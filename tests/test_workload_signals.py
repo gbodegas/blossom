@@ -28,8 +28,9 @@ from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.plan_checks import PlanCheck
 from blossom.plans import DailyPlan, Deferral, PlanBlock
+from blossom.routes import student as student_routes
 from blossom.routes.runs import plan_graphs
-from blossom.routes.student import templates
+from blossom.routes.student import SIGNAL_REMOVED, landing_cookie, templates
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
     DEFAULT_EVENING_MINUTES,
@@ -55,8 +56,10 @@ from tests.support import (
     good_plan,
     graph_with,
     human_text,
+    landing_in,
     light_fixture_plan,
     ok,
+    refusing,
     scripted_graphs,
     signals_in_memory,
 )
@@ -365,7 +368,7 @@ def test_taking_it_back_from_the_page_restores_the_evening() -> None:
         listed = client.get("/student/workload-signals").json()
 
     assert taken_back.status_code == 303
-    assert taken_back.headers["location"] == REMOVED_PAGE
+    assert taken_back.headers["location"] == landed_at(taken_back.headers["location"])
     assert "Too much right now" in page
     assert REQUESTED not in page
     assert REMOVED in page
@@ -382,7 +385,6 @@ REMOVED = "You removed your request."
 UNCHANGED = "Your saved plan has not changed."
 STILL = "A shorter plan is still requested for today."
 PAGE = "/student/due-this-week"
-REMOVED_PAGE = f"{PAGE}?signal=removed"
 STATE = re.compile(
     r'<div class="too-much">\s*<p class="note" id="too-much-state"( role="status")?>(.*?)</p>'
     r'\s*<div class="actions">(.*?)</div>\s*</div>',
@@ -414,12 +416,22 @@ def todays_draft(client: TestClient) -> object:
     return state.drafts.latest_for(PLAN_DATE)
 
 
+def landed_at(location: str) -> str:
+    """Her week at the landing an Undo's redirect names, which is new for every press."""
+    return f"{PAGE}?landing={landing_in(location)}"
+
+
 def undo(client: TestClient, signal_id: str) -> str:
-    """Press Undo for one signal, as her page sends it, and read the page it leads to."""
+    """Press Undo for one signal, as her page sends it, and read the page it lands on, which
+    the mark the press left in that landing's cookie is for."""
     pressed = client.post(f"/student/actions/take-back/{signal_id}")
     assert pressed.status_code == 303
-    assert pressed.headers["location"] == REMOVED_PAGE
-    return client.get(pressed.headers["location"]).text
+    location = pressed.headers["location"]
+    assert location == landed_at(location)
+    assert pressed.headers["set-cookie"].startswith(
+        f"{landing_cookie(landing_in(location))}={SIGNAL_REMOVED};"
+    )
+    return client.get(location).text
 
 
 def asked(planners: list[Scripted[DailyPlan]]) -> tuple[int, int]:
@@ -561,6 +573,92 @@ def test_an_undo_sent_again_changes_nothing_and_never_says_the_evening_is_back()
     assert f"take-back/{first}" in state.group(3)
     for never in ("150 minutes", "usual", "full evening"):
         assert never not in twice, never
+
+
+def test_only_the_page_her_undo_lands_on_says_she_removed_her_request() -> None:
+    """The Undo's redirect names a new landing and leaves a mark for that page alone, which
+    reads it once, clears it and is kept by no cache. A refresh or a return says what stands."""
+    with browser(key=True) as client:
+        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much")
+        first, latest = tonight(client)
+        pressed = client.post(f"/student/actions/take-back/{latest}")
+        landed = client.get(pressed.headers["location"])
+        refreshed = client.get(pressed.headers["location"])
+        returned = client.get(PAGE)
+
+    news = STATE.search(today_of(landed.text))
+    assert news is not None
+    assert news.group(1) == ' role="status"'
+    assert said(news.group(2)) == f"{REMOVED} {STILL} {NEXT_PLAN}"
+    for later in (refreshed.text, returned.text):
+        assert REMOVED not in later
+        state = STATE.search(today_of(later))
+        assert state is not None
+        assert state.group(1) is None
+        assert said(state.group(2)) == f"{REQUESTED} {NEXT_PLAN}"
+        assert f"take-back/{first}" in state.group(3)
+    landing = landing_in(pressed.headers["location"])
+    left = pressed.headers["set-cookie"]
+    assert left.startswith(f"{landing_cookie(landing)}={SIGNAL_REMOVED};")
+    for part in ("HttpOnly", "Max-Age=60", f"Path={PAGE}", "SameSite=lax"):
+        assert part in left, part
+    assert landed.headers["cache-control"] == "no-store"
+    assert landed.headers["set-cookie"].startswith(f'{landing_cookie(landing)}=""; ')
+    assert "cache-control" not in refreshed.headers
+
+
+@pytest.mark.parametrize("kept", [0, 1], ids=["nothing kept", "a request kept"])
+@pytest.mark.parametrize(
+    "query",
+    ["signal=removed", f"landing={'0' * 16}", f"signal=removed&landing={'0' * 16}"],
+    ids=["a removal named", "a landing with no mark", "both"],
+)
+def test_an_address_alone_never_says_she_removed_her_request(kept: int, query: str) -> None:
+    """Opened from a bookmark, a link or by hand, an address says nothing of a removal: Today
+    says what stands, as on any visit."""
+    with browser(key=True) as client:
+        for _ in range(kept):
+            client.post("/student/actions/too-much")
+        page = client.get(f"{PAGE}?{query}")
+
+    today = today_of(page.text)
+    assert REMOVED not in today
+    state = STATE.search(today)
+    if kept:
+        assert state is not None
+        assert state.group(1) is None
+        assert said(state.group(2)) == f"{REQUESTED} {NEXT_PLAN}"
+    else:
+        assert state is None
+        assert ">Too much right now</button>" in today
+    assert "cache-control" not in page.headers
+
+
+def test_try_again_after_an_unreadable_landing_says_the_removal_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Her week unreadable where an Undo lands says nothing of the removal and leaves its mark,
+    so Try again, the same address while the mark waits, says it once."""
+    real = student_routes.student_page
+    with browser(key=True) as client:
+        client.post("/student/actions/too-much")
+        pressed = client.post(f"/student/actions/take-back/{tonight(client)[0]}")
+        monkeypatch.setattr(student_routes, "student_page", refusing())
+        failed = client.get(pressed.headers["location"])
+        monkeypatch.setattr(student_routes, "student_page", real)
+        again = re.search(r'<a href="([^"]+)">Try again</a>', failed.text)
+        assert again is not None
+        tried = client.get(again.group(1))
+        refreshed = client.get(again.group(1))
+
+    assert failed.status_code == 503
+    assert REMOVED not in failed.text
+    assert "set-cookie" not in failed.headers
+    assert again.group(1) == pressed.headers["location"]
+    assert REMOVED in today_of(tried.text)
+    assert tried.headers["cache-control"] == "no-store"
+    assert REMOVED not in refreshed.text
 
 
 def test_a_press_on_her_page_reaches_the_parents_plan() -> None:

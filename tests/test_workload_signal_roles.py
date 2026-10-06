@@ -39,6 +39,7 @@ from tests.support import (
     accepting,
     fixture_settings,
     fixture_week_plan,
+    landing_in,
     light_fixture_plan,
     scripted_graphs,
     signed_in,
@@ -47,7 +48,10 @@ from tests.support import (
 )
 
 PAGE = "/student/due-this-week"
-REMOVED = f"{PAGE}?signal=removed"
+NAMED_REMOVED = f"{PAGE}?signal=removed"
+"""An address that names a removal no press of hers made."""
+LANDED = (f"{PAGE}?landing={{landing}}", student_routes.SIGNAL_REMOVED)
+"""Where her Undo sends her, its landing new for each press, and the mark it leaves there."""
 UNDO = "Undo 'Too much right now'"
 TOO_MUCH = "/student/actions/too-much"
 TAKE_BACK = "/student/actions/take-back/"
@@ -392,8 +396,20 @@ def answered(client: TestClient, which: str) -> tuple[int, object]:
         body = answer.json()
         said = (body["principal"], body["signal"]["detail"])
     elif answer.status_code == 303:
-        said = answer.headers["location"]
+        said = landed(answer)
     return answer.status_code, said
+
+
+def landed(answer: Response) -> str | tuple[str, str]:
+    """Where a press sends her: the address, or with a landing, the address with the landing
+    written as ``{landing}`` and what the press left in that landing's cookie."""
+    location = answer.headers["location"]
+    if "landing=" not in location:
+        return location
+    landing = landing_in(location)
+    name, _, left = answer.headers.get("set-cookie", "").partition(";")[0].partition("=")
+    assert name == student_routes.landing_cookie(landing), name
+    return location.replace(landing, "{landing}"), left
 
 
 @pytest.mark.parametrize("reader", ["her", "open"])
@@ -401,8 +417,8 @@ def answered(client: TestClient, which: str) -> tuple[int, object]:
     ("which", "expected", "kept"),
     [
         ("too much", (303, PAGE), 1),
-        ("take back", (303, REMOVED), 0),
-        ("take back absent", (303, REMOVED), 0),
+        ("take back", (303, LANDED), 0),
+        ("take back absent", (303, LANDED), 0),
         ("create", (201, ("STUDENT", "a long day")), 1),
         ("delete", (204, None), 0),
         ("delete absent", (404, f"no signal '{ABSENT}'"), 0),
@@ -535,6 +551,31 @@ def test_her_page_left_open_when_a_parent_signs_in_is_refused(tmp_path: pathlib.
     assert after == before
 
 
+def test_a_parent_who_opens_the_page_her_undo_landed_on_reads_no_removal(
+    tmp_path: pathlib.Path,
+) -> None:
+    """On her device, a parent who opens the address her Undo was answered with, while its
+    mark still waits, reads what stands in the parent's words and nothing of the removal; the
+    mark is cleared, so she meets none after."""
+    with household(tmp_path, "her") as client:
+        _, removed = one_of_hers(client), one_of_hers(client)
+        pressed = client.post(TAKE_BACK + removed)
+        as_a_parent(client)
+        opened = client.get(pressed.headers["location"])
+        as_her(client)
+        hers_after = client.get(pressed.headers["location"]).text
+
+    assert pressed.status_code == 303
+    assert opened.status_code == 200
+    assert "removed your request" not in opened.text
+    assert "<strong>She said it was too much</strong> at" in opened.text
+    assert "removed your request" not in hers_after
+    assert "<strong>A shorter plan is requested for today.</strong>" in hers_after
+    landing = landing_in(pressed.headers["location"])
+    cleared = f'{student_routes.landing_cookie(landing)}=""; '
+    assert cleared in opened.headers.get("set-cookie", "")
+
+
 # -------------------------------------------------------------- her evening
 
 
@@ -582,7 +623,7 @@ def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
         none_yet = client.get(PAGE).text
         hers_in_turn(client, monkeypatch, "the essay and two quizzes", "a late night")
         signaled = client.get(PAGE).text
-        named_removed = client.get(REMOVED).text
+        named_removed = client.get(NAMED_REMOVED).text
 
     assert f'action="{TOO_MUCH}"' not in none_yet
     assert "Too much right now</button>" not in none_yet

@@ -249,9 +249,6 @@ logger = logging.getLogger(__name__)
 
 PAGE: Final = "/student/due-this-week"
 A_WEEK: Final = timedelta(days=7)
-SIGNAL_REMOVED: Final = "removed"
-"""What her week's address says after Undo 'Too much right now' or a Remove took a request
-away, so Today says she removed it, beside what still stands."""
 
 # The words her page uses for each channel a date can come from. The page
 # speaks to her, so her own report is "what you reported".
@@ -459,8 +456,9 @@ them and no other visit to her week does."""
 IN_PLACE_LANDING_DIGITS: Final = 16
 """How many hex digits a landing has."""
 IN_PLACE_COOKIE: Final = "blossom-in-place"
-"""The start of the cookie a save, an undo, Change or Keep it as it is leaves for the one
-page that answers it, followed by that page's landing. The page reads it once and clears it."""
+"""The start of the cookie a save, an undo, Change, Keep it as it is or a removed signal
+leaves for the one page that answers it, followed by that page's landing. The page reads it
+once and clears it."""
 IN_PLACE_SECONDS: Final = 60
 """How long that cookie waits for the page that answers it, which a browser asks for at once."""
 IN_PLACE_MAX: Final = 40
@@ -476,6 +474,10 @@ IN_PLACE_DONE: Final = "n"
 """The mark the cookie a save leaves puts ahead of the cards it keeps in place, on the key of
 the card that save has just made Done. No form or address carries it, and ``InPlace.read``
 passes over it."""
+SIGNAL_REMOVED: Final = "r"
+"""The whole of the cookie Undo 'Too much right now' or a Remove leaves, so the one page that
+answers it says she removed her request, beside what still stands. No form or address
+carries it, and ``InPlace.read`` passes over it."""
 WELL_DONE: Final = "Done. Nice work."
 """The words a save that has just made a card Done is met with, beside a small petal, on the
 one page that answers it."""
@@ -1809,6 +1811,26 @@ def sent_done_to_the_details(location: str, assignment_id: str) -> RedirectRespo
     return moved
 
 
+def sent_removed(location: str) -> RedirectResponse:
+    """The redirect to her week after a signal of hers is removed: its address names a new
+    landing, and the cookie named for it tells that one page, and no other, that she removed
+    her request. It holds no card."""
+    landing = secrets.token_hex(IN_PLACE_LANDING_DIGITS // 2)
+    moved = RedirectResponse(
+        str(URL(location).include_query_params(**{IN_PLACE_LANDING: landing})),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    moved.set_cookie(
+        landing_cookie(landing),
+        SIGNAL_REMOVED,
+        max_age=IN_PLACE_SECONDS,
+        path=WEEK_PAGE,
+        httponly=True,
+        samesite="lax",
+    )
+    return moved
+
+
 def named_once(request: Request, name: str) -> str | None:
     """The value her week's address gives a query, or ``None`` when it gives none or gives
     more than one."""
@@ -2214,9 +2236,6 @@ def due_this_week(
     run: Annotated[
         str | None, Query(description="a planning run to say where it stands; changes nothing")
     ] = None,
-    signal: Annotated[
-        str | None, Query(description="removed after her Undo of Too much right now; a note")
-    ] = None,
 ) -> Response:
     """Render her week and today's plan.
 
@@ -2240,10 +2259,10 @@ def due_this_week(
     and offers the same address again. ``earlier`` and ``earlier_said`` name what a choice in
     Earlier homework to check just did, said beside that item only when this process signed
     it for today and that item and today's choices still agree; a word not in the set says
-    nothing. The household day is read once, for that check and the page alike. ``signal``
-    is ``removed`` after her Undo of Too much right now or a Remove, and Today then says she
-    removed her request, beside what the signals kept now say; any other value says nothing,
-    and a parent is told nothing of it.
+    nothing. The household day is read once, for that check and the page alike. Today says
+    she removed her request only on the page her Undo of Too much right now or a Remove lands
+    on, from the mark that press left in its landing's cookie, beside what the signals kept
+    now say; no address says it, and a parent is told nothing of it.
 
     The cards a visit keeps where they were come to the page once. A save or an undo leaves
     them in a cookie named for the landing its redirect names in ``landing``; Change and Keep
@@ -2255,7 +2274,8 @@ def due_this_week(
     and its Try again carries them in ``in_place``, so a try made after the cookie is gone
     still finds them where they were. A save that has just made a card Done says so in its
     cookie, and that one page meets the card with a few words beside a small petal, and is
-    sent to be kept by no cache, so a step back or forward through history asks again.
+    sent to be kept by no cache, so a step back or forward through history asks again. The
+    page that reads a removed signal's mark is sent the same way.
     """
     landing = landing_asked(request)
     if in_place is not None:
@@ -2263,6 +2283,7 @@ def due_this_week(
         return moved if landing is None else forget_landing(moved, landing)
     left = None if landing is None else request.cookies.get(landing_cookie(landing))
     kept = InPlace.read(left)
+    removed = left == SIGNAL_REMOVED
     card = met(card_shown(saved, same, undone, change, show, undo_event), left)
     try:
         today = state.clock.today()
@@ -2297,7 +2318,7 @@ def due_this_week(
             earlier_note=chose,
             today=today,
             run_notice=run_notice(state, run, PAGE, parent=parent, today=today),
-            signal_removed=signal == SIGNAL_REMOVED,
+            signal_removed=removed,
         )
     except sqlite3.Error as error:
         again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
@@ -2305,8 +2326,9 @@ def due_this_week(
         return unreadable if landing is None else leave_in_place(unreadable, kept, landing)
     if landing is not None and left is not None:
         forget_landing(page, landing)
-    if card is not None and card.well_done:
-        # Not kept by the browser, so Back or Forward to it asks again and meets no petal.
+    if (card is not None and card.well_done) or removed:
+        # Not kept by the browser, so Back or Forward to it asks again and meets no petal
+        # and no word of a removal.
         page.headers["Cache-Control"] = "no-store"
     return page
 
@@ -3763,10 +3785,10 @@ async def too_much_from_the_page(request: Request, state: State) -> Response:
 @router.post("/actions/take-back/{signal_id}", response_class=HTMLResponse, include_in_schema=False)
 async def take_back_from_the_page(request: Request, signal_id: str, state: State) -> Response:
     """Remove a signal from her page, by Undo 'Too much right now' or a Remove, and return to
-    her week, which says she removed her request and what still stands. A signal already
-    gone is not an error here. A parent is answered 403 before the signal is looked up: the
-    signal is hers to take back. A removal the file refuses is rolled back and said at the
-    top of her week, 500."""
+    her week, where only the page the redirect lands on says she removed her request, beside
+    what still stands. A signal already gone is not an error here, and is answered the same
+    way. A parent is answered 403 before the signal is looked up: the signal is hers to take
+    back. A removal the file refuses is rolled back and said at the top of her week, 500."""
     if viewer_of(request) == "parent":
         return not_hers(request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL)
     try:
@@ -3774,9 +3796,7 @@ async def take_back_from_the_page(request: Request, signal_id: str, state: State
     except sqlite3.Error as error:
         logger.warning("her signal could not be taken back: %s", type(error).__name__)
         return signal_not_saved(request, state)
-    return RedirectResponse(
-        address(PAGE, signal=SIGNAL_REMOVED), status_code=status.HTTP_303_SEE_OTHER
-    )
+    return sent_removed(PAGE)
 
 
 def signal_not_saved(request: Request, state: ApplicationState) -> HTMLResponse:
