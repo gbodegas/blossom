@@ -944,6 +944,7 @@ def test_every_way_back_holds_through_change_keep_save_undo_and_a_conflict(origi
         )
         after_save = client.get(saved.headers["location"], headers=PAGE_HEADERS).text
         undone = client.post(UNDO, data=form_fields(after_save, UNDO), headers=PAGE_HEADERS)
+        undo_id = store_of(client).student_reports(ESSAY_ID)[-1].report_id
         after_undo = client.get(undone.headers["location"], headers=PAGE_HEADERS).text
         again = client.post(
             REPORT,
@@ -968,7 +969,9 @@ def test_every_way_back_holds_through_change_keep_save_undo_and_a_conflict(origi
     assert saved.headers["location"] == (
         f"{DETAILS}?said=saved&{back}&landing={landing}#update-result-{ESSAY_ID}"
     )
-    assert undone.headers["location"] == f"{DETAILS}?said=undone&{back}#update-result-{ESSAY_ID}"
+    assert undone.headers["location"] == (
+        f"{DETAILS}?said=undone&undo_event={undo_id}&{back}#update-result-{ESSAY_ID}"
+    )
     assert unescape(keep.group(1)) == f"{DETAILS}?{back}#update-or-turn-in"
     assert conflict.status_code == 409
     first = way_back(arrived)
