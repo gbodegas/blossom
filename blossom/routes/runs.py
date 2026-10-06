@@ -120,12 +120,15 @@ still to do: nothing has been planned, no run has been written, and no model ask
 
 COULD_NOT_START: Final = "Blossom couldn't start a plan this time. Try again in a moment."
 """What a planning route answers, 503, when the week couldn't be read, the graph couldn't be
-built, or the run couldn't be admitted in time. No run was recorded and no model asked."""
+built, or the run couldn't be admitted in time. No model is asked. A failure before admission
+records no run; an admission the route stopped waiting for can still insert its run, which then
+refuses presses until its own deadline."""
 
 
 class CouldNotStart(HTTPException):
     """The week couldn't be read, the graph couldn't be built, or the run couldn't be admitted
-    within the wait. Nothing was recorded."""
+    within the wait. A failure before admission records nothing; an admission whose result
+    isn't known yet can still insert its run."""
 
     def __init__(self) -> None:
         super().__init__(status.HTTP_503_SERVICE_UNAVAILABLE, detail=COULD_NOT_START)
