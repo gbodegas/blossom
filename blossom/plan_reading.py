@@ -37,6 +37,7 @@ from blossom.clock import spoken_time
 from blossom.plan_dates import DATES_UNREAD, SOURCE_LIMIT, DatesNow, RowNow, row_now
 from blossom.plan_snapshot import PlanSnapshot, SavedReview, read_snapshot
 from blossom.plan_text import one_line, plain
+from blossom.plans import DailyPlan
 from blossom.stores.drafts import DraftRecord
 
 Reader = Literal["student", "family"]
@@ -153,6 +154,9 @@ class PlanReading:
     deferrals: list[DeferralRow] = field(default_factory=list)
     clarifications: list[ClarificationRow] = field(default_factory=list)
     review: SavedReview | None = None
+    saved_plan: DailyPlan | None = None
+    """The plan as its snapshot keeps it, for a page that measures it; ``None`` for the text
+    reading."""
 
     @property
     def annotated(self) -> bool:
@@ -276,6 +280,7 @@ def read_plan(
         body=record.body,
         unsettled=unsettled,
         title=plan_title(snapshot.plan.plan_date),
+        saved_plan=snapshot.plan,
         intro=[plain(line) for line in snapshot.intro],
         blocks=[
             BlockRow(
