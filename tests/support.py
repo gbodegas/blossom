@@ -1967,14 +1967,29 @@ def help_group(fragment: str) -> list[tuple[str, str]]:
     return [(part, words(inside)) for _, part, inside in HELP_PART.findall(fragment)]
 
 
-def help_reply(fragment: str) -> str | None:
-    """What the first reply in a fragment says, from the line under its Parent reply label,
-    or ``None`` when the fragment shows no reply."""
+UPDATE_LABELS = ("Parent update", "Earlier reply")
+"""The labels over a parent's updates: one added with its time, and a reply kept with none."""
+
+
+def help_updates(fragment: str) -> list[tuple[str, str, str | None]]:
+    """Every parent update a fragment shows, in the order shown, the latest first and then the
+    earlier ones as they came: its label, its words, and the line that says when it was
+    added, or ``None`` for a reply kept with no time."""
     parts = help_group(fragment)
-    for at, part in enumerate(parts[:-1]):
-        if part == ("label", "Parent reply"):
-            return parts[at + 1][1]
-    return None
+    found: list[tuple[str, str, str | None]] = []
+    for at, (part, said) in enumerate(parts[:-1]):
+        if part == "label" and said in UPDATE_LABELS:
+            after = parts[at + 2] if at + 2 < len(parts) else ("", "")
+            added = after[1] if after[0] == "when" and after[1].startswith("Added: ") else None
+            found.append((said, parts[at + 1][1], added))
+    return found
+
+
+def help_reply(fragment: str) -> str | None:
+    """What the first parent update in a fragment says, the latest of its request, or ``None``
+    when the fragment shows none."""
+    shown = help_updates(fragment)
+    return shown[0][1] if shown else None
 
 
 # ------------------------------------------------------------- the family page's rows, and a check

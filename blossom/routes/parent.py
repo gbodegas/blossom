@@ -134,7 +134,21 @@ from blossom.stores.drafts import (
     DraftRecord,
     NotPublished,
 )
-from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
+from blossom.stores.help_requests import (
+    NOTE_MAX_LENGTH,
+    AlreadyTakenUp,
+    HelpRequest,
+    NotARequestId,
+    NotTakenUp,
+    RequestClosed,
+    UnreadableHelpRequest,
+    UpdateFormUsed,
+    UpdateTooLong,
+    UpdateWithoutWords,
+    kept_words,
+    new_update_id,
+    update_id_from,
+)
 from blossom.stores.project_state import (
     CHECKED,
     AlreadyChecked,
@@ -283,8 +297,25 @@ HELP_STEP_NOT_SAVED: Final = (
     "That could not be saved, and nothing was changed. Your reply is below. Try again."
 )
 STEP_NOT_SAVED: Final = "That could not be saved, and nothing was changed. Try again."
-"""What a parent's take-up or resolve the file refused says, with and without a reply: the
+"""What a parent's move on her request the file refused says, with and without words: the
 store rolls back a write it could not finish, a refused commit included."""
+ALREADY_TAKEN_UP: Final = (
+    "This request was already taken up. Your words weren't added; they're below in Add an update."
+)
+CLOSED_BEFORE_UPDATE: Final = "This request was closed before your update was added."
+ALREADY_CLOSED: Final = "This request is already closed."
+FORM_ADDED_OTHER_WORDS: Final = (
+    "This form already added an update with other words, so nothing was changed. Your words "
+    "are below in Add an update."
+)
+NOT_TAKEN_UP_YET: Final = (
+    "This request isn't taken up yet, so your update wasn't added. Your words are below."
+)
+UPDATE_NEEDS_WORDS: Final = "An update needs some words. Nothing was added."
+"""What a move on her request says when the request's state or the form refuses it. Each
+writes nothing, and the family page keeps the words as typed."""
+WORDS_BELOW: Final = frozenset({ALREADY_TAKEN_UP, FORM_ADDED_OTHER_WORDS, NOT_TAKEN_UP_YET})
+"""The refusals that say the words are below, in the request's own box, with a way to it."""
 WITHOUT_THE_PAGE: Final[dict[str, str]] = {
     CHECK_MOVED_ON: (
         "This row was marked checked or reopened from another device since this page was made. "
@@ -317,12 +348,14 @@ class FamilyKept:
 
 @dataclass(frozen=True)
 class HelpReplyKept:
-    """A reply to her request that a refused press sends back to the family page as typed:
-    the request it was for, the words, and whether the words are what was refused."""
+    """Words for her request that a refused press sends back to the family page as typed: the
+    request they were for, the words, whether the words are what was refused, and whether
+    the refusal says they are below, in the request's own box."""
 
     request_id: str
     reply: str
     at_reply: bool = False
+    below: bool = False
 
 
 @dataclass(frozen=True)
@@ -743,32 +776,69 @@ def checkpoint(state: State) -> ParentCheckpointView:
 
 
 class HelpStep(BaseModel):
-    """A parent's move on a request: taking it up or resolving it, with a word back if any."""
+    """A parent's move on a request, with words if any, and the id of the form that sends it.
+    Without an id, every call moves as a form of its own, so retrying one isn't safe. The words
+    are held to the cap as the store keeps them, as the family page's are."""
 
     model_config = ConfigDict(extra="forbid")
 
-    response: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
+    response: str | None = None
+    update_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+
+
+def reply_too_long(length: int) -> str:
+    """What both routes say of a parent's words past the cap, counted as they would be kept."""
+    return f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is {length}."
 
 
 def move_request(
-    state: ApplicationState, request_id: str, step: str, response: str | None
+    state: ApplicationState,
+    request_id: str,
+    step: str,
+    response: str | None,
+    update_id: str | None = None,
 ) -> HelpRequest:
-    """Take a request up or resolve it; unknown is 404, closed is 409, any other step is 422."""
+    """Take a request up, add an update to it, or close it. Words past the cap are 422 before
+    anything is read; then an unknown request is 404, an update with no words 422, and a move
+    its state or its form refuses 409. Any other step is 422."""
+    store = state.help_requests
     try:
         if step == "accept":
-            return state.help_requests.accept(request_id, response)
+            return store.accept(request_id, response, update_id=update_id)
+        if step == "update":
+            return store.add_update(request_id, response, update_id=update_id)
         if step == "resolve":
-            return state.help_requests.resolve(request_id, response)
+            return store.resolve(request_id, response, update_id=update_id)
+    except UpdateTooLong as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, detail=reply_too_long(error.length)
+        ) from error
     except KeyError as error:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, detail=f"no help request {request_id!r}"
         ) from error
     except RequestClosed as error:
-        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+        said = CLOSED_BEFORE_UPDATE if step == "update" else ALREADY_CLOSED
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=said) from error
+    except AlreadyTakenUp as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=ALREADY_TAKEN_UP) from error
+    except UpdateFormUsed as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=FORM_ADDED_OTHER_WORDS) from error
+    except NotTakenUp as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=NOT_TAKEN_UP_YET) from error
+    except UpdateWithoutWords as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, detail=UPDATE_NEEDS_WORDS
+        ) from error
     raise HTTPException(
         status.HTTP_422_UNPROCESSABLE_CONTENT,
-        detail=f"{step!r} is not one of the two moves, accept or resolve.",
+        detail=f"{step!r} is not one of the three moves, accept, update or resolve.",
     )
+
+
+def step_of(payload: HelpStep | None) -> tuple[str | None, str | None]:
+    """The words and the form's id a JSON move carries, none when it carries no body."""
+    return (None, None) if payload is None else (payload.response, payload.update_id)
 
 
 @router.get("/help-requests")
@@ -784,9 +854,17 @@ def help_requests(state: State) -> list[HelpRequestView]:
 def accept_help_request(
     request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
 ) -> HelpRequestView:
-    """Take a request up, so her page says a parent is on it."""
-    response = None if payload is None else payload.response
-    moved = move_request(state, request_id, "accept", response)
+    """Take a request up, so her page says a parent is on it, any words its first update."""
+    moved = move_request(state, request_id, "accept", *step_of(payload))
+    return help_view(state, moved, notes_named_by(state, [moved]))
+
+
+@router.post("/help-requests/{request_id}/update")
+def update_help_request(
+    request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
+) -> HelpRequestView:
+    """Add an update to a request a parent has taken up; it stays open."""
+    moved = move_request(state, request_id, "update", *step_of(payload))
     return help_view(state, moved, notes_named_by(state, [moved]))
 
 
@@ -794,9 +872,8 @@ def accept_help_request(
 def resolve_help_request(
     request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
 ) -> HelpRequestView:
-    """Answer a request, with a word back if given; her page shows it for two weeks."""
-    response = None if payload is None else payload.response
-    moved = move_request(state, request_id, "resolve", response)
+    """Close a request, any words its last update; her page shows it for two weeks."""
+    moved = move_request(state, request_id, "resolve", *step_of(payload))
     return help_view(state, moved, notes_named_by(state, [moved]))
 
 
@@ -842,9 +919,10 @@ def review_page(
     ``open_plan`` is a plan a link came back to, whose folds are opened.
     ``problem_check`` links the problem to the run it names, and ``run_notice`` is what
     the page says about a planning run. A waiting plan no review could resume says so in
-    place of its two buttons, as the decision itself refuses it. ``help_reply`` is a
-    reply a refused press sent back, shown in its request's box while that request is
-    open on the page, and under the problem otherwise.
+    place of its two buttons, as the decision itself refuses it. ``help_reply`` is the
+    words a refused press sent back, shown in its request's box while that request is
+    open on the page, and under the problem otherwise. Each open request's form gets a
+    fresh id of its own, so the same form sent again is known as one.
 
     The household day is read once, and today's working plan with it: the
     last draft published for today that no later one displaced. That one
@@ -933,6 +1011,7 @@ def review_page(
             "reason_max_length": REASON_MAX_LENGTH,
             "help_open": [help_view(state, r, named) for r in asked if r.open],
             "help_resolved": [help_view(state, r, named) for r in asked if not r.open],
+            "update_ids": {r.request_id: new_update_id() for r in asked if r.open},
             "help_reply": help_reply,
             "help_reply_listed": help_reply is not None
             and any(r.open and r.request_id == help_reply.request_id for r in asked),
@@ -1413,40 +1492,56 @@ def help_from_the_page(
     state: State,
     step: Annotated[str, Form()] = "",
     response: Annotated[str, Form()] = "",
+    update_id: Annotated[str, Form()] = "",
 ) -> Response:
-    """The two buttons under a request, through the same path the JSON routes take.
+    """The buttons under a request, I can help, Add an update and Close request, through the
+    same path the JSON routes take.
 
-    The reply is read with one kind of line ending, as its box counts it, so a line break
-    is one character of the cap. A step the family page refuses is said at its top with
-    the reply as typed, in the request's own box while the request is open there and under
-    the problem otherwise. A take-up or a resolve the file refuses is rolled back and
-    answered at once on the family page's stand-in, which reads no store, 500, with the
-    reply as typed. A refusal whose page can't be read keeps its status there, with the
-    reply.
+    The words are read with one kind of line ending, as the box counts them, so a line
+    break is one character of the cap. The form's id goes with the move, so the same form
+    sent again changes nothing; a form with no id moves as one of its own, and one whose id
+    no form carries is refused. A step the family page refuses is said at its top with the
+    words as typed: in the request's own box while the request is open there, marked and
+    focused when the words are what was refused, with a way to the box when the refusal
+    says they are below, and under the problem otherwise. A move the file refuses, or a
+    request whose row can't be read, is rolled back and answered at once on the family
+    page's stand-in, which reads no store, 500, with the words as typed. A refusal whose
+    page can't be read keeps its status there, with the words.
     """
-    words = normalize_note(response) or ""
     typed = FamilyKept(reply=response)
-    if len(words) > NOTE_MAX_LENGTH:
+    try:
+        words = kept_words(response) or ""
+    except UpdateTooLong as error:
         return refused_on_the_page(
             request,
             state,
-            f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}.",
+            reply_too_long(error.length),
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             typed,
             help_reply=HelpReplyKept(request_id, response, at_reply=True),
         )
     try:
-        move_request(state, request_id, step, words or None)
-    except HTTPException as error:
+        form = update_id_from(update_id) if update_id else None
+    except NotARequestId:
         return refused_on_the_page(
             request,
             state,
-            str(error.detail),
-            error.status_code,
+            BAD_CHECK_FORM,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             typed,
             help_reply=HelpReplyKept(request_id, response) if words else None,
         )
-    except sqlite3.Error as error:
+    try:
+        move_request(state, request_id, step, words or None, form)
+    except HTTPException as error:
+        said = str(error.detail)
+        kept = None
+        if said == UPDATE_NEEDS_WORDS:
+            kept = HelpReplyKept(request_id, response, at_reply=True)
+        elif words:
+            kept = HelpReplyKept(request_id, response, below=said in WORDS_BELOW)
+        return refused_on_the_page(request, state, said, error.status_code, typed, help_reply=kept)
+    except (sqlite3.Error, UnreadableHelpRequest) as error:
         logger.warning(
             "a parent's move on her request could not be saved: %s", type(error).__name__
         )

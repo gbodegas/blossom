@@ -541,8 +541,21 @@ class HelpNoteView(BaseModel):
         return cls(capture_id=note.capture_id, text=note.text, archived=note.archived)
 
 
+class ParentUpdateView(BaseModel):
+    """One update a parent added to a request, as both pages show it: the words, and when, in
+    the household's zone, or no time for a reply kept from before updates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    update_id: str
+    body: str
+    written_at: AwareDatetime | None = None
+    written_local: AwareDatetime | None = None
+
+
 class HelpRequestView(BaseModel):
-    """One request for help as both pages see it: her words, where it stands, the word back.
+    """One request for help as both pages see it: her words, where it stands, a parent's
+    updates.
 
     The same view serves her page and the parent's: what a parent does with a
     request is shown to her in full, and nothing is kept about a request that
@@ -562,6 +575,9 @@ class HelpRequestView(BaseModel):
     resolved_local: AwareDatetime | None = None
     """When a parent resolved it, in the household's zone, which is the day her page says."""
     response: str | None = None
+    """The latest update's words."""
+    updates: list[ParentUpdateView] = []
+    """What parents added, in the order it came: the last is the latest."""
     about_note: HelpNoteView | None = None
     """The homework note the request is about, when it is about one."""
 

@@ -234,6 +234,7 @@ from blossom.views import (
     HelpNoteView,
     HelpRequestView,
     NamedAssignmentView,
+    ParentUpdateView,
     PublishedRunView,
     RunStatusView,
     SchoolStatementView,
@@ -705,8 +706,8 @@ def notes_named_by(state: ApplicationState, requests: list[HelpRequest]) -> Name
     """The notes these requests are about, in one statement for all of them, and in none
     when no request is about a note.
 
-    The notes are context for a request and never the answer itself, and an
-    accept or a resolve is already written when they are read. So a read of
+    The notes are context for a request and never the answer itself, and a
+    parent's move on it is already written when they are read. So a read of
     them that fails is logged and answered as no notes read, which shows each
     such note as unavailable, and never fails what it is context for.
     """
@@ -722,8 +723,10 @@ def notes_named_by(state: ApplicationState, requests: list[HelpRequest]) -> Name
 def help_view(
     state: ApplicationState, request: HelpRequest, named: NamedCaptures
 ) -> HelpRequestView:
-    """The request as both pages see it, with the time she asked in the household's zone and
-    the note it is about out of ``named``, the notes read for the requests being shown."""
+    """The request as both pages see it, with the time she asked and each update's time in
+    the household's zone, and the note it is about out of ``named``, the notes read for the
+    requests being shown."""
+    zone = state.clock.zone
     return HelpRequestView(
         about_note=HelpNoteView.about(
             request.capture_id,
@@ -733,17 +736,26 @@ def help_view(
         request_id=request.request_id,
         evening=request.evening,
         asked_at=request.asked_at,
-        asked_local=request.asked_at.astimezone(state.clock.zone),
+        asked_local=request.asked_at.astimezone(zone),
         note=request.note,
         state=request.state,
         accepted_at=request.accepted_at,
         resolved_at=request.resolved_at,
         resolved_local=(
-            None
-            if request.resolved_at is None
-            else request.resolved_at.astimezone(state.clock.zone)
+            None if request.resolved_at is None else request.resolved_at.astimezone(zone)
         ),
-        response=request.response,
+        response=request.parent_updates[-1].body if request.parent_updates else None,
+        updates=[
+            ParentUpdateView(
+                update_id=update.update_id,
+                body=update.body,
+                written_at=update.written_at,
+                written_local=(
+                    None if update.written_at is None else update.written_at.astimezone(zone)
+                ),
+            )
+            for update in request.parent_updates
+        ],
     )
 
 

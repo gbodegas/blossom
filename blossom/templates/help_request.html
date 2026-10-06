@@ -5,14 +5,22 @@
   to a line: where it stands, her words under a label for whoever reads the
   page, when she asked, by the request's own day and time in the household's
   zone, the evening it was asked for when that is another day, the homework
-  note it is about, and a parent's reply under a label of its own. The state
+  note it is about, and a parent's updates. The latest update comes first,
+  under Parent update, with the day and time it was added; the earlier ones
+  fold under Earlier updates, in the order they came. A reply kept from
+  before updates had times reads as Earlier reply, with no time. The state
   says what a parent did and nothing of how it turned out, and no line names
-  a parent or says who read what. The reply carries no time: the record keeps
-  when the request was taken up and closed, not when its reply was written.
-  ``ask`` is the request, ``hers`` whether the page is read as hers, and
-  ``today`` the household's day, beside which a date says its year. Each page
-  puts its own controls after this.
+  a parent or says who read what. ``ask`` is the request, ``hers`` whether
+  the page is read as hers, and ``today`` the household's day, beside which a
+  date says its year. Each page puts its own controls after this.
 #}
+{% macro update_lines(update, today) %}
+<p class="help-label">{% if update.written_local %}Parent update{% else %}Earlier reply{% endif %}</p>
+<p class="help-words"><q class="authored-text">{{ update.body }}</q></p>
+{% if update.written_local %}
+<p class="help-when">Added: {{ update.written_local|spoken_day(today) }} at {{ update.written_local|clock }}</p>
+{% endif %}
+{% endmacro %}
 <p class="help-state"><strong>{% if ask.state == "requested" %}Waiting for a parent.{% elif ask.state == "accepted" %}A parent is helping.{% else %}A parent closed this request on {{ ask.resolved_local|spoken_day(today) }}.{% endif %}</strong></p>
 <p class="help-label">{% if hers %}Your request{% else %}Student's request{% endif %}</p>
 {% if ask.note %}
@@ -27,7 +35,14 @@
 {% if ask.about_note %}
 <p class="help-about">{% with about = ask.about_note, viewer = "student" if hers else "parent" %}{% include "help_about_note.html" %}{% endwith %}</p>
 {% endif %}
-{% if ask.response %}
-<p class="help-label">Parent reply</p>
-<p class="help-words"><q class="authored-text">{{ ask.response }}</q></p>
+{% if ask.updates %}
+{{ update_lines(ask.updates[-1], today) }}
+{% if ask.updates|length > 1 %}
+<details class="help-earlier">
+<summary>Earlier updates ({{ ask.updates|length - 1 }})</summary>
+{% for update in ask.updates[:-1] %}
+{{ update_lines(update, today) }}
+{% endfor %}
+</details>
+{% endif %}
 {% endif %}

@@ -55,6 +55,7 @@ from tests.support import (
     settled_run,
     state_of,
     store_of,
+    whole_form,
 )
 
 PLAN_DATE = date(2026, 8, 19)
@@ -250,7 +251,7 @@ def test_the_parents_work_with_her_comes_before_planning_for_her() -> None:
     assert page.index('value="accept"') < plan_form_at
     assert "<summary>Help with a plan</summary>" in page
     assert ">I can help<" in page
-    assert ">Mark resolved<" in page
+    assert ">Close request<" in page
     assert ">Reply to your student (optional)</label>" in page
     assert "<strong>Blossom's review:</strong> accepted." in page
     assert '<p class="review-heading">Parent review</p>' in page
@@ -263,7 +264,8 @@ def test_the_help_buttons_accessible_names_begin_with_their_visible_words() -> N
         page = client.get("/parent").text
 
     assert 'aria-label="I can help with the request from ' in page
-    assert 'aria-label="Mark resolved: request from ' in page
+    assert 'aria-label="Close request from ' in page
+    assert "Mark resolved" not in page
     assert "What you say here appears on her page when she refreshes it." in page
     assert "as soon as it is taken" not in page
 
@@ -296,12 +298,21 @@ def asked_lines(item: dict[str, str]) -> list[tuple[str, str]]:
     return lines
 
 
+def added_line(update: dict[str, str]) -> tuple[str, str]:
+    """When a parent's update was added, as a request's group says it: its own day and time in
+    the household's zone, from what the JSON route lists."""
+    at = datetime.fromisoformat(update["written_local"])
+    year = "" if at.year == PLAN_DATE.year else f", {at.year}"
+    return ("when", f"Added: {at:%A, %B} {at.day}{year} at {spoken_time(at)}")
+
+
 def test_each_request_on_the_family_page_is_one_group_with_a_short_reply_field() -> None:
     """The group her page shows, said to a parent: where it stands, her words under Student's
-    request, when she asked, the reply so far under its own label, and no word about what her
-    page says. The reply is a short box with the cap. A request already taken up offers only
-    Mark resolved, so its field is the reply sent when closing, and says it replaces the
-    reply she has when there is one."""
+    request, when she asked, the latest update under Parent update with the day and time it
+    was added, and no word about what her page says. The box is short, with the cap, and a
+    one-time id rides with it. A waiting request's box is the reply I can help sends; a
+    request already taken up calls it Add an update. Close request is its own button in
+    both."""
     with browser() as client:
         made = {
             name: client.post("/student/help-requests", json={"note": f"Synthetic {name}"}).json()[
@@ -318,7 +329,7 @@ def test_each_request_on_the_family_page_is_one_group_with_a_short_reply_field()
 
     part = page.split('<section id="help-she-asked-for"', 1)[1].split("</section>", 1)[0]
     theirs = ("label", "Student's request")
-    reply = ("label", "Parent reply")
+    reply = ("label", "Parent update")
 
     def card(name: str) -> str:
         at = part.index(f'action="/parent/actions/help/{made[name]}"')
@@ -334,26 +345,46 @@ def test_each_request_on_the_family_page_is_one_group_with_a_short_reply_field()
         *opening("taken"),
         reply,
         ("words", "Synthetic so far"),
+        added_line(listed[taken]["updates"][0]),
     ]
     assert help_group(card("taken quietly")) == [helping, *opening("taken quietly")]
     history = part.split("<summary>Closed in the last two weeks</summary>", 1)[1]
     state, *rest = help_group(history)
     assert state[1].startswith("A parent closed this request on ")
-    assert rest == [*opening("closed"), reply, ("words", "Synthetic last")]
-    for name, label, replaces in (
-        ("waiting", "Reply to your student (optional)", False),
-        ("taken", "Reply when closing (optional)", True),
-        ("taken quietly", "Reply when closing (optional)", False),
+    assert rest == [
+        *opening("closed"),
+        reply,
+        ("words", "Synthetic last"),
+        added_line(listed[closed]["updates"][0]),
+    ]
+    for name, label, moves in (
+        ("waiting", "Reply to your student (optional)", ["I can help", "Close request"]),
+        ("taken", "Add an update", ["Add an update", "Close request"]),
+        ("taken quietly", "Add an update", ["Add an update", "Close request"]),
     ):
         shown, key = card(name), made[name]
-        hint = f'<p class="note" id="reply-hint-{key}">This replaces the current reply.</p>'
         assert f'<label for="reply-{key}">{label}</label>' in shown
         field = f'<textarea id="reply-{key}" name="response" rows="2" maxlength="{NOTE_MAX_LENGTH}"'
         assert field in shown
-        assert (hint in shown) is replaces
-        assert (f'aria-describedby="reply-hint-{key}"' in shown) is replaces
+        assert "aria-describedby" not in shown
         assert '<input type="text" name="response"' not in shown
-    for never in ("She said", "Her page says", "Reply so far", "Resolved", "Not taken up"):
+        assert re.fullmatch(
+            r"[0-9a-f]{32}", whole_form(shown, f"/parent/actions/help/{key}")["update_id"]
+        )
+        assert re.findall(r'<button type="submit" name="step"[^>]*>([^<]*)</button>', shown) == (
+            moves
+        )
+    for never in (
+        "She said",
+        "Her page says",
+        "Reply so far",
+        "Resolved",
+        "Not taken up",
+        "Parent reply",
+        "Reply when closing",
+        "replaces the current reply",
+        "Mark resolved",
+    ):
         assert never not in part
 
 
