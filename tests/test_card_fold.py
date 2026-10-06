@@ -30,6 +30,7 @@ from blossom.routes.navigation import assignment_anchor
 from blossom.school_instructions import InstructionChoice, InstructionSeen
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
+    ARRIVAL_CUE,
     DETAILS,
     ESCAPED,
     ESSAY,
@@ -55,6 +56,7 @@ from tests.support import (
     card_for,
     conflict,
     control_names,
+    declared_for,
     due,
     failed_undo,
     failed_write,
@@ -69,7 +71,6 @@ from tests.support import (
     reading,
     refuse_writes,
     reported,
-    rules_named,
     save,
     saved,
     saved_again,
@@ -791,7 +792,7 @@ def test_a_card_reported_done_offers_change_and_undo_and_no_button() -> None:
     assert quick_buttons(card) == []
     assert 'class="quick"' not in card
     assert ">Change<span" in card
-    assert ">Undo<span" in card
+    assert ">Undo last update<span" in card
 
 
 def test_every_button_names_its_assignment_and_the_page_says_what_done_means_once() -> None:
@@ -941,11 +942,10 @@ def test_change_lands_on_the_group_of_the_form_it_opens_and_asks_for_no_focus(
     assert autofocused(row) == []
 
 
-def test_the_group_a_change_lands_on_has_the_apps_outline() -> None:
-    assert any(
-        "outline: 2px solid var(--blue-action);" in inside
-        for inside in rules_named(".update .choice:focus")
-    )
+def test_the_group_a_change_lands_on_takes_the_arrival_cue() -> None:
+    """The choices Change opens are a place to land, marked by a tint and a bar with no
+    outline around them, as every place a press lands on her week is."""
+    assert declared_for(".update .choice:focus") == [ARRIVAL_CUE]
 
 
 # ------------------------------------------------------------------ the details

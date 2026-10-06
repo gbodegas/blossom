@@ -34,7 +34,6 @@ from blossom.routes.student import (
     HAND_IN_UNDONE,
     UPDATE_ALREADY_SAVED,
     UPDATE_SAVED,
-    UPDATE_UNDONE,
     WELL_DONE,
 )
 from blossom.to_turn_in import BACK_ON_THE_LIST, TURNED_IN_FROM_THE_LIST
@@ -48,6 +47,7 @@ from tests.support import (
     REPORT,
     THEIRS,
     UNDO,
+    UNDONE_TO_NOTHING,
     browser,
     card_for,
     client_for,
@@ -125,7 +125,7 @@ def undone_on_her_week(client: TestClient) -> Left:
     week = client.get(report(client, ESSAY_ID, "done"), headers=PAGE_HEADERS).text
     fields = form_fields(card_for(week, ESSAY_ID), UNDO)
     undone = client.post(UNDO, data=fields, headers=PAGE_HEADERS)
-    return Left(went_to(undone), UPDATE_UNDONE, NONE_YET, ESSAY_ID)
+    return Left(went_to(undone), UNDONE_TO_NOTHING, NONE_YET, ESSAY_ID)
 
 
 def saved_apart(client: TestClient) -> Left:
@@ -146,7 +146,7 @@ def saved_on_the_details(client: TestClient) -> Left:
 def undone_on_the_details(client: TestClient) -> Left:
     saved_on_the_details(client)
     undone = client.post(UNDO, data=form_fields(details(client), UNDO), headers=PAGE_HEADERS)
-    return Left(went_to(undone), UPDATE_UNDONE, NONE_YET)
+    return Left(went_to(undone), UNDONE_TO_NOTHING, NONE_YET)
 
 
 def handed_in(client: TestClient, state: str = "turned_in") -> str:

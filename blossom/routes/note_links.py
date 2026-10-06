@@ -342,7 +342,7 @@ def search_page(
             "query_error": refused is not None,
             "not_hers": NOT_HERS_TO_UPDATE,
             "ways_back": ways_back(request),
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -387,7 +387,7 @@ def plain_search(
             "unsaved_copy": refused,
             "help_note": name,
             "ways_back": ways_back(request),
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )

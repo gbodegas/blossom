@@ -36,7 +36,8 @@
       </nav>
     </header>
     <main id="main"{% if wide %} class="wide"{% endif %}>
-      {% if sample %}<p class="sample-label">Sample week</p>{% endif %}
+      {% if marks and marks.label %}<p class="sample-label">{{ marks.label }}</p>{% endif %}
+      {%- if marks and marks.pinned_line %}<p class="note">{{ marks.pinned_line }}</p>{% endif %}
       {% block content %}{% endblock %}
     </main>
     <footer class="colophon">

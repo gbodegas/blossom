@@ -46,6 +46,11 @@
   --blue-action: #4c7193;
   --blue-action-hover: #3f5f7d;
 
+  /* Arrival: the stone's hue as a pale wash behind a place a press or a link lands on.
+     Opaque, so it reads the same on the paper and on a card, and light enough that the
+     action color keeps 4.5 to 1 on it. */
+  --arrival-tint: #edf3fc;
+
   /* Secondary: the petals. Outline buttons, hover states, small highlights. */
   --pink: #e5a8b4;
   --pink-deep: #c98495;
@@ -449,9 +454,11 @@ article h2 {
    the date warning's link, the summary's, the notes', and the line that says
    how many instructions wait; in Help, a refusal's link and the family review
    link a parent reads; at the top of her week, the link from a problem to the
-   card it is about; on a note's small page, Try again. */
+   card it is about, and Refresh list beside the line that says why a card stays
+   where it was; on a note's small page, Try again. */
 .notice a,
 .refresh a,
+.stays-here a,
 .return a,
 .assignment.detail .confidence a,
 #problem-summary a,
@@ -697,8 +704,10 @@ main > .return + .return {
 }
 
 .plan-reading:focus {
-  outline: 2px solid var(--blue-action);
+  outline: 3px solid transparent;
   outline-offset: 4px;
+  background-color: var(--arrival-tint);
+  box-shadow: 0 0 0 0.375rem var(--arrival-tint), -0.25rem 0 0 0.375rem var(--blue-action);
 }
 
 .plan-rows {
@@ -783,34 +792,33 @@ a.assignment-link:focus-visible {
 
 /* Places a press or a link lands on. On her week: the homework's heading, the title
    of a card or the name of a row due later, the line for a card not on record now,
-   the problem at the top when no card holds it, a card's problem line, and the choices
-   of the form Change opens. On her week and on the list's own page, the problem line
-   of her To turn in list. On an assignment's details, the headings a jump or a
-   section's link lands on, Turning it in's among them. Plain :focus, since a fragment
-   arrival after a click need not match :focus-visible. */
+   what a save did, and the choices of the form Change opens. On an assignment's
+   details, the evidence and the headings a jump or a section's link lands on, Turning
+   it in's among them. Each takes the same calm cue, whether a click, a key or a
+   redirect brought the focus: a pale wash around the place and a bar of the action
+   color at its left, both drawn outside its box so nothing moves, and no outline
+   around it. The outline is there and transparent, so forced colors, which draws no
+   wash or bar, draws it instead. Plain :focus, since a fragment arrival after a click
+   need not match :focus-visible. Controls keep their own focus ring. */
 .update-result:focus,
 .evidence:focus,
 #instructions:focus,
 #waiting-instructions:focus,
 #update-or-turn-in:focus,
 #turning-it-in:focus,
-#problem-summary:focus,
-#note-problem:focus,
-.detail .problem[tabindex="-1"]:focus,
 .list-heading:focus,
 .assignment h2[tabindex="-1"]:focus,
 .assigned .row-title:focus,
 .card-gone:focus,
-.week-problem:focus,
-.update .choice:focus,
-.update .problem[tabindex="-1"]:focus,
-#to-turn-in-problem:focus {
-  outline: 2px solid var(--blue-action);
+.update .choice:focus {
+  outline: 3px solid transparent;
   outline-offset: 4px;
+  background-color: var(--arrival-tint);
+  box-shadow: 0 0 0 0.375rem var(--arrival-tint), -0.25rem 0 0 0.375rem var(--blue-action);
 }
 
 /* A link to a card lands on its title with the course above it and the card's edge in
-   view; a row's name keeps its outline on the screen. What a save did, and the choices
+   view; a row's name keeps its cue on the screen. What a save did, and the choices
    Change opens, land a third of the way down the screen, so the card they belong to is
    still around them. */
 .assignment h2[tabindex="-1"] {
@@ -827,8 +835,9 @@ a.assignment-link:focus-visible {
   scroll-margin-top: 33vh;
 }
 
-/* The headings of Turning it in and of Help stop a little below the top of the screen when
-   a link lands on them, so their focus outline shows whole. */
+/* The headings of the week's homework, of Turning it in and of Help stop a little below the
+   top of the screen when a link lands on them, so their cue shows whole. */
+.list-heading,
 #turning-it-in,
 #help,
 #ask-for-help {
@@ -836,18 +845,36 @@ a.assignment-link:focus-visible {
 }
 
 /* Her form's link lands on the words of Help's heading, which fill the heading's line, so its
-   outline is the heading's own. */
+   cue is the heading's own. */
 .help-panel h2 > span {
   display: block;
 }
 
-/* Help's places to land: its heading, each row, result or problem in it that a link or a
-   redirect names, and the family page's list of her requests. Plain :focus, since a
-   fragment arrival after a click need not match :focus-visible. */
-.help-panel [tabindex="-1"]:focus,
+/* Help's places to land: its heading, each row or result in it that a link or a redirect
+   names, and the family page's list of her requests. They take the same calm cue; a
+   problem line in Help takes its own, below. Plain :focus, since a fragment arrival after
+   a click need not match :focus-visible. */
+.help-panel [tabindex="-1"]:not(.problem):focus,
 #help-she-asked-for:focus {
-  outline: 2px solid var(--blue-action);
+  outline: 3px solid transparent;
   outline-offset: 4px;
+  background-color: var(--arrival-tint);
+  box-shadow: 0 0 0 0.375rem var(--arrival-tint), -0.25rem 0 0 0.375rem var(--blue-action);
+}
+
+/* A problem line a press lands on, at the top of her week or of a page, on a card, in her
+   To turn in list or in Help, keeps its own tint and edge, and the edge widens: the same
+   calm cue in the problem's colors, with the same transparent outline for forced colors. */
+#problem-summary:focus,
+#note-problem:focus,
+.detail .problem[tabindex="-1"]:focus,
+.week-problem:focus,
+.update .problem[tabindex="-1"]:focus,
+#to-turn-in-problem:focus,
+.help-panel .problem[tabindex="-1"]:focus {
+  outline: 3px solid transparent;
+  outline-offset: 4px;
+  box-shadow: inset 0.25rem 0 0 var(--rose-ink);
 }
 
 /* Help breaks a long word, hers or a parent's word back, rather than widen the page. Its
@@ -2053,14 +2080,56 @@ main.wide {
   min-height: 2.75rem;
 }
 
-/* Work she has reported done folds under the active cards; the cards inside
-   keep their shape. */
+/* Her finished homework folds under the active cards; the cards inside keep their
+   shape. The summary is a row as wide as the list, so it reads as something to open: a
+   quiet tint and an edge, the marker, Show or Hide as the fold stands, and one line
+   under it that says what the fold holds. The tint is the row's alone, and the darker
+   action color keeps its words at 4.5 to 1 on it. */
 details.reported-done {
   margin-top: 1.25rem;
 }
 
 details.reported-done > summary {
+  padding: 0.6rem 1rem;
+  border: 1.5px solid var(--edge);
+  border-radius: var(--radius-small);
+  background: var(--slate-bg);
+  color: var(--blue-action-hover);
   font-size: 1.05rem;
+}
+
+details.reported-done[open] > summary {
+  margin-bottom: 0.75rem;
+}
+
+.fold-state {
+  margin-left: 0.35rem;
+  font-size: 0.92rem;
+}
+
+details.reported-done > summary .fold-hide,
+details.reported-done[open] > summary .fold-show {
+  display: none;
+}
+
+details.reported-done[open] > summary .fold-hide {
+  display: inline;
+}
+
+.fold-says {
+  display: block;
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 0.92rem;
+  color: var(--text-soft);
+}
+
+/* How Blossom uses her information, and what it keeps about this, are read when wanted:
+   their summaries are quieter than a fold of homework, in the softer text color, and as
+   tall to press as any summary. */
+details.quiet-fold > summary {
+  color: var(--text-soft);
+  font-weight: 500;
 }
 
 .assigned .update {
@@ -2075,7 +2144,8 @@ details.reported-done > summary {
 /* A parent's check on a row worth checking together: a note for her card
    and one button; where a check stands, the line that says so and the
    button to check again under it. The controls keep the 44 pixels every
-   button has, and a row takes focus when a link points at it. */
+   button has, and a row takes focus when a link points at it, with the same
+   calm cue as a place on her week. */
 .check label {
   display: block;
   margin: 0.5rem 0 0.25rem;
@@ -2094,8 +2164,10 @@ details.reported-done > summary {
 }
 
 .assignment-updates [tabindex="-1"]:focus {
-  outline: 2px solid var(--blue-action);
-  outline-offset: 2px;
+  outline: 3px solid transparent;
+  outline-offset: 4px;
+  background-color: var(--arrival-tint);
+  box-shadow: 0 0 0 0.375rem var(--arrival-tint), -0.25rem 0 0 0.375rem var(--blue-action);
 }
 
 /* Her words are hers to break as she likes: a long address or an unbroken

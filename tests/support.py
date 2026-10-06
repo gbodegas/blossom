@@ -21,6 +21,7 @@ import dataclasses
 import pathlib
 import re
 import sqlite3
+import sys
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
@@ -761,6 +762,20 @@ def signed_in_household(tmp_path: pathlib.Path) -> Settings:
     )
 
 
+def linked_to(folder: pathlib.Path, link: pathlib.Path) -> pathlib.Path | None:
+    """A junction on Windows, a symlink elsewhere, or None where neither can be made."""
+    try:
+        if sys.platform == "win32":
+            import _winapi
+
+            _winapi.CreateJunction(str(folder), str(link))
+        else:
+            link.symlink_to(folder, target_is_directory=True)
+    except OSError:
+        return None
+    return link
+
+
 def state_of(client: TestClient) -> ApplicationState:
     state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
     return state
@@ -1114,6 +1129,25 @@ UNDO = f"/student/actions/assignments/{ESSAY_ID}/undo-report"
 NONE_APPLIES = '<p class="source">No instruction from the school applies now.</p>'
 KEY = "not-a-key-and-never-sent"
 """A key that lets the plan button show for scripted graphs; nothing is ever sent with it."""
+UNDONE_TO_NOTHING = "Last update undone. No update is recorded."
+UNDONE_TO_NOT_YET = "Last update undone. This is Not yet again."
+UNDONE_STILL_DONE = "Last update undone. This is still Done."
+UNDONE_DONE_AGAIN = "Last update undone. This is Done again."
+"""What Undo last update says where it lands, by what it restored: no update, a Not yet, the
+Done a note edit was made on, or a Done that a Not yet was saved over."""
+ARRIVAL_CUE = (
+    "outline: 3px solid transparent; outline-offset: 4px; "
+    "background-color: var(--arrival-tint); "
+    "box-shadow: 0 0 0 0.375rem var(--arrival-tint), -0.25rem 0 0 0.375rem var(--blue-action);"
+)
+"""The declarations of a rule that marks a place a press or a link lands on, spaces folded: a
+soft tint around the place, a bar of the action blue at its left, and an outline that only
+forced colors draws. How it looks is measured in a browser."""
+PROBLEM_CUE = (
+    "outline: 3px solid transparent; outline-offset: 4px; "
+    "box-shadow: inset 0.25rem 0 0 var(--rose-ink);"
+)
+"""The same for a problem line a press lands on, which keeps its own tint and widens its edge."""
 
 
 @contextmanager
@@ -1898,6 +1932,12 @@ def rules_named(selector: str) -> list[str]:
         for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain)
         if selector in (part.strip() for part in head.split(","))
     ]
+
+
+def declared_for(selector: str) -> list[str]:
+    """The declarations of every rule naming ``selector`` itself, spaces folded as
+    ``ARRIVAL_CUE`` is written."""
+    return [" ".join(inside.split()) for inside in rules_named(selector)]
 
 
 def went_to(answer: Answer) -> str:

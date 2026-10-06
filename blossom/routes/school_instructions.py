@@ -44,7 +44,7 @@ from typing import Final, Literal
 from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from blossom.dependencies import ApplicationState
+from blossom.dependencies import ApplicationState, get_application_state
 from blossom.routes.forms import form_of
 from blossom.routes.inbox import State
 from blossom.routes.instruction_answers import (
@@ -297,6 +297,7 @@ def review_page(
                 "not_saved": said,
                 "not_saved_why": why,
                 "back": "/parent",
+                "marks": state.settings.page_marks,
             },
             status_code=status.HTTP_404_NOT_FOUND,
         )
@@ -311,6 +312,7 @@ def review_page(
                 "not_saved": said,
                 "not_saved_why": why,
                 "back": back,
+                "marks": state.settings.page_marks,
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
@@ -362,6 +364,7 @@ def review_page(
             "pressed": pressed,
             "action": instructions_action_href(assignment_id),
             "back": back,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -391,6 +394,7 @@ def plain_page(
             "not_saved": said,
             "not_saved_why": why,
             "back": details_href(assignment_id, return_to="family"),
+            "marks": get_application_state(request).settings.page_marks,
         },
         status_code=status_code,
     )

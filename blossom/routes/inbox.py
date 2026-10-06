@@ -1030,7 +1030,7 @@ def intake_unavailable(
             "draft": {
                 name: value for name, value in draft.items() if name in (*ENTRY_FIELDS, "text")
             },
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
@@ -1363,7 +1363,7 @@ def preview_page(
             },
             "kind_choices": KIND_CHOICES,
             "notice": notice,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
             "spoken_report": spoken_report,
             "spoken_day": spoken_day,
             "refused": refused,

@@ -10,10 +10,20 @@ synced copy would carry the family's record somewhere it was never meant to
 go. The saved-state store, the record of assignments, the drafts, the traces,
 her signals, her requests for help, the household's claim on its files, and
 the sign-in secret all open through it.
+
+A ``TEST-COPY`` file declares that its folder holds a test copy: files copied from the
+household's, never linked to them. Before a start opens anything, with the test-copy flag
+on, the folder each state file really lands in must hold one, and no existing state file
+may be a link or anything but a plain file; with the flag off, a marker in a configured or
+real folder is refused. The check can't tell where the data came from. It holds for copies
+on local storage that no other process changes while Blossom checks or uses them. A marker
+put in the household's own folder, files swapped by another process, and network mounts
+are outside it.
 """
 
 import ctypes
 import os
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
@@ -102,9 +112,11 @@ def refuse_unsafe_path(path: Path, environ: Mapping[str, str] | None = None) -> 
     the point of saving state), a network share whether named as one or mapped
     to a drive letter, and any location inside a folder a sync client owns.
 
-    Every test but the first runs against the resolved path, because a junction
-    or a symlink can point a plainly named folder at a synced one, and the sync
-    client follows where the folder really is rather than how it was spelled.
+    A share and a mapped drive letter are asked about before the path is
+    resolved, since resolving it reaches the share. The rest runs against the
+    resolved path, because a junction or a symlink can point a plainly named
+    folder at a synced one, and the sync client follows where the folder really
+    is rather than how it was spelled.
     """
     text = str(path)
     if text == ":memory:":
@@ -112,8 +124,10 @@ def refuse_unsafe_path(path: Path, environ: Mapping[str, str] | None = None) -> 
         raise UnsafeCheckpointPath(msg)
     # A share is read from the configured text before anything resolves it: it
     # is named the same way everywhere, while resolving a Windows path on
-    # another platform turns it into an ordinary local name.
-    if looks_like_a_share(text):
+    # another platform turns it into an ordinary local name. The drive letter a
+    # path lands on, relative or not, is asked about without resolving it too.
+    absolute = without_extended_prefix(os.path.abspath(text))
+    if looks_like_a_share(text) or drive_is_network(absolute):
         msg = f"the household's state may not live on a network share: {text}"
         raise UnsafeCheckpointPath(msg)
     real = local_form(path)
@@ -131,3 +145,124 @@ def refuse_unsafe_path(path: Path, environ: Mapping[str, str] | None = None) -> 
             msg = f"the household's state may not live under {variable}: {text}"
             raise UnsafeCheckpointPath(msg)
     return path
+
+
+SECRET_NAME: Final = "household.secret"  # noqa: S105  (a file name, not a secret)
+"""The sign-in secret's file, beside the household's database."""
+SQLITE_SIDECARS: Final = ("-journal", "-wal", "-shm")
+"""What SQLite opens beside a database by name: its journal, its write-ahead log, and the
+log's index. Each database is checked for all three, whatever journal mode it runs in."""
+TEST_COPY_MARKER: Final = "TEST-COPY"
+"""The empty file that declares a folder holds a test copy, put there by whoever makes the
+copy. It belongs in no folder of the household's own."""
+
+
+class CopyMarkError(ValueError):
+    """Raised at startup when the test-copy flag and the state folders disagree."""
+
+
+def lock_path_for(state_path: Path) -> Path:
+    """The lock file beside a state file, named for the file as it really is.
+
+    ``blossom.sqlite3`` is claimed through ``blossom.lock`` in the same
+    folder. The path is resolved first, so a file reached by two spellings,
+    through a link or a relative path, is claimed through one lock.
+    """
+    return state_path.resolve().with_suffix(".lock")
+
+
+def state_files(database: Path, checkpoint: Path, trace: Path) -> list[Path]:
+    """Every file a start opens in a state folder: the three databases with their SQLite
+    files, the two locks the claim holds, and the sign-in secret.
+
+    A lock is named as ``lock_path_for`` names it, but through ``os.path.realpath``, which
+    stops at a link loop where ``Path.resolve`` raises, so a loop meets the same checks as
+    any other link instead of ending them with an error of its own.
+    """
+    files = [
+        path.with_name(path.name + suffix)
+        for path in (database, checkpoint, trace)
+        for suffix in ("", *SQLITE_SIDECARS)
+    ]
+    files += [Path(os.path.realpath(path)).with_suffix(".lock") for path in (database, checkpoint)]
+    files.append(database.with_name(SECRET_NAME))
+    return list(dict.fromkeys(files))
+
+
+def holds_a_marker(folder: Path) -> bool:
+    """Whether ``folder`` holds ``TEST-COPY`` in any case, for a file system that tells case
+    apart. A folder that isn't there, or a link that leads back to itself, holds nothing; one
+    that is there but can't be listed raises, so it is never taken for unmarked."""
+    if not folder.is_dir():
+        return False
+    return any(name.casefold() == TEST_COPY_MARKER.casefold() for name in os.listdir(folder))
+
+
+def not_plain(path: Path) -> str | None:
+    """What makes an existing state file unfit for a test copy, or ``None`` when it is absent
+    or a plain file with one name. A link count that can't be read counts against it."""
+    try:
+        status = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(status.st_mode):
+        return "a symbolic link"
+    if not stat.S_ISREG(status.st_mode):
+        return "not a plain file"
+    if status.st_nlink != 1:
+        return f"a file whose link count is {status.st_nlink}, not 1"
+    return None
+
+
+def landing(path: Path) -> tuple[Path, str]:
+    """The folder ``path`` really lands in, and how a refusal names it: by the configured
+    folder, or by the file and its real folder when the two differ."""
+    real = Path(os.path.realpath(path)).parent
+    if os.path.normcase(os.path.abspath(path.parent)) == os.path.normcase(real):
+        return real, str(path.parent)
+    return real, f"{path} lands in {real}, which"
+
+
+def refuse_mismarked_state(
+    database: Path, checkpoint: Path, trace: Path, *, test_copy: bool
+) -> None:
+    """Refuse a test copy its marks and files don't bear out, and a marked copy unlabeled.
+
+    The paths pass ``refuse_unsafe_path`` first. After that only names and file details are
+    read, where each state file really lands: nothing is opened, created or claimed.
+    """
+    for path in (database, checkpoint, trace):
+        refuse_unsafe_path(path)
+    files = state_files(database, checkpoint, trace)
+    if test_copy:
+        for path in files:
+            real, named = landing(path)
+            if not (real / TEST_COPY_MARKER).is_file():
+                msg = (
+                    f"BLOSSOM_TEST_COPY is on, but {named} holds no {TEST_COPY_MARKER} file: "
+                    "a test copy runs only on state copied into a folder marked as one"
+                )
+                raise CopyMarkError(msg)
+        for path in files:
+            problem = not_plain(path)
+            if problem is not None:
+                msg = (
+                    f"BLOSSOM_TEST_COPY is on, but {path} is {problem}: a test copy's state "
+                    "files are its own copies, never links"
+                )
+                raise CopyMarkError(msg)
+        return
+    checked: set[str] = set()
+    for path in files:
+        real, named = landing(path)
+        for folder, said in ((path.parent, str(path.parent)), (real, named)):
+            key = os.path.normcase(os.path.abspath(folder))
+            if key in checked:
+                continue
+            checked.add(key)
+            if holds_a_marker(folder):
+                msg = (
+                    f"{said} holds a {TEST_COPY_MARKER} file, so its state is a test copy: "
+                    "set BLOSSOM_TEST_COPY=1 to serve it"
+                )
+                raise CopyMarkError(msg)

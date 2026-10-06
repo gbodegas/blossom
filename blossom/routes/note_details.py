@@ -680,7 +680,7 @@ def plain_details(
             "unsaved_copy": refused,
             "help_note": form.capture_id if back_to_the_note else None,
             "ways_back": ways_back(request),
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -835,7 +835,7 @@ def details_page(
             "course_max_length": CAPTURE_COURSE_MAX_LENGTH,
             "title_max_length": CAPTURE_TITLE_MAX_LENGTH,
             "note_max_length": CAPTURE_NOTE_MAX_LENGTH,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )

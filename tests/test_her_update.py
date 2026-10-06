@@ -78,14 +78,21 @@ from blossom.stores.project_state import (
     UnknownAssignment,
 )
 from tests.support import (
+    DETAILS,
     ESCAPED,
     ESSAY_TITLE,
     HERS,
+    LATER_WEEK,
     MISSING_EMAIL,
+    NOW,
     PAGE_HEADERS,
     PLAN_DATE,
     SAME_ORIGIN,
     THEIRS,
+    UNDONE_DONE_AGAIN,
+    UNDONE_STILL_DONE,
+    UNDONE_TO_NOT_YET,
+    UNDONE_TO_NOTHING,
     Answer,
     ReportsWhileAsked,
     Scripted,
@@ -107,6 +114,7 @@ from tests.support import (
     lands_on,
     main_of,
     ok,
+    reading,
     refusing,
     report,
     reported,
@@ -141,8 +149,8 @@ CHANGE_ESSAY: Final = f"/student/due-this-week#update-choice-{ESSAY}"
 
 
 def placed(page: str) -> tuple[list[str], list[str]]:
-    """Her week's cards in page order, the active ones and the ones in Reported done: each
-    card's id as the card writes it, split where the week's Reported done fold starts."""
+    """Her week's cards in page order, the active ones and the ones in the fold of finished
+    homework: each card's id as the card writes it, split where the week's fold starts."""
     main = main_of(page)
     later = main.find('<section class="panel assigned">')
     cards = main if later < 0 else main[:later]
@@ -273,7 +281,7 @@ def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit
     assert ESSAY not in active
     assert done == [ESSAY]
     assert '<details class="steps reported-done" open>' in refreshed
-    assert "<summary>Reported done (1)</summary>" in refreshed
+    assert "<summary>Finished homework (1) " in refreshed
     assert UPDATE_SAVED in card_for(refreshed, ESSAY)
     assert placed(returned)[1] == [ESSAY]
     assert '<details class="steps reported-done">' in returned
@@ -342,7 +350,7 @@ def test_a_cards_own_buttons_keep_the_cards_in_place_until_her_next_visit() -> N
     assert '<span class="pill">Your update: Done</span>' in card_for(done, ESSAY)
     assert '<span class="pill">Your update: Not yet</span>' in card_for(not_yet, SYLLABUS)
     assert '<span class="pill">Your update: Done</span>' in card_for(then_done, SYLLABUS)
-    assert UPDATE_UNDONE in card_for(undone_page, SYLLABUS)
+    assert UNDONE_TO_NOT_YET in card_for(undone_page, SYLLABUS)
     assert '<span class="pill">Your update: Not yet</span>' in card_for(undone_page, SYLLABUS)
     assert [event.operation for event in history] == ["report", "report", "undo"]
     assert placed(refreshed)[1] == [ESSAY]
@@ -424,7 +432,7 @@ def test_no_petal_meets_a_save_that_makes_no_new_done() -> None:
     assert UPDATE_ALREADY_SAVED in card_for(again, ESSAY)
     assert UPDATE_SAVED in card_for(noted_page, ESSAY)
     assert "You wrote: <q>All of it.</q>" in card_for(noted_page, ESSAY)
-    assert UPDATE_UNDONE in card_for(undone, ESSAY)
+    assert UNDONE_DONE_AGAIN in card_for(undone, ESSAY)
     assert '<span class="pill">Your update: Done</span>' in card_for(undone, ESSAY)
     assert [(item.operation, item.status) for item in history] == [
         ("report", "done"),
@@ -847,13 +855,14 @@ def test_change_undo_and_keep_it_as_it_is_keep_the_card_where_it_was() -> None:
     assert "<legend>Your update<span" not in card_for(kept, ESSAY)
     assert '<span class="pill">Your update: Not yet</span>' in card_for(changed, ESSAY)
     assert undo["in_place"] == f"a:{place_key(ESSAY)}"
-    assert UPDATE_UNDONE in card_for(undone, ESSAY)
+    assert UNDONE_DONE_AGAIN in card_for(undone, ESSAY)
     assert '<span class="pill">Your update: Done</span>' in card_for(undone, ESSAY)
 
 
 def test_a_card_changed_from_done_stays_in_reported_done_for_the_visit() -> None:
-    """A card in Reported done that she changes to Not yet stays in that fold, open around
-    it, for the rest of the visit, and is among the active cards on her next visit."""
+    """A card in the fold of finished homework that she changes to Not yet stays in that
+    fold, open around it, for the rest of the visit, and is among the active cards on her
+    next visit."""
     with browser() as client:
         reported(store_of(client), "done", ESSAY)
         card = week_card(client, ESSAY)
@@ -888,6 +897,391 @@ def test_a_refused_save_keeps_the_cards_the_visit_holds_in_place() -> None:
         assert IN_PLACE_COOKIE not in answer.headers.get("set-cookie", "")
     assert CHOOSE_ONE in card_for(unchosen.text, SYLLABUS)
     assert SAVED_ELSEWHERE in card_for(conflict.text, SYLLABUS)
+
+
+# ------------------------------------------------------------- what a held card's week says
+
+STAYS_HERE: Final = "Your update is saved. This stays here so you don't lose your place."
+"""The line above her week's homework while a card is shown away from the group its saved
+update puts it in."""
+CHANGE_STAYS_HERE: Final = "Your change is saved. This stays here so you don't lose your place."
+"""The same line while a card held away from its group has no update standing, as an Undo
+can leave it."""
+HELD: Final = "<summary>Finished homework and recent updates "
+"""The summary of a fold while a card of its list is held away from its group: no number."""
+DONE_UPDATES: Final = "Done updates, not what the school has received"
+RECENT_CHANGES: Final = "Done updates and recent changes, not what the school has received"
+"""The line under a fold's name, after "Your" or "Her": in a list grouped by its updates, and
+while a card of the fold's list is held away from its group."""
+HOMEWORK_HEADING: Final = '<h2 class="list-heading" id="homework" tabindex="-1">'
+REFRESH_LIST: Final = re.compile(
+    r'<a href="([^"]+)" aria-describedby="refresh-list-means">Refresh list</a> '
+    r'<span id="refresh-list-means">Group homework by its latest update\.</span>'
+)
+FAIR: Final = "assignment-science-fair-proposal"
+ALGEBRA: Final = "assignment-algebra-set"
+
+
+def finished(count: int) -> str:
+    """The summary of a fold of finished homework in a list grouped by its updates."""
+    return f"<summary>Finished homework ({count}) "
+
+
+def refresh_list(page: str) -> str:
+    """The address of Refresh list beside the line, as a browser follows it."""
+    found = REFRESH_LIST.search(page)
+    assert found is not None
+    return found.group(1).replace("&amp;", "&")
+
+
+def undo_pressed(client: TestClient, page: str, name: str = ESSAY) -> Answer:
+    """A press of a card's Undo last update, its form sent as a browser sends it."""
+    action = f"/student/actions/assignments/{name}/undo-report"
+    return client.post(action, data=form_fields(card_for(page, name), action), headers=PAGE_HEADERS)
+
+
+def changed_to(client: TestClient, page: str, status: str, note: str, name: str = ESSAY) -> str:
+    """Change on a card, the essay's unless another is named, then the form it opens saved:
+    the page that answers."""
+    change = client.get(PAGE, params=change_form(page, name), headers=PAGE_HEADERS)
+    opened = redirected(client, change).text
+    return redirected(client, save(client, card_for(opened, name), status, note, name)).text
+
+
+def folds_say(page: str) -> list[tuple[str, str]]:
+    """What each fold of finished homework is called and the line under its name, this week's
+    fold first and then the later list's."""
+    return re.findall(
+        r'<details class="steps reported-done"(?: open)?>\s*<summary>(.*?) '
+        r'<span class="fold-state">.*?</span></span><span class="fold-says">(.*?)</span>',
+        main_of(page),
+        re.S,
+    )
+
+
+def held_by_address(client: TestClient, kept: InPlace) -> str:
+    """Her week as an address that keeps these cards where they were shows it to whoever opens
+    it, answered with a landing of its own as Change is."""
+    moved = client.get(PAGE, params={"in_place": kept.said()}, headers=PAGE_HEADERS)
+    return redirected(client, moved).text
+
+
+Press = tuple[str, str | None, bool]
+"""One press on the essay's card: its status, the note typed, ``None`` for the one the card
+carries, and whether it is made from the form Change opens."""
+JOURNEYS: Final[dict[str, tuple[list[Press], str, str | None]]] = {
+    "no update, then Done": ([("done", "", False)], UNDONE_TO_NOTHING, None),
+    "Not yet with a note, then Done": (
+        [("not_yet", "Two pages left.", False), ("done", None, False)],
+        UNDONE_TO_NOT_YET,
+        "not_yet",
+    ),
+    "Done, then a note edit": (
+        [("done", "", False), ("done", "Both pages.", True)],
+        UNDONE_STILL_DONE,
+        "done",
+    ),
+    "Done, then Not yet": ([("done", "", False), ("not_yet", "", True)], UNDONE_DONE_AGAIN, "done"),
+}
+"""Her ways to Undo last update on the essay: the presses before it, what it says, and the
+update it leaves standing."""
+
+
+def journey(client: TestClient, presses: list[Press], inside: bool) -> str:
+    """The presses on the essay's card, each answered on her week. ``inside`` has a fresh
+    visit group the week after the first Done, so the rest happens in the fold."""
+    page = client.get(PAGE, headers=PAGE_HEADERS).text
+    regrouped = not inside
+    for status, note, by_change in presses:
+        if by_change:
+            page = changed_to(client, page, status, note or "")
+        elif note:
+            page = redirected(client, save(client, card_for(page, ESSAY), status, note)).text
+        else:
+            page = redirected(client, quick_press(client, page, ESSAY, status)).text
+        if status == "done" and not regrouped:
+            page = client.get(PAGE, headers=PAGE_HEADERS).text
+            regrouped = True
+    return page
+
+
+@pytest.mark.parametrize("inside", [False, True], ids=["outside the fold", "inside the fold"])
+@pytest.mark.parametrize("name", list(JOURNEYS))
+def test_undo_last_update_says_what_it_restored_and_the_fold_says_what_it_holds(
+    name: str, inside: bool
+) -> None:
+    """Undo last update says what stands after it, read from her history, on the card where
+    it was. While the card is shown away from the group its update puts it in, one line
+    above the homework says why, beside Refresh list: her update is saved, or her change when
+    the Undo left no update. The fold then reads as finished homework and recent updates with
+    no number, and its line says it holds recent changes; otherwise the fold counts the cards
+    whose update is Done. A refresh of the address groups the week again."""
+    presses, said, left = JOURNEYS[name]
+    with browser() as client:
+        reported(store_of(client), "done", SYLLABUS)
+        before = journey(client, presses, inside)
+        answer = undo_pressed(client, before)
+        undone = redirected(client, answer).text
+        refreshed = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
+        history = store_of(client).student_reports(ESSAY)
+
+    card, page = card_for(undone, ESSAY), main_of(undone)
+    held = inside != (left == "done")
+    done = 1 + (left == "done")
+    line = STAYS_HERE if left is not None else CHANGE_STAYS_HERE
+    assert ">Undo last update<span" in card_for(before, ESSAY)
+    assert (ESSAY in placed(before)[1]) == inside
+    assert (ESSAY in placed(undone)[1]) == inside, "the card stays where it was"
+    assert f'id="update-result-{ESSAY}" tabindex="-1">{said}</p>' in card
+    assert undone.count("Last update undone.") == 1
+    assert UPDATE_UNDONE not in undone
+    assert history[-1].operation == "undo"
+    if left is None:
+        assert OFFERED in card
+        assert "Your update: " not in card
+    else:
+        assert f"Your update: {'Done' if left == 'done' else 'Not yet'}</span>" in card
+    if left == "not_yet":
+        assert "You wrote: <q>Two pages left.</q>" in card
+    assert page.count(line) == (1 if held else 0)
+    assert page.count("is saved. This stays here") == page.count(line)
+    if held:
+        heading = page.index(HOMEWORK_HEADING)
+        assert heading < page.index(line) < page.index('<article class="assignment', heading)
+        assert refresh_list(undone) == f"{PAGE}#homework"
+        assert HELD in page
+        assert "<summary>Finished homework (" not in page
+        assert folds_say(undone)[0][1] == f"Your {RECENT_CHANGES}"
+    else:
+        assert finished(done) in page
+        assert HELD not in page
+        assert folds_say(undone)[0][1] == f"Your {DONE_UPDATES}"
+    assert (f"{FOLD} open>" in page) == inside
+    assert "is saved. This stays here" not in refreshed
+    assert (ESSAY in placed(refreshed)[1]) == (left == "done")
+    assert finished(done) in refreshed
+    assert HELD not in refreshed
+    assert folds_say(refreshed) == [(f"Finished homework ({done})", f"Your {DONE_UPDATES}")]
+
+
+def made_meanwhile(store: ProjectStateStore, meanwhile: str) -> None:
+    """What another tab or device saves on the essay before the page an Undo sends her to is
+    read: nothing, a Not yet, or a note on the Done that Undo restored, then taken back."""
+    if meanwhile == "a later save":
+        reported(store, "not_yet")
+    elif meanwhile == "a later report and its undo":
+        head = store.student_reports(ESSAY)[-1].report_id
+        made = store.report_status(
+            ESSAY, "done", "Both pages.", expected_head=head, now=NOW, today=PLAN_DATE
+        )
+        assert isinstance(made, Saved)
+        store.undo_report(ESSAY, made.report.report_id, now=NOW, today=PLAN_DATE)
+
+
+BOOKMARKED: Final = {
+    "her week": f"{PAGE}?week={WEEK}&undone={ESSAY}#update-result-{ESSAY}",
+    "the details": f"{DETAILS}?said=undone&return_to=week#update-result-{ESSAY}",
+}
+"""Where Undo last update sends her, as an address that names no undo has it: a bookmark."""
+
+
+@pytest.mark.parametrize("meanwhile", ["nothing", "a later save", "a later report and its undo"])
+@pytest.mark.parametrize("where", list(BOOKMARKED))
+def test_undo_last_update_says_what_it_restored_only_while_its_undo_is_her_latest(
+    where: str, meanwhile: str
+) -> None:
+    """The address Undo last update sends her to names the undo the press made, by its id
+    alone, and the page says what that undo restored only while it is her latest event. A
+    save, or another update and its undo, made before the page is read leaves the plain
+    sentence, and so does an address that names no undo. Her week and the details alike."""
+    opened = PAGE if where == "her week" else f"{DETAILS}?return_to=week"
+    with browser() as client:
+        store = store_of(client)
+        reported(store, "done")
+        reported(store, "not_yet")
+        page = client.get(opened, headers=PAGE_HEADERS).text
+        form = card_for(page, ESSAY) if where == "her week" else main_of(page)
+        answer = client.post(UNDO_ESSAY, data=form_fields(form, UNDO_ESSAY), headers=PAGE_HEADERS)
+        made = store.student_reports(ESSAY)[-1]
+        made_meanwhile(store, meanwhile)
+        shown = redirected(client, answer).text
+        bookmark = client.get(BOOKMARKED[where], headers=PAGE_HEADERS).text
+
+    said = UNDONE_DONE_AGAIN if meanwhile == "nothing" else UPDATE_UNDONE
+    for read, expected in ((shown, said), (bookmark, UPDATE_UNDONE)):
+        result = card_for(read, ESSAY) if where == "her week" else main_of(read)
+        assert f'id="update-result-{ESSAY}" tabindex="-1">{expected}' in result
+        assert main_of(read).count(expected) == 1
+    assert ("Last update undone." in shown) == (meanwhile == "nothing")
+    assert "Last update undone." not in bookmark
+    location = urlsplit(answer.headers["location"])
+    assert made.operation == "undo"
+    assert parse_qs(location.query)["undo_event"] == [made.report_id]
+    assert location.fragment == f"update-result-{ESSAY}"
+
+
+def test_two_cards_held_in_one_visit_are_explained_once_and_refresh_list_groups_the_week() -> None:
+    """Done on two cards in one visit keeps both among the active cards, with one line above
+    the homework and no fold made to hold it. Refresh list is a plain address to her week's
+    homework heading that names no landing and no card, and the week it shows is grouped by
+    the updates, both cards counted in the fold."""
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        first = redirected(client, quick_press(client, before, ESSAY, "done")).text
+        second = redirected(client, quick_press(client, first, SYLLABUS, "done")).text
+        address = refresh_list(second)
+        regrouped = client.get(address, headers=PAGE_HEADERS)
+
+    assert STAYS_HERE in main_of(first)
+    assert placed(second) == placed(before)
+    assert main_of(second).count(STAYS_HERE) == 1
+    assert FOLD not in main_of(second)
+    assert address == f"{PAGE}#homework"
+    assert regrouped.status_code == 200
+    assert IN_PLACE_COOKIE not in regrouped.headers.get("set-cookie", "")
+    assert STAYS_HERE not in regrouped.text
+    assert sorted(placed(regrouped.text)[1]) == sorted([ESSAY, SYLLABUS])
+    assert finished(2) in regrouped.text
+    assert lands_on(regrouped.text, address) == HOMEWORK_HEADING
+
+
+def test_refresh_list_on_another_week_asks_for_that_week_grouped_again() -> None:
+    """Done on a card of the week after keeps it among that week's active cards, and Refresh
+    list names that week, and only it, with her week's homework heading."""
+    with browser() as client:
+        shown = client.get(PAGE, params={"week": LATER_WEEK}, headers=PAGE_HEADERS).text
+        saved = redirected(client, quick_press(client, shown, ALGEBRA, "done")).text
+        address = refresh_list(saved)
+        regrouped = client.get(address, headers=PAGE_HEADERS).text
+
+    assert placed(saved) == placed(shown)
+    assert address == f"{PAGE}?week={LATER_WEEK}#homework"
+    assert STAYS_HERE not in regrouped
+    assert placed(regrouped)[1] == [ALGEBRA]
+    assert finished(1) in regrouped
+    assert f"{HOMEWORK_HEADING}Due that week</h2>" in regrouped
+
+
+def test_the_fold_of_work_due_later_counts_and_labels_its_own_rows() -> None:
+    """The fold of the work given out for later counts its own Done rows. An Undo held in
+    it takes its number away while this week's fold keeps its count, and the line above the
+    homework says why, once, as a change saved, since the Undo left no update. A refresh
+    groups both lists again."""
+    later = '<section class="panel assigned">'
+    with browser() as client:
+        reported(store_of(client), "done", ESSAY)
+        reported(store_of(client), "done", LOG)
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        answer = undo_pressed(client, before, LOG)
+        undone = redirected(client, answer).text
+        refreshed = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
+
+    for page, given_later, line in (
+        (before, finished(1), 0),
+        (undone, HELD, 1),
+        (refreshed, None, 0),
+    ):
+        week, _, rest = main_of(page).partition(later)
+        assert finished(1) in week
+        assert HELD not in week
+        assert (FOLD in rest) == (given_later is not None)
+        if given_later is not None:
+            assert given_later in rest
+        assert main_of(page).count(CHANGE_STAYS_HERE) == line
+        assert STAYS_HERE not in main_of(page)
+    assert UNDONE_TO_NOTHING in card_for(undone, LOG)
+    assert f"{FOLD} open>" in undone.partition(later)[2]
+
+
+def test_a_stale_write_while_cards_are_held_keeps_them_and_says_nothing_was_undone() -> None:
+    """An Undo and a save from a page that has moved on are refused on the page with the
+    cards the visit holds where they were, the line that says why, and a fold with no number;
+    a refused Undo says nothing about what it restored."""
+    with browser() as client:
+        reported(store_of(client), "done", SYLLABUS)
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        held = redirected(client, quick_press(client, before, ESSAY, "done")).text
+        reported(store_of(client), "not_yet", FAIR)
+        stale_save = quick_press(client, held, FAIR, "done")
+        reported(store_of(client), "not_yet", SYLLABUS)
+        stale_undo = undo_pressed(client, held, SYLLABUS)
+        history = store_of(client).student_reports(SYLLABUS)
+
+    assert stale_undo.status_code == 409
+    assert stale_save.status_code == 409
+    assert CANNOT_UNDO in card_for(stale_undo.text, SYLLABUS)
+    assert SAVED_ELSEWHERE in card_for(stale_save.text, FAIR)
+    for answer in (stale_undo, stale_save):
+        page = main_of(answer.text)
+        assert placed(answer.text) == placed(held), answer.status_code
+        assert page.count(STAYS_HERE) == 1
+        assert HELD in page
+        assert "Last update undone." not in page
+        assert "Your update: Done</span>" in card_for(page, ESSAY)
+    assert [event.operation for event in history] == ["report", "report"]
+
+
+@pytest.mark.parametrize("reader", ["her", "a parent"])
+def test_the_line_says_a_change_is_saved_while_a_card_held_has_no_update(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """A card held in the fold with no update standing, as an Undo there leaves the essay,
+    makes the line above the homework say the change is saved, in the reader's words, and
+    so does a second card held beside it with an update. Refresh list and what it means are
+    the same."""
+    whose, pill = ("Her", "Student update: ") if reader == "a parent" else ("Your", "Your update: ")
+    with reading(reader, tmp_path) as client:
+        if reader == "her":
+            reported(store_of(client), "done")
+            grouped = client.get(PAGE, headers=PAGE_HEADERS).text
+            alone = redirected(client, undo_pressed(client, grouped)).text
+            mixed = redirected(client, quick_press(client, alone, SYLLABUS, "done")).text
+        else:
+            reported(store_of(client), "done", SYLLABUS)
+            alone = held_by_address(client, InPlace().keeping(ESSAY, True))
+            both = InPlace().keeping(ESSAY, True).keeping(SYLLABUS, False)
+            mixed = held_by_address(client, both)
+
+    line = f"{whose} change is saved. This stays here so you don't lose your place."
+    for page in (alone, mixed):
+        main = main_of(page)
+        assert main.count(line) == 1
+        assert "update is saved. This stays here" not in main
+        assert refresh_list(page) == f"{PAGE}#homework"
+        assert ESSAY in placed(page)[1]
+        assert f'<span class="pill">{pill}' not in card_for(page, ESSAY)
+    assert SYLLABUS in placed(mixed)[0]
+    assert f'<span class="pill">{pill}Done</span>' in card_for(mixed, SYLLABUS)
+
+
+@pytest.mark.parametrize("reader", ["her", "a parent"])
+@pytest.mark.parametrize("name", [ESSAY, LOG], ids=["this week", "due later"])
+def test_a_fold_holding_a_not_yet_says_it_holds_recent_changes(
+    name: str, reader: str, tmp_path: pathlib.Path
+) -> None:
+    """A Not yet held in a fold of finished homework, this week's or the later list's, takes
+    the fold's number away, and the line under its name says it holds recent changes as well
+    as Done updates, in the reader's words. The other list's fold keeps its number and line."""
+    whose = "Her" if reader == "a parent" else "Your"
+    with reading(reader, tmp_path) as client:
+        reported(store_of(client), "done", ESSAY)
+        reported(store_of(client), "done", LOG)
+        if reader == "her":
+            grouped = client.get(PAGE, headers=PAGE_HEADERS).text
+            held = changed_to(client, grouped, "not_yet", "", name)
+        else:
+            reported(store_of(client), "not_yet", name)
+            held = held_by_address(client, InPlace().keeping(name, True))
+
+    holding = ("Finished homework and recent updates", f"{whose} {RECENT_CHANGES}")
+    grouped_by_updates = ("Finished homework (1)", f"{whose} {DONE_UPDATES}")
+    week, later = main_of(held).split('<section class="panel assigned">')
+    shown_in = week if name == ESSAY else later
+    assert folds_say(held) == (
+        [holding, grouped_by_updates] if name == ESSAY else [grouped_by_updates, holding]
+    )
+    assert shown_in.index(FOLD) < shown_in.index(f'id="assignment-{name}"')
+    assert "update: Not yet</span>" in card_for(held, name)
 
 
 def test_what_a_visit_keeps_in_place_is_read_only_as_the_pages_write_it() -> None:
@@ -1347,6 +1741,7 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
             f"/student/actions/assignments/{ESSAY}/undo-report",
             data={"report_id": done_id, "week": WEEK},
         )
+        undo_id = store_of(client).student_reports(ESSAY)[-1].report_id
         restored_page = client.get(undone.headers["location"], headers=PAGE_HEADERS).text
         restored = card_for(restored_page, ESSAY)
         stale = client.post(
@@ -1365,9 +1760,9 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
 
     assert undone.status_code == 303
     assert undone.headers["location"] == (
-        f"{PAGE}?week={WEEK}&undone={ESSAY}#update-result-{ESSAY}"
+        f"{PAGE}?week={WEEK}&undone={ESSAY}&undo_event={undo_id}#update-result-{ESSAY}"
     )
-    assert UPDATE_UNDONE in restored
+    assert UNDONE_TO_NOT_YET in restored
     assert '<span class="pill">Your update: Not yet</span>' in restored
     assert "Reported August 19, restored August 19" in restored
     assert "You wrote: <q>Half left.</q>" in restored
@@ -1377,7 +1772,7 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
     assert ALREADY_UNDONE in card_for(stale.text, ESSAY)
     assert f'href="#title-{ESSAY}"' in stale.text
     assert to_nothing.status_code == 303
-    assert UPDATE_UNDONE in blank_again
+    assert UNDONE_TO_NOTHING in blank_again
     assert OFFERED in blank_again
     assert hidden(blank_again, "expected_report_id") == statuses[LOG].head_id
     assert (statuses[ESSAY].work_state, statuses[LOG].work_state) == ("not_yet", "unreported")
@@ -1556,7 +1951,7 @@ def test_the_assigned_later_list_takes_her_update_the_same_way() -> None:
     _, _, later_before = before.partition("Assigned this week, due later")
     assert OFFERED in card_for(later_before, LOG)
     _, _, later_after = after.partition("Assigned this week, due later")
-    assert "<summary>Reported done (1)</summary>" in later_after
+    assert "<summary>Finished homework (1) " in later_after
     assert '<span class="pill">Your update: Done</span>' in card_for(later_after, LOG)
 
 
@@ -1977,6 +2372,7 @@ def test_a_save_the_file_refuses_keeps_her_words_and_says_nothing_of_a_save(
     assert undo_refused.status_code == 500
     assert NOT_UNDONE in card_for(undo_refused.text, ESSAY)
     assert UPDATE_UNDONE not in undo_refused.text
+    assert "Last update undone." not in undo_refused.text
     assert (standing.status, standing.note) == ("done", "kept <words>")
 
 
@@ -2803,7 +3199,7 @@ def test_a_plan_press_stays_in_the_visit_and_keeps_its_cards_in_place() -> None:
     assert left_for_the_page(made).startswith(f"{landing_cookie(landing)}=a:{place_key(ESSAY)};")
     assert placed(shown) == placed(before)
     assert "Plan for Wednesday, August 19, 2026" in shown
-    assert ESSAY in placed(returned)[1], "her next visit puts it in Reported done"
+    assert ESSAY in placed(returned)[1], "her next visit puts it in the fold"
 
 
 def plan_form(page: str) -> str:

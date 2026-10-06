@@ -38,6 +38,7 @@ from blossom.stores.captures import CaptureReadings
 from blossom.stores.project_state import HandInReadings, ProjectStateStore, UnreadableClaim
 from blossom.views import school_words
 from tests.support import (
+    ARRIVAL_CUE,
     DETAILS,
     ESSAY,
     ESSAY_ID,
@@ -48,6 +49,7 @@ from tests.support import (
     NONE_APPLIES,
     NOW,
     PAGE_HEADERS,
+    PROBLEM_CUE,
     QUIZ_ID,
     REPORT,
     THEIRS,
@@ -56,6 +58,7 @@ from tests.support import (
     browser,
     card_for,
     client_for,
+    declared_for,
     form_fields,
     homework_from_a_note,
     landing_in,
@@ -941,6 +944,7 @@ def test_every_way_back_holds_through_change_keep_save_undo_and_a_conflict(origi
         )
         after_save = client.get(saved.headers["location"], headers=PAGE_HEADERS).text
         undone = client.post(UNDO, data=form_fields(after_save, UNDO), headers=PAGE_HEADERS)
+        undo_id = store_of(client).student_reports(ESSAY_ID)[-1].report_id
         after_undo = client.get(undone.headers["location"], headers=PAGE_HEADERS).text
         again = client.post(
             REPORT,
@@ -965,7 +969,9 @@ def test_every_way_back_holds_through_change_keep_save_undo_and_a_conflict(origi
     assert saved.headers["location"] == (
         f"{DETAILS}?said=saved&{back}&landing={landing}#update-result-{ESSAY_ID}"
     )
-    assert undone.headers["location"] == f"{DETAILS}?said=undone&{back}#update-result-{ESSAY_ID}"
+    assert undone.headers["location"] == (
+        f"{DETAILS}?said=undone&undo_event={undo_id}&{back}#update-result-{ESSAY_ID}"
+    )
     assert unescape(keep.group(1)) == f"{DETAILS}?{back}#update-or-turn-in"
     assert conflict.status_code == 409
     first = way_back(arrived)
@@ -1715,23 +1721,21 @@ def rules_for(css: str, selector: str) -> list[str]:
 
 
 def test_the_new_places_show_their_focus_and_their_links_are_as_tall_as_a_control() -> None:
-    """Each new place a link or a response focuses takes the outline the evidence has; the
-    links inside the details' sentences keep their line and take a control's height; the
-    jump is as tall as a button. The browser shows what these give; here the rules are
-    pinned."""
+    """Each new place a link or a response focuses takes the cue the evidence has, a tint
+    and a bar with no outline around it, and a problem line widens its own edge; the links
+    inside the details' sentences keep their line and take a control's height; the jump is
+    as tall as a button. The browser shows what these give; here the rules are pinned."""
     css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
-    for selector in (
-        "#instructions:focus",
-        "#waiting-instructions:focus",
-        "#update-or-turn-in:focus",
-        "#turning-it-in:focus",
-        "#problem-summary:focus",
-        '.detail .problem[tabindex="-1"]:focus',
+    for selector, cue in (
+        (".evidence:focus", ARRIVAL_CUE),
+        ("#instructions:focus", ARRIVAL_CUE),
+        ("#waiting-instructions:focus", ARRIVAL_CUE),
+        ("#update-or-turn-in:focus", ARRIVAL_CUE),
+        ("#turning-it-in:focus", ARRIVAL_CUE),
+        ("#problem-summary:focus", PROBLEM_CUE),
+        ('.detail .problem[tabindex="-1"]:focus', PROBLEM_CUE),
     ):
-        outlined = rules_for(css, selector)
-        assert any("outline: 2px solid var(--blue-action);" in inside for inside in outlined), (
-            selector
-        )
+        assert declared_for(selector) == [cue], selector
     for selector in (
         ".assignment.detail .confidence a",
         "#problem-summary a",

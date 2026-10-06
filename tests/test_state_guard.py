@@ -52,7 +52,7 @@ from tests.state_guard import (
     lands_inside,
     protecting,
 )
-from tests.support import fixture_clock, fixture_settings, practice_store
+from tests.support import fixture_clock, fixture_settings, linked_to, practice_store
 
 REPOSITORY = pathlib.Path(__file__).resolve().parent.parent
 WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="a Windows spelling of a path")
@@ -231,20 +231,6 @@ def short_name_of(folder: pathlib.Path) -> pathlib.Path | None:
         return None
     short = pathlib.Path(buffer.value)
     return None if str(short).lower() == str(folder).lower() else short
-
-
-def linked_to(folder: pathlib.Path, link: pathlib.Path) -> pathlib.Path | None:
-    """A junction on Windows, a symlink elsewhere, or None where neither can be made."""
-    try:
-        if sys.platform == "win32":
-            import _winapi
-
-            _winapi.CreateJunction(str(folder), str(link))
-        else:
-            link.symlink_to(folder, target_is_directory=True)
-    except OSError:
-        return None
-    return link
 
 
 def test_a_walk_through_another_folder_is_the_same_place(

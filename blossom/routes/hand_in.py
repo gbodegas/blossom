@@ -236,7 +236,7 @@ def list_page(
             "list_card": list_card_shown(card, everything, viewer),
             "hand_in_routes": hand_in_actions,
             "viewer": viewer,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -394,7 +394,7 @@ def could_not_on_the_list(
                     else LIST_UNDO_FAILED
                 ),
                 "ways_back": list_ways_back(view, attempt.assignment_id),
-                "sample": state.settings.sample,
+                "marks": state.settings.page_marks,
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
@@ -490,7 +490,7 @@ def could_not(
                         details_href(assignment_id, **back.fields()), "Back to the assignment"
                     )
                 ],
-                "sample": state.settings.sample,
+                "marks": state.settings.page_marks,
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )

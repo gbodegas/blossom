@@ -91,6 +91,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
         "can't read is answered with a page; it opens no file and no connection"
     ),
     "sqlite3": "standard library; local file and in-memory databases only",
+    "stat": "standard library; tells a plain file from a link or a folder, no I/O of its own",
     "sys": "standard library; which platform's lock to use",
     "threading": "standard library; serializes the shared connection and the sign-in count",
     "time": "standard library; the forward-only clock behind the sign-in wait",
