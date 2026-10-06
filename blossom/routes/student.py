@@ -2070,7 +2070,7 @@ def student_page(
             "family_help": FAMILY_HELP,
             "update_note_max_length": UPDATE_NOTE_MAX_LENGTH,
             "card": card,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
             "earlier_note": earlier_note,
             "earlier_listed": {item.assignment_id for item in view.earlier},
             "earlier_by_id": {item.assignment_id: item for item in view.earlier},
@@ -2367,6 +2367,7 @@ def week_unreadable(request: Request, error: sqlite3.Error, *, again: str) -> HT
             "page": "student",
             "heading": WEEK_UNREADABLE,
             "alert": WEEK_UNREADABLE_WHY,
+            "marks": get_application_state(request).settings.page_marks,
             "again": again,
             "parent": parent,
             "todays": True,
@@ -2612,7 +2613,7 @@ def gone_page(
             "card": card,
             "hand_in_card": hand_in,
             "back": link,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status.HTTP_404_NOT_FOUND,
     )
@@ -2762,7 +2763,7 @@ def detail_page(
             "hand_in_note_max_length": HAND_IN_NOTE_MAX_LENGTH,
             "problem": problem,
             "update_note_max_length": UPDATE_NOTE_MAX_LENGTH,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -3040,7 +3041,7 @@ def not_shown(
             "note_problem": fallback.said,
             "page_line": fallback.line,
             "ways_back": fallback.ways_back,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -3125,7 +3126,7 @@ def unavailable_page(
             "again": again,
             "ways_back": ways_back,
             "family": family,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
@@ -3160,7 +3161,7 @@ def could_not(
             {
                 "card": card,
                 "ways_back": plain_ways_back(origin, assignment_id, in_place),
-                "sample": state.settings.sample,
+                "marks": state.settings.page_marks,
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
@@ -3585,7 +3586,7 @@ def help_again(
                 "note_problem": form.problem,
                 "help_question": form.words,
                 "ways_back": [ReturnLink(PAGE, "Back to the week")],
-                "sample": state.settings.sample,
+                "marks": state.settings.page_marks,
             },
             status_code=status_code,
         )

@@ -58,7 +58,12 @@ def sign_in_page(
     return templates.TemplateResponse(
         request,
         "sign_in.html",
-        {"next": next_path, "problem": problem, "sign_in": True},
+        {
+            "next": next_path,
+            "problem": problem,
+            "sign_in": True,
+            "marks": get_application_state(request).settings.page_marks,
+        },
         status_code=status_code,
         headers=headers,
     )

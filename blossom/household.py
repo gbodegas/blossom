@@ -563,7 +563,10 @@ class HouseholdGate(BaseHTTPMiddleware):
         if not may_open(role, path) and not may_press_to_be_refused(role, request.method, path):
             if wants_a_page(request):
                 return templates.TemplateResponse(
-                    request, "not_for_you.html", {"home": home_of(role)}, status_code=403
+                    request,
+                    "not_for_you.html",
+                    {"home": home_of(role), "marks": self.settings.page_marks},
+                    status_code=403,
                 )
             return JSONResponse({"detail": "This page is for a parent."}, status_code=403)
         return await call_next(request)

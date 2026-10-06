@@ -552,7 +552,7 @@ def new_note_page(
             "not_hers": NOT_HERS_TO_UPDATE,
             "text_max_length": CAPTURE_TEXT_MAX_LENGTH,
             "course_max_length": CAPTURE_COURSE_MAX_LENGTH,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -571,7 +571,11 @@ def gone(request: Request, state: ApplicationState, capture_id: str | None = Non
     return templates.TemplateResponse(
         request,
         "student_note_gone.html",
-        {"problem": problem, "ways_back": ways_back(request), "sample": state.settings.sample},
+        {
+            "problem": problem,
+            "ways_back": ways_back(request),
+            "marks": state.settings.page_marks,
+        },
         status_code=status.HTTP_404_NOT_FOUND,
     )
 
@@ -651,7 +655,7 @@ def plain_failure(
             "page_line": line,
             "note_form": form,
             "ways_back": ways_back(request),
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -684,7 +688,7 @@ def note_unavailable(
             "again": asked_address(path, request.scope["query_string"]),
             "ways_back": links,
             "family": family,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
@@ -728,7 +732,7 @@ def help_not_sent(
             "help_note": capture_id,
             "help_fresh_form": fresh_form,
             "ways_back": ways_back(request),
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code if mine else status.HTTP_403_FORBIDDEN,
     )
@@ -753,7 +757,7 @@ def note_refused(request: Request, state: ApplicationState, capture_id: str) -> 
             "note_problem": NOT_HERS_TO_UPDATE,
             "help_note": shown,
             "ways_back": ways_back(request),
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status.HTTP_403_FORBIDDEN,
     )
@@ -799,7 +803,7 @@ def unreadable(
         {
             "problem": NOTE_CANNOT_BE_READ if opened else NOTE_UNREADABLE,
             "ways_back": ways_back(request),
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -958,7 +962,7 @@ def note_page(
             ),
             "text_max_length": CAPTURE_TEXT_MAX_LENGTH,
             "course_max_length": CAPTURE_COURSE_MAX_LENGTH,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -1103,7 +1107,7 @@ def notes_list(
             "notes_page": NOTES_PAGE,
             "added_notes_page": ADDED_NOTES_PAGE,
             "archived_notes_page": ARCHIVED_NOTES_PAGE,
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
     )
 
@@ -1249,7 +1253,7 @@ def help_page(
             "not_hers": NOT_HERS_TO_UPDATE,
             "note_max_length": NOTE_MAX_LENGTH,
             "request_id": new_request_id(),
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
         status_code=status_code,
     )
@@ -1567,7 +1571,7 @@ def delete_page(request: Request, capture_id: str, state: State) -> HTMLResponse
         {
             "note": note,
             "ways_back": ways_back(request),
-            "sample": state.settings.sample,
+            "marks": state.settings.page_marks,
         },
     )
 

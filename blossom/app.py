@@ -38,7 +38,7 @@ from blossom.routes import (
 from blossom.routes.forms import FormUnreadable
 from blossom.routes.navigation import FAMILY_PAGE, WEEK_PAGE, address, note_href
 from blossom.routes.student import ReturnLink, parent_reads
-from blossom.settings import Settings, get_settings
+from blossom.settings import PageMarks, Settings, get_settings
 from blossom.templating import page_templates
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ NOTHING_SENT: Final = "That form could not be read, so nothing was sent."
 SIGN_IN_NOT_READ: Final = "That form could not be read. Open sign-in and try again."
 
 
-def unreadable_form(sample: bool) -> Callable[[Request, Exception], HTMLResponse]:
+def unreadable_form(marks: PageMarks) -> Callable[[Request, Exception], HTMLResponse]:
     """The answer to a form the parser could not read, 400, on a page that reads no store.
 
     What it says and the ways back come from the route alone: sign-in's own words and the way
@@ -99,7 +99,7 @@ def unreadable_form(sample: bool) -> Callable[[Request, Exception], HTMLResponse
                 "ways_back": ways_back,
                 "family": family,
                 "sign_in": sign_in,
-                "sample": sample,
+                "marks": marks,
             },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
@@ -135,7 +135,7 @@ def create_app(
     app.include_router(parent.router)
     app.include_router(inbox.router)
     app.include_router(verifier.router)
-    app.add_exception_handler(FormUnreadable, unreadable_form(resolved.sample))
+    app.add_exception_handler(FormUnreadable, unreadable_form(resolved.page_marks))
     # The gate wraps everything above: with two passphrases set, a page or a
     # route answers only someone who has signed in and may open it.
     app.add_middleware(HouseholdGate, settings=resolved)

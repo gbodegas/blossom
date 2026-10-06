@@ -193,7 +193,10 @@ def test_her_week_says_nothing_about_plans_when_none_was_read(
     main = assert_recovery(shown.text, HER_ALERT, "/student/due-this-week?show_plan=1")
     assert "todays-plan" not in main
     assert "plan-reading" not in main
-    assert words(main) == f"This week cannot be shown right now {HER_ALERT} Try again"
+    assert words(main) == (
+        "Today is set to Wednesday, August 19, 2026. "
+        f"This week cannot be shown right now {HER_ALERT} Try again"
+    )
     assert (calls["latest_for"], calls["read_everything"]) == (1, 0)
 
 

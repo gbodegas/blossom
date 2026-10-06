@@ -162,8 +162,9 @@ Each path has a working default under `.local/`.
 
 One variable has no default and must be set: `BLOSSOM_TIMEZONE`, the
 household's IANA zone, because "due this week" means the days you live in and
-no value is right for everyone. `BLOSSOM_TODAY` pins the clock to a date;
-unset or blank, the real clock is used. `.env.example` sets the zone and
+no value is right for everyone. `BLOSSOM_TODAY` pins the clock to a date,
+and every page then says which day it is set to; unset or blank, the real
+clock is used. `.env.example` sets the zone and
 leaves the date blank, which is why the first run needs nothing else and
 shows the real week. The sample week's launch file sets its own date. Either
 can also be set as an ordinary environment variable in the shell.
@@ -355,6 +356,7 @@ there's no `.env` yet. Then check these lines in `.env`:
 - `BLOSSOM_FIXTURE_PATH` is blank, so nothing synthetic is read in.
 - `BLOSSOM_TODAY` is blank, so the pages show the real date.
 - `BLOSSOM_SAMPLE` is blank, so sample mode is off.
+- `BLOSSOM_TEST_COPY` is blank or absent, so the pages don't say Test copy.
 - The three state paths name the household's own files, never
   `.local/sample/`. The defaults under `.local/` are fine in a folder that
   isn't synced.
@@ -483,6 +485,31 @@ see the moved instructions: assignments show no school instruction, and
 nothing tells the planner about them. A school note it saves is found by the
 next start of the newer version and, beside instructions already kept, waits
 for a parent's review.
+
+### Testing on a copy of the household
+
+A test pass on the family's own record runs on a copy, never on the
+household's files:
+
+1. Stop Blossom.
+2. Copy `blossom.sqlite3` and `checkpoints.sqlite3` into a new folder, the way
+   "Upgrading and rolling back" copies the database: with no `-journal` or
+   `-wal` file beside either one, or with SQLite's `.backup` command. Never
+   serve a test from the household's own folder.
+3. In the new folder, write a launch file such as `test-copy.env` that points
+   `BLOSSOM_DATABASE_PATH` and `BLOSSOM_CHECKPOINT_PATH` at the two copies,
+   points `BLOSSOM_TRACE_PATH` at a new `traces.sqlite3` beside them, and sets
+   `BLOSSOM_TEST_COPY=1`. Never put these lines in `.env`.
+4. In a fresh terminal, load `.env` and then that file, the way "The sample
+   week" loads its launch file after `.env`. `BLOSSOM_SAMPLE` stays blank:
+   the app refuses to start with both flags on.
+5. Start it on a port other than the household's, such as 8001.
+
+Every page then says "Test copy", the sign-in page included. A browser that
+uses both the household's Blossom and a test copy on the same computer has
+to sign in again when it switches. The copy holds the family's real data, so
+keep the folder private, out of any synced or shared place, and delete it
+after the pass.
 
 ## Homework notes
 

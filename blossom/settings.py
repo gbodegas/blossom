@@ -48,6 +48,7 @@ TIMEZONE_VARIABLE = "BLOSSOM_TIMEZONE"
 EVENING_MINUTES_VARIABLE = "BLOSSOM_EVENING_MINUTES"
 TOO_MUCH_MINUTES_VARIABLE = "BLOSSOM_TOO_MUCH_MINUTES"
 SAMPLE_VARIABLE = "BLOSSOM_SAMPLE"
+TEST_COPY_VARIABLE = "BLOSSOM_TEST_COPY"
 # The names of the variables, not their values, so the lint rule does not apply.
 STUDENT_PASSPHRASE_VARIABLE = "BLOSSOM_STUDENT_PASSPHRASE"  # noqa: S105
 PARENT_PASSPHRASE_VARIABLE = "BLOSSOM_PARENT_PASSPHRASE"  # noqa: S105
@@ -132,6 +133,23 @@ def resolve_configured_path(value: str) -> Path:
 
 
 @dataclass(frozen=True)
+class PageMarks:
+    """What every page says above its own content about the instance serving it."""
+
+    label: str | None = None
+    """"Sample week" or "Test copy", or ``None`` for the family's own data."""
+    today: date | None = None
+    """The pinned day, or ``None`` on the real clock."""
+
+    @property
+    def pinned_line(self) -> str | None:
+        """The pinned day as a sentence: ``Today is set to Monday, September 7, 2026.``"""
+        if self.today is None:
+            return None
+        return f"Today is set to {self.today:%A, %B} {self.today.day}, {self.today.year}."
+
+
+@dataclass(frozen=True)
 class Settings:
     """Runtime configuration: the filesystem locations the application needs as
     absolute paths, the optional pinned clock, and the optional model API key."""
@@ -170,6 +188,10 @@ class Settings:
     """From ``BLOSSOM_SAMPLE``. True marks every page "Sample week": what is shown
     is a synthetic scenario, not the family's own. Set by the sample launch and
     nothing else; a pinned clock on its own says nothing about whose data this is."""
+    test_copy: bool = False
+    """From ``BLOSSOM_TEST_COPY``. True marks every page "Test copy": the state is a copy
+    of the family's own data, made for a test pass. Set by a test-copy launch and nothing
+    else, and refused beside ``sample``."""
     student_passphrase: str | None = field(default=None, repr=False)
     """From ``BLOSSOM_STUDENT_PASSPHRASE``. With ``parent_passphrase`` it turns the
     household sign-in on: every page asks who is there before showing anything.
@@ -184,7 +206,27 @@ class Settings:
         """Whether the pages ask who is there. True when both passphrases are set."""
         return self.student_passphrase is not None and self.parent_passphrase is not None
 
+    @property
+    def instance_label(self) -> str | None:
+        """What every page says about whose data it shows, or ``None`` for the family's own."""
+        if self.sample:
+            return "Sample week"
+        if self.test_copy:
+            return "Test copy"
+        return None
+
+    @property
+    def page_marks(self) -> PageMarks:
+        """The label and the pinned day every page shows above its own content."""
+        return PageMarks(self.instance_label, self.today)
+
     def __post_init__(self) -> None:
+        if self.sample and self.test_copy:
+            msg = (
+                f"{SAMPLE_VARIABLE} and {TEST_COPY_VARIABLE} cannot both be on: one marks a "
+                "synthetic week, the other a copy of the family's own state"
+            )
+            raise ValueError(msg)
         if (self.student_passphrase is None) != (self.parent_passphrase is None):
             missing = (
                 PARENT_PASSPHRASE_VARIABLE
@@ -313,6 +355,7 @@ class Settings:
             evening_minutes=minutes(EVENING_MINUTES_VARIABLE, DEFAULT_EVENING_MINUTES),
             too_much_minutes=minutes(TOO_MUCH_MINUTES_VARIABLE, DEFAULT_TOO_MUCH_MINUTES),
             sample=flag(SAMPLE_VARIABLE),
+            test_copy=flag(TEST_COPY_VARIABLE),
             student_passphrase=secret(STUDENT_PASSPHRASE_VARIABLE),
             parent_passphrase=secret(PARENT_PASSPHRASE_VARIABLE),
         )
