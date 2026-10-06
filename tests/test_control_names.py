@@ -79,7 +79,7 @@ REPEATED = (
     "Save update",
     "Keep it as it is",
     "Change",
-    "Undo",
+    "Undo last update",
     "Update history",
     "Hand-in history",
     "Read instructions",
@@ -151,7 +151,7 @@ def test_the_states_show_the_controls_they_are_for(pages: dict[str, str]) -> Non
     assert ">Save update" in pages["week, change"]
     assert ">Keep it as it is" in pages["details, change"]
     assert ">Change<span" in pages["week, saved"]
-    assert ">Undo<span" in pages["details, saved"]
+    assert ">Undo last update<span" in pages["details, saved"]
     assert "<summary>Update history<span" in pages["details, saved"]
     assert "<summary>Hand-in history<span" in pages["details, hand-in history"]
     assert ": school report to check" in pages["week, to check"]
@@ -229,10 +229,10 @@ NAMESAKE_NAMES = (
     ("hand-in, returned", "Not now", "Not now: the hand-in status for Practice, {}"),
     ("hand-in, keep", "Keep it as it is", "Keep it as it is: the hand-in status for Practice, {}"),
     ("week, saved", "Change", "Change your update on Practice, {}"),
-    ("week, saved", "Undo", "Undo your update on Practice, {}"),
+    ("week, saved", "Undo last update", "Undo last update on Practice, {}"),
     ("week, saved", "Update history", "Update history for Practice, {}"),
     ("details, saved", "Change", "Change your update on Practice, {}"),
-    ("details, saved", "Undo", "Undo your update on Practice, {}"),
+    ("details, saved", "Undo last update", "Undo last update on Practice, {}"),
     ("details, saved", "Update history", "Update history for Practice, {}"),
     ("details, hand-in history", "Hand-in history", "Hand-in history for Practice, {}"),
     ("week, to check", "Practice", "Practice, {}: school report to check"),

@@ -288,6 +288,14 @@ no more. What to do about it, when anything can be done, is the stale warning's 
 UPDATE_SAVED: Final = "Your update is saved."
 UPDATE_ALREADY_SAVED: Final = "Your update is already saved."
 UPDATE_UNDONE: Final = "Your update is undone."
+"""What an Undo is said to have done when the undo its address names is not her latest event:
+an update saved after it, an address that names no undo, or updates that cannot be read."""
+UNDONE_TO_NOTHING: Final = "Last update undone. No update is recorded."
+UNDONE_TO_NOT_YET: Final = "Last update undone. This is Not yet again."
+UNDONE_STILL_DONE: Final = "Last update undone. This is still Done."
+UNDONE_DONE_AGAIN: Final = "Last update undone. This is Done again."
+"""What Undo last update restored: no update, a Not yet, the Done a note edit was made on, or
+a Done that a Not yet was saved over."""
 CHOOSE_ONE: Final = "Choose Done or Not yet."
 NOTE_TOO_LONG: Final = f"Keep your note to {UPDATE_NOTE_MAX_LENGTH} characters or fewer."
 SAVED_ELSEWHERE: Final = "An update was saved on another device. Review it before saving yours."
@@ -496,6 +504,8 @@ TURNING_IT_IN: Final = "turning-it-in"
 ASK_FOR_HELP: Final = "ask-for-help"
 """The id of the place on her week that holds her Ask for help form, or a parent's line
 about her requests."""
+HOMEWORK: Final = "homework"
+"""The id of her week's homework heading, where Refresh list lands."""
 FAMILY_HELP: Final = f"{FAMILY_PAGE}#help-she-asked-for"
 """The help she asked for, on the family page, where a parent answers it."""
 HAND_IN_SAVED: Final = "Your hand-in update is saved."
@@ -1629,7 +1639,8 @@ class CardState:
     an update saved elsewhere among them, takes the focus on the card, and is
     said at the top of the page too, with a link to the card. ``saved_elsewhere``
     marks the refusal that comes with a newer update to look at. ``well_done`` is the words
-    for a Done the save has just made, on the page that answers it alone.
+    for a Done the save has just made, on the page that answers it alone. ``undo_event`` is
+    the undo an address says an Undo made: an id, which only her latest event can bear out.
     """
 
     assignment_id: str
@@ -1641,6 +1652,7 @@ class CardState:
     status: str | None = None
     note: str | None = None
     saved_elsewhere: bool = False
+    undo_event: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2000,6 +2012,10 @@ def student_page(
         for item in listed
         if kept.shown_done(item.assignment_id, item.update_status == "done")
     }
+    for item in listed:
+        card = said_after_undo(card, item)
+    held_week = held_from_its_group(view.assignments, shown_done)
+    held_later = held_from_its_group(view.assigned_this_week, shown_done)
     by_a_card = card is not None and card.problem is not None and problem is None
     # A card's problem is said on the card only when the card is on the page: a form made
     # for an id that is not on record is refused before any lookup, and has no card.
@@ -2023,6 +2039,22 @@ def student_page(
                 for item in listed
             },
             "shown_done": shown_done,
+            # Whether a card of this week's list, or of the work given out for later, is shown
+            # away from the group its saved update puts it in, and whether every card held so
+            # has an update standing, which an Undo can leave it without; and the plain
+            # address that asks for the week again, grouped, at its homework heading.
+            "held": {
+                "week": bool(held_week),
+                "later": bool(held_later),
+                "updated": all(
+                    item.update_status is not None for item in (*held_week, *held_later)
+                ),
+            },
+            "refresh_list": address(
+                WEEK_PAGE,
+                fragment=HOMEWORK,
+                week=None if view.week.current else view.week.start.isoformat(),
+            ),
             # What Earlier homework to check's presses carry, so a choice keeps every card
             # this visit keeps where it was.
             "earlier_in_place": kept.said(),
@@ -2094,13 +2126,20 @@ def student_page(
 
 
 def card_shown(
-    saved: str | None, same: str | None, undone: str | None, change: str | None, show: str | None
+    saved: str | None,
+    same: str | None,
+    undone: str | None,
+    change: str | None,
+    show: str | None,
+    undo_event: str | None = None,
 ) -> CardState | None:
-    """What the address says about one card, read in a fixed order and one thing at a time.
-    An id to change that is longer than any the store makes opens nothing."""
+    """What the address says about one card, read in a fixed order and one thing at a time,
+    an undo with the undo it names. An id to change that is longer than any the store makes
+    opens nothing."""
     for said, given in (("saved", saved), ("same", same), ("undone", undone)):
         if given:
-            return CardState(given, said=CONFIRMATIONS[said])
+            named = undo_event if said == "undone" else None
+            return CardState(given, said=CONFIRMATIONS[said], undo_event=named)
     if change and len(change) <= TOKEN_MAX_LENGTH:
         return CardState(change, change=True)
     if show:
@@ -2127,6 +2166,9 @@ def due_this_week(
     ] = None,
     undone: Annotated[
         str | None, Query(description="the assignment whose update was just undone; a note")
+    ] = None,
+    undo_event: Annotated[
+        str | None, Query(description="the undo that press made; compared, never trusted")
     ] = None,
     change: Annotated[
         str | None, Query(description="the assignment whose update form to open; changes nothing")
@@ -2177,7 +2219,9 @@ def due_this_week(
     no plan is saved. A GET never makes a plan. The rest name one card: what a
     save or an undo just did to it, which the server chose and the address only
     carries, or that its form is to be open, or that it is to be in view, with
-    the fold around it open. ``asked`` names the request a help form just made, and
+    the fold around it open. An undo names the undo it made too, in ``undo_event``, and
+    what it restored is said only while that undo is her latest event. ``asked`` names
+    the request a help form just made, and
     ``asked_again`` the one a help form sent twice had made; the first is read when both
     are there. Either is said to her in Help, beside that request when it is on the page,
     and at the top of Help when it is not. When the record cannot be read, the page says so
@@ -2204,7 +2248,7 @@ def due_this_week(
         return moved if landing is None else forget_landing(moved, landing)
     left = None if landing is None else request.cookies.get(landing_cookie(landing))
     kept = InPlace.read(left)
-    card = met(card_shown(saved, same, undone, change, show), left)
+    card = met(card_shown(saved, same, undone, change, show, undo_event), left)
     try:
         today = state.clock.today()
         signed = (
@@ -2260,6 +2304,44 @@ def met(card: CardState | None, left: str | None) -> CardState | None:
     if newly_done(left) != place_key(card.assignment_id):
         return card
     return replace(card, well_done=WELL_DONE)
+
+
+def what_undo_restored(assignment: StudentAssignmentView, undo_event: str | None) -> str:
+    """What Undo last update restored, read from her history as the page shows it, while the
+    undo the address names is her latest event. Otherwise, a later event of hers or an
+    address that names no undo, it says only that her update is undone."""
+    history = assignment.update_history
+    if (
+        assignment.updates_unavailable
+        or undo_event is None
+        or assignment.update_head_id != undo_event
+        or not history
+        or history[-1].operation != UNDO
+    ):
+        return UPDATE_UNDONE
+    if assignment.update_status is None:
+        return UNDONE_TO_NOTHING
+    if assignment.update_status != DONE:
+        return UNDONE_TO_NOT_YET
+    taken_back = history[-2].status if len(history) > 1 else None
+    return UNDONE_STILL_DONE if taken_back == DONE else UNDONE_DONE_AGAIN
+
+
+def said_after_undo(card: CardState | None, assignment: StudentAssignmentView) -> CardState | None:
+    """The card an Undo names, saying what it restored once the page has read the card."""
+    if card is None or card.said != UPDATE_UNDONE or card.assignment_id != assignment.assignment_id:
+        return card
+    return replace(card, said=what_undo_restored(assignment, card.undo_event))
+
+
+def held_from_its_group(
+    cards: Sequence[StudentAssignmentView], shown_done: set[str]
+) -> list[StudentAssignmentView]:
+    """The cards shown away from the group their saved update puts them in: Done among the
+    active cards, or anything else in the fold of finished homework."""
+    return [
+        card for card in cards if (card.assignment_id in shown_done) != (card.update_status == DONE)
+    ]
 
 
 def carrying(query: bytes, kept: InPlace) -> bytes:
@@ -2400,16 +2482,19 @@ def week_named(given: str) -> date | None:
     return chosen if chosen is not None and showable(chosen) else None
 
 
-def back_to_the_card(week: date | None, said: str, assignment_id: str) -> str:
+def back_to_the_card(
+    week: date | None, said: str, assignment_id: str, undo_event: str | None = None
+) -> str:
     """Where a save or an undo sends her: the week she was on, the card, and what happened,
-    landing on the card's line that says it. The id is escaped where it goes, in the query,
-    and the fragment is the id that line is written with, so one that holds a hash, an
-    ampersand, or a question mark is still one value and one place."""
+    with the undo an undo made, landing on the card's line that says it. The id is escaped
+    where it goes, in the query, and the fragment is the id that line is written with, so one
+    that holds a hash, an ampersand, or a question mark is still one value and one place."""
     return address(
         PAGE,
         fragment=result_anchor(assignment_id),
         week=None if week is None else week.isoformat(),
         **{said: assignment_id},
+        undo_event=undo_event,
     )
 
 
@@ -2701,6 +2786,7 @@ def detail_page(
         instructions=instructions.readable.get(assignment_id),
         instructions_unreadable=assignment_id in instructions.unreadable,
     )
+    card = said_after_undo(card, view)
     link = way_back(state, back, assignment_id, today=today)
     # Which of the school's instructions apply is the family's to choose: a parent's, or the
     # household's with the sign-in off when it came from the family's pages. She reads them.
@@ -2785,6 +2871,9 @@ def assignment_details(
     said: Annotated[
         str | None, Query(description="what a save or an undo just did; a note")
     ] = None,
+    undo_event: Annotated[
+        str | None, Query(description="the undo that press made; compared, never trusted")
+    ] = None,
     hand_in: Annotated[
         str | None, Query(description="change to open the hand-in form, or what a save did")
     ] = None,
@@ -2795,7 +2884,8 @@ def assignment_details(
     anything else is her safe default, or a parent's. ``change`` opens the
     form on an update that stands, and ``said`` is one of the three things a
     save or an undo can have done, which the server chose and the address
-    only carries: any other word says nothing. When the record can't be read,
+    only carries: any other word says nothing. An undo names the undo it made
+    in ``undo_event``, as on her week. When the record can't be read,
     503: a page that says so, offers the same address again and the way back
     the address names, and says nothing of a save. A save that has just made
     the assignment Done names a landing whose cookie says so; the page that
@@ -2810,7 +2900,8 @@ def assignment_details(
     left = None if landing is None else request.cookies.get(done_cookie(landing))
     card = None
     if said in CONFIRMATIONS:
-        card = met(CardState(assignment_id, said=CONFIRMATIONS[said]), left)
+        named = undo_event if said == "undone" else None
+        card = met(CardState(assignment_id, said=CONFIRMATIONS[said], undo_event=named), left)
     elif change == "1":
         card = CardState(assignment_id, change=True)
     turning_in = None
@@ -2911,36 +3002,42 @@ def result_page(
     )
 
 
-def after(origin: Origin, said: str, assignment_id: str) -> str:
+def after(origin: Origin, said: str, assignment_id: str, undo_event: str | None = None) -> str:
     """Where a save or an undo sends her once it is committed: back to the page the form
-    was on, with what happened. The address lands on the result itself, on the details
-    with the way back repeated beside it, so neither is below a long page's first
-    screen."""
+    was on, with what happened and, for an undo, the undo it made. The address lands on
+    the result itself, on the details with the way back repeated beside it, so neither is
+    below a long page's first screen."""
     if origin.detail:
         return details_href(
             assignment_id,
             fragment=result_anchor(assignment_id),
             said=said,
+            undo_event=undo_event,
             **origin.back.fields(),
         )
-    return back_to_the_card(origin.week, said, assignment_id)
+    return back_to_the_card(origin.week, said, assignment_id, undo_event)
 
 
 def answered(
-    origin: Origin, said: str, assignment_id: str, kept: InPlace, *, made_done: bool = False
+    origin: Origin,
+    said: str,
+    assignment_id: str,
+    kept: InPlace,
+    *,
+    made_done: bool = False,
+    undo_event: str | None = None,
 ) -> Response:
     """The redirect a committed save or undo is answered with. From her week it leaves the
     cards the form kept in place for the page it lands on, the saved card where it was; from
     her week or the details it says, to the one page that answers it, when the save has just
-    made that card Done."""
+    made that card Done. An undo's address names the undo it made."""
+    location = after(origin, said, assignment_id, undo_event)
     if not origin.detail:
         done = assignment_id if made_done else None
-        return sent_in_place(after(origin, said, assignment_id), kept, done)
+        return sent_in_place(location, kept, done)
     if made_done:
-        return sent_done_to_the_details(after(origin, said, assignment_id), assignment_id)
-    return RedirectResponse(
-        after(origin, said, assignment_id), status_code=status.HTTP_303_SEE_OTHER
-    )
+        return sent_done_to_the_details(location, assignment_id)
+    return RedirectResponse(location, status_code=status.HTTP_303_SEE_OTHER)
 
 
 def plain_ways_back(
@@ -3309,8 +3406,9 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
     changed, with the component as it stands, since what she meant to take
     back is not what is there. A write the file refuses is said as that, and
     never as an undo. The result is shown where the form was, her week or
-    the assignment's details, and an undo never sends her to another week.
-    A refusal whose page can't be read is said on the page that reads no store.
+    the assignment's details, at an address that names the undo made, and an
+    undo never sends her to another week. A refusal whose page can't be read
+    is said on the page that reads no store.
     """
     if viewer_of(request) == "parent":
         return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
@@ -3383,8 +3481,8 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
             kept,
         )
     match result:
-        case Undone():
-            return answered(origin, "undone", assignment_id, kept)
+        case Undone(report=made):
+            return answered(origin, "undone", assignment_id, kept, undo_event=made.report_id)
         case Conflict(head=head):
             repeat = head is not None and head.operation == UNDO and head.undoes_report_id == named
             return refused(

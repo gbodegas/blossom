@@ -162,7 +162,7 @@ def test_with_every_assignment_done_and_an_empty_week_the_notes_are_still_there(
 
     assert 'action="/student/actions/plan"' not in done
     assert "Homework notes (1)" in notes_section(done)
-    assert done.index("Reported done (") < done.index('id="homework-notes"')
+    assert done.index("Finished homework (") < done.index('id="homework-notes"')
     assert "No assignments are recorded as due" in nothing_due
     assert f'href="{NEW_NOTE_PAGE}">Write down homework</a>' in nothing_due
     assert "Homework notes (1)" in notes_section(with_a_note)

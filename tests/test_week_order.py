@@ -40,6 +40,7 @@ from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import REPOSITORY_ROOT
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
+    ARRIVAL_CUE,
     DETAILS,
     ESCAPED,
     ESSAY_ID,
@@ -49,9 +50,11 @@ from tests.support import (
     NOW,
     PAGE_HEADERS,
     PLAN_DATE,
+    PROBLEM_CUE,
     REPORT,
     THEIRS,
     UNDO,
+    UNDONE_TO_NOTHING,
     Answer,
     accepting,
     after,
@@ -59,6 +62,7 @@ from tests.support import (
     bad_return,
     card_for,
     conflict,
+    declared_for,
     due,
     failed_undo,
     failed_write,
@@ -294,15 +298,8 @@ def item_of(page: str, title: str) -> tuple[int, int]:
     raise AssertionError(title)
 
 
-def outlined() -> set[str]:
-    """Every selector of a rule that draws an outline."""
-    plain = re.sub(r"/\*.*?\*/", "", CSS.read_text(encoding="utf-8"), flags=re.S)
-    return {
-        part.strip()
-        for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain)
-        if re.search(r"(?<![-\w])outline:\s*\d", inside)
-        for part in head.split(",")
-    }
+RING: Final = "outline: 3px solid var(--blue-action); outline-offset: 2px;"
+"""The focus ring of a field or any other control, spaces folded."""
 
 
 def in_sentence_rule() -> set[str]:
@@ -328,37 +325,37 @@ def in_an_update(page: str, place: int) -> bool:
     return start >= 0 and depth > 0
 
 
-def outline_reaches(page: str, tag: str) -> bool:
-    """Whether a rule that draws an outline on focus names this element: the top line, a
-    card's problem line in an update, the To turn in list's problem line, a result line, the
-    homework heading, or a field."""
-    selectors = outlined()
+def marked_on_arrival(page: str, tag: str) -> bool:
+    """Whether the rule for this element marks it when the focus arrives: the top line, a
+    card's problem line in an update and the To turn in list's problem line widen their own
+    edge, a result line and the homework heading take the arrival cue, and a field its ring."""
     place = page.index(tag)
     checks = [
-        ('class="problem week-problem"' in tag, ".week-problem:focus"),
+        ('class="problem week-problem"' in tag, ".week-problem:focus", PROBLEM_CUE),
         (
             tag.startswith('<p class="problem"')
             and 'tabindex="-1"' in tag
             and in_an_update(page, place),
             '.update .problem[tabindex="-1"]:focus',
+            PROBLEM_CUE,
         ),
-        ('id="to-turn-in-problem"' in tag, "#to-turn-in-problem:focus"),
-        ("update-result" in tag, ".update-result:focus"),
-        ('class="list-heading"' in tag, ".list-heading:focus"),
-        (tag.startswith("<input"), "input:focus-visible"),
-        (tag.startswith("<textarea"), "textarea:focus-visible"),
+        ('id="to-turn-in-problem"' in tag, "#to-turn-in-problem:focus", PROBLEM_CUE),
+        ("update-result" in tag, ".update-result:focus", ARRIVAL_CUE),
+        ('class="list-heading"' in tag, ".list-heading:focus", ARRIVAL_CUE),
+        (tag.startswith("<input"), "input:focus-visible", RING),
+        (tag.startswith("<textarea"), "textarea:focus-visible", RING),
     ]
-    return any(matches and selector in selectors for matches, selector in checks)
+    return any(matches and cue in declared_for(selector) for matches, selector, cue in checks)
 
 
 def one_focus(answer: Answer) -> str:
     """The one element a response asks to take the focus, checked: no positive tabindex,
-    at most one autofocus, and an outline that reaches it."""
+    at most one autofocus, and a rule that marks it when the focus arrives."""
     page = answer.text
     assert re.search(r'tabindex="[1-9]', page) is None
     asked = focused_on_arrival(page)
     assert len(asked) == 1, asked
-    assert outline_reaches(page, asked[0]), asked[0]
+    assert marked_on_arrival(page, asked[0]), asked[0]
     assert folds_open_around(page, asked[0]), asked[0]
     return asked[0]
 
@@ -546,8 +543,51 @@ def test_to_turn_in_needs_no_done_fold_when_every_assignment_is_done(
     assert not inside_a_fold(page, panel_at)
     assert "<details" not in panel
     assert "To turn in (1)" in panel
-    assert page.index("<summary>Reported done (") < panel_at
+    assert page.index("<summary>Finished homework (") < panel_at
     assert 'action="/student/actions/plan"' not in page
+
+
+FOLD_STATE: Final = (
+    '<span class="fold-state"><span class="fold-show">Show</span>'
+    '<span class="fold-hide">Hide</span></span>'
+)
+"""What the summary of a fold of finished homework says it does: Show while it is closed,
+Hide while it is open, one of the two shown at a time."""
+
+
+@pytest.mark.parametrize("reader", READERS)
+def test_finished_homework_is_a_row_to_open_said_in_the_readers_words(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """With every assignment Done, the fold of this week's cards and the fold of the work
+    given out for later are each a closed row with the number of cards Done, Show and Hide,
+    and a line saying these are her Done updates and not what the school has received, in
+    the words of whoever reads. How Blossom uses her information and what Blossom keeps
+    take the quieter class, their summaries as they are."""
+    with reading(reader, tmp_path) as client:
+        everything_done(store_of(client))
+        state_of(client).workload_signals.record(PLAN_DATE, None)
+        page = main_of(page_of(client))
+
+    whose = "Her" if reader == "a parent" else "Your"
+    says = f'<span class="fold-says">{whose} Done updates, not what the school has received</span>'
+    folds = re.findall(
+        r'<details class="steps reported-done"( open)?>\s*<summary>(.*?)</summary>', page, re.S
+    )
+    later = at(page, ASSIGNED)
+    counts = [
+        page[at(page, HEADING) : later].count('<article class="assignment'),
+        page[later : page.index("</section>", later)].count('<li id="assignment-'),
+    ]
+    assert all(counts)
+    assert folds == [("", f"Finished homework ({count}) {FOLD_STATE}{says}") for count in counts]
+    assert "Reported done" not in page
+    whom = "her" if reader == "a parent" else "your"
+    for fold, summary in (
+        ("steps quiet-fold", f"How Blossom uses {whom} information"),
+        ("steps kept quiet-fold", "What Blossom keeps about this"),
+    ):
+        assert f'<details class="{fold}">\n      <summary>{summary}</summary>' in page
 
 
 # ------------------------------------------------------------------ See homework (U7-2)
@@ -701,7 +741,7 @@ def test_after_see_homework_the_next_tab_is_inside_the_first_work_left(
     if "school report" in case:
         assert heading < page.index("to check:</strong>") < start
     if "Reported done" in case:
-        assert heading < page.index("<summary>Reported done (5)</summary>") < start
+        assert heading < page.index("<summary>Finished homework (5) ") < start
 
 
 def later_work_keeps_the_plan_button(client: TestClient) -> None:
@@ -723,13 +763,13 @@ OMITTED: Final[dict[str, tuple[Callable[[TestClient], None], bool, tuple[str, ..
     "every assignment Done": (
         lambda client: everything_done(store_of(client)),
         False,
-        (NO_PLAN_YET, NOTHING_TO_SCHEDULE, "<summary>Reported done (5)</summary>"),
+        (NO_PLAN_YET, NOTHING_TO_SCHEDULE, "<summary>Finished homework (5) "),
     ),
     "an empty week": (an_empty_week, False, (NO_PLAN_YET, NOTHING_TO_SCHEDULE, EMPTY_WEEK)),
     "this week Done, later work planned": (
         later_work_keeps_the_plan_button,
         False,
-        (NO_PLAN_YET, "<summary>Reported done (5)</summary>"),
+        (NO_PLAN_YET, "<summary>Finished homework (5) "),
     ),
     "a plan today": (
         lambda client: None,
@@ -816,23 +856,27 @@ def test_a_way_back_lands_on_the_cards_title_or_says_the_card_is_gone(
     assert "autofocus" not in gone
 
 
-def test_the_homework_heading_is_an_outlined_place_to_land() -> None:
+def test_the_homework_heading_is_a_place_to_land_with_the_arrival_cue() -> None:
     """The heading, the title of a card or a row due later, the line for a card not on
-    record, the top line, a card's problem line, the To turn in list's problem line and a
-    result line each show an outline when they take the focus, and the top line's link is as
-    tall as a control."""
-    selectors = outlined()
+    record, a result line and the choices Change opens take the arrival cue when they take
+    the focus, a tint and a bar with no outline around them; the top line, a card's problem
+    line and the To turn in list's problem line widen their own edge. The top line's link is
+    as tall as a control."""
     for selector in (
         ".list-heading:focus",
         '.assignment h2[tabindex="-1"]:focus',
         ".assigned .row-title:focus",
         ".card-gone:focus",
+        ".update-result:focus",
+        ".update .choice:focus",
+    ):
+        assert declared_for(selector) == [ARRIVAL_CUE], selector
+    for selector in (
         ".week-problem:focus",
         '.update .problem[tabindex="-1"]:focus',
         "#to-turn-in-problem:focus",
-        ".update-result:focus",
     ):
-        assert selector in selectors, selector
+        assert declared_for(selector) == [PROBLEM_CUE], selector
     assert ".week-problem a" in in_sentence_rule()
 
 
@@ -1004,7 +1048,7 @@ def test_a_refusal_about_a_card_is_said_on_the_card_which_takes_the_focus(
 SUCCESSES: Final[dict[str, tuple[Callable[[TestClient], Answer], str, str]]] = {
     "a save": (saved, "saved", "Your update is saved."),
     "the same save again": (saved_again, "same", "Your update is already saved."),
-    "an undo": (undone, "undone", "Your update is undone."),
+    "an undo": (undone, "undone", UNDONE_TO_NOTHING),
     "a save on a card shown apart": (saved_apart, "saved", "Your update is saved."),
 }
 
@@ -1030,7 +1074,7 @@ def test_a_save_or_an_undo_lands_on_the_cards_result_and_asks_for_no_focus(
     assert said in words(page[page.index(target) :])
     assert page.index(target) > page.index(f'id="assignment-{ESSAY_ID}"')
     assert folds_open_around(page, target)
-    assert outline_reaches(page, target)
+    assert marked_on_arrival(page, target)
     assert focused_on_arrival(landed.text) == []
     assert 'role="alert"' not in page
     if "apart" in case:
