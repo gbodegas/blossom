@@ -21,6 +21,7 @@ import dataclasses
 import pathlib
 import re
 import sqlite3
+import sys
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
@@ -759,6 +760,20 @@ def signed_in_household(tmp_path: pathlib.Path) -> Settings:
         BLOSSOM_STUDENT_PASSPHRASE=HERS,
         BLOSSOM_PARENT_PASSPHRASE=THEIRS,
     )
+
+
+def linked_to(folder: pathlib.Path, link: pathlib.Path) -> pathlib.Path | None:
+    """A junction on Windows, a symlink elsewhere, or None where neither can be made."""
+    try:
+        if sys.platform == "win32":
+            import _winapi
+
+            _winapi.CreateJunction(str(folder), str(link))
+        else:
+            link.symlink_to(folder, target_is_directory=True)
+    except OSError:
+        return None
+    return link
 
 
 def state_of(client: TestClient) -> ApplicationState:

@@ -26,7 +26,6 @@ from blossom.household import (
     ATTEMPT_LIMIT,
     COOKIE,
     COOLDOWN_SECONDS,
-    SECRET_NAME,
     SESSION_SECONDS,
     SKEW_SECONDS,
     SignInAttempts,
@@ -36,6 +35,7 @@ from blossom.household import (
 )
 from blossom.principals import Principal
 from blossom.settings import PARENT_PASSPHRASE_VARIABLE, STUDENT_PASSPHRASE_VARIABLE, Settings
+from blossom.stores.paths import SECRET_NAME
 from tests.support import SAME_ORIGIN, browser, fixture_settings
 
 HERS = "quiet mornings and loud music"

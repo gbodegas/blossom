@@ -48,13 +48,12 @@ from starlette.types import ASGIApp
 
 from blossom.principals import Principal
 from blossom.settings import Settings
-from blossom.stores.paths import refuse_unsafe_path
+from blossom.stores.paths import SECRET_NAME, refuse_unsafe_path
 from blossom.templating import page_templates
 
 COOKIE: Final = "blossom_household"
 SESSION_SECONDS: Final = 30 * 24 * 60 * 60
 """A sign-in lasts a month, then asks again."""
-SECRET_NAME: Final = "household.secret"  # noqa: S105  (a file name, not a secret)
 SECRET_LENGTH: Final = 64
 """The secret on disk is 32 random bytes written as lowercase hex, and nothing else counts."""
 HEX_BYTES: Final = frozenset(b"0123456789abcdef")
