@@ -338,20 +338,47 @@ def test_her_update_s_group_and_note_name_the_title_and_course(
     }
 
 
+def asked_on(item: dict[str, str]) -> str:
+    """The day and time a request was asked, its own, in the household's zone, as a control's
+    name says them: the year only when it is not the page's."""
+    at = datetime.fromisoformat(item["asked_local"])
+    time = f"{at.hour % 12 or 12}:{at.minute:02d} {'AM' if at.hour < 12 else 'PM'}"
+    year = "" if at.year == PLAN_DATE.year else f", {at.year}"
+    return f"{at:%A, %B} {at.day}{year} at {time}"
+
+
 def test_take_it_back_names_her_request_by_its_time_and_day_in_one_label() -> None:
-    """The visible words, then the request's time and day, in a label that reads as written."""
+    """The visible words, then the request's own day and time, in a label that reads as
+    written. The page's day is pinned to the evening she asked for, which is another day than
+    the one the real clock stamped."""
     with browser() as client:
         client.post("/student/help-requests", json={"note": "Synthetic question"})
         asked = client.get("/student/help-requests").json()[0]
         page = client.get(HER_PAGE).text
-    at = datetime.fromisoformat(asked["asked_local"])
-    evening = date.fromisoformat(asked["evening"])
-    time = f"{at.hour % 12 or 12}:{at.minute:02d} {'AM' if at.hour < 12 else 'PM'}"
-    name = f"Take it back: your request from {time} on Wednesday, August 19"
+    name = f"Take it back: your request from {asked_on(asked)}"
 
-    assert evening == PLAN_DATE
+    assert date.fromisoformat(asked["evening"]) == PLAN_DATE
     assert [heard for shown, heard in control_names(page) if shown == "Take it back"] == [name]
     assert f'aria-label="{name}">Take it back</button>' in page
+
+
+def test_the_family_pages_help_buttons_name_her_request_by_its_own_day_and_time() -> None:
+    """I can help and Mark resolved say their words, then the request they move, by the day
+    and time it was asked, never the evening's day beside the request's time."""
+    with browser() as client:
+        client.post("/student/help-requests", json={"note": "Synthetic question"})
+        asked = client.get("/parent/help-requests").json()[0]
+        page = client.get("/parent").text
+    when = asked_on(asked)
+
+    assert [
+        (shown, heard)
+        for shown, heard in control_names(page)
+        if shown in ("I can help", "Mark resolved")
+    ] == [
+        ("I can help", f"I can help with the request from {when}"),
+        ("Mark resolved", f"Mark resolved: request from {when}"),
+    ]
 
 
 LABELED = (

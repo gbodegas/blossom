@@ -527,6 +527,13 @@
       form carries an id of its own, so sending it twice asks once; a refused
       form comes back with her words and what went wrong beside them.
 
+      Each request is one group, the one the family page shows as well
+      (``help_request.html``), with her controls after it: Take it back while
+      nobody has taken it up, and Ask again beside one closed in the last
+      seven days. Both lists show a request through that group alone, and
+      no list marker sits beside it, so the bar an arrival draws at its left
+      edge stays clear.
+
       Open requests and those resolved in the last seven days are the help
       updates; one resolved seven days ago or more moves to the fold below,
       where it stays until the store's two weeks are up. A line a sent form
@@ -541,7 +548,6 @@
       her ``#ask-for-help`` on the heading's words. The surface sets it apart
       from the homework, after the heading has.
     #}
-    {% set asker = "She" if parent else "You" %}
     <section class="panel help-panel" aria-labelledby="help">
       {% if viewer == "parent" %}
         <h2 id="help" tabindex="-1">Her help requests</h2>
@@ -586,22 +592,13 @@
             {% for ask in view.help_open + view.help_recent %}
               <li class="help-request" id="help-{{ ask.request_id }}" tabindex="-1">
                 {% if help_result and help_result.request_id == ask.request_id %}<p class="note update-result" role="status" id="help-result" tabindex="-1">{{ help_result.said }}</p>{% endif %}
-                <strong>{{ asker }} asked for help</strong> at {{ ask.asked_local|clock }}
-                on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
-                {% if ask.about_note %}{% with about = ask.about_note %}{% include "help_about_note.html" %}{% endwith %}{% endif %}
-                {% if ask.state == "requested" %}
-                  Waiting for a parent to respond.
-                  {% if viewer != "parent" %}
-                    <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
-                      <button type="submit" class="secondary" aria-label="Take it back: your request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it back</button>
-                    </form>
-                  {% endif %}
-                {% elif ask.state == "accepted" %}
-                  <strong>A parent is on it.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
-                {% else %}
-                  {% set closed = ask.resolved_local %}
-                  <strong>A parent closed this request on {{ closed.strftime("%A, %B") }} {{ closed.day }}{% if closed.year != view.today.year %}, {{ closed.year }}{% endif %}.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
-                  {% if viewer != "parent" %}<a class="ask-again" href="#ask-for-help">Ask again</a>{% endif %}
+                {% with hers = not parent, today = view.today %}{% include "help_request.html" %}{% endwith %}
+                {% if viewer != "parent" and ask.state == "requested" %}
+                  <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="help-actions">
+                    <button type="submit" class="secondary" aria-label="Take it back: your request from {{ ask.asked_local|spoken_day(view.today) }} at {{ ask.asked_local|clock }}">Take it back</button>
+                  </form>
+                {% elif viewer != "parent" and ask.state == "resolved" %}
+                  <p class="help-actions"><a class="ask-again" href="#ask-for-help">Ask again</a></p>
                 {% endif %}
               </li>
             {% endfor %}
@@ -618,11 +615,7 @@
             {% for ask in view.help_earlier %}
               <li class="help-request" id="help-{{ ask.request_id }}" tabindex="-1">
                 {% if help_result and help_result.request_id == ask.request_id %}<p class="note update-result" role="status" id="help-result" tabindex="-1">{{ help_result.said }}</p>{% endif %}
-                <strong>{{ asker }} asked for help</strong> at {{ ask.asked_local|clock }}
-                on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
-                {% if ask.about_note %}{% with about = ask.about_note %}{% include "help_about_note.html" %}{% endwith %}{% endif %}
-                {% set closed = ask.resolved_local %}
-                <strong>A parent closed this request on {{ closed.strftime("%A, %B") }} {{ closed.day }}{% if closed.year != view.today.year %}, {{ closed.year }}{% endif %}.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
+                {% with hers = not parent, today = view.today %}{% include "help_request.html" %}{% endwith %}
               </li>
             {% endfor %}
           </ul>

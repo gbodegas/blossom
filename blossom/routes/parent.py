@@ -125,8 +125,8 @@ from blossom.routes.runs import (
     tidy_later,
     tidy_thread,
 )
+from blossom.routes.student import help_view, notes_named_by
 from blossom.settings import CALENDAR_MARGIN
-from blossom.stores.captures import NamedCaptures
 from blossom.stores.drafts import (
     INTERRUPTED,
     STORE_WAIT_SECONDS,
@@ -158,7 +158,6 @@ from blossom.views import (
     DecisionView,
     HandInRowView,
     HandInView,
-    HelpNoteView,
     HelpRequestView,
     NamedAssignmentView,
     ParentCheckpointAssignmentView,
@@ -314,6 +313,16 @@ class FamilyKept:
     note: str = ""
     reply: str = ""
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class HelpReplyKept:
+    """A reply to her request that a refused press sends back to the family page as typed:
+    the request it was for, the words, and whether the words are what was refused."""
+
+    request_id: str
+    reply: str
+    at_reply: bool = False
 
 
 @dataclass(frozen=True)
@@ -741,53 +750,6 @@ class HelpStep(BaseModel):
     response: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
 
 
-def notes_named_by(state: ApplicationState, requests: list[HelpRequest]) -> NamedCaptures:
-    """The notes these requests are about, in one statement for all of them, and in none
-    when no request is about a note.
-
-    The notes are context for a request and never the answer itself, and an
-    accept or a resolve is already written when they are read. So a read of
-    them that fails is logged and answered as no notes read, which shows each
-    such note as unavailable, and never fails what it is context for.
-    """
-    try:
-        return state.project_state.captures_named(
-            request.capture_id for request in requests if request.capture_id
-        )
-    except Exception:
-        logger.exception("the homework notes her requests are about could not be read")
-        return NamedCaptures({}, [])
-
-
-def help_view(
-    state: ApplicationState, request: HelpRequest, named: NamedCaptures
-) -> HelpRequestView:
-    """The request as the parent sees it, which is exactly as she sees it, with the
-    homework note it is about, when it is about one, out of ``named``, the notes read for
-    the requests being shown."""
-    return HelpRequestView(
-        about_note=HelpNoteView.about(
-            request.capture_id,
-            named.notes,
-            unreadable_reference=request.capture_reference_unreadable,
-        ),
-        request_id=request.request_id,
-        evening=request.evening,
-        asked_at=request.asked_at,
-        asked_local=request.asked_at.astimezone(state.clock.zone),
-        note=request.note,
-        state=request.state,
-        accepted_at=request.accepted_at,
-        resolved_at=request.resolved_at,
-        resolved_local=(
-            None
-            if request.resolved_at is None
-            else request.resolved_at.astimezone(state.clock.zone)
-        ),
-        response=request.response,
-    )
-
-
 def move_request(
     state: ApplicationState, request_id: str, step: str, response: str | None
 ) -> HelpRequest:
@@ -863,6 +825,7 @@ def review_page(
     open_plan: str | None = None,
     problem_check: RunCheck | None = None,
     run_notice: RunNotice | None = None,
+    help_reply: HelpReplyKept | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to add assignments,
@@ -879,7 +842,9 @@ def review_page(
     ``open_plan`` is a plan a link came back to, whose folds are opened.
     ``problem_check`` links the problem to the run it names, and ``run_notice`` is what
     the page says about a planning run. A waiting plan no review could resume says so in
-    place of its two buttons, as the decision itself refuses it.
+    place of its two buttons, as the decision itself refuses it. ``help_reply`` is a
+    reply a refused press sent back, shown in its request's box while that request is
+    open on the page, and under the problem otherwise.
 
     The household day is read once, and today's working plan with it: the
     last draft published for today that no later one displaced. That one
@@ -968,6 +933,9 @@ def review_page(
             "reason_max_length": REASON_MAX_LENGTH,
             "help_open": [help_view(state, r, named) for r in asked if r.open],
             "help_resolved": [help_view(state, r, named) for r in asked if not r.open],
+            "help_reply": help_reply,
+            "help_reply_listed": help_reply is not None
+            and any(r.open and r.request_id == help_reply.request_id for r in asked),
             "homework_notes": notes.notes,
             "homework_notes_unreadable": notes.unreadable,
             "remains": what_remains(
@@ -1448,12 +1416,15 @@ def help_from_the_page(
 ) -> Response:
     """The two buttons under a request, through the same path the JSON routes take.
 
-    A take-up or a resolve the file refuses is rolled back and answered at once on the
-    family page's stand-in, 500, with the reply as typed: the family page has no place
-    for a reply it didn't keep. A refusal whose page can't be read keeps its status there,
-    with the reply.
+    The reply is read with one kind of line ending, as its box counts it, so a line break
+    is one character of the cap. A step the family page refuses is said at its top with
+    the reply as typed, in the request's own box while the request is open there and under
+    the problem otherwise. A take-up or a resolve the file refuses is rolled back and
+    answered at once on the family page's stand-in, which reads no store, 500, with the
+    reply as typed. A refusal whose page can't be read keeps its status there, with the
+    reply.
     """
-    words = response.strip()
+    words = normalize_note(response) or ""
     typed = FamilyKept(reply=response)
     if len(words) > NOTE_MAX_LENGTH:
         return refused_on_the_page(
@@ -1462,11 +1433,19 @@ def help_from_the_page(
             f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}.",
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             typed,
+            help_reply=HelpReplyKept(request_id, response, at_reply=True),
         )
     try:
         move_request(state, request_id, step, words or None)
     except HTTPException as error:
-        return refused_on_the_page(request, state, str(error.detail), error.status_code, typed)
+        return refused_on_the_page(
+            request,
+            state,
+            str(error.detail),
+            error.status_code,
+            typed,
+            help_reply=HelpReplyKept(request_id, response) if words else None,
+        )
     except sqlite3.Error as error:
         logger.warning(
             "a parent's move on her request could not be saved: %s", type(error).__name__
@@ -1574,14 +1553,21 @@ def refused_on_the_page(
     kept: FamilyKept | None = None,
     *,
     check: RunCheck | None = None,
+    help_reply: HelpReplyKept | None = None,
 ) -> HTMLResponse:
     """A form action the family page refused, said at its top with the status the JSON route
-    would answer, and ``check`` the link to the run it names, tried once."""
+    would answer, ``check`` the link to the run it names, and ``help_reply`` a reply to her
+    request as typed, tried once."""
     return reviewed_once(
         request,
         state,
         lambda: review_page(
-            request, state, problem=problem, problem_check=check, status_code=status_code
+            request,
+            state,
+            problem=problem,
+            problem_check=check,
+            help_reply=help_reply,
+            status_code=status_code,
         ),
         problem,
         status_code,

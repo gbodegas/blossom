@@ -669,9 +669,7 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
     assert rest.index("Canal Era comparison essay") < help_at
     assert 'action="/student/actions/ask-for-help"' in help_part
     assert "What would you like help with? (optional)" in help_part
-    assert help_part.index("Waiting for a parent to respond.") < help_part.index(
-        "the essay outline"
-    )
+    assert help_part.index("Waiting for a parent.") < help_part.index("the essay outline")
     assert "A parent closed this request on " in help_part
     assert "Planning uses the model provider." in panel
     assert 'href="#what-is-shared"' in panel
@@ -786,7 +784,7 @@ def test_refresh_is_a_link_on_both_pages_and_a_visit_marks_nothing() -> None:
     assert "Refresh to see updates. Save or send your note first." in hers
     assert '<a href="/parent?refreshed=1">Refresh requests</a>' in theirs
     assert state == "requested"
-    assert "Waiting for a parent to respond." in hers_after
+    assert "Waiting for a parent." in hers_after
 
 
 # --------------------------------------------------- the evening changing

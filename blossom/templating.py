@@ -8,7 +8,7 @@ from typing import Final
 from fastapi.templating import Jinja2Templates
 
 from blossom.agent.steps import step_label, step_sentence
-from blossom.clock import spoken_time
+from blossom.clock import spoken_day, spoken_time
 from blossom.plan_reading import long_date
 from blossom.plan_text import present_plan
 from blossom.routes.navigation import (
@@ -75,7 +75,8 @@ def ended(words: str) -> str:
 
 def page_templates() -> Jinja2Templates:
     """The packaged templates, with ``clock`` for times, ``long_date`` for a date with its
-    year, ``present`` for a saved plan's text, ``ended`` for typed words that close a
+    year, ``spoken_day`` for a day with its weekday, and its year when it is not today's,
+    ``present`` for a saved plan's text, ``ended`` for typed words that close a
     sentence, ``details_href`` for the address of an
     assignment's details, ``assignment_anchor`` for the id of an assignment's card or row,
     ``title_anchor`` for the id of its title on her week, where a link to it lands,
@@ -93,6 +94,7 @@ def page_templates() -> Jinja2Templates:
     reads them, and the test ``in_words`` for words a form carries as they are."""
     templates = Jinja2Templates(directory=TEMPLATE_PATH)
     templates.env.filters["clock"] = spoken_time
+    templates.env.filters["spoken_day"] = spoken_day
     templates.env.filters["ended"] = ended
     templates.env.filters["step_sentence"] = step_sentence
     templates.env.globals["step_label"] = step_label

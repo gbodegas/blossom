@@ -75,8 +75,8 @@ READERS: Final = ("her", "parent", "open")
 HELP_RESULT: Final = '<p class="note update-result" role="status" id="help-result" tabindex="-1">'
 NOTE_RESULT: Final = '<p class="note update-result" role="status" id="note-result" tabindex="-1">'
 HELP_LINES: Final = (SENT, ALREADY_SENT, NOT_ON_THIS_PAGE, CANNOT_CHECK)
-WAITING: Final = "Waiting for a parent to respond."
-TAKEN_UP: Final = "A parent is on it."
+WAITING: Final = "Waiting for a parent."
+TAKEN_UP: Final = "A parent is helping."
 CLOSED: Final = "A parent closed this request on "
 NOBODY: Final = "0" * 32
 """An id of the right shape that names no request."""
@@ -258,7 +258,7 @@ def test_a_parent_signing_in_over_her_page_after_she_asked_reads_no_line(
         assert lands_on(shown, where) == ""
         assert not [line for line in HELP_LINES if line in words(shown)]
         assert no_autofocus(page)
-    assert words(main_of(plain)).count("She asked for help") == 2
+    assert words(main_of(plain)).count("Student's request") == 2
     assert words(main_of(plain)).count(WAITING) == 2
 
 

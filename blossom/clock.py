@@ -67,6 +67,13 @@ def spoken_time(value: datetime | time) -> str:
     return f"{hour}:{value.minute:02d} {half}"
 
 
+def spoken_day(value: date, today: date) -> str:
+    """A day the way her pages say one: ``Wednesday, August 19``, with its year only when it
+    is not the year of ``today``. A moment says the day it falls on where it is given."""
+    year = "" if value.year == today.year else f", {value.year}"
+    return f"{value:%A, %B} {value.day}{year}"
+
+
 def is_aware(value: datetime) -> bool:
     """True when ``value`` names a fixed instant.
 

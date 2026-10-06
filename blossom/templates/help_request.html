@@ -1,0 +1,33 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#
+  One request for help as her week and the family page both show it, a part
+  to a line: where it stands, her words under a label for whoever reads the
+  page, when she asked, by the request's own day and time in the household's
+  zone, the evening it was asked for when that is another day, the homework
+  note it is about, and a parent's reply under a label of its own. The state
+  says what a parent did and nothing of how it turned out, and no line names
+  a parent or says who read what. The reply carries no time: the record keeps
+  when the request was taken up and closed, not when its reply was written.
+  ``ask`` is the request, ``hers`` whether the page is read as hers, and
+  ``today`` the household's day, beside which a date says its year. Each page
+  puts its own controls after this.
+#}
+<p class="help-state"><strong>{% if ask.state == "requested" %}Waiting for a parent.{% elif ask.state == "accepted" %}A parent is helping.{% else %}A parent closed this request on {{ ask.resolved_local|spoken_day(today) }}.{% endif %}</strong></p>
+<p class="help-label">{% if hers %}Your request{% else %}Student's request{% endif %}</p>
+{% if ask.note %}
+<p class="help-words"><q class="authored-text">{{ ask.note }}</q></p>
+{% else %}
+<p class="help-words note">No words with it.</p>
+{% endif %}
+<p class="help-when">Requested: {{ ask.asked_local|spoken_day(today) }} at {{ ask.asked_local|clock }}</p>
+{% if ask.evening != ask.asked_local.date() %}
+<p class="help-when">For {{ ask.evening|spoken_day(today) }}</p>
+{% endif %}
+{% if ask.about_note %}
+<p class="help-about">{% with about = ask.about_note, viewer = "student" if hers else "parent" %}{% include "help_about_note.html" %}{% endwith %}</p>
+{% endif %}
+{% if ask.response %}
+<p class="help-label">Parent reply</p>
+<p class="help-words"><q class="authored-text">{{ ask.response }}</q></p>
+{% endif %}

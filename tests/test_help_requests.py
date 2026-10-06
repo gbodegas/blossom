@@ -31,8 +31,10 @@ from tests.support import (
     THEIRS,
     ZONE,
     Answer,
+    as_a_browser_sends,
     fixture_clock,
     fixture_settings,
+    help_reply,
     signed_in_household,
     whole_form,
 )
@@ -41,7 +43,9 @@ PAGE = "/student/due-this-week"
 ASK = "/student/actions/ask-for-help"
 FORM_TYPE = "application/x-www-form-urlencoded"
 CLOSED_ON = r"<strong>A parent closed this request on \w+day, \w+ \d+(, \d{4})?\.</strong>"
-"""A closure's words on her page. The store stamps it by the real clock, so its day varies."""
+"""A closure's words on both pages. The store stamps it by the real clock, so its day varies."""
+WAITING = "<strong>Waiting for a parent.</strong>"
+HELPING = "<strong>A parent is helping.</strong>"
 
 
 def store_in_memory(clock: FrozenClock | None = None) -> HelpRequestsStore:
@@ -208,12 +212,14 @@ def test_a_parent_takes_it_up_and_resolves_it_and_she_sees_each_step() -> None:
         after = client.get(PAGE).text
         again = client.post(f"/parent/help-requests/{request_id}/resolve")
 
-    assert "Waiting for a parent to respond." in not_seen
+    assert WAITING in not_seen
     assert taken_up.status_code == 200
     assert taken_up.json()["state"] == "accepted"
-    assert "<strong>A parent is on it.</strong> They said: <q>coming</q>" in on_it
+    assert HELPING in on_it
+    assert help_reply(on_it) == "coming"
     assert resolved.json()["state"] == "resolved"
-    assert re.search(CLOSED_ON + r" They said: <q>all sorted</q>", after)
+    assert re.search(CLOSED_ON, after)
+    assert help_reply(after) == "all sorted"
     assert '<a href="#help-updates">Help updates (1)</a>' in after
     assert again.status_code == 409
 
@@ -283,6 +289,99 @@ def test_a_parents_word_back_is_capped_on_the_form_too() -> None:
     assert at_cap.status_code == 303
 
 
+TYPED_REPLY = "Synthetic reply: page 12 has <the steps> & the answers"
+KEPT_UNDER_THE_PROBLEM = '<label for="kept-reply">Reply, as typed</label>'
+
+
+@pytest.mark.parametrize(
+    ("case", "status_code"),
+    [
+        ("a reply too long", 422),
+        ("a step no page sends", 422),
+        ("a request closed meanwhile", 409),
+        ("no such request", 404),
+    ],
+)
+def test_a_refused_reply_comes_back_with_the_family_page(case: str, status_code: int) -> None:
+    """A take-up or a close the family page refuses writes nothing and keeps the reply as
+    typed: in its own field while the request is still open there, marked and focused when
+    the reply is what was refused; and under the problem when the request is closed or gone,
+    to copy."""
+    typed = TYPED_REPLY + " x" * 250 if case == "a reply too long" else TYPED_REPLY
+    with browser() as client:
+        request_id = client.post("/student/help-requests").json()["request"]["request_id"]
+        client.post(f"/parent/help-requests/{request_id}/accept", json={"response": "Synthetic"})
+        if case == "a request closed meanwhile":
+            client.post(f"/parent/help-requests/{request_id}/resolve")
+        named = "0" * 32 if case == "no such request" else request_id
+        step = "sideways" if case == "a step no page sends" else "resolve"
+        before = requests_held(client)
+        answer = client.post(
+            f"/parent/actions/help/{named}", data={"step": step, "response": typed}
+        )
+        after = requests_held(client)
+
+    page = answer.text
+    field = re.search(rf'<textarea id="reply-{request_id}"[^>]*>(.*?)</textarea>', page, re.S)
+    problem = re.search(r'<p class="problem" role="alert" id="problem">(.*?)</p>', page, re.S)
+    assert answer.status_code == status_code
+    assert after == before
+    assert "<h1>Family review</h1>" in page
+    assert problem is not None
+    assert page.count(str(escape(typed))) == 1
+    if case in ("a reply too long", "a step no page sends"):
+        assert field is not None
+        assert field.group(1) == str(escape(typed))
+        assert KEPT_UNDER_THE_PROBLEM not in page
+        opening = field.group(0).split(">", 1)[0]
+        refused_words = case == "a reply too long"
+        assert ('aria-invalid="true"' in opening) is refused_words
+        assert (" autofocus" in opening) is refused_words
+        assert ('aria-describedby="problem' in opening) is refused_words
+        go = f'<a href="#reply-{request_id}">Go to the field.</a>'
+        assert problem.group(1).endswith(go) is refused_words
+    else:
+        assert (field is None) is (case == "a request closed meanwhile")
+        assert field is None or field.group(1) == ""
+        assert problem.group(1) == str(escape(answer_detail(case, named)))
+        kept = page.split(problem.group(0), 1)[1]
+        assert kept.lstrip().startswith(KEPT_UNDER_THE_PROBLEM)
+        assert f'<textarea id="kept-reply" rows="3" readonly>{escape(typed)}</textarea>' in kept
+
+
+def answer_detail(case: str, named: str) -> str:
+    """What the JSON route answers for a refused step, which the family page says as it is."""
+    if case == "no such request":
+        return f"no help request {named!r}"
+    return f"request {named!r} is resolved, so it cannot be resolved again"
+
+
+def test_a_reply_counts_a_line_break_once_as_the_field_does() -> None:
+    """A browser sends each line break of a reply as two characters; the field and the cap
+    count it as one, and the reply is kept with one kind of line ending."""
+    at_cap = "w" * 249 + "\n" + "w" * 250
+    over = "w" * 250 + "\n" + "w" * 250
+    with browser() as client:
+        first = client.post("/student/help-requests").json()["request"]["request_id"]
+        second = client.post("/student/help-requests").json()["request"]["request_id"]
+        kept = client.post(
+            f"/parent/actions/help/{first}",
+            data=as_a_browser_sends({"step": "accept", "response": at_cap}),
+        )
+        refused = client.post(
+            f"/parent/actions/help/{second}",
+            data=as_a_browser_sends({"step": "accept", "response": over}),
+        )
+        listed = {item["request_id"]: item for item in client.get(HELP_JSON).json()}
+
+    assert kept.status_code == 303
+    assert listed[first]["response"] == at_cap
+    assert refused.status_code == 422
+    assert f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is 501." in refused.text
+    assert listed[second]["state"] == "requested"
+    assert listed[second]["response"] is None
+
+
 # --------------------------------------------------------------- the pages
 
 
@@ -295,19 +394,20 @@ def test_her_page_offers_the_press_and_then_lists_the_request_with_a_way_back() 
         taken_back = client.post(f"/student/actions/take-back-help/{request_id}")
         again = client.get(PAGE).text
 
+    yours = '<p class="help-label">Your request</p>'
     assert 'action="/student/actions/ask-for-help"' in before
-    assert "You asked for help" not in before
+    assert yours not in before
     assert asked.status_code == 303
     assert asked.headers["location"] == f"{PAGE}?asked={request_id}#help-result"
-    assert "<strong>You asked for help</strong>" in after
-    assert "<q>the outline</q>" in after
-    assert "Waiting for a parent to respond." in after
+    assert yours in after
+    assert '<q class="authored-text">the outline</q>' in after
+    assert WAITING in after
     assert f'action="/student/actions/take-back-help/{request_id}"' in after
     assert 'aria-label="Take it back: your request from ' in after
     assert ">Take it back</button>" in after
     assert 'aria-label="Take back' not in after
     assert taken_back.status_code == 303
-    assert "You asked for help" not in again
+    assert yours not in again
 
 
 def test_the_parents_page_lists_what_is_open_and_moves_it_with_two_buttons() -> None:
@@ -325,21 +425,28 @@ def test_the_parents_page_lists_what_is_open_and_moves_it_with_two_buttons() -> 
         after = client.get("/parent").text
         hers = client.get(PAGE).text
 
+    def help_of(page: str) -> str:
+        return page.split('<section id="help-she-asked-for"', 1)[1].split("</section>", 1)[0]
+
     assert "<h2>Help she asked for</h2>" in listed
-    assert "She said: <q>the outline</q>" in listed
-    assert "Not taken up yet. Her page says it is waiting for a parent to respond." in listed
+    assert '<p class="help-label">Student\'s request</p>' in help_of(listed)
+    assert '<q class="authored-text">the outline</q>' in help_of(listed)
+    assert WAITING in help_of(listed)
+    assert "Her page says" not in listed
     assert 'value="accept"' in listed
     assert taken_up.status_code == 303
-    assert (
-        "<strong>Taken up.</strong> Her page says a parent is on it. "
-        "Reply so far: <q>coming</q>" in on_it
-    )
+    assert HELPING in help_of(on_it)
+    assert help_reply(help_of(on_it)) == "coming"
+    assert "Reply so far" not in on_it
     assert 'value="accept"' not in on_it
     assert resolved.status_code == 303
     assert "No open help requests." in after
-    assert "Resolved in the last two weeks" in after
-    assert "Resolved with <q>sorted</q>" in after
-    assert re.search(CLOSED_ON + r" They said: <q>sorted</q>", hers)
+    assert "<summary>Closed in the last two weeks</summary>" in help_of(after)
+    assert re.search(CLOSED_ON, help_of(after))
+    assert help_reply(help_of(after)) == "sorted"
+    assert "Resolved" not in help_of(after)
+    assert re.search(CLOSED_ON, hers)
+    assert help_reply(hers) == "sorted"
 
 
 def test_taking_back_a_request_that_is_not_there_is_said_on_her_page() -> None:
@@ -427,7 +534,7 @@ def test_a_parent_can_not_ask_or_take_back_in_her_name(tmp_path: pathlib.Path) -
     assert after == before
     assert f'action="{ASK}"' not in page
     assert "/student/actions/take-back-help/" not in page
-    assert "<q>hers</q>" in page
+    assert '<q class="authored-text">hers</q>' in page
     assert 'href="/parent#help-she-asked-for"' in page
 
 
@@ -691,7 +798,7 @@ def test_the_same_form_after_a_parent_took_it_up_shows_it_as_it_stands() -> None
     assert again.status_code == 303
     assert after == before
     assert ALREADY_SENT in landed
-    assert "A parent is on it." in landed
+    assert HELPING in landed
 
 
 def test_the_same_form_with_other_words_is_refused_and_keeps_them() -> None:
