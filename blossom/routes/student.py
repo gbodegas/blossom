@@ -63,6 +63,7 @@ from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 from functools import partial
 from typing import Annotated, Any, ClassVar, Final, Literal, cast
+from zoneinfo import ZoneInfo
 
 from fastapi import (
     APIRouter,
@@ -1081,6 +1082,13 @@ def todays_plan_read(
     return read_a_plan(state, record, reader=reader, current=True, today=today)
 
 
+def planned_minutes(read: PlanRead, zone: ZoneInfo) -> int | None:
+    """The minutes a plan's blocks ask for as saved, measured on its evening as the plan check
+    measured them; ``None`` for a plan kept as text alone."""
+    saved = read.reading.saved_plan
+    return None if saved is None else saved.total_minutes(zone, on=read.view.plan_date)
+
+
 def todays_plan(state: ApplicationState) -> StudentPlanView | None:
     """Today's latest plan, or ``None`` when none has been made."""
     found = todays_plan_read(state, today=state.clock.today())
@@ -1370,7 +1378,7 @@ def build_student_due_this_week_view(
     *,
     viewer: str = "anyone",
     focus: str | None = None,
-    plan: StudentPlanView | None | Unread = UNREAD,
+    plan: PlanRead | None | Unread = UNREAD,
     today: date | None = None,
     everything: Everything | None = None,
     groups: HelpGroups | None | Unread = UNREAD,
@@ -1468,6 +1476,15 @@ def build_student_due_this_week_view(
     def help_views(requests: list[HelpRequest]) -> list[HelpRequestView]:
         return [help_view(state, request, named) for request in requests]
 
+    # The saved plan against the limit set now, which need not be the one it was made under:
+    # a shorter plan whose blocks fit uses it, one over it calls for a smaller plan, and one
+    # kept as text alone, which can't be measured, is said to do neither.
+    saved = todays_plan_read(state, today=today) if isinstance(plan, Unread) else plan
+    budget = household.too_much_minutes if tonight else household.evening_minutes
+    shorter = bool(tonight) and saved is not None and saved.view.too_much
+    measured = None if saved is None else planned_minutes(saved, state.clock.zone)
+    fits = shorter and measured is not None and measured <= budget
+    over = shorter and measured is not None and measured > budget
     return StudentDueThisWeekView(
         generated_at=datetime.now(UTC),
         today=today,
@@ -1476,12 +1493,14 @@ def build_student_due_this_week_view(
         assigned_this_week=[beside_view(item) for item in later],
         plan_horizon_end=today + DUE_THIS_WEEK_SPAN,
         full_budget_minutes=household.evening_minutes,
-        budget_minutes=household.too_much_minutes if tonight else household.evening_minutes,
-        plan=todays_plan(state) if isinstance(plan, Unread) else plan,
+        budget_minutes=budget,
+        plan=None if saved is None else saved.view,
         to_turn_in=still_to_turn_in.rows,
         to_turn_in_unreadable=still_to_turn_in.unreadable,
         can_plan=model_configured(state.settings),
         too_much=signal_view(state, tonight[-1]) if tonight else None,
+        plan_uses_limit=fits,
+        smaller_wanted=bool(tonight) and (not shorter or over),
         signals=[signal_view(state, signal) for signal in state.workload_signals.held()],
         help_open=[] if groups is None else help_views(groups.open),
         help_recent=[] if groups is None else help_views(groups.recent),
@@ -2026,7 +2045,7 @@ def student_page(
         week,
         viewer=viewer,
         focus=None if card is None else card.assignment_id,
-        plan=None if todays is None else todays.view,
+        plan=todays,
         today=today,
         everything=everything,
         groups=groups,

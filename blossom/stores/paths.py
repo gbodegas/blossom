@@ -173,24 +173,29 @@ def lock_path_for(state_path: Path) -> Path:
 
 def state_files(database: Path, checkpoint: Path, trace: Path) -> list[Path]:
     """Every file a start opens in a state folder: the three databases with their SQLite
-    files, the two locks the claim holds, and the sign-in secret."""
+    files, the two locks the claim holds, and the sign-in secret.
+
+    A lock is named as ``lock_path_for`` names it, but through ``os.path.realpath``, which
+    stops at a link loop where ``Path.resolve`` raises, so a loop meets the same checks as
+    any other link instead of ending them with an error of its own.
+    """
     files = [
         path.with_name(path.name + suffix)
         for path in (database, checkpoint, trace)
         for suffix in ("", *SQLITE_SIDECARS)
     ]
-    files += [lock_path_for(database), lock_path_for(checkpoint), database.with_name(SECRET_NAME)]
+    files += [Path(os.path.realpath(path)).with_suffix(".lock") for path in (database, checkpoint)]
+    files.append(database.with_name(SECRET_NAME))
     return list(dict.fromkeys(files))
 
 
 def holds_a_marker(folder: Path) -> bool:
     """Whether ``folder`` holds ``TEST-COPY`` in any case, for a file system that tells case
-    apart. A folder that isn't there holds nothing."""
-    try:
-        names = os.listdir(folder)
-    except (FileNotFoundError, NotADirectoryError):
+    apart. A folder that isn't there, or a link that leads back to itself, holds nothing; one
+    that is there but can't be listed raises, so it is never taken for unmarked."""
+    if not folder.is_dir():
         return False
-    return any(name.casefold() == TEST_COPY_MARKER.casefold() for name in names)
+    return any(name.casefold() == TEST_COPY_MARKER.casefold() for name in os.listdir(folder))
 
 
 def not_plain(path: Path) -> str | None:

@@ -8,9 +8,13 @@ hold the store, the graph, the routes, and the page to that.
 """
 
 import asyncio
+import pathlib
 import re
 import sqlite3
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import date, time, timedelta
 from time import monotonic
 from typing import Any
@@ -45,11 +49,14 @@ from blossom.stores.workload_signals import (
 from blossom.views import StudentDueThisWeekView, WeekView, WorkloadSignalView
 from tests.support import (
     FIXTURE_TIMEZONE,
+    HERS,
     OBSERVED_AT,
     PLAN_DATE,
     SAME_ORIGIN,
+    THEIRS,
     Scripted,
     accepting,
+    changed_by_hand,
     drafts_in_memory,
     fixture_clock,
     fixture_settings,
@@ -62,6 +69,8 @@ from tests.support import (
     refusing,
     scripted_graphs,
     signals_in_memory,
+    signed_in,
+    signed_in_household,
 )
 
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
@@ -866,3 +875,148 @@ def test_each_remove_button_says_which_signal_it_removes() -> None:
         assert signal.evening.strftime("%B") in label
         assert str(signal.evening.day) in label
         assert spoken_time(signal.given_local) in label
+
+
+# --------------------------------------------- a saved plan against the limit set now
+
+
+@contextmanager
+def started(
+    folder: pathlib.Path, minutes: int, planners: list[Scripted[DailyPlan]] | None = None
+) -> Iterator[TestClient]:
+    """Her household on the files under ``folder``, its Too much limit set to ``minutes``, her
+    signed in. A later start on the same files reads the limit as set at that start."""
+    settings = replace(
+        signed_in_household(folder),
+        anthropic_api_key="not-a-key-and-never-sent",
+        too_much_minutes=minutes,
+    )
+    app = create_app(settings)
+    app.dependency_overrides[plan_graphs] = scripted_graphs(
+        lambda: [light_fixture_plan()], lambda: [accepting()], planners=planners
+    )
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        signed_in(client, HERS)
+        yield client
+
+
+def as_a_parent(client: TestClient) -> str:
+    """Today's panel of her week as a parent signed in on this client reads it."""
+    client.post("/sign-out")
+    signed_in(client, THEIRS)
+    return today_of(client.get(PAGE).text)
+
+
+def a_shorter_plan_saved(folder: pathlib.Path, *, presses: int = 1) -> object:
+    """Too much pressed ``presses`` times, then a plan made under the usual 75 minutes: one
+    block, 60 minutes long. The plan as saved."""
+    with started(folder, DEFAULT_TOO_MUCH_MINUTES) as client:
+        for _ in range(presses):
+            client.post("/student/actions/too-much")
+        client.post("/student/actions/plan")
+        return todays_draft(client)
+
+
+@pytest.mark.parametrize(
+    ("now", "fits"),
+    [
+        pytest.param(40, False, id="lowered to 40"),
+        pytest.param(75, True, id="kept at 75"),
+        pytest.param(100, True, id="raised to 100"),
+    ],
+)
+def test_a_saved_plan_is_said_to_use_the_limit_only_when_its_blocks_fit_the_limit_set_now(
+    now: int, fits: bool, tmp_path: pathlib.Path
+) -> None:
+    """Read after a start with the limit set to ``now``: her line, her plan button and a
+    parent's sentence say the saved plan uses the limit only when its blocks fit it. The
+    plan keeps its own words, and nothing is planned."""
+    saved = a_shorter_plan_saved(tmp_path)
+    planners: list[Scripted[DailyPlan]] = []
+    with started(tmp_path, now, planners) as client:
+        hers = today_of(client.get(PAGE).text)
+        theirs = as_a_parent(client)
+        kept = todays_draft(client)
+
+    state = STATE.search(hers)
+    assert state is not None
+    if fits:
+        assert said(state.group(2)) == (
+            f"{REQUESTED} Your saved plan already uses the {now}-minute limit."
+        )
+        assert "Plan again</button>" in hers
+        assert f"This plan already uses the smaller budget, {now} minutes." in said(theirs)
+    else:
+        assert said(state.group(2)) == f"{REQUESTED} Your next plan will use up to {now} minutes."
+        assert "Make a smaller plan</button>" in hers
+        assert "already uses" not in theirs
+        assert f"held to {now} minutes instead of {DEFAULT_EVENING_MINUTES}." in said(theirs)
+    assert ("Make a smaller plan" in hers) is not fits
+    assert "kept to 75 minutes" in hers
+    assert kept == saved
+    assert asked(planners) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("now", "fits"), [pytest.param(40, False, id="lowered"), pytest.param(75, True, id="kept")]
+)
+def test_an_undo_that_leaves_a_request_measures_the_saved_plan_against_the_limit_set_now(
+    now: int, fits: bool, tmp_path: pathlib.Path
+) -> None:
+    a_shorter_plan_saved(tmp_path, presses=2)
+    with started(tmp_path, now) as client:
+        landing = today_of(undo(client, tonight(client)[-1]))
+
+    state = STATE.search(landing)
+    assert state is not None
+    plan = (
+        f"Your saved plan already uses the {now}-minute limit."
+        if fits
+        else f"Your next plan will use up to {now} minutes."
+    )
+    assert said(state.group(2)) == f"{REMOVED} {STILL} {plan}"
+    assert ("Make a smaller plan</button>" in landing) is not fits
+
+
+def test_a_saved_plan_whose_blocks_cant_be_read_is_said_neither_to_fit_nor_to_be_over(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Saved as text alone, its blocks can't be measured: her line says what her next plan
+    will use, the button offers a plan again, and a parent reads no claim about the limit."""
+    a_shorter_plan_saved(tmp_path)
+    with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
+        state_now: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        changed_by_hand(state_now.drafts, "UPDATE drafts SET plan_snapshot = NULL")
+        hers = today_of(client.get(PAGE).text)
+        theirs = as_a_parent(client)
+
+    state = STATE.search(hers)
+    assert state is not None
+    assert said(state.group(2)) == f"{REQUESTED} {NEXT_PLAN}"
+    assert "Plan again</button>" in hers
+    assert "Make a smaller plan" not in hers
+    assert "already uses" not in theirs
+
+
+@pytest.mark.parametrize(
+    ("now", "label"),
+    [
+        pytest.param(40, "Make a smaller plan", id="lowered"),
+        pytest.param(75, "Plan again", id="kept"),
+    ],
+)
+def test_a_saved_plan_read_as_changed_offers_what_the_limit_set_now_calls_for(
+    now: int, label: str, tmp_path: pathlib.Path
+) -> None:
+    """The work it was made from reads differently now, so the plan's notice leads with what
+    the plan button offers, which follows the limit set now."""
+    a_shorter_plan_saved(tmp_path)
+    with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
+        state_now: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        changed_by_hand(state_now.drafts, "UPDATE drafts SET inputs_digest = ?", ("0" * 32,))
+    with started(tmp_path, now) as client:
+        hers = today_of(client.get(PAGE).text)
+        theirs = as_a_parent(client)
+
+    assert f"<strong>{label}.</strong>" in hers
+    assert "already uses" not in theirs

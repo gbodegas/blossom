@@ -704,6 +704,15 @@ class StudentDueThisWeekView(BaseModel):
     """The assignments whose hand-in record cannot be read, named under the list."""
     can_plan: bool = False
     too_much: WorkloadSignalView | None = None
+    plan_uses_limit: bool = False
+    """Whether the saved plan can be said to use ``budget_minutes`` already: her request
+    stands, the plan was made after it, and its blocks as saved fit the minutes set now. A
+    plan saved under a larger limit, or kept as text alone, is not."""
+    smaller_wanted: bool = False
+    """Whether the plan button offers a smaller plan: her request stands, and there is no
+    saved plan, a plan for the full evening, or a shorter one whose blocks are over the
+    minutes set now. A shorter plan kept as text alone can't be measured, so it is offered
+    again rather than made smaller."""
     signals: list[WorkloadSignalView] = []
     help_open: list[HelpRequestView] = []
     """Her requests for help still open, oldest first, so she sees each step a parent takes."""

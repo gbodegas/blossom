@@ -413,6 +413,8 @@ def a_junction(copy: Path, name: str) -> None:
     [
         pytest.param(a_dangling_link, "traces.sqlite3", id="dangling link"),
         pytest.param(a_loop, "traces.sqlite3", id="link loop"),
+        pytest.param(a_loop, "blossom.sqlite3", id="link loop at the database"),
+        pytest.param(a_loop, "checkpoints.sqlite3", id="link loop at the saved state"),
         pytest.param(a_folder, "traces.sqlite3", id="folder"),
         pytest.param(a_junction, "checkpoints.sqlite3-shm", id="junction"),
     ],
@@ -458,6 +460,11 @@ def linked_folder(household: Path, copy: Path) -> Path:
     return folder
 
 
+def looped_database(household: Path, copy: Path) -> Path:
+    a_loop(copy, "blossom.sqlite3")
+    return copy
+
+
 def marked_in_lower_case(household: Path, copy: Path) -> Path:
     (household / TEST_COPY_MARKER.lower()).write_text("", encoding="utf-8")
     return household
@@ -469,6 +476,7 @@ def marked_in_lower_case(household: Path, copy: Path) -> Path:
         pytest.param(linked_database, id="database linked into a marked folder"),
         pytest.param(linked_log, id="write-ahead log linked into a marked folder"),
         pytest.param(linked_folder, id="folder linked to a marked one"),
+        pytest.param(looped_database, id="database a link loop in a marked folder"),
         pytest.param(marked_in_lower_case, id="marker in lower case"),
     ],
 )
@@ -486,3 +494,32 @@ def test_without_the_flag_a_marked_folder_however_reached_is_refused(
         tmp_path,
         match="set BLOSSOM_TEST_COPY=1",
     )
+
+
+def the_three_in(folder: Path) -> list[Path]:
+    """The three state paths in ``folder``, without making or reading it."""
+    return [folder / name for name in ("blossom.sqlite3", "checkpoints.sqlite3", "traces.sqlite3")]
+
+
+@pytest.mark.parametrize("name", ["blossom.sqlite3", "checkpoints.sqlite3"])
+def test_without_the_flag_a_link_loop_in_an_unmarked_folder_passes_the_check(
+    name: str, tmp_path: Path
+) -> None:
+    """Nothing there is marked, so the loop is no test copy's, and the check has nothing to say."""
+    a_loop(tmp_path, name)
+
+    refuse_mismarked_state(*the_three_in(tmp_path), test_copy=False)
+
+
+def test_a_folder_that_leads_back_to_itself_holds_no_marker(tmp_path: Path) -> None:
+    """Refused as unmarked with the flag on, and nothing to refuse with it off."""
+    folder = tmp_path / "one"
+    try:
+        folder.symlink_to(tmp_path / "two", target_is_directory=True)
+        (tmp_path / "two").symlink_to(folder, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"no symbolic link can be made here: {error}")
+
+    with pytest.raises(CopyMarkError, match="holds no TEST-COPY file"):
+        refuse_mismarked_state(*the_three_in(folder), test_copy=True)
+    refuse_mismarked_state(*the_three_in(folder), test_copy=False)
