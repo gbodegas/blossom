@@ -1120,6 +1120,8 @@ UNDONE_STILL_DONE = "Last update undone. This is still Done."
 UNDONE_DONE_AGAIN = "Last update undone. This is Done again."
 """What Undo last update says where it lands, by what it restored: no update, a Not yet, the
 Done a note edit was made on, or a Done that a Not yet was saved over."""
+NOTHING_TO_PLAN = "<strong>Nothing to plan right now.</strong>"
+"""How Today begins on her week when nothing in today's planning window is left to plan."""
 ARRIVAL_CUE = (
     "outline: 3px solid transparent; outline-offset: 4px; "
     "background-color: var(--arrival-tint); "
@@ -1526,15 +1528,16 @@ def to_details(assignment_id: str) -> str:
 
 
 def plan_on(page: str, record: DraftRecord) -> str:
-    """One plan's container on a page, whole: from its anchor to the end of its original
-    text fold, or to the end of its text reading."""
+    """One plan's container on a page, whole: from its anchor to the end of its own element,
+    whichever reading it holds, and nothing the page shows after it."""
     start = page.index(f'id="{anchor_for(record.draft_id)}"')
-    ends = [
-        found
-        for found in (page.find(mark, start) for mark in ("</pre>", "</section>", "</article>"))
-        if found >= 0
-    ]
-    return page[start : min(ends)] if ends else page[start:]
+    depth = 1
+    for tag in re.finditer(r"<div\b|</div>", page[start:]):
+        depth += 1 if tag.group() == "<div" else -1
+        if depth == 0:
+            return page[start : start + tag.end()]
+    msg = f"the container of {record.draft_id} never ends"
+    raise AssertionError(msg)
 
 
 NOTE_AT = datetime(2026, 9, 14, 21, 0, tzinfo=UTC)

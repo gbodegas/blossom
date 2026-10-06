@@ -165,6 +165,8 @@ def test_her_week_keeps_todays_plan_as_saved_when_a_later_read_fails(
     plan = plan_on(today, made)
     assert plan.count(DATES_UNREAD) == 1
     assert HISTORY in plan
+    assert made.outcome == "accepted"
+    assert '<details class="steps plan-review">' in plan, "folded for an accepted plan"
     assert "Recorded due August 21, 2026. <strong>Check this date.</strong>" in plan
     assert f'href="/student/assignments/{ESSAY_ID}?return_to=today#evidence"' in plan
     assert "A parent has not reviewed it yet." in today
@@ -430,6 +432,8 @@ def test_the_family_page_keeps_every_plan_in_force_as_saved_when_a_later_read_fa
         article = main[main.rindex("<article", 0, at) : main.index("</article>", at)]
         assert f"<strong>{words_said}</strong>" in article, where
         assert plan_on(article, plan).count(DATES_UNREAD) == 1
+        assert plan.outcome == "accepted"
+        assert '<details class="steps plan-review">' in plan_on(article, plan), words_said
         assert "Recorded due" in article
         back = f"?return_to=family&amp;plan_id={quote(plan.draft_id, safe='')}"
         assert f'href="/student/assignments/{ESSAY_ID}{back}#evidence"' in article

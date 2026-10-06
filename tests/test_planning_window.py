@@ -29,6 +29,7 @@ from tests.support import (
     HER_PAGE,
     HERS,
     KEY,
+    NOTHING_TO_PLAN,
     PAGE_HEADERS,
     SAME_ORIGIN,
     THEIRS,
@@ -93,6 +94,8 @@ def poster(client: TestClient) -> str:
 
 @pytest.mark.parametrize("finished", [False, True], ids=["work to plan", "nothing to plan"])
 def test_this_week_names_the_window_once_under_todays_controls(finished: bool) -> None:
+    """Under the plan button and before the links to what is left, while there is work to
+    plan; with nothing left to plan, last, under the links and the quieter place for help."""
     with browser() as client:
         if finished:
             for item in state_of(client).project_state.all_assignments():
@@ -101,9 +104,15 @@ def test_this_week_names_the_window_once_under_todays_controls(finished: bool) -
     today = page[page.index('id="today"') : page.index("</section>", page.index('id="today"'))]
 
     assert page.count(WINDOW) == 1
-    assert today.index('<div class="actions">') < today.index(WINDOW)
-    assert today.index(WINDOW) < today.index('class="support-links"')
-    assert ("Nothing to schedule from the work in this planning window." in today) is finished
+    assert (NOTHING_TO_PLAN in today) is finished
+    if finished:
+        assert today.index(NOTHING_TO_PLAN) < today.index('class="support-links"')
+        assert today.index('class="support-links"') < today.index('<div class="actions">')
+        assert today.index('<div class="actions">') < today.index(WINDOW)
+        assert f'<p class="note planning-window">{WINDOW}</p>' in today
+    else:
+        assert today.index('<div class="actions">') < today.index(WINDOW)
+        assert today.index(WINDOW) < today.index('class="support-links"')
 
 
 @pytest.mark.parametrize("week", ["2026-08-10", "2026-08-24", "2026-09-07"])

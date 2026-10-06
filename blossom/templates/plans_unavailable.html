@@ -28,7 +28,7 @@
         <h2>Today's plan</h2>
         {% for draft, reading in plans %}
           {{ decided(draft) }}
-          {% with review_open = false %}{% include "plan_reading.html" %}{% endwith %}
+          {% include "plan_reading.html" %}
         {% endfor %}
       </section>
     {% else %}
@@ -38,7 +38,7 @@
           <article class="draft">
             <h3>{{ draft.plan_date.strftime("%A, %B") }} {{ draft.plan_date.day }}, {{ draft.plan_date.year }}</h3>
             {{ decided(draft) }}
-            {% with review_open = true, plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
+            {% with plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
           </article>
         {% endfor %}
       </section>

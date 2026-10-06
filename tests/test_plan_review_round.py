@@ -380,8 +380,7 @@ def test_a_snapshot_that_is_not_whole_falls_back_to_the_saved_text_on_both_pages
     assert (
         "No due date on record" not in hers.text[hers.text.index(anchor_for(bad.draft_id)) :][:4000]
     )
-    earlier = family.text[family.text.index(f'id="{anchor_for(good.draft_id)}"') :]
-    assert '<ol class="plan-rows">' in earlier[: earlier.index("</pre>")]
+    assert '<ol class="plan-rows">' in plan_on(family.text, good)
     assert after == before
 
 

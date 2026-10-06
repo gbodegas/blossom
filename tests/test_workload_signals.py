@@ -30,7 +30,11 @@ from blossom.plan_checks import PlanCheck
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import templates
-from blossom.settings import DEFAULT_EVENING_MINUTES, DEFAULT_TOO_MUCH_MINUTES
+from blossom.settings import (
+    ANTHROPIC_API_KEY_VARIABLE,
+    DEFAULT_EVENING_MINUTES,
+    DEFAULT_TOO_MUCH_MINUTES,
+)
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.workload_signals import (
     DETAIL_MAX_LENGTH,
@@ -299,10 +303,13 @@ def test_a_signal_about_another_evening_changes_nothing_tonight() -> None:
 # ------------------------------------------------------- the routes and the page
 
 
-def browser() -> TestClient:
-    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
+def browser(*, key: bool = False, planners: list[Scripted[DailyPlan]] | None = None) -> TestClient:
+    """Her page with scripted models. ``key`` lets the page offer its plan button, and
+    ``planners`` collects every planner a run builds, so a test can count what was asked."""
+    environ = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"} if key else {}
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **environ))
     app.dependency_overrides[plan_graphs] = scripted_graphs(
-        lambda: [light_fixture_plan()], lambda: [accepting()]
+        lambda: [light_fixture_plan()], lambda: [accepting()], planners=planners
     )
     return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
 
@@ -339,12 +346,12 @@ def test_the_page_offers_the_control_and_then_shows_what_it_changed() -> None:
         after = client.get("/student/due-this-week").text
 
     assert "Too much right now" in before
-    assert "You said it was too much" not in before
+    assert REQUESTED not in before
     assert pressed.status_code == 303
     assert pressed.headers["location"] == "/student/due-this-week"
-    assert "You said it was too much" in after
-    assert "held to 75 minutes instead of 150" in after
-    assert "Take it back" in after
+    assert REQUESTED in after
+    assert NEXT_PLAN in after
+    assert f">{UNDO}</button>" in after
     assert "What Blossom keeps about this" in after
     assert 'action="/student/actions/too-much"' not in after
 
@@ -354,13 +361,206 @@ def test_taking_it_back_from_the_page_restores_the_evening() -> None:
         client.post("/student/actions/too-much")
         signal_id = client.get("/student/workload-signals").json()[0]["signal_id"]
         taken_back = client.post(f"/student/actions/take-back/{signal_id}")
-        page = client.get("/student/due-this-week").text
+        page = client.get(taken_back.headers["location"]).text
         listed = client.get("/student/workload-signals").json()
 
     assert taken_back.status_code == 303
+    assert taken_back.headers["location"] == REMOVED_PAGE
     assert "Too much right now" in page
-    assert "You said it was too much" not in page
+    assert REQUESTED not in page
+    assert REMOVED in page
     assert listed == []
+
+
+# ------------------------------------------- what her page says, and Undo 'Too much right now'
+
+UNDO = "Undo 'Too much right now'"
+REQUESTED = "<strong>A shorter plan is requested for today.</strong>"
+NEXT_PLAN = "Your next plan will use up to 75 minutes."
+SAVED_PLAN = "Your saved plan already uses the 75-minute limit."
+REMOVED = "You removed your request."
+UNCHANGED = "Your saved plan has not changed."
+STILL = "A shorter plan is still requested for today."
+PAGE = "/student/due-this-week"
+REMOVED_PAGE = f"{PAGE}?signal=removed"
+STATE = re.compile(
+    r'<div class="too-much">\s*<p class="note" id="too-much-state"( role="status")?>(.*?)</p>'
+    r'\s*<div class="actions">(.*?)</div>\s*</div>',
+    re.S,
+)
+"""The state line and the Undo beside it: whether it is said as news, its words, its control."""
+
+
+def today_of(page: str) -> str:
+    """Today's panel, from its heading to the week's homework."""
+    start = page.index('<section class="panel today" id="today"')
+    return page[start : page.index('<h2 class="list-heading"')]
+
+
+def said(html: str) -> str:
+    """Words as a reader meets them, the spaces between them folded."""
+    return " ".join(html.split())
+
+
+def tonight(client: TestClient) -> list[str]:
+    """Her signals kept for today, the oldest first."""
+    state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+    return [item.signal_id for item in state.workload_signals.for_evening(PLAN_DATE)]
+
+
+def todays_draft(client: TestClient) -> object:
+    """Today's saved plan whole, as the drafts store keeps it."""
+    state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+    return state.drafts.latest_for(PLAN_DATE)
+
+
+def undo(client: TestClient, signal_id: str) -> str:
+    """Press Undo for one signal, as her page sends it, and read the page it leads to."""
+    pressed = client.post(f"/student/actions/take-back/{signal_id}")
+    assert pressed.status_code == 303
+    assert pressed.headers["location"] == REMOVED_PAGE
+    return client.get(pressed.headers["location"]).text
+
+
+def asked(planners: list[Scripted[DailyPlan]]) -> tuple[int, int]:
+    """How many planners runs built, and how many times they were asked."""
+    return len(planners), sum(planner.calls for planner in planners)
+
+
+def test_with_no_signal_today_offers_the_press_and_says_nothing_about_a_shorter_plan() -> None:
+    with browser(key=True) as client:
+        today = today_of(client.get(PAGE).text)
+
+    assert ">Too much right now</button>" in today
+    assert UNDO not in today
+    assert STATE.search(today) is None
+    for words in ("shorter plan", REMOVED, "use up to", "-minute limit"):
+        assert words not in today, words
+
+
+@pytest.mark.parametrize("plan", ["no plan", "a full plan", "a smaller plan"])
+def test_a_signal_says_what_it_asks_for_beside_its_undo(plan: str) -> None:
+    """From the signals kept for today and the household's minutes: a shorter plan is asked
+    for, and her next plan will be held to it, or the plan saved under it already is. Undo
+    sits under those words and is described by them, and nothing offers to press Too much
+    again. Pressing plans nothing."""
+    planners: list[Scripted[DailyPlan]] = []
+    with browser(key=True, planners=planners) as client:
+        if plan == "a full plan":
+            client.post("/student/actions/plan")
+        before = asked(planners)
+        client.post("/student/actions/too-much")
+        after = asked(planners)
+        if plan == "a smaller plan":
+            client.post("/student/actions/plan")
+        page = client.get(PAGE).text
+        held = tonight(client)
+
+    today = today_of(page)
+    state = STATE.search(today)
+    assert state is not None
+    news, words, control = state.groups()
+    assert news is None
+    assert said(words) == f"{REQUESTED} {SAVED_PLAN if plan == 'a smaller plan' else NEXT_PLAN}"
+    assert f'action="/student/actions/take-back/{held[-1]}"' in control
+    assert f'aria-describedby="too-much-state">{UNDO}</button>' in control
+    assert today.count(UNDO) == 1
+    assert "Too much right now</button>" not in page
+    assert ("Make a smaller plan</button>" in today) is (plan != "a smaller plan")
+    assert "smaller budget" not in today
+    assert after == before
+
+
+@pytest.mark.parametrize("plan", [False, True], ids=["no plan", "a smaller plan"])
+def test_undo_removes_her_request_says_so_and_leaves_the_plan_as_saved(plan: bool) -> None:
+    """One signal, one Undo: the row is gone, the page says she removed her request, and that
+    her saved plan has not changed when one is saved; Too much right now is offered again.
+    No model is asked, and the saved plan is as it was."""
+    planners: list[Scripted[DailyPlan]] = []
+    with browser(key=True, planners=planners) as client:
+        client.post("/student/actions/too-much")
+        if plan:
+            client.post("/student/actions/plan")
+        saved = todays_draft(client)
+        before = asked(planners)
+        page = undo(client, tonight(client)[0])
+        after = asked(planners)
+        left = tonight(client)
+        kept = todays_draft(client)
+
+    today = today_of(page)
+    line = re.search(r'<p class="note" id="too-much-state" role="status">(.*?)</p>', today, re.S)
+    assert line is not None
+    assert said(line.group(1)) == (f"{REMOVED} {UNCHANGED}" if plan else REMOVED)
+    assert left == []
+    assert after == before
+    assert kept == saved
+    assert (saved is not None) is plan
+    assert STATE.search(today) is None
+    assert ">Too much right now</button>" in today
+    assert UNDO not in page
+    for never in ("taken back", "withdr", "150 minutes", "usual"):
+        assert never not in today, never
+    assert "taken back" not in page
+    assert "withdr" not in page
+
+
+def test_with_two_requests_each_undo_says_what_still_stands() -> None:
+    """Each press keeps a row, and the evening stays shorter while any is left. Undo removes
+    the latest: the page says she removed her request and that a shorter plan is still
+    requested, with what it does, and its Undo is for the one left. That removes the last,
+    and only then is nothing said to be requested."""
+    with browser(key=True) as client:
+        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much")
+        first, latest = tonight(client)
+        two = today_of(client.get(PAGE).text)
+        one_left = today_of(undo(client, latest))
+        left = tonight(client)
+        none_left = today_of(undo(client, first))
+        gone = tonight(client)
+
+    state = STATE.search(two)
+    assert state is not None
+    assert f"take-back/{latest}" in state.group(3)
+    assert two.count(UNDO) == 1
+    assert left == [first]
+    state = STATE.search(one_left)
+    assert state is not None
+    news, words, control = state.groups()
+    assert news == ' role="status"'
+    assert said(words) == f"{REMOVED} {STILL} {NEXT_PLAN}"
+    assert f'action="/student/actions/take-back/{first}"' in control
+    assert one_left.count(UNDO) == 1
+    assert REQUESTED not in one_left
+    assert gone == []
+    assert STATE.search(none_left) is None
+    assert REMOVED in none_left
+    assert STILL not in none_left
+    assert "shorter plan" not in none_left
+    assert ">Too much right now</button>" in none_left
+
+
+def test_an_undo_sent_again_changes_nothing_and_never_says_the_evening_is_back() -> None:
+    """Undo pressed twice, as a double press or a page left open sends it: the second finds
+    its request gone, changes nothing, and lands on the same words. With an earlier request
+    still kept, the page says so, and nothing says the usual evening is back."""
+    with browser(key=True) as client:
+        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much")
+        first, latest = tonight(client)
+        once = today_of(undo(client, latest))
+        twice = today_of(undo(client, latest))
+        left = tonight(client)
+
+    assert left == [first]
+    assert twice == once
+    state = STATE.search(twice)
+    assert state is not None
+    assert said(state.group(2)) == f"{REMOVED} {STILL} {NEXT_PLAN}"
+    assert f"take-back/{first}" in state.group(3)
+    for never in ("150 minutes", "usual", "full evening"):
+        assert never not in twice, never
 
 
 def test_a_press_on_her_page_reaches_the_parents_plan() -> None:

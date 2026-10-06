@@ -843,10 +843,10 @@ def test_repeated_blocks_of_one_assignment_show_one_label_and_one_line_each() ->
             "As things stand: The sources give August 19, 2026, not the recorded due date.",
         )
     )
-    rows_shown = html[: html.index('<details class="steps plan-original">')]
+    assert 'class="steps plan-original"' not in html
     assert reading.blocks[0].now is reading.blocks[1].now
-    assert rows_shown.count("Dates needing clarification") == 1
-    assert rows_shown.count("but the sources say family entry: 2026-08-20") == 1
+    assert html.count("Dates needing clarification") == 1
+    assert html.count("but the sources say family entry: 2026-08-20") == 1
     assert html.count(LIMIT) == 1
 
 

@@ -47,6 +47,7 @@ from tests.support import (
     FIXTURE_WEEK,
     HER_PAGE,
     LATER_WEEK,
+    NOTHING_TO_PLAN,
     NOW,
     PAGE_HEADERS,
     PLAN_DATE,
@@ -124,9 +125,6 @@ OTHER_WEEK_SENTENCE: Final = (
     "different week.</p>"
 )
 NO_PLAN_YET: Final = "No plan for today yet."
-NOTHING_TO_SCHEDULE: Final = (
-    '<p class="note" role="status">Nothing to schedule from the work in this planning window.</p>'
-)
 EMPTY_WEEK: Final = "No assignments are recorded as due this week."
 NOT_HERS: Final = "Sign in as the student to update."
 NOT_HERS_TO_SIGNAL: Final = "Sign in as the student to say today is too much or take it back."
@@ -763,9 +761,9 @@ OMITTED: Final[dict[str, tuple[Callable[[TestClient], None], bool, tuple[str, ..
     "every assignment Done": (
         lambda client: everything_done(store_of(client)),
         False,
-        (NO_PLAN_YET, NOTHING_TO_SCHEDULE, "<summary>Finished homework (5) "),
+        (NOTHING_TO_PLAN, "<summary>Finished homework (5) "),
     ),
-    "an empty week": (an_empty_week, False, (NO_PLAN_YET, NOTHING_TO_SCHEDULE, EMPTY_WEEK)),
+    "an empty week": (an_empty_week, False, (NOTHING_TO_PLAN, EMPTY_WEEK)),
     "this week Done, later work planned": (
         later_work_keeps_the_plan_button,
         False,
@@ -802,7 +800,12 @@ def test_see_homework_is_left_out_with_a_plan_or_nothing_left_and_the_page_says_
     plan_button = 'action="/student/actions/plan"' in page
     assert plan_button == (case in ("this week Done, later work planned", "a plan today"))
     if case == "this week Done, later work planned":
-        assert "Nothing to schedule from the work in this planning window." not in page
+        assert "Nothing to plan right now." not in page
+    if case in ("every assignment Done", "an empty week"):
+        assert NO_PLAN_YET not in page
+        assert today.index("Nothing to plan right now.") < today.index('class="support-links"')
+        assert today.index('class="support-links"') < today.index("planning window is")
+        assert "Planning uses the model provider" not in today
     assert "autofocus" not in page
 
 
@@ -1184,7 +1187,7 @@ def stale_pages(client: TestClient) -> dict[str, tuple[str, list[tuple[str, str]
             list(form_fields(result, f"{science}/undo-hand-in").items()),
         ),
         "Too much right now": (TOO_MUCH, []),
-        "Take it back": (signal.group(1), []),
+        "Undo 'Too much right now'": (signal.group(1), []),
         "Remove, in what Blossom keeps": (signal.group(1), []),
     }
 
@@ -1199,7 +1202,7 @@ STALE: Final = (
     "I turned it in on her week's list",
     "an Undo on the To turn in page",
     "Too much right now",
-    "Take it back",
+    "Undo 'Too much right now'",
     "Remove, in what Blossom keeps",
 )
 

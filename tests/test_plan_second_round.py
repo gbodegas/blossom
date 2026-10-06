@@ -181,8 +181,7 @@ def test_a_snapshot_no_page_can_send_falls_back_to_the_saved_text_on_both_pages(
             assert escape(said) in text
         assert "Reported done" not in text
         assert "skip this block" not in text
-    earlier = family.text[family.text.index(f'id="{anchor_for(good.draft_id)}"') :]
-    assert '<ol class="plan-rows">' in earlier[: earlier.index("</pre>")]
+    assert '<ol class="plan-rows">' in plan_on(family.text, good)
     assert after == before
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert bad.draft_id in logged

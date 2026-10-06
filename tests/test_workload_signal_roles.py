@@ -47,6 +47,8 @@ from tests.support import (
 )
 
 PAGE = "/student/due-this-week"
+REMOVED = f"{PAGE}?signal=removed"
+UNDO = "Undo 'Too much right now'"
 TOO_MUCH = "/student/actions/too-much"
 TAKE_BACK = "/student/actions/take-back/"
 SIGNALS = "/student/workload-signals"
@@ -399,8 +401,8 @@ def answered(client: TestClient, which: str) -> tuple[int, object]:
     ("which", "expected", "kept"),
     [
         ("too much", (303, PAGE), 1),
-        ("take back", (303, PAGE), 0),
-        ("take back absent", (303, PAGE), 0),
+        ("take back", (303, REMOVED), 0),
+        ("take back absent", (303, REMOVED), 0),
         ("create", (201, ("STUDENT", "a long day")), 1),
         ("delete", (204, None), 0),
         ("delete absent", (404, f"no signal '{ABSENT}'"), 0),
@@ -580,12 +582,16 @@ def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
         none_yet = client.get(PAGE).text
         hers_in_turn(client, monkeypatch, "the essay and two quizzes", "a late night")
         signaled = client.get(PAGE).text
+        named_removed = client.get(REMOVED).text
 
     assert f'action="{TOO_MUCH}"' not in none_yet
     assert "Too much right now</button>" not in none_yet
     assert TAKE_BACK not in signaled
     assert "Take it back</button>" not in signaled
+    assert UNDO not in signaled
     assert "Remove</button>" not in signaled
+    assert "removed your request" not in named_removed
+    assert "requested for today" not in signaled + named_removed
     assert "<strong>She said it was too much</strong> at" in signaled
     assert "Her next plan for today is held to 75 minutes instead of 150." in signaled
     assert "Nothing has been planned yet; the next plan will be the shorter one." in signaled
@@ -593,12 +599,12 @@ def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
     assert signaled.count("She added <q>the essay and two quizzes</q>.") == 1
     assert signaled.count("Too much on Wednesday, August 19, 2026,") == 2
     assert (
-        '"Too much right now" takes her one press, no rating, no reason, and she can take it '
-        "back." in signaled
+        '"Too much right now" takes her one press, no rating, no reason, and she can undo it.'
+        in signaled
     )
     for said_to_her in ("You said", "You added", "Your next plan", "the plan you make"):
         assert said_to_her not in signaled
-    assert "you can take it back" not in signaled
+    assert "you can undo it" not in signaled
     assert "<summary>What Blossom keeps about this</summary>" in signaled
     assert 'id="today"' in signaled
     assert "autofocus" not in none_yet
@@ -623,18 +629,18 @@ def test_she_and_the_open_household_keep_every_control_and_word(
     assert ">Too much right now</button>" in none_yet
     assert signaled.count(f'action="{TAKE_BACK}{latest}"') == 2
     assert signaled.count(f'action="{TAKE_BACK}{first}"') == 1
-    assert signaled.count(">Take it back</button>") == 1
+    assert signaled.count(f">{UNDO}</button>") == 1
+    assert "Take it back</button>" not in signaled
     assert signaled.count(">Remove</button>") == 2
-    assert "<strong>You said it was too much</strong> at" in signaled
-    assert "Your next plan for today is held to 75 minutes instead of 150." in signaled
-    assert "Nothing has been planned yet; the plan you make will be the shorter one." in signaled
+    assert "<strong>A shorter plan is requested for today.</strong>" in signaled
+    assert "Your next plan will use up to 75 minutes." in signaled
     assert signaled.count("You added <q>a late night</q>.") == 2
     assert signaled.count("You added <q>the essay and two quizzes</q>.") == 1
     assert (
-        '"Too much right now" takes one press, no rating, no reason, and you can take it back.'
+        '"Too much right now" takes one press, no rating, no reason, and you can undo it.'
         in signaled
     )
-    for said_to_a_parent in ("She said", "She added", "Her next plan", "she can take it back"):
+    for said_to_a_parent in ("She said", "She added", "Her next plan", "she can undo it"):
         assert said_to_a_parent not in signaled
     assert 'id="today"' in signaled
     assert "autofocus" not in none_yet

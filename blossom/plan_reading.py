@@ -10,7 +10,9 @@ read, and linking to that assignment's current record by id. The text reading
 is the saved text taken apart along the composer's shapes, for a plan from
 before snapshots and for one whose snapshot cannot be used; nothing in it is
 linked or annotated, because a line of text does not say which assignment it
-is about.
+is about. A page shows one reading of a plan, never both. Either reading says
+whether the run's review settled, read from the draft, so every page folds or
+opens the reviewer's notes alike.
 
 What is saved and what stands now are kept apart here. The rows come from the
 snapshot and never change, each with the due date the run read and, when the
@@ -141,7 +143,10 @@ class PlanReading:
     unavailable: bool
     """Whether a snapshot is saved and cannot be used, which the page says in a sentence."""
     body: str
-    """The text as composed, unchanged, for the text reading and the original-text fold."""
+    """The text as composed, unchanged, for the text reading."""
+    unsettled: bool
+    """Whether the run that made the plan ended with its review unsettled, from the draft
+    itself, so every page opens the reviewer's notes; an accepted plan's stay folded."""
     title: str = ""
     intro: list[str] = field(default_factory=list)
     blocks: list[BlockRow] = field(default_factory=list)
@@ -221,7 +226,8 @@ def read_plan(
     then say what applies, one line for all of them. ``dates_unread`` is the
     page's word that it could not read the record, and is never given with
     ``now``. A draft without a usable snapshot gets the text reading, with no
-    links, marks, or current lines, whatever else is handed in.
+    links, marks, or current lines, whatever else is handed in. Whether the
+    run's review settled comes from the draft's outcome alone, in both readings.
     """
     found = read_snapshot(
         record.draft_id,
@@ -230,6 +236,7 @@ def read_plan(
         plan_assignment_ids=record.plan_assignment_ids,
     )
     anchor = anchor_for(record.draft_id)
+    unsettled = record.outcome == "unsettled"
     if found.snapshot is None:
         return PlanReading(
             draft_id=record.draft_id,
@@ -241,6 +248,7 @@ def read_plan(
             structured=False,
             unavailable=found.unavailable,
             body=record.body,
+            unsettled=unsettled,
         )
     snapshot = found.snapshot
     marks = dict(done or {}) if current else {}
@@ -266,6 +274,7 @@ def read_plan(
         structured=True,
         unavailable=False,
         body=record.body,
+        unsettled=unsettled,
         title=plan_title(snapshot.plan.plan_date),
         intro=[plain(line) for line in snapshot.intro],
         blocks=[

@@ -83,6 +83,7 @@ from tests.support import (
     HERS,
     LATER_WEEK,
     MISSING_EMAIL,
+    NOTHING_TO_PLAN,
     PAGE_HEADERS,
     PLAN_DATE,
     SAME_ORIGIN,
@@ -101,6 +102,7 @@ from tests.support import (
     card_for,
     changed_by_hand,
     client_for,
+    due,
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
@@ -1729,8 +1731,8 @@ def test_a_plan_that_speaks_about_work_she_has_since_finished_says_so_on_both_pa
 
 
 def test_with_everything_in_the_window_reported_done_her_page_offers_no_plan_button() -> None:
-    """The panel says nothing is left to schedule and the button is gone; the family page
-    keeps its form, which the route refuses."""
+    """The panel says nothing is left to plan and the button is gone; the family page keeps
+    its form, which the route refuses."""
     with browser(key=True) as client:
         state = state_of(client)
         for item in state.project_state.all_assignments():
@@ -1739,7 +1741,7 @@ def test_with_everything_in_the_window_reported_done_her_page_offers_no_plan_but
         family = client.get("/parent", headers=PAGE_HEADERS).text
         posted = client.post("/parent/actions/plan", data={"plan_date": ""})
 
-    assert NOTHING_TO_SCHEDULE in hers
+    assert NOTHING_TO_PLAN in hers
     assert 'action="/student/actions/plan"' not in hers
     assert "Planning uses the model provider." not in hers
     assert 'action="/parent/actions/plan"' in family
@@ -2618,8 +2620,7 @@ def test_with_everything_done_the_today_panel_informs_and_asks_for_nothing(decis
 
     panel = today_panel(page)
     assert asks_for_nothing(panel), panel
-    assert "Your saved plan is below." in panel
-    assert NOTHING_TO_SCHEDULE in panel
+    assert f"{NOTHING_TO_PLAN} Your saved plan is below." in panel
     assert PLAN_INCLUDES_DONE in panel
     assert "In it: " in panel
     assert f"{ESSAY_TITLE}</a> (World History)," in panel
@@ -2653,8 +2654,8 @@ def test_a_plan_from_before_ids_and_a_smaller_evening_ask_for_nothing_either() -
     assert PLAN_WINDOW_DONE == "Some work in this plan's window is now reported Done."
     assert str(escape(PLAN_WINDOW_DONE)) in panel
     assert "In it:" not in panel
-    assert NOTHING_TO_SCHEDULE in panel
-    assert "You said it was too much" in panel
+    assert NOTHING_TO_PLAN in panel
+    assert "<strong>A shorter plan is requested for today.</strong>" in panel
     assert "<strong>Saved plan.</strong>" in panel
 
 
@@ -2697,7 +2698,96 @@ def test_a_not_yet_in_the_window_brings_the_plan_button_back_and_one_outside_doe
     assert "A plan is ready." in back
     assert ASSIGNMENTS_CHANGED in back
     assert "A new plan will leave it out." in back
-    assert NOTHING_TO_SCHEDULE not in back
+    assert NOTHING_TO_PLAN not in back
+
+
+@pytest.mark.parametrize("signal", [False, True], ids=["no request", "a shorter plan requested"])
+def test_with_nothing_to_plan_today_leads_with_it_and_keeps_support_in_a_quieter_place(
+    signal: bool,
+) -> None:
+    """Everything in today's planning window Done: Today leads with Nothing to plan right now
+    and says nothing about planning in its main part. To turn in and Homework notes follow,
+    then a quieter place with Write down homework, Ask for help, and her Too much right now,
+    or, once she has pressed it, what her request does, with its Undo. Today's planning
+    window is named last."""
+    with browser(key=True) as client:
+        finish_everything(client)
+        if signal:
+            assert client.post("/student/actions/too-much").status_code == 303
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    panel = today_panel(page)
+    after_heading = panel[panel.index("</h2>") + len("</h2>") :]
+    assert re.match(
+        rf'\s*<p class="standing">\s*{re.escape(NOTHING_TO_PLAN)}\s*</p>', after_heading
+    ), after_heading[:200]
+    links = panel.index('<p class="support-links"><a href="/student/to-turn-in">To turn in</a>')
+    row = re.search(r'<div class="actions">(.*?)</div>', panel[links:], re.S)
+    assert row is not None
+    row_at = links + row.start()
+    window = panel.index("Today's planning window is August 19 to August 25, 2026.")
+    assert panel.index(NOTHING_TO_PLAN) < links < row_at < window
+    shown = re.findall(r">([^<>]+)</(?:a|button)>", row.group(1))
+    support = ["Write down homework", "Ask for help"]
+    assert shown == (support if signal else [*support, "Too much right now"])
+    state = panel.find('id="too-much-state"')
+    if signal:
+        assert row_at < state < window
+        words = " ".join(panel[state:window].split())
+        assert (
+            "<strong>A shorter plan is requested for today.</strong> Your next plan will use up "
+            "to 75 minutes." in words
+        )
+        assert "Undo 'Too much right now'</button>" in words
+    else:
+        assert state < 0
+    assert asks_for_nothing(panel), panel
+    for never in (
+        "Planning uses the model provider",
+        "Makes a plan for today",
+        'id="plan-scope"',
+        "Nothing to schedule",
+        "No plan for today yet.",
+    ):
+        assert never not in panel, never
+    assert page.count("planning window is") == 1
+
+
+EARLIER = "assignment-earlier-set"
+
+
+@pytest.mark.parametrize(
+    "left",
+    [
+        "work due later in the window",
+        "undated work",
+        "earlier work chosen for today",
+        "earlier work not chosen",
+    ],
+)
+def test_today_is_empty_only_when_nothing_in_its_planning_window_is_left(left: str) -> None:
+    """Whether anything is left to plan is read from today's planning window, not from the
+    week's cards: work due later in the window, undated work, and earlier work she chose for
+    today each keep the plan button, and Today out of its empty state, with every other
+    assignment Done. Earlier work she has not chosen is in no plan, so with nothing else left
+    Today says there is nothing to plan."""
+    kept = {"work due later in the window": "assignment-algebra-set", "undated work": SYLLABUS}
+    with browser(key=True) as client:
+        store = store_of(client)
+        if left.startswith("earlier"):
+            store.put_on_record([due(EARLIER, "Fractions practice", date(2026, 8, 14))], {})
+        for item in store.all_assignments():
+            if item.assignment_id not in (kept.get(left), EARLIER):
+                report(client, item.assignment_id, "done")
+        if left == "earlier work chosen for today":
+            store.choose_catch_up(EARLIER, PLAN_DATE, include=True)
+        panel = today_panel(client.get(PAGE, headers=PAGE_HEADERS).text)
+
+    empty = left == "earlier work not chosen"
+    assert (NOTHING_TO_PLAN in panel) is empty
+    assert ('action="/student/actions/plan"' in panel) is not empty
+    assert ('id="plan-scope"' in panel) is not empty
+    assert ("No plan for today yet." in panel) is not empty
 
 
 def test_an_old_update_put_back_today_is_recent_by_its_correction_and_dated_as_it_is() -> None:

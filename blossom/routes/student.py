@@ -25,9 +25,11 @@ says so and everything else on it still works.
 The workload signal takes no argument: rating or describing the load requires
 stepping back, and that capacity is least available exactly when the signal
 matters. One press records that today is too much, the page shows it at once
-with what it changes, tonight's plan is held to a reduced budget, and she can
-take it back. The page also lists every signal still kept, each with a way to
-remove it, because the record is hers.
+with what it changes, tonight's plan is held to a reduced budget, and Undo
+'Too much right now' beside it takes it back. Each press keeps a row of its own
+and the evening stays shorter while any is left, so after an Undo the page says
+what still stands and never promises the usual evening. The page also lists
+every signal still kept, each with a way to remove it, because the record is hers.
 
 Asking for help is the other press on her page. It is addressed to a person,
 so it has a state a parent moves, requested to accepted to resolved, and each
@@ -247,6 +249,9 @@ logger = logging.getLogger(__name__)
 
 PAGE: Final = "/student/due-this-week"
 A_WEEK: Final = timedelta(days=7)
+SIGNAL_REMOVED: Final = "removed"
+"""What her week's address says after Undo 'Too much right now' or a Remove took a request
+away, so Today says she removed it, beside what still stands."""
 
 # The words her page uses for each channel a date can come from. The page
 # speaks to her, so her own report is "what you reported".
@@ -1905,6 +1910,7 @@ def student_page(
     status_code: int = status.HTTP_200_OK,
     today: date | None = None,
     run_notice: RunNotice | None = None,
+    signal_removed: bool = False,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
@@ -1934,7 +1940,9 @@ def student_page(
     Ask for help form gets a fresh id, which needs no read. ``earlier_note`` is what a choice
     in Earlier homework to check did or could not do, said beside the item it named.
     ``in_place`` is the cards this visit keeps where they were; every update form on the
-    page carries them on, with its own card kept where it is shown.
+    page carries them on, with its own card kept where it is shown. ``signal_removed`` says
+    an Undo or a Remove just took a request of hers away, which Today says to her alone,
+    beside what the signals kept for today say now.
     """
     viewer = viewer_of(request)
     # An address that only brings a card into view, as a way back from its details does.
@@ -2058,6 +2066,7 @@ def student_page(
             "pressed": pressed,
             "plan_failure": plan_failure,
             "run_notice": run_notice,
+            "signal_removed": signal_removed and viewer != "parent",
             "in_place_said": kept.said(),
             "plan_reading": None if todays is None else todays.reading,
             "plan_asked": plan_asked,
@@ -2187,6 +2196,9 @@ def due_this_week(
     run: Annotated[
         str | None, Query(description="a planning run to say where it stands; changes nothing")
     ] = None,
+    signal: Annotated[
+        str | None, Query(description="removed after her Undo of Too much right now; a note")
+    ] = None,
 ) -> Response:
     """Render her week and today's plan.
 
@@ -2208,7 +2220,10 @@ def due_this_week(
     and offers the same address again. ``earlier`` and ``earlier_said`` name what a choice in
     Earlier homework to check just did, said beside that item only when this process signed
     it for today and that item and today's choices still agree; a word not in the set says
-    nothing. The household day is read once, for that check and the page alike.
+    nothing. The household day is read once, for that check and the page alike. ``signal``
+    is ``removed`` after her Undo of Too much right now or a Remove, and Today then says she
+    removed her request, beside what the signals kept now say; any other value says nothing,
+    and a parent is told nothing of it.
 
     The cards a visit keeps where they were come to the page once. A save or an undo leaves
     them in a cookie named for the landing its redirect names in ``landing``; Change and Keep
@@ -2262,6 +2277,7 @@ def due_this_week(
             earlier_note=chose,
             today=today,
             run_notice=run_notice(state, run, PAGE, parent=parent, today=today),
+            signal_removed=signal == SIGNAL_REMOVED,
         )
     except sqlite3.Error as error:
         again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
@@ -2347,11 +2363,12 @@ def week_page(
     earlier_note: "EarlierNote | None" = None,
     today: date | None = None,
     run_notice: RunNotice | None = None,
+    signal_removed: bool = False,
 ) -> HTMLResponse:
     """Her week as an address asks for it, with the cards a visit keeps in place, what a
-    choice in Earlier homework to check did, and what today's panel says about a planning
-    run, for the household day ``today`` the caller read. A record that cannot be read
-    raises ``sqlite3.Error``."""
+    choice in Earlier homework to check did, what today's panel says about a planning run,
+    and whether an Undo just removed a request of hers, for the household day ``today`` the
+    caller read. A record that cannot be read raises ``sqlite3.Error``."""
     if week is None:
         return student_page(
             request,
@@ -2365,6 +2382,7 @@ def week_page(
             earlier_note=earlier_note,
             today=today,
             run_notice=run_notice,
+            signal_removed=signal_removed,
         )
     try:
         chosen = date.fromisoformat(week.strip())
@@ -3698,9 +3716,11 @@ async def too_much_from_the_page(request: Request, state: State) -> Response:
 
 @router.post("/actions/take-back/{signal_id}", response_class=HTMLResponse, include_in_schema=False)
 async def take_back_from_the_page(request: Request, signal_id: str, state: State) -> Response:
-    """Remove a signal from her page. A signal already gone is not an error here. A parent
-    is answered 403 before the signal is looked up: the signal is hers to take back. A
-    removal the file refuses is rolled back and said at the top of her week, 500."""
+    """Remove a signal from her page, by Undo 'Too much right now' or a Remove, and return to
+    her week, which says she removed her request and what still stands. A signal already
+    gone is not an error here. A parent is answered 403 before the signal is looked up: the
+    signal is hers to take back. A removal the file refuses is rolled back and said at the
+    top of her week, 500."""
     if viewer_of(request) == "parent":
         return not_hers(request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL)
     try:
@@ -3708,7 +3728,9 @@ async def take_back_from_the_page(request: Request, signal_id: str, state: State
     except sqlite3.Error as error:
         logger.warning("her signal could not be taken back: %s", type(error).__name__)
         return signal_not_saved(request, state)
-    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(
+        address(PAGE, signal=SIGNAL_REMOVED), status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 def signal_not_saved(request: Request, state: ApplicationState) -> HTMLResponse:

@@ -255,9 +255,9 @@ def test_the_walkthrough_plan_is_labeled_by_assignment_id_on_both_pages(
         assert LINK not in saved, name
         assert now is None, name
         assert saved.startswith(("Recorded due ", "No due date on record.")), name
-    rows_shown = plan[: plan.index('<details class="steps plan-original">')]
-    assert rows_shown.count("Dates needing clarification") == 1
-    clarify = rows_shown[rows_shown.index("Dates needing clarification") :]
+    assert 'class="steps plan-original"' not in plan
+    assert plan.count("Dates needing clarification") == 1
+    clarify = plan[plan.index("Dates needing clarification") :]
     assert clarify[: clarify.index("</ul>")].count(f"/student/assignments/{ESSAY_ID}?") == 1
     assert "Not in this evening's plan</h" in plan
     assert LIMIT not in plan
@@ -991,7 +991,8 @@ def test_each_evidence_link_names_its_assignment_and_lands_on_what_the_sources_s
 
 
 def test_a_plan_composed_with_the_older_heading_keeps_its_words_and_takes_the_labels() -> None:
-    """Its saved words and old heading stay, and its rows take labels by id."""
+    """Its saved words and its heading stay as saved, and its rows are shown under the page's
+    own heading and take labels by id."""
     with browser(key=True) as client:
         walkthrough(client)
         made = planned(client)
@@ -1003,10 +1004,13 @@ def test_a_plan_composed_with_the_older_heading_keeps_its_words_and_takes_the_la
         )
         unrelated_update(client)
         hers, family = pages(client)
+        kept = drafts.get(made.draft_id)
 
+    assert kept is not None
+    assert kept.body == old_body
     for page in (hers, family):
         plan = plan_on(page, made)
-        assert "Waiting for another day:" in plan[plan.index('<pre class="plan-original-text">') :]
+        assert "Waiting for another day:" not in plan
         assert "Not in this evening's plan</h" in plan
         assert "school portal (day header): 2026-08-21" in plan
         assert lines(plan, block(made, 0)) == (

@@ -31,7 +31,8 @@ from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.noticing import read_week
-from blossom.plan_reading import Reader
+from blossom.plan_reading import Reader, anchor_for
+from blossom.plan_snapshot import read_snapshot
 from blossom.plan_text import present_plan
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceChannel
@@ -72,6 +73,7 @@ from tests.support import (
     light_fixture_plan,
     model_graphs,
     ok,
+    plan_on,
     record,
     report,
     scripted_graphs,
@@ -126,18 +128,57 @@ def browser(
 SHOWN = f"{PAGE}?show_plan=1"
 
 
-def whole(body: str, page: str) -> bool:
-    """Whether every part of a saved plan is on the page, as the presenter sets it out."""
-    text = present_plan(body)
-    parts = [text.title, *text.notes, *text.other]
-    for block in text.blocks:
-        parts.extend([block.span, block.item, block.rationale])
-    for section in text.sections:
-        parts.append(section.title)
-        parts.extend(item.text for item in section.items)
-    if text.review:
-        parts.extend(item.text for item in text.review.items)
-    return all(str(escape(part)) in page for part in parts if part)
+def whole(record: DraftRecord, page: str) -> bool:
+    """Whether a saved plan is on the page once, read by its rows: each block's time,
+    assignment and reason, and each assignment put off with its reason, in a row of its own,
+    with every date to clarify and every note of the review, and no copy of the text beside
+    them."""
+    snapshot = read_snapshot(
+        record.draft_id,
+        record.plan_snapshot,
+        plan_date=record.plan_date,
+        plan_assignment_ids=record.plan_assignment_ids,
+    ).snapshot
+    assert snapshot is not None
+    plan = plan_on(page, record)
+    anchor = anchor_for(record.draft_id)
+    named = snapshot.assignments
+
+    def row(dom_id: str, *parts: str) -> bool:
+        found = re.search(rf'<li class="plan-[a-z]+[^"]*" id="{dom_id}">(.*?)</li>', plan, re.S)
+        return found is not None and all(str(escape(part)) in found.group(1) for part in parts)
+
+    blocks = [
+        row(
+            f"{anchor}-block-{index}",
+            f"{spoken_time(block.starts_at)} to {spoken_time(block.ends_at)}",
+            named[block.assignment_id].title,
+            named[block.assignment_id].course,
+            block.rationale,
+        )
+        for index, block in enumerate(snapshot.plan.blocks)
+    ]
+    deferrals = [
+        row(
+            f"{anchor}-deferral-{index}",
+            named[item.assignment_id].title,
+            named[item.assignment_id].course,
+            item.reason,
+        )
+        for index, item in enumerate(snapshot.plan.deferred)
+    ]
+    review = [] if snapshot.review is None else snapshot.review.findings
+    notes = [str(escape(f"{finding.label}:")) for finding in review]
+    notes += [str(escape(finding.text)) for finding in review]
+    notes += [str(escape(item.text)) for item in snapshot.clarifications]
+    rows = len(re.findall(r'<li class="plan-(?:block|deferral)', plan))
+    return (
+        all(blocks + deferrals)
+        and rows == len(blocks) + len(deferrals)
+        and all(note in plan for note in notes)
+        and "<pre" not in plan
+        and "Original saved text" not in plan
+    )
 
 
 # --------------------------------------------------------------- the store
@@ -445,14 +486,18 @@ def test_a_change_asked_for_is_said_in_her_words() -> None:
 
 def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
     """The time range in bold, the assignment under it as a link to its details by id, its
-    due date, the reason, the work put off under a heading, the reviewer's notes behind a
-    fold, and the text as composed in a fold of its own; every part of the saved text."""
+    due date, the reason, the work put off under a heading, and the reviewer's notes behind
+    one fold, folded on both pages for a plan the review accepted; every part of the saved
+    plan once, and no second copy of it as text."""
     with browser() as client:
         client.post("/student/actions/plan")
         body = client.get("/student/plans/today").json()["body"]
+        saved = state_of(client).drafts.latest_for(PLAN_DATE)
         page = client.get(PAGE).text
         theirs = client.get("/parent").text
 
+    assert saved is not None
+    assert saved.outcome == "accepted"
     text = present_plan(body)
     assert text.blocks[0].span == "4:30 PM to 5:30 PM"
     assert '<p class="plan-when"><strong>4:30 PM to 5:30 PM</strong></p>' in page
@@ -470,14 +515,13 @@ def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
     assert '<p class="plan-why">' in page
     assert '<h3 class="plan-heading">Not in this evening\'s plan</h3>' in page
     assert '<h4 class="plan-heading">Not in this evening\'s plan</h4>' in theirs
-    assert "<summary>Original saved text</summary>" in page
-    assert "<summary>Original saved text</summary>" in theirs
-    assert "<summary>Blossom's review notes</summary>" in page
-    assert '<details class="steps plan-review">' in page, "folded on her page"
-    assert '<details class="steps plan-review" open>' in theirs, "open on the parent's"
-    assert '<pre class="body">' not in page
-    assert whole(body, page)
-    assert whole(body, theirs)
+    for shown in (page, theirs):
+        assert "Original saved text" not in shown
+        assert 'class="plan-original' not in shown
+        assert shown.count("<summary>Blossom's review notes</summary>") == 1
+        assert '<details class="steps plan-review">' in shown, "folded for an accepted plan"
+        assert '<details class="steps plan-review" open>' not in shown
+        assert whole(saved, shown)
 
 
 def test_times_read_as_she_reads_a_clock() -> None:
@@ -485,11 +529,11 @@ def test_times_read_as_she_reads_a_clock() -> None:
         client.post("/student/actions/too-much", follow_redirects=False)
         page = client.get(PAGE).text
 
-    assert re.search(r"You said it was too much</strong> at \d{1,2}:\d{2} [AP]M\.", page)
+    assert re.search(r"said at \d{1,2}:\d{2} [AP]M\.", page)
     assert not re.search(r"\b[01]\d:\d{2}\b(?! [AP]M)", page.split('<main id="main">', 1)[1]), (
         "no 24-hour time anywhere on the page"
     )
-    assert "Nothing has been planned yet; the plan you make will be the shorter one." in page
+    assert "Your next plan will use up to 75 minutes." in page
 
 
 def test_a_refresh_says_when() -> None:
@@ -528,8 +572,8 @@ def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away(
         shown = client.get(planned.headers["location"]).text
         revisit = client.get(PAGE).text
         refreshed = client.get(PAGE, params={"refreshed": "1"}).text
-        body = client.get("/student/plans/today").json()["body"]
         state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        saved = state.drafts.latest_for(PLAN_DATE)
         changed_by_hand(state.drafts, "UPDATE drafts SET plan_snapshot=NULL")
         as_text = client.get(PAGE).text
 
@@ -544,7 +588,8 @@ def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away(
             '<div id="todays-plan" tabindex="-1">'
         )
         assert '<span id="ask-for-help" tabindex="-1">Ask a parent for help</span>' in page
-    assert whole(body, revisit), "the saved text, set out for reading, all of it"
+    assert saved is not None
+    assert whole(saved, revisit), "the saved plan, read by its rows, all of it"
     assert "This plan uses the earlier text format." in as_text
     assert "set aside for" in as_text
     assert "Looks ahead through Tuesday, August 25." in revisit
@@ -586,7 +631,7 @@ def test_asking_for_the_plan_unfolded_makes_no_plan() -> None:
 
 def test_a_review_the_reviewer_could_not_finish_is_said_outside_the_plan() -> None:
     """Not a check that failed: the reviewer could not tell. A parent's approval
-    does not make that go away; the notes are in the plan."""
+    does not make that go away; the notes are in the plan, open."""
     warning = "Blossom's review could not settle every point. Open the plan to read its notes."
     with browser(critic=undecided) as client:
         client.post("/student/actions/plan")
@@ -597,6 +642,8 @@ def test_a_review_the_reviewer_could_not_finish_is_said_outside_the_plan() -> No
 
     assert warning in before
     assert "did not settle" in before, "the notes are in the saved text"
+    for page in (before, after):
+        assert '<details class="steps plan-review" open>' in page, "open whatever was decided"
     assert warning in after
     assert "From your parents" in after
     assert "check" not in warning
@@ -667,10 +714,11 @@ def test_the_plan_button_follows_the_evening_as_it_stands() -> None:
     assert "Make a smaller plan" not in nothing_yet
 
     assert ">Make a smaller plan<" in signaled_no_plan
-    assert "Your next plan for today is held to 75 minutes instead of 150." in signaled_no_plan
+    assert "Your next plan will use up to 75 minutes." in signaled_no_plan
 
     assert ">Plan again<" in small_plan_signaled
-    assert "This plan already uses the smaller budget, 75 minutes." in small_plan_signaled
+    assert "Your saved plan already uses the 75-minute limit." in small_plan_signaled
+    assert "Your next plan will use up to" not in small_plan_signaled
     assert "Make a smaller plan" not in small_plan_signaled
 
     assert ">Plan again<" in small_plan_no_signal
@@ -683,13 +731,15 @@ def test_a_full_plan_under_a_signal_offers_a_smaller_one_and_keeps_the_plan() ->
     with browser() as client:
         client.post("/student/actions/plan")
         body = client.get("/student/plans/today").json()["body"]
+        saved = state_of(client).drafts.latest_for(PLAN_DATE)
         client.post("/student/actions/too-much")
         page = client.get(PAGE).text
         after = client.get("/student/plans/today").json()["body"]
 
+    assert saved is not None
     assert ">Make a smaller plan<" in page
     assert "Your current plan has not changed yet. Make a smaller plan when you are ready." in page
-    assert whole(body, page)
+    assert whole(saved, page)
     assert after == body, "pressing the signal does not plan"
 
 
@@ -755,7 +805,7 @@ def test_a_press_after_the_plan_tells_her_to_plan_again_in_her_words() -> None:
     )
     assert "<strong>Make a smaller plan.</strong> You have said today is too much" in page
     assert ">Make a smaller plan<" in page
-    assert "Your next plan for today is held to 75 minutes instead of 150." in page
+    assert "Your next plan will use up to 75 minutes." in page
 
 
 def test_her_page_measures_the_plan_against_the_evening_whatever_a_parent_said() -> None:
