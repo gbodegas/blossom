@@ -34,7 +34,6 @@ from blossom.routes.student import (
     SAVED_ELSEWHERE,
     UPDATE_ALREADY_SAVED,
     UPDATE_SAVED,
-    UPDATE_UNDONE,
     WELL_DONE,
     done_cookie,
     place_key,
@@ -52,6 +51,8 @@ from tests.support import (
     SAME_ORIGIN,
     SYLLABUS_ID,
     THEIRS,
+    UNDONE_STILL_DONE,
+    UNDONE_TO_NOTHING,
     Answer,
     browser,
     form_fields,
@@ -330,9 +331,10 @@ def test_she_saves_changes_and_undoes_on_the_details_and_comes_back_to_them() ->
     assert "<legend>Your update<span" not in kept
     assert undone.status_code == 303
     assert undone.headers["location"] == (
-        f"{DETAILS}?said=undone&return_to=today#update-result-{ESSAY_ID}"
+        f"{DETAILS}?said=undone&undo_event={events[-1].report_id}&return_to=today"
+        f"#update-result-{ESSAY_ID}"
     )
-    assert UPDATE_UNDONE in finally_
+    assert UNDONE_TO_NOTHING in finally_
     assert finally_.count("Back to today&#39;s plan</a>") == 2
     assert UPDATE_ALREADY_SAVED not in finally_
     assert [(item.operation, item.status) for item in events] == [
@@ -401,7 +403,7 @@ def test_a_new_done_saved_on_the_details_is_met_once_and_nothing_else_is() -> No
     assert "landing=" not in noted.headers["location"]
     assert "said=same" in same.headers["location"]
     assert UPDATE_ALREADY_SAVED in same_page
-    assert UPDATE_UNDONE in undone_page
+    assert UNDONE_STILL_DONE in undone_page
     assert "Your update: Done" in undone_page
     assert unchosen.status_code == 422
     assert stale.status_code == 409

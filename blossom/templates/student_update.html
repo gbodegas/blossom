@@ -170,7 +170,7 @@
             {% for name, value in ctx.post_fields %}
             <input type="hidden" name="{{ name }}" value="{{ value }}">
             {% endfor %}
-            <button type="submit" class="secondary">Undo<span class="visually-hidden"> your update on {{ assignment.title }}, {{ assignment.course }}</span></button>
+            <button type="submit" class="secondary">Undo last update<span class="visually-hidden"> on {{ assignment.title }}, {{ assignment.course }}</span></button>
           </form>
         {% endif %}
       </div>

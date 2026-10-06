@@ -29,9 +29,11 @@ from blossom.settings import REPOSITORY_ROOT
 from blossom.stores import help_requests as help_store
 from blossom.stores.help_requests import HelpRequest, HelpRequestsStore, RequestClosed
 from tests.support import (
+    ARRIVAL_CUE,
     HERS,
     PAGE_HEADERS,
     PLAN_DATE,
+    PROBLEM_CUE,
     THEIRS,
     SetClock,
     browser,
@@ -218,12 +220,13 @@ class Refusing:
         return getattr(self.connection, name)
 
 
-def outline_rule(css: str) -> list[str]:
-    """Every selector of the rules that give a focused help target its outline."""
+def cue_rule(css: str, cue: str = ARRIVAL_CUE) -> list[str]:
+    """Every selector of the rules that mark a focused help target with ``cue``, as written:
+    the arrival cue, or a problem line's widened edge."""
     plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
     found: list[str] = []
     for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain):
-        if "outline: 2px solid var(--blue-action);" in inside:
+        if " ".join(inside.split()) == cue:
             found.extend(part.strip() for part in head.split(","))
     return found
 
@@ -1127,16 +1130,16 @@ def test_a_parents_press_from_a_page_left_open_is_refused_in_help_with_the_focus
 
 
 def lands_on_a_focus_target(page: str, address: str) -> str:
-    """The element an address lands on, which must take the focus and be outlined when it
-    does; its opening tag."""
+    """The element an address lands on, which must take the focus and show the arrival cue
+    when it does; its opening tag."""
     target = lands_on(page, address)
     assert target, address
     assert 'tabindex="-1"' in target, target
-    targets = outline_rule(CSS)
+    targets = cue_rule(CSS)
     if target.startswith("<section"):
         assert "#help-she-asked-for:focus" in targets
     else:
-        assert '.help-panel [tabindex="-1"]:focus' in targets
+        assert '.help-panel [tabindex="-1"]:not(.problem):focus' in targets
     return target
 
 
@@ -1186,7 +1189,7 @@ def test_every_help_link_and_redirect_lands_on_a_target_that_takes_the_focus(
     for where in (fresh, again, note_again.headers["location"]):
         assert where.endswith("#help-result")
         assert lands_on_a_focus_target(landings[where], where) == RESULT
-    assert ".update-result:focus" in outline_rule(CSS)
+    assert ".update-result:focus" in cue_rule(CSS)
 
     with household(tmp_path, "parent") as client:
         asked(state_of(client).help_requests, "Synthetic question")
@@ -1230,12 +1233,18 @@ def test_every_address_naming_help_lands_on_its_heading_and_never_on_the_panel(
         assert page.index(LANDING) < page.index(HER_LANDING) < page.index("Stuck on homework")
 
 
-def test_the_help_section_is_outlined_on_focus_its_links_are_tall_and_its_words_wrap() -> None:
-    targets = outline_rule(CSS)
+def test_help_takes_the_arrival_cue_on_focus_its_links_are_tall_and_its_words_wrap() -> None:
+    """Help's places to land take a tint and a bar with no outline around them, its problem
+    lines widen their own edge, and the panel itself is no place to land."""
+    targets = cue_rule(CSS)
     tall = in_sentence_rule(CSS)
 
-    for selector in ('.help-panel [tabindex="-1"]:focus', "#help-she-asked-for:focus"):
+    for selector in (
+        '.help-panel [tabindex="-1"]:not(.problem):focus',
+        "#help-she-asked-for:focus",
+    ):
         assert selector in targets
+    assert '.help-panel .problem[tabindex="-1"]:focus' in cue_rule(CSS, PROBLEM_CUE)
     assert ".help-panel:focus" not in targets
     assert ".help-panel .problem a" in tall
     assert ".help-panel #ask-for-help a" in tall
