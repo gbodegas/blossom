@@ -52,12 +52,14 @@ from tests.support import (
     NOTE_AT,
     NOTE_DAY,
     PAGE_HEADERS,
+    PROBLEM_CUE,
     Answer,
     HeldByAnother,
     Statements,
     after_the_failure,
     browser,
     database_of,
+    declared_for,
     every_row,
     form_fields,
     household_client,
@@ -1495,17 +1497,14 @@ def test_the_gone_pages_way_back_is_the_safe_default_when_none_these_pages_make_
 # ------------------------------------------------------------- the small page's Try again
 
 
-def test_the_small_pages_explanation_is_outlined_and_its_try_again_is_as_tall_as_a_control() -> (
+def test_the_small_pages_explanation_widens_its_edge_and_try_again_is_as_tall_as_a_control() -> (
     None
 ):
-    """The small page's focused explanation takes the outline every other focused explanation
-    has, drawn around the sentence alone, and the link inside it keeps its place in the line
-    and takes the height of a control. The browser shows what they give; here the rules are
-    pinned."""
-    assert any(
-        "outline: 2px solid var(--blue-action);" in inside
-        for inside in rules_named("#note-problem:focus")
-    )
+    """The small page's focused explanation keeps its own tint and widens its edge, as every
+    other focused problem line does, with no outline around it, and the link inside it keeps
+    its place in the line and takes the height of a control. The browser shows what they
+    give; here the rules are pinned."""
+    assert declared_for("#note-problem:focus") == [PROBLEM_CUE]
     assert any(
         "display: inline-block;" in inside
         and "padding: 0.8rem 0;" in inside

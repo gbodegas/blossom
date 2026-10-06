@@ -288,6 +288,14 @@ no more. What to do about it, when anything can be done, is the stale warning's 
 UPDATE_SAVED: Final = "Your update is saved."
 UPDATE_ALREADY_SAVED: Final = "Your update is already saved."
 UPDATE_UNDONE: Final = "Your update is undone."
+"""What an Undo is said to have done when her history does not end in that undo: an update
+saved after it, or updates that cannot be read."""
+UNDONE_TO_NOTHING: Final = "Last update undone. No update is recorded."
+UNDONE_TO_NOT_YET: Final = "Last update undone. This is Not yet again."
+UNDONE_STILL_DONE: Final = "Last update undone. This is still Done."
+UNDONE_DONE_AGAIN: Final = "Last update undone. This is Done again."
+"""What Undo last update restored: no update, a Not yet, the Done a note edit was made on, or
+a Done that a Not yet was saved over."""
 CHOOSE_ONE: Final = "Choose Done or Not yet."
 NOTE_TOO_LONG: Final = f"Keep your note to {UPDATE_NOTE_MAX_LENGTH} characters or fewer."
 SAVED_ELSEWHERE: Final = "An update was saved on another device. Review it before saving yours."
@@ -496,6 +504,8 @@ TURNING_IT_IN: Final = "turning-it-in"
 ASK_FOR_HELP: Final = "ask-for-help"
 """The id of the place on her week that holds her Ask for help form, or a parent's line
 about her requests."""
+HOMEWORK: Final = "homework"
+"""The id of her week's homework heading, where Refresh list lands."""
 FAMILY_HELP: Final = f"{FAMILY_PAGE}#help-she-asked-for"
 """The help she asked for, on the family page, where a parent answers it."""
 HAND_IN_SAVED: Final = "Your hand-in update is saved."
@@ -2000,6 +2010,8 @@ def student_page(
         for item in listed
         if kept.shown_done(item.assignment_id, item.update_status == "done")
     }
+    for item in listed:
+        card = said_after_undo(card, item)
     by_a_card = card is not None and card.problem is not None and problem is None
     # A card's problem is said on the card only when the card is on the page: a form made
     # for an id that is not on record is refused before any lookup, and has no card.
@@ -2023,6 +2035,18 @@ def student_page(
                 for item in listed
             },
             "shown_done": shown_done,
+            # Whether a card of this week's list, or of the work given out for later, is shown
+            # away from the group its saved update puts it in, and the plain address that asks
+            # for the week again, grouped, at its homework heading.
+            "held": {
+                "week": held_from_its_group(view.assignments, shown_done),
+                "later": held_from_its_group(view.assigned_this_week, shown_done),
+            },
+            "refresh_list": address(
+                WEEK_PAGE,
+                fragment=HOMEWORK,
+                week=None if view.week.current else view.week.start.isoformat(),
+            ),
             # What Earlier homework to check's presses carry, so a choice keeps every card
             # this visit keeps where it was.
             "earlier_in_place": kept.said(),
@@ -2260,6 +2284,33 @@ def met(card: CardState | None, left: str | None) -> CardState | None:
     if newly_done(left) != place_key(card.assignment_id):
         return card
     return replace(card, well_done=WELL_DONE)
+
+
+def what_undo_restored(assignment: StudentAssignmentView) -> str:
+    """What Undo last update restored, read from her history as the page shows it. A history
+    that does not end in the undo says only that her update is undone."""
+    history = assignment.update_history
+    if assignment.updates_unavailable or not history or history[-1].operation != UNDO:
+        return UPDATE_UNDONE
+    if assignment.update_status is None:
+        return UNDONE_TO_NOTHING
+    if assignment.update_status != DONE:
+        return UNDONE_TO_NOT_YET
+    taken_back = history[-2].status if len(history) > 1 else None
+    return UNDONE_STILL_DONE if taken_back == DONE else UNDONE_DONE_AGAIN
+
+
+def said_after_undo(card: CardState | None, assignment: StudentAssignmentView) -> CardState | None:
+    """The card an Undo names, saying what it restored once the page has read the card."""
+    if card is None or card.said != UPDATE_UNDONE or card.assignment_id != assignment.assignment_id:
+        return card
+    return replace(card, said=what_undo_restored(assignment))
+
+
+def held_from_its_group(cards: Sequence[StudentAssignmentView], shown_done: set[str]) -> bool:
+    """Whether any of these cards is shown away from the group its saved update puts it in:
+    Done among the active cards, or anything else in the fold of finished homework."""
+    return any((card.assignment_id in shown_done) != (card.update_status == DONE) for card in cards)
 
 
 def carrying(query: bytes, kept: InPlace) -> bytes:
@@ -2701,6 +2752,7 @@ def detail_page(
         instructions=instructions.readable.get(assignment_id),
         instructions_unreadable=assignment_id in instructions.unreadable,
     )
+    card = said_after_undo(card, view)
     link = way_back(state, back, assignment_id, today=today)
     # Which of the school's instructions apply is the family's to choose: a parent's, or the
     # household's with the sign-in off when it came from the family's pages. She reads them.

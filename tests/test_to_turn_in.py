@@ -196,7 +196,7 @@ def test_the_list_holds_what_is_still_to_turn_in_whatever_the_work_or_the_week()
     assert listed(page) == ["done-work", "far-off"]
     assert listed(section(week)) == ["done-work", "far-off"]
     assert "To turn in (2)" in week
-    assert week.index("Reported done (1)") < week.index('id="to-turn-in"')
+    assert week.index("Finished homework (1)") < week.index('id="to-turn-in"')
 
 
 def test_with_every_assignment_done_her_week_still_leads_to_what_is_left_to_turn_in() -> None:
@@ -216,7 +216,7 @@ def test_with_every_assignment_done_her_week_still_leads_to_what_is_left_to_turn
     assert f'<a href="{TO_TURN_IN_PAGE}">To turn in (1)</a>' in today
     assert listed(section(week)) == [ESSAY_ID]
     assert PRESS in section(week)
-    assert week.index("Reported done (") < week.index('id="to-turn-in"')
+    assert week.index("Finished homework (") < week.index('id="to-turn-in"')
     assert "<details" not in section(week)
 
 
