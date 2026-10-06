@@ -533,7 +533,8 @@ article h2 {
    set apart from the next by a rule, with no list marker beside it, so the bar an arrival
    draws at a request's left edge stays clear. Each part of a request is a line of its own:
    where it stands, whose words and what they say, when she asked, the note it is about, a
-   parent's reply under its own label, and the controls. */
+   parent's latest update under its own label with the earlier ones folded below it, and
+   the controls. */
 .help {
   margin: 1rem 0 0;
   padding: 0;

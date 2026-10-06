@@ -363,21 +363,25 @@ def test_take_it_back_names_her_request_by_its_time_and_day_in_one_label() -> No
 
 
 def test_the_family_pages_help_buttons_name_her_request_by_its_own_day_and_time() -> None:
-    """I can help and Mark resolved say their words, then the request they move, by the day
-    and time it was asked, never the evening's day beside the request's time."""
+    """I can help, Add an update and Close request say their words, then the request they
+    move, by the day and time it was asked, never the evening's day beside the request's
+    time."""
     with browser() as client:
         client.post("/student/help-requests", json={"note": "Synthetic question"})
         asked = client.get("/parent/help-requests").json()[0]
-        page = client.get("/parent").text
+        waiting = client.get("/parent").text
+        client.post(f"/parent/help-requests/{asked['request_id']}/accept", json={})
+        taken = client.get("/parent").text
     when = asked_on(asked)
+    moves = ("I can help", "Add an update", "Close request")
 
-    assert [
-        (shown, heard)
-        for shown, heard in control_names(page)
-        if shown in ("I can help", "Mark resolved")
-    ] == [
+    assert [(shown, heard) for shown, heard in control_names(waiting) if shown in moves] == [
         ("I can help", f"I can help with the request from {when}"),
-        ("Mark resolved", f"Mark resolved: request from {when}"),
+        ("Close request", f"Close request from {when}"),
+    ]
+    assert [(shown, heard) for shown, heard in control_names(taken) if shown in moves] == [
+        ("Add an update", f"Add an update to the request from {when}"),
+        ("Close request", f"Close request from {when}"),
     ]
 
 

@@ -5,17 +5,30 @@
 Asking for help is a gesture like the "too much" signal: one press, with a
 sentence if she wants one and no form to fill. Unlike the signal, it is
 addressed to a person, so it has a state a person moves: requested, until a
-parent takes it up; accepted, while the parent is on it; resolved, with a
-word back if they left one. Each step shows on her page in plain words, and
-nothing says a parent is looking into something before that parent has said
-so. She can take a request back while nobody has taken it up.
+parent takes it up; accepted, while the parent is on it; resolved, once a
+parent closes it. Each step shows on her page in plain words, and nothing
+says a parent is looking into something before that parent has said so. She
+can take a request back while nobody has taken it up.
 
-The store keeps a resolved request for two weeks, long enough for the word
-back to be read, and applies that cutoff on every read as well as in the
-sweep. An open request is kept until someone resolves it: a request is a
-question to a person, and a question nobody has answered is not old news.
-Nothing here counts requests or groups them by anything; a record like that
-would be about her rather than about the help.
+A parent's words go on the request as updates, in the order they came: words
+sent with I can help, each update added while the request is taken up, and
+any final words sent with the close. Each is an append in one statement, so
+two sent at once both stay, and a closed request takes none. Each of a
+parent's forms carries an id of its own, kept with the update it added: the
+same form sent again with the same words finds that update and writes
+nothing, and a second I can help adds no words at all, so no message is
+added twice. The latest update's words are kept in the reply's own column as
+well, so a build that reads only that column still shows the latest. A reply
+kept from before updates becomes the request's first update at the next
+start, with no time, since none was kept.
+
+The store keeps a resolved request for two weeks, long enough for a parent's
+updates to be read, and applies that cutoff on every read as well as in the
+sweep; the updates are in the request's row, so they go with it. An open
+request is kept until someone resolves it: a request is a question to a
+person, and a question nobody has answered is not old news. Nothing here
+counts requests or groups them by anything; a record like that would be
+about her rather than about the help.
 
 A request can be about one of her homework notes. It then carries the note's
 id and nothing of its words: the note is shown beside the request from the
@@ -33,10 +46,13 @@ never makes another, even after its request is taken back or gone: only the
 id is kept for that, and nothing else of the request.
 """
 
+import json
 import logging
 import re
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -53,7 +69,7 @@ from blossom.unreadable import refusal_in_names, text_or_refusal
 logger = logging.getLogger(__name__)
 
 HELP_RETENTION_DAYS: Final = 14
-"""How long a resolved request is kept: long enough for the word back to be read."""
+"""How long a resolved request is kept: long enough for a parent's updates to be read."""
 
 HELP_RECENT_DAYS: Final = 7
 """How long a resolved request stays among her help updates, counted from when it was
@@ -61,13 +77,24 @@ resolved. After that it is kept apart, with those resolved earlier, until retent
 takes it."""
 
 NOTE_MAX_LENGTH: Final = 500
-"""The most that is kept of her note or a parent's word back: a sentence or two,
+"""The most that is kept of her note or of a parent's update: a sentence or two,
 the same cap as everywhere else words are typed into this application."""
 
 HelpState = Literal["requested", "accepted", "resolved"]
 """Where a request stands: asked and not yet taken up, taken up by a parent, or
 answered. Only a parent moves it forward; only she takes it back, and only
 while it is still just requested."""
+
+
+class ParentUpdate(BaseModel):
+    """One message a parent added to a request: the id of the form that added it, its words,
+    and when, by the real clock, or no time for a reply kept from before updates."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    update_id: str
+    body: str = Field(min_length=1, max_length=NOTE_MAX_LENGTH)
+    written_at: AwareDatetime | None = None
 
 
 class HelpRequest(BaseModel):
@@ -86,7 +113,10 @@ class HelpRequest(BaseModel):
     accepted_at: AwareDatetime | None = None
     resolved_at: AwareDatetime | None = None
     response: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
-    """The parent's word back, left when taking the request up or resolving it."""
+    """The latest update's words, kept in the reply's own column for a build that reads only
+    that column."""
+    parent_updates: tuple[ParentUpdate, ...] = ()
+    """What parents added, in the order it came: the last is the latest."""
     capture_id: str | None = None
     """The homework note the request is about, when it is about one. Only the id: her
     note's words are never copied here."""
@@ -111,7 +141,80 @@ class RequestClosed(RuntimeError):
         self.request = request
 
 
+class AlreadyTakenUp(RuntimeError):
+    """Raised for I can help on a request a parent has taken up, with words that are not among
+    its updates: nothing is written, and the words are the caller's to keep."""
+
+    def __init__(self, request: HelpRequest) -> None:
+        super().__init__(f"request {request.request_id!r} is already taken up")
+        self.request = request
+
+
+class NotTakenUp(RuntimeError):
+    """Raised for an update to a request nobody has taken up yet: nothing is written."""
+
+    def __init__(self, request: HelpRequest) -> None:
+        super().__init__(f"request {request.request_id!r} is not taken up yet")
+        self.request = request
+
+
+class UpdateFormUsed(RuntimeError):
+    """Raised when the form's id already added an update with other words: nothing is
+    written, so those words are neither lost nor added in that update's place."""
+
+    def __init__(self, request: HelpRequest) -> None:
+        super().__init__(f"the form already added other words to request {request.request_id!r}")
+        self.request = request
+
+
+class UpdateWithoutWords(ValueError):
+    """Raised for an update with no words: an update is its words, so nothing is written."""
+
+
 HELP_REQUEST_COLUMNS: Final = "PRAGMA table_info(help_requests)"
+UPDATES_COLUMN: Final = "ALTER TABLE help_requests ADD COLUMN parent_updates TEXT"
+EARLIER_REPLIES: Final = """
+    UPDATE help_requests
+    SET parent_updates = json_array(
+        json_object('id', lower(hex(randomblob(16))), 'body', response, 'written_at', NULL)
+    )
+    WHERE typeof(response) = 'text'
+      AND length(trim(response, ' ' || char(9, 10, 13))) > 0
+      AND CASE
+          WHEN parent_updates IS NULL THEN 1
+          WHEN typeof(parent_updates) = 'text' AND json_valid(parent_updates)
+              THEN json_type(parent_updates) = 'array' AND json_array_length(parent_updates) = 0
+          ELSE 0
+      END
+"""
+"""A reply kept with no updates beside it becomes the request's one update, with no time, as
+the first start with updates finds it and as any later start finds one a build that reads
+only the reply has written. A value in the updates' place that is no list is left as it is."""
+TAKE_UP: Final = """
+    UPDATE help_requests SET state = 'accepted', accepted_at = ?
+    WHERE request_id = ? AND state = 'requested'
+"""
+ADD_UPDATE: Final = """
+    UPDATE help_requests
+    SET parent_updates = json_insert(
+            COALESCE(parent_updates, '[]'),
+            '$[#]',
+            json_object('id', ?, 'body', ?, 'written_at', ?)
+        ),
+        response = ?
+    WHERE request_id = ? AND state = ?
+      AND NOT EXISTS (
+          SELECT 1 FROM json_each(COALESCE(parent_updates, '[]'))
+          WHERE json_extract(value, '$.id') = ?
+      )
+"""
+"""One update appended in one statement, which holds only while the request is in the state
+given and the form's id is not on it yet."""
+CLOSE: Final = """
+    UPDATE help_requests
+    SET state = 'resolved', resolved_at = ?, accepted_at = COALESCE(accepted_at, ?)
+    WHERE request_id = ? AND state <> 'resolved'
+"""
 INSERT_HELP_REQUEST: Final = """
     INSERT INTO help_requests (request_id, evening, asked_at, note, state, capture_id)
     VALUES (?, ?, ?, ?, 'requested', ?)
@@ -186,6 +289,21 @@ def request_id_from(value: str) -> str:
     return value
 
 
+def new_update_id() -> str:
+    """A fresh id for one form that moves a request: I can help, Add an update, or Close
+    request. Making one writes nothing."""
+    return uuid4().hex
+
+
+def update_id_from(value: str) -> str:
+    """The id a parent's form sent, held to the shape ``new_update_id`` makes, or
+    ``NotARequestId``, as for any id no form of these pages carries."""
+    if REQUEST_ID.fullmatch(value) is None:
+        msg = "not a form id"
+        raise NotARequestId(msg)
+    return value
+
+
 @dataclass(frozen=True)
 class HelpAsked:
     """A request made now, under the form's id."""
@@ -226,11 +344,12 @@ class HelpRequestsStore:
 
     name = "help_requests"
     retention_policy = (
-        "Keep a request until a parent resolves it, and for fourteen days after, so the word "
-        "back can be read; nothing older stays, and nothing is ever derived from how often "
-        "she asks. The id of a note a request named is kept after the request goes, and "
-        "nothing else of it, so that note is never deleted. The id of every request is kept "
-        "for good, and nothing else of it, so a form sent again never asks twice."
+        "Keep a request, with a parent's updates on it, until a parent closes it, and for "
+        "fourteen days after, so the updates can be read; nothing older stays, and nothing is "
+        "ever derived from how often she asks. The id of a note a request named is kept after "
+        "the request goes, and nothing else of it, so that note is never deleted. The id of "
+        "every request is kept for good, and nothing else of it, so a form sent again never "
+        "asks twice."
     )
 
     def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
@@ -250,26 +369,31 @@ class HelpRequestsStore:
                 accepted_at TEXT,
                 resolved_at TEXT,
                 response TEXT,
-                capture_id TEXT
+                capture_id TEXT,
+                parent_updates TEXT
             )
             """
         )
-        # A file from before has the table without the last column. One nullable column
-        # is added, once: every request already there reads as about no note, and a
-        # start that meets the column again adds nothing.
+        # A file from before has the table without one or both of the last columns. Each
+        # nullable column is added, once: every request already there reads as about no
+        # note and with no updates, and a start that meets the columns again adds nothing.
         columns = {str(row[1]) for row in self._connection.execute(HELP_REQUEST_COLUMNS)}
         if "capture_id" not in columns:
             self._connection.execute("ALTER TABLE help_requests ADD COLUMN capture_id TEXT")
+        if "parent_updates" not in columns:
+            self._connection.execute(UPDATES_COLUMN)
         self._connection.commit()
         # The notes a request ever named, and the ids every request was asked under, by
         # id alone. Taking a request back or sweeping it leaves both. Each start fills
-        # them from the requests still here, in one transaction with the tables.
+        # them from the requests still here, in one transaction with the tables, and in
+        # the same transaction a reply kept with no updates becomes its request's first.
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             self._connection.execute(NOTES_NAMED_TABLE)
             self._connection.execute(NOTES_NAMED_FROM_REQUESTS)
             self._connection.execute(IDS_TABLE)
             self._connection.execute(IDS_FROM_REQUESTS)
+            self._connection.execute(EARLIER_REPLIES)
             self._connection.commit()
         except BaseException:
             self._connection.rollback()
@@ -406,46 +530,123 @@ class HelpRequestsStore:
             self._connection.execute("DELETE FROM help_requests WHERE request_id=?", (request_id,))
         return True
 
-    def accept(self, request_id: str, response: str | None = None) -> HelpRequest:
-        """A parent takes the request up, with a word back if given.
+    def accept(
+        self, request_id: str, response: str | None = None, *, update_id: str | None = None
+    ) -> HelpRequest:
+        """A parent takes the request up, with any words as its first update.
 
-        Taking up one already taken up changes nothing, words included: the
-        word she has already read stays, whatever comes with the repeat.
+        A second I can help adds nothing. Sent with no words, with words
+        already among the updates, or as the same form again, it is the
+        request as it stands; other words are ``AlreadyTakenUp``, so they are
+        neither added twice nor lost. A closed request is ``RequestClosed``,
+        unless this form's words are on it already. ``update_id`` is the
+        form's id; with none, the move counts as a form of its own.
         """
-        stamp = self._clock.now().isoformat()
-        with self._lock, self._connection:
+        words, form = given_words(response), form_id(update_id)
+        now = self._clock.now()
+        update = None if words is None else ParentUpdate(update_id=form, body=words, written_at=now)
+        with self._writing():
             current = self._read(request_id)
+            if current.state == "requested":
+                self._connection.execute(TAKE_UP, (now.isoformat(), request_id))
+                if update is not None:
+                    self._append(request_id, "accepted", update)
+                return self._read(request_id)
+            if retried(current, form, words):
+                return current
             if current.state == "resolved":
                 raise RequestClosed(current, "taken up")
-            if current.state == "accepted":
+            if words is None or on_record(current, words):
                 return current
-            self._connection.execute(
-                """
-                UPDATE help_requests
-                SET state='accepted', accepted_at=?, response=?
-                WHERE request_id=?
-                """,
-                (stamp, response, request_id),
-            )
-            return self._read(request_id)
+            raise AlreadyTakenUp(current)
 
-    def resolve(self, request_id: str, response: str | None = None) -> HelpRequest:
-        """A parent answers the request, from either open state, with a word back if given."""
-        stamp = self._clock.now().isoformat()
-        with self._lock, self._connection:
+    def add_update(
+        self, request_id: str, body: str | None, *, update_id: str | None = None
+    ) -> HelpRequest:
+        """A parent adds words to a request a parent has taken up, and it stays open.
+
+        The words are appended in one statement that holds only while the
+        request is taken up and the form's id is not on it yet. The same form
+        sent again with the same words is the request as it stands; with other
+        words it is ``UpdateFormUsed``. A closed request is ``RequestClosed``,
+        one nobody has taken up is ``NotTakenUp``, and no words at all is
+        ``UpdateWithoutWords``; each writes nothing.
+        """
+        words, form = given_words(body), form_id(update_id)
+        if words is None:
+            msg = "an update has no words"
+            raise UpdateWithoutWords(msg)
+        update = ParentUpdate(update_id=form, body=words, written_at=self._clock.now())
+        with self._writing():
+            if self._append(request_id, "accepted", update):
+                return self._read(request_id)
+            current = self._read(request_id)
+            if retried(current, form, words):
+                return current
+            if current.state == "resolved":
+                raise RequestClosed(current, "given an update")
+            if current.state == "requested":
+                raise NotTakenUp(current)
+            raise UpdateFormUsed(current)
+
+    def resolve(
+        self, request_id: str, response: str | None = None, *, update_id: str | None = None
+    ) -> HelpRequest:
+        """A parent closes the request, from either open state, any words added first as its
+        latest update.
+
+        A closed request closed again changes nothing when the close carries
+        no words or is this form's again; other words are ``RequestClosed``,
+        for the caller to keep. A form whose id already added other words
+        closes nothing and is ``UpdateFormUsed``.
+        """
+        words, form = given_words(response), form_id(update_id)
+        now = self._clock.now()
+        update = None if words is None else ParentUpdate(update_id=form, body=words, written_at=now)
+        with self._writing():
             current = self._read(request_id)
             if current.state == "resolved":
+                if words is None or retried(current, form, words):
+                    return current
                 raise RequestClosed(current, "resolved again")
-            self._connection.execute(
-                """
-                UPDATE help_requests
-                SET state='resolved', resolved_at=?, accepted_at=COALESCE(accepted_at, ?),
-                    response=COALESCE(?, response)
-                WHERE request_id=?
-                """,
-                (stamp, stamp, response, request_id),
-            )
+            if update is not None and not retried(current, form, words):
+                if any(added.update_id == form for added in current.parent_updates):
+                    raise UpdateFormUsed(current)
+                self._append(request_id, current.state, update)
+            self._connection.execute(CLOSE, (now.isoformat(), now.isoformat(), request_id))
             return self._read(request_id)
+
+    @contextmanager
+    def _writing(self) -> Iterator[None]:
+        """One move under the lock, with the file's writer reserved before anything is read:
+        committed whole when the move returns, rolled back whole when it raises."""
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+
+    def _append(self, request_id: str, state: HelpState, update: ParentUpdate) -> bool:
+        """Append one update inside the caller's transaction, while the request is in
+        ``state`` and the update's form id is not on it, with its words as the reply's too;
+        whether it was appended."""
+        written = None if update.written_at is None else update.written_at.isoformat()
+        appended = self._connection.execute(
+            ADD_UPDATE,
+            (
+                update.update_id,
+                update.body,
+                written,
+                update.body,
+                request_id,
+                state,
+                update.update_id,
+            ),
+        )
+        return appended.rowcount == 1
 
     def get(self, request_id: str) -> HelpRequest | None:
         """One request by id, or ``None``, a resolved one past retention counting as none.
@@ -537,6 +738,56 @@ def spaced(words: str | None) -> str:
     return " ".join((words or "").split())
 
 
+def given_words(words: str | None) -> str | None:
+    """A parent's words as a move takes them: ``None`` for none, a blank included."""
+    return words if words is not None and words.strip() else None
+
+
+def form_id(update_id: str | None) -> str:
+    """The id of the form a move came from, held to its shape, or a fresh one for a caller with
+    no form to send twice."""
+    return new_update_id() if update_id is None else update_id_from(update_id)
+
+
+def retried(request: HelpRequest, form: str, words: str | None) -> bool:
+    """Whether this form's id already added these words to the request, spaced alike or not:
+    the same form sent again."""
+    return any(
+        update.update_id == form and spaced(update.body) == spaced(words)
+        for update in request.parent_updates
+    )
+
+
+def on_record(request: HelpRequest, words: str) -> bool:
+    """Whether these words, spaced alike or not, are among the request's updates already."""
+    return any(spaced(update.body) == spaced(words) for update in request.parent_updates)
+
+
+def updates_from(held: object) -> tuple[ParentUpdate, ...]:
+    """A request's updates from what the file holds: none for nothing held, else the list of
+    updates as this store writes it. Anything else is ``ValueError`` or ``TypeError``, in
+    words that repeat none of what is held."""
+    if held is None:
+        return ()
+    if type(held) is not str:
+        msg = "the updates are held as no text"
+        raise TypeError(msg)
+    items = json.loads(held)
+    if type(items) is not list:
+        msg = "the updates are held as no list"
+        raise TypeError(msg)
+    updates = []
+    for item in items:
+        if type(item) is not dict:
+            msg = "an update is held as no object"
+            raise TypeError(msg)
+        held_as = {"update_id": "id", "body": "body", "written_at": "written_at"}
+        updates.append(
+            ParentUpdate.model_validate({name: item.get(key) for name, key in held_as.items()})
+        )
+    return tuple(updates)
+
+
 def request_from(row: sqlite3.Row) -> HelpRequest:
     """Build a request from a row read by column name, or ``UnreadableHelpRequest``, raised
     after the except block so the refusal, which can repeat her words, goes nowhere."""
@@ -557,6 +808,7 @@ def request_from(row: sqlite3.Row) -> HelpRequest:
             accepted_at=when(row["accepted_at"]),
             resolved_at=when(row["resolved_at"]),
             response=None if response is None else str(response),
+            parent_updates=updates_from(row["parent_updates"]),
             capture_id=capture_id,
             capture_reference_unreadable=unreadable,
         )

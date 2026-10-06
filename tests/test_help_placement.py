@@ -41,6 +41,7 @@ from tests.support import (
     control_names,
     help_group,
     help_reply,
+    help_updates,
     lands_on,
     signed_in,
     signed_in_household,
@@ -96,7 +97,8 @@ PARENT_LINK = '<a class="to-help" href="#help">Her help requests</a>'
 FOLD_OPEN = '<details class="steps resolved" id="help-older" open>'
 WAITING = "Waiting for a parent."
 HELPING = "A parent is helping."
-REPLY = ("label", "Parent reply")
+REPLY = ("label", "Parent update")
+EARLIER_REPLY = ("label", "Earlier reply")
 NO_WORDS = ("words", "No words with it.")
 
 Reader = Literal["her", "parent", "open"]
@@ -545,7 +547,11 @@ def test_a_closed_request_says_a_parent_closed_it_on_its_own_day(reply: str | No
         ("words", "Synthetic question"),
         ("when", "Requested: Thursday, August 20 at 11:30 PM"),
         ("when", "For Wednesday, August 19"),
-        *([REPLY, ("words", reply)] if reply is not None else []),
+        *(
+            [REPLY, ("words", reply), ("when", "Added: Thursday, August 20 at 11:30 PM")]
+            if reply is not None
+            else []
+        ),
         ("actions", "Ask again"),
     ]
     assert "Resolved" not in section(page)
@@ -630,6 +636,7 @@ def test_each_request_is_one_group_said_in_the_readers_words(
     def at(minute: int) -> tuple[str, str]:
         return ("when", f"Requested: Wednesday, August 19 at 5:0{minute} PM")
 
+    added = ("when", "Added: Wednesday, August 19 at 5:04 PM")
     assert {name: help_group(row(page, request_id)) for name, request_id in made.items()} == {
         "waiting": [("state", WAITING), said, ("words", "Synthetic waiting"), at(0), *take_back],
         "taken": [
@@ -639,6 +646,7 @@ def test_each_request_is_one_group_said_in_the_readers_words(
             at(1),
             REPLY,
             ("words", "Synthetic on it"),
+            added,
         ],
         "closed": [
             closed_on,
@@ -647,6 +655,7 @@ def test_each_request_is_one_group_said_in_the_readers_words(
             at(2),
             REPLY,
             ("words", "Synthetic closed reply"),
+            added,
             *again,
         ],
         "quiet": [closed_on, said, ("words", "Synthetic quiet"), at(3), *again],
@@ -770,6 +779,131 @@ def test_a_closed_request_reads_the_same_in_help_updates_and_in_the_fold_below()
     assert help_group(recent) == [*help_group(folded), ("actions", "Ask again")]
     without_controls = re.sub(r'<p class="help-actions">.*?</p>', "", recent, flags=re.S)
     assert " ".join(without_controls.split()) == " ".join(folded.split())
+
+
+# ------------------------------------------------------------------ a parent's updates
+
+
+EARLIER = re.compile(
+    r'<details class="help-earlier">\s*<summary>Earlier updates \((\d+)\)</summary>'
+)
+
+
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_the_latest_update_leads_and_the_earlier_ones_fold_in_the_order_they_came(
+    reader: Reader, tmp_path: pathlib.Path
+) -> None:
+    """The latest update, with Parent update over it and its own day and time under it, then
+    Earlier updates, folded, holding the rest oldest first. One update has no fold."""
+    with household(tmp_path, reader) as client:
+        store, clock = pinned_help(client)
+        several = asked(store, "Synthetic several")
+        once = asked(store, "Synthetic once")
+        clock.at = T0 + timedelta(hours=1)
+        store.accept(several, "Synthetic first")
+        store.accept(once, "Synthetic only")
+        clock.at = T0 + timedelta(hours=2)
+        store.add_update(several, "Synthetic second")
+        clock.at = datetime(2026, 8, 20, 13, 5, tzinfo=UTC)
+        store.add_update(several, "Synthetic third")
+        page = client.get(PAGE).text
+
+    shown = row(page, several)
+    folded = EARLIER.search(shown)
+    assert help_group(shown) == [
+        ("state", HELPING),
+        label_for(reader),
+        ("words", "Synthetic several"),
+        ("when", "Requested: Wednesday, August 19 at 5:00 PM"),
+        REPLY,
+        ("words", "Synthetic third"),
+        ("when", "Added: Thursday, August 20 at 9:05 AM"),
+        REPLY,
+        ("words", "Synthetic first"),
+        ("when", "Added: Wednesday, August 19 at 6:00 PM"),
+        REPLY,
+        ("words", "Synthetic second"),
+        ("when", "Added: Wednesday, August 19 at 7:00 PM"),
+    ]
+    assert folded is not None
+    assert folded.group(1) == "2"
+    assert shown.index("Synthetic third") < folded.start() < shown.index("Synthetic first")
+    assert help_group(row(page, once))[-3:] == [
+        REPLY,
+        ("words", "Synthetic only"),
+        ("when", "Added: Wednesday, August 19 at 6:00 PM"),
+    ]
+    assert "help-earlier" not in row(page, once)
+    for never in ("Parent reply", "replaces"):
+        assert never not in section(page)
+
+
+def test_a_reply_kept_from_before_updates_reads_as_an_earlier_reply_with_no_time() -> None:
+    """A reply the file kept before updates had times becomes the request's first update at
+    the next start: Earlier reply, with no time, and folded under a later update."""
+    with browser() as client:
+        store, clock = pinned_help(client)
+        alone = asked(store, "Synthetic alone")
+        followed = asked(store, "Synthetic followed")
+        for request_id, reply in ((alone, "Synthetic old reply"), (followed, "Synthetic before")):
+            store._connection.execute(
+                "UPDATE help_requests SET state = 'accepted', accepted_at = ?, response = ?, "
+                "parent_updates = NULL WHERE request_id = ?",
+                (T0.isoformat(), reply, request_id),
+            )
+        store._connection.commit()
+        store, clock = pinned_help(client, T0 + timedelta(hours=1))
+        store.add_update(followed, "Synthetic after")
+        page = client.get(PAGE).text
+
+    assert help_group(row(page, alone))[-2:] == [EARLIER_REPLY, ("words", "Synthetic old reply")]
+    assert help_group(row(page, followed))[-5:] == [
+        REPLY,
+        ("words", "Synthetic after"),
+        ("when", "Added: Wednesday, August 19 at 6:00 PM"),
+        EARLIER_REPLY,
+        ("words", "Synthetic before"),
+    ]
+    folded = EARLIER.search(row(page, followed))
+    assert folded is not None
+    assert folded.group(1) == "1"
+    assert "Earlier updates" not in row(page, alone)
+
+
+def test_both_pages_show_the_same_saved_messages_for_each_request(tmp_path: pathlib.Path) -> None:
+    """Her week, read by a parent, and the family page show each request through the one
+    group: the same lines in the same order, waiting, taken up with updates, and closed."""
+    with household(tmp_path, "parent") as client:
+        store, clock = pinned_help(client)
+        waiting = asked(store, "Synthetic waiting")
+        taken = asked(store, "Synthetic taken")
+        done = asked(store, "Synthetic done")
+        clock.at = T0 + timedelta(hours=1)
+        store.accept(taken, "Synthetic on it")
+        store.accept(done)
+        clock.at = T0 + timedelta(hours=2)
+        store.add_update(taken, "Synthetic update")
+        store.add_update(done, "Synthetic done update")
+        store.resolve(done, "Synthetic last")
+        week = client.get(PAGE).text
+        family = client.get("/parent").text
+
+    def on_the_family_page(request_id: str, words: str) -> str:
+        if f'action="/parent/actions/help/{request_id}"' in family:
+            at = family.index(f'action="/parent/actions/help/{request_id}"')
+            return family[family.rindex("<article", 0, at) : at]
+        at = family.index(words)
+        return family[family.rindex('<li class="help-request">', 0, at) : family.index("</li>", at)]
+
+    for request_id, words in ((waiting, "Synthetic waiting"), (taken, "Synthetic taken")):
+        shown = on_the_family_page(request_id, words)
+        assert help_group(shown) == help_group(row(week, request_id))
+    closed_here = on_the_family_page(done, "Synthetic done</q>")
+    assert help_group(closed_here) == help_group(row(week, done))
+    assert [said for _, said, _ in help_updates(closed_here)] == [
+        "Synthetic last",
+        "Synthetic done update",
+    ]
 
 
 # ------------------------------------------------------------------ each reader

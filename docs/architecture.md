@@ -680,7 +680,7 @@ still answers the structured side for one that would.
 | `DraftsStore` | Every draft that reached the gate, as its text and, in a nullable versioned column, the plan as data; every decision about it; and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
 | `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her |
-| `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, the parent's word back, and the id of the homework note a request is about, never the note's words | Wired and tested; in the drafts file, kept until resolved and swept two weeks after; each request's id alone is kept for good |
+| `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, a parent's updates, and the id of the homework note a request is about, never the note's words | Wired and tested; in the drafts file, kept until resolved and swept two weeks after; each request's id alone is kept for good |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -1260,7 +1260,7 @@ revision is read from a form only as these pages write it, a count from 1 in
 plain digits, because a save that asks for what already stands is answered
 before revisions are compared. The notes a request for help names are context
 for it: a read of them that fails is logged and shows each as unavailable, and
-never fails an accept or a resolve that is already written.
+never fails an accept, an update, or a close that is already written.
 
 Words are tidied on the way in and never on the way out. What a form sends is
 kept under the text rule, edges off, line endings as one kind, a blank class as
@@ -1603,23 +1603,42 @@ evening: one press, and words only if she wants them. Unlike the signal, a
 request is addressed to a person, so it has a state that a person moves.
 `HelpRequestsStore`, `blossom/stores/help_requests.py`, keeps each request as
 requested until a parent takes it up, accepted while the parent is on it, and
-resolved when they answer, with a word back at either step if they leave one.
-Her page shows the request and each step in plain words, and says a parent has
-not seen it until a parent has taken it up, so nobody is said to be looking
-into something before they have said so. She can take a request back while
-it is only requested; once a parent has taken it up, it is theirs to resolve.
-The parent's page lists what is open with the two moves under each and what
-was resolved in the last two weeks. Both pages read the same view: what a
-parent does with a request is shown to her in full, and nothing is kept about
-a request that either of them cannot see.
+resolved once a parent closes it. Her page shows the request and each step in
+plain words, and says a parent has not seen it until a parent has taken it up,
+so nobody is said to be looking into something before they have said so. She
+can take a request back while it is only requested; once a parent has taken
+it up, it is theirs to close. The parent's page lists what is open, each with
+its moves, and what was closed in the last two weeks. Both pages read the
+same view: what a parent does with a request is shown to her in full, and
+nothing is kept about a request that either of them cannot see.
+
+A parent's words are updates on the request, in `parent_updates`, a JSON list
+of `{id, body, written_at}` in the order they came, in the request's own row,
+since her week reads help in one statement. There are three moves: I can help
+takes a waiting request up, with any words as its first update; Add an update
+appends words to a request taken up, which stays open; and Close request, from
+either open state, appends any final words and then closes it. Each append is
+one statement that holds only while the request is in the right state and the
+form's id is not on it yet, so updates sent at once both stay, and a closed
+request takes none. Every form carries a one-time id: the same form sent again
+with the same words changes nothing, a close sent again succeeds, and a second
+I can help adds no words, so a message is never added twice. New words it
+carries stay in that request's Add an update box, with the reason at the top
+of the page; every refusal keeps the words typed, and nothing reopens a closed
+request. The latest update's words are kept in the `response` column too, so a
+build that reads only that column shows the latest. A reply kept from before
+updates becomes the request's first update at the next start, with no time,
+and reads as Earlier reply. Both pages show the latest update with the day and
+time it was added, and fold the earlier ones under Earlier updates. Her
+account cannot make any of these moves, and no update's words reach a log.
 
 A request is stamped by the real clock, like a signal, so retention runs even
 when the household clock is pinned. A resolved request is kept for
-`HELP_RETENTION_DAYS`, fourteen, long enough for the word back to be read, and
-the cutoff is applied on every read as well as in the hourly sweep; an open
-request is kept until someone resolves it, since a question nobody has
-answered is not old news. The store keeps no count of requests and looks for
-no pattern in them.
+`HELP_RETENTION_DAYS`, fourteen, long enough for a parent's updates to be
+read, and goes with its updates; the cutoff is applied on every read as well
+as in the hourly sweep; an open request is kept until someone resolves it,
+since a question nobody has answered is not old news. The store keeps no
+count of requests and looks for no pattern in them.
 
 On her week, help is one section below the homework, `#help`: her form, then
 the help updates, her open requests oldest first and those resolved less than

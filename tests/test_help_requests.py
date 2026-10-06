@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""Asking for help: one press from her page, a state a parent moves, each step shown to her."""
+"""Asking for help: one press from her page, a state a parent moves, each step shown to her,
+and a parent's updates, added without closing the request."""
 
+import logging
 import pathlib
 import re
 import sqlite3
-from datetime import timedelta
+import threading
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.parse import urlencode
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,9 +22,11 @@ from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.routes import student as student_routes
+from blossom.stores import help_requests as help_store
 from blossom.stores.help_requests import (
     HELP_RETENTION_DAYS,
     NOTE_MAX_LENGTH,
+    HelpRequest,
     HelpRequestsStore,
     RequestClosed,
 )
@@ -31,10 +38,14 @@ from tests.support import (
     THEIRS,
     ZONE,
     Answer,
+    SetClock,
     as_a_browser_sends,
     fixture_clock,
     fixture_settings,
     help_reply,
+    help_row,
+    help_updates,
+    refusing,
     signed_in_household,
     whole_form,
 )
@@ -46,6 +57,21 @@ CLOSED_ON = r"<strong>A parent closed this request on \w+day, \w+ \d+(, \d{4})?\
 """A closure's words on both pages. The store stamps it by the real clock, so its day varies."""
 WAITING = "<strong>Waiting for a parent.</strong>"
 HELPING = "<strong>A parent is helping.</strong>"
+ALREADY_TAKEN_UP = (
+    "This request was already taken up. Your words weren't added; they're below in Add an update."
+)
+CLOSED_BEFORE_UPDATE = "This request was closed before your update was added."
+ALREADY_CLOSED = "This request is already closed."
+FORM_ADDED_OTHER_WORDS = (
+    "This form already added an update with other words, so nothing was changed. Your words "
+    "are below in Add an update."
+)
+NOT_TAKEN_UP_YET = (
+    "This request isn't taken up yet, so your update wasn't added. Your words are below."
+)
+UPDATE_NEEDS_WORDS = "An update needs some words. Nothing was added."
+BAD_FORM = "The form did not arrive whole. Nothing was written."
+"""What the family page says for each press on a request it can't make as asked."""
 
 
 def store_in_memory(clock: FrozenClock | None = None) -> HelpRequestsStore:
@@ -86,7 +112,9 @@ def test_taking_up_then_resolving_moves_the_state_and_keeps_the_words_back() -> 
     asked = store.ask(PLAN_DATE)
 
     taken_up = store.accept(asked.request_id, "on my way")
-    again = store.accept(asked.request_id, "ignored")
+    again = store.accept(asked.request_id)
+    with pytest.raises(help_store.AlreadyTakenUp):
+        store.accept(asked.request_id, "not added")
     kept = store.get(asked.request_id)
     assert kept is not None
     assert kept.response == "on my way"
@@ -95,10 +123,11 @@ def test_taking_up_then_resolving_moves_the_state_and_keeps_the_words_back() -> 
     assert taken_up.state == "accepted"
     assert taken_up.accepted_at == fixture_clock().now()
     assert taken_up.response == "on my way"
-    assert again == taken_up
+    assert again == taken_up == kept
     assert resolved.state == "resolved"
     assert resolved.resolved_at == fixture_clock().now()
     assert resolved.response == "we did the outline together"
+    assert bodies(resolved) == ["on my way", "we did the outline together"]
     assert store.open_requests() == []
     assert [item.request_id for item in store.recently_resolved()] == [asked.request_id]
 
@@ -114,10 +143,13 @@ def test_a_request_taken_up_cannot_be_taken_back_and_a_resolved_one_cannot_move(
     with pytest.raises(RequestClosed, match="taken up"):
         store.accept(asked.request_id)
     with pytest.raises(RequestClosed, match="resolved again"):
-        store.resolve(asked.request_id)
+        store.resolve(asked.request_id, "new words")
+    with pytest.raises(RequestClosed, match="given an update"):
+        store.add_update(asked.request_id, "new words")
     with pytest.raises(KeyError):
         store.accept("nobody")
 
+    assert store.resolve(asked.request_id) == resolved
     assert resolved.accepted_at is not None
 
 
@@ -128,6 +160,9 @@ def test_resolving_straight_from_requested_stamps_both_steps() -> None:
     resolved = store.resolve(asked.request_id, "sorted")
 
     assert resolved.accepted_at == resolved.resolved_at == fixture_clock().now()
+    assert [(update.body, update.written_at) for update in resolved.parent_updates] == [
+        ("sorted", fixture_clock().now())
+    ]
 
 
 def test_a_resolved_request_is_kept_two_weeks_and_an_open_one_indefinitely() -> None:
@@ -166,6 +201,7 @@ def test_the_store_offers_no_way_to_read_a_pattern() -> None:
         "already_asked",
         "take_back",
         "accept",
+        "add_update",
         "resolve",
         "get",
         "open_requests",
@@ -177,6 +213,335 @@ def test_the_store_offers_no_way_to_read_a_pattern() -> None:
         "name",
         "retention_policy",
     }
+
+
+# ------------------------------------------------------------- a parent's updates, in the store
+
+AT = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
+"""Five in the afternoon in New York on the fixture's Wednesday."""
+HOUR = timedelta(hours=1)
+
+
+def set_store() -> tuple[HelpRequestsStore, SetClock]:
+    """A store in memory run by a clock the test moves."""
+    clock = SetClock(PLAN_DATE, AT)
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    return HelpRequestsStore(connection, clock), clock
+
+
+def bodies(request: HelpRequest | None) -> list[str]:
+    """A request's updates, their words alone, in the order they were added."""
+    assert request is not None
+    return [update.body for update in request.parent_updates]
+
+
+def rows_of(store: HelpRequestsStore) -> list[tuple[object, ...]]:
+    found = store._connection.execute("SELECT * FROM help_requests ORDER BY request_id")
+    return [tuple(row) for row in found.fetchall()]
+
+
+def test_taken_up_without_words_a_request_takes_updates_and_stays_open() -> None:
+    store, clock = set_store()
+    asked = store.ask(PLAN_DATE, "the outline").request_id
+    taken = store.accept(asked)
+    clock.at = AT + HOUR
+    first = store.add_update(asked, "Synthetic first update")
+    clock.at = AT + 2 * HOUR
+    second = store.add_update(asked, "Synthetic second update")
+
+    assert (taken.state, taken.parent_updates, taken.response) == ("accepted", (), None)
+    assert first.state == second.state == "accepted"
+    assert [(update.body, update.written_at) for update in second.parent_updates] == [
+        ("Synthetic first update", AT + HOUR),
+        ("Synthetic second update", AT + 2 * HOUR),
+    ]
+    assert second.response == "Synthetic second update"
+    assert second.accepted_at == AT
+    assert store.open_requests() == [second]
+
+
+@pytest.mark.parametrize("final", [None, "Synthetic final words"], ids=["no words", "words"])
+@pytest.mark.parametrize("taken_up", [False, True], ids=["from waiting", "from taken up"])
+def test_closing_adds_any_final_words_after_the_updates_and_keeps_them_all(
+    final: str | None, taken_up: bool
+) -> None:
+    store, clock = set_store()
+    asked = store.ask(PLAN_DATE).request_id
+    earlier: list[str] = []
+    if taken_up:
+        store.accept(asked, "Synthetic on it")
+        clock.at += HOUR
+        store.add_update(asked, "Synthetic update")
+        clock.at += HOUR
+        earlier = ["Synthetic on it", "Synthetic update"]
+    closed = store.resolve(asked, final)
+
+    assert closed.state == "resolved"
+    assert closed.resolved_at == clock.at
+    assert bodies(closed) == [*earlier, *([final] if final else [])]
+    assert closed.response == (final or (earlier[-1] if earlier else None))
+    if final:
+        assert closed.parent_updates[-1].written_at == clock.at
+
+
+def test_the_same_form_sent_again_changes_nothing_whichever_move_it_made() -> None:
+    """Each form carries an id of its own. Sent again with the same words, spaced alike or
+    not, it finds what it did and writes nothing, before and after the request closes."""
+    store, clock = set_store()
+    asked = store.ask(PLAN_DATE).request_id
+    helping, adding, closing = (uuid4().hex for _ in range(3))
+    taken = store.accept(asked, "Synthetic on it", update_id=helping)
+    clock.at += HOUR
+    retaken = store.accept(asked, "Synthetic on it", update_id=helping)
+    added = store.add_update(asked, "Synthetic update", update_id=adding)
+    clock.at += HOUR
+    readded = store.add_update(asked, "Synthetic  update ", update_id=adding)
+    closed = store.resolve(asked, "Synthetic last", update_id=closing)
+    clock.at += HOUR
+    before = rows_of(store)
+    again = [
+        store.resolve(asked, "Synthetic last", update_id=closing),
+        store.resolve(asked),
+        store.accept(asked, "Synthetic on it", update_id=helping),
+        store.add_update(asked, "Synthetic update", update_id=adding),
+    ]
+
+    assert retaken == taken
+    assert readded == added
+    assert again == [closed] * 4
+    assert rows_of(store) == before
+    assert bodies(closed) == ["Synthetic on it", "Synthetic update", "Synthetic last"]
+    assert [update.update_id for update in closed.parent_updates] == [helping, adding, closing]
+
+
+def test_i_can_help_again_adds_no_words_and_refuses_only_words_not_on_record() -> None:
+    store, _ = set_store()
+    asked = store.ask(PLAN_DATE).request_id
+    taken = store.accept(asked, "Synthetic on it")
+    before = rows_of(store)
+    quiet = [store.accept(asked, words) for words in (None, "  ", "Synthetic  on it")]
+    with pytest.raises(help_store.AlreadyTakenUp) as refused:
+        store.accept(asked, "Synthetic new words")
+
+    assert quiet == [taken] * 3
+    assert refused.value.request == taken
+    assert rows_of(store) == before
+    assert not store._connection.in_transaction
+
+
+def test_an_update_is_refused_with_nothing_written_unless_it_can_be_added() -> None:
+    store, _ = set_store()
+    waiting = store.ask(PLAN_DATE).request_id
+    closed = store.ask(PLAN_DATE).request_id
+    store.resolve(closed)
+    taken = store.ask(PLAN_DATE).request_id
+    store.accept(taken)
+    form = uuid4().hex
+    store.add_update(taken, "Synthetic update", update_id=form)
+    before = rows_of(store)
+
+    with pytest.raises(help_store.NotTakenUp):
+        store.add_update(waiting, "Synthetic words")
+    with pytest.raises(RequestClosed, match="given an update"):
+        store.add_update(closed, "Synthetic words")
+    with pytest.raises(help_store.UpdateFormUsed):
+        store.add_update(taken, "Synthetic other words", update_id=form)
+    with pytest.raises(help_store.UpdateFormUsed):
+        store.resolve(taken, "Synthetic other words", update_id=form)
+    for blank in (None, "", "  \n "):
+        with pytest.raises(help_store.UpdateWithoutWords):
+            store.add_update(taken, blank)
+    with pytest.raises(KeyError):
+        store.add_update("0" * 32, "Synthetic words")
+    with pytest.raises(help_store.NotARequestId):
+        store.add_update(taken, "Synthetic words", update_id="not-an-id")
+    with pytest.raises(ValidationError):
+        store.add_update(taken, "w" * (NOTE_MAX_LENGTH + 1))
+
+    assert rows_of(store) == before
+    assert not store._connection.in_transaction
+
+
+@pytest.mark.parametrize("first", ["the update", "the close"])
+def test_an_update_and_a_close_interleaved_keep_every_word_whichever_lands_first(
+    first: str,
+) -> None:
+    store, clock = set_store()
+    asked = store.ask(PLAN_DATE).request_id
+    store.accept(asked, "Synthetic on it")
+    clock.at += HOUR
+    if first == "the update":
+        store.add_update(asked, "Synthetic update")
+        clock.at += HOUR
+        closed = store.resolve(asked, "Synthetic last")
+        assert bodies(closed) == ["Synthetic on it", "Synthetic update", "Synthetic last"]
+        return
+    store.resolve(asked, "Synthetic last")
+    clock.at += HOUR
+    before = rows_of(store)
+    with pytest.raises(RequestClosed):
+        store.add_update(asked, "Synthetic update")
+    assert rows_of(store) == before
+    assert bodies(store.get(asked)) == ["Synthetic on it", "Synthetic last"]
+
+
+def test_updates_sent_at_once_through_two_connections_are_all_kept(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Two connections to one file, as two processes would have, each adding updates at the
+    same moment: every one is appended, none overwrites another."""
+    path = tmp_path / "record.sqlite3"
+    stores = [HelpRequestsStore.open(path, fixture_clock()) for _ in range(2)]
+    asked = stores[0].ask(PLAN_DATE).request_id
+    stores[1].accept(asked)
+    start = threading.Barrier(8)
+    failed: list[Exception] = []
+
+    def add(number: int) -> None:
+        try:
+            start.wait()
+            stores[number % 2].add_update(asked, f"Synthetic update {number}")
+        except Exception as error:
+            failed.append(error)
+
+    threads = [threading.Thread(target=add, args=(number,)) for number in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    kept = stores[0].get(asked)
+    for store in stores:
+        store.close()
+
+    assert failed == []
+    assert sorted(bodies(kept)) == sorted(f"Synthetic update {number}" for number in range(8))
+    assert kept is not None
+    assert len({update.update_id for update in kept.parent_updates}) == 8
+
+
+def test_a_parents_updates_go_with_their_request_when_it_ages_out() -> None:
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    then = HelpRequestsStore(connection, FrozenClock(OBSERVED_AT, ZONE))
+    asked = then.ask(PLAN_DATE).request_id
+    then.accept(asked, "Synthetic zebra on it")
+    then.add_update(asked, "Synthetic zebra update")
+    then.resolve(asked, "Synthetic zebra last")
+    past = OBSERVED_AT + timedelta(days=HELP_RETENTION_DAYS, microseconds=1)
+    now = HelpRequestsStore(connection, FrozenClock(past, ZONE))
+
+    swept = now.sweep()
+    tables = [
+        str(row[0])
+        for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    ]
+    held = [list(connection.execute(f"SELECT * FROM {table}")) for table in tables]  # noqa: S608
+
+    assert swept == 1
+    assert "zebra" not in repr(held)
+
+
+OLD_TABLE = """
+    CREATE TABLE help_requests (
+        request_id TEXT PRIMARY KEY,
+        evening TEXT NOT NULL,
+        asked_at TEXT NOT NULL,
+        note TEXT,
+        state TEXT NOT NULL,
+        accepted_at TEXT,
+        resolved_at TEXT,
+        response TEXT,
+        capture_id TEXT
+    )
+"""
+"""The table as a file from before updates holds it."""
+
+
+def test_a_file_from_before_gains_the_updates_column_and_its_reply_is_an_earlier_reply(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Additive, and safe to meet again: an old table gets one nullable column, a reply kept
+    in it becomes the request's one update, with no time, since none was kept; a request
+    with no reply has none; and a second start changes nothing."""
+    path = tmp_path / "record.sqlite3"
+    stamp = fixture_clock().now().isoformat()
+    old = sqlite3.connect(path)
+    old.execute(OLD_TABLE)
+    for request_id, state, response in (
+        ("waiting", "requested", None),
+        ("helping", "accepted", "Synthetic reply from before"),
+        ("closed", "resolved", "Synthetic closing words from before"),
+        ("quiet", "accepted", None),
+        ("blank", "accepted", " \n "),
+    ):
+        old.execute(
+            "INSERT INTO help_requests (request_id, evening, asked_at, note, state, "
+            "accepted_at, resolved_at, response) VALUES (?, ?, ?, 'Synthetic question', ?, "
+            "?, ?, ?)",
+            (
+                request_id,
+                PLAN_DATE.isoformat(),
+                stamp,
+                state,
+                None if state == "requested" else stamp,
+                stamp if state == "resolved" else None,
+                response,
+            ),
+        )
+    old.commit()
+    old.close()
+
+    first = HelpRequestsStore.open(path, fixture_clock())
+    kept = {request.request_id: request for request in first.retained().requests}
+    first.close()
+    second = HelpRequestsStore.open(path, fixture_clock())
+    again = {request.request_id: request for request in second.retained().requests}
+    columns = [
+        str(row[1]) for row in second._connection.execute("PRAGMA table_info(help_requests)")
+    ]
+    added = second.add_update("helping", "Synthetic update after")
+
+    assert columns.count("parent_updates") == 1
+    for request_id, reply in (
+        ("helping", "Synthetic reply from before"),
+        ("closed", "Synthetic closing words from before"),
+    ):
+        (earlier,) = kept[request_id].parent_updates
+        assert (earlier.body, earlier.written_at) == (reply, None)
+        assert re.fullmatch(r"[0-9a-f]{32}", earlier.update_id)
+        assert kept[request_id].response == reply
+    for request_id in ("waiting", "quiet", "blank"):
+        assert kept[request_id].parent_updates == ()
+    assert again == kept
+    assert [(update.body, update.written_at is None) for update in added.parent_updates] == [
+        ("Synthetic reply from before", True),
+        ("Synthetic update after", False),
+    ]
+    assert added.response == "Synthetic update after"
+
+
+def test_a_start_that_meets_updates_it_cannot_read_leaves_them_and_names_no_words(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A value in the updates' place that is no list of updates is never rewritten at a start,
+    and reading it is ``UnreadableHelpRequest`` in names alone."""
+    path = tmp_path / "record.sqlite3"
+    store = HelpRequestsStore.open(path, fixture_clock())
+    asked = store.ask(PLAN_DATE).request_id
+    store.accept(asked, "Synthetic zebra words")
+    store._connection.execute(
+        "UPDATE help_requests SET parent_updates = 'Synthetic zebra, no list'"
+    )
+    store._connection.commit()
+    store.close()
+
+    again = HelpRequestsStore.open(path, fixture_clock())
+    held = again._connection.execute("SELECT parent_updates FROM help_requests").fetchone()[0]
+    with pytest.raises(help_store.UnreadableHelpRequest) as refused:
+        again.retained()
+
+    assert held == "Synthetic zebra, no list"
+    assert "zebra" not in str(refused.value)
+    assert asked in str(refused.value)
 
 
 # ------------------------------------------------------------- the routes
@@ -211,6 +576,9 @@ def test_a_parent_takes_it_up_and_resolves_it_and_she_sees_each_step() -> None:
         )
         after = client.get(PAGE).text
         again = client.post(f"/parent/help-requests/{request_id}/resolve")
+        with_words = client.post(
+            f"/parent/help-requests/{request_id}/resolve", json={"response": "and more"}
+        )
 
     assert WAITING in not_seen
     assert taken_up.status_code == 200
@@ -220,8 +588,12 @@ def test_a_parent_takes_it_up_and_resolves_it_and_she_sees_each_step() -> None:
     assert resolved.json()["state"] == "resolved"
     assert re.search(CLOSED_ON, after)
     assert help_reply(after) == "all sorted"
+    assert [said for _, said, _ in help_updates(after)] == ["all sorted", "coming"]
     assert '<a href="#help-updates">Help updates (1)</a>' in after
-    assert again.status_code == 409
+    assert again.status_code == 200
+    assert again.json() == resolved.json()
+    assert with_words.status_code == 409
+    assert with_words.json()["detail"] == ALREADY_CLOSED
 
 
 def test_she_can_take_a_request_back_only_while_nobody_has_taken_it_up() -> None:
@@ -240,15 +612,21 @@ def test_she_can_take_a_request_back_only_while_nobody_has_taken_it_up() -> None
     assert [item["request_id"] for item in listed] == [second]
 
 
-def test_an_unknown_request_and_a_move_that_is_not_one_of_the_two_are_refused() -> None:
+def test_an_unknown_request_and_a_move_that_is_not_one_of_the_three_are_refused() -> None:
     with browser() as client:
         unknown = client.post("/parent/help-requests/nobody/accept")
+        unknown_update = client.post(
+            "/parent/help-requests/nobody/update", json={"response": "Synthetic"}
+        )
         request_id = client.post("/student/help-requests").json()["request"]["request_id"]
         odd_move = client.post(f"/parent/actions/help/{request_id}", data={"step": "shrug"})
 
     assert unknown.status_code == 404
+    assert unknown_update.status_code == 404
     assert odd_move.status_code == 422
-    assert "is not one of the two moves" in odd_move.text
+    assert "&#39;shrug&#39; is not one of the three moves, accept, update or resolve." in (
+        odd_move.text
+    )
 
 
 def test_her_note_is_capped_at_the_boundary() -> None:
@@ -353,7 +731,7 @@ def answer_detail(case: str, named: str) -> str:
     """What the JSON route answers for a refused step, which the family page says as it is."""
     if case == "no such request":
         return f"no help request {named!r}"
-    return f"request {named!r} is resolved, so it cannot be resolved again"
+    return ALREADY_CLOSED
 
 
 def test_a_reply_counts_a_line_break_once_as_the_field_does() -> None:
@@ -662,23 +1040,33 @@ def test_her_json_ask_reads_its_body_as_the_framework_does(
         assert (first["type"], first["loc"]) == problem
 
 
-def test_she_can_not_take_up_or_resolve_her_own_request(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("state", ["requested", "accepted"])
+def test_she_can_not_take_up_update_or_close_her_own_request(
+    state: str, tmp_path: pathlib.Path
+) -> None:
     client = signed_in(tmp_path)
     try:
         client.post(ASK, data={**ask_form(client), "note": "hers"})
         request_id = client.get("/student/help-requests").json()[0]["request_id"]
+        if state == "accepted":
+            as_a_parent(client)
+            client.post(f"/parent/help-requests/{request_id}/accept", json={"response": "on it"})
+            client.post("/sign-out")
+            client.post("/sign-in", data={"passphrase": HERS})
         before = requests_held(client)
+        words = {"response": "Synthetic words of hers", "update_id": uuid4().hex}
         answers = [
-            client.post(f"/parent/actions/help/{request_id}", data={"step": "accept"}),
-            client.post(f"/parent/actions/help/{request_id}", data={"step": "resolve"}),
-            client.post(f"/parent/help-requests/{request_id}/accept", json={}),
-            client.post(f"/parent/help-requests/{request_id}/resolve", json={}),
+            client.post(f"/parent/actions/help/{request_id}", data={**words, "step": step})
+            for step in ("accept", "update", "resolve")
+        ] + [
+            client.post(f"/parent/help-requests/{request_id}/{step}", json=words)
+            for step in ("accept", "update", "resolve")
         ]
         after = requests_held(client)
     finally:
         client.__exit__(None, None, None)
 
-    assert all(answer.status_code == 403 for answer in answers)
+    assert [answer.status_code for answer in answers] == [403] * 6
     assert after == before
 
 
@@ -859,3 +1247,386 @@ def test_json_with_an_id_asks_once_and_without_one_asks_every_time() -> None:
     assert (other.status_code, malformed.status_code, spent.status_code) == (409, 422, 409)
     assert [answer.status_code for answer in plain] == [201, 201]
     assert len(held) == 2
+
+
+# ------------------------------------------------------------------ a parent's updates, on the page
+
+FAMILY = "/parent"
+PROBLEM_LINE = re.compile(r'<p class="problem" role="alert" id="problem">(.*?)</p>', re.S)
+
+
+def family_form(page: str, request_id: str) -> dict[str, str]:
+    """What the family page's form for one request sends with no button pressed: the words
+    in its box and the one-time id the page gave it."""
+    return whole_form(page, f"/parent/actions/help/{request_id}")
+
+
+def press(client: TestClient, page: str, request_id: str, step: str, words: str = "") -> Answer:
+    """One button under a request, pressed on ``page`` with ``words`` in its box."""
+    fields = {**family_form(page, request_id), "step": step, "response": words}
+    return client.post(f"/parent/actions/help/{request_id}", data=fields)
+
+
+def asked_for(client: TestClient, note: str = "Synthetic question") -> str:
+    made = client.post("/student/help-requests", json={"note": note}).json()
+    return str(made["request"]["request_id"])
+
+
+def listed(client: TestClient) -> dict[str, dict[str, Any]]:
+    """Her requests as the family's JSON route lists them, by id."""
+    return {item["request_id"]: item for item in client.get("/parent/help-requests").json()}
+
+
+def updates_of(client: TestClient, request_id: str) -> list[str]:
+    return [update["body"] for update in listed(client)[request_id]["updates"]]
+
+
+def field_of(page: str, request_id: str) -> tuple[str, str]:
+    """A request's box on the family page: its opening tag, and the words in it."""
+    found = re.search(rf'(<textarea id="reply-{request_id}"[^>]*>)(.*?)</textarea>', page, re.S)
+    assert found is not None, request_id
+    return found.group(1), found.group(2)
+
+
+def test_a_parent_takes_a_request_up_adds_updates_and_closes_it_from_the_page() -> None:
+    """Taken up without words, two updates, and a close with final words: each a press of its
+    own, the request open until the close, every message kept, and her week showing the
+    latest with the earlier ones folded under it."""
+    with browser() as client:
+        request_id = asked_for(client)
+        waiting = client.get(FAMILY).text
+        taken = press(client, waiting, request_id, "accept")
+        first_page = client.get(FAMILY).text
+        first = press(client, first_page, request_id, "update", "Synthetic first update")
+        second_page = client.get(FAMILY).text
+        second = press(client, second_page, request_id, "update", "Synthetic second update")
+        open_still = listed(client)[request_id]["state"]
+        closing_page = client.get(FAMILY).text
+        closed = press(client, closing_page, request_id, "resolve", "Synthetic last words")
+        kept = listed(client)[request_id]
+        hers = help_row(client.get(PAGE).text, request_id)
+
+    ids = {
+        family_form(page, request_id)["update_id"]
+        for page in (waiting, first_page, second_page, closing_page)
+    }
+    assert [answer.status_code for answer in (taken, first, second, closed)] == [303] * 4
+    assert open_still == "accepted"
+    assert kept["state"] == "resolved"
+    assert [update["body"] for update in kept["updates"]] == [
+        "Synthetic first update",
+        "Synthetic second update",
+        "Synthetic last words",
+    ]
+    assert kept["response"] == "Synthetic last words"
+    assert len(ids) == 4
+    assert all(re.fullmatch(r"[0-9a-f]{32}", form_id) for form_id in ids)
+    assert [said for _, said, _ in help_updates(hers)] == [
+        "Synthetic last words",
+        "Synthetic first update",
+        "Synthetic second update",
+    ]
+    assert "<summary>Earlier updates (2)</summary>" in hers
+
+
+@pytest.mark.parametrize("step", ["accept", "update", "resolve"])
+def test_the_same_form_sent_again_from_the_page_changes_nothing(step: str) -> None:
+    with browser() as client:
+        request_id = asked_for(client)
+        if step == "update":
+            client.post(f"/parent/help-requests/{request_id}/accept", json={})
+        page = client.get(FAMILY).text
+        first = press(client, page, request_id, step, "Synthetic words")
+        before = requests_held(client)
+        again = press(client, page, request_id, step, "Synthetic words")
+        after = requests_held(client)
+
+    assert (first.status_code, again.status_code) == (303, 303)
+    assert again.headers["location"] == first.headers["location"]
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    "words", ["", "Synthetic on it", "Synthetic new words"], ids=["none", "on record", "new"]
+)
+def test_i_can_help_from_another_page_left_open_adds_nothing_and_keeps_new_words(
+    words: str,
+) -> None:
+    """A second I can help never adds a message. Words already on record, or none, change
+    nothing and say nothing; new words are kept in the request's Add an update box, a fresh
+    form's, with the reason at the top and a way to the box."""
+    with browser() as client:
+        request_id = asked_for(client)
+        mine, theirs = client.get(FAMILY).text, client.get(FAMILY).text
+        assert press(client, mine, request_id, "accept", "Synthetic on it").status_code == 303
+        before = requests_held(client)
+        answer = press(client, theirs, request_id, "accept", words)
+        after = requests_held(client)
+        hers = help_row(client.get(PAGE).text, request_id)
+
+    assert after == before
+    assert [said for _, said, _ in help_updates(hers)] == ["Synthetic on it"]
+    if words != "Synthetic new words":
+        assert answer.status_code == 303
+        return
+    page = answer.text
+    problem = PROBLEM_LINE.search(page)
+    opening, inside = field_of(page, request_id)
+    assert answer.status_code == 409
+    assert problem is not None
+    assert problem.group(1) == (
+        f'{escape(ALREADY_TAKEN_UP)} <a href="#reply-{request_id}">Go to the field.</a>'
+    )
+    assert inside == str(escape(words))
+    assert page.count(str(escape(words))) == 1
+    assert f'<label for="reply-{request_id}">Add an update</label>' in page
+    assert 'aria-describedby="problem"' in opening
+    assert "aria-invalid" not in opening
+    assert " autofocus" not in opening
+    fresh = family_form(page, request_id)["update_id"]
+    used = {family_form(earlier, request_id)["update_id"] for earlier in (mine, theirs)}
+    assert fresh not in used
+
+
+def test_updates_from_two_pages_left_open_are_both_kept_in_the_order_they_came() -> None:
+    with browser() as client:
+        request_id = asked_for(client)
+        client.post(f"/parent/help-requests/{request_id}/accept", json={})
+        first_page, second_page = client.get(FAMILY).text, client.get(FAMILY).text
+        second = press(client, second_page, request_id, "update", "Synthetic from the second")
+        first = press(client, first_page, request_id, "update", "Synthetic from the first")
+        kept = updates_of(client, request_id)
+
+    assert (second.status_code, first.status_code) == (303, 303)
+    assert kept == ["Synthetic from the second", "Synthetic from the first"]
+
+
+def test_a_close_from_a_page_left_open_keeps_the_update_sent_since() -> None:
+    with browser() as client:
+        request_id = asked_for(client)
+        client.post(f"/parent/help-requests/{request_id}/accept", json={"response": "Synthetic"})
+        left_open, newer = client.get(FAMILY).text, client.get(FAMILY).text
+        added = press(client, newer, request_id, "update", "Synthetic update")
+        closed = press(client, left_open, request_id, "resolve", "Synthetic last")
+        kept = listed(client)[request_id]
+
+    assert (added.status_code, closed.status_code) == (303, 303)
+    assert kept["state"] == "resolved"
+    assert [update["body"] for update in kept["updates"]] == [
+        "Synthetic",
+        "Synthetic update",
+        "Synthetic last",
+    ]
+
+
+REFUSED_ON_THE_PAGE = {
+    "an update to a request closed meanwhile": (
+        "update",
+        409,
+        CLOSED_BEFORE_UPDATE,
+        "under the problem",
+    ),
+    "I can help on a request closed meanwhile": (
+        "accept",
+        409,
+        ALREADY_CLOSED,
+        "under the problem",
+    ),
+    "a close with words of a request closed meanwhile": (
+        "resolve",
+        409,
+        ALREADY_CLOSED,
+        "under the problem",
+    ),
+    "I can help again with new words": ("accept", 409, ALREADY_TAKEN_UP, "below"),
+    "an update form sent again with other words": (
+        "update",
+        409,
+        FORM_ADDED_OTHER_WORDS,
+        "below",
+    ),
+    "a close from a form that added other words": (
+        "resolve",
+        409,
+        FORM_ADDED_OTHER_WORDS,
+        "below",
+    ),
+    "an update to a request nobody has taken up": ("update", 409, NOT_TAKEN_UP_YET, "below"),
+    "an update with no words": ("update", 422, UPDATE_NEEDS_WORDS, "marked"),
+    "a form whose id is not one": ("accept", 422, BAD_FORM, "in the field"),
+}
+"""Each refusal: the button pressed, the status, what the page says, and where the words go."""
+
+
+@pytest.mark.parametrize("case", list(REFUSED_ON_THE_PAGE))
+def test_every_refusal_of_a_parents_words_writes_nothing_and_keeps_them(case: str) -> None:
+    """Whatever the family page refuses, it writes nothing and keeps the words as typed: in
+    the request's own box while the request is open there, with a way to it when the reason
+    is about them, and under the reason when the request is closed. A blank update marks its
+    empty box."""
+    step, status_code, said, where = REFUSED_ON_THE_PAGE[case]
+    typed = "" if case == "an update with no words" else TYPED_REPLY
+    with browser() as client:
+        request_id = asked_for(client)
+        page = client.get(FAMILY).text
+        if case != "an update to a request nobody has taken up":
+            assert press(client, page, request_id, "accept", "Synthetic on it").status_code == 303
+            page = client.get(FAMILY).text
+        if "meanwhile" in case:
+            client.post(f"/parent/help-requests/{request_id}/resolve")
+        if said == FORM_ADDED_OTHER_WORDS:
+            assert press(client, page, request_id, "update", "Synthetic update").status_code == 303
+        fields = {**family_form(page, request_id), "step": step, "response": typed}
+        if case == "a form whose id is not one":
+            fields["update_id"] = "not-an-id"
+        before = requests_held(client)
+        answer = client.post(f"/parent/actions/help/{request_id}", data=fields)
+        after = requests_held(client)
+
+    text = answer.text
+    problem = PROBLEM_LINE.search(text)
+    assert answer.status_code == status_code
+    assert after == before
+    assert "<h1>Family review</h1>" in text
+    assert problem is not None
+    go = f' <a href="#reply-{request_id}">Go to the field.</a>'
+    pointed = where in ("below", "marked")
+    assert problem.group(1) == f"{escape(said)}{go if pointed else ''}"
+    if where == "under the problem":
+        assert f'id="reply-{request_id}"' not in text
+        kept = text.split(problem.group(0), 1)[1]
+        assert kept.lstrip().startswith(KEPT_UNDER_THE_PROBLEM)
+        assert f'<textarea id="kept-reply" rows="3" readonly>{escape(typed)}</textarea>' in kept
+        return
+    opening, inside = field_of(text, request_id)
+    assert inside == str(escape(typed))
+    assert KEPT_UNDER_THE_PROBLEM not in text
+    assert ('aria-describedby="problem"' in opening) is pointed
+    assert ('aria-invalid="true"' in opening) is (where == "marked")
+    assert (" autofocus" in opening) is (where == "marked")
+    assert family_form(text, request_id)["update_id"] != fields["update_id"]
+    if typed:
+        assert text.count(str(escape(typed))) == 1
+
+
+@pytest.mark.parametrize("step", ["update", "resolve"])
+def test_an_update_or_closing_words_count_a_line_break_once_as_the_field_does(step: str) -> None:
+    at_cap = "w" * 249 + "\n" + "w" * 250
+    over = "w" * 250 + "\n" + "w" * 250
+    with browser() as client:
+        kept_id, refused_id = asked_for(client), asked_for(client)
+        for request_id in (kept_id, refused_id):
+            client.post(f"/parent/help-requests/{request_id}/accept", json={})
+        page = client.get(FAMILY).text
+        kept = client.post(
+            f"/parent/actions/help/{kept_id}",
+            data=as_a_browser_sends(
+                {**family_form(page, kept_id), "step": step, "response": at_cap}
+            ),
+        )
+        refused = client.post(
+            f"/parent/actions/help/{refused_id}",
+            data=as_a_browser_sends(
+                {**family_form(page, refused_id), "step": step, "response": over}
+            ),
+        )
+        held = listed(client)
+
+    assert kept.status_code == 303
+    assert [update["body"] for update in held[kept_id]["updates"]] == [at_cap]
+    assert refused.status_code == 422
+    assert f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is 501." in refused.text
+    assert held[refused_id]["updates"] == []
+    assert held[refused_id]["state"] == "accepted"
+
+
+def test_an_update_over_json_is_added_once_for_its_id_and_its_refusals_are_said() -> None:
+    with browser() as client:
+        request_id = asked_for(client)
+        route = f"/parent/help-requests/{request_id}/update"
+        early = client.post(route, json={"response": "Synthetic early"})
+        client.post(f"/parent/help-requests/{request_id}/accept", json={})
+        form_id = uuid4().hex
+        made = client.post(route, json={"response": "Synthetic update", "update_id": form_id})
+        same = client.post(route, json={"response": "Synthetic update", "update_id": form_id})
+        other = client.post(route, json={"response": "Synthetic other", "update_id": form_id})
+        blank = client.post(route, json={"response": "  "})
+        malformed = client.post(route, json={"response": "Synthetic", "update_id": "not-an-id"})
+        client.post(f"/parent/help-requests/{request_id}/resolve", json={})
+        late = client.post(route, json={"response": "Synthetic late"})
+        kept = listed(client)[request_id]
+
+    assert (early.status_code, early.json()["detail"]) == (409, NOT_TAKEN_UP_YET)
+    assert made.status_code == same.status_code == 200
+    assert same.json() == made.json()
+    assert made.json()["state"] == "accepted"
+    assert (other.status_code, other.json()["detail"]) == (409, FORM_ADDED_OTHER_WORDS)
+    assert (blank.status_code, blank.json()["detail"]) == (422, UPDATE_NEEDS_WORDS)
+    assert malformed.status_code == 422
+    assert (late.status_code, late.json()["detail"]) == (409, CLOSED_BEFORE_UPDATE)
+    assert [(update["update_id"], update["body"]) for update in kept["updates"]] == [
+        (form_id, "Synthetic update")
+    ]
+    written = datetime.fromisoformat(kept["updates"][0]["written_local"])
+    assert written.utcoffset() == datetime.fromisoformat(kept["asked_local"]).utcoffset()
+
+
+def test_no_words_of_a_parents_update_reach_the_log(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every press, accepted, refused, or refused by the file, logs nothing of its words."""
+    caplog.set_level(logging.DEBUG)
+    with browser() as client:
+        request_id = asked_for(client)
+        mine, theirs = client.get(FAMILY).text, client.get(FAMILY).text
+        press(client, mine, request_id, "accept", "Synthetic zebra one")
+        press(client, theirs, request_id, "accept", "Synthetic zebra two")
+        page = client.get(FAMILY).text
+        press(client, page, request_id, "update", "Synthetic zebra three")
+        press(client, page, request_id, "update", "Synthetic zebra four")
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        monkeypatch.setattr(state.help_requests, "add_update", refusing())
+        failed = press(client, client.get(FAMILY).text, request_id, "update", "Synthetic zebra 5")
+        monkeypatch.undo()
+        press(client, client.get(FAMILY).text, request_id, "resolve", "Synthetic zebra six")
+        press(client, page, request_id, "update", "Synthetic zebra seven")
+        client.get(PAGE)
+        client.get(FAMILY)
+
+    assert failed.status_code == 500
+    assert "Synthetic zebra 5" in failed.text
+    assert "zebra" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("step", "kind"),
+    [("update", "OperationalError"), ("resolve", "UnreadableHelpRequest")],
+)
+def test_a_move_on_a_row_that_can_not_be_read_keeps_the_words_and_writes_nothing(
+    step: str, kind: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A request whose updates turn unreadable after the page was made: the file refuses the
+    append, or the row is read and refused, and either way the press is answered on the
+    family page's stand-in with the words as typed, nothing is written, and the log names the
+    kind of failure alone."""
+    with browser() as client:
+        request_id = asked_for(client)
+        client.post(f"/parent/help-requests/{request_id}/accept", json={})
+        page = client.get(FAMILY).text
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        state.help_requests._connection.execute(
+            "UPDATE help_requests SET parent_updates = 'Synthetic zebra, no list'"
+        )
+        state.help_requests._connection.commit()
+        before = requests_held(client)
+        answer = press(client, page, request_id, step, "Synthetic zebra words")
+        after = requests_held(client)
+
+    assert answer.status_code == 500
+    assert "That could not be saved, and nothing was changed. Your reply is below." in answer.text
+    assert '<textarea id="kept-reply" rows="3" readonly>Synthetic zebra words</textarea>' in (
+        answer.text
+    )
+    assert after == before
+    assert f"a parent's move on her request could not be saved: {kind}" in caplog.text
+    assert "zebra" not in caplog.text

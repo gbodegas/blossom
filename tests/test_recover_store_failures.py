@@ -704,7 +704,7 @@ FAMILY_PRESSES = {
     ),
     "a step no page sends": FamilyPress(
         422,
-        "'sideways' is not one of the two moves, accept or resolve.",
+        "'sideways' is not one of the three moves, accept, update or resolve.",
         ("Reply, as typed", TYPED),
     ),
 }
@@ -759,7 +759,7 @@ def family_press(client: TestClient, case: str, reader: str) -> tuple[str, dict[
         return f"/parent/actions/help/{asked}", {"step": "accept", "response": LONG}, ""
     if case == "a reply to a request already closed":
         state_of(client).help_requests.resolve(asked, None)
-        said = f"request '{asked}' is resolved, so it cannot be taken up."
+        said = "This request is already closed."
         return f"/parent/actions/help/{asked}", {"step": "accept", "response": TYPED}, said
     if case == "a reply to no request":
         return "/parent/actions/help/" + "0" * 32, {"step": "accept", "response": TYPED}, ""
@@ -842,18 +842,19 @@ def test_a_decision_on_a_decided_draft_keeps_its_409_and_the_reason_without_the_
 
 @pytest.mark.parametrize("case", ["a request already closed", "no such request"])
 @pytest.mark.parametrize("reader", ["parent", "open"])
-def test_a_request_named_in_a_refusal_is_named_whole_on_family_review_and_its_stand_in(
+def test_a_refused_step_reads_the_same_on_family_review_and_its_stand_in(
     case: str, reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A step on a request that is closed, or not on record, is refused with the request's
-    whole id, on the family page and on its stand-in alike: nothing of it is cut."""
+    """A step on a request that is closed is refused as already closed, and one on a request
+    not on record names that request by its whole id: the same words on the family page and
+    on its stand-in, nothing of them cut."""
     with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         state = state_of(client)
         asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
         if case == "a request already closed":
             state.help_requests.resolve(asked, None)
-            named, said = asked, f"request '{asked}' is resolved, so it cannot be taken up"
+            named, said = asked, "This request is already closed."
         else:
             named = uuid4().hex
             said = f"no help request '{named}'"
@@ -863,10 +864,11 @@ def test_a_request_named_in_a_refusal_is_named_whole_on_family_review_and_its_st
         stand_in = client.post(path, data={"step": "accept", "response": ""}, headers=PAGE_HEADERS)
 
     status = 409 if case == "a request already closed" else 404
+    ended = said if said.endswith(".") else f"{said}."
     assert page.status_code == status
     assert len(named) == 32
     assert f'<p class="problem" role="alert" id="problem">{escape(said)}</p>' in main_of(page.text)
-    store_free_page(stand_in, status=status, heading="Family review", alert=f"{said}. {FAMILY}")
+    store_free_page(stand_in, status=status, heading="Family review", alert=f"{ended} {FAMILY}")
 
 
 def test_family_reviews_alerts_break_a_long_word_where_they_must() -> None:
@@ -1150,8 +1152,12 @@ HELP_STEP_FAILED = (
 )
 
 
+MOVES = {"accept": "accept", "update": "add_update", "resolve": "resolve"}
+"""Each button under a request, by the step it sends, and the store call it makes."""
+
+
 @pytest.mark.parametrize("kind", [sqlite3.OperationalError, sqlite3.DatabaseError])
-@pytest.mark.parametrize("step", ["accept", "resolve"])
+@pytest.mark.parametrize("step", list(MOVES))
 @pytest.mark.parametrize("reader", ["parent", "open"])
 def test_a_reply_the_file_would_not_keep_is_kept_on_the_page_that_reads_no_store(
     reader: str,
@@ -1165,6 +1171,8 @@ def test_a_reply_the_file_would_not_keep_is_kept_on_the_page_that_reads_no_store
         sign_in_as(client, reader)
         state = state_of(client)
         asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
+        if step == "update":
+            state.help_requests.accept(asked)
         path = f"/parent/actions/help/{asked}"
         real: Callable[..., object] = state.drafts.review_snapshot
 
@@ -1175,7 +1183,7 @@ def test_a_reply_the_file_would_not_keep_is_kept_on_the_page_that_reads_no_store
         monkeypatch.setattr(state.drafts, "review_snapshot", counted)
         before = every_row(database_of(client))
         with Statements(state) as seen:
-            monkeypatch.setattr(state.help_requests, step, refusing(kind, seen))
+            monkeypatch.setattr(state.help_requests, MOVES[step], refusing(kind, seen))
             answer = client.post(path, data={"step": step, "response": TYPED})
         monkeypatch.undo()
         after = every_row(database_of(client))
@@ -1192,7 +1200,8 @@ def test_a_reply_the_file_would_not_keep_is_kept_on_the_page_that_reads_no_store
     assert again.status_code == 303
     assert moved is not None
     assert moved.response == TYPED
-    assert moved.state == ("accepted" if step == "accept" else "resolved")
+    assert [update.body for update in moved.parent_updates] == [TYPED]
+    assert moved.state == ("resolved" if step == "resolve" else "accepted")
 
 
 def test_a_step_with_no_reply_that_the_file_would_not_keep_promises_no_reply(
@@ -1231,6 +1240,7 @@ STEP_REFUSALS = {
     ("outcome", "reply"),
     [
         *[(step, reply) for step in ("accept", "resolve") for reply in REPLIES],
+        ("update", "typed"),
         *[(refusal, reply) for refusal in STEP_REFUSALS for reply in ("typed", "blank")],
     ],
 )
@@ -1261,7 +1271,7 @@ def test_a_reply_is_said_to_be_below_only_when_one_was_typed(
                 )
             else:
                 monkeypatch.setattr(
-                    state.help_requests, outcome, refusing(sqlite3.OperationalError, seen)
+                    state.help_requests, MOVES[outcome], refusing(sqlite3.OperationalError, seen)
                 )
             answer = client.post(
                 f"/parent/actions/help/{named}",
@@ -1272,9 +1282,11 @@ def test_a_reply_is_said_to_be_below_only_when_one_was_typed(
         after = every_row(database_of(client))
 
     refused = {
-        "a request already closed": f"request '{asked}' is resolved, so it cannot be taken up.",
+        "a request already closed": "This request is already closed.",
         "no such request": f"no help request '{named}'.",
-        "a step no page sends": "'sideways' is not one of the two moves, accept or resolve.",
+        "a step no page sends": (
+            "'sideways' is not one of the three moves, accept, update or resolve."
+        ),
     }
     if outcome in STEP_REFUSALS:
         status, said = STEP_REFUSALS[outcome][0], f"{refused[outcome]} {FAMILY}"
@@ -1721,6 +1733,7 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
             started = time.monotonic()
             answer = client.post(path, data={"step": "accept", "response": TYPED})
             took = time.monotonic() - started
+        idle = not state.help_requests._connection.in_transaction
         after = every_row(database_of(client))
         again = client.post(path, data={"step": "accept", "response": TYPED})
         moved = state.help_requests.get(asked)
@@ -1729,12 +1742,13 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     assert f"readonly>{escape(TYPED)}</textarea>" in main
     assert took < 9
     ran = [line for line in seen if line.strip().upper() != "ROLLBACK"]
-    assert len(ran) == 1
-    assert "help_requests" in ran[0]
+    assert ran == ["BEGIN IMMEDIATE"]
+    assert idle
     assert after == before
     assert again.status_code == 303
     assert moved is not None
     assert (moved.state, moved.response) == ("accepted", TYPED)
+    assert [update.body for update in moved.parent_updates] == [TYPED]
 
 
 def test_her_notes_while_the_file_is_held_say_they_cannot_be_shown(
