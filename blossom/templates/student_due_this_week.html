@@ -330,10 +330,12 @@
     any card is shown away from the group its saved update puts it in, one line
     above the homework says why, beside Refresh list: a plain link to this week
     again at this heading, which names no card, so the week it shows is grouped by
-    the updates and the line is gone.
+    the updates and the line is gone. The line says her update is saved while
+    every card held has one standing, and her change once an Undo leaves a card
+    held with none.
   #}
   {% if held is defined and (held.week or held.later) %}
-    <p class="note stays-here">{% if parent %}Her{% else %}Your{% endif %} update is saved. This stays here so you don't lose your place. <a href="{{ refresh_list }}" aria-describedby="refresh-list-means">Refresh list</a> <span id="refresh-list-means">Group homework by its latest update.</span></p>
+    <p class="note stays-here">{% if parent %}Her{% else %}Your{% endif %} {% if held.updated %}update{% else %}change{% endif %} is saved. This stays here so you don't lose your place. <a href="{{ refresh_list }}" aria-describedby="refresh-list-means">Refresh list</a> <span id="refresh-list-means">Group homework by its latest update.</span></p>
   {% endif %}
 
   {#
@@ -360,12 +362,13 @@
     the cards shown in the fold. The fold's summary counts the cards whose saved
     update is Done; while a card of its list is held away from its group, it gives
     no number and says it holds her recent updates too. It says once, in the
-    reader's words, that these are her Done updates and not what the school has
-    received. The fold opens when the card the address names is inside it, so a
-    save on such a card lands in view. The same card template renders both groups.
+    reader's words, that these are her Done updates, and her recent changes while
+    a card is held, and not what the school has received. The fold opens when the
+    card the address names is inside it, so a save on such a card lands in view.
+    The same card template renders both groups.
   #}
   {% macro finished_summary(count, held_here) -%}
-    <summary>{% if held_here %}Finished homework and recent updates{% else %}Finished homework ({{ count }}){% endif %} <span class="fold-state"><span class="fold-show">Show</span><span class="fold-hide">Hide</span></span><span class="fold-says">{% if parent %}Her{% else %}Your{% endif %} Done updates, not what the school has received</span></summary>
+    <summary>{% if held_here %}Finished homework and recent updates{% else %}Finished homework ({{ count }}){% endif %} <span class="fold-state"><span class="fold-show">Show</span><span class="fold-hide">Hide</span></span><span class="fold-says">{% if parent %}Her{% else %}Your{% endif %} Done updates{% if held_here %} and recent changes{% endif %}, not what the school has received</span></summary>
   {%- endmacro %}
   {% set active_cards = view.assignments|rejectattr("assignment_id", "in", shown_done)|list %}
   {% set done_cards = view.assignments|selectattr("assignment_id", "in", shown_done)|list %}

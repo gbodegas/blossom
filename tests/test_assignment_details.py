@@ -331,7 +331,8 @@ def test_she_saves_changes_and_undoes_on_the_details_and_comes_back_to_them() ->
     assert "<legend>Your update<span" not in kept
     assert undone.status_code == 303
     assert undone.headers["location"] == (
-        f"{DETAILS}?said=undone&return_to=today#update-result-{ESSAY_ID}"
+        f"{DETAILS}?said=undone&undo_event={events[-1].report_id}&return_to=today"
+        f"#update-result-{ESSAY_ID}"
     )
     assert UNDONE_TO_NOTHING in finally_
     assert finally_.count("Back to today&#39;s plan</a>") == 2
