@@ -1620,17 +1620,24 @@ appends words to a request taken up, which stays open; and Close request, from
 either open state, appends any final words and then closes it. Each append is
 one statement that holds only while the request is in the right state and the
 form's id is not on it yet, so updates sent at once both stay, and a closed
-request takes none. Every form carries a one-time id: the same form sent again
-with the same words changes nothing, a close sent again succeeds, and a second
-I can help adds no words, so a message is never added twice. New words it
-carries stay in that request's Add an update box, with the reason at the top
-of the page; every refusal keeps the words typed, and nothing reopens a closed
-request. The latest update's words are kept in the `response` column too, so a
-build that reads only that column shows the latest. A reply kept from before
-updates becomes the request's first update at the next start, with no time,
-and reads as Earlier reply. Both pages show the latest update with the day and
-time it was added, and fold the earlier ones under Earlier updates. Her
-account cannot make any of these moves, and no update's words reach a log.
+request takes none. A move reads the clock only once it holds the writer, so
+the updates' times follow the order they are kept in. The words are kept as
+the family page's box keeps them, with one kind of line ending and the edges
+trimmed, and the cap counts them that way, from the page or as JSON. Every
+form carries a one-time id: the same form sent again with the same words
+changes nothing, a close sent again succeeds, and a second I can help adds no
+words, so a message is never added twice. New words it carries stay in that
+request's Add an update box, with the reason at the top of the page; every
+refusal keeps the words typed, and nothing reopens a closed request. The
+latest update's words are kept in the `response` column too, so a build that
+reads only that column shows the latest. At each start, a reply that no update
+holds becomes the request's latest update, with no time, and reads as Earlier
+reply: a reply kept from before updates, or words that such a build saved
+after the last start. A reply that is the latest update's words, with other
+line endings or spacing at the edges, adds nothing. Both pages show the latest
+update with the day and time it was added, and fold the earlier ones under
+Earlier updates. Her account cannot make any of these moves, and no update's
+words reach a log.
 
 A request is stamped by the real clock, like a signal, so retention runs even
 when the household clock is pinned. A resolved request is kept for

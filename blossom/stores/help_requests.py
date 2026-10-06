@@ -12,15 +12,20 @@ can take a request back while nobody has taken it up.
 
 A parent's words go on the request as updates, in the order they came: words
 sent with I can help, each update added while the request is taken up, and
-any final words sent with the close. Each is an append in one statement, so
-two sent at once both stay, and a closed request takes none. Each of a
-parent's forms carries an id of its own, kept with the update it added: the
-same form sent again with the same words finds that update and writes
-nothing, and a second I can help adds no words at all, so no message is
-added twice. The latest update's words are kept in the reply's own column as
-well, so a build that reads only that column still shows the latest. A reply
-kept from before updates becomes the request's first update at the next
-start, with no time, since none was kept.
+any final words sent with the close. They are kept as the family page's box
+keeps them, with one kind of line ending and the edges trimmed, and the cap
+counts them that way, whichever route sends them. Each is an append in one
+statement, so two sent at once both stay, and a closed request takes none.
+A move reads the clock only once it holds the writer, so the updates' times
+follow the order they are kept in. Each of a parent's forms carries an id of
+its own, kept with the update it added: the same form sent again with the
+same words finds that update and writes nothing, and a second I can help
+adds no words at all, so no message is added twice. The latest update's
+words are kept in the reply's own column as well, so a build that reads only
+that column still shows the latest. A reply that no update holds becomes the
+request's latest update at the next start, with no time, since none was
+kept: a reply kept from before updates, or words that a build reading only
+that column saved after the last start.
 
 The store keeps a resolved request for two weeks, long enough for a parent's
 updates to be read, and applies that cutoff on every read as well as in the
@@ -64,6 +69,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from blossom.captures import capture_id_from
 from blossom.clock import Clock
 from blossom.stores.paths import refuse_unsafe_path
+from blossom.stores.project_state import normalize_note
 from blossom.unreadable import refusal_in_names, text_or_refusal
 
 logger = logging.getLogger(__name__)
@@ -171,25 +177,59 @@ class UpdateWithoutWords(ValueError):
     """Raised for an update with no words: an update is its words, so nothing is written."""
 
 
+class UpdateTooLong(ValueError):
+    """Raised for a parent's words past the cap, counted as they would be kept: nothing is read
+    or written, and the words are the caller's to keep."""
+
+    def __init__(self, length: int) -> None:
+        super().__init__(f"an update is at most {NOTE_MAX_LENGTH} characters; this is {length}")
+        self.length = length
+
+
 HELP_REQUEST_COLUMNS: Final = "PRAGMA table_info(help_requests)"
 UPDATES_COLUMN: Final = "ALTER TABLE help_requests ADD COLUMN parent_updates TEXT"
+SPACES: Final = "".join(chr(point) for point in range(0x3001) if chr(point).isspace())
+"""Every character ``str.strip`` takes off an edge, the last of them U+3000, so the start's
+statement trims words as ``normalize_note`` trims them."""
 EARLIER_REPLIES: Final = """
     UPDATE help_requests
-    SET parent_updates = json_array(
+    SET parent_updates = json_insert(
+        COALESCE(parent_updates, '[]'),
+        '$[#]',
         json_object('id', lower(hex(randomblob(16))), 'body', response, 'written_at', NULL)
     )
     WHERE typeof(response) = 'text'
-      AND length(trim(response, ' ' || char(9, 10, 13))) > 0
+      AND length(trim(response, :spaces)) > 0
       AND CASE
           WHEN parent_updates IS NULL THEN 1
-          WHEN typeof(parent_updates) = 'text' AND json_valid(parent_updates)
-              THEN json_type(parent_updates) = 'array' AND json_array_length(parent_updates) = 0
+          WHEN typeof(parent_updates) = 'text' AND json_valid(parent_updates) THEN CASE
+              WHEN json_type(parent_updates) <> 'array' THEN 0
+              WHEN EXISTS (
+                  SELECT 1 FROM json_each(parent_updates)
+                  WHERE CASE
+                      WHEN type = 'object' THEN json_type(value, '$.body') IS NOT 'text'
+                      ELSE 1
+                  END
+              ) THEN 0
+              WHEN json_array_length(parent_updates) = 0 THEN 1
+              ELSE trim(
+                  replace(replace(response, char(13, 10), char(10)), char(13), char(10)),
+                  :spaces
+              ) <> trim(
+                  replace(
+                      replace(json_extract(parent_updates, '$[#-1].body'), char(13, 10), char(10)),
+                      char(13),
+                      char(10)
+                  ),
+                  :spaces
+              )
+          END
           ELSE 0
       END
 """
-"""A reply kept with no updates beside it becomes the request's one update, with no time, as
-the first start with updates finds it and as any later start finds one a build that reads
-only the reply has written. A value in the updates' place that is no list is left as it is."""
+"""At every start, a reply that no update holds becomes the latest update, with no time. A blank
+reply, or the latest update's words with other line endings or edges, adds nothing, and a value
+in the updates' place that is no list of objects with words is left as it is."""
 TAKE_UP: Final = """
     UPDATE help_requests SET state = 'accepted', accepted_at = ?
     WHERE request_id = ? AND state = 'requested'
@@ -386,14 +426,14 @@ class HelpRequestsStore:
         # The notes a request ever named, and the ids every request was asked under, by
         # id alone. Taking a request back or sweeping it leaves both. Each start fills
         # them from the requests still here, in one transaction with the tables, and in
-        # the same transaction a reply kept with no updates becomes its request's first.
+        # the same transaction a reply that no update holds becomes its request's latest.
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             self._connection.execute(NOTES_NAMED_TABLE)
             self._connection.execute(NOTES_NAMED_FROM_REQUESTS)
             self._connection.execute(IDS_TABLE)
             self._connection.execute(IDS_FROM_REQUESTS)
-            self._connection.execute(EARLIER_REPLIES)
+            self._connection.execute(EARLIER_REPLIES, {"spaces": SPACES})
             self._connection.commit()
         except BaseException:
             self._connection.rollback()
@@ -542,16 +582,15 @@ class HelpRequestsStore:
         unless this form's words are on it already. ``update_id`` is the
         form's id; with none, the move counts as a form of its own.
         """
-        words, form = given_words(response), form_id(update_id)
-        now = self._clock.now()
-        update = None if words is None else ParentUpdate(update_id=form, body=words, written_at=now)
-        with self._writing():
-            current = self._read(request_id)
+        words, form = kept_words(response), form_id(update_id)
+        with self._writing() as now:
+            current = self._read(request_id, now)
             if current.state == "requested":
                 self._connection.execute(TAKE_UP, (now.isoformat(), request_id))
-                if update is not None:
+                if words is not None:
+                    update = ParentUpdate(update_id=form, body=words, written_at=now)
                     self._append(request_id, "accepted", update)
-                return self._read(request_id)
+                return self._read(request_id, now)
             if retried(current, form, words):
                 return current
             if current.state == "resolved":
@@ -568,19 +607,20 @@ class HelpRequestsStore:
         The words are appended in one statement that holds only while the
         request is taken up and the form's id is not on it yet. The same form
         sent again with the same words is the request as it stands; with other
-        words it is ``UpdateFormUsed``. A closed request is ``RequestClosed``,
-        one nobody has taken up is ``NotTakenUp``, and no words at all is
-        ``UpdateWithoutWords``; each writes nothing.
+        words it is ``UpdateFormUsed``. A request that is not kept is a
+        ``KeyError`` before its words are looked at; then no words at all is
+        ``UpdateWithoutWords``, a closed request ``RequestClosed``, and one
+        nobody has taken up ``NotTakenUp``. Each writes nothing.
         """
-        words, form = given_words(body), form_id(update_id)
-        if words is None:
-            msg = "an update has no words"
-            raise UpdateWithoutWords(msg)
-        update = ParentUpdate(update_id=form, body=words, written_at=self._clock.now())
-        with self._writing():
+        words, form = kept_words(body), form_id(update_id)
+        with self._writing() as now:
+            current = self._read(request_id, now)
+            if words is None:
+                msg = "an update has no words"
+                raise UpdateWithoutWords(msg)
+            update = ParentUpdate(update_id=form, body=words, written_at=now)
             if self._append(request_id, "accepted", update):
-                return self._read(request_id)
-            current = self._read(request_id)
+                return self._read(request_id, now)
             if retried(current, form, words):
                 return current
             if current.state == "resolved":
@@ -600,30 +640,30 @@ class HelpRequestsStore:
         for the caller to keep. A form whose id already added other words
         closes nothing and is ``UpdateFormUsed``.
         """
-        words, form = given_words(response), form_id(update_id)
-        now = self._clock.now()
-        update = None if words is None else ParentUpdate(update_id=form, body=words, written_at=now)
-        with self._writing():
-            current = self._read(request_id)
+        words, form = kept_words(response), form_id(update_id)
+        with self._writing() as now:
+            current = self._read(request_id, now)
             if current.state == "resolved":
                 if words is None or retried(current, form, words):
                     return current
                 raise RequestClosed(current, "resolved again")
-            if update is not None and not retried(current, form, words):
+            if words is not None and not retried(current, form, words):
                 if any(added.update_id == form for added in current.parent_updates):
                     raise UpdateFormUsed(current)
+                update = ParentUpdate(update_id=form, body=words, written_at=now)
                 self._append(request_id, current.state, update)
             self._connection.execute(CLOSE, (now.isoformat(), now.isoformat(), request_id))
-            return self._read(request_id)
+            return self._read(request_id, now)
 
     @contextmanager
-    def _writing(self) -> Iterator[None]:
-        """One move under the lock, with the file's writer reserved before anything is read:
+    def _writing(self) -> Iterator[datetime]:
+        """One move under the lock, with the file's writer reserved before anything is read and
+        the move's instant read once it is, so times follow the order moves are kept in:
         committed whole when the move returns, rolled back whole when it raises."""
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
-                yield
+                yield self._clock.now()
                 self._connection.commit()
             except BaseException:
                 self._connection.rollback()
@@ -707,18 +747,18 @@ class HelpRequestsStore:
             ).rowcount
         return int(removed)
 
-    def _read(self, request_id: str) -> HelpRequest:
+    def _read(self, request_id: str, now: datetime | None = None) -> HelpRequest:
         """One request inside a held lock, or a ``KeyError`` for one that does not exist.
 
         A resolved request past retention does not exist here either, so no
-        move can be made on it.
+        move can be made on it. ``now`` is the move's instant, when it has one.
         """
         row = self._connection.execute(
             """
             SELECT * FROM help_requests
             WHERE request_id=? AND (state<>'resolved' OR resolved_at >= ?)
             """,
-            (request_id, self._cutoff()),
+            (request_id, self._cutoff(now)),
         ).fetchone()
         if row is None:
             msg = f"no help request {request_id!r}"
@@ -738,9 +778,14 @@ def spaced(words: str | None) -> str:
     return " ".join((words or "").split())
 
 
-def given_words(words: str | None) -> str | None:
-    """A parent's words as a move takes them: ``None`` for none, a blank included."""
-    return words if words is not None and words.strip() else None
+def kept_words(words: str | None) -> str | None:
+    """A parent's words as every move keeps them, as the family page's box counts them: one kind
+    of line ending, the edges trimmed, ``None`` for none or blank, and ``UpdateTooLong`` past
+    the cap."""
+    kept = normalize_note(words)
+    if kept is not None and len(kept) > NOTE_MAX_LENGTH:
+        raise UpdateTooLong(len(kept))
+    return kept
 
 
 def form_id(update_id: str | None) -> str:

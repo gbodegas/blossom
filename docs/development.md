@@ -111,8 +111,12 @@ With the app running as the README describes:
   needs and the other two may leave out, and may carry an `update_id`, 32
   lowercase hex digits: the same id sent again with the same words changes
   nothing, so a retry is safe, and without one every POST is a press of its
-  own. A second accept adds no words, and new words it carries answer 409; a
-  move a closed request can't take answers 409 too.
+  own. The words are kept as the family page keeps them, with one kind of line
+  ending and the edges trimmed, and the 500-character cap counts them that
+  way. Words past the cap answer 422 before anything else; then a request
+  that isn't kept answers 404, whatever the words, and an update with none
+  answers 422. A second accept adds no words, and new words it carries answer
+  409; a move a closed request can't take answers 409 too.
 - <http://127.0.0.1:8000/parent> is the parent's page: read the plan she has,
   see how it was made step by step, and say it looks good or ask for a
   change. A parent can also start an evening's plan for her there. A run that

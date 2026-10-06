@@ -8,10 +8,12 @@ import pathlib
 import re
 import sqlite3
 import threading
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -351,11 +353,13 @@ def test_an_update_is_refused_with_nothing_written_unless_it_can_be_added() -> N
     for blank in (None, "", "  \n "):
         with pytest.raises(help_store.UpdateWithoutWords):
             store.add_update(taken, blank)
+        with pytest.raises(KeyError):
+            store.add_update("0" * 32, blank)
     with pytest.raises(KeyError):
         store.add_update("0" * 32, "Synthetic words")
     with pytest.raises(help_store.NotARequestId):
         store.add_update(taken, "Synthetic words", update_id="not-an-id")
-    with pytest.raises(ValidationError):
+    with pytest.raises(help_store.UpdateTooLong):
         store.add_update(taken, "w" * (NOTE_MAX_LENGTH + 1))
 
     assert rows_of(store) == before
@@ -417,6 +421,131 @@ def test_updates_sent_at_once_through_two_connections_are_all_kept(
     assert sorted(bodies(kept)) == sorted(f"Synthetic update {number}" for number in range(8))
     assert kept is not None
     assert len({update.update_id for update in kept.parent_updates}) == 8
+
+
+def times_follow_the_order(request: HelpRequest) -> bool:
+    """Whether each update's time is no earlier than the time of the update kept before it, and
+    a close, if any, no earlier than the last."""
+    times = []
+    for update in request.parent_updates:
+        if update.written_at is not None:
+            times.append(update.written_at)
+    if request.resolved_at is not None:
+        times.append(request.resolved_at)
+    return times == sorted(times)
+
+
+class LetsAnotherMoveLand:
+    """A clock that, the first time it is read, lets another page's move land first, as
+    another thread's could land while a move had read the clock and not yet reserved the
+    writer."""
+
+    def __init__(self, at: datetime, lands: Callable[[], None]) -> None:
+        self.at = at
+        self.lands: Callable[[], None] | None = lands
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return ZONE
+
+    def now(self) -> datetime:
+        lands, self.lands = self.lands, None
+        if lands is not None:
+            lands()
+        return self.at
+
+    def today(self) -> date:
+        return PLAN_DATE
+
+
+@pytest.mark.parametrize("move", ["update", "close"])
+def test_update_times_follow_their_order_when_another_page_lands_during_a_move(
+    move: str, tmp_path: pathlib.Path
+) -> None:
+    """Another page's update, an hour later by its clock, is sent while a move reads the clock
+    and again after. The move holds the writer by then, so the other lands after it or finds
+    the request closed, and every time kept follows the order kept."""
+    path = tmp_path / "record.sqlite3"
+    setup = HelpRequestsStore.open(path, fixture_clock())
+    asked = setup.ask(PLAN_DATE).request_id
+    setup.accept(asked)
+    setup.close()
+    other = HelpRequestsStore(
+        sqlite3.connect(path, timeout=0, check_same_thread=False), SetClock(PLAN_DATE, AT + HOUR)
+    )
+    form = uuid4().hex
+    outcomes: list[str] = []
+
+    def lands() -> None:
+        try:
+            other.add_update(asked, "Synthetic from the other page", update_id=form)
+        except sqlite3.OperationalError:
+            outcomes.append("waits")
+        except RequestClosed:
+            outcomes.append("closed")
+        else:
+            outcomes.append("kept")
+
+    store = HelpRequestsStore.open(path, LetsAnotherMoveLand(AT, lands))
+    if move == "update":
+        store.add_update(asked, "Synthetic from this page")
+    else:
+        store.resolve(asked, "Synthetic last words")
+    lands()
+    kept = store.get(asked)
+    store.close()
+    other.close()
+
+    assert kept is not None
+    assert times_follow_the_order(kept)
+    if move == "update":
+        assert outcomes == ["waits", "kept"]
+        assert [(update.body, update.written_at) for update in kept.parent_updates] == [
+            ("Synthetic from this page", AT),
+            ("Synthetic from the other page", AT + HOUR),
+        ]
+        return
+    assert outcomes == ["waits", "closed"]
+    assert [(update.body, update.written_at) for update in kept.parent_updates] == [
+        ("Synthetic last words", AT)
+    ]
+    assert kept.resolved_at == AT
+
+
+class NotesTheWriter:
+    """A clock that notes, each time it is read, whether its store's writer is reserved."""
+
+    def __init__(self, at: datetime) -> None:
+        self.at = at
+        self.connection: sqlite3.Connection | None = None
+        self.reserved: list[bool] = []
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return ZONE
+
+    def now(self) -> datetime:
+        if self.connection is not None:
+            self.reserved.append(self.connection.in_transaction)
+        return self.at
+
+    def today(self) -> date:
+        return PLAN_DATE
+
+
+@pytest.mark.parametrize("move", ["accept", "add_update", "resolve"])
+def test_every_move_reads_the_clock_only_with_the_writer_reserved(move: str) -> None:
+    clock = NotesTheWriter(AT)
+    store = HelpRequestsStore(sqlite3.connect(":memory:", check_same_thread=False), clock)
+    asked = store.ask(PLAN_DATE).request_id
+    if move == "add_update":
+        store.accept(asked)
+    clock.connection = store._connection
+    moved = getattr(store, move)(asked, "Synthetic words")
+
+    assert bodies(moved) == ["Synthetic words"]
+    assert clock.reserved
+    assert all(clock.reserved)
 
 
 def test_a_parents_updates_go_with_their_request_when_it_ages_out() -> None:
@@ -519,18 +648,86 @@ def test_a_file_from_before_gains_the_updates_column_and_its_reply_is_an_earlier
     assert added.response == "Synthetic update after"
 
 
-def test_a_start_that_meets_updates_it_cannot_read_leaves_them_and_names_no_words(
+CLOSED_BY_THE_REPLY_ALONE = """
+    UPDATE help_requests
+    SET state = 'resolved', resolved_at = ?, accepted_at = COALESCE(accepted_at, ?),
+        response = COALESCE(?, response)
+    WHERE request_id = ?
+"""
+"""A close as a build that reads only the reply makes it: its words, if any, in that column."""
+
+
+def test_words_a_build_reading_only_the_reply_saves_show_once_after_the_next_start(
     tmp_path: pathlib.Path,
 ) -> None:
+    """Closes made by a build that reads only the reply: at the next start, new words are the
+    latest update, with no time, and still the reply; the latest update's words with other line
+    endings or edges, or no words, add nothing, and a second start changes nothing."""
+    path = tmp_path / "record.sqlite3"
+    store = HelpRequestsStore.open(path, fixture_clock())
+    asked = {}
+    for case in ("new words", "the same words", "no words"):
+        asked[case] = store.ask(PLAN_DATE, "Synthetic question").request_id
+        store.accept(asked[case], "Synthetic on it")
+        store.add_update(asked[case], "Synthetic update\nover two lines")
+    store.close()
+    stamp = fixture_clock().now().isoformat()
+    elsewhere = sqlite3.connect(path)
+    for case, words in (
+        ("new words", "Synthetic closing words, saved elsewhere"),
+        ("the same words", "\u3000 Synthetic update\r\nover two lines \u00a0\r\n"),
+        ("no words", None),
+    ):
+        elsewhere.execute(CLOSED_BY_THE_REPLY_ALONE, (stamp, stamp, words, asked[case]))
+    elsewhere.commit()
+    elsewhere.close()
+
+    first = HelpRequestsStore.open(path, fixture_clock())
+    kept = {request.request_id: request for request in first.retained().requests}
+    held = rows_of(first)
+    first.close()
+    second = HelpRequestsStore.open(path, fixture_clock())
+    held_again = rows_of(second)
+    second.close()
+
+    closed = kept[asked["new words"]]
+    assert closed.state == "resolved"
+    assert [(update.body, update.written_at is None) for update in closed.parent_updates] == [
+        ("Synthetic on it", False),
+        ("Synthetic update\nover two lines", False),
+        ("Synthetic closing words, saved elsewhere", True),
+    ]
+    assert re.fullmatch(r"[0-9a-f]{32}", closed.parent_updates[-1].update_id)
+    assert closed.response == "Synthetic closing words, saved elsewhere"
+    for case in ("the same words", "no words"):
+        assert bodies(kept[asked[case]]) == ["Synthetic on it", "Synthetic update\nover two lines"]
+    assert held_again == held
+
+
+NO_UPDATE_ID = "0123456789abcdef0123456789abcdef"
+
+
+@pytest.mark.parametrize(
+    "unreadable",
+    [
+        "Synthetic zebra, no list",
+        '[7, {"id": "' + NO_UPDATE_ID + '", "body": "Synthetic zebra other", "written_at": null}]',
+        '[{"id": "' + NO_UPDATE_ID + '", "body": "Synthetic zebra other", "written_at": null}, '
+        '"Synthetic zebra"]',
+    ],
+    ids=["no list", "an earlier one no update", "the latest no update"],
+)
+def test_a_start_that_meets_updates_it_cannot_read_leaves_them_and_names_no_words(
+    unreadable: str, tmp_path: pathlib.Path
+) -> None:
     """A value in the updates' place that is no list of updates is never rewritten at a start,
-    and reading it is ``UnreadableHelpRequest`` in names alone."""
+    even beside a reply that differs from every update, and reading it is
+    ``UnreadableHelpRequest`` in names alone."""
     path = tmp_path / "record.sqlite3"
     store = HelpRequestsStore.open(path, fixture_clock())
     asked = store.ask(PLAN_DATE).request_id
     store.accept(asked, "Synthetic zebra words")
-    store._connection.execute(
-        "UPDATE help_requests SET parent_updates = 'Synthetic zebra, no list'"
-    )
+    store._connection.execute("UPDATE help_requests SET parent_updates = ?", (unreadable,))
     store._connection.commit()
     store.close()
 
@@ -539,7 +736,7 @@ def test_a_start_that_meets_updates_it_cannot_read_leaves_them_and_names_no_word
     with pytest.raises(help_store.UnreadableHelpRequest) as refused:
         again.retained()
 
-    assert held == "Synthetic zebra, no list"
+    assert held == unreadable
     assert "zebra" not in str(refused.value)
     assert asked in str(refused.value)
 
@@ -1540,6 +1737,47 @@ def test_an_update_or_closing_words_count_a_line_break_once_as_the_field_does(st
     assert held[refused_id]["state"] == "accepted"
 
 
+@pytest.mark.parametrize("step", ["accept", "update", "resolve"])
+def test_words_sent_as_json_are_kept_as_the_family_page_keeps_them(step: str) -> None:
+    """Words at the cap, sent with a carriage return in each line break and spacing at the
+    edges, are kept alike as JSON and from the family page, trimmed with one kind of line
+    ending; one character more is refused over JSON too, with nothing written."""
+    at_cap = "w" * 249 + "\n" + "w" * 250
+    over = "w" * 250 + "\n" + "w" * 250
+
+    def padded(words: str) -> str:
+        return "  " + words.replace("\n", "\r\n") + " \r\n"
+
+    with browser() as client:
+        by_json, by_form, refused_id = (asked_for(client) for _ in range(3))
+        if step == "update":
+            for request_id in (by_json, by_form, refused_id):
+                client.post(f"/parent/help-requests/{request_id}/accept", json={})
+        sent = client.post(
+            f"/parent/help-requests/{by_json}/{step}", json={"response": padded(at_cap)}
+        )
+        pressed = client.post(
+            f"/parent/actions/help/{by_form}", data={"step": step, "response": padded(at_cap)}
+        )
+        before = requests_held(client)
+        refused = client.post(
+            f"/parent/help-requests/{refused_id}/{step}", json={"response": padded(over)}
+        )
+        after = requests_held(client)
+        held = listed(client)
+
+    assert (sent.status_code, pressed.status_code) == (200, 303)
+    for request_id in (by_json, by_form):
+        assert [update["body"] for update in held[request_id]["updates"]] == [at_cap]
+        assert held[request_id]["response"] == at_cap
+    assert held[by_json]["state"] == held[by_form]["state"]
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == (
+        f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is 501."
+    )
+    assert after == before
+
+
 def test_an_update_over_json_is_added_once_for_its_id_and_its_refusals_are_said() -> None:
     with browser() as client:
         request_id = asked_for(client)
@@ -1571,6 +1809,52 @@ def test_an_update_over_json_is_added_once_for_its_id_and_its_refusals_are_said(
     assert written.utcoffset() == datetime.fromisoformat(kept["asked_local"]).utcoffset()
 
 
+@pytest.mark.parametrize("route", ["JSON", "form"])
+@pytest.mark.parametrize(
+    ("case", "status_code"), [("missing", 404), ("expired", 404), ("taken up", 422)]
+)
+def test_a_blank_update_to_a_request_not_kept_is_unknown_before_it_is_blank(
+    route: str, case: str, status_code: int
+) -> None:
+    """A request that is not kept, never asked or closed past retention, is 404 for an update
+    whatever its words, as for every move; a blank update to one that is kept is 422. Nothing
+    is written either way."""
+    with browser() as client:
+        request_id = asked_for(client)
+        client.post(f"/parent/help-requests/{request_id}/accept", json={})
+        if case == "expired":
+            client.post(f"/parent/help-requests/{request_id}/resolve", json={})
+            state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+            past = datetime.now(UTC) - timedelta(days=HELP_RETENTION_DAYS, hours=1)
+            state.help_requests._connection.execute(
+                "UPDATE help_requests SET resolved_at = ?", (past.isoformat(),)
+            )
+            state.help_requests._connection.commit()
+        named = "0" * 32 if case == "missing" else request_id
+        before = requests_held(client)
+        if route == "JSON":
+            answer = client.post(f"/parent/help-requests/{named}/update", json={"response": " \n "})
+            said = str(answer.json()["detail"])
+        else:
+            answer = client.post(
+                f"/parent/actions/help/{named}", data={"step": "update", "response": " \n "}
+            )
+            problem = PROBLEM_LINE.search(answer.text)
+            assert problem is not None
+            said = problem.group(1)
+        after = requests_held(client)
+
+    assert answer.status_code == status_code
+    assert after == before
+    expected = f"no help request {named!r}" if status_code == 404 else UPDATE_NEEDS_WORDS
+    if route == "JSON":
+        assert said == expected
+    elif status_code == 404:
+        assert said == str(escape(expected))
+    else:
+        assert said == f'{escape(expected)} <a href="#reply-{request_id}">Go to the field.</a>'
+
+
 def test_no_words_of_a_parents_update_reach_the_log(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1598,17 +1882,13 @@ def test_no_words_of_a_parents_update_reach_the_log(
     assert "zebra" not in caplog.text
 
 
-@pytest.mark.parametrize(
-    ("step", "kind"),
-    [("update", "OperationalError"), ("resolve", "UnreadableHelpRequest")],
-)
+@pytest.mark.parametrize("step", ["update", "resolve"])
 def test_a_move_on_a_row_that_can_not_be_read_keeps_the_words_and_writes_nothing(
-    step: str, kind: str, caplog: pytest.LogCaptureFixture
+    step: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A request whose updates turn unreadable after the page was made: the file refuses the
-    append, or the row is read and refused, and either way the press is answered on the
-    family page's stand-in with the words as typed, nothing is written, and the log names the
-    kind of failure alone."""
+    """A request whose updates turn unreadable after the page was made is refused when the move
+    reads it: the family page's stand-in keeps the words as typed, nothing is written, and the
+    log names the kind of failure alone."""
     with browser() as client:
         request_id = asked_for(client)
         client.post(f"/parent/help-requests/{request_id}/accept", json={})
@@ -1628,5 +1908,6 @@ def test_a_move_on_a_row_that_can_not_be_read_keeps_the_words_and_writes_nothing
         answer.text
     )
     assert after == before
+    kind = "UnreadableHelpRequest"
     assert f"a parent's move on her request could not be saved: {kind}" in caplog.text
     assert "zebra" not in caplog.text

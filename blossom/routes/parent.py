@@ -143,7 +143,9 @@ from blossom.stores.help_requests import (
     RequestClosed,
     UnreadableHelpRequest,
     UpdateFormUsed,
+    UpdateTooLong,
     UpdateWithoutWords,
+    kept_words,
     new_update_id,
     update_id_from,
 )
@@ -775,12 +777,18 @@ def checkpoint(state: State) -> ParentCheckpointView:
 
 class HelpStep(BaseModel):
     """A parent's move on a request, with words if any, and the id of the form that sends it.
-    Without an id, every call moves as a form of its own, so retrying one isn't safe."""
+    Without an id, every call moves as a form of its own, so retrying one isn't safe. The words
+    are held to the cap as the store keeps them, as the family page's are."""
 
     model_config = ConfigDict(extra="forbid")
 
-    response: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
+    response: str | None = None
     update_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+
+
+def reply_too_long(length: int) -> str:
+    """What both routes say of a parent's words past the cap, counted as they would be kept."""
+    return f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is {length}."
 
 
 def move_request(
@@ -790,8 +798,9 @@ def move_request(
     response: str | None,
     update_id: str | None = None,
 ) -> HelpRequest:
-    """Take a request up, add an update to it, or close it. Unknown is 404; a move its state
-    or its form refuses is 409; an update with no words, and any other step, is 422."""
+    """Take a request up, add an update to it, or close it. Words past the cap are 422 before
+    anything is read; then an unknown request is 404, an update with no words 422, and a move
+    its state or its form refuses 409. Any other step is 422."""
     store = state.help_requests
     try:
         if step == "accept":
@@ -800,6 +809,10 @@ def move_request(
             return store.add_update(request_id, response, update_id=update_id)
         if step == "resolve":
             return store.resolve(request_id, response, update_id=update_id)
+    except UpdateTooLong as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, detail=reply_too_long(error.length)
+        ) from error
     except KeyError as error:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, detail=f"no help request {request_id!r}"
@@ -1495,13 +1508,14 @@ def help_from_the_page(
     page's stand-in, which reads no store, 500, with the words as typed. A refusal whose
     page can't be read keeps its status there, with the words.
     """
-    words = normalize_note(response) or ""
     typed = FamilyKept(reply=response)
-    if len(words) > NOTE_MAX_LENGTH:
+    try:
+        words = kept_words(response) or ""
+    except UpdateTooLong as error:
         return refused_on_the_page(
             request,
             state,
-            f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}.",
+            reply_too_long(error.length),
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             typed,
             help_reply=HelpReplyKept(request_id, response, at_reply=True),
