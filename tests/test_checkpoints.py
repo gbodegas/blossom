@@ -144,6 +144,22 @@ def test_a_drive_letter_mapped_to_a_share_is_refused(
         refuse_unsafe_path(tmp_path / "checkpoints.sqlite3", environ={})
 
 
+def test_a_mapped_drive_is_refused_before_anything_resolves_the_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """Resolving a path reads the share behind its drive letter, so the letter comes first."""
+
+    def resolving(*args: object, **kwargs: object) -> str:
+        msg = "the path was resolved before its drive was asked about"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(paths, "drive_is_network", lambda text: True)
+    monkeypatch.setattr(os.path, "realpath", resolving)
+
+    with pytest.raises(UnsafeCheckpointPath, match="network share"):
+        refuse_unsafe_path(tmp_path / "checkpoints.sqlite3", environ={})
+
+
 @pytest.mark.skipif(os.name != "nt", reason="drive letters are a Windows idea")
 def test_a_local_drive_letter_is_not_read_as_a_network_one(tmp_path: pathlib.Path) -> None:
     """The real call, not the stand-in: a fixed drive must answer no."""

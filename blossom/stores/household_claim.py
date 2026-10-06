@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import IO
 
-from blossom.stores.paths import refuse_unsafe_path
+from blossom.stores.paths import lock_path_for, refuse_unsafe_path
 
 if sys.platform == "win32":
     import msvcrt
@@ -85,16 +85,6 @@ class HouseholdClaim:
                 _unlock(handle)
             finally:
                 handle.close()
-
-
-def lock_path_for(state_path: Path) -> Path:
-    """The lock file beside a state file, named for the file as it really is.
-
-    ``blossom.sqlite3`` is claimed through ``blossom.lock`` in the same
-    folder. The path is resolved first, so a file reached by two spellings,
-    through a link or a relative path, is claimed through one lock.
-    """
-    return state_path.resolve().with_suffix(".lock")
 
 
 def claim_household(*state_paths: Path) -> HouseholdClaim:
