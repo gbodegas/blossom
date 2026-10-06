@@ -1084,9 +1084,18 @@ matters most. Words may be attached, and are never asked for.
 
 A press records that today, by the household's clock, is too much, in
 `WorkloadSignalsStore`, `blossom/stores/workload_signals.py`. Three things
-follow, each visible at once. Her page shows the signal, the time she gave it,
-and what it changes, with a button to take it back. The evening's budget is
-cut to the household's shorter one, `BLOSSOM_TOO_MUCH_MINUTES`, and the cut is
+follow, each visible at once. Her page says a shorter plan is requested for
+today and what that does, to her next plan or to the plan saved under it,
+with Undo 'Too much right now' beside it; its list of what Blossom keeps gives
+the time she said it. Each press keeps a row of its own, and the evening stays
+shorter while any is left, so after an Undo the page says she removed her
+request and what still stands, never that the usual evening is back. Only the
+page the Undo lands on says she removed it: the redirect names a landing of
+its own, and the short-lived cookie for that landing holds the mark and no
+card, read once and cleared like the cards a save keeps in place. An address
+alone, a refresh or a return says only what still stands. The
+evening's budget is cut to the household's shorter one,
+`BLOSSOM_TOO_MUCH_MINUTES`, and the cut is
 made in the graph's `retrieve` node before the planner is asked, so the
 tier-one budget check enforces it and
 the planner is told, in a block written by this system, that her word on the

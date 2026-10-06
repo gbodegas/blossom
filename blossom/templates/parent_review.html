@@ -413,17 +413,18 @@
         <h3>{{ draft.plan_date.strftime("%A, %B") }} {{ draft.plan_date.day }}, {{ draft.plan_date.year }}</h3>
         {#
           Blossom's own review travels with the plan and never decides for
-          it: the line says which way it went, the text carries its notes,
-          and the parent's review is the form below.
+          it: the line says which way it went, the plan carries its notes in
+          one fold, open when the review could not settle, and the parent's
+          review is the form below.
         #}
         {% if draft.outcome == "accepted" %}
           <p class="confidence corroborated"><strong>Blossom's review:</strong> accepted.</p>
         {% else %}
           <p class="confidence disagree">
-            <strong>Blossom's review:</strong> could not settle every point. Its notes are at the end of the text.
+            <strong>Blossom's review:</strong> could not settle every point. Its notes are open under the plan, in Blossom's review notes.
           </p>
         {% endif %}
-        {% with reading = readings[draft.draft_id], review_open = true, plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
+        {% with reading = readings[draft.draft_id], plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
         {{ steps_list(draft.steps, "How this plan was made") }}
         {% if draft.stale %}
           <p class="confidence disagree" role="alert"><strong>Plan again.</strong> {{ draft.stale }}</p>
@@ -447,10 +448,17 @@
         {% if draft.draft_id in unresumable %}
           <p class="note">{{ unresumable[draft.draft_id] }}</p>
         {% else %}
+        {#
+          The note says what it is, in a label of its own, so the field keeps the
+          body text's weight, as the pasted text's field does. Its example is only a
+          placeholder, gone once anything is typed; the helper under it stays, and
+          the field names it as its description. Each waiting plan's field and
+          helper have ids of their own.
+        #}
         <form method="post" action="/parent/actions/decide/{{ draft.draft_id }}" class="decision">
-          <label>Reason (optional)
-            <input type="text" name="reason" maxlength="{{ reason_max_length }}" placeholder="A sentence she would recognize">
-          </label>
+          <label for="review-note-{{ loop.index }}">Note about this plan (optional)</label>
+          <input id="review-note-{{ loop.index }}" type="text" name="reason" maxlength="{{ reason_max_length }}" placeholder="For example: Start with Geometry, then take a short break." aria-describedby="review-note-help-{{ loop.index }}">
+          <p class="helper" id="review-note-help-{{ loop.index }}">Add encouragement or explain what should change.</p>
           <div class="actions">
             {% if not draft.stale %}
               <button type="submit" name="decision" value="approve" class="primary" aria-label="Looks good: the plan for {{ evening }}{{ which }}">Looks good</button>
@@ -459,6 +467,7 @@
                     aria-label="Ask for a change to the plan for {{ evening }}{{ which }}">Ask for a change</button>
           </div>
           <p class="note">
+            Ask for a change records your note. It doesn't rewrite the saved plan.
             {% if draft.plan_date == today %}
               She has this plan on her page already. What you say here shows there, under it.
             {% elif draft.plan_date > today %}
@@ -503,7 +512,7 @@
         {% if draft.reported_done %}
           {{ done_notice(draft) }}
         {% endif %}
-        {% with reading = readings[draft.draft_id], review_open = true, plan_level = 3 %}{% include "plan_reading.html" %}{% endwith %}
+        {% with reading = readings[draft.draft_id], plan_level = 3 %}{% include "plan_reading.html" %}{% endwith %}
         {{ steps_list(draft.steps, "How this plan was made") }}
       </article>
     </section>
@@ -641,7 +650,7 @@ Cover both books with paper.</pre>
           {% endif %}
           <details{% if open_plan == draft.draft_id %} open{% endif %}>
             <summary>{% if draft.decision in ("approved", "rejected") %}The plan as it was reviewed{% else %}The plan as it was{% endif %}</summary>
-            {% with reading = readings[draft.draft_id], review_open = true, plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
+            {% with reading = readings[draft.draft_id], plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
           </details>
           {{ steps_list(draft.steps, "How this plan was made") }}
         </article>

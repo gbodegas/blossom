@@ -22,13 +22,14 @@ from blossom.plan_reading import anchor_for
 from blossom.plans import Deferral
 from blossom.reconciliation import SourceChannel
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
-from blossom.routes.runs import NOTHING_TO_SCHEDULE, plan_graphs
+from blossom.routes.runs import plan_graphs
 from blossom.settings import REPOSITORY_ROOT
 from blossom.stores.drafts import DraftRecord
 from tests.support import (
     ESSAY_ID,
     ESSAY_TITLE,
     HER_PAGE,
+    NOTHING_TO_PLAN,
     PAGE_HEADERS,
     PLAN_DATE,
     SAME_ORIGIN,
@@ -264,10 +265,10 @@ def walkthrough_without_the_essay(client: TestClient) -> bool:
 def test_long_words_around_a_plans_rows_are_whole_inside_the_container_that_wraps_them() -> None:
     """A plan composed and saved the ordinary way, whose reviewer wrote a long address in a
     finding and whose window holds an undated assignment with a long unbroken title, which
-    the plan lists as a date to clarify. Both pages show every such word whole, inside the
-    plan's own container, the family page with the review notes open on arrival and her page
-    with them folded; and the container's rule wraps whatever it holds, the rows, the
-    lists, and the notes alike, while the text as composed keeps its own lines."""
+    the plan lists as a date to clarify. Both pages show every such word whole and once,
+    inside the plan's own container, with the review notes folded for a plan the review
+    accepted; and the container's rule wraps whatever it holds, the rows, the lists, and the
+    notes alike."""
     address = "https://example.test/" + "q" * 300
     long_title = "Fieldwork" + "w" * 180
     critique = f"Check the instructions at {address}"
@@ -300,26 +301,23 @@ def test_long_words_around_a_plans_rows_are_whole_inside_the_container_that_wrap
     css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
 
     assert record.plan_snapshot is not None
-    for page, folded in ((hers, True), (family, False)):
+    assert record.outcome == "accepted"
+    for page in (hers, family):
         container = plan_on(page, record)
         assert container.startswith(f'id="{anchor_for(record.draft_id)}" tabindex="-1">')
         assert 'class="plan-reading"' in page[: page.index(container)][-40:]
         notes = container[container.index('<details class="steps plan-review"') :]
-        assert notes.startswith(
-            '<details class="steps plan-review">'
-            if folded
-            else '<details class="steps plan-review" open>'
-        )
+        assert notes.startswith('<details class="steps plan-review">')
         assert notes[: notes.index("</details>")].count(address) == 1
+        assert container.count(address) == 1
         clarify = container[container.index("Dates needing clarification") :]
         assert long_title in clarify[: clarify.index("</ul>")]
-        assert container.count("<pre") == 1
-        assert address in container[container.index("<pre") :]
+        assert "<pre" not in container
+    rules = css[css.index(".plan-reading {") : css.index("/* A link to an assignment, from a row")]
     assert ".plan-reading {\n  min-width: 0;\n  overflow-wrap: anywhere;\n}" in css
-    original = css[css.index(".plan-original-text {") :]
-    assert "white-space: pre-wrap;" in original[: original.index("}")]
+    assert ".plan-original" not in css
     for cut in ("text-overflow", "overflow-x: auto", "overflow-x: scroll"):
-        assert cut not in css[css.index(".plan-reading {") : css.index(".plan-original-text {")]
+        assert cut not in rules
 
 
 # ------------------------------------------------------------- current, and history
@@ -363,10 +361,10 @@ def test_todays_latest_plan_is_marked_on_both_pages_whatever_was_decided(decisio
         assert "No earlier plans yet." in earlier
 
 
-def test_an_earlier_plan_for_today_a_future_plan_and_the_original_text_carry_no_marks() -> None:
+def test_an_earlier_plan_for_today_and_a_future_plan_carry_no_marks() -> None:
     """Two plans for today: the first is history the moment the second is published, whatever
     was said about it, and only the second is marked. A plan waiting for tomorrow is read by
-    its rows and carries no mark. The text as composed never does."""
+    its rows and carries no mark. No plan read by its rows is shown a second time as text."""
     with browser(key=True) as client:
         namesake = walkthrough(client)
         first = planned(client)
@@ -400,8 +398,8 @@ def test_an_earlier_plan_for_today_a_future_plan_and_the_original_text_carry_no_
         f'id="{anchor_for(first.draft_id)}"'
     )
     assert "Today's reviewed plan" not in family
-    original = family[family.index('<pre class="plan-original-text">') :]
-    assert "Reported done" not in original[: original.index("</pre>")]
+    assert "Original saved text" not in hers + family
+    assert 'class="plan-original' not in hers + family
     assert tomorrow.status_code == 201
     assert len(later) == 1
     for plan in later:
@@ -431,6 +429,76 @@ def test_a_new_household_day_makes_yesterdays_plan_history(tmp_path: pathlib.Pat
     assert anchor_for(record.draft_id) not in hers
     assert "Reported done" not in plan_on(family, record)
     assert HISTORY in plan_on(family, record)
+
+
+# ------------------------------------------------------------- Blossom's review notes
+
+
+def unsettled() -> CriticVerdict:
+    """A reviewer that could not settle: one criterion it could not tell about."""
+    return CriticVerdict(
+        findings=[finding(Judgment.CANNOT_TELL, Criterion.SUPPORT_RULES, "no rules were given")]
+    )
+
+
+def review_fold(page: str, record: DraftRecord) -> str:
+    """The opening tag of the one fold of Blossom's review notes in a plan on a page."""
+    folds: list[str] = re.findall(
+        r'<details class="steps plan-review"(?: open)?>', plan_on(page, record)
+    )
+    assert len(folds) == 1, folds
+    return folds[0]
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "unsettled"])
+def test_the_review_notes_fold_follows_the_run_wherever_a_plan_is_shown(outcome: str) -> None:
+    """Each plan has one fold of Blossom's review notes, folded when the review accepted the
+    plan and open when it could not settle, on her week and on the family page alike: today's
+    reviewed plan, a plan waiting for review, an earlier plan, and a plan read as its saved
+    text. Whatever a parent decided, the fold follows the run, and no plan read by its rows
+    is shown a second time as text."""
+    verdict = accepting if outcome == "accepted" else unsettled
+    tag = (
+        '<details class="steps plan-review" open>'
+        if outcome == "unsettled"
+        else '<details class="steps plan-review">'
+    )
+    with browser(key=True) as client:
+        namesake = walkthrough(client)
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [walkthrough_plan(namesake)], lambda: [verdict()]
+        )
+        first = planned(client)
+        decided = client.post(
+            f"/parent/actions/decide/{first.draft_id}", data={"decision": "approve"}
+        )
+        assert decided.status_code == 303
+        reviewed = client.get("/parent", headers=PAGE_HEADERS).text
+        hers_reviewed = client.get(HER_PAGE, headers=PAGE_HEADERS).text
+        second = planned(client)
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+        hers = client.get(HER_PAGE, headers=PAGE_HEADERS).text
+        changed_by_hand(state_of(client).drafts, "UPDATE drafts SET plan_snapshot=NULL")
+        family_as_text = client.get("/parent", headers=PAGE_HEADERS).text
+        hers_as_text = client.get(HER_PAGE, headers=PAGE_HEADERS).text
+
+    assert (first.outcome, second.outcome) == (outcome, outcome)
+    first_at = f'id="{anchor_for(first.draft_id)}"'
+    second_at = f'id="{anchor_for(second.draft_id)}"'
+    assert reviewed.index("<h2>Today's reviewed plan</h2>") < reviewed.index(first_at)
+    assert family.index("<h2>Waiting for your review</h2>") < family.index(second_at)
+    assert family.index("<summary>Earlier plans</summary>") < family.index(first_at)
+    assert review_fold(reviewed, first) == tag, "today's reviewed plan"
+    assert review_fold(hers_reviewed, first) == tag, "her week, the plan reviewed"
+    assert review_fold(family, second) == tag, "waiting for review"
+    assert review_fold(family, first) == tag, "an earlier plan"
+    assert review_fold(hers, second) == tag, "her week, the plan waiting"
+    for page, record in ((family_as_text, first), (family_as_text, second), (hers_as_text, second)):
+        assert EARLIER_FORMAT in plan_on(page, record)
+        assert review_fold(page, record) == tag, "read as its saved text"
+    for page in (reviewed, hers_reviewed, family, hers, family_as_text, hers_as_text):
+        assert "Original saved text" not in page
+        assert 'class="plan-original' not in page
 
 
 # ------------------------------------------------------------- plans without a usable snapshot
@@ -517,7 +585,7 @@ def test_a_plan_paused_from_before_snapshots_is_decided_as_it_was_and_stays_text
 def test_every_saved_block_done_is_not_nothing_to_schedule_and_all_done_offers_no_plan() -> None:
     """With the two blocked assignments done and other work still active, her page still
     offers a plan. With everything done it keeps the saved plan and its marks, says there is
-    nothing to schedule, and offers her no plan; the family's form stays."""
+    nothing to plan, and offers her no plan; the family's form stays."""
     with browser(key=True) as client:
         walkthrough(client)
         record = planned(client)
@@ -530,9 +598,9 @@ def test_every_saved_block_done_is_not_nothing_to_schedule_and_all_done_offers_n
         family = client.get("/parent", headers=PAGE_HEADERS).text
 
     assert plan_on(some, record).count(YOU_SKIP) == 3
-    assert NOTHING_TO_SCHEDULE not in some
+    assert NOTHING_TO_PLAN not in some
     assert 'action="/student/actions/plan"' in some
-    assert NOTHING_TO_SCHEDULE in everything
+    assert NOTHING_TO_PLAN in everything
     assert 'action="/student/actions/plan"' not in everything
     assert "Plan again" not in everything
     assert plan_on(everything, record).count(YOU_SKIP) == 3

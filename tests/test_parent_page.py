@@ -214,12 +214,20 @@ def test_a_date_that_is_not_one_is_said_rather_than_guessed_at() -> None:
 
 
 def test_an_unsettled_plan_says_so_above_its_text() -> None:
+    """The line above the plan says where the notes are: open under the plan, in the one fold
+    of Blossom's review notes, which holds what the review could not settle."""
     with browser(verdict=undecided) as client:
         client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         page = client.get("/parent").text
 
-    assert "could not settle every point. Its notes are at the end of the text." in page
-    assert "support rules (could not assess)" in page
+    assert (
+        "could not settle every point. Its notes are open under the plan, in Blossom's review "
+        "notes." in page
+    )
+    assert "at the end of the text" not in page
+    notes = page[page.index('<details class="steps plan-review" open>') :]
+    assert "support rules (could not assess)" in notes[: notes.index("</details>")]
+    assert page.count("<summary>Blossom's review notes</summary>") == 1
 
 
 def test_the_parents_work_with_her_comes_before_planning_for_her() -> None:
@@ -406,6 +414,58 @@ def test_each_decision_button_says_which_draft_it_decides() -> None:
     assert "Ask for a change to the plan for Thursday, August 20, 2 of 2" in labels
     assert "She has this plan on her page already." in two_waiting
     assert "This plan is for Thursday, August 20. It reaches her page on that day" in two_waiting
+
+
+NOTE_LABEL = "Note about this plan (optional)"
+NOTE_EXAMPLE = "For example: Start with Geometry, then take a short break."
+NOTE_HELPER = "Add encouragement or explain what should change."
+WHAT_A_CHANGE_DOES = "Ask for a change records your note. It doesn't rewrite the saved plan."
+
+
+def test_the_review_note_says_what_it_is_with_an_example_and_a_helper_that_stays() -> None:
+    """Each waiting plan's note is labeled as a note about that plan, optional; the example is
+    a placeholder and never a value; a helper that stays once the placeholder goes is tied to
+    the field by its own id; and the form says that Ask for a change records the note without
+    rewriting the plan, beside where the note shows for that evening."""
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
+    app.dependency_overrides[plan_graphs] = scripted_graphs()
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        app.dependency_overrides[plan_graphs] = scripted_graphs(plans=lambda: [tomorrows_plan()])
+        client.post(
+            "/parent/actions/plan", data={"plan_date": (PLAN_DATE + timedelta(days=1)).isoformat()}
+        )
+        page = client.get("/parent").text
+
+    forms = re.findall(
+        r'<form method="post" action="/parent/actions/decide/[^"]+" class="decision">(.*?)</form>',
+        page,
+        re.S,
+    )
+    helpers = []
+    for form, evening in zip(
+        forms, ("She has this plan", "This plan is for Thursday"), strict=True
+    ):
+        field = re.search(r'<label for="([^"]+)">([^<]*)</label>\s*<input ([^>]*)>', form)
+        assert field is not None
+        named, label, attributes = field.groups()
+        assert label == NOTE_LABEL
+        assert f'id="{named}"' in attributes
+        assert 'name="reason"' in attributes
+        assert f'placeholder="{NOTE_EXAMPLE}"' in attributes
+        assert "value=" not in attributes
+        described = re.search(r'aria-describedby="([^"]+)"', attributes)
+        assert described is not None
+        assert f'<p class="helper" id="{described.group(1)}">{NOTE_HELPER}</p>' in form
+        helpers.append(described.group(1))
+        note = re.search(r'<p class="note">(.*?)</p>', form, re.S)
+        assert note is not None
+        said = " ".join(note.group(1).split())
+        assert said.startswith(f"{WHAT_A_CHANGE_DOES} {evening}")
+        assert said.endswith("Nothing leaves here on its own.")
+    assert len(set(helpers)) == 2
+    assert "Reason (optional)" not in page
+    assert "A sentence she would recognize" not in page
 
 
 def test_a_past_evening_is_refused_by_the_form_and_a_past_draft_says_it_is_not_on_her_page(

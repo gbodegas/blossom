@@ -219,7 +219,8 @@ def test_the_page_shows_the_households_budgets() -> None:
         client.post("/student/actions/too-much", follow_redirects=False)
         shown = client.get("/student/due-this-week").text
 
-    assert "held to 40 minutes instead of 120" in shown
+    assert "Your next plan will use up to 40 minutes." in shown
+    assert "75 minutes" not in shown
 
 
 def test_the_planner_arranges_the_evening_and_does_not_teach() -> None:

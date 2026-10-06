@@ -696,8 +696,7 @@ main > .return + .return {
    words wrap wherever the plan shows them, a title or a reason in a row,
    an assignment named in a date to clarify, a line of the reviewer's
    notes, so the rule sits on the container and everything in it inherits
-   it; nothing is cut, hidden, or scrolled sideways. The text as composed
-   is kept in a fold with its own lines, wrapped the same way. */
+   it; nothing is cut, hidden, or scrolled sideways. */
 .plan-reading {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -752,14 +751,6 @@ main > .return + .return {
 
 .plan-why-label {
   font-weight: 600;
-}
-
-.plan-original-text {
-  margin: 0.5rem 0 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font: inherit;
-  font-size: 0.92rem;
 }
 
 /* A link to an assignment, from a row of a plan, a notice, a row of the
@@ -1256,6 +1247,12 @@ details summary {
   overflow-wrap: anywhere;
 }
 
+/* Her request for a shorter plan: what it does, with its Undo under the words, kept apart
+   from the plan button's row that may follow. */
+.too-much {
+  margin-bottom: 0.75rem;
+}
+
 .too-much .actions {
   margin-top: 0.5rem;
 }
@@ -1595,10 +1592,13 @@ select[aria-invalid="true"] {
   gap: 0.35rem;
 }
 
+/* A helper under a field stays inside the form whatever its words, as the buttons beside it
+   do: a word wider than the line breaks. */
 .helper {
   margin: 0;
   font-size: 0.9rem;
   color: var(--text-soft);
+  overflow-wrap: anywhere;
 }
 
 .lead-action {

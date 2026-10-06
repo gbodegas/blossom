@@ -49,11 +49,15 @@
       One line says where today stands, and a parent's words get a place of
       their own. A parent's review is shown, never waited for: the plan is
       hers from the moment it is made, and what a parent says about it is
-      one more thing she can see.
+      one more thing she can see. With nothing in today's planning window
+      left to plan, the line says that first; it is about planning, not about
+      what she has turned in.
     #}
     <p class="standing">
-      {% if view.plan %}
-        {% if view.nothing_to_plan %}Your saved plan is below.{% else %}A plan is ready.{% endif %}
+      {% if view.nothing_to_plan %}
+        <strong>Nothing to plan right now.</strong>{% if view.plan %} {% if parent %}Her{% else %}Your{% endif %} saved plan is below.{% endif %}
+      {% elif view.plan %}
+        A plan is ready.
       {% else %}
         No plan for today yet.
       {% endif %}
@@ -66,9 +70,6 @@
     #}
     {% if run_notice %}
       <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run">{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}</p>
-    {% endif %}
-    {% if view.nothing_to_plan %}
-      <p class="note" role="status">Nothing to schedule from the work in this planning window.</p>
     {% endif %}
     {#
       Work the plan includes that she reports as done is said here,
@@ -119,12 +120,12 @@
     {% endif %}
     {#
       What the plan button offers follows the evening as it stands: a plan
-      for the smaller evening while her signal is up and no plan yet uses it,
-      a plan again otherwise. The words beside it say what has and has not
-      changed; nothing here plans on its own.
+      for the smaller evening while her signal is up and no saved plan is a
+      shorter one that fits the minutes set now, a plan again otherwise. The
+      words beside it say what has and has not changed; nothing here plans on
+      its own.
     #}
-    {% set smaller_wanted = view.too_much and not (view.plan and view.plan.too_much) %}
-    {% set plan_label = "Make a smaller plan" if smaller_wanted else ("Plan again" if view.plan else "Plan today") %}
+    {% set plan_label = "Make a smaller plan" if view.smaller_wanted else ("Plan again" if view.plan else "Plan today") %}
     {% if view.plan and view.plan.stale %}
       {% if view.nothing_to_plan %}
         <p class="confidence disagree" role="status">
@@ -134,7 +135,7 @@
       {% else %}
         <p class="confidence disagree" role="status"><strong>{{ plan_label }}.</strong> {{ view.plan.stale }}</p>
       {% endif %}
-    {% elif view.plan and view.plan.too_much and view.too_much %}
+    {% elif view.plan_uses_limit and parent %}
       <p class="note">This plan already uses the smaller budget, {{ view.budget_minutes }} minutes.</p>
     {% endif %}
     {#
@@ -147,61 +148,58 @@
         Blossom's review could not settle every point. Open the plan to read its notes.
       </p>
     {% endif %}
-    {% if view.too_much and parent %}
-      <p class="confidence disagree">
-        <strong>She said it was too much</strong> at {{ view.too_much.given_local|clock }}.
-        Her next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
-        {% if not view.plan and not view.nothing_to_plan %}Nothing has been planned yet; the next plan will be the shorter one.{% endif %}
-        {% if view.too_much.detail %}She added <q>{{ view.too_much.detail }}</q>.{% endif %}
-      </p>
-    {% elif view.too_much %}
-      <p class="confidence disagree">
-        <strong>You said it was too much</strong> at {{ view.too_much.given_local|clock }}.
-        Your next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
-        {% if not view.plan and not view.nothing_to_plan %}Nothing has been planned yet; the plan you make will be the shorter one.{% endif %}
-        {% if view.too_much.detail %}You added <q>{{ view.too_much.detail }}</q>.{% endif %}
-      </p>
-    {% endif %}
-
-    <div class="actions">
-      {% if view.can_plan and not view.nothing_to_plan %}
-        <form method="post" action="/student/actions/plan" class="action"
-              data-pending="Making your plan"
-              data-pending-later="Still working. The planner reads your week and writes the plan, which can take up to about a minute and a half"
-              data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
-          {% if in_place_said %}<input type="hidden" name="in_place" value="{{ in_place_said }}">{% endif %}
-          <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure and plan_failure.try_again %}Try again{% else %}{{ plan_label }}{% endif %}</button>
+    {#
+      Her support signal, said from the signals kept for today and the household's
+      minutes: a shorter plan is asked for, and her next plan will be held to it, or
+      the plan saved after it already is, when its blocks fit the minutes set now.
+      Undo 'Too much right now' sits under those words, which describe it. Each press
+      keeps a row of its own, and the evening stays shorter while any is left, so
+      after an Undo, or a Remove below, the line on the one page it lands on, told by
+      a mark in that landing's cookie and never by the address, says she removed her
+      request and then what still stands: a shorter plan still asked for, with the
+      Undo for the request left, or, with none left, that her saved plan has not
+      changed. Neither press plans anything. Saying today is too much, and undoing it,
+      are hers alone: a parent reads what she said and meets neither control, and
+      nothing takes their place.
+    #}
+    {% set signal_said %}
+      {% if parent %}
+        {% if view.too_much %}
+          <p class="confidence disagree">
+            <strong>She said it was too much</strong> at {{ view.too_much.given_local|clock }}.
+            Her next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
+            {% if not view.plan and not view.nothing_to_plan %}Nothing has been planned yet; the next plan will be the shorter one.{% endif %}
+            {% if view.too_much.detail %}She added <q>{{ view.too_much.detail }}</q>.{% endif %}
+          </p>
+        {% endif %}
+      {% elif view.too_much %}
+        <div class="too-much">
+          <p class="note" id="too-much-state"{% if signal_removed %} role="status"{% endif %}>{% if signal_removed %}You removed your request. A shorter plan is still requested for today.{% else %}<strong>A shorter plan is requested for today.</strong>{% endif %} {% if view.plan_uses_limit %}Your saved plan already uses the {{ view.budget_minutes }}-minute limit.{% else %}Your next plan will use up to {{ view.budget_minutes }} minutes.{% endif %}{% if view.too_much.detail %} You added <q>{{ view.too_much.detail }}</q>.{% endif %}</p>
+          <div class="actions">
+            <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="action">
+              <button type="submit" class="secondary" aria-describedby="too-much-state">Undo 'Too much right now'</button>
+            </form>
+          </div>
+        </div>
+      {% elif signal_removed %}
+        <p class="note" id="too-much-state" role="status">You removed your request.{% if view.plan %} Your saved plan has not changed.{% endif %}</p>
+      {% endif %}
+    {% endset %}
+    {% set signal_press %}
+      {% if viewer != "parent" and not view.too_much %}
+        <form method="post" action="/student/actions/too-much" class="action">
+          <button type="submit" class="secondary">Too much right now</button>
         </form>
       {% endif %}
-      {#
-        Saying today is too much, and taking it back, are hers alone. A parent
-        reads what she said above and meets neither control, and nothing takes
-        their place.
-      #}
-      {% if viewer != "parent" %}
-        {% if view.too_much %}
-          <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="action">
-            <button type="submit" class="secondary">Take it back</button>
-          </form>
-        {% else %}
-          <form method="post" action="/student/actions/too-much" class="action">
-            <button type="submit" class="secondary">Too much right now</button>
-          </form>
-        {% endif %}
-      {% endif %}
-      {#
-        Help is below the homework, one link away. She lands on her form; a
-        parent, who has no form here, lands on the section with her requests.
-      #}
+    {% endset %}
+    {#
+      Help is below the homework, one link away. She lands on her form; a
+      parent, who has no form here, lands on the section with her requests.
+    #}
+    {% set to_help %}
       {% if viewer != "parent" %}<a class="to-help" href="{{ new_note_page }}">Write down homework</a>{% endif %}
       {% if viewer != "parent" %}<a class="to-help" href="#ask-for-help">Ask for help</a>{% else %}<a class="to-help" href="#help">Her help requests</a>{% endif %}
-    </div>
-    {#
-      Where the plan button is, what a plan is made from is said beside it, before
-      the window's days, in words that suit either reader, and the button names this
-      line as its description.
-    #}
-    <p class="note planning-window"{% if view.can_plan and not view.nothing_to_plan %} id="plan-scope"{% endif %}>{% if view.can_plan and not view.nothing_to_plan %}Makes a plan for today using unfinished homework due in the next 7 days, homework without a due date, and earlier work chosen for today. {% endif %}Today's planning window is {{ planning_window }}.</p>
+    {% endset %}
     {#
       The places that hold what is left to do beside the plan, under the
       controls and never in the masthead. Each link goes to a page of its
@@ -211,28 +209,66 @@
       section's heading, and said apart as one that cannot be read. With
       every assignment Done this is still how she finds what is left to turn
       in.
-    #}
-    <p class="support-links"><a href="{{ to_turn_in_page }}">To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</a><a href="{{ notes_page }}">Homework notes{% if homework_notes or homework_notes_unreadable %} ({{ homework_notes|length + homework_notes_unreadable|length }}){% endif %}</a></p>
-    {#
+
       Help updates: her open requests and those a parent resolved in the last
       seven days, counted and one link away, whoever reads. Nothing here says
       what they are, or that anyone has read them. There is no count when
       there is nothing to count, or when her requests could not be read.
     #}
     {% set help_updates = view.help_open|length + view.help_recent|length %}
-    {% if help_updates %}
-      <p class="support-links help-updates-link"><a href="#help-updates">Help updates ({{ help_updates }})</a></p>
-    {% endif %}
+    {% set places %}
+      <p class="support-links"><a href="{{ to_turn_in_page }}">To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</a><a href="{{ notes_page }}">Homework notes{% if homework_notes or homework_notes_unreadable %} ({{ homework_notes|length + homework_notes_unreadable|length }}){% endif %}</a></p>
+      {% if help_updates %}
+        <p class="support-links help-updates-link"><a href="#help-updates">Help updates ({{ help_updates }})</a></p>
+      {% endif %}
+    {% endset %}
+
+    {#
+      With nothing in today's planning window left to plan, nothing here offers a plan
+      or explains planning. The places that hold what is left come first; then, quieter,
+      help and her signal, which she may want whether or not there is anything to plan;
+      and today's planning window, named last.
+    #}
     {% if view.nothing_to_plan %}
-    {% elif view.can_plan %}
-      <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
-    {% elif parent %}
-      <p class="notice">Planning is unavailable right now. Everything else here still works.</p>
+      {{ places }}
+      <div class="actions">
+        {{ to_help }}
+        {{ signal_press }}
+      </div>
+      {{ signal_said }}
+      <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
     {% else %}
+      {{ signal_said }}
+      <div class="actions">
+        {% if view.can_plan %}
+          <form method="post" action="/student/actions/plan" class="action"
+                data-pending="Making your plan"
+                data-pending-later="Still working. The planner reads your week and writes the plan, which can take up to about a minute and a half"
+                data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
+            {% if in_place_said %}<input type="hidden" name="in_place" value="{{ in_place_said }}">{% endif %}
+            <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure and plan_failure.try_again %}Try again{% else %}{{ plan_label }}{% endif %}</button>
+          </form>
+        {% endif %}
+        {{ signal_press }}
+        {{ to_help }}
+      </div>
+      {#
+        Where the plan button is, what a plan is made from is said beside it, before
+        the window's days, in words that suit either reader, and the button names this
+        line as its description.
+      #}
+      <p class="note planning-window"{% if view.can_plan %} id="plan-scope"{% endif %}>{% if view.can_plan %}Makes a plan for today using unfinished homework due in the next 7 days, homework without a due date, and earlier work chosen for today. {% endif %}Today's planning window is {{ planning_window }}.</p>
+      {{ places }}
+      {% if view.can_plan %}
+        <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
+      {% elif parent %}
+        <p class="notice">Planning is unavailable right now. Everything else here still works.</p>
+      {% else %}
       <p class="notice">
         Planning is unavailable right now. Everything else here still works, and "Too much
         right now" is still yours to press.
       </p>
+      {% endif %}
     {% endif %}
 
     {#
@@ -269,7 +305,7 @@
             {% if view.plan.too_much %}Kept to a shorter evening because {% if parent %}she{% else %}you{% endif %} said today was too much.{% endif %}
             Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
           </p>
-          {% with reading = plan_reading, review_open = false %}{% include "plan_reading.html" %}{% endwith %}
+          {% with reading = plan_reading %}{% include "plan_reading.html" %}{% endwith %}
         </details>
       </div>
     {% else %}
@@ -656,9 +692,9 @@
       </p>
       {% endif %}
       {% if parent %}
-      <p>"Too much right now" takes her one press, no rating, no reason, and she can take it back.</p>
+      <p>"Too much right now" takes her one press, no rating, no reason, and she can undo it.</p>
       {% else %}
-      <p>"Too much right now" takes one press, no rating, no reason, and you can take it back.</p>
+      <p>"Too much right now" takes one press, no rating, no reason, and you can undo it.</p>
       {% endif %}
     </details>
   {% endif %}

@@ -13,7 +13,7 @@ from time import monotonic
 
 from blossom.agent.compose import Composition
 from blossom.agent.runs import RUN_DEADLINE_SECONDS
-from blossom.plan_reading import DoneMark, anchor_for, read_plan
+from blossom.plan_reading import DoneMark, Reader, anchor_for, read_plan
 from blossom.plans import DailyPlan
 from blossom.routes.navigation import details_href, segment
 from blossom.stores.drafts import DraftRecord
@@ -240,3 +240,22 @@ def test_rows_whose_updates_cannot_be_read_say_so_on_todays_plan_and_on_no_other
     assert [row.updates_unread for row in current.deferrals] == [False, True]
     assert [row.done for row in current.blocks + current.deferrals] == [None] * 5
     assert not any(row.updates_unread for row in history.blocks + history.deferrals)
+
+
+def test_both_readings_say_whether_the_run_settled_its_review_whatever_the_page() -> None:
+    """The structured reading and the saved text alike carry the run's outcome, read from the
+    draft and from nothing a page hands in, so each page folds the review notes of an
+    accepted plan and opens those of a plan the review could not settle."""
+    made = composed_plan()
+    readers: tuple[Reader, ...] = ("student", "family")
+    for outcome in ("accepted", "unsettled"):
+        readings = [
+            read_plan(saved(made, outcome=outcome), reader=reader, current=current)
+            for reader in readers
+            for current in (True, False)
+        ]
+        text = saved(made, outcome=outcome, plan_snapshot=None)
+        readings.append(read_plan(text, reader="family"))
+
+        assert [reading.structured for reading in readings] == [True] * 4 + [False]
+        assert all(reading.unsettled is (outcome == "unsettled") for reading in readings), outcome

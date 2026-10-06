@@ -622,7 +622,7 @@ def test_each_reader_reads_help_in_their_own_words_and_meets_only_their_controls
         else "Refresh replies. Refresh to see updates."
     )
     assert '<a href="/student/due-this-week?refreshed=1#help">Refresh replies</a>' in part
-    last = "and you can take it back." if hers else "and she can take it back."
+    last = "and you can undo it." if hers else "and she can undo it."
     assert last in page
     if not hers:
         about_her = words(part).replace("You can answer", "")

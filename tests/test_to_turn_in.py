@@ -40,7 +40,6 @@ from blossom.routes.navigation import (
     title_anchor,
     update_choice_anchor,
 )
-from blossom.routes.runs import NOTHING_TO_SCHEDULE
 from blossom.routes.student import (
     BAD_RETURN,
     HAND_IN_ALREADY_SAVED,
@@ -64,6 +63,7 @@ from tests.support import (
     FIXTURE_WEEK,
     HER_PAGE,
     HERS,
+    NOTHING_TO_PLAN,
     PAGE_HEADERS,
     QUIZ_ID,
     READING_LOG_ID,
@@ -211,7 +211,7 @@ def test_with_every_assignment_done_her_week_still_leads_to_what_is_left_to_turn
         week = client.get(HER_PAGE).text
 
     today = week[week.index('id="today"') : week.index("</section>", week.index('id="today"'))]
-    assert NOTHING_TO_SCHEDULE in today
+    assert NOTHING_TO_PLAN in today
     assert 'action="/student/actions/plan"' not in week
     assert f'<a href="{TO_TURN_IN_PAGE}">To turn in (1)</a>' in today
     assert listed(section(week)) == [ESSAY_ID]

@@ -39,6 +39,7 @@ from tests.support import (
     accepting,
     fixture_settings,
     fixture_week_plan,
+    landing_in,
     light_fixture_plan,
     scripted_graphs,
     signed_in,
@@ -47,6 +48,11 @@ from tests.support import (
 )
 
 PAGE = "/student/due-this-week"
+NAMED_REMOVED = f"{PAGE}?signal=removed"
+"""An address that names a removal no press of hers made."""
+LANDED = (f"{PAGE}?landing={{landing}}", student_routes.SIGNAL_REMOVED)
+"""Where her Undo sends her, its landing new for each press, and the mark it leaves there."""
+UNDO = "Undo 'Too much right now'"
 TOO_MUCH = "/student/actions/too-much"
 TAKE_BACK = "/student/actions/take-back/"
 SIGNALS = "/student/workload-signals"
@@ -390,8 +396,20 @@ def answered(client: TestClient, which: str) -> tuple[int, object]:
         body = answer.json()
         said = (body["principal"], body["signal"]["detail"])
     elif answer.status_code == 303:
-        said = answer.headers["location"]
+        said = landed(answer)
     return answer.status_code, said
+
+
+def landed(answer: Response) -> str | tuple[str, str]:
+    """Where a press sends her: the address, or with a landing, the address with the landing
+    written as ``{landing}`` and what the press left in that landing's cookie."""
+    location = answer.headers["location"]
+    if "landing=" not in location:
+        return location
+    landing = landing_in(location)
+    name, _, left = answer.headers.get("set-cookie", "").partition(";")[0].partition("=")
+    assert name == student_routes.landing_cookie(landing), name
+    return location.replace(landing, "{landing}"), left
 
 
 @pytest.mark.parametrize("reader", ["her", "open"])
@@ -399,8 +417,8 @@ def answered(client: TestClient, which: str) -> tuple[int, object]:
     ("which", "expected", "kept"),
     [
         ("too much", (303, PAGE), 1),
-        ("take back", (303, PAGE), 0),
-        ("take back absent", (303, PAGE), 0),
+        ("take back", (303, LANDED), 0),
+        ("take back absent", (303, LANDED), 0),
         ("create", (201, ("STUDENT", "a long day")), 1),
         ("delete", (204, None), 0),
         ("delete absent", (404, f"no signal '{ABSENT}'"), 0),
@@ -533,6 +551,31 @@ def test_her_page_left_open_when_a_parent_signs_in_is_refused(tmp_path: pathlib.
     assert after == before
 
 
+def test_a_parent_who_opens_the_page_her_undo_landed_on_reads_no_removal(
+    tmp_path: pathlib.Path,
+) -> None:
+    """On her device, a parent who opens the address her Undo was answered with, while its
+    mark still waits, reads what stands in the parent's words and nothing of the removal; the
+    mark is cleared, so she meets none after."""
+    with household(tmp_path, "her") as client:
+        _, removed = one_of_hers(client), one_of_hers(client)
+        pressed = client.post(TAKE_BACK + removed)
+        as_a_parent(client)
+        opened = client.get(pressed.headers["location"])
+        as_her(client)
+        hers_after = client.get(pressed.headers["location"]).text
+
+    assert pressed.status_code == 303
+    assert opened.status_code == 200
+    assert "removed your request" not in opened.text
+    assert "<strong>She said it was too much</strong> at" in opened.text
+    assert "removed your request" not in hers_after
+    assert "<strong>A shorter plan is requested for today.</strong>" in hers_after
+    landing = landing_in(pressed.headers["location"])
+    cleared = f'{student_routes.landing_cookie(landing)}=""; '
+    assert cleared in opened.headers.get("set-cookie", "")
+
+
 # -------------------------------------------------------------- her evening
 
 
@@ -580,12 +623,16 @@ def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
         none_yet = client.get(PAGE).text
         hers_in_turn(client, monkeypatch, "the essay and two quizzes", "a late night")
         signaled = client.get(PAGE).text
+        named_removed = client.get(NAMED_REMOVED).text
 
     assert f'action="{TOO_MUCH}"' not in none_yet
     assert "Too much right now</button>" not in none_yet
     assert TAKE_BACK not in signaled
     assert "Take it back</button>" not in signaled
+    assert UNDO not in signaled
     assert "Remove</button>" not in signaled
+    assert "removed your request" not in named_removed
+    assert "requested for today" not in signaled + named_removed
     assert "<strong>She said it was too much</strong> at" in signaled
     assert "Her next plan for today is held to 75 minutes instead of 150." in signaled
     assert "Nothing has been planned yet; the next plan will be the shorter one." in signaled
@@ -593,12 +640,12 @@ def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
     assert signaled.count("She added <q>the essay and two quizzes</q>.") == 1
     assert signaled.count("Too much on Wednesday, August 19, 2026,") == 2
     assert (
-        '"Too much right now" takes her one press, no rating, no reason, and she can take it '
-        "back." in signaled
+        '"Too much right now" takes her one press, no rating, no reason, and she can undo it.'
+        in signaled
     )
     for said_to_her in ("You said", "You added", "Your next plan", "the plan you make"):
         assert said_to_her not in signaled
-    assert "you can take it back" not in signaled
+    assert "you can undo it" not in signaled
     assert "<summary>What Blossom keeps about this</summary>" in signaled
     assert 'id="today"' in signaled
     assert "autofocus" not in none_yet
@@ -623,18 +670,18 @@ def test_she_and_the_open_household_keep_every_control_and_word(
     assert ">Too much right now</button>" in none_yet
     assert signaled.count(f'action="{TAKE_BACK}{latest}"') == 2
     assert signaled.count(f'action="{TAKE_BACK}{first}"') == 1
-    assert signaled.count(">Take it back</button>") == 1
+    assert signaled.count(f">{UNDO}</button>") == 1
+    assert "Take it back</button>" not in signaled
     assert signaled.count(">Remove</button>") == 2
-    assert "<strong>You said it was too much</strong> at" in signaled
-    assert "Your next plan for today is held to 75 minutes instead of 150." in signaled
-    assert "Nothing has been planned yet; the plan you make will be the shorter one." in signaled
+    assert "<strong>A shorter plan is requested for today.</strong>" in signaled
+    assert "Your next plan will use up to 75 minutes." in signaled
     assert signaled.count("You added <q>a late night</q>.") == 2
     assert signaled.count("You added <q>the essay and two quizzes</q>.") == 1
     assert (
-        '"Too much right now" takes one press, no rating, no reason, and you can take it back.'
+        '"Too much right now" takes one press, no rating, no reason, and you can undo it.'
         in signaled
     )
-    for said_to_a_parent in ("She said", "She added", "Her next plan", "she can take it back"):
+    for said_to_a_parent in ("She said", "She added", "Her next plan", "she can undo it"):
         assert said_to_a_parent not in signaled
     assert 'id="today"' in signaled
     assert "autofocus" not in none_yet

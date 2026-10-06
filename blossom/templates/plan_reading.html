@@ -4,11 +4,10 @@
   One saved plan as a page reads it. ``reading`` comes from a view, which
   decided everything: whether the plan can be shown by assignment, whether
   this page presents it as today's working plan, which rows carry a current
-  mark, and which assignments have a record to link to. Nothing here reads a
-  store or works any of that out. ``review_open`` unfolds the reviewer's
-  notes, which the family page wants open and hers folded; ``plan_level`` is
-  the level of the headings inside the plan, three unless the page says
-  otherwise.
+  mark, which assignments have a record to link to, and whether the run's
+  review settled. Nothing here reads a store or works any of that out.
+  ``plan_level`` is the level of the headings inside the plan, three unless
+  the page says otherwise.
 
   A structured plan keeps every saved row where it was, with its time, its
   assignment, the due date the plan was made with, and its reason. A row whose
@@ -20,10 +19,11 @@
   reports as Done says so after those, with the day of the report, and labels
   the reason as the reason when planned; nothing is struck out, faded, moved,
   or folded, and the link stays a link. A row of that plan whose assignment's
-  updates can't be read says so, and nothing about Done or Not yet. The text
-  as composed is kept whole in a fold of its own and is never annotated. A
-  plan without a usable snapshot is shown as its saved text, with a sentence
-  that says why.
+  updates can't be read says so, and nothing about Done or Not yet. A plan
+  read by its rows is shown by them alone. A plan without a usable snapshot
+  is shown as its saved text, with a sentence that says why. Either way the
+  reviewer's notes are one fold, open when the run's review could not settle
+  and folded when it accepted the plan, on her page and the family's alike.
 #}
 {% set level = plan_level|default(3) %}
 {% set hers = reading.reader == "student" %}
@@ -103,7 +103,7 @@
         </ul>
       {% endif %}
       {% if reading.review %}
-        <details class="steps plan-review"{% if review_open %} open{% endif %}>
+        <details class="steps plan-review"{% if reading.unsettled %} open{% endif %}>
           <summary>Blossom's review notes</summary>
           <ul class="plan-list">
             {% for line in reading.review.intro %}
@@ -116,16 +116,12 @@
         </details>
       {% endif %}
     </div>
-    <details class="steps plan-original">
-      <summary>Original saved text</summary>
-      <pre class="plan-original-text">{{ reading.body }}</pre>
-    </details>
   {% else %}
     {% if reading.unavailable %}
       <p class="plan-note">The saved text is shown because this plan's structured view is unavailable.</p>
     {% else %}
       <p class="plan-note">This plan uses the earlier text format. Assignment links and block updates are available in newly made plans.</p>
     {% endif %}
-    {% with body = reading.body %}{% include "plan_body.html" %}{% endwith %}
+    {% with body = reading.body, review_open = reading.unsettled %}{% include "plan_body.html" %}{% endwith %}
   {% endif %}
 </div>

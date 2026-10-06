@@ -25,9 +25,11 @@ says so and everything else on it still works.
 The workload signal takes no argument: rating or describing the load requires
 stepping back, and that capacity is least available exactly when the signal
 matters. One press records that today is too much, the page shows it at once
-with what it changes, tonight's plan is held to a reduced budget, and she can
-take it back. The page also lists every signal still kept, each with a way to
-remove it, because the record is hers.
+with what it changes, tonight's plan is held to a reduced budget, and Undo
+'Too much right now' beside it takes it back. Each press keeps a row of its own
+and the evening stays shorter while any is left, so after an Undo the page says
+what still stands and never promises the usual evening. The page also lists
+every signal still kept, each with a way to remove it, because the record is hers.
 
 Asking for help is the other press on her page. It is addressed to a person,
 so it has a state a parent moves, requested to accepted to resolved, and each
@@ -61,6 +63,7 @@ from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 from functools import partial
 from typing import Annotated, Any, ClassVar, Final, Literal, cast
+from zoneinfo import ZoneInfo
 
 from fastapi import (
     APIRouter,
@@ -454,8 +457,9 @@ them and no other visit to her week does."""
 IN_PLACE_LANDING_DIGITS: Final = 16
 """How many hex digits a landing has."""
 IN_PLACE_COOKIE: Final = "blossom-in-place"
-"""The start of the cookie a save, an undo, Change or Keep it as it is leaves for the one
-page that answers it, followed by that page's landing. The page reads it once and clears it."""
+"""The start of the cookie a save, an undo, Change, Keep it as it is or a removed signal
+leaves for the one page that answers it, followed by that page's landing. The page reads it
+once and clears it."""
 IN_PLACE_SECONDS: Final = 60
 """How long that cookie waits for the page that answers it, which a browser asks for at once."""
 IN_PLACE_MAX: Final = 40
@@ -471,6 +475,10 @@ IN_PLACE_DONE: Final = "n"
 """The mark the cookie a save leaves puts ahead of the cards it keeps in place, on the key of
 the card that save has just made Done. No form or address carries it, and ``InPlace.read``
 passes over it."""
+SIGNAL_REMOVED: Final = "r"
+"""The whole of the cookie Undo 'Too much right now' or a Remove leaves, so the one page that
+answers it says she removed her request, beside what still stands. No form or address
+carries it, and ``InPlace.read`` passes over it."""
 WELL_DONE: Final = "Done. Nice work."
 """The words a save that has just made a card Done is met with, beside a small petal, on the
 one page that answers it."""
@@ -1062,6 +1070,13 @@ def todays_plan_read(
     return read_a_plan(state, record, reader=reader, current=True, today=today)
 
 
+def planned_minutes(read: PlanRead, zone: ZoneInfo) -> int | None:
+    """The minutes a plan's blocks ask for as saved, measured on its evening as the plan check
+    measured them; ``None`` for a plan kept as text alone."""
+    saved = read.reading.saved_plan
+    return None if saved is None else saved.total_minutes(zone, on=read.view.plan_date)
+
+
 def todays_plan(state: ApplicationState) -> StudentPlanView | None:
     """Today's latest plan, or ``None`` when none has been made."""
     found = todays_plan_read(state, today=state.clock.today())
@@ -1351,7 +1366,7 @@ def build_student_due_this_week_view(
     *,
     viewer: str = "anyone",
     focus: str | None = None,
-    plan: StudentPlanView | None | Unread = UNREAD,
+    plan: PlanRead | None | Unread = UNREAD,
     today: date | None = None,
     everything: Everything | None = None,
     groups: HelpGroups | None | Unread = UNREAD,
@@ -1449,6 +1464,15 @@ def build_student_due_this_week_view(
     def help_views(requests: list[HelpRequest]) -> list[HelpRequestView]:
         return [help_view(state, request, named) for request in requests]
 
+    # The saved plan against the limit set now, which need not be the one it was made under:
+    # a shorter plan whose blocks fit uses it, one over it calls for a smaller plan, and one
+    # kept as text alone, which can't be measured, is said to do neither.
+    saved = todays_plan_read(state, today=today) if isinstance(plan, Unread) else plan
+    budget = household.too_much_minutes if tonight else household.evening_minutes
+    shorter = bool(tonight) and saved is not None and saved.view.too_much
+    measured = None if saved is None else planned_minutes(saved, state.clock.zone)
+    fits = shorter and measured is not None and measured <= budget
+    over = shorter and measured is not None and measured > budget
     return StudentDueThisWeekView(
         generated_at=datetime.now(UTC),
         today=today,
@@ -1457,12 +1481,14 @@ def build_student_due_this_week_view(
         assigned_this_week=[beside_view(item) for item in later],
         plan_horizon_end=today + DUE_THIS_WEEK_SPAN,
         full_budget_minutes=household.evening_minutes,
-        budget_minutes=household.too_much_minutes if tonight else household.evening_minutes,
-        plan=todays_plan(state) if isinstance(plan, Unread) else plan,
+        budget_minutes=budget,
+        plan=None if saved is None else saved.view,
         to_turn_in=still_to_turn_in.rows,
         to_turn_in_unreadable=still_to_turn_in.unreadable,
         can_plan=model_configured(state.settings),
         too_much=signal_view(state, tonight[-1]) if tonight else None,
+        plan_uses_limit=fits,
+        smaller_wanted=bool(tonight) and (not shorter or over),
         signals=[signal_view(state, signal) for signal in state.workload_signals.held()],
         help_open=[] if groups is None else help_views(groups.open),
         help_recent=[] if groups is None else help_views(groups.recent),
@@ -1804,6 +1830,26 @@ def sent_done_to_the_details(location: str, assignment_id: str) -> RedirectRespo
     return moved
 
 
+def sent_removed(location: str) -> RedirectResponse:
+    """The redirect to her week after a signal of hers is removed: its address names a new
+    landing, and the cookie named for it tells that one page, and no other, that she removed
+    her request. It holds no card."""
+    landing = secrets.token_hex(IN_PLACE_LANDING_DIGITS // 2)
+    moved = RedirectResponse(
+        str(URL(location).include_query_params(**{IN_PLACE_LANDING: landing})),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    moved.set_cookie(
+        landing_cookie(landing),
+        SIGNAL_REMOVED,
+        max_age=IN_PLACE_SECONDS,
+        path=WEEK_PAGE,
+        httponly=True,
+        samesite="lax",
+    )
+    return moved
+
+
 def named_once(request: Request, name: str) -> str | None:
     """The value her week's address gives a query, or ``None`` when it gives none or gives
     more than one."""
@@ -1907,6 +1953,7 @@ def student_page(
     status_code: int = status.HTTP_200_OK,
     today: date | None = None,
     run_notice: RunNotice | None = None,
+    signal_removed: bool = False,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
@@ -1936,7 +1983,9 @@ def student_page(
     Ask for help form gets a fresh id, which needs no read. ``earlier_note`` is what a choice
     in Earlier homework to check did or could not do, said beside the item it named.
     ``in_place`` is the cards this visit keeps where they were; every update form on the
-    page carries them on, with its own card kept where it is shown.
+    page carries them on, with its own card kept where it is shown. ``signal_removed`` says
+    an Undo or a Remove just took a request of hers away, which Today says to her alone,
+    beside what the signals kept for today say now.
     """
     viewer = viewer_of(request)
     # An address that only brings a card into view, as a way back from its details does.
@@ -1984,7 +2033,7 @@ def student_page(
         week,
         viewer=viewer,
         focus=None if card is None else card.assignment_id,
-        plan=None if todays is None else todays.view,
+        plan=todays,
         today=today,
         everything=everything,
         groups=groups,
@@ -2066,6 +2115,7 @@ def student_page(
             "pressed": pressed,
             "plan_failure": plan_failure,
             "run_notice": run_notice,
+            "signal_removed": signal_removed and viewer != "parent",
             "in_place_said": kept.said(),
             "plan_reading": None if todays is None else todays.reading,
             "plan_asked": plan_asked,
@@ -2228,7 +2278,10 @@ def due_this_week(
     and offers the same address again. ``earlier`` and ``earlier_said`` name what a choice in
     Earlier homework to check just did, said beside that item only when this process signed
     it for today and that item and today's choices still agree; a word not in the set says
-    nothing. The household day is read once, for that check and the page alike.
+    nothing. The household day is read once, for that check and the page alike. Today says
+    she removed her request only on the page her Undo of Too much right now or a Remove lands
+    on, from the mark that press left in its landing's cookie, beside what the signals kept
+    now say; no address says it, and a parent is told nothing of it.
 
     The cards a visit keeps where they were come to the page once. A save or an undo leaves
     them in a cookie named for the landing its redirect names in ``landing``; Change and Keep
@@ -2240,7 +2293,8 @@ def due_this_week(
     and its Try again carries them in ``in_place``, so a try made after the cookie is gone
     still finds them where they were. A save that has just made a card Done says so in its
     cookie, and that one page meets the card with a few words beside a small petal, and is
-    sent to be kept by no cache, so a step back or forward through history asks again.
+    sent to be kept by no cache, so a step back or forward through history asks again. The
+    page that reads a removed signal's mark is sent the same way.
     """
     landing = landing_asked(request)
     if in_place is not None:
@@ -2248,6 +2302,7 @@ def due_this_week(
         return moved if landing is None else forget_landing(moved, landing)
     left = None if landing is None else request.cookies.get(landing_cookie(landing))
     kept = InPlace.read(left)
+    removed = left == SIGNAL_REMOVED
     card = met(card_shown(saved, same, undone, change, show, undo_event), left)
     try:
         today = state.clock.today()
@@ -2282,6 +2337,7 @@ def due_this_week(
             earlier_note=chose,
             today=today,
             run_notice=run_notice(state, run, PAGE, parent=parent, today=today),
+            signal_removed=removed,
         )
     except sqlite3.Error as error:
         again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
@@ -2289,8 +2345,9 @@ def due_this_week(
         return unreadable if landing is None else leave_in_place(unreadable, kept, landing)
     if landing is not None and left is not None:
         forget_landing(page, landing)
-    if card is not None and card.well_done:
-        # Not kept by the browser, so Back or Forward to it asks again and meets no petal.
+    if (card is not None and card.well_done) or removed:
+        # Not kept by the browser, so Back or Forward to it asks again and meets no petal
+        # and no word of a removal.
         page.headers["Cache-Control"] = "no-store"
     return page
 
@@ -2378,11 +2435,12 @@ def week_page(
     earlier_note: "EarlierNote | None" = None,
     today: date | None = None,
     run_notice: RunNotice | None = None,
+    signal_removed: bool = False,
 ) -> HTMLResponse:
     """Her week as an address asks for it, with the cards a visit keeps in place, what a
-    choice in Earlier homework to check did, and what today's panel says about a planning
-    run, for the household day ``today`` the caller read. A record that cannot be read
-    raises ``sqlite3.Error``."""
+    choice in Earlier homework to check did, what today's panel says about a planning run,
+    and whether an Undo just removed a request of hers, for the household day ``today`` the
+    caller read. A record that cannot be read raises ``sqlite3.Error``."""
     if week is None:
         return student_page(
             request,
@@ -2396,6 +2454,7 @@ def week_page(
             earlier_note=earlier_note,
             today=today,
             run_notice=run_notice,
+            signal_removed=signal_removed,
         )
     try:
         chosen = date.fromisoformat(week.strip())
@@ -3744,9 +3803,11 @@ async def too_much_from_the_page(request: Request, state: State) -> Response:
 
 @router.post("/actions/take-back/{signal_id}", response_class=HTMLResponse, include_in_schema=False)
 async def take_back_from_the_page(request: Request, signal_id: str, state: State) -> Response:
-    """Remove a signal from her page. A signal already gone is not an error here. A parent
-    is answered 403 before the signal is looked up: the signal is hers to take back. A
-    removal the file refuses is rolled back and said at the top of her week, 500."""
+    """Remove a signal from her page, by Undo 'Too much right now' or a Remove, and return to
+    her week, where only the page the redirect lands on says she removed her request, beside
+    what still stands. A signal already gone is not an error here, and is answered the same
+    way. A parent is answered 403 before the signal is looked up: the signal is hers to take
+    back. A removal the file refuses is rolled back and said at the top of her week, 500."""
     if viewer_of(request) == "parent":
         return not_hers(request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL)
     try:
@@ -3754,7 +3815,7 @@ async def take_back_from_the_page(request: Request, signal_id: str, state: State
     except sqlite3.Error as error:
         logger.warning("her signal could not be taken back: %s", type(error).__name__)
         return signal_not_saved(request, state)
-    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+    return sent_removed(PAGE)
 
 
 def signal_not_saved(request: Request, state: ApplicationState) -> HTMLResponse:
