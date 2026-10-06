@@ -744,7 +744,7 @@ def help_view(
         resolved_local=(
             None if request.resolved_at is None else request.resolved_at.astimezone(zone)
         ),
-        response=request.response,
+        response=request.parent_updates[-1].body if request.parent_updates else None,
         updates=[
             ParentUpdateView(
                 update_id=update.update_id,

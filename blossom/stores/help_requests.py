@@ -188,48 +188,20 @@ class UpdateTooLong(ValueError):
 
 HELP_REQUEST_COLUMNS: Final = "PRAGMA table_info(help_requests)"
 UPDATES_COLUMN: Final = "ALTER TABLE help_requests ADD COLUMN parent_updates TEXT"
-SPACES: Final = "".join(chr(point) for point in range(0x3001) if chr(point).isspace())
-"""Every character ``str.strip`` takes off an edge, the last of them U+3000, so the start's
-statement trims words as ``normalize_note`` trims them."""
-EARLIER_REPLIES: Final = """
+EARLIER_REPLY_ROWS: Final = "SELECT rowid FROM help_requests WHERE typeof(response) = 'text'"
+"""The requests that hold a reply, by rowid alone, so no words are read until each row is."""
+EARLIER_REPLY: Final = """
     UPDATE help_requests
     SET parent_updates = json_insert(
-        COALESCE(parent_updates, '[]'),
-        '$[#]',
-        json_object('id', lower(hex(randomblob(16))), 'body', response, 'written_at', NULL)
-    )
-    WHERE typeof(response) = 'text'
-      AND length(trim(response, :spaces)) > 0
-      AND CASE
-          WHEN parent_updates IS NULL THEN 1
-          WHEN typeof(parent_updates) = 'text' AND json_valid(parent_updates) THEN CASE
-              WHEN json_type(parent_updates) <> 'array' THEN 0
-              WHEN EXISTS (
-                  SELECT 1 FROM json_each(parent_updates)
-                  WHERE CASE
-                      WHEN type = 'object' THEN json_type(value, '$.body') IS NOT 'text'
-                      ELSE 1
-                  END
-              ) THEN 0
-              WHEN json_array_length(parent_updates) = 0 THEN 1
-              ELSE trim(
-                  replace(replace(response, char(13, 10), char(10)), char(13), char(10)),
-                  :spaces
-              ) <> trim(
-                  replace(
-                      replace(json_extract(parent_updates, '$[#-1].body'), char(13, 10), char(10)),
-                      char(13),
-                      char(10)
-                  ),
-                  :spaces
-              )
-          END
-          ELSE 0
-      END
+            COALESCE(parent_updates, '[]'),
+            '$[#]',
+            json_object('id', ?, 'body', ?, 'written_at', NULL)
+        ),
+        response = ?
+    WHERE rowid = ? AND parent_updates IS ?
 """
-"""At every start, a reply that no update holds becomes the latest update, with no time. A blank
-reply, or the latest update's words with other line endings or edges, adds nothing, and a value
-in the updates' place that is no list of objects with words is left as it is."""
+"""A reply no update holds appended as the request's latest update, with no time, and kept as
+the reply too, while the updates are still the ones read."""
 TAKE_UP: Final = """
     UPDATE help_requests SET state = 'accepted', accepted_at = ?
     WHERE request_id = ? AND state = 'requested'
@@ -433,11 +405,39 @@ class HelpRequestsStore:
             self._connection.execute(NOTES_NAMED_FROM_REQUESTS)
             self._connection.execute(IDS_TABLE)
             self._connection.execute(IDS_FROM_REQUESTS)
-            self._connection.execute(EARLIER_REPLIES, {"spaces": SPACES})
+            self._take_in_earlier_replies()
             self._connection.commit()
         except BaseException:
             self._connection.rollback()
             raise
+
+    def _take_in_earlier_replies(self) -> None:
+        """At a start, inside its transaction: a reply that no update holds becomes its
+        request's latest update, with no time. That is a reply kept from before updates, or
+        words a build that reads only the reply saved since the last start.
+
+        Each row is read as the pages read it, and only a request they can read, with words an
+        update can hold, gains one: any other row is left as it is, and never stops the start,
+        its refusal logged by kind alone. A reply that is the latest update's words, with other
+        line endings or edges, adds nothing. The words are kept as every update's are, and the
+        reply is set to them, so the two agree."""
+        for (rowid,) in self._connection.execute(EARLIER_REPLY_ROWS).fetchall():
+            try:
+                row = self._connection.execute(
+                    "SELECT * FROM help_requests WHERE rowid = ?", (rowid,)
+                ).fetchone()
+                request = request_from(row)
+                words = normalize_note(request.response)
+                updates = request.parent_updates
+                if words is None or (updates and normalize_note(updates[-1].body) == words):
+                    continue
+                update = ParentUpdate(update_id=new_update_id(), body=words)
+                self._connection.execute(
+                    EARLIER_REPLY,
+                    (update.update_id, update.body, update.body, rowid, row["parent_updates"]),
+                )
+            except (sqlite3.Error, ValueError, TypeError, RecursionError) as fault:
+                logger.warning("a start left a reply where it was: %s", type(fault).__name__)
 
     @classmethod
     def open(cls, path: Path, clock: Clock) -> "HelpRequestsStore":
@@ -857,7 +857,7 @@ def request_from(row: sqlite3.Row) -> HelpRequest:
             capture_id=capture_id,
             capture_reference_unreadable=unreadable,
         )
-    except (ValueError, TypeError) as fault:
+    except (ValueError, TypeError, RecursionError) as fault:
         why = refusal_in_names(fault, HelpRequest.model_fields)
     raise UnreadableHelpRequest(why, row["request_id"])
 

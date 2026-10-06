@@ -1630,11 +1630,15 @@ words, so a message is never added twice. New words it carries stay in that
 request's Add an update box, with the reason at the top of the page; every
 refusal keeps the words typed, and nothing reopens a closed request. The
 latest update's words are kept in the `response` column too, so a build that
-reads only that column shows the latest. At each start, a reply that no update
-holds becomes the request's latest update, with no time, and reads as Earlier
-reply: a reply kept from before updates, or words that such a build saved
-after the last start. A reply that is the latest update's words, with other
-line endings or spacing at the edges, adds nothing. Both pages show the latest
+reads only that column shows the latest; nothing in this build shows that
+column, and the JSON's reply is the latest update's words. At each start, a
+reply that no update holds becomes the request's latest update, with no time,
+and reads as Earlier reply: a reply kept from before updates, or words that
+such a build saved after the last start. Each row is read as the pages read
+it, so a request they can't read, or a reply no update could hold, is left as
+it is, and one such row never stops the start. A reply that is the latest
+update's words, with other line endings or spacing at the edges, adds nothing,
+and the words taken in are kept as every update's are. Both pages show the latest
 update with the day and time it was added, and fold the earlier ones under
 Earlier updates. Her account cannot make any of these moves, and no update's
 words reach a log.

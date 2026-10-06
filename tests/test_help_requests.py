@@ -707,6 +707,17 @@ def test_words_a_build_reading_only_the_reply_saves_show_once_after_the_next_sta
 NO_UPDATE_ID = "0123456789abcdef0123456789abcdef"
 
 
+def an_update(*fields: tuple[str, str]) -> str:
+    """The updates' place holding one update as a file might, each key with its JSON value,
+    a key given twice kept twice."""
+    return "[{" + ", ".join(f'"{key}": {value}' for key, value in fields) + "}]"
+
+
+ITS_ID = ("id", f'"{NO_UPDATE_ID}"')
+ITS_WORDS = ("body", '"Synthetic zebra other"')
+NO_TIME = ("written_at", "null")
+
+
 @pytest.mark.parametrize(
     "unreadable",
     [
@@ -714,15 +725,32 @@ NO_UPDATE_ID = "0123456789abcdef0123456789abcdef"
         '[7, {"id": "' + NO_UPDATE_ID + '", "body": "Synthetic zebra other", "written_at": null}]',
         '[{"id": "' + NO_UPDATE_ID + '", "body": "Synthetic zebra other", "written_at": null}, '
         '"Synthetic zebra"]',
+        an_update(ITS_WORDS, NO_TIME),
+        an_update(("id", "7"), ITS_WORDS, NO_TIME),
+        an_update(ITS_ID, ITS_WORDS, ("written_at", '"Synthetic zebra time"')),
+        an_update(ITS_ID, ITS_WORDS, ("written_at", '"2026-08-19T17:30:00"')),
+        an_update(ITS_ID, ("body", '""'), NO_TIME),
+        an_update(ITS_ID, ("body", '"' + "z" * (NOTE_MAX_LENGTH + 1) + '"'), NO_TIME),
+        "[" * 100_000 + "]" * 100_000,
     ],
-    ids=["no list", "an earlier one no update", "the latest no update"],
+    ids=[
+        "no list",
+        "an earlier one no update",
+        "the latest no update",
+        "an update with no id",
+        "an id that is no text",
+        "a time that is no time",
+        "a time with no zone",
+        "no words",
+        "words past the cap",
+        "nested past reading",
+    ],
 )
 def test_a_start_that_meets_updates_it_cannot_read_leaves_them_and_names_no_words(
     unreadable: str, tmp_path: pathlib.Path
 ) -> None:
-    """A value in the updates' place that is no list of updates is never rewritten at a start,
-    even beside a reply that differs from every update, and reading it is
-    ``UnreadableHelpRequest`` in names alone."""
+    """Updates the pages can't read are never written at a start, even beside a reply that
+    differs from every update, and reading them is ``UnreadableHelpRequest`` in names alone."""
     path = tmp_path / "record.sqlite3"
     store = HelpRequestsStore.open(path, fixture_clock())
     asked = store.ask(PLAN_DATE).request_id
@@ -739,6 +767,126 @@ def test_a_start_that_meets_updates_it_cannot_read_leaves_them_and_names_no_word
     assert held == unreadable
     assert "zebra" not in str(refused.value)
     assert asked in str(refused.value)
+
+
+HOLDS_NO_UTF8 = b"Synthetic zebra \xff words"
+"""Words with one byte in them that UTF-8 has no reading for."""
+
+
+def held_raw(store: HelpRequestsStore, request_id: str) -> tuple[object, ...]:
+    """A request's reply and updates as the file holds them, bytes and all."""
+    return tuple(
+        store._connection.execute(
+            "SELECT CAST(response AS BLOB), CAST(parent_updates AS BLOB) FROM help_requests "
+            "WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+    )
+
+
+@pytest.mark.parametrize(
+    ("column", "held"),
+    [
+        pytest.param("response", HOLDS_NO_UTF8, id="a reply that is no UTF-8"),
+        pytest.param(
+            "parent_updates",
+            b'[{"id": "' + NO_UPDATE_ID.encode() + b'", "body": "' + HOLDS_NO_UTF8 + b'", '
+            b'"written_at": null}]',
+            id="updates that are no UTF-8",
+        ),
+        pytest.param("response", "z" * (NOTE_MAX_LENGTH + 100), id="a reply past the cap"),
+    ],
+)
+def test_a_row_a_start_cannot_read_is_left_as_it_is_and_the_start_goes_on(
+    column: str, held: object, tmp_path: pathlib.Path
+) -> None:
+    """Whatever part of a row the pages can't read, a start adds no update to it, and the
+    requests after it still have their replies taken in."""
+    path = tmp_path / "record.sqlite3"
+    store = HelpRequestsStore.open(path, fixture_clock())
+    damaged = store.ask(PLAN_DATE).request_id
+    store.accept(damaged, "Synthetic zebra words")
+    later = store.ask(PLAN_DATE).request_id
+    store.accept(later, "Synthetic on it")
+    store._connection.execute(
+        f"UPDATE help_requests SET {column} = CAST(? AS TEXT) WHERE request_id = ?",  # noqa: S608
+        (held, damaged),
+    )
+    store._connection.execute(
+        "UPDATE help_requests SET response = ? WHERE request_id = ?",
+        ("Synthetic words saved elsewhere", later),
+    )
+    store._connection.commit()
+    before = held_raw(store, damaged)
+    store.close()
+
+    again = HelpRequestsStore.open(path, fixture_clock())
+    after = held_raw(again, damaged)
+    taken_in = again.get(later)
+    again.close()
+
+    assert after == before
+    assert bodies(taken_in) == ["Synthetic on it", "Synthetic words saved elsewhere"]
+
+
+@pytest.mark.parametrize(
+    ("updates", "kept"),
+    [
+        pytest.param(
+            an_update(
+                ITS_ID, ("body", '"Synthetic first"'), ("body", '"Synthetic zebra words"'), NO_TIME
+            ),
+            ["Synthetic zebra words"],
+            id="words held twice in one update",
+        ),
+        pytest.param(
+            an_update(ITS_ID, ("body", '"Synthetic on it"'), NO_TIME, ("color", '"teal"')),
+            ["Synthetic on it", "Synthetic zebra words"],
+            id="a key the pages don't use",
+        ),
+    ],
+)
+def test_a_start_reads_the_updates_as_the_pages_read_them(
+    updates: str, kept: list[str], tmp_path: pathlib.Path
+) -> None:
+    """An update that holds its words twice reads as the last of them, on the pages and at a
+    start, so a reply that is those words adds nothing; a key the pages don't use is passed
+    over, and a reply no update holds becomes the latest, once."""
+    path = tmp_path / "record.sqlite3"
+    store = HelpRequestsStore.open(path, fixture_clock())
+    asked = store.ask(PLAN_DATE).request_id
+    store.accept(asked, "Synthetic zebra words")
+    store._connection.execute("UPDATE help_requests SET parent_updates = ?", (updates,))
+    store._connection.commit()
+    store.close()
+
+    first = HelpRequestsStore.open(path, fixture_clock())
+    once = first.get(asked)
+    first.close()
+    second = HelpRequestsStore.open(path, fixture_clock())
+    twice = second.get(asked)
+    second.close()
+
+    assert bodies(once) == kept
+    assert twice == once
+
+
+def test_the_json_reply_is_the_latest_updates_words_whatever_its_column_holds() -> None:
+    """A build that reads only the reply can leave that column holding words no update holds
+    as kept, spaces alone after a close with none, say: every JSON answer gives the latest
+    update's words, as both pages show them."""
+    with browser() as client:
+        request_id = client.post("/student/help-requests").json()["request"]["request_id"]
+        client.post(f"/parent/help-requests/{request_id}/accept", json={"response": "on it"})
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        with state.help_requests._lock:
+            state.help_requests._connection.execute("UPDATE help_requests SET response = '   '")
+            state.help_requests._connection.commit()
+        theirs = client.get("/parent/help-requests").json()
+        hers = client.get("/student/help-requests").json()
+
+    assert [item["response"] for item in theirs] == ["on it"]
+    assert [item["response"] for item in hers] == ["on it"]
 
 
 # ------------------------------------------------------------- the routes
