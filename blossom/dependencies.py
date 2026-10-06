@@ -43,6 +43,7 @@ from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.help_requests import HelpRequestsStore
 from blossom.stores.household_claim import claim_household
+from blossom.stores.paths import refuse_mismarked_state
 from blossom.stores.project_state import ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
@@ -261,6 +262,12 @@ def create_lifespan(
         # make up its state, is taken before either is opened, so a second
         # process is refused with a sentence rather than left to share state
         # it would then corrupt, and is released when this process stops.
+        # A test copy runs only on marked folders, and a marked folder only as a test copy,
+        # checked before anything beside the state files is claimed or opened.
+        refuse_mismarked_state(
+            (settings.database_path, settings.checkpoint_path, settings.trace_path),
+            settings.test_copy,
+        )
         claim = claim_household(settings.database_path, settings.checkpoint_path)
         try:
             async with open_checkpointer(settings.checkpoint_path) as checkpointer:

@@ -14,7 +14,7 @@ the sign-in secret all open through it.
 
 import ctypes
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Final
 
@@ -131,3 +131,37 @@ def refuse_unsafe_path(path: Path, environ: Mapping[str, str] | None = None) -> 
             msg = f"the household's state may not live under {variable}: {text}"
             raise UnsafeCheckpointPath(msg)
     return path
+
+
+TEST_COPY_MARKER: Final = "TEST-COPY"
+"""The empty file a copy of the household's state carries in each of its folders. The copy
+step makes it; the household's own folders never hold one."""
+
+
+class CopyMarkError(ValueError):
+    """Raised at startup when the test-copy flag and the state folders disagree."""
+
+
+def refuse_mismarked_state(paths: Iterable[Path], test_copy: bool) -> None:
+    """Refuse a test copy on unmarked folders, and a marked copy served without its label.
+
+    With ``BLOSSOM_TEST_COPY`` on, every state file's folder must hold ``TEST-COPY``, so a
+    path left to its default or inherited from the household's own settings is refused rather
+    than served as a copy. With it off, no state folder may hold one, so a copy always says
+    what it is. Only the marker's presence is read: nothing is opened, created or claimed.
+    """
+    for path in paths:
+        folder = path.parent
+        marked = (folder / TEST_COPY_MARKER).is_file()
+        if test_copy and not marked:
+            msg = (
+                f"BLOSSOM_TEST_COPY is on, but {folder} holds no {TEST_COPY_MARKER} file: "
+                "a test copy runs only on state copied into a folder marked as one"
+            )
+            raise CopyMarkError(msg)
+        if marked and not test_copy:
+            msg = (
+                f"{folder} holds a {TEST_COPY_MARKER} file, so its state is a test copy: "
+                "set BLOSSOM_TEST_COPY=1 to serve it"
+            )
+            raise CopyMarkError(msg)

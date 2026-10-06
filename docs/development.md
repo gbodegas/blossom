@@ -494,8 +494,9 @@ household's files:
 1. Stop Blossom.
 2. Copy `blossom.sqlite3` and `checkpoints.sqlite3` into a new folder, the way
    "Upgrading and rolling back" copies the database: with no `-journal` or
-   `-wal` file beside either one, or with SQLite's `.backup` command. Never
-   serve a test from the household's own folder.
+   `-wal` file beside either one, or with SQLite's `.backup` command. Then
+   make an empty file named `TEST-COPY` in that folder. Never serve a test
+   from the household's own folder.
 3. In the new folder, write a launch file such as `test-copy.env` that points
    `BLOSSOM_DATABASE_PATH` and `BLOSSOM_CHECKPOINT_PATH` at the two copies,
    points `BLOSSOM_TRACE_PATH` at a new `traces.sqlite3` beside them, and sets
@@ -505,7 +506,11 @@ household's files:
    the app refuses to start with both flags on.
 5. Start it on a port other than the household's, such as 8001.
 
-Every page then says "Test copy", the sign-in page included. A browser that
+Every page then says "Test copy", the sign-in page included. Blossom
+refuses to start with `BLOSSOM_TEST_COPY` on unless each state file's folder
+holds `TEST-COPY`, so a path left to its default or to the household's own
+setting can't be served as a copy, and refuses to start on a folder holding
+`TEST-COPY` with the flag off, so a copy never runs without its label. A browser that
 uses both the household's Blossom and a test copy on the same computer has
 to sign in again when it switches. The copy holds the family's real data, so
 keep the folder private, out of any synced or shared place, and delete it
