@@ -37,7 +37,11 @@
   <p class="lead-action"><a href="#add-assignments">Add assignments</a></p>
 
   {% if problem %}
-    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_check %} <a href="{{ problem_check.href }}">{{ problem_check.label }}</a>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% endif %}</p>
+    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_check %} <a href="{{ problem_check.href }}">{{ problem_check.label }}</a>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% elif help_reply and help_reply.at_reply and help_reply_listed %} <a href="#reply-{{ help_reply.request_id }}">Go to the field.</a>{% endif %}</p>
+    {% if help_reply and not help_reply_listed %}
+      <label for="kept-reply">Reply, as typed</label>
+      <textarea id="kept-reply" rows="3" readonly>{{ help_reply.reply }}</textarea>
+    {% endif %}
   {% endif %}
   {% if refreshed_at %}
     <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
@@ -65,28 +69,41 @@
   #}
   <section id="help-she-asked-for" tabindex="-1">
     <h2>Help she asked for</h2>
+    {#
+      Each request is the group her page shows (``help_request.html``), said to
+      a parent, then the form that moves it. The reply is a short box with the
+      same cap as her words. I can help sends it as the request is taken up;
+      Mark resolved sends it as the request closes, in the place of the reply
+      she has, and a blank one leaves that reply as it is. So a request already
+      taken up, where Mark resolved is the one button, calls the box the reply
+      sent when closing, and says it replaces the reply she has when there is
+      one. A refused press keeps the reply as typed: in its own box while the
+      request is still open here, marked and focused when the reply is what
+      was refused, and under the problem at the top when the request is closed
+      or gone. Every name says the request by its own day and time.
+    #}
     {% if not help_open %}
       <p class="empty quiet">No open help requests.</p>
     {% endif %}
     {% for ask in help_open %}
+      {% set kept = help_reply if help_reply and help_reply.request_id == ask.request_id else none %}
+      {% set refused_words = kept and kept.at_reply %}
+      {% set replaces = ask.state == "accepted" and ask.response %}
+      {% set described = (["problem"] if refused_words else []) + (["reply-hint-" ~ ask.request_id] if replaces else []) %}
+      {% set asked_on %}{{ ask.asked_local|spoken_day(today) }} at {{ ask.asked_local|clock }}{% endset %}
       <article class="draft help-{{ ask.state }}">
-        <p class="course">Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local|clock }}</p>
-        {% if ask.note %}<p class="body">She said: <q>{{ ask.note }}</q></p>{% else %}<p class="note">No words with it.</p>{% endif %}
-        {% if ask.about_note %}<p class="note">{% with about = ask.about_note, viewer = "parent" %}{% include "help_about_note.html" %}{% endwith %}</p>{% endif %}
-        <p class="decision-line">
-          {% if ask.state == "requested" %}Not taken up yet. Her page says it is waiting for a parent to respond.{% else %}<strong>Taken up.</strong> Her page says a parent is on it.{% if ask.response %} Reply so far: <q>{{ ask.response }}</q>{% endif %}{% endif %}
-        </p>
-        <form method="post" action="/parent/actions/help/{{ ask.request_id }}" class="decision">
-          <label>Reply (optional)
-            <input type="text" name="response" maxlength="{{ note_max_length }}" placeholder="What she will read under her request">
-          </label>
+        {% with hers = false %}{% include "help_request.html" %}{% endwith %}
+        <form method="post" action="/parent/actions/help/{{ ask.request_id }}" class="decision help-reply">
+          <label for="reply-{{ ask.request_id }}">{% if ask.state == "requested" %}Reply to your student (optional){% else %}Reply when closing (optional){% endif %}</label>
+          <textarea id="reply-{{ ask.request_id }}" name="response" rows="2" maxlength="{{ note_max_length }}" placeholder="What she will read under her request"{% if described %} aria-describedby="{{ described|join(" ") }}"{% endif %}{% if refused_words %} aria-invalid="true" autofocus{% endif %}>{{ kept.reply if kept else "" }}</textarea>
+          {% if replaces %}<p class="note" id="reply-hint-{{ ask.request_id }}">This replaces the current reply.</p>{% endif %}
           <div class="actions">
             {% if ask.state == "requested" %}
               <button type="submit" name="step" value="accept" class="primary"
-                      aria-label="I can help with the request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">I can help</button>
+                      aria-label="I can help with the request from {{ asked_on }}">I can help</button>
             {% endif %}
             <button type="submit" name="step" value="resolve" class="secondary"
-                    aria-label="Mark resolved: request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Mark resolved</button>
+                    aria-label="Mark resolved: request from {{ asked_on }}">Mark resolved</button>
           </div>
           <p class="note">What you say here appears on her page when she refreshes it. Nothing leaves here.</p>
         </form>
@@ -97,19 +114,11 @@
     </p>
     {% if help_resolved %}
       <details class="steps">
-        <summary>Resolved in the last two weeks</summary>
-        <ul>
+        <summary>Closed in the last two weeks</summary>
+        <ul class="help">
           {% for ask in help_resolved %}
-            <li>
-              Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local|clock }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
-              Resolved{% if ask.response %} with <q>{{ ask.response }}</q>{% endif %}.
-              {% if ask.about_note %}
-                <p class="note">
-                  {% with about = ask.about_note, viewer = "parent" %}
-                    {% include "help_about_note.html" %}
-                  {% endwith %}
-                </p>
-              {% endif %}
+            <li class="help-request">
+              {% with hers = false %}{% include "help_request.html" %}{% endwith %}
             </li>
           {% endfor %}
         </ul>

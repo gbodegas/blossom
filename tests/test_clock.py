@@ -24,6 +24,7 @@ from blossom.clock import (
     TimeZoneUnavailable,
     clock_from,
     household_zone,
+    spoken_day,
 )
 from blossom.drafts import Draft
 from blossom.retrieval import RetrievalResult
@@ -158,6 +159,17 @@ def test_every_hand_written_guard_uses_pythons_rule_for_aware(naive: datetime) -
 def test_a_pydantic_instant_refuses_both_shapes_too(naive: datetime) -> None:
     with pytest.raises(ValidationError):
         Draft(body="Could she have until Friday?", created_at=naive)
+
+
+def test_a_day_is_said_with_its_weekday_and_its_year_only_when_it_is_another_years() -> None:
+    """A date, or the day of a moment in the household's zone, as her pages say it beside
+    the household's own day."""
+    today = date(2026, 8, 19)
+
+    assert spoken_day(date(2026, 8, 21), today) == "Friday, August 21"
+    assert spoken_day(local(2026, 8, 20, 0, 30), today) == "Thursday, August 20"
+    assert spoken_day(local(2025, 12, 31, 15), today) == "Wednesday, December 31, 2025"
+    assert spoken_day(date(2027, 1, 1), today) == "Friday, January 1, 2027"
 
 
 def test_clock_from_returns_system_clock_when_no_date_is_pinned() -> None:

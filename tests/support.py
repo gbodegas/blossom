@@ -1955,6 +1955,28 @@ def help_row(page: str, request_id: str) -> str:
     return page[start : page.index("</li>", start)]
 
 
+HELP_PART = re.compile(r'<(p|form)\b[^>]*?\sclass="help-(\w+)[^"]*"[^>]*>(.*?)</\1>', re.S)
+"""One line of a request for help, on her week or the family page: its part, by class, and
+what it holds."""
+
+
+def help_group(fragment: str) -> list[tuple[str, str]]:
+    """A request for help as a reader meets it, a line at a time: which part each line is,
+    the state, a label, words, a time, the note it is about, or the controls, and what it
+    says."""
+    return [(part, words(inside)) for _, part, inside in HELP_PART.findall(fragment)]
+
+
+def help_reply(fragment: str) -> str | None:
+    """What the first reply in a fragment says, from the line under its Parent reply label,
+    or ``None`` when the fragment shows no reply."""
+    parts = help_group(fragment)
+    for at, part in enumerate(parts[:-1]):
+        if part == ("label", "Parent reply"):
+            return parts[at + 1][1]
+    return None
+
+
 # ------------------------------------------------------------- the family page's rows, and a check
 
 

@@ -14,7 +14,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 import pytest
@@ -38,6 +38,9 @@ from tests.support import (
     SetClock,
     browser,
     client_for,
+    control_names,
+    help_group,
+    help_reply,
     lands_on,
     signed_in,
     signed_in_household,
@@ -91,6 +94,10 @@ ASK_AGAIN = '<a class="ask-again" href="#ask-for-help">Ask again</a>'
 HER_LINK = '<a class="to-help" href="#ask-for-help">Ask for help</a>'
 PARENT_LINK = '<a class="to-help" href="#help">Her help requests</a>'
 FOLD_OPEN = '<details class="steps resolved" id="help-older" open>'
+WAITING = "Waiting for a parent."
+HELPING = "A parent is helping."
+REPLY = ("label", "Parent reply")
+NO_WORDS = ("words", "No words with it.")
 
 Reader = Literal["her", "parent", "open"]
 
@@ -171,6 +178,11 @@ def fold(page: str) -> str:
 def words(fragment: str) -> str:
     """What a fragment says, its tags left out and its spaces as a reader meets them."""
     return " ".join(html.unescape(re.sub(r"<[^>]*>", "", fragment)).split())
+
+
+def label_for(reader: Reader) -> tuple[str, str]:
+    """The label over her words, in the words of whoever reads the page."""
+    return ("label", "Student's request" if reader == "parent" else "Your request")
 
 
 def help_tables(client: TestClient) -> dict[str, list[tuple[object, ...]]]:
@@ -430,10 +442,10 @@ def test_today_holds_a_link_and_a_count_and_no_words_of_any_request(how_many: in
     assert HER_LINK in shown
     assert "Synthetic" not in shown
     assert 'action="/student/actions/ask-for-help"' not in shown
-    assert words(updates(page)).count("You asked for help") == counted
+    assert help_group(updates(page)).count(("label", "Your request")) == counted
     if how_many == 36:
         assert "<summary>Older closed requests (12)</summary>" in fold(page)
-        assert words(fold(page)).count("You asked for help") == 12
+        assert help_group(fold(page)).count(("label", "Your request")) == 12
 
 
 @pytest.mark.parametrize("reader", ["her", "parent", "open"])
@@ -498,7 +510,7 @@ def test_her_page_moves_a_closure_at_seven_days_and_drops_it_after_fourteen(
         assert "help-updates-link" not in page
         return
     shown = row(page, request_id)
-    assert "They said: <q>Synthetic boundary reply</q>" in shown
+    assert help_reply(shown) == "Synthetic boundary reply"
     assert (f'id="help-{request_id}"' in updates(page)) is (where == "recent")
     assert (f'id="help-{request_id}"' in fold(page)) is (where == "earlier")
     assert ("Help updates (1)" in today(page)) is (where == "recent")
@@ -527,9 +539,15 @@ def test_a_closed_request_says_a_parent_closed_it_on_its_own_day(reply: str | No
 
     shown = row(page, request_id)
     assert "<strong>A parent closed this request on Thursday, August 20.</strong>" in shown
-    assert ("They said:" in shown) is (reply is not None)
-    if reply is not None:
-        assert "They said: <q>Synthetic reply about the outline</q>" in shown
+    assert help_group(shown) == [
+        ("state", "A parent closed this request on Thursday, August 20."),
+        ("label", "Your request"),
+        ("words", "Synthetic question"),
+        ("when", "Requested: Thursday, August 20 at 11:30 PM"),
+        ("when", "For Wednesday, August 19"),
+        *([REPLY, ("words", reply)] if reply is not None else []),
+        ("actions", "Ask again"),
+    ]
     assert "Resolved" not in section(page)
     for listed in (hers, theirs):
         by_id = {item["request_id"]: item for item in listed}
@@ -544,7 +562,9 @@ def test_a_closure_in_another_year_says_its_year() -> None:
         clock.at = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
         page = client.get(PAGE).text
 
-    assert "A parent closed this request on Wednesday, December 31, 2025." in row(page, request_id)
+    shown = help_group(row(page, request_id))
+    assert shown[:1] == [("state", "A parent closed this request on Wednesday, December 31, 2025.")]
+    assert ("when", "Requested: Wednesday, December 31, 2025 at 3:00 PM") in shown
 
 
 def test_several_requests_keep_their_own_rows_and_a_later_one_hides_no_earlier_reply() -> None:
@@ -574,11 +594,182 @@ def test_several_requests_keep_their_own_rows_and_a_later_one_hides_no_earlier_r
     assert "Synthetic note words" in row(page, made[1])
     assert "Synthetic note words" not in row(page, made[0])
     assert "Synthetic question 1" in row(page, made[1])
-    assert "They said: <q>Synthetic reply three</q>" in row(page, made[3])
-    assert "<strong>A parent is on it.</strong> They said: <q>Synthetic reply two</q>" in row(
-        page, made[2]
+    assert help_reply(row(page, made[3])) == "Synthetic reply three"
+    assert help_group(row(page, made[2]))[:1] == [("state", HELPING)]
+    assert help_reply(row(page, made[2])) == "Synthetic reply two"
+    assert help_reply(row(page, made[4])) is None
+
+
+# ------------------------------------------------------------------ one group for each request
+
+
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_each_request_is_one_group_said_in_the_readers_words(
+    reader: Reader, tmp_path: pathlib.Path
+) -> None:
+    """Where it stands, whose words they are and what they say, when she asked, and a parent's
+    reply under its own label, each a line of its own, then her controls. Asked on the page's
+    own day, so no evening is said."""
+    with household(tmp_path, reader) as client:
+        store, clock = pinned_help(client)
+        made = {}
+        for minute, name in enumerate(("waiting", "taken", "closed", "quiet", "empty")):
+            clock.at = T0 + timedelta(minutes=minute)
+            made[name] = asked(store, None if name == "empty" else f"Synthetic {name}")
+        store.accept(made["taken"], "Synthetic on it")
+        store.resolve(made["closed"], "Synthetic closed reply")
+        store.resolve(made["quiet"])
+        page = client.get(PAGE).text
+
+    hers = reader != "parent"
+    said = label_for(reader)
+    take_back = [("actions", "Take it back")] if hers else []
+    again = [("actions", "Ask again")] if hers else []
+    closed_on = ("state", "A parent closed this request on Wednesday, August 19.")
+
+    def at(minute: int) -> tuple[str, str]:
+        return ("when", f"Requested: Wednesday, August 19 at 5:0{minute} PM")
+
+    assert {name: help_group(row(page, request_id)) for name, request_id in made.items()} == {
+        "waiting": [("state", WAITING), said, ("words", "Synthetic waiting"), at(0), *take_back],
+        "taken": [
+            ("state", HELPING),
+            said,
+            ("words", "Synthetic taken"),
+            at(1),
+            REPLY,
+            ("words", "Synthetic on it"),
+        ],
+        "closed": [
+            closed_on,
+            said,
+            ("words", "Synthetic closed"),
+            at(2),
+            REPLY,
+            ("words", "Synthetic closed reply"),
+            *again,
+        ],
+        "quiet": [closed_on, said, ("words", "Synthetic quiet"), at(3), *again],
+        "empty": [("state", WAITING), said, NO_WORDS, at(4), *take_back],
+    }
+    for never in ("asked for help", "They said", "esolved", "is on it", "seen", "read it"):
+        assert never not in words(section(page)), never
+
+
+@pytest.mark.parametrize(
+    ("asked_at", "evening", "closed_at", "state", "when"),
+    [
+        pytest.param(
+            T0,
+            PLAN_DATE,
+            None,
+            WAITING,
+            ["Requested: Wednesday, August 19 at 5:00 PM"],
+            id="on the evening's own day",
+        ),
+        pytest.param(
+            datetime(2026, 8, 20, 4, 30, tzinfo=UTC),
+            PLAN_DATE,
+            None,
+            WAITING,
+            ["Requested: Thursday, August 20 at 12:30 AM", "For Wednesday, August 19"],
+            id="after midnight",
+        ),
+        pytest.param(
+            datetime(2026, 8, 21, 20, 15, tzinfo=UTC),
+            PLAN_DATE,
+            None,
+            WAITING,
+            ["Requested: Friday, August 21 at 4:15 PM", "For Wednesday, August 19"],
+            id="a pinned evening two days before",
+        ),
+        pytest.param(
+            datetime(2026, 8, 18, 22, 0, tzinfo=UTC),
+            date(2026, 8, 18),
+            datetime(2026, 8, 21, 13, 0, tzinfo=UTC),
+            "A parent closed this request on Friday, August 21.",
+            ["Requested: Tuesday, August 18 at 6:00 PM"],
+            id="closed on a later day",
+        ),
+        pytest.param(
+            datetime(2026, 8, 21, 20, 15, tzinfo=UTC),
+            PLAN_DATE,
+            datetime(2026, 8, 22, 14, 0, tzinfo=UTC),
+            "A parent closed this request on Saturday, August 22.",
+            ["Requested: Friday, August 21 at 4:15 PM", "For Wednesday, August 19"],
+            id="a pinned evening, closed the next day",
+        ),
+        pytest.param(
+            datetime(2025, 12, 31, 20, 0, tzinfo=UTC),
+            date(2025, 12, 31),
+            None,
+            WAITING,
+            ["Requested: Wednesday, December 31, 2025 at 3:00 PM"],
+            id="another year",
+        ),
+    ],
+)
+def test_the_time_she_asked_is_the_requests_own_and_its_evening_is_said_only_when_it_differs(
+    asked_at: datetime, evening: date, closed_at: datetime | None, state: str, when: list[str]
+) -> None:
+    """The time and the day she asked are both the request's own, in the household's zone;
+    the evening it was asked for is said apart, and only when it is another day, as a pinned
+    day or a request after midnight makes it. A closure says its own day."""
+    with browser() as client:
+        store, clock = pinned_help(client, asked_at)
+        request_id = store.ask(evening, "Synthetic question").request_id
+        if closed_at is not None:
+            clock.at = closed_at
+            store.resolve(request_id)
+        clock.at += timedelta(hours=1)
+        page = client.get(PAGE).text
+
+    shown = row(page, request_id)
+    parts = help_group(shown)
+    assert parts[:1] == [("state", state)]
+    assert [said for part, said in parts if part == "when"] == when
+    names = [heard for seen, heard in control_names(shown) if seen == "Take it back"]
+    asked_on = when[0].removeprefix("Requested: ")
+    assert names == ([] if closed_at else [f"Take it back: your request from {asked_on}"])
+
+
+def test_long_words_no_words_and_a_reply_of_two_lines_keep_their_group() -> None:
+    """Her words and a parent's reply are shown whole, as typed, line breaks kept, in the hand
+    that wraps a long word; a request with no words says so where its words would be."""
+    long = " ".join(["Synthetic", "w" * 200, "words"] * 3)[: help_store.NOTE_MAX_LENGTH].strip()
+    with browser() as client:
+        store, _ = pinned_help(client)
+        full = asked(store, long)
+        empty = asked(store, None)
+        replied = asked(store, "Synthetic question")
+        store.accept(replied, "Synthetic first line.\nSynthetic second line.")
+        page = client.get(PAGE).text
+
+    assert f'<p class="help-words"><q class="authored-text">{escape(long)}</q></p>' in row(
+        page, full
     )
-    assert "They said" not in row(page, made[4])
+    assert help_group(row(page, empty))[2] == NO_WORDS
+    assert "<q" not in row(page, empty)
+    reply = '<q class="authored-text">Synthetic first line.\nSynthetic second line.</q>'
+    assert reply in row(page, replied)
+
+
+def test_a_closed_request_reads_the_same_in_help_updates_and_in_the_fold_below() -> None:
+    """Both of her lists show a request through the one group: seven days after it was closed
+    it moves to the fold with the same lines, and only Ask again stays behind."""
+    with browser() as client:
+        store, clock = pinned_help(client)
+        request_id = closed(store, "Synthetic question", "Synthetic reply")
+        clock.at = T0 + SEVEN - MICRO
+        recent = row(client.get(PAGE).text, request_id)
+        clock.at = T0 + SEVEN
+        later = client.get(PAGE).text
+
+    folded = row(later, request_id)
+    assert f'id="help-{request_id}"' in fold(later)
+    assert help_group(recent) == [*help_group(folded), ("actions", "Ask again")]
+    without_controls = re.sub(r'<p class="help-actions">.*?</p>', "", recent, flags=re.S)
+    assert " ".join(without_controls.split()) == " ".join(folded.split())
 
 
 # ------------------------------------------------------------------ each reader
@@ -601,8 +792,7 @@ def test_each_reader_reads_help_in_their_own_words_and_meets_only_their_controls
     hers = reader != "parent"
     part = section(page)
     for request_id in (waiting, taken, old, recent):
-        shown = words(row(page, request_id))
-        assert shown.startswith("You asked for help" if hers else "She asked for help")
+        assert help_group(row(page, request_id))[1:2] == [label_for(reader)]
     for request_id in (taken, old, recent):
         assert TAKE_BACK not in row(page, request_id)
     for request_id in (waiting, taken, old):
@@ -667,7 +857,7 @@ def test_asking_with_no_note_is_saved_and_the_line_says_saved_and_not_seen() -> 
     said = row(landed, form["request_id"])
     assert f"{RESULT}{SENT}</p>" in said
     assert "seen" not in words(said)
-    assert "Waiting for a parent to respond." in words(said)
+    assert help_group(said)[:3] == [("state", WAITING), ("label", "Your request"), NO_WORDS]
 
 
 # ------------------------------------------------------------------ where a sent form lands
@@ -721,11 +911,13 @@ def test_the_same_form_sent_again_lands_on_the_request_as_it_stands(then: str) -
         assert page.count('id="help-result"') == 1
         assert f"{RESULT}{ALREADY_SENT}</p>" in shown
         assert "Sent. Your parents" not in page
+        states = [said for part, said in help_group(shown) if part == "state"]
         if then == "accepted":
-            assert "<strong>A parent is on it.</strong> They said: <q>Synthetic reply</q>" in shown
+            assert states == [HELPING]
         else:
-            assert "A parent closed this request on " in shown
-            assert "They said: <q>Synthetic reply</q>" in shown
+            assert len(states) == 1
+            assert states[0].startswith("A parent closed this request on ")
+        assert help_reply(shown) == "Synthetic reply"
         assert f'id="help-{earlier}"' in fold(page)
         assert (FOLD_OPEN in page) is (then == "closed a week ago")
         assert (f'id="help-{request_id}"' in fold(page)) is (then == "closed a week ago")
@@ -808,7 +1000,7 @@ def test_a_parent_reading_a_marker_reads_no_line_and_meets_no_control(
         after = help_tables(client)
 
     assert 'id="help-result"' not in page
-    assert "Waiting for a parent to respond." in row(page, request_id)
+    assert help_group(row(page, request_id))[:2] == [("state", WAITING), label_for("parent")]
     assert ALREADY_SENT not in page
     assert "Sent. Your parents" not in page
     assert 'action="/student/actions/' not in section(page)
@@ -1285,11 +1477,16 @@ def own_line_rule(css: str) -> list[str]:
 
 
 def test_ask_again_and_the_note_link_keep_their_press_areas_inside_their_own_lines() -> None:
-    """In a request's row the two links can sit on lines next to each other."""
+    """In a request's row the two links can sit on lines next to each other, and the family
+    page's note link sits on a line of its own above the reply's field."""
     own = own_line_rule(CSS)
     shared = in_sentence_rule(CSS)
 
-    for selector in (".help-panel .help-request a.ask-again", ".help-panel .help-about-note a"):
+    for selector in (
+        ".help-panel .help-request a.ask-again",
+        ".help-panel .help-about-note a",
+        "#help-she-asked-for .help-about-note a",
+    ):
         assert selector in own
         assert selector not in shared
 

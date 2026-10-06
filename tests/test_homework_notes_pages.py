@@ -59,6 +59,7 @@ from tests.support import (
     dissent,
     fixture_week_plan,
     form_fields,
+    help_reply,
     help_row,
     report,
     scripted_graphs,
@@ -559,8 +560,9 @@ def test_a_parent_asking_about_a_note_is_refused_before_the_form_is_read(
 def own_row(page: str, *, family: bool, resolved: bool) -> str:
     """The one request's own row: its list item or its card, and nothing else of the page."""
     if resolved and family:
-        summary = "Resolved in the last two weeks"
-        rows = page.split(f"<summary>{summary}</summary>", 1)[1].split("</details>", 1)[0]
+        summary = "<summary>Closed in the last two weeks</summary>"
+        assert summary in page
+        rows = page.split(summary, 1)[1].split("</details>", 1)[0]
         return rows.split("<li", 1)[1].split("</li>", 1)[0]
     if family:
         return page.split('<article class="draft help-', 1)[1].split("</article>", 1)[0]
@@ -1042,9 +1044,9 @@ def help_held(client: TestClient) -> tuple[list[object], int]:
 @pytest.mark.parametrize(
     ("steps", "reply", "stands"),
     [
-        ([], None, "Waiting for a parent to respond."),
-        (["accept"], None, "A parent is on it."),
-        (["accept"], "Review the graph together after dinner.", "A parent is on it."),
+        ([], None, "Waiting for a parent."),
+        (["accept"], None, "A parent is helping."),
+        (["accept"], "Review the graph together after dinner.", "A parent is helping."),
         (["accept", "resolve"], None, "A parent closed this request on "),
         (["accept", "resolve"], "Page 12 has the steps.", "A parent closed this request on "),
     ],
@@ -1084,7 +1086,7 @@ def test_the_same_note_form_sent_again_lands_on_the_request_as_it_stands(
     assert f'id="help-result" tabindex="-1">{ALREADY_SENT}' in row
     assert "Which part comes first?" in row
     assert stands in row
-    assert (f"They said: <q>{escape(reply)}</q>" in row) is (reply is not None)
+    assert help_reply(row) == reply
     assert f'href="{note_href(name)}"' in row
     assert 'id="help-older"' not in landed.text
     assert after == before

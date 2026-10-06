@@ -37,6 +37,7 @@ from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
 from blossom.stores.drafts import RunState
+from blossom.stores.help_requests import NOTE_MAX_LENGTH
 from blossom.stores.project_state import Assignment, Saved, Undone
 from tests import support
 from tests.support import (
@@ -46,6 +47,9 @@ from tests.support import (
     ended_run,
     fixture_settings,
     forgetful_fixture_plan,
+    help_group,
+    help_reply,
+    help_row,
     ok,
     record,
     settled_run,
@@ -247,7 +251,7 @@ def test_the_parents_work_with_her_comes_before_planning_for_her() -> None:
     assert "<summary>Help with a plan</summary>" in page
     assert ">I can help<" in page
     assert ">Mark resolved<" in page
-    assert "Reply (optional)" in page
+    assert ">Reply to your student (optional)</label>" in page
     assert "<strong>Blossom's review:</strong> accepted." in page
     assert '<p class="review-heading">Parent review</p>' in page
 
@@ -276,7 +280,81 @@ def test_the_labels_submit_the_same_values_as_before() -> None:
     assert 'name="step" value="accept" class="primary"' in page
     assert 'name="step" value="resolve" class="secondary"' in page
     assert helped.status_code == 303
-    assert "<strong>A parent is on it.</strong> They said: <q>on it</q>" in hers
+    assert "<strong>A parent is helping.</strong>" in hers
+    assert help_reply(help_row(hers, request_id)) == "on it"
+
+
+def asked_lines(item: dict[str, str]) -> list[tuple[str, str]]:
+    """When she asked, as a request's group says it: the request's own day and time in the
+    household's zone, from what the JSON route lists, and the evening it was asked for when
+    that is another day, as the pinned day makes it here."""
+    at = datetime.fromisoformat(item["asked_local"])
+    year = "" if at.year == PLAN_DATE.year else f", {at.year}"
+    lines = [("when", f"Requested: {at:%A, %B} {at.day}{year} at {spoken_time(at)}")]
+    if at.date() != date.fromisoformat(item["evening"]):
+        lines.append(("when", "For Wednesday, August 19"))
+    return lines
+
+
+def test_each_request_on_the_family_page_is_one_group_with_a_short_reply_field() -> None:
+    """The group her page shows, said to a parent: where it stands, her words under Student's
+    request, when she asked, the reply so far under its own label, and no word about what her
+    page says. The reply is a short box with the cap. A request already taken up offers only
+    Mark resolved, so its field is the reply sent when closing, and says it replaces the
+    reply she has when there is one."""
+    with browser() as client:
+        made = {
+            name: client.post("/student/help-requests", json={"note": f"Synthetic {name}"}).json()[
+                "request"
+            ]["request_id"]
+            for name in ("waiting", "taken", "taken quietly", "closed")
+        }
+        taken, quietly, closed = made["taken"], made["taken quietly"], made["closed"]
+        client.post(f"/parent/help-requests/{taken}/accept", json={"response": "Synthetic so far"})
+        client.post(f"/parent/help-requests/{quietly}/accept")
+        client.post(f"/parent/help-requests/{closed}/resolve", json={"response": "Synthetic last"})
+        listed = {item["request_id"]: item for item in client.get("/parent/help-requests").json()}
+        page = client.get("/parent").text
+
+    part = page.split('<section id="help-she-asked-for"', 1)[1].split("</section>", 1)[0]
+    theirs = ("label", "Student's request")
+    reply = ("label", "Parent reply")
+
+    def card(name: str) -> str:
+        at = part.index(f'action="/parent/actions/help/{made[name]}"')
+        return part[part.rindex("<article", 0, at) : part.index("</article>", at)]
+
+    def opening(name: str) -> list[tuple[str, str]]:
+        return [theirs, ("words", f"Synthetic {name}"), *asked_lines(listed[made[name]])]
+
+    waiting, helping = ("state", "Waiting for a parent."), ("state", "A parent is helping.")
+    assert help_group(card("waiting")) == [waiting, *opening("waiting")]
+    assert help_group(card("taken")) == [
+        helping,
+        *opening("taken"),
+        reply,
+        ("words", "Synthetic so far"),
+    ]
+    assert help_group(card("taken quietly")) == [helping, *opening("taken quietly")]
+    history = part.split("<summary>Closed in the last two weeks</summary>", 1)[1]
+    state, *rest = help_group(history)
+    assert state[1].startswith("A parent closed this request on ")
+    assert rest == [*opening("closed"), reply, ("words", "Synthetic last")]
+    for name, label, replaces in (
+        ("waiting", "Reply to your student (optional)", False),
+        ("taken", "Reply when closing (optional)", True),
+        ("taken quietly", "Reply when closing (optional)", False),
+    ):
+        shown, key = card(name), made[name]
+        hint = f'<p class="note" id="reply-hint-{key}">This replaces the current reply.</p>'
+        assert f'<label for="reply-{key}">{label}</label>' in shown
+        field = f'<textarea id="reply-{key}" name="response" rows="2" maxlength="{NOTE_MAX_LENGTH}"'
+        assert field in shown
+        assert (hint in shown) is replaces
+        assert (f'aria-describedby="reply-hint-{key}"' in shown) is replaces
+        assert '<input type="text" name="response"' not in shown
+    for never in ("She said", "Her page says", "Reply so far", "Resolved", "Not taken up"):
+        assert never not in part
 
 
 def test_review_times_read_in_the_households_zone() -> None:

@@ -251,7 +251,7 @@ def test_a_request_the_note_page_cannot_check_sends_her_to_help_and_asks_nothing
         ("/student/homework-notes", "Back to Homework notes"),
         week_link("her", "help"),
     ]
-    assert "You asked for help" not in main
+    assert '<p class="help-label">Your request</p>' not in main
     assert after_the_failure(seen) == []
     assert again.status_code == 303
     assert "asked_again=" in again.headers["location"]

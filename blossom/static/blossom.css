@@ -529,9 +529,64 @@ article h2 {
   max-width: none;
 }
 
+/* Her requests for help, on her week and on the family page: one group for each request,
+   set apart from the next by a rule, with no list marker beside it, so the bar an arrival
+   draws at a request's left edge stays clear. Each part of a request is a line of its own:
+   where it stands, whose words and what they say, when she asked, the note it is about, a
+   parent's reply under its own label, and the controls. */
 .help {
   margin: 1rem 0 0;
-  padding-left: 1.25rem;
+  padding: 0;
+  list-style: none;
+}
+
+.help-request {
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--edge);
+}
+
+.help-request:first-child {
+  border-top: 0;
+}
+
+.help-state,
+.help-words,
+.help-when,
+.help-about,
+.help-actions {
+  margin: 0.3rem 0 0;
+}
+
+/* Take it back keeps its compact shape under her request: the same 44 pixels to press,
+   with less room at its sides, so on a narrow screen with large text its words break
+   between words. */
+.help-actions button {
+  padding: 0.35rem 1rem;
+}
+
+.help-label {
+  margin: 0.75rem 0 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: var(--text-strong);
+}
+
+.help-when {
+  font-size: 0.92rem;
+  color: var(--text-soft);
+}
+
+/* On the family page the form that moves a request stands apart from the request, so its
+   field reads as a parent's own and not as a line of the request. A reply to her request
+   is a sentence or two: its box starts two lines tall, not the height of the paste box,
+   and grows as a reader drags it. */
+.help-reply {
+  margin-top: 1.25rem;
+}
+
+.help-reply textarea {
+  min-height: 3.6rem;
 }
 
 details.plan {
@@ -887,9 +942,11 @@ a.assignment-link:focus-visible {
 
 /* In a request's row, Open homework note and Ask again can sit on lines next to each
    other. Each keeps its 44 pixels to press inside its own line, which grows to hold
-   them, so neither reaches into the other. */
+   them, so neither reaches into the other. The family page shows the same request, and
+   its note link keeps the same 44 pixels above the reply's field. */
 .help-panel .help-request a.ask-again,
-.help-panel .help-about-note a {
+.help-panel .help-about-note a,
+#help-she-asked-for .help-about-note a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: 0;
