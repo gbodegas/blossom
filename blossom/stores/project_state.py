@@ -704,7 +704,10 @@ class ProjectStateStore(
         "are kept until she deletes one that was never used or the household removes the "
         "file. A used note can only be put away, putting one away keeps it, and nothing "
         "sweeps them, so a backup of the file holds them as well, a deleted note included "
-        "if the backup was made before it went."
+        "if the backup was made before it went. Her student record for grade reports, one "
+        "random ID, and the name forms a parent confirmed, keyed hashes and never the names, "
+        "are kept until the household removes the file; confirming her name under a new key "
+        "replaces the forms."
     )
 
     def __init__(

@@ -3,8 +3,8 @@
 """Whether a grade report's student line is one a parent confirmed as hers, told without her name.
 
 A line is compared as its name form: a keyed hash of the line with its spaces, case and accents
-folded, under a key drawn from the household secret with a label of its own, so it is none of
-the keys the sign-in draws. The key check, a keyed hash of a fixed text, says whether the
+folded, under a key drawn from the household secret with a label no passphrase can be, so it is
+none of the keys the sign-in draws. The key check, a keyed hash of a fixed text, says whether the
 confirmed forms were made under the key in hand. When it doesn't match, the secret was replaced,
 and her name is confirmed again; nothing here guesses why, and a mismatch never reads as another
 student.
@@ -19,10 +19,12 @@ from typing import Final
 
 from blossom.grades.draft import folded
 
-NAME_FORM_LABEL: Final = b"grade name forms"
-"""What the name-form key is drawn for, under the household secret."""
-KEY_CHECK_TEXT: Final = b"the key the confirmed name forms were made under"
-"""The fixed text the key check is a keyed hash of."""
+NAME_FORM_LABEL: Final = b"\xffgrade name forms"
+"""What the name-form key is drawn for, under the household secret. Its first byte is never
+valid UTF-8, and a passphrase always is, so no sign-in key is drawn from the same input."""
+KEY_CHECK_TEXT: Final = b"\xffthe key the confirmed name forms were made under"
+"""The fixed text the key check is a keyed hash of. Its first byte is never valid UTF-8, and a
+student line always is, so no line's form is ever the key check."""
 
 
 class IdentityStatus(StrEnum):

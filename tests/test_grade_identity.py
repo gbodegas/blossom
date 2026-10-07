@@ -8,6 +8,7 @@ says whether the forms were made under the key in hand. A key that doesn't match
 name to be confirmed again; confirming again replaces the forms and the key check together.
 """
 
+import dataclasses
 import pathlib
 import re
 import sqlite3
@@ -16,6 +17,8 @@ from typing import Any
 import pytest
 
 from blossom.grades.identity import (
+    KEY_CHECK_TEXT,
+    NAME_FORM_LABEL,
     Identity,
     IdentityStatus,
     key_check,
@@ -148,6 +151,24 @@ def test_the_name_form_key_is_its_own_and_the_key_check_tells_keys_apart(
     assert re.fullmatch(r"[0-9a-f]{64}", key_check(KEY))
     assert key_check(KEY) == key_check(name_form_key(SECRET))
     assert key_check(KEY) != key_check(NEW_KEY)
+
+
+def test_no_passphrase_draws_the_name_form_key_and_no_line_makes_the_key_check(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A passphrase and a student line are text, so their bytes are valid UTF-8; the label and
+    the key check's fixed text aren't, so no sign-in key is the name-form key and no line's
+    form is the key check, whatever is typed."""
+    typed_label = NAME_FORM_LABEL.decode("utf-8", errors="ignore")
+    typed_check = KEY_CHECK_TEXT.decode("utf-8", errors="ignore")
+    household = dataclasses.replace(signed_in_household(tmp_path), parent_passphrase=typed_label)
+
+    for fixed in (NAME_FORM_LABEL, KEY_CHECK_TEXT):
+        with pytest.raises(UnicodeDecodeError):
+            fixed.decode("utf-8")
+    assert typed_label == "grade name forms"
+    assert KEY not in keys_for(SECRET, household).values()
+    assert name_form(KEY, typed_check) != key_check(KEY)
 
 
 # ------------------------------------------------------------- what a student line is
@@ -349,6 +370,46 @@ def test_a_failure_between_the_two_writes_leaves_both_as_they_were() -> None:
     assert gradebook_of(store) == saved
     assert store.identity_of(KEY, WREN).status is IdentityStatus.MATCHES
     assert store.identity_of(NEW_KEY, WREN).status is IdentityStatus.CONFIRM_AGAIN
+
+
+def test_a_confirmation_failing_inside_a_caller_s_transaction_takes_back_its_writes() -> None:
+    """Joined into a save's transaction, a confirmation that fails midway takes back what it
+    began, so a caller that goes on and commits keeps neither half of it."""
+    store = in_memory()
+    store.add_name_form(KEY, WREN, "parent")
+    store.add_name_form(KEY, OTHER_ORDER, "parent")
+    saved = gradebook_of(store)
+    store._connection.set_authorizer(deny_the_key_check)
+    try:
+        with store.comparing_and_writing(), pytest.raises(NameFormNotSaved):
+            store.confirm_name_again(NEW_KEY, WREN, "parent")
+    finally:
+        store._connection.set_authorizer(None)
+
+    assert gradebook_of(store) == saved
+    assert store.identity_of(KEY, WREN).status is IdentityStatus.MATCHES
+
+
+def test_a_first_form_failing_inside_a_caller_s_transaction_leaves_no_form() -> None:
+    store = in_memory()
+    saved = gradebook_of(store)
+    store._connection.set_authorizer(deny_the_key_check)
+    try:
+        with store.comparing_and_writing(), pytest.raises(NameFormNotSaved):
+            store.add_name_form(KEY, WREN, "parent")
+    finally:
+        store._connection.set_authorizer(None)
+
+    assert gradebook_of(store) == saved
+    assert store.identity_of(KEY, WREN).status is IdentityStatus.FIRST_USE
+
+
+def test_the_store_says_how_long_it_keeps_her_record_and_name_forms() -> None:
+    policy = ProjectStateStore.retention_policy
+
+    assert "student record" in policy
+    assert "name forms" in policy
+    assert "never the names" in policy
 
 
 @pytest.mark.parametrize("line", [WREN, LINNET, "  "])
