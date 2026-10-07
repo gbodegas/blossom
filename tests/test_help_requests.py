@@ -92,6 +92,38 @@ def store_in_memory(clock: FrozenClock | None = None) -> HelpRequestsStore:
     )
 
 
+def test_both_lists_are_read_in_one_statement_in_their_own_orders() -> None:
+    """The open requests and those resolved come from one read of the file, so a request
+    another connection resolves meanwhile is in one list, never both; each list keeps its
+    order: open oldest first, resolved most recently resolved first."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+
+    def at(minutes: int) -> HelpRequestsStore:
+        clock = FrozenClock(OBSERVED_AT + timedelta(minutes=minutes), ZoneInfo("America/New_York"))
+        return HelpRequestsStore(connection, clock)
+
+    asked = [at(minute).ask(PLAN_DATE, f"question {minute}") for minute in range(4)]
+    at(10).resolve(asked[0].request_id, "done")
+    at(20).resolve(asked[2].request_id, "done")
+    store = at(30)
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+
+    listed = store.listed()
+
+    connection.set_trace_callback(None)
+    reads = [text for text in statements if text.lstrip().upper().startswith("SELECT")]
+    assert len(reads) == 1
+    assert [request.request_id for request in listed.open] == [
+        asked[1].request_id,
+        asked[3].request_id,
+    ]
+    assert [request.request_id for request in listed.resolved] == [
+        asked[2].request_id,
+        asked[0].request_id,
+    ]
+
+
 def browser() -> TestClient:
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)

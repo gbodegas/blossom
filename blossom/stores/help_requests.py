@@ -267,6 +267,16 @@ RESOLVED_ROWS: Final = """
     WHERE state='resolved' AND resolved_at >= ?
     ORDER BY resolved_at DESC, request_id
 """
+LISTED_ROWS: Final = """
+    SELECT * FROM help_requests
+    WHERE state<>'resolved' OR resolved_at >= ?
+    ORDER BY state='resolved',
+        CASE WHEN state<>'resolved' THEN asked_at END,
+        CASE WHEN state='resolved' THEN resolved_at END DESC,
+        request_id
+"""
+"""Both lists in one statement, so they read one state of the file: the open requests oldest
+first, then those resolved within retention, most recently resolved first."""
 REQUEST_ID: Final = re.compile(r"[0-9a-f]{32}")
 """The shape of an id a form carries: 32 lowercase hex digits, as ``new_request_id`` makes."""
 
@@ -744,15 +754,16 @@ class HelpRequestsStore:
         return list(readable(rows)[0])
 
     def listed(self) -> HelpListed:
-        """The open requests and those resolved within retention, read under one hold of the
-        lock, with how many kept rows were set apart because they can't be read. A statement
-        the file refuses is raised, never an empty list."""
+        """The open requests and those resolved within retention, read in one statement, so
+        no request is in both lists or neither when another connection moves it, with how many
+        kept rows were set apart because they can't be read. A statement the file refuses is
+        raised, never an empty list."""
         with self._lock:
-            open_rows = self._held_rows(OPEN_ROWS, ())
-            resolved_rows = self._held_rows(RESOLVED_ROWS, (self._cutoff(),))
-        waiting, open_unread = readable(open_rows)
-        resolved, resolved_unread = readable(resolved_rows)
-        return HelpListed(waiting, resolved, open_unread + resolved_unread)
+            rows = self._held_rows(LISTED_ROWS, (self._cutoff(),))
+        requests, unreadable = readable(rows)
+        waiting = tuple(request for request in requests if request.state != "resolved")
+        resolved = tuple(request for request in requests if request.state == "resolved")
+        return HelpListed(waiting, resolved, unreadable)
 
     def retained(self) -> HelpHeld:
         """Every request kept, open or resolved within retention, in one statement, with the

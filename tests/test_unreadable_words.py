@@ -17,7 +17,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import UTC, date, datetime
-from typing import NamedTuple, NoReturn
+from typing import Final, NamedTuple, NoReturn
 
 import pytest
 from fastapi.testclient import TestClient
@@ -171,6 +171,11 @@ UNREAD_REQUESTS: dict[str, tuple[str, type[Exception], str]] = {
 form carries, never one the row made up, and the field and kind of refusal."""
 
 
+ID_REPLACED: Final = frozenset({"her words in place of its id and its state"})
+"""Damage that writes over the request's id: no read by that id finds the row at all, so the
+lists set it apart and a read by its id finds nothing."""
+
+
 @pytest.mark.parametrize("damaged", list(UNREAD_REQUESTS))
 def test_a_help_request_that_cannot_be_read_is_named_without_her_words(
     damaged: str, caplog: pytest.LogCaptureFixture
@@ -189,11 +194,14 @@ def test_a_help_request_that_cannot_be_read_is_named_without_her_words(
     listed = store.listed()
     held = store.retained()
     records = list(caplog.records)
-    refused = None
-    try:
-        store.get(asked.request_id)
-    except refused_as as error:
-        refused = error
+    if damaged in ID_REPLACED:
+        assert store.get(asked.request_id) is None
+    else:
+        with pytest.raises(refused_as) as refused:
+            store.get(asked.request_id)
+        assert str(refused.value) == said.format(id=asked.request_id)
+        assert (refused.value.__cause__, refused.value.__context__) == (None, None)
+        assert words_in(told(refused.value)) == []
     kept = store.get(neighbor.request_id)
     taken_back = store.take_back(neighbor.request_id)
 
@@ -208,10 +216,6 @@ def test_a_help_request_that_cannot_be_read_is_named_without_her_words(
     set_apart = f"a kept help request was set apart: {said.format(id=asked.request_id)}"
     assert [record.getMessage() for record in records] == [set_apart, set_apart]
     assert [record.exc_info for record in records] == [None, None]
-    if refused is not None:
-        assert str(refused) == said.format(id=asked.request_id)
-        assert (refused.__cause__, refused.__context__) == (None, None)
-        assert words_in(told(refused)) == []
     assert words_in(logged(records)) == []
     assert kept == neighbor
     assert taken_back is True
