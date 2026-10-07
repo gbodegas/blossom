@@ -530,32 +530,50 @@ article h2 {
 }
 
 /* Her requests for help, on her week and on the family page: one group for each request,
-   set apart from the next by a rule, with no list marker beside it, so the bar an arrival
-   draws at a request's left edge stays clear. Each part of a request is a line of its own:
-   where it stands, whose words and what they say, when she asked, the note it is about, a
-   parent's latest update under its own label with the earlier ones folded below it, and
-   the controls. */
+   set apart from the next by a rule and the widest gap in the list, with no list marker
+   beside it, so the bar an arrival draws at a request's left edge stays clear. Each part
+   of a request is a line of its own: where it stands, whose words and what they say, when
+   she asked, the note it is about, a parent's latest update under its own label with the
+   earlier ones folded below it, and the controls. A label, its words and their times sit
+   line under line at the text's own line spacing, so each reads as one group, and a
+   parent's update starts further down than any line inside a group. */
 .help {
-  margin: 1rem 0 0;
+  margin: 0.5rem 0 0;
   padding: 0;
   list-style: none;
 }
 
 .help-request {
-  padding: 0.75rem 0;
+  padding: 1rem 0;
   border-top: 1px solid var(--edge);
 }
 
 .help-request:first-child {
+  padding-top: 0;
   border-top: 0;
 }
 
 .help-state,
 .help-words,
 .help-when,
-.help-about,
+.help-about {
+  margin: 0;
+}
+
 .help-actions {
-  margin: 0.3rem 0 0;
+  margin: 0.5rem 0 0;
+}
+
+/* On her week, Help updates stand apart from her form: their heading has more room above
+   it than between it and the first request. */
+#help-updates {
+  margin-top: 2rem;
+}
+
+/* What a save did opens the request it made, with room under it for its arrival cue and
+   no more. */
+.help-request > .update-result {
+  margin: 0 0 0.75rem;
 }
 
 /* Take it back keeps its compact shape under her request: the same 44 pixels to press,
@@ -566,11 +584,18 @@ article h2 {
 }
 
 .help-label {
-  margin: 0.75rem 0 0;
+  margin: 1rem 0 0;
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 0.92rem;
   color: var(--text-strong);
+}
+
+/* Her words sit close under where the request stands, and an earlier update close under
+   the summary of its fold. */
+.help-state + .help-label,
+.help-earlier > summary + .help-label {
+  margin-top: 0.25rem;
 }
 
 .help-when {
@@ -940,8 +965,10 @@ a.assignment-link:focus-visible {
 
 /* In Help, Refresh replies sits between other links and controls with press areas of
    their own: Family review, Ask again or the Ask button above it, and the fold of older
-   requests below. These margins keep the press areas from reaching into each other. */
-.help-panel .refresh {
+   requests below. On the family page Refresh requests sits the same way above the fold of
+   closed requests. These margins keep the press areas from reaching into each other. */
+.help-panel .refresh,
+#help-she-asked-for .refresh {
   margin: 1.75rem 0 1rem;
 }
 
