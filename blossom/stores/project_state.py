@@ -108,6 +108,7 @@ from blossom.stores.captures import (
     with_details,
 )
 from blossom.stores.catch_up import CatchUpRecords
+from blossom.stores.gradebook import GradebookRecords
 from blossom.stores.intake_decisions import IntakeDecisionRecords
 from blossom.stores.paths import refuse_unsafe_path
 from blossom.stores.school_instructions import (
@@ -681,7 +682,11 @@ class Reopened:
 
 
 class ProjectStateStore(
-    CaptureRecords, SchoolInstructionRecords, IntakeDecisionRecords, CatchUpRecords
+    CaptureRecords,
+    SchoolInstructionRecords,
+    IntakeDecisionRecords,
+    CatchUpRecords,
+    GradebookRecords,
 ):
     """SQLite-backed project state, opened once and shared across worker threads.
 
@@ -847,6 +852,10 @@ class ProjectStateStore(
         # The earlier work she chose for a day's plan, by day and assignment.
         with self._writing():
             self._create_catch_up_table()
+        # Her student record for grade reports and the name forms a parent confirmed: the
+        # record is made by the first start that opens the file with them, and kept after.
+        with self._writing():
+            self._create_gradebook_tables()
 
     def _upgrade_date_claims(self) -> None:
         """Give the claims table the note a claim came from, the note's revision, whether

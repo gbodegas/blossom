@@ -22,7 +22,7 @@ import pathlib
 import re
 import sqlite3
 import sys
-from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import unescape
@@ -1780,6 +1780,32 @@ def every_row(path: pathlib.Path) -> list[str]:
         return list(connection.iterdump())
     finally:
         connection.close()
+
+
+def closed_world(
+    paths: Iterable[pathlib.Path], *, leaving_out: Collection[str]
+) -> dict[str, object]:
+    """Every table, index and trigger in the files at ``paths`` but those of the tables named
+    in ``leaving_out``: each one's schema, and each table's rows as stored, in a fixed order.
+    Read through read-only connections of its own, so a table added later is in it unnamed."""
+    world: dict[str, object] = {}
+    for path in paths:
+        connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        try:
+            objects = connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+            ).fetchall()
+            connection.text_factory = bytes
+            for kind, name, table, sql in objects:
+                if table in leaving_out:
+                    continue
+                world[f"{path.name} {kind} {name}"] = sql
+                if kind == "table":
+                    rows = connection.execute(f'SELECT * FROM "{name}"').fetchall()  # noqa: S608
+                    world[f"{path.name} rows of {name}"] = sorted(repr(row) for row in rows)
+        finally:
+            connection.close()
+    return world
 
 
 class HeldByAnother:

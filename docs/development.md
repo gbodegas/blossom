@@ -216,8 +216,11 @@ Three files under `.local/` outlive a restart:
   class, title, and due date, where it landed, and the homework the card
   listed. A sixth, `catch_up_choices`, keeps the earlier homework she
   chose for a day's plan, one row of the day and the assignment each, and
-  nothing else. A file from before any of them gains the tables on the
-  first start.
+  nothing else. Two more keep her student record for grade reports:
+  `grade_student`, one row with a random ID made at the first start and the
+  key check for her name forms, and `grade_name_forms`, the keyed forms of
+  the student lines a parent confirmed as hers, never the names themselves.
+  A file from before any of them gains the tables on the first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   A draft is its text and, in a nullable `plan_snapshot` column, the plan as

@@ -73,7 +73,9 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "hmac": (
         "standard library; signs and checks the household sign-in cookie, the result a save "
         "of the school's instructions carries to its page, and the answers a paste review "
-        "was made with, nothing more"
+        "was made with; keys the form of a grade report's student line and compares it with "
+        "the forms a parent confirmed, and makes the check that tells which key made them, "
+        "nothing more"
     ),
     "ipaddress": "standard library; reads an address named in a Host or Origin header, no network",
     "logging": "standard library; reports failures to the process log only, never to a page",
@@ -82,9 +84,9 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "os": "standard library; the environment, and the sign-in secret written owner-only",
     "re": "standard library; the composer's line shapes for the page, the portal's from a paste",
     "secrets": (
-        "standard library; makes the sign-in secret, draws the key a save's result and a "
-        "paste review's answers are signed with at every start, compares passphrases in "
-        "constant time"
+        "standard library; makes the sign-in secret and her student ID, draws the key a "
+        "save's result and a paste review's answers are signed with at every start, compares "
+        "passphrases in constant time"
     ),
     "starlette": "the toolkit under FastAPI; the middleware base the household gate extends",
     "urllib": (
@@ -103,7 +105,10 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "threading": "standard library; serializes the shared connection and the sign-in count",
     "time": "standard library; the forward-only clock behind the sign-in wait",
     "typing": "standard library",
-    "unicodedata": "standard library; the category of a character, to refuse a control",
+    "unicodedata": (
+        "standard library; the category of a character, to refuse a control, and one way of "
+        "writing the accents in a grade report's student line"
+    ),
     "uuid": "standard library",
     "zoneinfo": "standard library; resolves the household zone, backed by tzdata",
 }
