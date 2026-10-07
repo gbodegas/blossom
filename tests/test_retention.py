@@ -2498,8 +2498,8 @@ def test_a_run_canceled_while_it_ends_out_of_time_keeps_one_account_of_how_it_en
 
 class HeldStoreCall:
     """Wraps one drafts store method: its first call starts another connection's hold on the
-    file's write lock for ``held`` seconds and asks the event loop for a callback 0.05
-    seconds on, recording how late it ran."""
+    file's write lock for ``held`` seconds, or until the test ends it sooner, and asks the
+    event loop for a callback 0.05 seconds on, recording how late it ran."""
 
     def __init__(
         self,
@@ -2514,6 +2514,8 @@ class HeldStoreCall:
         self.loop = loop
         self.releases: list[threading.Timer] = []
         self.late_by: asyncio.Future[float] = loop.create_future()
+        self.ending = threading.Lock()
+        self.ended = False
 
     def __call__(self, *args: object, **kwargs: object) -> object:
         if not self.releases:
@@ -2529,7 +2531,17 @@ class HeldStoreCall:
         return self.call(*args, **kwargs)
 
     def release(self) -> None:
-        self.other.execute("ROLLBACK")
+        """End the hold once, whichever of its timer and the test ends it first."""
+        with self.ending:
+            if self.releases and not self.ended:
+                self.ended = True
+                self.other.execute("ROLLBACK")
+
+    def end_hold(self) -> None:
+        """End the hold now, before its timer, once the test has what it held the file for."""
+        for release in self.releases:
+            release.cancel()
+        self.release()
 
     def close(self) -> None:
         for release in self.releases:
@@ -2767,7 +2779,9 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
 ) -> None:
     """A run canceled, once or twice, while it records a review a thread holds and the drafts
     file is held lets the decision lock go without waiting for the write, which lands on
-    its own. The review stands and today's plan stays."""
+    its own. The review stands and today's plan stays. The file's hold ends once the lock is
+    let go, so the canceled run's ending, which waits only its grace for the store, finds the
+    write landed."""
     state = file_backed_application(tmp_path)
     try:
 
@@ -2813,6 +2827,10 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
                 for _ in range(times):
                     late.cancel()
                     await asyncio.sleep(0)
+                let_go_by = monotonic() + STORE_WAIT
+                while not releases and monotonic() < let_go_by:  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+                held.end_hold()
                 await asyncio.gather(late, return_exceptions=True)
             finally:
                 held.close()
