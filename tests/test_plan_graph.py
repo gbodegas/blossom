@@ -2130,19 +2130,15 @@ def test_a_retry_is_counted_only_once_its_request_is_sent(
 
 def test_a_pause_the_runs_own_limit_cuts_off_counts_no_retry() -> None:
     """On the process's own clock: the pause after the busy answer is still going when the
-    run's limit ends it, so nothing was resent."""
+    run's limit ends it, so nothing was resent. The graph is built before the limit's clock
+    starts, and the limit leaves seconds to spare on both sides, the first request well
+    inside it and the pause well past it, so a slow machine can't move either across."""
     planner: Spending[DailyPlan] = Spending(FakeTime(), (0, ServiceBusy("overloaded")))
     state = a_household()
-    budget = RunBudget(seconds=0.3, sleep=lambda _: asyncio.sleep(5))
     try:
-        view = asyncio.run(
-            plan_evening(
-                plan_graph_for(state, planner=planner, critic=Scripted()),
-                PLAN_DATE,
-                state,
-                budget=budget,
-            )
-        )
+        graph = plan_graph_for(state, planner=planner, critic=Scripted())
+        budget = RunBudget(seconds=2.0, sleep=lambda _: asyncio.sleep(10))
+        view = asyncio.run(plan_evening(graph, PLAN_DATE, state, budget=budget))
     finally:
         state.close()
 
