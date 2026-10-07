@@ -10,6 +10,7 @@ matches an earlier saved value, and only a New or Changed value can be selected.
 """
 
 import dataclasses
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Collection
@@ -19,6 +20,18 @@ import pytest
 
 from blossom.grades.draft import GradeReportDraft, Presence, capture_key
 from blossom.grades.identity import name_form_key
+from blossom.grades.projection import (
+    NEW,
+    ActionRecorded,
+    CurrentPreview,
+    MadeCurrent,
+    NothingToChange,
+    PreviewRevised,
+    ReportNotSaved,
+    ScopeHeld,
+    SourceOf,
+    preview_of,
+)
 from blossom.grades.review import (
     TERM_KEY,
     AlreadyRecorded,
@@ -37,7 +50,15 @@ from blossom.grades.review import (
 )
 from blossom.grades.text_reader import read_grade_report, reading_complete
 from blossom.stores.project_state import ProjectStateStore
-from tests.support import FIXTURES, fixture_clock, grade_answers, save_grade
+from tests.support import (
+    FIXTURES,
+    OBSERVED_AT,
+    confirm_current,
+    current_preview,
+    fixture_clock,
+    grade_answers,
+    save_grade,
+)
 
 REPORT = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
 """Wren's synthetic report: Biology, 2026-2027, T1, four categories and four results."""
@@ -1670,3 +1691,332 @@ def test_a_capture_s_rest_matching_an_earlier_value_reads_shown_in_a_newer_repor
 
     assert (cell.status, cell.covered) == (ItemStatus.COVERED, True)
     assert cell.key not in again.ready | again.back_to
+
+
+LEAF_CHANGES = (CELL_SCORE, (SEED, f"{SEED}\n{LEAF}"))
+B_LEAF = variant(*LEAF_CHANGES)
+"""A newer capture: Cell Diagram's score changed from 7.0 to 8.0, and Leaf Sketch added."""
+NINE_LEAF = variant(CELL_NINE, (SEED, f"{SEED}\n{LEAF}"))
+"""A capture newer still: Cell Diagram at 9.0, with Leaf Sketch."""
+OBSERVED_LATER = OBSERVED_AT.replace(day=28)
+LATER = fixture_clock(OBSERVED_LATER)
+"""A clock nine days on, for the moment a parent makes saved values current."""
+
+
+def made(outcome: object) -> MadeCurrent:
+    assert isinstance(outcome, MadeCurrent), outcome
+    return outcome
+
+
+def revision_of(store: ProjectStateStore) -> int:
+    (revision,) = store._connection.execute("SELECT revision FROM grade_scope_revisions").fetchone()
+    return int(revision)
+
+
+def result_of(store: ProjectStateStore, draft: GradeReportDraft, title: str) -> str:
+    result_id = row(review_of(store, draft), title).result_id
+    assert result_id is not None
+    return result_id
+
+
+def test_class_details_brings_a_replaced_value_back_from_the_capture_s_latest_report() -> None:
+    """A's 7.0, then B's 8.0 with Leaf Sketch: the preview of A's capture lists 7.0 back from
+    8.0, each of A's results last shown in the new report, and Leaf Sketch not shown there; the
+    confirmation makes exactly that current ("back to" from class details)."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    newer = saved(save(store, B_LEAF, complete=whole(*LEAF_CHANGES)))
+    cell, leaf = result_of(store, A, "Cell Diagram"), result_of(store, B_LEAF, "Leaf Sketch")
+    preview = current_preview(store, A)
+
+    assert (preview.source, preview.acceptances, preview.made_by) == (
+        first.report_id,
+        (first.acceptance_id,),
+        None,
+    )
+    assert preview.complete is True
+    ((effect),) = preview.values
+    assert (effect.kind, effect.target, effect.after.report_id) == ("result", cell, NEW)
+    assert effect.before is not None
+    assert (effect.before.report_id, text_of(effect.before, "points")) == (newer.report_id, "8.0")
+    assert text_of(effect.after, "points") == "7.0"
+    a_results = {result_id for _, result_id in first.accepted if result_id is not None}
+    assert {(one.result, one.before, one.after) for one in preview.last_shown} == {
+        (result_id, newer.report_id, NEW) for result_id in a_results
+    }
+    assert [(one.result, one.before, one.after) for one in preview.not_shown] == [(leaf, None, NEW)]
+    body = json.loads(preview.canonical)
+    assert set(body) == {
+        "scope",
+        "revision",
+        "source",
+        "complete",
+        "values",
+        "last_shown",
+        "not_shown",
+    }
+    assert body["values"][0][3][0] == NEW
+    assert hashlib.sha256(preview.canonical.encode()).hexdigest() == preview.digest
+    assert preview.action_id not in preview.canonical
+    assert "2026-" not in preview.canonical
+    revision = revision_of(store)
+
+    outcome = made(confirm_current(store, A, preview))
+    current = store.current_values(class_of(store), "T1")
+    value = current.results[cell]
+
+    assert (outcome.source, outcome.digest) == (first.report_id, preview.digest)
+    assert (text_of(value, "points"), value.report_id, value.order) == ("7.0", outcome.report_id, 3)
+    assert value.last_shown == ReportAt(outcome.report_id, 3)
+    assert current.results[leaf].report_id == newer.report_id
+    assert current.results[leaf].not_shown == ReportAt(outcome.report_id, 3)
+    assert use_of(store, outcome.report_id) == "current"
+    assert revision_of(store) == revision + 1
+
+
+def test_the_new_report_keeps_its_source_s_import_and_the_action_records_its_copies() -> None:
+    """The new report carries A's source key, reader, import time, as-of time and number of
+    result rows; its row records are ``same_capture`` at the action's role and time; the action
+    record names its source, the acceptances into it and every copy; no acceptance or name form
+    is written."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    saved(save(store, B_LEAF, complete=True))
+    preview = current_preview(store, A)
+    forms = store._connection.execute("SELECT * FROM grade_name_forms").fetchall()
+    store._clock = LATER
+
+    outcome = made(confirm_current(store, A, preview))
+
+    def report(report_id: str) -> tuple[object, ...]:
+        return tuple(
+            store._connection.execute(
+                "SELECT source_key, reader, imported_at, as_of, result_rows FROM grade_reports "
+                "WHERE report_id = ?",
+                (report_id,),
+            ).fetchone()
+        )
+
+    assert report(outcome.report_id) == report(str(first.report_id))
+    copied_rows = store._connection.execute(
+        "SELECT row_key, result_id, how, rejected, decided_by, decided_at "
+        "FROM grade_match_decisions WHERE report_id = ? ORDER BY row_key",
+        (outcome.report_id,),
+    ).fetchall()
+    source_rows = store._connection.execute(
+        "SELECT row_key, result_id FROM grade_match_decisions WHERE report_id = ? ORDER BY row_key",
+        (first.report_id,),
+    ).fetchall()
+    later = OBSERVED_LATER.isoformat()
+    assert copied_rows == [
+        (row_key, result_id, "same_capture", None, "parent", later)
+        for row_key, result_id in source_rows
+    ]
+    (action,) = store._connection.execute(
+        "SELECT action_id, source_report, source_acceptances, source_action, report_made, "
+        "copied, complete_from_source, digest, acted_at, role FROM grade_current_actions"
+    ).fetchall()
+    assert action[:5] == (
+        preview.action_id,
+        first.report_id,
+        json.dumps([first.acceptance_id]),
+        None,
+        outcome.report_id,
+    )
+    copied = json.loads(action[5])
+    assert copied["rows"] == [[row_key, result_id] for row_key, result_id in source_rows]
+    assert sorted(map(tuple, copied["observations"])) == sorted(
+        [("term", TERM_KEY)]
+        + [
+            ("category", key)
+            for key, result_id in first.accepted
+            if result_id is None and key != TERM_KEY
+        ]
+        + [("result", result_id) for _, result_id in first.accepted if result_id is not None]
+    )
+    assert action[6:] == (1, preview.digest, later, "parent")
+    assert report(outcome.report_id)[2] != later
+    assert store._connection.execute("SELECT COUNT(*) FROM grade_acceptances").fetchone() == (2,)
+    assert store._connection.execute("SELECT * FROM grade_name_forms").fetchall() == forms
+
+
+def test_a_retry_returns_its_outcome_and_a_second_confirmation_has_nothing_to_change() -> None:
+    """After the action, its retry returns the recorded outcome and writes nothing; the preview
+    of the capture is empty, from its new latest report, and confirming it writes nothing and
+    leaves the revision. A retry posting another digest also gets a fresh preview."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, B_LEAF, complete=True))
+    preview = current_preview(store, A)
+    outcome = made(confirm_current(store, A, preview))
+    changes, revision = store._connection.total_changes, revision_of(store)
+
+    assert confirm_current(store, A, preview) == ActionRecorded(outcome)
+    again = current_preview(store, A)
+    assert again.empty
+    assert (again.source, again.acceptances, again.made_by) == (
+        outcome.report_id,
+        (),
+        outcome.action_id,
+    )
+    assert isinstance(confirm_current(store, A, again), NothingToChange)
+    other = confirm_current(store, A, preview, digest="0" * 64)
+    assert isinstance(other, ActionRecorded)
+    assert other.made == outcome
+    assert other.fresh is not None
+    assert not isinstance(other.fresh, ReportNotSaved)
+    assert other.fresh.empty
+    assert (store._connection.total_changes, revision_of(store)) == (changes, revision)
+
+
+def test_a_changed_revision_source_or_preview_returns_the_revised_preview() -> None:
+    """A saved without Osmosis, then B, clipped, with Cell Diagram at 8.0. A's rest saved after
+    the preview joins A's report: the stale confirmation returns the revised preview, with both
+    acceptances, under a fresh action ID; a digest not of that preview returns it again; only
+    the revised preview's own confirmation writes."""
+    store = in_memory()
+    full = review_of(store, A)
+    osmosis = row(full, "Osmosis with Potato Slices").key
+    first = saved(save(store, A, full, selection=full.ready - {osmosis}, complete=True))
+    saved(save(store, variant(CELL_SCORE, text=CLIPPED)))
+    preview = current_preview(store, A)
+    rest = saved(save(store, A, complete=True))
+    assert rest.report_id == first.report_id
+    count = reports_of(store)
+
+    revised = confirm_current(store, A, preview)
+    assert isinstance(revised, PreviewRevised)
+    fresh = revised.preview
+    assert fresh.action_id != preview.action_id
+    assert fresh.revision == preview.revision + 1
+    assert fresh.acceptances == tuple(sorted((first.acceptance_id, rest.acceptance_id)))
+    tampered = confirm_current(store, A, fresh, digest=preview.digest)
+    assert isinstance(tampered, PreviewRevised)
+    assert reports_of(store) == count
+    outcome = made(confirm_current(store, A, fresh))
+    assert reports_of(store) == count + 1
+    assert outcome.digest == fresh.digest
+
+
+def test_a_row_the_source_only_showed_gives_no_score() -> None:
+    """B saved with nothing selected shows Cell Diagram at 8.0 without accepting it; made
+    current after a newer report, B moves last showings only, and 7.0 stays current."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    shown = saved(save(store, B, selection=()))
+    saved(save(store, WITH_LEAF))
+    cell = result_of(store, A, "Cell Diagram")
+    preview = current_preview(store, B)
+
+    assert preview.source == shown.report_id
+    assert preview.values == ()
+    assert {one.after for one in preview.last_shown} == {NEW}
+    outcome = made(confirm_current(store, B, preview))
+    value = store.current_values(class_of(store), "T1").results[cell]
+    assert (text_of(value, "points"), value.report_id) == ("7.0", first.report_id)
+    assert value.last_shown == ReportAt(outcome.report_id, 4)
+    (copied,) = store._connection.execute("SELECT copied FROM grade_current_actions").fetchone()
+    assert json.loads(copied)["observations"] == []
+
+
+def test_a_copy_of_an_incomplete_report_stays_incomplete_through_a_copy_of_a_copy() -> None:
+    """A read incomplete: its copy claims no absence, and a copy of that copy, which has no
+    acceptance of its own, takes its making action's flag, never completeness from no
+    readings."""
+    store = in_memory()
+    saved(save(store, A, complete=False))
+    saved(save(store, B_LEAF, complete=True))
+    leaf = result_of(store, B_LEAF, "Leaf Sketch")
+    preview = current_preview(store, A)
+    assert (preview.complete, preview.not_shown) == (False, ())
+    copy = made(confirm_current(store, A, preview))
+    saved(save(store, NINE_LEAF, complete=True))
+
+    again = current_preview(store, A)
+    assert (again.source, again.acceptances, again.made_by) == (
+        copy.report_id,
+        (),
+        copy.action_id,
+    )
+    assert again.complete is False
+    made(confirm_current(store, A, again))
+    assert store.current_values(class_of(store), "T1").results[leaf].not_shown is None
+    (flags,) = zip(
+        *store._connection.execute("SELECT complete_from_source FROM grade_current_actions"),
+        strict=True,
+    )
+    assert flags == (0, 0)
+
+
+@pytest.mark.parametrize("rest_complete", [True, False])
+def test_the_capture_s_rest_joins_the_new_report_over_a_newer_one(rest_complete: bool) -> None:
+    """A saved without Cell Diagram, then B with 8.0: A's Cell Diagram is shown in a newer
+    report. Once A's capture is made current, it is Changed and selectable, its save joins the
+    new report, and that report claims Leaf Sketch's absence only if the rest read complete."""
+    store = in_memory()
+    full = review_of(store, A)
+    cell_key = row(full, "Cell Diagram").key
+    saved(save(store, A, full, selection=full.ready - {cell_key}, complete=True))
+    saved(save(store, B_LEAF, complete=True))
+    leaf = result_of(store, B_LEAF, "Leaf Sketch")
+    assert row(review_of(store, A), "Cell Diagram").status is ItemStatus.COVERED
+
+    outcome = made(confirm_current(store, A))
+    assert store.current_values(class_of(store), "T1").results[leaf].not_shown is None
+    review = review_of(store, A)
+    cell = row(review, "Cell Diagram")
+    assert cell.status is ItemStatus.CHANGED
+    assert review.ready == {cell.key}
+    rest = saved(save(store, A, review, complete=rest_complete))
+    current = store.current_values(class_of(store), "T1")
+
+    assert rest.report_id == outcome.report_id
+    assert text_of(current.results[cell.result_id or ""], "points") == "7.0"
+    expected = ReportAt(outcome.report_id, 3) if rest_complete else None
+    assert current.results[leaf].not_shown == expected
+
+
+def test_a_same_text_source_change_alone_is_an_effect() -> None:
+    """The projection over two reports with the same term grade: making the first one the source
+    lists the term's source change alone; the newer one, already the source, has nothing to
+    change."""
+    cells = {"percent": (Presence.REPORTED, "81.9"), "letter": (Presence.REPORTED, "B-")}
+    held = ScopeHeld(
+        reports={"report-a": (1, "current", 0), "report-b": (2, "current", 0)},
+        complete={"report-a": True},
+        observed=(("term", TERM_KEY, "report-a", cells), ("term", TERM_KEY, "report-b", cells)),
+        decided=(),
+    )
+
+    def preview(source: str) -> CurrentPreview:
+        return preview_of(held, SourceOf("s", "c", "T1", 2, source, (), None), "action-x")
+
+    first, top = preview("report-a"), preview("report-b")
+    (effect,) = first.values
+    assert effect.before is not None
+    assert (effect.target, effect.before.report_id, effect.after.report_id) == (
+        TERM_KEY,
+        "report-b",
+        NEW,
+    )
+    assert effect.before.cells == effect.after.cells
+    assert (first.last_shown, first.not_shown, first.complete) == ((), (), True)
+    assert top.empty
+    assert top.complete is False
+
+
+def test_a_report_not_saved_offers_no_preview_and_a_confirmation_naming_it_writes_nothing() -> None:
+    """A capture with no report in the class and term has no preview, and a confirmation naming
+    a report that isn't saved there writes nothing."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, B, complete=True))
+    preview = current_preview(store, A)
+    changes = store._connection.total_changes
+
+    missing = store.preview_current(class_of(store), "T1", capture_key(WITH_LEAF))
+    gone = confirm_current(store, A, dataclasses.replace(preview, source="report-gone"))
+
+    assert isinstance(missing, ReportNotSaved)
+    assert isinstance(gone, ReportNotSaved)
+    assert store._connection.total_changes == changes

@@ -14,15 +14,24 @@ writes her own account or the school's submission status.
 """
 
 import dataclasses
+import json
 import logging
 import pathlib
 import sqlite3
+from collections import Counter
 from collections.abc import Callable
 
 import pytest
 
 from blossom.grades.draft import GradeReportDraft, capture_key
 from blossom.grades.identity import IdentityStatus, name_form, name_form_key
+from blossom.grades.projection import (
+    ActionRecorded,
+    CurrentPreview,
+    MadeCurrent,
+    NothingToChange,
+    PreviewRevised,
+)
 from blossom.grades.review import (
     TERM_KEY,
     AlreadyRecorded,
@@ -41,6 +50,8 @@ from tests.support import (
     OBSERVED_AT,
     as_stored,
     closed_world,
+    confirm_current,
+    current_preview,
     database_of,
     fixture_clock,
     grade_answers,
@@ -142,6 +153,31 @@ def expect(kind: type, outcome: object) -> object:
     return outcome
 
 
+def class_details_actions(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
+    """The class-details action on the capture kept as earlier, its retry, a confirmation with
+    nothing to change, and one posting a digest not of its preview."""
+    previews: list[CurrentPreview] = []
+
+    def act() -> object:
+        previews.append(current_preview(store, KEPT))
+        return expect(MadeCurrent, confirm_current(store, KEPT, previews[0]))
+
+    return [
+        ("the class-details action", act),
+        ("its retry", lambda: expect(ActionRecorded, confirm_current(store, KEPT, previews[0]))),
+        ("nothing to change", lambda: expect(NothingToChange, confirm_current(store, KEPT))),
+        (
+            "a digest not of its preview",
+            lambda: expect(
+                PreviewRevised,
+                confirm_current(
+                    store, ANOTHER_CAPTURE, current_preview(store, ANOTHER_CAPTURE), digest="0"
+                ),
+            ),
+        ),
+    ]
+
+
 def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
     """Each kind of grade save, and each save that writes nothing, in an order that reaches
     them all."""
@@ -227,6 +263,7 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
             "not hers",
             lambda: expect(NotHers, answered(LINNET_REPORT, NEW_KEY, IdentityAnswer.NOT_HERS)),
         ),
+        *class_details_actions(store),
     ]
 
 
@@ -557,3 +594,79 @@ def test_g_i19_presence_comes_only_from_a_deliberate_submission_and_accepts_noth
     assert kept_uses == uses
     assert isinstance(retry, AlreadyRecorded)
     assert unchanged_after_retry
+
+
+def test_g_i21_every_observation_and_row_record_traces_to_one_acceptance_or_one_action(
+    tmp_path: pathlib.Path,
+) -> None:
+    """After every kind of grade write, each observation is named by exactly one acceptance
+    into its report or by the action that made its report, and each row record is listed by
+    that action or was written with an acceptance into its report."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    for _, write in every_grade_write(store):
+        write()
+    connection = store._connection
+    named: Counter[tuple[str, str, str]] = Counter()
+    accepted_at: dict[str, set[str]] = {}
+    for report_id, accepted, at in connection.execute(
+        "SELECT report_id, accepted, accepted_at FROM grade_acceptances WHERE report_id IS NOT NULL"
+    ):
+        accepted_at.setdefault(report_id, set()).add(at)
+        for item_key, result_id in json.loads(accepted):
+            if result_id is not None:
+                named[report_id, "result", result_id] += 1
+            elif item_key == TERM_KEY:
+                named[report_id, "term", TERM_KEY] += 1
+            else:
+                named[report_id, "category", item_key] += 1
+    listed: Counter[tuple[str, str, str]] = Counter()
+    rows_listed: Counter[tuple[str, str, str]] = Counter()
+    for report_id, copied in connection.execute(
+        "SELECT report_made, copied FROM grade_current_actions"
+    ):
+        body = json.loads(copied)
+        for kind, target in body["observations"]:
+            listed[report_id, kind, target] += 1
+        for row_key, result_id in body["rows"]:
+            rows_listed[report_id, row_key, result_id] += 1
+    observations = [
+        *(
+            (str(report_id), "term", TERM_KEY)
+            for (report_id,) in connection.execute("SELECT report_id FROM grade_term_observations")
+        ),
+        *(
+            (str(report_id), "category", str(key))
+            for report_id, key in connection.execute(
+                "SELECT report_id, category_key FROM grade_category_observations"
+            )
+        ),
+        *(
+            (str(report_id), "result", str(result))
+            for report_id, result in connection.execute(
+                "SELECT report_id, result_id FROM grade_result_observations"
+            )
+        ),
+    ]
+    records = connection.execute(
+        "SELECT report_id, row_key, result_id, decided_at FROM grade_match_decisions"
+    ).fetchall()
+    traced = {
+        (report_id, row_key): rows_listed[report_id, row_key, result_id]
+        + (
+            (report_id, row_key, result_id) not in rows_listed
+            and decided_at in accepted_at.get(report_id, set())
+        )
+        for report_id, row_key, result_id, decided_at in records
+    }
+    store.close()
+
+    assert listed
+    assert rows_listed
+    assert {one: named[one] + listed[one] for one in observations} == dict.fromkeys(observations, 1)
+    assert (named + listed).total() == len(observations)
+    assert traced == dict.fromkeys(traced, 1)
+    assert rows_listed.total() == sum(
+        1
+        for report_id, row_key, result_id, _ in records
+        if (report_id, row_key, result_id) in rows_listed
+    )

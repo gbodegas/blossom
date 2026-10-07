@@ -32,10 +32,9 @@ import secrets
 import sqlite3
 import threading
 import uuid
-from collections import Counter
 from collections.abc import Callable, Collection, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC
 from typing import Final, Literal, cast, get_args
 
@@ -50,6 +49,23 @@ from blossom.grades.draft import (
     row_evidence,
 )
 from blossom.grades.identity import Identity, IdentityStatus, identity_among, key_check
+from blossom.grades.projection import (
+    EXPLICIT,
+    ActionOutcome,
+    ActionRecorded,
+    CurrentPage,
+    CurrentPreview,
+    Decided,
+    MadeCurrent,
+    NothingToChange,
+    Observed,
+    PreviewRevised,
+    ReportNotSaved,
+    ScopeHeld,
+    SourceOf,
+    preview_of,
+    project,
+)
 from blossom.grades.review import (
     CATEGORY_FIELDS,
     NOTHING_HELD,
@@ -59,8 +75,6 @@ from blossom.grades.review import (
     AlreadyRecorded,
     Cell,
     ClassRecord,
-    Compared,
-    CurrentValue,
     CurrentValues,
     GradeAnswers,
     GradeReportSaved,
@@ -70,7 +84,6 @@ from blossom.grades.review import (
     MatchAnswer,
     NotHers,
     OnRecord,
-    ReportAt,
     ReportUse,
     ReturnReason,
     ReviewPage,
@@ -78,7 +91,6 @@ from blossom.grades.review import (
     SaveOutcome,
     answers_asked,
     category_keys,
-    compared,
     evidence_text,
     matches_asked,
     rejected_text,
@@ -103,6 +115,7 @@ GRADEBOOK_TABLES: Final = (
     "grade_match_decisions",
     "grade_scope_revisions",
     "grade_acceptances",
+    "grade_current_actions",
 )
 """Every table a grade write may change. Every other table of the file, and the checkpoint and
 trace files, are a closed world no grade write touches."""
@@ -334,16 +347,37 @@ CREATE TABLE IF NOT EXISTS grade_acceptances (
     role TEXT NOT NULL CHECK (role {WHO})
 )
 """,
+    f"""
+CREATE TABLE IF NOT EXISTS grade_current_actions (
+    action_id TEXT PRIMARY KEY,
+    student_id TEXT NOT NULL,
+    class_id TEXT NOT NULL,
+    term_label TEXT NOT NULL,
+    source_report TEXT NOT NULL,
+    source_acceptances TEXT NOT NULL,
+    source_action TEXT,
+    report_made TEXT NOT NULL UNIQUE,
+    copied TEXT NOT NULL,
+    complete_from_source INTEGER NOT NULL CHECK (complete_from_source IN (0, 1)),
+    digest TEXT NOT NULL,
+    acted_at TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role {WHO})
 )
-"""The tables a save of a report writes, each row carrying her student ID.
+""",
+)
+"""The tables a save of a report, or the class-details action, writes, each row carrying her
+student ID.
 
 A report keeps its number of result rows. A row record names the result its row resolved to and
 how: automatically (``same_capture``, ``exact``, ``reused``), by the parent's answer (``answer``,
 or ``chosen`` from her assignments), or ``new``. A remembered "A different assignment" is
 ``different``: it names no result, and ``rejected`` keeps the candidates it turned down, each
 with its matching evidence. An acceptance keeps its counts of rows recorded as shown and answers
-kept, and whether its reading was complete; a report is complete when every acceptance into it
-was."""
+kept, and whether its reading was complete. The class-details action keeps its source report,
+the acceptances whose report that is and the action that made it, the report it made, what it
+copied, the source's completeness as ``complete_from_source``, the digest of the preview it
+confirmed, the role and its time. A report is complete when it has at least one acceptance or a
+making action, and each of them was."""
 
 CONTEXT_ON_RECORD: Final = "SELECT 1 FROM grade_context WHERE student_id = ?"
 YEAR_ON_RECORD: Final = "SELECT 1 FROM grade_years WHERE student_id = ? AND label = ?"
@@ -364,9 +398,90 @@ SCOPE_REPORTS: Final = (
     "WHERE student_id = ? AND class_id = ? AND term_label = ?"
 )
 SCOPE_COMPLETE: Final = (
-    "SELECT a.report_id, MIN(a.complete) FROM grade_acceptances AS a JOIN grade_reports AS r "
-    "ON r.report_id = a.report_id AND r.student_id = a.student_id "
-    "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? GROUP BY a.report_id"
+    "SELECT report_id, MIN(complete) FROM ("
+    "SELECT a.report_id AS report_id, a.complete AS complete FROM grade_acceptances AS a "
+    "JOIN grade_reports AS r ON r.report_id = a.report_id AND r.student_id = a.student_id "
+    "WHERE r.student_id = :student AND r.class_id = :class AND r.term_label = :term "
+    "UNION ALL "
+    "SELECT c.report_made, c.complete_from_source FROM grade_current_actions AS c "
+    "JOIN grade_reports AS r ON r.report_id = c.report_made AND r.student_id = c.student_id "
+    "WHERE r.student_id = :student AND r.class_id = :class AND r.term_label = :term"
+    ") GROUP BY report_id"
+)
+"""Each report's completeness, the one function for every report: the least of its
+acceptances' readings and its making action's ``complete_from_source``. A report with neither is
+missing, which reads incomplete."""
+SCOPE_REPORT: Final = (
+    "SELECT source_key FROM grade_reports "
+    "WHERE student_id = ? AND class_id = ? AND term_label = ? AND report_id = ?"
+)
+ACCEPTED_INTO: Final = (
+    "SELECT acceptance_id FROM grade_acceptances WHERE student_id = ? AND report_id = ? "
+    "ORDER BY acceptance_id"
+)
+MADE_BY: Final = (
+    "SELECT action_id FROM grade_current_actions WHERE student_id = ? AND report_made = ?"
+)
+ACTION_RECORDED: Final = (
+    "SELECT source_report, report_made, digest FROM grade_current_actions "
+    "WHERE student_id = ? AND action_id = ?"
+)
+COPIED_OBSERVATIONS: Final = (
+    "SELECT 'term', ? FROM grade_term_observations WHERE student_id = ? AND report_id = ? "
+    "UNION ALL SELECT 'category', category_key FROM grade_category_observations "
+    "WHERE student_id = ? AND report_id = ? "
+    "UNION ALL SELECT 'result', result_id FROM grade_result_observations "
+    "WHERE student_id = ? AND report_id = ?"
+)
+COPIED_ROWS: Final = (
+    "SELECT row_key, result_id FROM grade_match_decisions "
+    "WHERE student_id = ? AND report_id = ? AND result_id IS NOT NULL ORDER BY row_key"
+)
+COPY_REPORT: Final = (
+    "INSERT INTO grade_reports (report_id, student_id, class_id, term_label, source_key, "
+    "acceptance_order, use, reader, imported_at, as_of, result_rows) "
+    "SELECT ?, student_id, class_id, term_label, source_key, ?, 'current', reader, imported_at, "
+    "as_of, result_rows FROM grade_reports WHERE student_id = ? AND report_id = ?"
+)
+COPY_TERM: Final = (
+    "INSERT INTO grade_term_observations (report_id, student_id, percent_text, "
+    "percent_presence, letter_text, letter_presence) "
+    "SELECT ?, student_id, percent_text, percent_presence, letter_text, letter_presence "
+    "FROM grade_term_observations WHERE student_id = ? AND report_id = ?"
+)
+COPY_CATEGORIES: Final = (
+    "INSERT INTO grade_category_observations (report_id, category_key, student_id, position, "
+    "name_text, name_presence, weight_text, weight_presence, average_text, average_presence) "
+    "SELECT ?, category_key, student_id, position, name_text, name_presence, weight_text, "
+    "weight_presence, average_text, average_presence "
+    "FROM grade_category_observations WHERE student_id = ? AND report_id = ?"
+)
+COPY_RESULTS: Final = (
+    "INSERT INTO grade_result_observations (report_id, result_id, student_id, position, "
+    "category_text, category_presence, assignment_text, assignment_presence, points_text, "
+    "points_presence, max_points_text, max_points_presence, average_text, average_presence, "
+    "status_text, status_presence, due_text, due_presence, curve_text, curve_presence, "
+    "bonus_text, bonus_presence, penalty_text, penalty_presence, weight_text, weight_presence, "
+    "note_text, note_presence) "
+    "SELECT ?, result_id, student_id, position, "
+    "category_text, category_presence, assignment_text, assignment_presence, points_text, "
+    "points_presence, max_points_text, max_points_presence, average_text, average_presence, "
+    "status_text, status_presence, due_text, due_presence, curve_text, curve_presence, "
+    "bonus_text, bonus_presence, penalty_text, penalty_presence, weight_text, weight_presence, "
+    "note_text, note_presence "
+    "FROM grade_result_observations WHERE student_id = ? AND report_id = ?"
+)
+COPY_ROW_RECORDS: Final = (
+    "INSERT INTO grade_match_decisions (report_id, row_key, student_id, evidence, occurrence, "
+    "result_id, how, rejected, decided_by, decided_at) "
+    "SELECT ?, row_key, student_id, evidence, occurrence, result_id, 'same_capture', NULL, ?, ? "
+    "FROM grade_match_decisions WHERE student_id = ? AND report_id = ? AND result_id IS NOT NULL"
+)
+ADD_ACTION: Final = (
+    "INSERT INTO grade_current_actions (action_id, student_id, class_id, term_label, "
+    "source_report, source_acceptances, source_action, report_made, copied, "
+    "complete_from_source, digest, acted_at, role) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 CAPTURE_SHOWN: Final = (
     "SELECT d.row_key, d.result_id FROM grade_match_decisions AS d JOIN grade_reports AS r "
@@ -501,6 +616,11 @@ def new_acceptance_id() -> str:
     return f"acceptance-{uuid.uuid4().hex}"
 
 
+def new_action_id() -> str:
+    """A one-time ID for a preview of the class-details action, its confirmation's retry key."""
+    return f"action-{uuid.uuid4().hex}"
+
+
 def matched_as(header: ReportHeader) -> str:
     """How a class alias is matched: the class code and name as written, with spaces and case
     folded."""
@@ -603,6 +723,12 @@ def _report_refused(error: BaseException) -> Exception:
 
 def _form_refused(error: BaseException) -> Exception:
     return NameFormNotSaved(f"the name form could not be saved: {type(error).__name__}")
+
+
+def _action_refused(error: BaseException) -> Exception:
+    return GradeReportNotSaved(
+        f"the saved values could not be made current: {type(error).__name__}"
+    )
 
 
 def _confirmation_refused(error: BaseException) -> Exception:
@@ -935,21 +1061,24 @@ class GradebookRecords:
         )
 
     def _class_record(self, student_id: str, class_id: str, term: str) -> ClassRecord:
-        """What her class and term hold, read under her student ID: each target's current value,
-        with a result's last showing and the newest report that supports its absence; every
-        value a current report holds for each target; each result's latest observation; the
-        results stored decisions gave each row evidence, and the candidates each "different" one
-        turned down; and the newest current report that supplied or showed each target."""
+        """What her class and term hold, read under her student ID and projected by
+        ``project``."""
+        return project(self._scope_held(student_id, class_id, term))
+
+    def _scope_held(self, student_id: str, class_id: str, term: str) -> ScopeHeld:
+        """Her class and term's reports, their completeness, observations and row records, as
+        stored."""
         scope = (student_id, class_id, term)
         reports = {
             str(report_id): (int(order), str(use), int(rows))
             for report_id, order, use, rows in self._connection.execute(SCOPE_REPORTS, scope)
         }
+        named = {"student": student_id, "class": class_id, "term": term}
         complete = {
             str(report_id): bool(read_complete)
-            for report_id, read_complete in self._connection.execute(SCOPE_COMPLETE, scope)
+            for report_id, read_complete in self._connection.execute(SCOPE_COMPLETE, named)
         }
-        observed: list[tuple[str, str, str, dict[str, Cell]]] = []
+        observed: list[Observed] = []
         for row in self._connection.execute(TERMS_OBSERVED, scope):
             observed.append(("term", TERM_KEY, str(row[0]), _cells(TERM_FIELDS, row[1:])))
         for row in self._connection.execute(CATEGORIES_OBSERVED, scope):
@@ -958,70 +1087,170 @@ class GradebookRecords:
             )
         for row in self._connection.execute(RESULTS_OBSERVED, scope):
             observed.append(("result", str(row[1]), str(row[0]), _cells(RESULT_FIELDS, row[2:])))
-        observed.sort(key=lambda one: reports[one[2]][0])
-        current: dict[str, dict[str, CurrentValue]] = {"term": {}, "category": {}, "result": {}}
-        once_current: dict[str, set[Compared]] = {}
-        latest: dict[str, CurrentValue] = {}
-        newest: dict[str, ReportAt] = {}
-
-        def showing(target: str, report_id: str) -> None:
-            order, use, _ = reports[report_id]
-            if use == "current" and order > newest.get(target, ReportAt("", 0)).order:
-                newest[target] = ReportAt(report_id, order)
-
-        for kind, target, report_id, cells in observed:
-            order, use, _ = reports[report_id]
-            value = CurrentValue(cells, report_id, order)
-            if kind == "result":
-                latest[target] = value
-            if use == "current":
-                current[kind][target] = value
-                once_current.setdefault(target, set()).add(compared(cells))
-            showing(target, report_id)
-        decided: dict[str, set[str]] = {}
-        explicit: dict[str, set[str]] = {}
-        different: dict[str, set[str]] = {}
-        resolved: Counter[str] = Counter()
-        for report_id, evidence, result, how, rejected in self._connection.execute(DECIDED, scope):
-            if result is None:
-                different.setdefault(str(evidence), set()).add(str(rejected))
-                continue
-            decided.setdefault(str(evidence), set()).add(str(result))
-            if how in EXPLICIT:
-                explicit.setdefault(str(evidence), set()).add(str(result))
-            resolved[str(report_id)] += 1
-            showing(str(result), str(report_id))
-        # A report supports "Not shown in this report" only when it is current, every reading
-        # into it was complete, and each of its result rows has a record naming a result.
-        proving = sorted(
+        decided: list[Decided] = [
             (
-                ReportAt(report_id, order)
-                for report_id, (order, use, rows) in reports.items()
-                if use == "current"
-                and complete.get(report_id, False)
-                and resolved[report_id] == rows
-            ),
-            key=lambda report: report.order,
-        )
-        for result, value in current["result"].items():
-            shown = newest[result]
-            absent = [report for report in proving if report.order > shown.order]
-            current["result"][result] = replace(
-                value, last_shown=shown, not_shown=absent[-1] if absent else None
+                str(report_id),
+                str(evidence),
+                None if result is None else str(result),
+                str(how),
+                None if rejected is None else str(rejected),
             )
-        return ClassRecord(
-            current=CurrentValues(
-                term=current["term"].get(TERM_KEY),
-                categories=current["category"],
-                results=current["result"],
-            ),
-            once_current={target: frozenset(values) for target, values in once_current.items()},
-            latest=latest,
-            decided={evidence: frozenset(results) for evidence, results in decided.items()},
-            newest={target: report.order for target, report in newest.items()},
-            explicit={evidence: frozenset(results) for evidence, results in explicit.items()},
-            different={evidence: frozenset(texts) for evidence, texts in different.items()},
+            for report_id, evidence, result, how, rejected in self._connection.execute(
+                DECIDED, scope
+            )
+        ]
+        return ScopeHeld(reports, complete, tuple(observed), tuple(decided))
+
+    def preview_current(
+        self, class_id: str, term: str, source_key: str
+    ) -> CurrentPreview | ReportNotSaved:
+        """What "Use saved values from this report as current" would do for the capture
+        ``source_key`` in her class and term, under a fresh action ID: its source is the
+        capture's latest report. A read alone; ``ReportNotSaved`` when the capture has none."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            return self._preview_locked(student_id, class_id, folded(term), source_key)
+
+    def use_capture_as_current(
+        self, class_id: str, term: str, *, page: CurrentPage, role: ConfirmedBy
+    ) -> ActionOutcome:
+        """The parent's confirmation of the preview ``page`` names, as one grade write: a
+        recorded action ID returns its outcome; a missing source, a changed revision, source
+        acceptances or preview, or nothing to change write nothing; otherwise the copy of the
+        source as the next current report, the action record and the raised revision."""
+        by = _confirmer(role)
+        term = folded(term)
+        with self._grade_write(_action_refused):
+            student_id = self._her_name_record()[0]
+            source = self._connection.execute(
+                SCOPE_REPORT, (student_id, class_id, term, page.source)
+            ).fetchone()
+            recorded = self._connection.execute(
+                ACTION_RECORDED, (student_id, page.action_id)
+            ).fetchone()
+            if recorded is not None:
+                made = MadeCurrent(
+                    page.action_id, str(recorded[0]), str(recorded[1]), str(recorded[2])
+                )
+                if (made.source, made.digest) == (page.source, page.digest):
+                    return ActionRecorded(made)
+                fresh: CurrentPreview | ReportNotSaved = ReportNotSaved()
+                if source is not None:
+                    fresh = self._preview_locked(student_id, class_id, term, str(source[0]))
+                return ActionRecorded(made, fresh)
+            if source is None:
+                return ReportNotSaved()
+            preview = self._preview_locked(student_id, class_id, term, str(source[0]))
+            if isinstance(preview, ReportNotSaved):
+                return preview
+            if preview.empty:
+                return NothingToChange()
+            if (preview.source, preview.digest) != (page.source, page.digest):
+                return PreviewRevised(preview)
+            return self._copy_as_current(
+                preview, page.action_id, class_id, term, student_id=student_id, by=by
+            )
+
+    def _preview_locked(
+        self, student_id: str, class_id: str, term: str, source_key: str
+    ) -> CurrentPreview | ReportNotSaved:
+        """The preview for the capture's latest report in the class and term, from the same
+        projection a confirmation recomputes."""
+        latest = self._connection.execute(
+            LATEST_OF_CAPTURE, (student_id, class_id, term, source_key)
+        ).fetchone()
+        revision = self._connection.execute(REVISION_OF, (student_id, class_id, term)).fetchone()
+        if latest is None or revision is None:
+            return ReportNotSaved()
+        report_id = str(latest[0])
+        acceptances = tuple(
+            str(row[0]) for row in self._connection.execute(ACCEPTED_INTO, (student_id, report_id))
         )
+        made_by = self._connection.execute(MADE_BY, (student_id, report_id)).fetchone()
+        source = SourceOf(
+            student_id=student_id,
+            class_id=class_id,
+            term=term,
+            revision=int(revision[0]),
+            report_id=report_id,
+            acceptances=acceptances,
+            made_by=None if made_by is None else str(made_by[0]),
+        )
+        held = self._scope_held(student_id, class_id, term)
+        return preview_of(held, source, new_action_id())
+
+    def _copy_as_current(
+        self,
+        preview: CurrentPreview,
+        action_id: str,
+        class_id: str,
+        term: str,
+        *,
+        student_id: str,
+        by: ConfirmedBy,
+    ) -> MadeCurrent:
+        """The writes of a confirmed action: the source copied as the next current report, one
+        statement per table under her student ID, its row records naming a result as
+        ``same_capture`` at the action's time and role; the action record; the revision."""
+        now = self._stamp()
+        source = preview.source
+        (order,) = self._connection.execute(NEXT_ORDER, (student_id, class_id, term)).fetchone()
+        report_id = f"report-{uuid.uuid4().hex}"
+        observations = [
+            [str(kind), str(target)]
+            for kind, target in self._connection.execute(
+                COPIED_OBSERVATIONS,
+                (TERM_KEY, student_id, source, student_id, source, student_id, source),
+            )
+        ]
+        rows = [
+            [str(row_key), str(result_id)]
+            for row_key, result_id in self._connection.execute(COPIED_ROWS, (student_id, source))
+        ]
+        copies = (
+            (COPY_REPORT, (report_id, order, student_id, source), 1),
+            (COPY_TERM, (report_id, student_id, source), None),
+            (COPY_CATEGORIES, (report_id, student_id, source), None),
+            (COPY_RESULTS, (report_id, student_id, source), None),
+            (COPY_ROW_RECORDS, (report_id, by, now, student_id, source), len(rows)),
+        )
+        written = 0
+        for statement, parameters, expected in copies:
+            count = self._connection.execute(statement, parameters).rowcount
+            if expected is not None and count != expected:
+                msg = "the action copies only her source report, and all of it"
+                raise RuntimeError(msg)
+            if statement is not COPY_REPORT and statement is not COPY_ROW_RECORDS:
+                written += count
+        if written != len(observations):
+            msg = "the action copies every observation its record lists"
+            raise RuntimeError(msg)
+        copied = json.dumps(
+            {"observations": sorted(observations), "rows": rows},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        self._connection.execute(
+            ADD_ACTION,
+            (
+                action_id,
+                student_id,
+                class_id,
+                term,
+                source,
+                json.dumps(list(preview.acceptances)),
+                preview.made_by,
+                report_id,
+                copied,
+                int(preview.complete),
+                preview.digest,
+                now,
+                by,
+            ),
+        )
+        self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
+        return MadeCurrent(action_id, source, report_id, preview.digest)
 
     def _revision_of(self, student_id: str, class_id: str, draft: GradeReportDraft) -> int | None:
         """The scope revision of ``class_id`` in the report's term, None when it holds nothing."""
@@ -1405,9 +1634,6 @@ ALREADY: Final = frozenset({ItemStatus.SAVED, ItemStatus.MATCHES_EARLIER})
 UPDATES: Final = frozenset({ItemStatus.CHANGED, ItemStatus.MATCHES_EARLIER})
 """The statuses of selected values an outcome counts as updated: changed, or back to a value a
 newer report replaced."""
-EXPLICIT: Final = frozenset({"answer", "chosen"})
-"""How a row record counts as the parent's explicit answer, whether its row was shown or
-accepted."""
 
 
 def _rows_by_key(draft: GradeReportDraft) -> dict[str, tuple[GradeValue, GradeRow]]:

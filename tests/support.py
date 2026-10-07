@@ -71,6 +71,7 @@ from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_applicat
 from blossom.drafts import Draft
 from blossom.grades.draft import GradeReportDraft, capture_key
 from blossom.grades.identity import IdentityStatus
+from blossom.grades.projection import ActionOutcome, CurrentPage, CurrentPreview
 from blossom.grades.review import (
     GradeAnswers,
     GradeReview,
@@ -1864,6 +1865,42 @@ def save_grade(
         selection=frozenset(review.ready if selection is None else selection),
         role="parent",
         complete=complete,
+    )
+
+
+def capture_class(store: ProjectStateStore, draft: GradeReportDraft) -> str:
+    """The class the reports of ``draft``'s capture are in."""
+    (class_id,) = store._connection.execute(
+        "SELECT DISTINCT class_id FROM grade_reports WHERE source_key = ?", (capture_key(draft),)
+    ).fetchone()
+    return str(class_id)
+
+
+def current_preview(store: ProjectStateStore, draft: GradeReportDraft) -> CurrentPreview:
+    """The class-details preview of "Use saved values from this report as current" for the
+    capture ``draft`` was read from."""
+    preview = store.preview_current(
+        capture_class(store, draft), draft.header.term_label, capture_key(draft)
+    )
+    assert isinstance(preview, CurrentPreview), preview
+    return preview
+
+
+def confirm_current(
+    store: ProjectStateStore,
+    draft: GradeReportDraft,
+    preview: CurrentPreview | None = None,
+    *,
+    digest: str | None = None,
+) -> ActionOutcome:
+    """A parent's confirmation of ``preview``, a fresh one when none is given, for the capture
+    ``draft`` was read from, posting ``digest`` instead of the preview's when given."""
+    preview = preview or current_preview(store, draft)
+    return store.use_capture_as_current(
+        capture_class(store, draft),
+        draft.header.term_label,
+        page=CurrentPage(preview.action_id, preview.source, digest or preview.digest),
+        role="parent",
     )
 
 

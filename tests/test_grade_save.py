@@ -199,6 +199,7 @@ def test_a_first_save_writes_exactly_the_expected_rows_and_raises_the_revision()
         "grade_match_decisions": 4,
         "grade_scope_revisions": 1,
         "grade_acceptances": 1,
+        "grade_current_actions": 0,
     }
     assert one(store, "SELECT year_label, term_label FROM grade_context") == [("2026-2027", "T1")]
     assert one(store, "SELECT label, first_month FROM grade_years") == [("2026-2027", 8)]
