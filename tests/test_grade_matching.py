@@ -19,7 +19,7 @@ from typing import cast
 import pytest
 
 from blossom.grades.draft import GradeReportDraft, Presence, capture_key
-from blossom.grades.identity import name_form_key
+from blossom.grades.identity import Identity, IdentityStatus, name_form_key
 from blossom.grades.projection import (
     NEW,
     ActionRecorded,
@@ -33,12 +33,17 @@ from blossom.grades.projection import (
     preview_of,
 )
 from blossom.grades.review import (
+    RESULT_FIELDS,
     TERM_KEY,
     AlreadyRecorded,
+    ClassRecord,
+    CurrentValue,
+    CurrentValues,
     GradeReportSaved,
     GradeReview,
     ItemStatus,
     MatchAnswer,
+    OnRecord,
     QuestionKind,
     ReportAt,
     ReportUse,
@@ -47,6 +52,8 @@ from blossom.grades.review import (
     ReviewReturned,
     SaveOutcome,
     UseChoice,
+    cells_of,
+    review_from,
 )
 from blossom.grades.text_reader import read_grade_report, reading_complete
 from blossom.stores.project_state import ProjectStateStore
@@ -58,6 +65,7 @@ from tests.support import (
     fixture_clock,
     grade_answers,
     save_grade,
+    without_the_due_column,
 )
 
 REPORT = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
@@ -2020,3 +2028,252 @@ def test_a_report_not_saved_offers_no_preview_and_a_confirmation_naming_it_write
     assert isinstance(missing, ReportNotSaved)
     assert isinstance(gone, ReportNotSaved)
     assert store._connection.total_changes == changes
+
+
+def test_a_different_answer_for_an_unreadable_score_is_remembered_with_its_warning() -> None:
+    """His fourteenth round, 6: kept only by a review submission, bound to the row's
+    evidence and the candidate it turned down; it creates no assignment and no presence, the row
+    stays Couldn't read, and the same evidence with the same candidate is remembered."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+    draft = variant(CELL_EX, CELL_DUE)
+    before = store._connection.total_changes
+    review = review_of(store, draft)
+    cell = row(review, "Cell Diagram")
+
+    assert store._connection.total_changes == before
+    assert (cell.status, cell.result_id, cell.how) == (ItemStatus.UNREADABLE, None, None)
+    answered = row(answered_review(store, draft, different(cell)), "Cell Diagram")
+    assert (answered.status, answered.result_id, answered.how) == (
+        ItemStatus.UNREADABLE,
+        None,
+        "answer",
+    )
+    assert answered.key not in answered_review(store, draft, different(cell)).ready
+    kept = saved(save(store, draft, review, matches=[different(cell)], selection=(), complete=True))
+
+    assert (kept.added, kept.updated, kept.accepted) == (0, 0, ())
+    assert (kept.shown, kept.answers_kept) == (3, 1)
+    assert records(store, kept.report_id)[cell.key] == (None, "different")
+    (rejected,) = store._connection.execute(
+        "SELECT rejected FROM grade_match_decisions WHERE row_key = ?", (cell.key,)
+    ).fetchone()
+    evidence = [["reported", "Homework / Practice"], ["reported", "Cell Diagram"]]
+    assert json.loads(rejected) == [[cell_id, [*evidence, ["reported", "09/26"]]]]
+    assert observed(store, kept.report_id) == 0
+    assert len(results(store)) == 4
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+    assert (text_of(value, "points"), value.report_id) == ("7.0", first.report_id)
+    assert value.last_shown == ReportAt(first.report_id or "", 1)
+    changes = store._connection.total_changes
+    assert isinstance(save(store, draft, review, matches=[different(cell)]), AlreadyRecorded)
+    assert store._connection.total_changes == changes
+    for again in (draft, variant(CELL_EX, CELL_DUE, SEED_SCORE)):
+        later = review_of(store, again)
+        item = row(later, "Cell Diagram")
+
+        assert (item.status, item.result_id, item.how, item.remembered) == (
+            ItemStatus.UNREADABLE,
+            None,
+            "answer",
+            True,
+        )
+        assert item.question is not None
+        assert item.question.ids == (cell_id,)
+        assert cell_id in item.choices
+        assert item.key not in later.ready
+
+
+# ------------------------------------------------------------- a due date that wasn't captured
+
+
+NO_DUE = without_the_due_column(REPORT, "Homework / Practice")
+"""Wren's report with the Homework / Practice table's Due column left out of the copy."""
+LEAF_SKETCH = (
+    "| Cell Diagram             | 7.0     | 10.0 ",
+    "| Leaf Sketch              | 7.0     | 15.0 ",
+)
+"""Cell Diagram's row as a title and max points no result has."""
+
+
+def undated(*changes: tuple[str, str]) -> GradeReportDraft:
+    return variant(*changes, text=NO_DUE)
+
+
+def test_a_row_whose_due_wasnt_captured_asks_and_an_answer_records_only_which_it_is() -> None:
+    """His fourteenth round, 5: the row never matches by itself, asks which assignment it is and
+    offers a choice; the parent's answer records it as shown, its date kept not captured, and it
+    is never selectable. The reading is incomplete, so no absence follows; the same capture
+    replays the answer, and another capture lacking dates asks again."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    held = review_of(store, A)
+    seed_id = row(held, "Seed Germination Log").result_id or ""
+    osmosis = row(held, "Osmosis with Potato Slices").result_id or ""
+    draft = undated(OSMOSIS_GONE)
+    review = review_of(store, draft)
+    seed, cell = row(review, "Seed Germination Log"), row(review, "Cell Diagram")
+
+    for item in (seed, cell):
+        assert (item.status, item.result_id, item.how) == (
+            ItemStatus.DUE_NOT_CAPTURED,
+            None,
+            None,
+        )
+        assert item.key not in review.ready
+    assert seed.question is not None
+    assert (seed.question.kind, seed.question.ids) == (QuestionKind.WHICH, (seed_id,))
+    assert seed_id in seed.choices
+    answers = [same(seed), same(cell)]
+    settled = answered_review(store, draft, *answers)
+    answered = row(settled, "Seed Germination Log")
+    assert (answered.status, answered.result_id, answered.how) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        seed_id,
+        "answer",
+    )
+    assert answered.key not in settled.ready
+    refused = save(store, draft, review, matches=answers, selection={seed.key})
+    assert isinstance(refused, ReviewReturned)
+    assert refused.why is ReturnReason.SELECTION
+    complete = whole(OSMOSIS_GONE, text=NO_DUE)
+    kept = saved(save(store, draft, review, matches=answers, selection=(), complete=complete))
+
+    assert complete is False
+    assert (kept.added, kept.updated, kept.accepted) == (0, 0, ())
+    assert (kept.shown, kept.answers_kept) == (3, 2)
+    assert records(store, kept.report_id)[seed.key] == (seed_id, "answer")
+    (evidence,) = store._connection.execute(
+        "SELECT evidence FROM grade_match_decisions WHERE row_key = ?", (seed.key,)
+    ).fetchone()
+    assert json.loads(evidence)[2] == ["not_captured", ""]
+    assert observed(store, kept.report_id) == 0
+    assert len(results(store)) == 4
+    current = store.current_values(class_of(store), "T1").results
+    assert (text_of(current[seed_id], "due"), current[seed_id].report_id) == (
+        "09/22",
+        first.report_id,
+    )
+    assert current[seed_id].last_shown == ReportAt(kept.report_id or "", 2)
+    assert current[osmosis].not_shown is None
+    changes = store._connection.total_changes
+    assert isinstance(save(store, draft, review, matches=answers, selection=()), AlreadyRecorded)
+    assert store._connection.total_changes == changes
+    replay = review_of(store, draft)
+    again = row(replay, "Seed Germination Log")
+    assert (again.status, again.result_id, again.how, again.question) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        seed_id,
+        "same_capture",
+        None,
+    )
+    assert again.key not in replay.ready
+    other = review_of(store, undated(OSMOSIS_GONE, CELL_SCORE))
+    asked = row(other, "Seed Germination Log")
+    assert (asked.status, asked.result_id, asked.how) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        None,
+        None,
+    )
+    assert asked.question is not None
+    assert asked.question.ids == (seed_id,)
+    assert asked.key not in other.ready
+
+
+def test_a_row_whose_due_wasnt_captured_and_no_result_fits_is_offered_a_choice_only() -> None:
+    """With no candidate, the row is no proposed new assignment: it can't be selected, records
+    nothing unanswered, and "Choose an existing assignment" records which assignment it is."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+    draft = undated(LEAF_SKETCH)
+    review = review_of(store, draft)
+    leaf, seed = row(review, "Leaf Sketch"), row(review, "Seed Germination Log")
+
+    assert (leaf.status, leaf.question, leaf.result_id) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        None,
+        None,
+    )
+    assert cell_id in leaf.choices
+    assert leaf.key not in review.ready
+    for matches in ([], [chosen(leaf, cell_id)]):
+        refused = save(store, draft, review, matches=matches, selection={leaf.key})
+        assert isinstance(refused, ReviewReturned)
+        assert refused.why is ReturnReason.SELECTION
+    outcome = saved(save(store, draft, review, matches=[chosen(leaf, cell_id)], selection=()))
+
+    assert (outcome.added, outcome.updated, outcome.answers_kept) == (0, 0, 1)
+    assert records(store, outcome.report_id)[leaf.key] == (cell_id, "chosen")
+    assert seed.key not in records(store, outcome.report_id)
+    assert observed(store, outcome.report_id) == 0
+    assert len(results(store)) == 4
+    again = row(review_of(store, draft), "Leaf Sketch")
+    assert (again.status, again.result_id, again.how) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        cell_id,
+        "same_capture",
+    )
+
+
+def test_a_row_missing_its_due_date_with_a_score_that_cant_be_read_keeps_couldnt_read() -> None:
+    """Both rules at once: the row asks, its answer records which assignment it is, and the
+    score warning stays."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+    draft = undated(CELL_EX)
+    review = review_of(store, draft)
+    cell = row(review, "Cell Diagram")
+
+    assert (cell.status, cell.result_id) == (ItemStatus.UNREADABLE, None)
+    assert cell.question is not None
+    assert cell.question.ids == (cell_id,)
+    assert cell_id in cell.choices
+    kept = saved(save(store, draft, review, matches=[same(cell)], selection=()))
+
+    assert records(store, kept.report_id)[cell.key] == (cell_id, "answer")
+    again = row(review_of(store, draft), "Cell Diagram")
+    assert (again.status, again.result_id, again.how) == (
+        ItemStatus.UNREADABLE,
+        cell_id,
+        "same_capture",
+    )
+
+
+def test_a_missing_due_date_is_never_matching_evidence_and_never_equals_another() -> None:
+    """Rule 2: a result whose own due date wasn't captured is no candidate by its date for a row
+    missing its date, and equal evidence with the date missing never matches without asking."""
+    draft = undated(LEAF_SKETCH)
+    poster = (LEAF_SKETCH[0], "| Poster                   | 7.0     | 12.0 ")
+    leaf = ("| Seed Germination Log | 18.0    | 20.0 ", "| Leaf Sketch          | 18.0    | 15.0 ")
+    (homework, *_) = undated(leaf, poster).categories
+    seen = {
+        f"result-{index}": CurrentValue(
+            cells_of(RESULT_FIELDS, (homework.name, *one.cells())), "report-1", 1
+        )
+        for index, one in enumerate(homework.rows)
+    }
+    on_record = OnRecord(
+        identity=Identity(IdentityStatus.MATCHES, "form"),
+        context=True,
+        year_known=True,
+        matched="class-1",
+        existing=(),
+        revision=1,
+        held=ClassRecord(CurrentValues(None, {}, {}), {}, seen, {}, {}),
+        saved={},
+    )
+    review = review_from(draft, capture_key(draft), "acceptance-1", on_record, complete=False)
+    sketch, seed = row(review, "Leaf Sketch"), row(review, "Seed Germination Log")
+
+    assert (sketch.status, sketch.result_id, sketch.how) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        None,
+        None,
+    )
+    assert sketch.question is not None
+    assert sketch.question.ids == ("result-0",)
+    assert seed.question is None
+    assert seed.choices == ("result-0", "result-1")

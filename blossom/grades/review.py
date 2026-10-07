@@ -18,13 +18,17 @@ Each value's status compares it with its target's current value, as accepted sch
 holds that a newer one replaced, so it was current once (a value only reports kept as earlier
 hold was never current, and reads Changed or New);
 "Changed", it differs; "New", no target; "Needs your answer", a matching question is open;
-"Couldn't read", a cell is unreadable; "Shown in a newer report", a current report newer than the
-one its capture's rest joins supplied or showed its target. A row with a value that can't be read
-but whose identity reads still asks its question, or offers her results to choose from, and keeps
-"Couldn't read" before and after an answer, which records only which result it is. Only a New or
-Changed value can be selected, and a value that matches an earlier saved one only under the
-parent's choice of current for the new report a save makes. That choice starts on "Keep as an
-earlier report" when any value repeats one a newer report replaced, and on current otherwise.
+"Couldn't read", a cell is unreadable; "Due date not captured", the copy left out a row's due
+cell; "Shown in a newer report", a current report newer than the one its capture's rest joins
+supplied or showed its target. A row with a value that can't be read but whose identity reads,
+or whose category and title read but whose due date wasn't captured, still asks its question,
+or offers her results to choose from, and keeps its status before and after an answer, which
+records only which result it is. A due date that wasn't captured is never evidence, so such a
+row resolves only through its own capture's records or the parent's answer or choice. Only a
+New or Changed value can be selected, and a value that matches an earlier saved one only under
+the parent's choice of current for the new report a save makes. That choice starts on "Keep as
+an earlier report" when any value repeats one a newer report replaced, and on current
+otherwise.
 
 The questions a review asks are the identity of the student line, the first setup, the first
 month of a year not on record, and the class when no alias matches. The answers a page sends are
@@ -172,6 +176,9 @@ class ItemStatus(StrEnum):
     """"Needs your answer": a matching question is open."""
     UNREADABLE = "unreadable"
     """"Couldn't read": a cell is unreadable. Never offered, whether or not the row asks."""
+    DUE_NOT_CAPTURED = "due_not_captured"
+    """"Due date not captured": the row's category and title read, its due cell wasn't in the
+    copy. Never offered; the parent's answer or choice records only which result it is."""
     COVERED = "covered"
     """"Shown in a newer report": a New, Changed or matching-earlier value this capture's rest
     can't change, since a current report newer than the one it joins supplied or showed its
@@ -182,7 +189,8 @@ class QuestionKind(StrEnum):
     """What a matching question asks about a row."""
 
     DUE_CHANGED = "due_changed"
-    """"Same assignment, due date changed from A to B?": one candidate, the same title."""
+    """"Same assignment, due date changed from A to B?": one candidate, the same title, the
+    row's due date read."""
     RENAMED = "renamed"
     """"Same assignment, renamed from 'X'?": one candidate, another title."""
     WHICH = "which"
@@ -551,6 +559,9 @@ class _Row:
     unreadable: bool
     identified: bool
     """Its category, title and due date were read, so it can match though a value can't."""
+    undated: bool
+    """Its category and title were read and its due date wasn't captured: it resolves only
+    through its capture's records or the parent's answer or choice, and is never selected."""
 
 
 class _Matching:
@@ -568,8 +579,9 @@ class _Matching:
     def candidates(self, row: _Row) -> list[str]:
         """Her results the row may be, among those no row of this report has resolved to: those
         with its title; for a row no title matches, those that share its category and its due
-        text or its max points. A result another row may still be stays a candidate, since
-        either row may be it until one resolves to it."""
+        text or its max points. A due date that wasn't read shares nothing, not even with
+        another. A result another row may still be stays a candidate, since either row may be it
+        until one resolves to it."""
         latest = self.held.latest
         free = {
             result: evidence_of(latest[result]) for result in latest if result not in self.taken
@@ -578,12 +590,13 @@ class _Matching:
         if by_title:
             return by_title
         most = compared({"max": row.cells["max_points"]})
+        dated = row.evidence[2][0] not in UNREAD
         return [
             result
             for result, seen in free.items()
             if seen[0] == row.evidence[0]
             and (
-                seen[2] == row.evidence[2]
+                (dated and seen[2] == row.evidence[2])
                 or compared({"max": latest[result].cells["max_points"]}) == most
             )
         ]
@@ -647,25 +660,38 @@ class _Matching:
             seen = evidence_of(latest[found[0]])
             if _title(seen) != _title(row.evidence):
                 kind = QuestionKind.RENAMED
-            elif seen[0] == row.evidence[0] and seen[2] != row.evidence[2]:
+            elif row.identified and seen[0] == row.evidence[0] and seen[2] != row.evidence[2]:
                 kind = QuestionKind.DUE_CHANGED
         return MatchQuestion(kind, tuple(Candidate(result, latest[result]) for result in found))
 
 
 def _rows_of(draft: GradeReportDraft) -> list[_Row]:
-    return [
-        _Row(
-            key=row_key(category.name, row),
-            evidence=row_evidence(category.name, row),
-            cells=cells_of(RESULT_FIELDS, (category.name, *row.cells())),
-            unreadable=_unreadable(category.name, *row.cells()),
-            identified=not any(
-                presence in UNREAD for presence, _ in row_evidence(category.name, row)
-            ),
-        )
-        for category in draft.categories
-        for row in category.rows
-    ]
+    rows: list[_Row] = []
+    for category in draft.categories:
+        for row in category.rows:
+            evidence = row_evidence(category.name, row)
+            named = not any(presence in UNREAD for presence, _ in evidence[:2])
+            rows.append(
+                _Row(
+                    key=row_key(category.name, row),
+                    evidence=evidence,
+                    cells=cells_of(RESULT_FIELDS, (category.name, *row.cells())),
+                    unreadable=_unreadable(category.name, *row.cells()),
+                    identified=named and evidence[2][0] not in UNREAD,
+                    undated=named and evidence[2][0] is Presence.NOT_CAPTURED,
+                )
+            )
+    return rows
+
+
+def _kept(row: _Row) -> ItemStatus | None:
+    """The status a row keeps whatever it resolves to, since it is never selected: Couldn't read
+    when a value can't be read, else Due date not captured; None for any other row."""
+    if row.unreadable:
+        return ItemStatus.UNREADABLE
+    if row.undated:
+        return ItemStatus.DUE_NOT_CAPTURED
+    return None
 
 
 def _binds(answer: MatchAnswer, question: MatchQuestion) -> bool:
@@ -710,7 +736,8 @@ def _resolved_rows(
     row it showed), by equal evidence, by a reused answer, by an answer bound to the question
     asked now or a choice bound to the results offered, as a new result, or with its question
     open. A row whose identity reads but a value doesn't asks as any row does and stays
-    Couldn't read; a row with an unreadable cell whose identity doesn't read asks nothing."""
+    Couldn't read, a row missing only its due date asks the same way and stays Due date not
+    captured, and a row with an unreadable cell whose identity doesn't read asks nothing."""
     held = on_record.held
     matching = _Matching(rows, on_record)
     answered = {answer.row_key: answer for answer in matches}
@@ -719,8 +746,9 @@ def _resolved_rows(
         row: _Row, result: str, how: MatchedHow, asked: MatchQuestion | None
     ) -> ReviewItem:
         current = held.current.results.get(result)
-        if row.unreadable:
-            return ReviewItem(row.key, ItemStatus.UNREADABLE, result, current, asked, how)
+        kept = _kept(row)
+        if kept is not None:
+            return ReviewItem(row.key, kept, result, current, asked, how)
         status = status_against(held, result, row.cells, current)
         if row.key in on_record.saved and status in OFFERED:
             status = ItemStatus.SAVED
@@ -744,13 +772,14 @@ def _resolved_rows(
 
     def opened(row: _Row) -> ReviewItem:
         item = asking(row)
-        if row.unreadable and item.status is not ItemStatus.UNREADABLE:
-            return replace(item, status=ItemStatus.UNREADABLE)
+        kept = _kept(row)
+        if kept is not None and item.status is not kept:
+            return replace(item, status=kept)
         return item
 
     def asking(row: _Row) -> ReviewItem:
         asked = matching.question(row)
-        choices = free if row.identified else ()
+        choices = free if row.identified or row.undated else ()
         answer = answered.get(row.key)
         if answer is not None and answer.chosen:
             if answer.result_id is not None and _chooses(answer, choices):
@@ -784,7 +813,7 @@ def _resolved_rows(
             items.append(resolved(row, exact[row.key], "exact", None))
         elif row.key in reused:
             items.append(resolved(row, reused[row.key], "reused", None))
-        elif row.unreadable and not row.identified:
+        elif row.unreadable and not (row.identified or row.undated):
             items.append(ReviewItem(row.key, ItemStatus.UNREADABLE))
         else:
             items.append(opened(row))

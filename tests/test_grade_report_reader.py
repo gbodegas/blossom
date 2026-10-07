@@ -32,7 +32,7 @@ from blossom.grades.text_reader import (
     reading_complete,
 )
 from blossom.settings import PACKAGE_ROOT
-from tests.support import FIXTURES
+from tests.support import FIXTURES, without_the_due_column
 
 REPORT = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
 """A synthetic report in the shape the school's gradebook pastes as: Wren's, for an invented
@@ -718,6 +718,17 @@ def test_a_reading_without_a_term_grade_row_is_incomplete() -> None:
 def test_a_category_whose_average_was_not_read_is_incomplete() -> None:
     reading, draft = read(REPORT.replace("**Category Average**", "**Average**", 1))
     assert draft.categories[0].average.presence is Presence.NOT_CAPTURED
+    assert reading_complete(reading) is False
+
+
+def test_a_result_row_whose_due_cell_was_not_captured_makes_the_reading_incomplete() -> None:
+    """His fourteenth round, 5: a reading with a result row missing its due date can't say what
+    its report doesn't show, while the format waits for his samples."""
+    reading, draft = read(without_the_due_column(REPORT, "Homework / Practice"))
+
+    assert {row.due.presence for row in draft.categories[0].rows} == {Presence.NOT_CAPTURED}
+    assert {row.due.presence for row in draft.categories[1].rows} == {Presence.REPORTED}
+    assert (reading.unrecognized, reading.places) == ((), ())
     assert reading_complete(reading) is False
 
 
