@@ -86,9 +86,8 @@ class State(StrEnum):
     ROWS = "rows"
     """A category with a column header in force."""
     LABELED = "labeled"
-    """The category's average label is read, with only blank or layout lines since."""
-    LABELED_AFTER_OTHER = "labeled_after_other"
-    """The category's average label is read, and a line the reader didn't know came since."""
+    """The category's average label is read, and its value awaited: a line the reader doesn't
+    know stays visible and leaves it so."""
     CLOSED = "closed"
     """The category takes nothing more: its average is read, or a structure interrupted it."""
     AFTER_TERM = "after_term"
@@ -114,9 +113,7 @@ class LineClass(StrEnum):
     HEADER = "header"
 
 
-IN_A_CATEGORY = frozenset(
-    {State.NEEDS_COLUMNS, State.ROWS, State.LABELED, State.LABELED_AFTER_OTHER, State.CLOSED}
-)
+IN_A_CATEGORY = frozenset({State.NEEDS_COLUMNS, State.ROWS, State.LABELED, State.CLOSED})
 """The states with a category open."""
 TAKES_A_CATEGORY = frozenset({State.HEADED, State.PERCENT_READ, State.NAMED}) | IN_A_CATEGORY
 """The states a category line or the term grade is read in."""
@@ -309,9 +306,9 @@ def weight_of(cell: str) -> str:
 
 
 def closed(category: _Category, state: State) -> None:
-    """Close ``category`` as a category line or the term grade arrives in ``state``: a label with
-    only blank or layout lines after it is a blank average; any other close keeps the average as
-    it stands, read or not captured."""
+    """Close ``category`` as a category line or the term grade arrives in ``state``: a label still
+    awaiting its value is a blank average; any other close keeps the average as it stands, read
+    or not captured."""
     if state is State.LABELED:
         category.average = GradeNumber.read("")
 
@@ -376,14 +373,11 @@ def read_grade_report(text: str) -> GradeReportReading:
             case State.ROWS, LineClass.COLUMNS:
                 unrecognized.append((index, line))
                 state = State.CLOSED
-            case State.LABELED | State.LABELED_AFTER_OTHER, LineClass.VALUE:
+            case State.LABELED, LineClass.VALUE:
                 categories[-1].average = GradeNumber.read(bare(line))
                 state = State.CLOSED
-            case State.LABELED, LineClass.PRINT | LineClass.PERCENT | LineClass.OTHER:
-                unrecognized.append((index, line))
-                state = State.LABELED_AFTER_OTHER
             case (
-                State.LABELED | State.LABELED_AFTER_OTHER,
+                State.LABELED,
                 LineClass.COLUMNS | LineClass.ROW | LineClass.CLASS_TABLE | LineClass.LABEL,
             ):
                 unrecognized.append((index, line))
