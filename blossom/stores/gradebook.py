@@ -937,9 +937,9 @@ class GradebookRecords:
     def _class_record(self, student_id: str, class_id: str, term: str) -> ClassRecord:
         """What her class and term hold, read under her student ID: each target's current value,
         with a result's last showing and the newest report that supports its absence; every
-        accepted value of each target; each result's latest observation; the results stored
-        decisions gave each row evidence, and the candidates each "different" one turned down;
-        and the newest current report that supplied or showed each target."""
+        value a current report holds for each target; each result's latest observation; the
+        results stored decisions gave each row evidence, and the candidates each "different" one
+        turned down; and the newest current report that supplied or showed each target."""
         scope = (student_id, class_id, term)
         reports = {
             str(report_id): (int(order), str(use), int(rows))
@@ -960,7 +960,7 @@ class GradebookRecords:
             observed.append(("result", str(row[1]), str(row[0]), _cells(RESULT_FIELDS, row[2:])))
         observed.sort(key=lambda one: reports[one[2]][0])
         current: dict[str, dict[str, CurrentValue]] = {"term": {}, "category": {}, "result": {}}
-        accepted: dict[str, set[Compared]] = {}
+        once_current: dict[str, set[Compared]] = {}
         latest: dict[str, CurrentValue] = {}
         newest: dict[str, ReportAt] = {}
 
@@ -972,11 +972,11 @@ class GradebookRecords:
         for kind, target, report_id, cells in observed:
             order, use, _ = reports[report_id]
             value = CurrentValue(cells, report_id, order)
-            accepted.setdefault(target, set()).add(compared(cells))
             if kind == "result":
                 latest[target] = value
             if use == "current":
                 current[kind][target] = value
+                once_current.setdefault(target, set()).add(compared(cells))
             showing(target, report_id)
         decided: dict[str, set[str]] = {}
         explicit: dict[str, set[str]] = {}
@@ -1015,7 +1015,7 @@ class GradebookRecords:
                 categories=current["category"],
                 results=current["result"],
             ),
-            accepted={target: frozenset(values) for target, values in accepted.items()},
+            once_current={target: frozenset(values) for target, values in once_current.items()},
             latest=latest,
             decided={evidence: frozenset(results) for evidence, results in decided.items()},
             newest={target: report.order for target, report in newest.items()},

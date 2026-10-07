@@ -393,7 +393,8 @@ def test_a_history_only_repeat_changes_nothing_current() -> None:
     saved(save(store, B, review))
 
     assert {value.report_id for value in before.results.values()} == {first.report_id}
-    assert row(review, "Cell Diagram").status is ItemStatus.MATCHES_EARLIER
+    # B's 8.0 was never current, and B's own capture accepted it: Saved, never offered again.
+    assert row(review, "Cell Diagram").status is ItemStatus.SAVED
     assert review.ready == frozenset()
     assert review.use is None
     assert store.current_values(class_id, "T1") == before
@@ -1587,3 +1588,85 @@ def test_an_explicit_answer_kept_in_an_earlier_report_still_counts_for_matching(
     other = row(review_of(store, variant(MOVED, CELL_SCORE)), "Microscope Practice")
 
     assert (other.result_id, other.how) == (moved.question.ids[0], "reused")
+
+
+SEED_19 = ("| Seed Germination Log | 18.0 ", "| Seed Germination Log | 19.0 ")
+SEED_20 = ("| Seed Germination Log | 18.0 ", "| Seed Germination Log | 20.0 ")
+CELL_9 = ("| Cell Diagram             | 7.0 ", "| Cell Diagram             | 9.0 ")
+MICROSCOPE_28 = (
+    "| Microscope Practice                | 27.0 ",
+    "| Microscope Practice                | 28.0 ",
+)
+
+
+def test_a_value_only_an_earlier_report_holds_is_changed_and_offered_in_another_capture() -> None:
+    """His thirteenth round, 5: B's 8.0 was saved only as history, so nothing replaced it. In
+    another capture it reads Changed from A's 7.0, is offered, the report starts on current, and
+    saving it makes 8.0 current."""
+    store = in_memory()
+    saved(save(store, A))
+    saved(save(store, B, use="earlier"))
+    other = variant(CELL_SCORE, SEED_19)
+    review = review_of(store, other)
+    cell = row(review, "Cell Diagram")
+
+    assert cell.status is ItemStatus.CHANGED
+    assert cell.key in review.ready
+    assert review.use == UseChoice("current", ())
+    saved(save(store, other, review))
+    value = store.current_values(class_of(store), "T1").results[cell.result_id or ""]
+    assert text_of(value, "points") == "8.0"
+
+
+def test_a_result_only_an_earlier_report_holds_offers_its_first_current_value() -> None:
+    """Lab Safety Log was saved only in a report kept as earlier, so it has no current value. In
+    another capture its row matches that result and offers its first current value."""
+    store = in_memory()
+    saved(save(store, A))
+    saved(save(store, variant(text=LAB_LOG_REPORT), use="earlier"))
+    other = variant(SEED_19, text=LAB_LOG_REPORT)
+    review = review_of(store, other)
+    log = row(review, "Lab Safety Log")
+
+    assert (log.status, log.how, log.current) == (ItemStatus.NEW, "exact", None)
+    assert log.result_id is not None
+    assert log.key in review.ready
+    saved(save(store, other, review))
+    value = store.current_values(class_of(store), "T1").results[log.result_id]
+    assert text_of(value, "points") == "9.0"
+    assert len(results(store)) == 5
+
+
+def test_a_replaced_value_still_starts_the_report_on_earlier_beside_an_earlier_only_one() -> None:
+    """Seed's 18.0 was current until 19.0 replaced it, and Cell's 8.0 was only ever history. A
+    capture repeating both offers Cell as Changed, and Seed's repeat still starts it on earlier."""
+    store = in_memory()
+    saved(save(store, A))
+    saved(save(store, variant(SEED_19)))
+    saved(save(store, B, use="earlier"))
+    other = variant(CELL_SCORE, MICROSCOPE_28)
+    review = review_of(store, other)
+    seed = row(review, "Seed Germination Log")
+
+    assert seed.status is ItemStatus.MATCHES_EARLIER
+    assert row(review, "Cell Diagram").status is ItemStatus.CHANGED
+    assert row(review, "Cell Diagram").key in review.ready
+    assert review.use == UseChoice("earlier", (seed.key,))
+
+
+def test_a_capture_s_rest_matching_an_earlier_value_reads_shown_in_a_newer_report() -> None:
+    """His scheduled review on #148 (4210429315): K saves only Seed, then M makes Cell 8.0
+    current and N replaces it with 9.0. K's rest, Cell 8.0, matches a value M held, but N is newer
+    than K's report and covers it: Shown in a newer report, and never offered."""
+    store = in_memory()
+    saved(save(store, A))
+    k = variant(CELL_SCORE, SEED_19)
+    first = review_of(store, k)
+    saved(save(store, k, first, selection={row(first, "Seed Germination Log").key}))
+    saved(save(store, variant(CELL_SCORE, SEED_20)))
+    saved(save(store, variant(CELL_9, SEED_20)))
+    again = review_of(store, k)
+    cell = row(again, "Cell Diagram")
+
+    assert (cell.status, cell.covered) == (ItemStatus.COVERED, True)
+    assert cell.key not in again.ready | again.back_to

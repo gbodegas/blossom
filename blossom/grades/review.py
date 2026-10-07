@@ -14,7 +14,9 @@ evidence and the same candidates until changed; an open row may also be one of h
 parent chooses.
 
 Each value's status compares it with its target's current value, as accepted school values:
-"Saved", equal to it; "Matches an earlier saved value", equal to a value a newer one replaced;
+"Saved", equal to it; "Matches an earlier saved value", equal to a value a current report
+holds that a newer one replaced, so it was current once (a value only reports kept as earlier
+hold was never current, and reads Changed or New);
 "Changed", it differs; "New", no target; "Needs your answer", a matching question is open;
 "Couldn't read", a cell is unreadable; "Shown in a newer report", a current report newer than the
 one its capture's rest joins supplied or showed its target. A row with a value that can't be read
@@ -171,8 +173,9 @@ class ItemStatus(StrEnum):
     UNREADABLE = "unreadable"
     """"Couldn't read": a cell is unreadable. Never offered, whether or not the row asks."""
     COVERED = "covered"
-    """"Shown in a newer report": a New or Changed value this capture's rest can't change, since a
-    current report newer than the one it joins supplied or showed its target. Not offered."""
+    """"Shown in a newer report": a New, Changed or matching-earlier value this capture's rest
+    can't change, since a current report newer than the one it joins supplied or showed its
+    target. Not offered."""
 
 
 class QuestionKind(StrEnum):
@@ -435,7 +438,9 @@ class ClassRecord:
     supplied or showed each target."""
 
     current: CurrentValues
-    accepted: Mapping[str, frozenset[Compared]]
+    once_current: Mapping[str, frozenset[Compared]]
+    """Each value a current report holds for each target, as compared: each was current once,
+    until a newer current report replaced it. Reports kept as earlier hold none of these."""
     latest: Mapping[str, CurrentValue]
     decided: Mapping[str, frozenset[str]]
     newest: Mapping[str, int]
@@ -477,6 +482,10 @@ class OnRecord:
 
 OFFERED: Final = frozenset({ItemStatus.NEW, ItemStatus.CHANGED})
 """The statuses a save may select."""
+COVERABLE: Final = OFFERED | {ItemStatus.MATCHES_EARLIER}
+"""The statuses a newer current report's coverage takes precedence over, for a value its capture
+hasn't saved: a capture's rest shows "Shown in a newer report", never the status its value would
+have."""
 CURRENT_COULD_CHANGE: Final = frozenset(
     {ItemStatus.NEW, ItemStatus.CHANGED, ItemStatus.MATCHES_EARLIER, ItemStatus.NEEDS_ANSWER}
 )
@@ -495,12 +504,13 @@ def status_against(
     held: ClassRecord, target: str, cells: Mapping[str, Cell], current: CurrentValue | None
 ) -> ItemStatus:
     """A value's status against its target: Saved when equal to the current value, Matches an
-    earlier saved value when equal to another accepted one, else Changed, or New with no
-    current value."""
+    earlier saved value when equal to another value a current report holds, which a newer one
+    replaced, else Changed, or New with no current value. A value only reports kept as earlier
+    hold was never current, so nothing replaced it: it reads Changed or New, and is offered."""
     value = compared(cells)
     if current is not None and compared(current.cells) == value:
         return ItemStatus.SAVED
-    if value in held.accepted.get(target, frozenset()):
+    if value in held.once_current.get(target, frozenset()):
         return ItemStatus.MATCHES_EARLIER
     return ItemStatus.NEW if current is None else ItemStatus.CHANGED
 
@@ -714,7 +724,9 @@ def _resolved_rows(
         status = status_against(held, result, row.cells, current)
         if row.key in on_record.saved and status in OFFERED:
             status = ItemStatus.SAVED
-        covered = status in OFFERED and on_record.covers(result)
+        covered = (
+            row.key not in on_record.saved and status in COVERABLE and on_record.covers(result)
+        )
         if covered:
             status = ItemStatus.COVERED
         return ReviewItem(row.key, status, result, current, asked, how, covered)
@@ -800,7 +812,7 @@ def review_from(
         status = status_against(held, key, cells, current)
         if key in on_record.saved and status in OFFERED:
             status = ItemStatus.SAVED
-        covered = status in OFFERED and on_record.covers(key)
+        covered = key not in on_record.saved and status in COVERABLE and on_record.covers(key)
         if covered:
             status = ItemStatus.COVERED
         return ReviewItem(key, status, current=current, covered=covered)
