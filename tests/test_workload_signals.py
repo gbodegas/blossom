@@ -8,6 +8,7 @@ hold the store, the graph, the routes, and the page to that.
 """
 
 import asyncio
+import logging
 import pathlib
 import re
 import sqlite3
@@ -22,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 from pydantic import ValidationError
 
 from blossom.agent.graph import Ask, CompiledPlanGraph, PlanState
@@ -33,8 +35,17 @@ from blossom.heuristic_relevance import CriticVerdict
 from blossom.plan_checks import PlanCheck
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes import student as student_routes
+from blossom.routes.parent import SIGNAL_ENDED as THEIR_SIGNAL_ENDED
+from blossom.routes.parent import SIGNALED_SINCE as THEIR_SIGNALED_SINCE
 from blossom.routes.runs import plan_graphs
-from blossom.routes.student import SIGNAL_REMOVED, landing_cookie, templates
+from blossom.routes.student import (
+    ASSIGNMENTS_CHANGED,
+    SIGNAL_ENDED,
+    SIGNAL_REMOVED,
+    SIGNALED_SINCE,
+    landing_cookie,
+    templates,
+)
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
     DEFAULT_EVENING_MINUTES,
@@ -57,6 +68,7 @@ from tests.support import (
     THEIRS,
     Scripted,
     accepting,
+    as_stored,
     changed_by_hand,
     declared_for,
     drafts_in_memory,
@@ -893,14 +905,22 @@ def test_each_remove_button_says_which_signal_it_removes() -> None:
 
 @contextmanager
 def started(
-    folder: pathlib.Path, minutes: int, planners: list[Scripted[DailyPlan]] | None = None
+    folder: pathlib.Path,
+    minutes: int,
+    planners: list[Scripted[DailyPlan]] | None = None,
+    *,
+    evening: int = DEFAULT_EVENING_MINUTES,
+    today: date = PLAN_DATE,
 ) -> Iterator[TestClient]:
-    """Her household on the files under ``folder``, its Too much limit set to ``minutes``, her
-    signed in. A later start on the same files reads the limit as set at that start."""
+    """Her household on the files under ``folder``, its Too much limit set to ``minutes`` and
+    its evening to ``evening``, on the day ``today``, her signed in. A later start on the same
+    files reads the limits as set at that start."""
     settings = replace(
         signed_in_household(folder),
         anthropic_api_key="not-a-key-and-never-sent",
+        evening_minutes=evening,
         too_much_minutes=minutes,
+        today=today,
     )
     app = create_app(settings)
     app.dependency_overrides[plan_graphs] = scripted_graphs(
@@ -1010,17 +1030,18 @@ def test_a_saved_plan_whose_blocks_cant_be_read_is_said_neither_to_fit_nor_to_be
 
 
 @pytest.mark.parametrize(
-    ("now", "label"),
+    ("now", "label", "over"),
     [
-        pytest.param(40, "Make a smaller plan", id="lowered"),
-        pytest.param(75, "Plan again", id="kept"),
+        pytest.param(40, "Make a smaller plan", True, id="lowered"),
+        pytest.param(75, "Plan again", False, id="kept"),
     ],
 )
 def test_a_saved_plan_read_as_changed_offers_what_the_limit_set_now_calls_for(
-    now: int, label: str, tmp_path: pathlib.Path
+    now: int, label: str, over: bool, tmp_path: pathlib.Path
 ) -> None:
     """The work it was made from reads differently now, so the plan's notice leads with what
-    the plan button offers, which follows the limit set now."""
+    the plan button offers, which follows the limit set now. A plan over that limit is told
+    so first, before the work it was made from."""
     a_shorter_plan_saved(tmp_path)
     with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
         state_now: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
@@ -1029,5 +1050,209 @@ def test_a_saved_plan_read_as_changed_offers_what_the_limit_set_now_calls_for(
         hers = today_of(client.get(PAGE).text)
         theirs = as_a_parent(client)
 
-    assert f"<strong>{label}.</strong>" in hers
+    notice = longer_than(now, STAYS) if over else ASSIGNMENTS_CHANGED
+    assert f"<strong>{label}.</strong> {escape(notice)}</p>" in hers
     assert "fits within" not in theirs
+
+
+# ------------------------------------------ a waiting plan over the limit set now
+
+
+STAYS = "It stays until a new one is made."
+BEFORE_APPROVING = "Plan again before approving."
+
+
+def longer_than(minutes: int, then: str) -> str:
+    """The notice for a saved plan whose blocks are over the ``minutes`` set now, ending with
+    what ``then`` says to do."""
+    return f"This plan is longer than today's {minutes}-minute limit. {then}"
+
+
+def press_approve(client: TestClient, draft_id: str) -> tuple[int, Any, object, object]:
+    """Approve one draft as a parent signed in on this client: the answer's status and body,
+    and the drafts table as stored before and after the press."""
+    state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+    before = as_stored(state.drafts, "drafts")
+    answer = client.post(f"/parent/approvals/{draft_id}", json={"approved": True})
+    return answer.status_code, answer.json(), before, as_stored(state.drafts, "drafts")
+
+
+@pytest.mark.parametrize(
+    ("now", "over"),
+    [
+        pytest.param(40, True, id="lowered to 40"),
+        pytest.param(75, False, id="kept at 75"),
+        pytest.param(100, False, id="raised to 100"),
+    ],
+)
+def test_a_shorter_plan_over_the_limit_set_now_is_stale_everywhere_and_never_approved(
+    now: int, over: bool, tmp_path: pathlib.Path
+) -> None:
+    """Made after Too much under 75 minutes, one 60-minute block, and read after a start with
+    the limit set to ``now``: over it, every page says so and approval is refused with the
+    row untouched; within it, the plan is current and approval goes through. Nothing plans."""
+    a_shorter_plan_saved(tmp_path)
+    planners: list[Scripted[DailyPlan]] = []
+    with started(tmp_path, now, planners) as client:
+        mine = client.get("/student/plans/today").json()
+        hers = today_of(client.get(PAGE).text)
+        theirs = as_a_parent(client)
+        family = client.get("/parent").text
+        status, answer, before, after = press_approve(client, mine["draft_id"])
+
+    if over:
+        notice = f"<strong>Make a smaller plan.</strong> {escape(longer_than(now, STAYS))}</p>"
+        refused = f"<strong>Plan again.</strong> {escape(longer_than(now, BEFORE_APPROVING))}</p>"
+        assert mine["stale"] == longer_than(now, STAYS)
+        assert notice in hers
+        assert notice in theirs
+        assert refused in family
+        assert 'value="approve"' not in family
+        assert 'value="refuse"' in family
+        assert status == 409
+        assert answer == {"detail": longer_than(now, BEFORE_APPROVING)}
+        assert after == before
+    else:
+        assert mine["stale"] is None
+        assert "longer than" not in hers + theirs + family
+        assert 'value="approve"' in family
+        assert status == 200
+        assert answer["decision"] == "approved"
+    assert sum(planner.calls for planner in planners) == 0
+
+
+def test_looks_good_from_a_page_left_open_is_refused_for_a_plan_over_the_limit_set_now(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A family page opened before the start still shows Looks good. Pressed after a start
+    that lowers the limit under the plan's blocks, it is refused with the family page's
+    notice, and the row is untouched."""
+    a_shorter_plan_saved(tmp_path)
+    with started(tmp_path, 40) as client:
+        draft_id = client.get("/student/plans/today").json()["draft_id"]
+        as_a_parent(client)
+        state_now: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        before = as_stored(state_now.drafts, "drafts")
+        pressed = client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        after = as_stored(state_now.drafts, "drafts")
+
+    assert pressed.status_code == 409
+    assert escape(longer_than(40, BEFORE_APPROVING)) in pressed.text
+    assert after == before
+
+
+def test_a_full_evening_plan_over_the_evening_set_now_is_stale_and_never_approved(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Made with no request under the usual evening, one 60-minute block, and read after a
+    start that sets the evening to 50 minutes: stale on every page, led by the plan button's
+    own words, and approval is refused with the row untouched."""
+    with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
+        client.post("/student/actions/plan")
+        saved = todays_draft(client)
+    planners: list[Scripted[DailyPlan]] = []
+    with started(tmp_path, 40, planners, evening=50) as client:
+        mine = client.get("/student/plans/today").json()
+        hers = today_of(client.get(PAGE).text)
+        as_a_parent(client)
+        family = client.get("/parent").text
+        status, answer, before, after = press_approve(client, mine["draft_id"])
+
+    refused = f"<strong>Plan again.</strong> {escape(longer_than(50, BEFORE_APPROVING))}</p>"
+    assert getattr(saved, "too_much", None) is False
+    assert mine["stale"] == longer_than(50, STAYS)
+    assert f"<strong>Plan again.</strong> {escape(longer_than(50, STAYS))}</p>" in hers
+    assert refused in family
+    assert 'value="approve"' not in family
+    assert status == 409
+    assert answer == {"detail": longer_than(50, BEFORE_APPROVING)}
+    assert after == before
+    assert sum(planner.calls for planner in planners) == 0
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "logged"),
+    [pytest.param(None, 0, id="no snapshot"), pytest.param("not a snapshot", 1, id="unusable")],
+)
+def test_a_plan_kept_as_text_alone_is_not_measured_against_the_limit_set_now(
+    snapshot: str | None, logged: int, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Its blocks can't be read, so a lowered limit makes no claim either way: the plan is
+    current and approval goes through. A snapshot that can't be used is logged once by the
+    page that shows the plan, and the approval press adds no line of its own."""
+    a_shorter_plan_saved(tmp_path)
+    with started(tmp_path, 40) as client:
+        state_now: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        changed_by_hand(state_now.drafts, "UPDATE drafts SET plan_snapshot = ?", (snapshot,))
+        mine = client.get("/student/plans/today").json()
+        with caplog.at_level(logging.WARNING, logger="blossom.plan_snapshot"):
+            caplog.clear()
+            hers = today_of(client.get(PAGE).text)
+            on_her_page = len(caplog.records)
+            as_a_parent(client)
+            caplog.clear()
+            status, answer, _, _ = press_approve(client, mine["draft_id"])
+            on_the_press = len(caplog.records)
+
+    assert mine["stale"] is None
+    assert "longer than" not in hers
+    assert on_her_page == logged
+    assert on_the_press == 0
+    assert status == 200
+    assert answer["decision"] == "approved"
+
+
+def test_a_changed_signal_is_said_before_the_limit(tmp_path: pathlib.Path) -> None:
+    """A plan over the limit that would apply now, whose signal has also changed since it was
+    made, is told about the signal: that sentence comes first, on both pages."""
+    with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
+        client.post("/student/actions/plan")
+    with started(tmp_path, 40) as client:
+        client.post("/student/actions/too-much")
+        since = client.get("/student/plans/today").json()
+        as_a_parent(client)
+        their_since = client.get("/parent/approvals").json()["waiting"]
+
+    shorter = tmp_path / "shorter"
+    shorter.mkdir()
+    a_shorter_plan_saved(shorter)
+    with started(shorter, 40, evening=50) as client:
+        undo(client, tonight(client)[-1])
+        ended = client.get("/student/plans/today").json()
+        as_a_parent(client)
+        their_ended = client.get("/parent/approvals").json()["waiting"]
+
+    assert since["stale"] == SIGNALED_SINCE
+    assert their_since[0]["stale"] == THEIR_SIGNALED_SINCE
+    assert ended["stale"] == SIGNAL_ENDED
+    assert their_ended[0]["stale"] == THEIR_SIGNAL_ENDED
+
+
+def test_a_decided_plan_and_a_past_evening_are_not_measured_against_the_limit_set_now(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A decided plan is a record, and a past evening's plan can't be planned again: neither
+    is stale after a start that lowers the limit under its blocks."""
+    with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
+        client.post("/student/actions/too-much")
+        client.post("/student/actions/plan")
+        draft_id = client.get("/student/plans/today").json()["draft_id"]
+        as_a_parent(client)
+        assert client.post(f"/parent/approvals/{draft_id}", json={"approved": True}).is_success
+    with started(tmp_path, 40) as client:
+        mine = client.get("/student/plans/today").json()
+        as_a_parent(client)
+        theirs = client.get(f"/parent/approvals/{draft_id}").json()
+
+    past = tmp_path / "past"
+    past.mkdir()
+    a_shorter_plan_saved(past)
+    with started(past, 40, today=PLAN_DATE + timedelta(days=1)) as client:
+        as_a_parent(client)
+        waiting = client.get("/parent/approvals").json()["waiting"]
+
+    assert mine["decision"] == "approved"
+    assert mine["stale"] is None
+    assert theirs["stale"] is None
+    assert [item["plan_date"] for item in waiting] == [PLAN_DATE.isoformat()]
+    assert waiting[0]["stale"] is None

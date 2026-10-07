@@ -7,15 +7,19 @@ the full evening, or a reduced one after she said today was too much. When her
 signal as it stands is not that one, the plan on the page is not the plan the
 checks held to the current budget. Both pages read this one rule and word it
 for their reader, and neither says which came first, since a signal can change
-while a run is still on its way to the draft.
+while a run is still on its way to the draft. A start can also set a smaller
+limit than the one a waiting plan was held to, and a plan over it does not fit.
 """
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from zoneinfo import ZoneInfo
 
 from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.noticing import Everything, planning_digest, planning_week, read_everything, week_from
+from blossom.plan_snapshot import read_snapshot
+from blossom.settings import Settings
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.project_state import ProjectStateStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
@@ -29,10 +33,35 @@ class Staleness(StrEnum):
     SIGNAL_ENDED = "signal_ended"
     """The plan was made for a reduced evening and the signal is gone, taken
     back or past its week; the store does not say which."""
+    OVER_THE_LIMIT = "over_the_limit"
+    """Her signal is as it was when the plan was made, and the plan's blocks as saved
+    ask for more minutes than the limit set now, which a start can lower after the plan
+    is made."""
     ASSIGNMENTS_CHANGED = "assignments_changed"
     """The work in the plan's window reads differently from when the run read
     it: work added or taken away, a date, a kind, a note, what a source says
     about a date, or what she has reported about her part."""
+
+
+def limit_now(record: DraftRecord, settings: Settings) -> int:
+    """The minutes ``record``'s evening is held to now while her signal is as it was when the
+    plan was made: the smaller limit after Too much, the full evening otherwise."""
+    return settings.too_much_minutes if record.too_much else settings.evening_minutes
+
+
+def saved_minutes(record: DraftRecord, zone: ZoneInfo) -> int | None:
+    """The minutes ``record``'s blocks ask for as saved, measured on its evening as the plan
+    check measured them; ``None`` for a plan kept as text alone. The snapshot is read without
+    a log line, since the page that shows the plan logs one it can't use."""
+    found = read_snapshot(
+        record.draft_id,
+        record.plan_snapshot,
+        plan_date=record.plan_date,
+        plan_assignment_ids=record.plan_assignment_ids,
+        quiet=True,
+    )
+    plan = found.snapshot
+    return None if plan is None else plan.plan.total_minutes(zone, on=record.plan_date)
 
 
 def staleness(
@@ -40,22 +69,30 @@ def staleness(
     record: DraftRecord,
     project_state: ProjectStateStore | None = None,
     *,
+    settings: Settings,
+    zone: ZoneInfo,
     everything: Everything | None = None,
 ) -> Staleness | None:
     """How ``record`` fails to fit the evening as it stands now, or ``None`` while it fits.
 
     Her signal is measured first, since it changes the budget the checks held
-    the plan to. Then the window: with the record handed in, the week the
-    run read for this evening is taken from it and its fingerprint compared
-    to the one the draft carries; a draft from before plans carried one is
-    not measured against the week. ``everything`` is a reading a page has
-    in hand already, which is measured as it is; with the store alone, the
-    record is read here, and only when the week is reached. With neither,
-    the week is not measured.
+    the plan to. Then a waiting plan's blocks as saved, against the limit set
+    now in ``settings``, which a start can change after the plan is made; a
+    decided plan is a record, and a plan kept as text alone can't be measured,
+    so neither is measured against the limit. Then the window: with the
+    record handed in, the week the run read for this evening is taken from it
+    and its fingerprint compared to the one the draft carries; a draft from
+    before plans carried one is not measured against the week. ``everything``
+    is a reading a page has in hand already, which is measured as it is; with
+    the store alone, the record is read here, and only when the week is
+    reached. With neither, the week is not measured.
     """
     signaled = bool(signals.for_evening(record.plan_date))
     if signaled != record.too_much:
         return Staleness.SIGNALED_SINCE if signaled else Staleness.SIGNAL_ENDED
+    minutes = saved_minutes(record, zone) if record.waiting else None
+    if minutes is not None and minutes > limit_now(record, settings):
+        return Staleness.OVER_THE_LIMIT
     if record.inputs_digest is None:
         return None
     if everything is None and project_state is not None:

@@ -74,7 +74,7 @@ from blossom.assignment_status import AssignmentStatus, basis_parts, statuses_fo
 from blossom.captures import what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
-from blossom.evening import PlanUpdates, Staleness, plan_updates, staleness
+from blossom.evening import PlanUpdates, Staleness, limit_now, plan_updates, staleness
 from blossom.hand_in import NEEDS_HAND_IN
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
 from blossom.intake import TEXT_MAX_LENGTH
@@ -235,6 +235,14 @@ ASSIGNMENTS_CHANGED: Final = (
     "her part, or what a source says about a date. The plan does not cover the week as it "
     "stands. Plan again before approving."
 )
+
+
+def over_the_limit(minutes: int) -> str:
+    """The family page's notice for a waiting plan whose blocks are over today's limit of
+    ``minutes``, which is not approved as it stands."""
+    return f"This plan is longer than today's {minutes}-minute limit. Plan again before approving."
+
+
 PLAN_INCLUDES_DONE: Final = "This plan includes work she now reports as Done."
 PLAN_WINDOW_DONE: Final = "Some work in this plan's window is now reported Done."
 FAMILY_UNREADABLE_WHY: Final = (
@@ -386,10 +394,11 @@ def stale_reason(
     """Why a waiting draft has stopped fitting the evening, or ``None`` while it fits.
 
     A draft is made for the evening as she had described it when the run
-    read it. When her signal as it stands is not that one, the plan on the
-    page is not the plan the checks held to the current budget, so it is not
-    approved as it stands. Neither message says which came first: her signal
-    can change while a run is still on its way to the draft, so the pages say
+    read it. When her signal as it stands is not that one, or its blocks as
+    saved are over the limit set now, the plan on the page is not the plan the
+    checks held to the current budget, so it is not approved as it stands.
+    Neither message about her signal says which came first: her signal can
+    change while a run is still on its way to the draft, so the pages say
     only that the two do not match.
     Refusing it is still allowed; refusing never sends anything. Only a
     waiting draft can be stale: a decided one is a record of what was decided,
@@ -407,11 +416,20 @@ def stale_reason(
     today = state.clock.today() if today is None else today
     if not record.waiting or record.plan_date < today:
         return None
-    match staleness(state.workload_signals, record, state.project_state, everything=everything):
+    match staleness(
+        state.workload_signals,
+        record,
+        state.project_state,
+        settings=state.settings,
+        zone=state.clock.zone,
+        everything=everything,
+    ):
         case Staleness.SIGNALED_SINCE:
             return SIGNALED_SINCE
         case Staleness.SIGNAL_ENDED:
             return SIGNAL_ENDED
+        case Staleness.OVER_THE_LIMIT:
+            return over_the_limit(limit_now(record, state.settings))
         case Staleness.ASSIGNMENTS_CHANGED:
             return ASSIGNMENTS_CHANGED
         case None:

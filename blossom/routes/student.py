@@ -88,7 +88,14 @@ from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.captures import derived_assignment_id, what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
-from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
+from blossom.evening import (
+    PlanUpdates,
+    ReportedDone,
+    Staleness,
+    limit_now,
+    plan_updates,
+    staleness,
+)
 from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEXT_ACTION_MAX_LENGTH
 from blossom.noticing import (
     Everything,
@@ -285,6 +292,17 @@ ASSIGNMENTS_CHANGED: Final = (
     "your week as it stands. It stays until a new one is made; plan again when you are "
     "ready."
 )
+
+
+def over_the_limit(minutes: int) -> str:
+    """The notice for a saved plan whose blocks are over today's limit of ``minutes``, said
+    alike to her and to a parent reading her week, since it names nobody."""
+    return (
+        f"This plan is longer than today's {minutes}-minute limit. "
+        "It stays until a new one is made."
+    )
+
+
 PLAN_INCLUDES_DONE: Final = "This plan includes work you now report as Done."
 PLAN_WINDOW_DONE: Final = "Some work in this plan's window is now reported Done."
 """The notice for a plan from before plans carried their ids: a fact about its window and
@@ -1006,19 +1024,19 @@ def read_a_plan(
     """Her projection of a draft and its reading, from one reading of the record.
 
     A decided plan is history: it is measured against her signal, as it always
-    was, but not against the week, which may well change after a parent has said
-    the plan looks good. Work it speaks about that she has since reported done
-    is said whatever a parent decided. The notice above the plan, the marks
-    beside its rows, and whether the week reads as it did all come from one
-    reading of the record, ``everything``, the page's own when it has one and
-    read here otherwise: read apart, a report landing between them could leave
-    them at odds, and her reports would be read once for each. ``current`` is
-    the caller's word that this is today's working plan, the one reading that
-    shows marks, and ``today`` is the household day the caller's page read,
-    once, so a page rendered across midnight is about one day from its heading
-    to its plan. ``dates`` is what stands about the plan's dates in that same
-    reading, which the rows show beside what was planned; a caller hands it in
-    for the plan in force for its evening and for no other.
+    was, but not against the limit set now or the week, which may well change
+    after a parent has said the plan looks good. Work it speaks about that she
+    has since reported done is said whatever a parent decided. The notice above
+    the plan, the marks beside its rows, and whether the week reads as it did
+    all come from one reading of the record, ``everything``, the page's own when
+    it has one and read here otherwise: read apart, a report landing between
+    them could leave them at odds, and her reports would be read once for each.
+    ``current`` is the caller's word that this is today's working plan, the one
+    reading that shows marks, and ``today`` is the household day the caller's
+    page read, once, so a page rendered across midnight is about one day from
+    its heading to its plan. ``dates`` is what stands about the plan's dates in
+    that same reading, which the rows show beside what was planned; a caller
+    hands it in for the plan in force for its evening and for no other.
     """
     stale = None
     store = state.project_state
@@ -1028,13 +1046,19 @@ def read_a_plan(
         updates = plan_updates(store, record, everything=everything)
         included = done_in(record, updates.done, today=today)
         found = staleness(
-            state.workload_signals, record, everything=everything if record.waiting else None
+            state.workload_signals,
+            record,
+            settings=state.settings,
+            zone=state.clock.zone,
+            everything=everything if record.waiting else None,
         )
     match found:
         case Staleness.SIGNALED_SINCE:
             stale = SHE_SIGNALED_SINCE if reader == "family" else SIGNALED_SINCE
         case Staleness.SIGNAL_ENDED:
             stale = SIGNAL_ENDED
+        case Staleness.OVER_THE_LIMIT:
+            stale = over_the_limit(limit_now(record, state.settings))
         case Staleness.ASSIGNMENTS_CHANGED:
             stale = ASSIGNMENTS_CHANGED
         case None:

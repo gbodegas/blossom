@@ -2070,7 +2070,7 @@ def spoil(
     return as_stored(store, table)
 
 
-def as_stored(store: ProjectStateStore, table: str) -> list[tuple[object, ...]]:
+def as_stored(store: ProjectStateStore | DraftsStore, table: str) -> list[tuple[object, ...]]:
     """Every row of ``table`` in the file's order, each text column as its stored bytes,
     so a row that is not UTF-8 can be read back and compared too."""
     connection = store._connection

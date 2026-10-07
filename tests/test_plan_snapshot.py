@@ -525,3 +525,35 @@ def test_a_reader_uses_a_snapshot_only_when_it_is_whole_and_its_drafts(
     assert "Canal Era" not in logged
     assert "while it is fresh" not in logged
     assert all(len(record.getMessage()) < 450 for record in caplog.records)
+
+
+def test_a_quiet_reading_decides_alike_and_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    """A check made beside a page reads each snapshot to the decision the page's own reading
+    makes, every way one can fail included, and leaves the one log line to the page."""
+    snapshot = composed_plan().snapshot
+    whole = snapshot.model_dump(mode="json")
+    ids = snapshot.assignment_ids
+    cases: list[tuple[str | None, date, list[str] | None]] = [
+        (json.dumps(whole), PLAN_DATE, ids),
+        (None, PLAN_DATE, ids),
+        ("not json {", PLAN_DATE, ids),
+        (json.dumps({**whole, "version": 2}), PLAN_DATE, ids),
+        (json.dumps(whole), date(2026, 8, 20), ids),
+        (json.dumps(whole), PLAN_DATE, ids[:-1]),
+        (json.dumps(whole), PLAN_DATE, None),
+    ]
+    with caplog.at_level(logging.WARNING, logger="blossom.plan_snapshot"):
+        quiet = [
+            read_snapshot("draft:read", saved, plan_date=on, plan_assignment_ids=named, quiet=True)
+            for saved, on, named in cases
+        ]
+        logged = len(caplog.records)
+        loud = [
+            read_snapshot("draft:read", saved, plan_date=on, plan_assignment_ids=named)
+            for saved, on, named in cases
+        ]
+
+    assert logged == 0
+    assert quiet == loud
+    assert [item.unavailable for item in quiet] == [False, False, True, True, True, True, True]
+    assert len(caplog.records) == 5

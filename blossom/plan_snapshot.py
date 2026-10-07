@@ -176,6 +176,7 @@ def read_snapshot(
     *,
     plan_date: date,
     plan_assignment_ids: Sequence[str] | None,
+    quiet: bool = False,
 ) -> SnapshotReading:
     """Decide what one draft's saved snapshot lets a page show, and never raise.
 
@@ -190,7 +191,8 @@ def read_snapshot(
     The text is decoded and validated in one step by the model's own JSON
     reader, which refuses what a page could not send, half of a surrogate
     pair written as an escape among it, so such a snapshot is unavailable
-    here and never an error while a page is being sent.
+    here and never an error while a page is being sent. ``quiet`` reads it
+    without the log line, for a check whose page logs the same snapshot once.
     """
     if saved is None:
         return SnapshotReading(None)
@@ -201,19 +203,25 @@ def read_snapshot(
             f"{part_of(found['loc'])}: {found['type']}"
             for found in error.errors(include_input=False, include_url=False)[:5]
         )
-        return unavailable(draft_id, f"not a version {SNAPSHOT_VERSION} snapshot ({places})")
+        return unavailable(
+            draft_id, f"not a version {SNAPSHOT_VERSION} snapshot ({places})", quiet=quiet
+        )
     except (ValueError, TypeError, RecursionError) as error:
-        return unavailable(draft_id, f"not readable ({type(error).__name__})")
+        return unavailable(draft_id, f"not readable ({type(error).__name__})", quiet=quiet)
     if snapshot.plan.plan_date != plan_date:
-        return unavailable(draft_id, "its plan is for another evening than its draft")
+        return unavailable(draft_id, "its plan is for another evening than its draft", quiet=quiet)
     if plan_assignment_ids is None or list(plan_assignment_ids) != snapshot.assignment_ids:
-        return unavailable(draft_id, "its assignments are not the ones its draft lists")
+        return unavailable(
+            draft_id, "its assignments are not the ones its draft lists", quiet=quiet
+        )
     return SnapshotReading(snapshot)
 
 
-def unavailable(draft_id: str, why: str) -> SnapshotReading:
-    """Log, in a bounded line, that a draft's structured view cannot be shown, and say so."""
-    logger.warning(
-        "the structured view of draft %s is unavailable: %s", draft_id, why[:DIAGNOSTIC_LIMIT]
-    )
+def unavailable(draft_id: str, why: str, *, quiet: bool = False) -> SnapshotReading:
+    """Log, in a bounded line unless ``quiet``, that a draft's structured view cannot be shown,
+    and say so."""
+    if not quiet:
+        logger.warning(
+            "the structured view of draft %s is unavailable: %s", draft_id, why[:DIAGNOSTIC_LIMIT]
+        )
     return SnapshotReading(None, unavailable=True)
