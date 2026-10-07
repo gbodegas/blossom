@@ -418,9 +418,12 @@ def matched_as(header: ReportHeader) -> str:
     return json.dumps([fold(header.class_code), fold(header.class_name)], ensure_ascii=False)
 
 
-SAVEPOINT: Final = "grade_save"
-"""The savepoint every grade write runs inside. A fixed name, since it is written into SQL; a
-write nested in another opens its own under the same name, and SQLite takes the latest."""
+OPEN_SAVEPOINT: Final = "SAVEPOINT grade_save"
+"""The savepoint every grade write runs inside, written out whole, as are the two statements
+that end it. A write nested in another opens its own under the same name, and SQLite takes the
+latest."""
+RELEASE_SAVEPOINT: Final = "RELEASE grade_save"
+UNDO_SAVEPOINT: Final = "ROLLBACK TO grade_save"
 
 
 @dataclass
@@ -442,10 +445,10 @@ def all_or_none(connection: sqlite3.Connection) -> Iterator[Boundary]:
         msg = "a grade write's savepoint opens only inside the writer's transaction"
         raise RuntimeError(msg)
     boundary = Boundary()
-    connection.execute(f"SAVEPOINT {SAVEPOINT}")
+    connection.execute(OPEN_SAVEPOINT)
     try:
         yield boundary
-        connection.execute(f"RELEASE {SAVEPOINT}")
+        connection.execute(RELEASE_SAVEPOINT)
     except BaseException:
         boundary.taken_back = connection.in_transaction and _rolled_back(connection)
         raise
@@ -455,11 +458,11 @@ def _rolled_back(connection: sqlite3.Connection) -> bool:
     """Whether the latest savepoint's writes were taken back. A release refused after that leaves
     an empty savepoint, which holds nothing."""
     try:
-        connection.execute(f"ROLLBACK TO {SAVEPOINT}")
+        connection.execute(UNDO_SAVEPOINT)
     except sqlite3.Error:
         return False
     with suppress(sqlite3.Error):
-        connection.execute(f"RELEASE {SAVEPOINT}")
+        connection.execute(RELEASE_SAVEPOINT)
     return True
 
 
