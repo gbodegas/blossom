@@ -340,7 +340,6 @@ def test_identical_reports_for_two_siblings_misread_saves_only_an_acceptance_rec
     assert (outcome.added, outcome.already_saved, outcome.report_id) == (0, 9, None)
     assert {table for table in GRADEBOOK_TABLES if after[table] != before[table]} == {
         "grade_acceptances",
-        "grade_scope_revisions",
     }
     assert len(after["grade_acceptances"]) == 2
     assert after["grade_name_forms"] == before["grade_name_forms"]
@@ -483,6 +482,40 @@ def test_a_stale_revision_returns_the_review_and_writes_nothing() -> None:
     assert (another_tab.revision, again.revision) == (1, 2)
     assert set(statuses(again)) == {ItemStatus.SAVED}
     assert gradebook_of(store) == before
+
+
+def test_a_no_op_that_completes_the_setup_returns_another_page_for_that_class() -> None:
+    """A submission that only confirms her name, the year and term, the first month and a new
+    class records nothing in the class and term, so no revision is raised. A second page open
+    for that class meets the recheck of its answers instead: it returns the review, writing
+    nothing, and its save then adds the values once, with one setup and one class."""
+    store = in_memory()
+    one_tab, another_tab = review_of(store), review_of(store)
+    nothing = saved(save(store, review=one_tab, selection=()))
+
+    assert (nothing.report_id, nothing.added, nothing.shown) == (None, 0, 0)
+    setup = ("grade_student", "grade_name_forms", "grade_context", "grade_years", "grade_terms")
+    made = (*setup, "grade_classes", "grade_class_aliases", "grade_acceptances")
+    assert counted(store) == {table: int(table in made) for table in GRADEBOOK_TABLES}
+    before = gradebook_of(store)
+    outcome = save(store, review=another_tab)
+
+    again = returned(outcome, ReturnReason.ANSWERS)
+    assert gradebook_of(store) == before
+    assert (again.setup, again.first_month, again.revision) == (None, None, None)
+    assert again.identity.status is IdentityStatus.MATCHES
+    (class_id,) = one(store, "SELECT class_id FROM grade_classes")
+    assert again.class_question.matched == class_id[0]
+    assert again.ready == frozenset(item.key for item in another_tab.items)
+    rest = saved(save(store, review=again))
+
+    assert rest.added == 9
+    after = counted(store)
+    assert {table: after[table] for table in made} == {
+        table: 2 if table == "grade_acceptances" else 1 for table in made
+    }
+    assert (after["grade_results"], after["grade_reports"]) == (4, 1)
+    assert one(store, "SELECT revision FROM grade_scope_revisions") == [(1,)]
 
 
 def stale_identity(store: ProjectStateStore, review: GradeReview) -> GradeAnswers:
@@ -647,7 +680,8 @@ def test_a_term_spaced_another_way_is_the_same_term() -> None:
 
     assert set(statuses(review)) == {ItemStatus.SAVED}
     assert one(store, "SELECT label FROM grade_terms") == [("Term 1",)]
-    assert one(store, "SELECT term_label, revision FROM grade_scope_revisions") == [("Term 1", 2)]
+    assert one(store, "SELECT term_label, revision FROM grade_scope_revisions") == [("Term 1", 1)]
+    assert one(store, "SELECT COUNT(*) FROM grade_acceptances") == [(2,)]
 
 
 def test_another_capture_s_saved_values_cannot_be_selected() -> None:

@@ -17,10 +17,12 @@ Each value's status compares it with its target's current value, as accepted sch
 "Saved", equal to it; "Matches an earlier saved value", equal to a value a newer one replaced;
 "Changed", it differs; "New", no target; "Needs your answer", a matching question is open;
 "Couldn't read", a cell is unreadable; "Shown in a newer report", a current report newer than the
-one its capture's rest joins supplied or showed its target. Only a New or Changed value can be
-selected, and a value that matches an earlier saved one only under the parent's choice of
-current for the new report a save makes. That choice starts on "Keep as an earlier report" when
-any value repeats one a newer report replaced, and on current otherwise.
+one its capture's rest joins supplied or showed its target. A row with a value that can't be read
+but whose identity reads still asks its question, or offers her results to choose from, and keeps
+"Couldn't read" before and after an answer, which records only which result it is. Only a New or
+Changed value can be selected, and a value that matches an earlier saved one only under the
+parent's choice of current for the new report a save makes. That choice starts on "Keep as an
+earlier report" when any value repeats one a newer report replaced, and on current otherwise.
 
 The questions a review asks are the identity of the student line, the first setup, the first
 month of a year not on record, and the class when no alias matches. The answers a page sends are
@@ -31,7 +33,7 @@ asked now, or a question left unanswered, saves nothing.
 import json
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Final, Literal, get_args
 
@@ -167,6 +169,7 @@ class ItemStatus(StrEnum):
     NEEDS_ANSWER = "needs_answer"
     """"Needs your answer": a matching question is open."""
     UNREADABLE = "unreadable"
+    """"Couldn't read": a cell is unreadable. Never offered, whether or not the row asks."""
     COVERED = "covered"
     """"Shown in a newer report": a New or Changed value this capture's rest can't change, since a
     current report newer than the one it joins supplied or showed its target. Not offered."""
@@ -696,8 +699,8 @@ def _resolved_rows(
     """Each row resolved: through this capture's acceptance or row records (identity only for a
     row it showed), by equal evidence, by a reused answer, by an answer bound to the question
     asked now or a choice bound to the results offered, as a new result, or with its question
-    open. A row whose identity reads but a value doesn't resolves only through its capture,
-    equal evidence or reuse, and can't be selected."""
+    open. A row whose identity reads but a value doesn't asks as any row does and stays
+    Couldn't read; a row with an unreadable cell whose identity doesn't read asks nothing."""
     held = on_record.held
     matching = _Matching(rows, on_record)
     answered = {answer.row_key: answer for answer in matches}
@@ -728,6 +731,12 @@ def _resolved_rows(
     free = tuple(result for result in held.latest if result not in matching.taken)
 
     def opened(row: _Row) -> ReviewItem:
+        item = asking(row)
+        if row.unreadable and item.status is not ItemStatus.UNREADABLE:
+            return replace(item, status=ItemStatus.UNREADABLE)
+        return item
+
+    def asking(row: _Row) -> ReviewItem:
         asked = matching.question(row)
         choices = free if row.identified else ()
         answer = answered.get(row.key)
@@ -763,7 +772,7 @@ def _resolved_rows(
             items.append(resolved(row, exact[row.key], "exact", None))
         elif row.key in reused:
             items.append(resolved(row, reused[row.key], "reused", None))
-        elif row.unreadable:
+        elif row.unreadable and not row.identified:
             items.append(ReviewItem(row.key, ItemStatus.UNREADABLE))
         else:
             items.append(opened(row))
