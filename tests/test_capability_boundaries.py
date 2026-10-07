@@ -45,6 +45,10 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "ctypes": "standard library; asks Windows whether a drive letter is a network share",
     "dataclasses": "standard library",
     "datetime": "standard library",
+    "decimal": (
+        "standard library; a grade report's numbers as exact decimals, for comparing values, "
+        "never for display"
+    ),
     "enum": "standard library",
     "fastapi": "the web framework; receives requests, never initiates them",
     "functools": "standard library",
@@ -62,7 +66,10 @@ ALLOWED_IMPORTS: dict[str, str] = {
         "see CLOSED_PREFIXES"
     ),
     "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
-    "hashlib": "standard library; tags the packaged stylesheet and script by their contents",
+    "hashlib": (
+        "standard library; tags the packaged stylesheet and script by their contents, and names "
+        "a pasted grade report by what it says, its capture key"
+    ),
     "hmac": (
         "standard library; signs and checks the household sign-in cookie, the result a save "
         "of the school's instructions carries to its page, and the answers a paste review "
