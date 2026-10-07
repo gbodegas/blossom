@@ -29,6 +29,7 @@ from blossom.grades.draft import (
     GradeValue,
     Presence,
     folded,
+    is_school_year,
     row_evidence,
 )
 from blossom.grades.identity import Identity, IdentityStatus
@@ -292,16 +293,26 @@ def review_from(
     )
 
 
+def is_current_context(setup: tuple[str, str]) -> bool:
+    """Whether a year and term a parent confirms as current are a school year's label and a
+    term."""
+    year, term = setup
+    return is_school_year(year) and bool(folded(term))
+
+
 def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
     """Whether ``answers`` answer the questions ``review`` asks and no other: the line's own
-    question with the form of the line read now, the setup offered, the first month of the year
-    asked about (left unconfirmed when absent), and one answer for a class no alias matched."""
+    question with the form of the line read now, a school year and term confirmed as current
+    when the setup is asked (the report's offered, any other allowed), the first month of the
+    year asked about (left unconfirmed when absent), and one answer for a class no alias matched."""
     identity = review.identity
     if answers.identity_form != identity.form:
         return False
     if answers.identity not in ANSWERS_FOR[identity.status]:
         return False
-    if answers.setup != review.setup:
+    if (answers.setup is None) != (review.setup is None):
+        return False
+    if answers.setup is not None and not is_current_context(answers.setup):
         return False
     if answers.first_month is not None:
         year, month = answers.first_month

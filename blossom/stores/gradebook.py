@@ -729,7 +729,10 @@ class GradebookRecords:
                 self.add_name_form(key, line, by)
         year, term = header.year_label, header.term_label
         if answers.setup is not None:
-            self._connection.execute(SET_CONTEXT, (student_id, year, term, by, now))
+            current_year, current_term = answers.setup
+            self._connection.execute(
+                SET_CONTEXT, (student_id, current_year, folded(current_term), by, now)
+            )
         if review.first_month is not None:
             month = None if answers.first_month is None else answers.first_month[1]
             self._connection.execute(

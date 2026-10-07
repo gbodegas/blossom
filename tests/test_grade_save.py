@@ -7,6 +7,7 @@ and each value's status. A save is one transaction that rechecks the page agains
 then writes the parent's selection with an acceptance record, or writes nothing and says why.
 """
 
+import dataclasses
 import pathlib
 import sqlite3
 from collections.abc import Callable, Collection
@@ -59,6 +60,8 @@ CHEMISTRY_DRAFT = draft_of(
 )
 """A report for another class in the same year and term."""
 UNREADABLE_DRAFT = draft_of(REPORT.replace("| 7.0     | 10.0    |", "| 7,0     | 10.0    |"))
+OLDER_DRAFT = draft_of(REPORT.replace("**2026-2027**", "**2025-2026**").replace("**T1**", "**T3**"))
+"""Last year's report for the class, imported first."""
 
 
 def in_memory() -> ProjectStateStore:
@@ -101,6 +104,34 @@ def statuses(review: GradeReview) -> list[ItemStatus]:
 
 def one(store: ProjectStateStore, sql: str, *values: object) -> list[tuple[object, ...]]:
     return store._connection.execute(sql, values).fetchall()
+
+
+def test_the_first_setup_confirms_the_year_and_term_current_now_not_the_report_s() -> None:
+    """An older report imported first leaves the parent free to confirm the year and term that
+    are current now; the report keeps its own, and the current context isn't moved by it."""
+    store = in_memory()
+    review = review_of(store, OLDER_DRAFT)
+    answers = dataclasses.replace(answers_to(review), setup=("2026-2027", " T1 "))
+    saved(save_grade(store, OLDER_DRAFT, key=KEY, review=review, answers=answers))
+
+    assert review.setup == ("2025-2026", "T3")
+    assert one(store, "SELECT year_label, term_label FROM grade_context") == [("2026-2027", "T1")]
+    assert one(store, "SELECT year_label, label FROM grade_terms") == [("2025-2026", "T3")]
+
+
+@pytest.mark.parametrize("setup", [("2026", "T1"), ("2026-2028", "T1"), ("2026-2027", "  ")])
+def test_a_setup_that_is_not_a_school_year_and_a_term_returns_the_review(
+    setup: tuple[str, str],
+) -> None:
+    store = in_memory()
+    review = review_of(store)
+    changes = store._connection.total_changes
+    answers = dataclasses.replace(answers_to(review), setup=setup)
+    returned(
+        save_grade(store, WREN_DRAFT, key=KEY, review=review, answers=answers),
+        ReturnReason.ANSWERS,
+    )
+    assert store._connection.total_changes == changes
 
 
 def returned(outcome: SaveOutcome, why: ReturnReason) -> GradeReview:
