@@ -65,15 +65,21 @@ ALREADY_TAKEN_UP = (
 CLOSED_BEFORE_UPDATE = "This request was closed before your update was added."
 ALREADY_CLOSED = "This request is already closed."
 FORM_ADDED_OTHER_WORDS = (
-    "This form already added an update with other words, so nothing was changed. Your words "
-    "are below in Add an update."
+    "This page already sent a different update. Your new message wasn't added. It is below in "
+    "Add an update."
 )
 NOT_TAKEN_UP_YET = (
-    "This request isn't taken up yet, so your update wasn't added. Your words are below."
+    "Choose I can help before adding an update. Your message wasn't added and is kept below."
 )
-UPDATE_NEEDS_WORDS = "An update needs some words. Nothing was added."
+UPDATE_NEEDS_WORDS = "Enter a message before adding an update."
 BAD_FORM = "The form did not arrive whole. Nothing was written."
 """What the family page says for each press on a request it can't make as asked."""
+ALREADY_TAKEN_UP_JSON = "This request was already taken up. Your words weren't added."
+FORM_ADDED_OTHER_WORDS_JSON = (
+    "This page already sent a different update. Your new message wasn't added."
+)
+NOT_TAKEN_UP_YET_JSON = "Choose I can help before adding an update. Your message wasn't added."
+"""The same refusals as JSON says them, with no place on a page in them."""
 
 
 def store_in_memory(clock: FrozenClock | None = None) -> HelpRequestsStore:
@@ -1854,6 +1860,23 @@ def test_every_refusal_of_a_parents_words_writes_nothing_and_keeps_them(case: st
         assert text.count(str(escape(typed))) == 1
 
 
+def test_a_new_update_may_repeat_earlier_words_and_the_same_one_sent_again_adds_nothing() -> None:
+    """Each Add an update form is one submission: a fresh form may say what an earlier one
+    said, and both are kept, while the same form sent again adds nothing."""
+    with browser() as client:
+        request_id = asked_for(client)
+        client.post(f"/parent/help-requests/{request_id}/accept", json={})
+        page = client.get(FAMILY).text
+        first = press(client, page, request_id, "update", "Synthetic same words")
+        again = press(client, page, request_id, "update", "Synthetic same words")
+        fresh = press(client, client.get(FAMILY).text, request_id, "update", "Synthetic same words")
+        kept = listed(client)[request_id]["updates"]
+
+    assert (first.status_code, again.status_code, fresh.status_code) == (303, 303, 303)
+    assert [update["body"] for update in kept] == ["Synthetic same words"] * 2
+    assert len({update["update_id"] for update in kept}) == 2
+
+
 @pytest.mark.parametrize("step", ["update", "resolve"])
 def test_an_update_or_closing_words_count_a_line_break_once_as_the_field_does(step: str) -> None:
     at_cap = "w" * 249 + "\n" + "w" * 250
@@ -1932,6 +1955,9 @@ def test_an_update_over_json_is_added_once_for_its_id_and_its_refusals_are_said(
         route = f"/parent/help-requests/{request_id}/update"
         early = client.post(route, json={"response": "Synthetic early"})
         client.post(f"/parent/help-requests/{request_id}/accept", json={})
+        retaken = client.post(
+            f"/parent/help-requests/{request_id}/accept", json={"response": "Synthetic new words"}
+        )
         form_id = uuid4().hex
         made = client.post(route, json={"response": "Synthetic update", "update_id": form_id})
         same = client.post(route, json={"response": "Synthetic update", "update_id": form_id})
@@ -1942,11 +1968,15 @@ def test_an_update_over_json_is_added_once_for_its_id_and_its_refusals_are_said(
         late = client.post(route, json={"response": "Synthetic late"})
         kept = listed(client)[request_id]
 
-    assert (early.status_code, early.json()["detail"]) == (409, NOT_TAKEN_UP_YET)
+    assert (early.status_code, early.json()["detail"]) == (409, NOT_TAKEN_UP_YET_JSON)
+    assert (retaken.status_code, retaken.json()["detail"]) == (409, ALREADY_TAKEN_UP_JSON)
     assert made.status_code == same.status_code == 200
     assert same.json() == made.json()
     assert made.json()["state"] == "accepted"
-    assert (other.status_code, other.json()["detail"]) == (409, FORM_ADDED_OTHER_WORDS)
+    assert (other.status_code, other.json()["detail"]) == (409, FORM_ADDED_OTHER_WORDS_JSON)
+    for answer in (early, retaken, other, blank, late):
+        for place in ("below", "above", "Add an update"):
+            assert place not in answer.json()["detail"], place
     assert (blank.status_code, blank.json()["detail"]) == (422, UPDATE_NEEDS_WORDS)
     assert malformed.status_code == 422
     assert (late.status_code, late.json()["detail"]) == (409, CLOSED_BEFORE_UPDATE)

@@ -305,13 +305,13 @@ ALREADY_TAKEN_UP: Final = (
 CLOSED_BEFORE_UPDATE: Final = "This request was closed before your update was added."
 ALREADY_CLOSED: Final = "This request is already closed."
 FORM_ADDED_OTHER_WORDS: Final = (
-    "This form already added an update with other words, so nothing was changed. Your words "
-    "are below in Add an update."
+    "This page already sent a different update. Your new message wasn't added. It is below in "
+    "Add an update."
 )
 NOT_TAKEN_UP_YET: Final = (
-    "This request isn't taken up yet, so your update wasn't added. Your words are below."
+    "Choose I can help before adding an update. Your message wasn't added and is kept below."
 )
-UPDATE_NEEDS_WORDS: Final = "An update needs some words. Nothing was added."
+UPDATE_NEEDS_WORDS: Final = "Enter a message before adding an update."
 """What a move on her request says when the request's state or the form refuses it. Each
 writes nothing, and the family page keeps the words as typed."""
 WORDS_BELOW: Final = frozenset({ALREADY_TAKEN_UP, FORM_ADDED_OTHER_WORDS, NOT_TAKEN_UP_YET})
@@ -331,9 +331,15 @@ WITHOUT_THE_PAGE: Final[dict[str, str]] = {
     PLAN_INTERRUPTED: (
         "Blossom couldn't finish a reliable plan this time. Her homework updates are saved."
     ),
+    ALREADY_TAKEN_UP: "This request was already taken up. Your words weren't added.",
+    FORM_ADDED_OTHER_WORDS: (
+        "This page already sent a different update. Your new message wasn't added."
+    ),
+    NOT_TAKEN_UP_YET: "Choose I can help before adding an update. Your message wasn't added.",
 }
-"""Each refusal written for the family page, as it reads where that page is not shown. Any
-other refusal reads the same in both places."""
+"""Each refusal written for the family page, as it reads where that page is not shown: on its
+stand-in, and in a JSON answer, which names no place on a page. Any other refusal reads the
+same in every place."""
 
 
 @dataclass(frozen=True)
@@ -841,6 +847,19 @@ def step_of(payload: HelpStep | None) -> tuple[str | None, str | None]:
     return (None, None) if payload is None else (payload.response, payload.update_id)
 
 
+def moved_over_json(
+    state: ApplicationState, request_id: str, step: str, payload: HelpStep | None
+) -> HelpRequestView:
+    """A move a JSON route makes, as the request reads after it, with a refusal said as it
+    reads where the family page is not shown."""
+    try:
+        moved = move_request(state, request_id, step, *step_of(payload))
+    except HTTPException as error:
+        said = str(error.detail)
+        raise HTTPException(error.status_code, detail=WITHOUT_THE_PAGE.get(said, said)) from error
+    return help_view(state, moved, notes_named_by(state, [moved]))
+
+
 @router.get("/help-requests")
 def help_requests(state: State) -> list[HelpRequestView]:
     """Every request she has open, oldest first, then those resolved within two weeks, each
@@ -855,8 +874,7 @@ def accept_help_request(
     request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
 ) -> HelpRequestView:
     """Take a request up, so her page says a parent is on it, any words its first update."""
-    moved = move_request(state, request_id, "accept", *step_of(payload))
-    return help_view(state, moved, notes_named_by(state, [moved]))
+    return moved_over_json(state, request_id, "accept", payload)
 
 
 @router.post("/help-requests/{request_id}/update")
@@ -864,8 +882,7 @@ def update_help_request(
     request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
 ) -> HelpRequestView:
     """Add an update to a request a parent has taken up; it stays open."""
-    moved = move_request(state, request_id, "update", *step_of(payload))
-    return help_view(state, moved, notes_named_by(state, [moved]))
+    return moved_over_json(state, request_id, "update", payload)
 
 
 @router.post("/help-requests/{request_id}/resolve")
@@ -873,8 +890,7 @@ def resolve_help_request(
     request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
 ) -> HelpRequestView:
     """Close a request, any words its last update; her page shows it for two weeks."""
-    moved = move_request(state, request_id, "resolve", *step_of(payload))
-    return help_view(state, moved, notes_named_by(state, [moved]))
+    return moved_over_json(state, request_id, "resolve", payload)
 
 
 # --------------------------------------------------------------------- the page

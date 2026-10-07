@@ -715,7 +715,7 @@ def test_the_plan_button_follows_the_evening_as_it_stands() -> None:
     assert "Your next plan will use up to 75 minutes." in signaled_no_plan
 
     assert ">Plan again<" in small_plan_signaled
-    assert "Your saved plan already uses the 75-minute limit." in small_plan_signaled
+    assert "Your saved plan fits within today's 75-minute limit." in small_plan_signaled
     assert "Your next plan will use up to" not in small_plan_signaled
     assert "Make a smaller plan" not in small_plan_signaled
 

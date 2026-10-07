@@ -21,6 +21,7 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 from starlette.routing import BaseRoute
 
 from blossom.app import create_app
@@ -50,8 +51,9 @@ from tests.support import (
 PAGE = "/student/due-this-week"
 NAMED_REMOVED = f"{PAGE}?signal=removed"
 """An address that names a removal no press of hers made."""
-LANDED = (f"{PAGE}?landing={{landing}}", student_routes.SIGNAL_REMOVED)
-"""Where her Undo sends her, its landing new for each press, and the mark it leaves there."""
+LANDED = (f"{PAGE}?landing={{landing}}#too-much-state", student_routes.SIGNAL_REMOVED)
+"""Where her Undo sends her, its landing new for each press, at the line that says what
+stands, and the mark it leaves there."""
 UNDO = "Undo 'Too much right now'"
 TOO_MUCH = "/student/actions/too-much"
 TAKE_BACK = "/student/actions/take-back/"
@@ -61,9 +63,9 @@ JSON_TYPE = {"Content-Type": "application/json"}
 FORM_TYPE = {"Content-Type": "application/x-www-form-urlencoded"}
 OVERLONG = b'{"detail": "' + b"x" * (DETAIL_MAX_LENGTH + 1) + b'"}'
 ABSENT = "0" * 32
-REFUSAL = "Sign in as the student to say today is too much or take it back."
+REFUSAL = "Sign in as the student to press Too much right now or Undo 'Too much right now'."
 REFUSED_AT_THE_TOP = (
-    f'<p class="problem week-problem" role="alert" tabindex="-1" autofocus>{REFUSAL}</p>'
+    f'<p class="problem week-problem" role="alert" tabindex="-1" autofocus>{escape(REFUSAL)}</p>'
 )
 """A parent's refused press said on her week: no card holds it, so it is the top line's,
 the one alert and the one focus."""
@@ -355,7 +357,7 @@ def test_a_parents_page_press_reads_no_form(
         after = rows(client)
 
     assert answer.status_code == 403
-    assert REFUSAL in answer.text
+    assert escape(REFUSAL) in answer.text
     assert after == before
 
 
@@ -567,9 +569,12 @@ def test_a_parent_who_opens_the_page_her_undo_landed_on_reads_no_removal(
 
     assert pressed.status_code == 303
     assert opened.status_code == 200
-    assert "removed your request" not in opened.text
-    assert "<strong>She said it was too much</strong> at" in opened.text
-    assert "removed your request" not in hers_after
+    assert "That request isn't active" not in opened.text
+    assert (
+        "<strong>A shorter plan is requested for today.</strong> She said it was too much at"
+        in opened.text
+    )
+    assert "That request isn't active" not in hers_after
     assert "<strong>A shorter plan is requested for today.</strong>" in hers_after
     landing = landing_in(pressed.headers["location"])
     cleared = f'{student_routes.landing_cookie(landing)}=""; '
@@ -631,10 +636,15 @@ def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
     assert "Take it back</button>" not in signaled
     assert UNDO not in signaled
     assert "Remove</button>" not in signaled
-    assert "removed your request" not in named_removed
-    assert "requested for today" not in signaled + named_removed
-    assert "<strong>She said it was too much</strong> at" in signaled
-    assert "Her next plan for today is held to 75 minutes instead of 150." in signaled
+    assert "That request isn't active" not in named_removed
+    assert 'id="too-much-state"' not in signaled + named_removed
+    assert "still requested" not in signaled + named_removed
+    assert signaled.count("requested for today") == 1
+    assert (
+        "<strong>A shorter plan is requested for today.</strong> She said it was too much at"
+        in signaled
+    )
+    assert "Her next plan will use up to 75 minutes instead of 150." in signaled
     assert "Nothing has been planned yet; the next plan will be the shorter one." in signaled
     assert signaled.count("She added <q>a late night</q>.") == 2
     assert signaled.count("She added <q>the essay and two quizzes</q>.") == 1

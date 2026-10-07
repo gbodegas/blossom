@@ -356,8 +356,8 @@ def test_todays_latest_plan_is_marked_on_both_pages_whatever_was_decided(decisio
         assert anchor_for(record.draft_id) not in queue
         assert anchor_for(record.draft_id) in rest
         assert anchor_for(record.draft_id) not in earlier
-        assert "Reason: Start with the outline." in rest
-        assert "Reason: Start with the outline.." not in rest
+        assert "Note about this plan: Start with the outline." in rest
+        assert "Note about this plan: Start with the outline.." not in rest
         assert "No earlier plans yet." in earlier
 
 

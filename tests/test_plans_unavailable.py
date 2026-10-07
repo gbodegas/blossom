@@ -265,7 +265,9 @@ def test_each_signed_in_reader_meets_the_same_page_in_their_own_words(
         assert "A change is asked for; plan again when you are ready." in today
         assert "<q>Start with the outline.</q>" in today
     else:
-        assert "<strong>Change asked.</strong> Reason: Start with the outline." in today
+        assert (
+            "<strong>Change asked.</strong> Note about this plan: Start with the outline." in today
+        )
     assert plan_on(today, made).count(DATES_UNREAD) == 1
 
 

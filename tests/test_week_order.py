@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
 from blossom.plans import DailyPlan
@@ -127,7 +128,9 @@ OTHER_WEEK_SENTENCE: Final = (
 NO_PLAN_YET: Final = "No plan for today yet."
 EMPTY_WEEK: Final = "No assignments are recorded as due this week."
 NOT_HERS: Final = "Sign in as the student to update."
-NOT_HERS_TO_SIGNAL: Final = "Sign in as the student to say today is too much or take it back."
+NOT_HERS_TO_SIGNAL: Final = (
+    "Sign in as the student to press Too much right now or Undo 'Too much right now'."
+)
 NOT_ON_RECORD: Final = "That assignment is not on record, so nothing was changed."
 SAVED_ELSEWHERE: Final = "An update was saved on another device. Review it before saving yours."
 
@@ -1236,7 +1239,7 @@ def test_a_page_of_hers_pressed_after_a_parent_signs_in_is_refused_at_the_top_wi
     assert answer.status_code == 403
     assert after_it == before
     assert "<h1>Student week</h1>" in answer.text
-    said = NOT_HERS_TO_SIGNAL if press in STALE[-3:] else NOT_HERS
+    said = escape(NOT_HERS_TO_SIGNAL) if press in STALE[-3:] else NOT_HERS
     check_top_focus(answer, said)
 
 
