@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""The part of the record's store that keeps her student record for grade reports and the name
-forms a parent confirmed as hers.
+"""The part of the record's store that keeps her grade reports: her student record, the name
+forms a parent confirmed as hers, and the reports a parent accepted, with what each save did.
 
 Mixed into the store of the record, which supplies the connection, the lock, the clock, and the
 transaction that reserves the writer before it reads. Her record is one row, the schema allows
@@ -9,23 +9,81 @@ no second: a random ID, made at the first start that opens the file with these t
 changed, and the key check, empty until the first confirmed form. A confirmed form is a keyed
 hash of a student line, never the line. Every row carries her student ID, and nothing is read
 under another. Nothing here changes any other table.
+
+A save of a report is one write: a recorded acceptance ID returns what it recorded, a
+changed class and term or an answer to a question the review doesn't ask now returns the
+review, and otherwise the answers, the selected values and an acceptance record are written
+together.
+
+Every grade write goes through one entry: the store's lock, the writer's transaction (its own,
+or a caller's it joins), and one savepoint around the whole write. A failure leaves none of the
+write behind, inside a caller's transaction too, and the caller's other work there stays. When
+SQLite itself ends a caller's transaction, everything in it is gone, and the caller hears that
+its transaction was lost, never a refusal it might go on from.
 """
 
+import json
 import secrets
 import sqlite3
 import threading
-from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+import uuid
+from collections.abc import Callable, Collection, Iterator
+from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Final, Literal, cast, get_args
 
 from blossom.clock import Clock
+from blossom.grades.draft import (
+    GradeReportDraft,
+    GradeValue,
+    ReportHeader,
+    folded,
+    row_evidence,
+)
 from blossom.grades.identity import Identity, IdentityStatus, identity_among, key_check
+from blossom.grades.review import (
+    TERM_KEY,
+    AlreadyRecorded,
+    GradeAnswers,
+    GradeReportSaved,
+    GradeReview,
+    IdentityAnswer,
+    ItemStatus,
+    NotHers,
+    OnRecord,
+    ReturnReason,
+    ReviewPage,
+    ReviewReturned,
+    SaveOutcome,
+    answers_asked,
+    category_keys,
+    evidence_text,
+    review_from,
+    row_key,
+)
 
-GRADEBOOK_TABLES: Final = ("grade_student", "grade_name_forms")
+GRADEBOOK_TABLES: Final = (
+    "grade_student",
+    "grade_name_forms",
+    "grade_context",
+    "grade_years",
+    "grade_terms",
+    "grade_classes",
+    "grade_class_aliases",
+    "grade_reports",
+    "grade_term_observations",
+    "grade_category_observations",
+    "grade_results",
+    "grade_result_observations",
+    "grade_match_decisions",
+    "grade_scope_revisions",
+    "grade_acceptances",
+)
 """Every table a grade write may change. Every other table of the file, and the checkpoint and
 trace files, are a closed world no grade write touches."""
+TEXT_KIND: Final = "grade_text"
+"""The kind of an acceptance of a pasted report, whose source key is its capture key."""
 
 ConfirmedBy = Literal["parent", "household"]
 """Who confirmed a name: a parent, or the household while the sign-in is off, when a page can't
@@ -64,19 +122,367 @@ ADD_FORM: Final = (
 DROP_HER_FORMS: Final = "DELETE FROM grade_name_forms WHERE student_id = ?"
 SET_KEY_CHECK: Final = "UPDATE grade_student SET key_check = ? WHERE student_id = ?"
 
+WHO: Final = "IN ('parent', 'household')"
+CREATE_REPORT_TABLES: Final = (
+    f"""
+CREATE TABLE IF NOT EXISTS grade_context (
+    student_id TEXT PRIMARY KEY,
+    year_label TEXT NOT NULL,
+    term_label TEXT NOT NULL,
+    set_by TEXT NOT NULL CHECK (set_by {WHO}),
+    set_at TEXT NOT NULL
+)
+""",
+    f"""
+CREATE TABLE IF NOT EXISTS grade_years (
+    student_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    first_month INTEGER CHECK (first_month BETWEEN 1 AND 12),
+    first_month_by TEXT CHECK (first_month_by {WHO}),
+    made_at TEXT NOT NULL,
+    PRIMARY KEY (student_id, label),
+    CHECK ((first_month IS NULL) = (first_month_by IS NULL))
+)
+""",
+    """
+CREATE TABLE IF NOT EXISTS grade_terms (
+    student_id TEXT NOT NULL,
+    year_label TEXT NOT NULL,
+    label TEXT NOT NULL,
+    made_at TEXT NOT NULL,
+    PRIMARY KEY (student_id, year_label, label)
+)
+""",
+    f"""
+CREATE TABLE IF NOT EXISTS grade_classes (
+    class_id TEXT PRIMARY KEY,
+    student_id TEXT NOT NULL,
+    year_label TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    made_by TEXT NOT NULL CHECK (made_by {WHO}),
+    made_at TEXT NOT NULL
+)
+""",
+    f"""
+CREATE TABLE IF NOT EXISTS grade_class_aliases (
+    student_id TEXT NOT NULL,
+    year_label TEXT NOT NULL,
+    matched_as TEXT NOT NULL,
+    class_id TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT,
+    added_by TEXT NOT NULL CHECK (added_by {WHO}),
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (student_id, year_label, matched_as)
+)
+""",
+    """
+CREATE TABLE IF NOT EXISTS grade_reports (
+    report_id TEXT PRIMARY KEY,
+    student_id TEXT NOT NULL,
+    class_id TEXT NOT NULL,
+    term_label TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    acceptance_order INTEGER NOT NULL CHECK (acceptance_order >= 1),
+    use TEXT NOT NULL CHECK (use IN ('current', 'earlier')),
+    reader TEXT NOT NULL CHECK (reader IN ('text', 'screenshot')),
+    imported_at TEXT NOT NULL,
+    as_of TEXT,
+    result_rows INTEGER NOT NULL CHECK (result_rows >= 0),
+    UNIQUE (student_id, class_id, term_label, acceptance_order)
+)
+""",
+    """
+CREATE TABLE IF NOT EXISTS grade_term_observations (
+    report_id TEXT PRIMARY KEY,
+    student_id TEXT NOT NULL,
+    percent_text TEXT NOT NULL,
+    percent_presence TEXT NOT NULL,
+    letter_text TEXT NOT NULL,
+    letter_presence TEXT NOT NULL
+)
+""",
+    """
+CREATE TABLE IF NOT EXISTS grade_category_observations (
+    report_id TEXT NOT NULL,
+    category_key TEXT NOT NULL,
+    student_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    name_text TEXT NOT NULL,
+    name_presence TEXT NOT NULL,
+    weight_text TEXT NOT NULL,
+    weight_presence TEXT NOT NULL,
+    average_text TEXT NOT NULL,
+    average_presence TEXT NOT NULL,
+    PRIMARY KEY (report_id, category_key)
+)
+""",
+    """
+CREATE TABLE IF NOT EXISTS grade_results (
+    result_id TEXT PRIMARY KEY,
+    student_id TEXT NOT NULL,
+    class_id TEXT NOT NULL,
+    term_label TEXT NOT NULL,
+    made_at TEXT NOT NULL
+)
+""",
+    """
+CREATE TABLE IF NOT EXISTS grade_result_observations (
+    report_id TEXT NOT NULL,
+    result_id TEXT NOT NULL,
+    student_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    category_text TEXT NOT NULL,
+    category_presence TEXT NOT NULL,
+    assignment_text TEXT NOT NULL,
+    assignment_presence TEXT NOT NULL,
+    points_text TEXT NOT NULL,
+    points_presence TEXT NOT NULL,
+    max_points_text TEXT NOT NULL,
+    max_points_presence TEXT NOT NULL,
+    average_text TEXT NOT NULL,
+    average_presence TEXT NOT NULL,
+    status_text TEXT NOT NULL,
+    status_presence TEXT NOT NULL,
+    due_text TEXT NOT NULL,
+    due_presence TEXT NOT NULL,
+    curve_text TEXT NOT NULL,
+    curve_presence TEXT NOT NULL,
+    bonus_text TEXT NOT NULL,
+    bonus_presence TEXT NOT NULL,
+    penalty_text TEXT NOT NULL,
+    penalty_presence TEXT NOT NULL,
+    weight_text TEXT NOT NULL,
+    weight_presence TEXT NOT NULL,
+    note_text TEXT NOT NULL,
+    note_presence TEXT NOT NULL,
+    PRIMARY KEY (report_id, result_id)
+)
+""",
+    f"""
+CREATE TABLE IF NOT EXISTS grade_match_decisions (
+    report_id TEXT NOT NULL,
+    row_key TEXT NOT NULL,
+    student_id TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    occurrence INTEGER NOT NULL CHECK (occurrence >= 1),
+    result_id TEXT,
+    how TEXT NOT NULL CHECK (
+        how IN ('new', 'same_capture', 'exact', 'reused', 'answer', 'chosen', 'different')
+    ),
+    rejected TEXT,
+    decided_by TEXT NOT NULL CHECK (decided_by {WHO}),
+    decided_at TEXT NOT NULL,
+    PRIMARY KEY (report_id, row_key),
+    CHECK ((how = 'different') = (result_id IS NULL)),
+    CHECK ((how = 'different') = (rejected IS NOT NULL))
+)
+""",
+    """
+CREATE TABLE IF NOT EXISTS grade_scope_revisions (
+    student_id TEXT NOT NULL,
+    class_id TEXT NOT NULL,
+    term_label TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    PRIMARY KEY (student_id, class_id, term_label)
+)
+""",
+    f"""
+CREATE TABLE IF NOT EXISTS grade_acceptances (
+    acceptance_id TEXT PRIMARY KEY,
+    student_id TEXT NOT NULL,
+    kind TEXT NOT NULL
+        CHECK (kind IN ('grade_text', 'grade_screenshot', 'homework_screenshot')),
+    source_key TEXT NOT NULL,
+    report_id TEXT,
+    accepted TEXT NOT NULL,
+    identity_status TEXT NOT NULL,
+    identity_answer TEXT NOT NULL,
+    identity_form TEXT,
+    added INTEGER NOT NULL,
+    updated INTEGER NOT NULL,
+    already_saved INTEGER NOT NULL,
+    left_to_check INTEGER NOT NULL,
+    shown INTEGER NOT NULL CHECK (shown >= 0),
+    answers_kept INTEGER NOT NULL CHECK (answers_kept >= 0),
+    complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+    accepted_at TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role {WHO})
+)
+""",
+)
+"""The tables a save of a report writes, each row carrying her student ID.
+
+A report keeps its number of result rows. A row record names the result its row resolved to and
+how: automatically (``same_capture``, ``exact``, ``reused``), by the parent's answer (``answer``,
+or ``chosen`` from her assignments), or ``new``. A remembered "A different assignment" is
+``different``: it names no result, and ``rejected`` keeps the candidates it turned down, each
+with its matching evidence. An acceptance keeps its counts of rows recorded as shown and answers
+kept, and whether its reading was complete. Until the reader reports where its unrecognized
+lines fell, no reading counts as complete, so every acceptance records 0."""
+
+CONTEXT_ON_RECORD: Final = "SELECT 1 FROM grade_context WHERE student_id = ?"
+YEAR_ON_RECORD: Final = "SELECT 1 FROM grade_years WHERE student_id = ? AND label = ?"
+ALIAS_MATCHED: Final = (
+    "SELECT class_id FROM grade_class_aliases "
+    "WHERE student_id = ? AND year_label = ? AND matched_as = ?"
+)
+CLASSES_OF_YEAR: Final = (
+    "SELECT class_id, display_name FROM grade_classes WHERE student_id = ? AND year_label = ? "
+    "ORDER BY display_name, class_id"
+)
+REVISION_OF: Final = (
+    "SELECT revision FROM grade_scope_revisions "
+    "WHERE student_id = ? AND class_id = ? AND term_label = ?"
+)
+ANOTHER_CAPTURE: Final = (
+    "SELECT 1 FROM grade_reports "
+    "WHERE student_id = ? AND class_id = ? AND term_label = ? AND source_key != ? LIMIT 1"
+)
+ACCEPTED_FROM_SOURCE: Final = (
+    "SELECT accepted FROM grade_acceptances WHERE student_id = ? AND kind = ? AND source_key = ?"
+)
+RECORDED: Final = (
+    "SELECT source_key, report_id, accepted, added, updated, already_saved, left_to_check, "
+    "shown, answers_kept FROM grade_acceptances WHERE student_id = ? AND acceptance_id = ?"
+)
+SET_CONTEXT: Final = (
+    "INSERT INTO grade_context (student_id, year_label, term_label, set_by, set_at) "
+    "VALUES (?, ?, ?, ?, ?)"
+)
+ADD_YEAR: Final = (
+    "INSERT INTO grade_years (student_id, label, first_month, first_month_by, made_at) "
+    "VALUES (?, ?, ?, ?, ?)"
+)
+ADD_TERM: Final = (
+    "INSERT OR IGNORE INTO grade_terms (student_id, year_label, label, made_at) VALUES (?, ?, ?, ?)"
+)
+ADD_CLASS: Final = (
+    "INSERT INTO grade_classes (class_id, student_id, year_label, display_name, made_by, made_at) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
+)
+ADD_ALIAS: Final = (
+    "INSERT INTO grade_class_aliases "
+    "(student_id, year_label, matched_as, class_id, code, name, added_by, added_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+)
+LATEST_OF_CAPTURE: Final = (
+    "SELECT report_id FROM grade_reports "
+    "WHERE student_id = ? AND class_id = ? AND term_label = ? AND source_key = ? "
+    "ORDER BY acceptance_order DESC LIMIT 1"
+)
+NEXT_ORDER: Final = (
+    "SELECT COALESCE(MAX(acceptance_order), 0) + 1 FROM grade_reports "
+    "WHERE student_id = ? AND class_id = ? AND term_label = ?"
+)
+ADD_REPORT: Final = (
+    "INSERT INTO grade_reports (report_id, student_id, class_id, term_label, source_key, "
+    "acceptance_order, use, reader, imported_at, as_of, result_rows) "
+    "VALUES (?, ?, ?, ?, ?, ?, 'current', 'text', ?, NULL, ?)"
+)
+ADD_TERM_OBSERVATION: Final = (
+    "INSERT INTO grade_term_observations (report_id, student_id, percent_text, "
+    "percent_presence, letter_text, letter_presence) VALUES (?, ?, ?, ?, ?, ?)"
+)
+ADD_CATEGORY_OBSERVATION: Final = (
+    "INSERT INTO grade_category_observations (report_id, category_key, student_id, position, "
+    "name_text, name_presence, weight_text, weight_presence, average_text, average_presence) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+ADD_RESULT: Final = (
+    "INSERT INTO grade_results (result_id, student_id, class_id, term_label, made_at) "
+    "VALUES (?, ?, ?, ?, ?)"
+)
+ADD_RESULT_OBSERVATION: Final = (
+    "INSERT INTO grade_result_observations (report_id, result_id, student_id, position, "
+    "category_text, category_presence, assignment_text, assignment_presence, points_text, "
+    "points_presence, max_points_text, max_points_presence, average_text, average_presence, "
+    "status_text, status_presence, due_text, due_presence, curve_text, curve_presence, "
+    "bonus_text, bonus_presence, penalty_text, penalty_presence, weight_text, weight_presence, "
+    "note_text, note_presence) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+ADD_MATCH_DECISION: Final = (
+    "INSERT INTO grade_match_decisions (report_id, row_key, student_id, evidence, occurrence, "
+    "result_id, how, decided_by, decided_at) VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?)"
+)
+RAISE_REVISION: Final = (
+    "INSERT INTO grade_scope_revisions (student_id, class_id, term_label, revision) "
+    "VALUES (?, ?, ?, 1) "
+    "ON CONFLICT (student_id, class_id, term_label) DO UPDATE SET revision = revision + 1"
+)
+ADD_ACCEPTANCE: Final = (
+    "INSERT INTO grade_acceptances (acceptance_id, student_id, kind, source_key, report_id, "
+    "accepted, identity_status, identity_answer, identity_form, added, updated, already_saved, "
+    "left_to_check, shown, answers_kept, complete, accepted_at, role) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
+)
+
+
+def new_acceptance_id() -> str:
+    """A one-time ID for a review page, which a save of that page is recorded under."""
+    return f"acceptance-{uuid.uuid4().hex}"
+
+
+def matched_as(header: ReportHeader) -> str:
+    """How a class alias is matched: the class code and name as written, with spaces and case
+    folded."""
+
+    def fold(text: str | None) -> str | None:
+        return None if text is None else folded(text).casefold()
+
+    return json.dumps([fold(header.class_code), fold(header.class_name)], ensure_ascii=False)
+
+
+OPEN_SAVEPOINT: Final = "SAVEPOINT grade_save"
+"""The savepoint every grade write runs inside, written out whole, as are the two statements
+that end it. A write nested in another opens its own under the same name, and SQLite takes the
+latest."""
+RELEASE_SAVEPOINT: Final = "RELEASE grade_save"
+UNDO_SAVEPOINT: Final = "ROLLBACK TO grade_save"
+
+
+@dataclass
+class Boundary:
+    """What became of one savepoint's write after a failure: the failure itself, and whether the
+    write was taken back with the transaction still active."""
+
+    taken_back: bool = True
+    failure: BaseException | None = None
+
 
 @contextmanager
-def all_or_none(connection: sqlite3.Connection) -> Iterator[None]:
-    """The writes in the block land together or not at all, inside a caller's transaction too: a
-    failure takes back what the block began before it goes on, so no caller commits half."""
-    connection.execute("SAVEPOINT name_forms")
+def all_or_none(connection: sqlite3.Connection) -> Iterator[Boundary]:
+    """The writes in the block land together or not at all, inside a caller's transaction too.
+
+    It opens only inside a transaction, so the writer's ``BEGIN IMMEDIATE`` stays the only begin
+    and its commit the only commit. A failure, the savepoint's own release included, takes back
+    what the block began before it goes on. ``taken_back`` says whether that worked: it can't
+    when SQLite has ended the transaction, or refuses the rollback."""
+    if not connection.in_transaction:
+        msg = "a grade write's savepoint opens only inside the writer's transaction"
+        raise RuntimeError(msg)
+    boundary = Boundary()
+    connection.execute(OPEN_SAVEPOINT)
     try:
-        yield
-    except BaseException:
-        connection.execute("ROLLBACK TO name_forms")
-        connection.execute("RELEASE name_forms")
+        yield boundary
+        connection.execute(RELEASE_SAVEPOINT)
+    except BaseException as error:
+        boundary.failure = error
+        boundary.taken_back = connection.in_transaction and _rolled_back(connection)
         raise
-    connection.execute("RELEASE name_forms")
+
+
+def _rolled_back(connection: sqlite3.Connection) -> bool:
+    """Whether the latest savepoint's writes were taken back. A release refused after that leaves
+    an empty savepoint, which holds nothing."""
+    try:
+        connection.execute(UNDO_SAVEPOINT)
+    except sqlite3.Error:
+        return False
+    with suppress(sqlite3.Error):
+        connection.execute(RELEASE_SAVEPOINT)
+    return True
 
 
 def new_student_id() -> str:
@@ -98,7 +504,32 @@ class AnswerNotAsked(ValueError):
 
 
 class NameFormNotSaved(RuntimeError):
-    """The file refused a write of her name forms; whatever was begun was rolled back with it."""
+    """The file refused a write of her name forms. Nothing of the write remains, and a caller's
+    transaction it joined is still open, with the caller's other work in it."""
+
+
+class GradeReportNotSaved(RuntimeError):
+    """The file refused a save of a report. Nothing of the save remains, and a caller's
+    transaction it joined is still open, with the caller's other work in it."""
+
+
+class GradeTransactionLost(RuntimeError):
+    """A grade write's transaction can't be trusted, and the operation must be abandoned: SQLite
+    ended it, which rolled back all its uncommitted work, a caller's earlier work included, or
+    the cleanup after a failure itself failed. Not a refusal, and no claim that a caller's work
+    was kept. The original error is its cause."""
+
+
+def _report_refused(error: BaseException) -> Exception:
+    return GradeReportNotSaved(f"the grade report could not be saved: {type(error).__name__}")
+
+
+def _form_refused(error: BaseException) -> Exception:
+    return NameFormNotSaved(f"the name form could not be saved: {type(error).__name__}")
+
+
+def _confirmation_refused(error: BaseException) -> Exception:
+    return NameFormNotSaved(f"her name could not be confirmed again: {type(error).__name__}")
 
 
 @dataclass(frozen=True)
@@ -128,14 +559,64 @@ class GradebookRecords:
     _connection: sqlite3.Connection
     _lock: "threading.RLock"
     _clock: Clock
+    _grade_depth: int = 0
+    """How many grade writes are open, nested, under the lock; only the outermost answers."""
 
     def _writing(self) -> AbstractContextManager[None]:
         raise NotImplementedError
+
+    def comparing_and_writing(self) -> AbstractContextManager[None]:
+        """The store's lock and its reserved writer, which the store of the record supplies. A
+        writer reserved by ``BEGIN IMMEDIATE`` holds out other connections; a caller's deferred
+        transaction is joined without that, and a write can then meet a busy file."""
+        raise NotImplementedError
+
+    @contextmanager
+    def _grade_write(self, refused: Callable[[BaseException], Exception]) -> Iterator[None]:
+        """Every grade write's one entry: the store's lock, the writer's transaction (its own,
+        or a caller's it joins), and one savepoint around the whole write (``all_or_none``).
+
+        Entries nest, and only the outermost decides what its caller hears when the write fails,
+        from the transaction's actual state, never the error's code: SQLite's errors may end a
+        transaction, and don't always. When the rollback to the savepoint worked with the
+        transaction still active, nothing of the write remains and a caller's earlier work
+        stays: a refusal of the file is ``refused(error)``, and any other exception is raised as
+        itself. When SQLite ended the transaction, or a cleanup failed, it raises
+        ``GradeTransactionLost`` from the original error: the caller abandons the operation,
+        never treating it as a refusal. A joined write's outcome stands only once the caller's
+        own block commits."""
+        with self._lock:
+            outermost = self._grade_depth == 0
+            joined = self._connection.in_transaction
+            boundary: Boundary | None = None
+            self._grade_depth += 1
+            try:
+                with self._writing(), all_or_none(self._connection) as boundary:
+                    yield
+            except BaseException as error:
+                if not outermost:
+                    raise
+                original = (
+                    error if boundary is None or boundary.failure is None else boundary.failure
+                )
+                cleaned = boundary is None or boundary.taken_back
+                if not cleaned or (not joined and self._connection.in_transaction):
+                    msg = (
+                        f"the transaction holding a grade write was lost: {type(original).__name__}"
+                    )
+                    raise GradeTransactionLost(msg) from original
+                if isinstance(error, sqlite3.Error):
+                    raise refused(error) from error
+                raise
+            finally:
+                self._grade_depth -= 1
 
     def _create_gradebook_tables(self) -> None:
         """The tables, and her record on a file without one, in the caller's transaction."""
         self._connection.execute(CREATE_STUDENT)
         self._connection.execute(CREATE_NAME_FORMS)
+        for statement in CREATE_REPORT_TABLES:
+            self._connection.execute(statement)
         if self._connection.execute(STUDENT_ON_RECORD).fetchone() is None:
             self._connection.execute(MAKE_STUDENT, (new_student_id(), self._stamp()))
 
@@ -167,26 +648,21 @@ class GradebookRecords:
         is kept, and the first form sets the key check. A form already confirmed writes nothing;
         any other question about the line, a replaced key's included, is ``AnswerNotAsked``."""
         confirmer = _confirmer(role)
-        try:
-            with self._lock, self._writing():
-                student_id, check, forms = self._her_name_record()
-                identity = identity_among(key, student_line, check=check, forms=forms)
-                if identity.form is None:
-                    raise AnswerNotAsked(identity)
-                if identity.status is IdentityStatus.MATCHES:
-                    return NameFormStood(identity.form)
-                if identity.status not in (IdentityStatus.FIRST_USE, IdentityStatus.NOT_CONFIRMED):
-                    raise AnswerNotAsked(identity)
-                with all_or_none(self._connection):
-                    self._connection.execute(
-                        ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
-                    )
-                    if check is None:
-                        self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
-                return NameFormAdded(identity.form)
-        except sqlite3.Error as error:
-            msg = f"the name form could not be saved: {type(error).__name__}"
-            raise NameFormNotSaved(msg) from error
+        with self._grade_write(_form_refused):
+            student_id, check, forms = self._her_name_record()
+            identity = identity_among(key, student_line, check=check, forms=forms)
+            if identity.form is None:
+                raise AnswerNotAsked(identity)
+            if identity.status is IdentityStatus.MATCHES:
+                return NameFormStood(identity.form)
+            if identity.status not in (IdentityStatus.FIRST_USE, IdentityStatus.NOT_CONFIRMED):
+                raise AnswerNotAsked(identity)
+            self._connection.execute(
+                ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
+            )
+            if check is None:
+                self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
+            return NameFormAdded(identity.form)
 
     def confirm_name_again(
         self, key: bytes, student_line: str, role: ConfirmedBy
@@ -195,30 +671,361 @@ class GradebookRecords:
         replaced by this line's, and the key check by one under ``key``, together. A line that
         already matches writes nothing; any other question is ``AnswerNotAsked``."""
         confirmer = _confirmer(role)
-        try:
-            with self._lock, self._writing():
-                student_id, check, forms = self._her_name_record()
-                identity = identity_among(key, student_line, check=check, forms=forms)
-                if identity.form is None:
-                    raise AnswerNotAsked(identity)
-                if identity.status is IdentityStatus.MATCHES:
-                    return NameFormStood(identity.form)
-                if identity.status is not IdentityStatus.CONFIRM_AGAIN:
-                    raise AnswerNotAsked(identity)
-                with all_or_none(self._connection):
-                    self._connection.execute(DROP_HER_FORMS, (student_id,))
-                    self._connection.execute(
-                        ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
-                    )
-                    self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
-                return NameConfirmedAgain(identity.form)
-        except sqlite3.Error as error:
-            msg = f"her name could not be confirmed again: {type(error).__name__}"
-            raise NameFormNotSaved(msg) from error
+        with self._grade_write(_confirmation_refused):
+            student_id, check, forms = self._her_name_record()
+            identity = identity_among(key, student_line, check=check, forms=forms)
+            if identity.form is None:
+                raise AnswerNotAsked(identity)
+            if identity.status is IdentityStatus.MATCHES:
+                return NameFormStood(identity.form)
+            if identity.status is not IdentityStatus.CONFIRM_AGAIN:
+                raise AnswerNotAsked(identity)
+            self._connection.execute(DROP_HER_FORMS, (student_id,))
+            self._connection.execute(
+                ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
+            )
+            self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
+            return NameConfirmedAgain(identity.form)
+
+    def review_grade_report(
+        self, draft: GradeReportDraft, source_key: str, *, key: bytes
+    ) -> GradeReview:
+        """What saving ``draft`` would do, under a fresh acceptance ID: the identity of its
+        line, its setup questions, the scope revision, and each value's status. A read alone."""
+        with self._lock:
+            return self._review_locked(draft, source_key, key, same_class=None)
+
+    def save_grade_report(
+        self,
+        draft: GradeReportDraft,
+        source_key: str,
+        *,
+        key: bytes,
+        page: ReviewPage,
+        answers: GradeAnswers,
+        selection: Collection[str],
+        role: ConfirmedBy,
+    ) -> SaveOutcome:
+        """The parent's save of the values ``selection`` names, as one grade write: inside its
+        own transaction, or a caller's it joins, where a failure leaves none of it (see
+        ``_grade_write``). A recorded acceptance ID returns its outcome; a changed revision, an
+        answer to no question asked now, or a value not New returns the review; each of these
+        writes nothing."""
+        confirmer = _confirmer(role)
+        chosen = frozenset(selection)
+        with self._grade_write(_report_refused):
+            student_id = self._her_name_record()[0]
+            recorded = self._recorded(student_id, page.acceptance_id)
+            if recorded is not None:
+                outcome, recorded_source = recorded
+                covered = {item_key for item_key, _ in outcome.accepted}
+                if recorded_source != source_key:
+                    covered = set()
+                return AlreadyRecorded(outcome, chosen - covered)
+            if answers.identity is IdentityAnswer.NOT_HERS:
+                return NotHers()
+            review = self._review_locked(draft, source_key, key, same_class=None)
+            into = review
+            if answers.same_class is not None:
+                into = self._review_locked(draft, source_key, key, same_class=answers.same_class)
+            if page.source_key != source_key:
+                return ReviewReturned(into, ReturnReason.SOURCE)
+            if review.revision != page.revision or (
+                answers.same_class is not None
+                and self._revision_of(student_id, answers.same_class, draft)
+                != answers.same_class_revision
+            ):
+                return ReviewReturned(into, ReturnReason.REVISION)
+            if not answers_asked(review, answers):
+                return ReviewReturned(into, ReturnReason.ANSWERS)
+            if not chosen <= into.ready:
+                return ReviewReturned(into, ReturnReason.SELECTION)
+            return self._write_save(
+                draft,
+                into,
+                answers,
+                chosen,
+                key=key,
+                by=confirmer,
+                student_id=student_id,
+                acceptance_id=page.acceptance_id,
+            )
+
+    def _review_locked(
+        self, draft: GradeReportDraft, source_key: str, key: bytes, *, same_class: str | None
+    ) -> GradeReview:
+        """The review, the values' statuses read in the class an alias matched, or else in
+        ``same_class`` when it is one of the year's classes."""
+        header = draft.header
+        student_id, check, forms = self._her_name_record()
+        identity = identity_among(key, header.student_line, check=check, forms=forms)
+        year, term = header.year_label, folded(header.term_label)
+        alias = self._connection.execute(
+            ALIAS_MATCHED, (student_id, year, matched_as(header))
+        ).fetchone()
+        matched = None if alias is None else str(alias[0])
+        existing = tuple(
+            (str(row[0]), str(row[1]), self._revision_of(student_id, str(row[0]), draft))
+            for row in self._connection.execute(CLASSES_OF_YEAR, (student_id, year))
+        )
+        revision = None if matched is None else self._revision_of(student_id, matched, draft)
+        reviewed = matched
+        if reviewed is None and same_class in {class_id for class_id, _, _ in existing}:
+            reviewed = same_class
+        others = reviewed is not None and (
+            self._connection.execute(
+                ANOTHER_CAPTURE, (student_id, reviewed, term, source_key)
+            ).fetchone()
+            is not None
+        )
+        saved: dict[str, str | None] = {}
+        for (accepted,) in self._connection.execute(
+            ACCEPTED_FROM_SOURCE, (student_id, TEXT_KIND, source_key)
+        ):
+            for item_key, result_id in json.loads(accepted):
+                saved[str(item_key)] = None if result_id is None else str(result_id)
+        on_record = OnRecord(
+            identity=identity,
+            context=self._connection.execute(CONTEXT_ON_RECORD, (student_id,)).fetchone()
+            is not None,
+            year_known=self._connection.execute(YEAR_ON_RECORD, (student_id, year)).fetchone()
+            is not None,
+            matched=matched,
+            existing=existing,
+            revision=revision,
+            others=others,
+            saved=saved,
+        )
+        return review_from(draft, source_key, new_acceptance_id(), on_record)
+
+    def _revision_of(self, student_id: str, class_id: str, draft: GradeReportDraft) -> int | None:
+        """The scope revision of ``class_id`` in the report's term, None when it holds nothing."""
+        term = folded(draft.header.term_label)
+        held = self._connection.execute(REVISION_OF, (student_id, class_id, term)).fetchone()
+        return None if held is None else int(held[0])
+
+    def _recorded(self, student_id: str, acceptance_id: str) -> tuple[GradeReportSaved, str] | None:
+        """The outcome recorded under ``acceptance_id`` for her, with its source key."""
+        row = self._connection.execute(RECORDED, (student_id, acceptance_id)).fetchone()
+        if row is None:
+            return None
+        source_key, report_id, accepted, added, updated, already_saved, left, shown, kept = row
+        outcome = GradeReportSaved(
+            acceptance_id=acceptance_id,
+            report_id=report_id,
+            added=added,
+            updated=updated,
+            already_saved=already_saved,
+            left=left,
+            shown=shown,
+            answers_kept=kept,
+            accepted=tuple(
+                (str(item_key), None if result_id is None else str(result_id))
+                for item_key, result_id in json.loads(accepted)
+            ),
+        )
+        return outcome, str(source_key)
+
+    def _write_save(
+        self,
+        draft: GradeReportDraft,
+        review: GradeReview,
+        answers: GradeAnswers,
+        chosen: frozenset[str],
+        *,
+        key: bytes,
+        by: ConfirmedBy,
+        student_id: str,
+        acceptance_id: str,
+    ) -> GradeReportSaved:
+        """Every write of a save that passed its checks, inside the save's one grade write: the
+        identity answer, the setup, the selected values, the revision and the acceptance."""
+        header = draft.header
+        now = self._stamp()
+        line = header.student_line
+        if answers.identity is IdentityAnswer.HERS and line is not None:
+            if review.identity.status is IdentityStatus.CONFIRM_AGAIN:
+                self.confirm_name_again(key, line, by)
+            else:
+                self.add_name_form(key, line, by)
+        year, term = header.year_label, folded(header.term_label)
+        if answers.setup is not None:
+            current_year, current_term = answers.setup
+            self._connection.execute(
+                SET_CONTEXT, (student_id, current_year, folded(current_term), by, now)
+            )
+        if review.first_month is not None:
+            month = None if answers.first_month is None else answers.first_month[1]
+            self._connection.execute(
+                ADD_YEAR, (student_id, year, month, None if month is None else by, now)
+            )
+        self._connection.execute(ADD_TERM, (student_id, year, term, now))
+        class_id = self._class_of(header, review, answers, student_id=student_id, by=by, now=now)
+        report_id = None
+        accepted: list[tuple[str, str | None]] = []
+        if chosen:
+            report_id = self._report_of(draft, class_id, review.source_key, student_id, now)
+            accepted = self._observe(
+                draft, chosen, report_id, class_id, student_id=student_id, by=by, now=now
+            )
+        self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
+        already = sum(1 for item in review.items if item.status is ItemStatus.SAVED)
+        outcome = GradeReportSaved(
+            acceptance_id=acceptance_id,
+            report_id=report_id,
+            added=len(chosen),
+            updated=0,
+            already_saved=already,
+            left=len(review.items) - len(chosen) - already,
+            accepted=tuple(sorted(accepted, key=lambda pair: pair[0])),
+        )
+        self._connection.execute(
+            ADD_ACCEPTANCE,
+            (
+                acceptance_id,
+                student_id,
+                TEXT_KIND,
+                review.source_key,
+                report_id,
+                json.dumps([list(pair) for pair in outcome.accepted], ensure_ascii=False),
+                review.identity.status.value,
+                answers.identity.value,
+                review.identity.form,
+                outcome.added,
+                outcome.updated,
+                outcome.already_saved,
+                outcome.left,
+                outcome.shown,
+                outcome.answers_kept,
+                now,
+                by,
+            ),
+        )
+        return outcome
+
+    def _class_of(
+        self,
+        header: ReportHeader,
+        review: GradeReview,
+        answers: GradeAnswers,
+        *,
+        student_id: str,
+        by: ConfirmedBy,
+        now: str,
+    ) -> str:
+        """The class an alias matched; or the class the answer names, the report's code and name
+        kept as its alias, a new class made for a display name."""
+        if review.class_question.matched is not None:
+            return review.class_question.matched
+        if answers.same_class is not None:
+            class_id = answers.same_class
+        else:
+            class_id = f"class-{uuid.uuid4().hex}"
+            name = folded(answers.new_class or "")
+            self._connection.execute(
+                ADD_CLASS, (class_id, student_id, header.year_label, name, by, now)
+            )
+        self._connection.execute(
+            ADD_ALIAS,
+            (
+                student_id,
+                header.year_label,
+                matched_as(header),
+                class_id,
+                header.class_code,
+                header.class_name,
+                by,
+                now,
+            ),
+        )
+        return class_id
+
+    def _report_of(
+        self, draft: GradeReportDraft, class_id: str, source_key: str, student_id: str, now: str
+    ) -> str:
+        """The capture's latest report in the class and term, which its rest joins; or a new
+        report, next in acceptance order. A new one is always the first of its class and term,
+        since another capture's results there leave no value selectable."""
+        term = folded(draft.header.term_label)
+        latest = self._connection.execute(
+            LATEST_OF_CAPTURE, (student_id, class_id, term, source_key)
+        ).fetchone()
+        if latest is not None:
+            return str(latest[0])
+        (order,) = self._connection.execute(NEXT_ORDER, (student_id, class_id, term)).fetchone()
+        report_id = f"report-{uuid.uuid4().hex}"
+        rows = sum(len(category.rows) for category in draft.categories)
+        self._connection.execute(
+            ADD_REPORT, (report_id, student_id, class_id, term, source_key, order, now, rows)
+        )
+        return report_id
+
+    def _observe(
+        self,
+        draft: GradeReportDraft,
+        chosen: frozenset[str],
+        report_id: str,
+        class_id: str,
+        *,
+        student_id: str,
+        by: ConfirmedBy,
+        now: str,
+    ) -> list[tuple[str, str | None]]:
+        """The selected values as observations of ``report_id``, a new result and its match
+        decision for each row: each accepted key with the result it resolved to."""
+        accepted: list[tuple[str, str | None]] = []
+        if TERM_KEY in chosen:
+            percent, letter = draft.term.percent, draft.term.letter
+            self._connection.execute(
+                ADD_TERM_OBSERVATION,
+                (report_id, student_id, *_cell(percent), *_cell(letter)),
+            )
+            accepted.append((TERM_KEY, None))
+        for position, (item_key, category) in enumerate(
+            zip(category_keys(draft), draft.categories, strict=True), start=1
+        ):
+            if item_key in chosen:
+                self._connection.execute(
+                    ADD_CATEGORY_OBSERVATION,
+                    (
+                        report_id,
+                        item_key,
+                        student_id,
+                        position,
+                        *_cell(category.name),
+                        *_cell(category.weight),
+                        *_cell(category.average),
+                    ),
+                )
+                accepted.append((item_key, None))
+        rows = [(category, row) for category in draft.categories for row in category.rows]
+        for position, (category, row) in enumerate(rows, start=1):
+            item_key = row_key(category.name, row)
+            if item_key not in chosen:
+                continue
+            result_id = f"result-{uuid.uuid4().hex}"
+            term = folded(draft.header.term_label)
+            self._connection.execute(ADD_RESULT, (result_id, student_id, class_id, term, now))
+            cells = [text for value in (category.name, *row.cells()) for text in _cell(value)]
+            self._connection.execute(
+                ADD_RESULT_OBSERVATION, (report_id, result_id, student_id, position, *cells)
+            )
+            evidence = evidence_text(row_evidence(category.name, row))
+            self._connection.execute(
+                ADD_MATCH_DECISION,
+                (report_id, item_key, student_id, evidence, row.occurrence, result_id, by, now),
+            )
+            accepted.append((item_key, result_id))
+        return accepted
 
     def _stamp(self) -> str:
         """Now, in UTC, as the record writes a moment."""
         return self._clock.now().astimezone(UTC).isoformat()
+
+
+def _cell(value: GradeValue) -> tuple[str, str]:
+    """A value as an observation keeps it: its text as written, and its presence."""
+    return value.text, value.presence.value
 
 
 def _confirmer(role: str) -> ConfirmedBy:

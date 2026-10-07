@@ -54,7 +54,10 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "functools": "standard library",
     "html": "standard library; escapes copied text inside a prompt block",
     "httpx": "the HTTP client under the SDK; confined to the model seam, see NETWORK_CAPABLE",
-    "json": "standard library; reads fixture files from disk",
+    "json": (
+        "standard library; reads fixture files from disk, writes a grade report's canonical "
+        "form, and keeps the keys of the values a grade save accepted"
+    ),
     "langchain": "agent middleware; the tool backstop is confined, see TOOL_CONSTRUCTION",
     "langchain_anthropic": "the model client; confined to the model seam, see NETWORK_CAPABLE",
     "langchain_core": (
