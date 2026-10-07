@@ -2281,6 +2281,28 @@ def test_her_ask_form_beside_a_request_that_cannot_be_read_sends_a_new_one_and_l
     assert str(escape(SET_APART)) in landed.text
 
 
+@pytest.mark.parametrize("how", list(DAMAGES))
+def test_with_sign_in_off_her_week_keeps_the_sentence_beside_the_ask_form_it_offers(
+    how: str,
+) -> None:
+    """With sign-in off her week still offers the ask form, so the line says she can send a new
+    request there, and sending one keeps a new request beside the one set apart, unchanged."""
+    with browser() as client:
+        held = three_requests(state_of(client), how)
+        before = stored(client)
+        page = client.get(PAGE)
+        form = ask_form(client)
+        sent = client.post(ASK, data={**form, "note": "Synthetic new question"})
+        after = stored(client)
+
+    assert page.status_code == 200
+    assert f'<p class="problem">{escape(SET_APART)} {escape(ASK_ANEW)}</p>' in page.text
+    assert form["request_id"] not in held
+    assert sent.status_code == 303
+    assert after[: len(before)] == before
+    assert len(after) == len(before) + 1
+
+
 DAMAGED_BY_ITS_OWN_WRITE = """
     CREATE TEMP TRIGGER damaged_by_its_own_write AFTER UPDATE ON main.help_requests
     BEGIN
