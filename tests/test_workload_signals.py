@@ -404,7 +404,7 @@ UNDO = "Undo 'Too much right now'"
 REQUESTED = "<strong>A shorter plan is requested for today.</strong>"
 NEXT_PLAN = "Your next plan will use up to 75 minutes."
 SAVED_PLAN = "Your saved plan fits within today's 75-minute limit."
-REMOVED = "You removed your request."
+REMOVED = "That request isn't active."
 UNCHANGED = "Your saved plan has not changed."
 STILL = "A shorter plan is still requested for today."
 PAGE = "/student/due-this-week"
@@ -509,7 +509,7 @@ def test_a_signal_says_what_it_asks_for_beside_its_undo(plan: str) -> None:
 
 @pytest.mark.parametrize("plan", [False, True], ids=["no plan", "a smaller plan"])
 def test_undo_removes_her_request_says_so_and_leaves_the_plan_as_saved(plan: bool) -> None:
-    """One signal, one Undo: the row is gone, the page says she removed her request, and that
+    """One signal, one Undo: the row is gone, the page says that request isn't active, and that
     her saved plan has not changed when one is saved; Too much right now is offered again.
     No model is asked, and the saved plan is as it was."""
     planners: list[Scripted[DailyPlan]] = []
@@ -551,7 +551,7 @@ def test_the_line_an_undo_lands_on_takes_the_arrival_cue() -> None:
 
 def test_with_two_requests_each_undo_says_what_still_stands() -> None:
     """Each press keeps a row, and the evening stays shorter while any is left. Undo removes
-    the latest: the page says she removed her request and that a shorter plan is still
+    the latest: the page says that request isn't active and that a shorter plan is still
     requested, with what it does, and its Undo is for the one left. That removes the last,
     and only then is nothing said to be requested."""
     with browser(key=True) as client:

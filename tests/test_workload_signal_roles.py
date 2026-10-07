@@ -569,12 +569,12 @@ def test_a_parent_who_opens_the_page_her_undo_landed_on_reads_no_removal(
 
     assert pressed.status_code == 303
     assert opened.status_code == 200
-    assert "removed your request" not in opened.text
+    assert "That request isn't active" not in opened.text
     assert (
         "<strong>A shorter plan is requested for today.</strong> She said it was too much at"
         in opened.text
     )
-    assert "removed your request" not in hers_after
+    assert "That request isn't active" not in hers_after
     assert "<strong>A shorter plan is requested for today.</strong>" in hers_after
     landing = landing_in(pressed.headers["location"])
     cleared = f'{student_routes.landing_cookie(landing)}=""; '
@@ -636,7 +636,7 @@ def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
     assert "Take it back</button>" not in signaled
     assert UNDO not in signaled
     assert "Remove</button>" not in signaled
-    assert "removed your request" not in named_removed
+    assert "That request isn't active" not in named_removed
     assert 'id="too-much-state"' not in signaled + named_removed
     assert "still requested" not in signaled + named_removed
     assert signaled.count("requested for today") == 1

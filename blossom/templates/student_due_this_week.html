@@ -156,7 +156,7 @@
       keeps a row of its own, and the evening stays shorter while any is left, so
       an Undo, or a Remove below, lands on this line, which takes the focus, and on
       the one page it lands on, told by a mark in that landing's cookie and never by
-      the address, the line says she removed her request and then what still stands:
+      the address, the line says that request isn't active and then what still stands:
       a shorter plan still asked for, with the Undo for the request left, or, with
       none left, that her saved plan has not changed. Neither press plans anything. Saying today is too much, and undoing it,
       are hers alone: a parent reads what she said and meets neither control, and
@@ -174,7 +174,7 @@
         {% endif %}
       {% elif view.too_much %}
         <div class="too-much">
-          <p class="note" id="too-much-state" tabindex="-1"{% if signal_removed %} role="status"{% endif %}>{% if signal_removed %}You removed your request. A shorter plan is still requested for today.{% else %}<strong>A shorter plan is requested for today.</strong>{% endif %} {% if view.plan_uses_limit %}Your saved plan fits within today's {{ view.budget_minutes }}-minute limit.{% else %}Your next plan will use up to {{ view.budget_minutes }} minutes.{% endif %}{% if view.too_much.detail %} You added <q>{{ view.too_much.detail }}</q>.{% endif %}</p>
+          <p class="note" id="too-much-state" tabindex="-1"{% if signal_removed %} role="status"{% endif %}>{% if signal_removed %}That request isn't active. A shorter plan is still requested for today.{% else %}<strong>A shorter plan is requested for today.</strong>{% endif %} {% if view.plan_uses_limit %}Your saved plan fits within today's {{ view.budget_minutes }}-minute limit.{% else %}Your next plan will use up to {{ view.budget_minutes }} minutes.{% endif %}{% if view.too_much.detail %} You added <q>{{ view.too_much.detail }}</q>.{% endif %}</p>
           <div class="actions">
             <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="action">
               <button type="submit" class="secondary" aria-describedby="too-much-state">Undo 'Too much right now'</button>
@@ -182,7 +182,7 @@
           </div>
         </div>
       {% elif signal_removed %}
-        <p class="note" id="too-much-state" tabindex="-1" role="status">You removed your request.{% if view.plan %} Your saved plan has not changed.{% endif %}</p>
+        <p class="note" id="too-much-state" tabindex="-1" role="status">That request isn't active.{% if view.plan %} Your saved plan has not changed.{% endif %}</p>
       {% endif %}
     {% endset %}
     {% set signal_press %}

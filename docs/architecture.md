@@ -1088,9 +1088,9 @@ follow, each visible at once. Her page says a shorter plan is requested for
 today and what that does, to her next plan or to the plan saved under it,
 with Undo 'Too much right now' beside it; its list of what Blossom keeps gives
 the time she said it. Each press keeps a row of its own, and the evening stays
-shorter while any is left, so after an Undo the page says she removed her
-request and what still stands, never that the usual evening is back. Only the
-page the Undo lands on says she removed it: the redirect names a landing of
+shorter while any is left, so after an Undo the page says that request isn't
+active and what still stands, never that the usual evening is back, whether
+the press removed it or found it gone. Only the page the Undo lands on says so: the redirect names a landing of
 its own and the line that says what stands, which takes the focus as a save's
 result line does, and the short-lived cookie for that landing holds the mark
 and no card, read once and cleared like the cards a save keeps in place. An address

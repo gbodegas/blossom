@@ -498,7 +498,7 @@ the card that save has just made Done. No form or address carries it, and ``InPl
 passes over it."""
 SIGNAL_REMOVED: Final = "r"
 """The whole of the cookie Undo 'Too much right now' or a Remove leaves, so the one page that
-answers it says she removed her request, beside what still stands. No form or address
+answers it says that request isn't active, beside what still stands. No form or address
 carries it, and ``InPlace.read`` passes over it."""
 TOO_MUCH_STATE: Final = "too-much-state"
 """The id of the line on her week that says where her request for a shorter plan stands, where
@@ -1874,7 +1874,7 @@ def sent_done_to_the_details(location: str, assignment_id: str) -> RedirectRespo
 def sent_removed(location: str) -> RedirectResponse:
     """The redirect to her week after a signal of hers is removed: its address names a new
     landing and the line that says what stands, and the cookie named for the landing tells
-    that one page, and no other, that she removed her request. It holds no card."""
+    that one page, and no other, that her request isn't active. It holds no card."""
     landing = secrets.token_hex(IN_PLACE_LANDING_DIGITS // 2)
     moved = RedirectResponse(
         str(URL(location).include_query_params(**{IN_PLACE_LANDING: landing})),
@@ -2320,7 +2320,7 @@ def due_this_week(
     Earlier homework to check just did, said beside that item only when this process signed
     it for today and that item and today's choices still agree; a word not in the set says
     nothing. The household day is read once, for that check and the page alike. Today says
-    she removed her request only on the page her Undo of Too much right now or a Remove lands
+    that request isn't active only on the page her Undo of Too much right now or a Remove lands
     on, from the mark that press left in its landing's cookie, beside what the signals kept
     now say; no address says it, and a parent is told nothing of it.
 
@@ -3849,7 +3849,7 @@ async def too_much_from_the_page(request: Request, state: State) -> Response:
 async def take_back_from_the_page(request: Request, signal_id: str, state: State) -> Response:
     """Remove a signal from her page, by Undo 'Too much right now' or a Remove, and return to
     her week, on the line that says what stands, where only the page the redirect lands on says
-    she removed her request, beside what still stands. A signal already gone is not an error
+    that request isn't active, beside what still stands. A signal already gone is not an error
     here, and is answered the same way. A parent is answered 403 before the signal is looked
     up: the signal is hers to take back. A removal the file refuses is rolled back and said at
     the top of her week, 500."""
