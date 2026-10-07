@@ -20,6 +20,7 @@ from blossom.grades.draft import (
     GradeRow,
     GradeValue,
     Presence,
+    ReportHeader,
     canonical,
     capture_key,
 )
@@ -336,6 +337,62 @@ def test_a_line_or_a_value_with_the_word_percent_in_it_is_kept() -> None:
     assert draft.categories[1].rows[0].note.text == "PERCENT"
 
 
+LABS = REPORT[REPORT.index("| **Labs** |") : REPORT.index("\n", REPORT.index("| Osmosis")) + 1]
+"""The Labs category's row, its column headers and its two results, as a fragment of another
+report would carry them."""
+
+LABS_SHOWN = tuple(line for line in LABS.split("\n") if line.strip() and set(line) - set("|- "))
+"""The fragment's lines a reader shows when they are out of place: all but its separator."""
+
+TITLE = "**Gradebook Student Progress Report**\n"
+
+
+@pytest.mark.parametrize("where", ["before the header", "after the term grade"])
+def test_a_report_fragment_out_of_place_stays_visible_and_out_of_the_draft(where: str) -> None:
+    seed, draft = read(REPORT)
+    if where == "before the header":
+        changed = replaced_once(REPORT, TITLE, f"{LABS}\n{TITLE}")
+    else:
+        changed = f"{REPORT}\n{LABS}"
+    reading, again = read(changed)
+    assert reading.unrecognized == LABS_SHOWN
+    assert again == draft
+    assert reading.capture_key == seed.capture_key
+
+
+def test_a_class_name_table_before_the_header_stays_visible() -> None:
+    seed, draft = read(REPORT)
+    reading, again = read(
+        replaced_once(REPORT, TITLE, f"| **Chemistry** |\n| ------------- |\n\n{TITLE}")
+    )
+    assert reading.unrecognized == ("| **Chemistry** |",)
+    assert again == draft
+    assert reading.capture_key == seed.capture_key
+
+
+@pytest.mark.parametrize("where", ["before", "after"])
+def test_a_second_report_s_title_makes_the_paste_unreadable(where: str) -> None:
+    other = f"{TITLE}\n{LABS}"
+    text = f"{other}\n{REPORT}" if where == "before" else f"{REPORT}\n{other}"
+    reading = read_grade_report(text)
+    assert reading.draft is None
+    assert reading.not_read is NotRead.SEVERAL_REPORTS
+    assert reading.unrecognized == tuple(line for line in text.split("\n") if line.strip())
+
+
+def test_print_and_the_selectors_are_known_only_before_the_header() -> None:
+    seed, draft = read(REPORT)
+    for shown in ("Print", "T1", "07 BIO - C", "**Biology**"):
+        for changed in (
+            replaced_once(REPORT, "**83.8**\n", f"**83.8**\n\n{shown}\n"),
+            f"{REPORT}\n{shown}\n",
+        ):
+            reading, again = read(changed)
+            assert reading.unrecognized == (shown,)
+            assert again == draft
+            assert reading.capture_key == seed.capture_key
+
+
 def test_a_paste_without_the_header_is_not_read_and_keeps_its_lines() -> None:
     text = REPORT.replace("| **Bramble, Wren** | **2026-2027** | **Teacher, Example** |\n", "")
     reading = read_grade_report(text)
@@ -413,6 +470,59 @@ def test_the_four_presences_never_stand_for_one_another() -> None:
     }
     assert {value.presence for value in values} == set(Presence)
     assert [value.decimal() for value in values if value.decimal() is not None] == [Decimal("0")]
+
+
+def test_an_unreadable_value_never_has_its_kind_s_form() -> None:
+    for kind, text in [(GradeValue, "Valid"), (GradeNumber, "7"), (DueText, "09/26")]:
+        with pytest.raises(ValidationError):
+            kind(text=text, presence=Presence.UNREADABLE)
+        assert kind.read(text).presence is Presence.REPORTED
+
+
+def test_a_due_date_is_a_month_and_a_day_that_exist() -> None:
+    for text in ("02/30", "02/31", "04/31", "06/31", "09/31", "11/31", "13/01", "00/10"):
+        assert DueText.read(text) == DueText(text=text, presence=Presence.UNREADABLE), text
+    for text in ("01/31", "02/29", "04/30", "12/31"):
+        assert DueText.read(text).presence is Presence.REPORTED, text
+
+
+def test_no_pasted_line_shows_in_a_repr() -> None:
+    header = "| **Bramble, Wren** | **2026-2027** | **Teacher, Example** |\n"
+    for text in (replaced_once(REPORT, header, "| **Bramble, Wren** |\n"), f"{REPORT}\n{REPORT}"):
+        reading = read_grade_report(text)
+        assert reading.draft is None
+        assert any("Wren" in line for line in reading.unrecognized)
+        assert "Wren" not in repr(reading)
+        assert "Teacher" not in repr(reading)
+
+
+def test_a_header_needs_a_school_year_of_two_years_in_a_row() -> None:
+    for label in ("2026-2028", "2027-2026", "2026-2026"):
+        reading = read_grade_report(replaced_once(REPORT, "**2026-2027**", f"**{label}**"))
+        assert reading.not_read is NotRead.NO_HEADER, label
+    with pytest.raises(ValidationError):
+        ReportHeader(
+            student_line=None,
+            year_label="2026-2028",
+            class_code="07 BIO - C",
+            term_label="T1",
+            class_name=None,
+        )
+
+
+def test_a_refused_value_never_echoes_what_was_pasted() -> None:
+    with pytest.raises(ValidationError) as refused:
+        ReportHeader(
+            student_line=" Bramble, Wren ",
+            year_label="2026-2027",
+            class_code="07 BIO - C",
+            term_label="T1",
+            class_name=None,
+        )
+    assert "Wren" not in str(refused.value)
+    with pytest.raises(ValidationError) as refused:
+        GradeReportReading(draft=None, not_read=None, unrecognized=("| **Bramble, Wren** |",))
+    assert "Wren" not in str(refused.value)
 
 
 def test_reading_a_report_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:

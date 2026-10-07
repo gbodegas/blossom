@@ -3,11 +3,13 @@
 """The reader for a gradebook report pasted as text: a closed set of line classes, never an
 interpreter.
 
-A line is the report's title, its header, the PERCENT label once between the header and the
-class name, its class name, a category, a column header row, a result row, a category average,
-the term grade, Print, a selector repeating the header's class or term, or a table with nothing
-in it. Any other line is kept, verbatim and in order, as a line the reader didn't recognize, and
-it never changes the draft or the capture key.
+Each line class is known only in its place. Before the header: the report's title, Print, and a
+selector repeating the header's class, its term or the class name. After the header, up to the
+term grade: the PERCENT label once before the class name, the class name, the categories with
+their column headers, result rows and averages, and the term grade itself. A table with nothing
+in it is layout anywhere. Any other line, and any line out of its place, is kept, verbatim and
+in order, as a line the reader didn't recognize, and it never changes the draft or the capture
+key. A second title, or a title after the header, is another report, and the paste isn't read.
 
 Print, the selectors and a wrapped title are read narrowly, as the one known report shape has
 them, and a result row a copy wraps isn't joined: a line the reader can't be sure of stays
@@ -18,11 +20,10 @@ import re
 from enum import StrEnum
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from blossom.grades.draft import (
     NUMBER,
-    SCHOOL_YEAR,
     DueText,
     Evidence,
     GradeCategory,
@@ -34,6 +35,7 @@ from blossom.grades.draft import (
     TermResult,
     capture_key,
     folded,
+    is_school_year,
     row_evidence,
 )
 
@@ -73,13 +75,14 @@ class NotRead(StrEnum):
 
 class GradeReportReading(BaseModel):
     """What one paste gave: its draft, or the reason it has none, and every line the reader
-    didn't recognize, verbatim and in order."""
+    didn't recognize, verbatim and in order, left out of every repr since a paste can carry
+    names."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     draft: GradeReportDraft | None
     not_read: NotRead | None
-    unrecognized: tuple[str, ...]
+    unrecognized: tuple[str, ...] = Field(repr=False)
 
     @model_validator(mode="after")
     def _a_draft_or_the_reason_for_none(self) -> Self:
@@ -152,7 +155,7 @@ def header_rows(lines: list[str]) -> list[tuple[int, list[str], list[str]]]:
     found = []
     for start in range(len(lines) - 2):
         top, rule, bottom = (cells_of(line) for line in lines[start : start + 3])
-        if top is None or len(top) != 3 or SCHOOL_YEAR.fullmatch(top[1]) is None:
+        if top is None or len(top) != 3 or not is_school_year(top[1]):
             continue
         if rule is None or not is_separator(rule) or bottom is None or len(bottom) != 3:
             continue
@@ -201,19 +204,33 @@ class _Category:
         )
 
 
+def title_starts(lines: list[str]) -> list[int]:
+    """Where each copy of the report's title starts, a wrapped one counted once."""
+    starts = []
+    index = 0
+    while index < len(lines):
+        if taken := title_lines(lines, index):
+            starts.append(index)
+            index += taken
+        else:
+            index += 1
+    return starts
+
+
 def read_grade_report(text: str) -> GradeReportReading:
     """Read pasted report text into its draft, or into the reason it can't be read, keeping
-    every line outside the line classes."""
+    every line outside the line classes or out of its place."""
     lines = text.splitlines()
     headers = header_rows(lines)
-    if len(headers) != 1:
+    titles = title_starts(lines)
+    if len(headers) != 1 or len(titles) > 1 or any(title > headers[0][0] for title in titles):
         return GradeReportReading(
             draft=None,
             not_read=NotRead.SEVERAL_REPORTS if headers else NotRead.NO_HEADER,
             unrecognized=tuple(line for line in lines if line.strip()),
         )
     ((start, top, bottom),) = headers
-    unrecognized: list[str] = []
+    unrecognized: list[tuple[int, str]] = []
     categories: list[_Category] = []
     term: TermResult | None = None
     class_name: str | None = None
@@ -222,18 +239,20 @@ def read_grade_report(text: str) -> GradeReportReading:
     while index < len(lines):
         line = lines[index]
         step = 1
-        current = categories[-1] if categories else None
+        before = index < start
+        body = index >= start + 3 and term is None
+        current = categories[-1] if body and categories else None
         cells = cells_of(line)
         if start <= index < start + 3 or not line.strip():
             pass
         elif cells is None:
-            if taken := title_lines(lines, index):
+            if before and (taken := title_lines(lines, index)):
                 step = taken
-            elif folded(bare(line)) == PRINT:
+            elif before and folded(bare(line)) == PRINT:
                 pass
             elif (
-                bare(line) == PERCENT
-                and index > start
+                body
+                and bare(line) == PERCENT
                 and not percent
                 and class_name is None
                 and not categories
@@ -243,13 +262,15 @@ def read_grade_report(text: str) -> GradeReportReading:
                 if current and not current.labeled:
                     current.labeled = True
                 else:
-                    unrecognized.append(line)
+                    unrecognized.append((index, line))
             elif current and current.awaits_average() and is_bold_or_number(line):
                 current.average = GradeNumber.read(bare(line))
             else:
-                unrecognized.append(line)
+                unrecognized.append((index, line))
         elif is_layout(cells):
             pass
+        elif not body:
+            unrecognized.append((index, line))
         elif (
             len(cells) == 1
             and class_name is None
@@ -263,7 +284,7 @@ def read_grade_report(text: str) -> GradeReportReading:
             if current:
                 current.close()
             categories.append(_Category(GradeValue.read(cells[0]), GradeNumber.read(weight[1])))
-        elif is_term_grade(cells) and term is None:
+        elif is_term_grade(cells):
             if current:
                 current.close()
             term = TermResult(percent=GradeNumber.read(cells[1]), letter=GradeValue.read(cells[2]))
@@ -284,7 +305,7 @@ def read_grade_report(text: str) -> GradeReportReading:
         ):
             current.rows.append(cells)
         else:
-            unrecognized.append(line)
+            unrecognized.append((index, line))
         index += step
     selectors = {folded(bottom[0]), folded(bottom[1])} | (
         {folded(class_name)} if class_name else set()
@@ -308,8 +329,8 @@ def read_grade_report(text: str) -> GradeReportReading:
         not_read=None,
         unrecognized=tuple(
             line
-            for line in unrecognized
-            if cells_of(line) is not None or folded(bare(line)) not in selectors
+            for index, line in unrecognized
+            if index >= start or cells_of(line) is not None or folded(bare(line)) not in selectors
         ),
     )
 
