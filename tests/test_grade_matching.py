@@ -12,7 +12,9 @@ matches an earlier saved value, and only a New or Changed value can be selected.
 import dataclasses
 import json
 import sqlite3
-from collections.abc import Collection
+from collections.abc import Callable, Collection
+
+import pytest
 
 from blossom.grades.draft import GradeReportDraft, Presence, capture_key
 from blossom.grades.identity import name_form_key
@@ -654,6 +656,159 @@ def test_a_row_with_an_unreadable_score_and_readable_identity_is_shown_not_accep
     assert value.last_shown == ReportAt(newer.report_id or "", 2)
 
 
+# ------------------------------------------------------------- a score that can't be read, asked
+
+
+CELL_EX = ("| Cell Diagram             | 7.0 ", "| Cell Diagram             | EX  ")
+"""Cell Diagram's score written "EX", which no supported format reads."""
+SEED_SCORE = ("| Seed Germination Log | 18.0 ", "| Seed Germination Log | 19.0 ")
+
+
+def answered_review(
+    store: ProjectStateStore, draft: GradeReportDraft, *answers: MatchAnswer
+) -> GradeReview:
+    """The review a save computes again with ``answers`` applied, as the save holds it."""
+    with store._lock:
+        source = capture_key(draft)
+        return store._review_locked(draft, source, KEY, same_class=None, matches=answers)
+
+
+def test_a_row_whose_score_cant_be_read_asks_and_its_answer_records_it_shown() -> None:
+    """His thirteenth round, 6: the row asks "Same assignment, due date changed?" beside its
+    warning; answered, it is recorded as shown, still Couldn't read, never selectable, and "EX"
+    is kept nowhere."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id
+    draft = variant(CELL_EX, CELL_DUE)
+    review = review_of(store, draft)
+    cell = row(review, "Cell Diagram")
+
+    assert (cell.status, cell.result_id, cell.how) == (ItemStatus.UNREADABLE, None, None)
+    assert cell.question is not None
+    assert (cell.question.kind, cell.question.ids) == (QuestionKind.DUE_CHANGED, (cell_id,))
+    assert cell.key not in review.ready
+    answer = same(cell)
+    answered = row(answered_review(store, draft, answer), "Cell Diagram")
+    assert (answered.status, answered.result_id, answered.how) == (
+        ItemStatus.UNREADABLE,
+        cell_id,
+        "answer",
+    )
+    refused = save(store, draft, review, matches=[answer], selection={cell.key})
+    assert isinstance(refused, ReviewReturned)
+    assert refused.why is ReturnReason.SELECTION
+    stale = MatchAnswer(cell.key, (*cell.question.ids, "result-of-no-one"), cell_id)
+    unbound = save(store, draft, review, matches=[stale], selection=())
+    assert isinstance(unbound, ReviewReturned)
+    assert unbound.why is ReturnReason.ANSWERS
+    kept = saved(save(store, draft, review, matches=[answer], selection=(), complete=True))
+
+    assert (kept.added, kept.updated, kept.accepted) == (0, 0, ())
+    assert (kept.shown, kept.answers_kept) == (4, 1)
+    assert records(store, kept.report_id)[cell.key] == (cell_id, "answer")
+    assert observed(store, kept.report_id) == 0
+    assert len(results(store)) == 4
+    value = store.current_values(class_of(store), "T1").results[cell_id or ""]
+    assert (text_of(value, "points"), text_of(value, "due")) == ("7.0", "09/26")
+    assert value.report_id == first.report_id
+    assert value.last_shown == ReportAt(kept.report_id or "", 2)
+    held = store._connection.execute(
+        "SELECT COUNT(*) FROM grade_result_observations WHERE points_text = 'EX'"
+    ).fetchone()
+    assert held == (0,)
+    again = row(review_of(store, draft), "Cell Diagram")
+    assert (again.status, again.result_id, again.how, again.question) == (
+        ItemStatus.UNREADABLE,
+        cell_id,
+        "same_capture",
+        None,
+    )
+    before = store._connection.total_changes
+    assert isinstance(save(store, draft, review, matches=[answer], selection=()), AlreadyRecorded)
+    assert store._connection.total_changes == before
+
+
+def test_an_unreadable_score_left_unanswered_records_nothing_and_proves_no_absence() -> None:
+    """The question may stay unanswered: the other eligible values save, the row records
+    nothing, and its report proves no absence until a later submission answers it."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    draft = variant(CELL_EX, CELL_DUE, OSMOSIS_GONE, SEED_SCORE)
+    review = review_of(store, draft)
+    cell, seed = row(review, "Cell Diagram"), row(review, "Seed Germination Log")
+
+    assert (cell.status, cell.question is not None) == (ItemStatus.UNREADABLE, True)
+    assert review.ready == {seed.key}
+    newer = saved(save(store, draft, review, selection={seed.key}, complete=True))
+
+    assert (newer.updated, newer.shown, newer.answers_kept) == (1, 1, 0)
+    assert cell.key not in records(store, newer.report_id)
+    current = store.current_values(class_of(store), "T1").results
+    assert text_of(current[seed.result_id or ""], "points") == "19.0"
+    assert current[osmosis].not_shown is None
+    later = review_of(store, draft)
+    asked = row(later, "Cell Diagram")
+    assert asked.question is not None
+    answered = saved(save(store, draft, later, matches=[same(asked)], selection=(), complete=True))
+    assert answered.report_id == newer.report_id
+    shown = store.current_values(class_of(store), "T1").results[osmosis].not_shown
+    assert shown == ReportAt(newer.report_id or "", 2)
+
+
+LAB_EX = (
+    OSMOSIS,
+    OSMOSIS.replace("Osmosis with Potato Slices", "Potato Lab                ")
+    .replace("| 31.0    |", "| EX      |")
+    .replace("| 40.0    |", "| 50.0    |")
+    .replace("10/02", "10/03"),
+)
+"""Osmosis's title, due date and max points all changed, and its score written "EX"."""
+
+
+def test_a_row_whose_score_cant_be_read_first_classed_new_can_choose_an_existing_one() -> None:
+    """Rule 7: "Choose an existing assignment" is open for it; the choice records presence as
+    the parent's, and the row never becomes a new result or a value."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    draft = variant(LAB_EX)
+    review = review_of(store, draft)
+    lab = row(review, "Potato Lab")
+
+    assert (lab.status, lab.question, lab.choices) == (ItemStatus.UNREADABLE, None, (osmosis,))
+    assert lab.key not in review.ready
+    refused = save(store, draft, review, matches=[chosen(lab, osmosis)], selection={lab.key})
+    assert isinstance(refused, ReviewReturned)
+    assert refused.why is ReturnReason.SELECTION
+    outcome = saved(save(store, draft, review, matches=[chosen(lab, osmosis)], selection=()))
+
+    assert (outcome.added, outcome.updated, outcome.answers_kept) == (0, 0, 1)
+    assert records(store, outcome.report_id)[lab.key] == (osmosis, "chosen")
+    assert len(results(store)) == 4
+    value = store.current_values(class_of(store), "T1").results[osmosis]
+    assert text_of(value, "assignment") == "Osmosis with Potato Slices"
+
+
+def test_a_row_whose_identity_and_score_cant_be_read_asks_nothing() -> None:
+    """A row whose due date can't be read either is unchanged: no question, no choice."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    draft = variant(CELL_EX, ("| Missing    | 09/26   |", "| Missing    | 09/2x   |"))
+    review = review_of(store, draft)
+    cell = row(review, "Cell Diagram")
+    newer = saved(save(store, draft, review, selection=()))
+
+    assert (cell.status, cell.result_id, cell.question, cell.choices) == (
+        ItemStatus.UNREADABLE,
+        None,
+        None,
+        (),
+    )
+    assert cell.key not in records(store, newer.report_id)
+
+
 def test_an_older_capture_s_rest_after_a_newer_report_showed_the_result_is_not_offered() -> None:
     """A saves Cell at 7.0; K saves only Osmosis; L, the newest, shows Cell at 7.0. K's rest
     can't put its 8.0 over the newer showing: it isn't offered."""
@@ -706,6 +861,78 @@ def test_a_submission_that_records_nothing_new_makes_no_report_and_its_retry_is_
     before = store._connection.total_changes
     assert isinstance(save(store, B, review, selection=()), AlreadyRecorded)
     assert store._connection.total_changes == before
+
+
+def revision(store: ProjectStateStore) -> int:
+    (found,) = store._connection.execute("SELECT revision FROM grade_scope_revisions").fetchone()
+    return int(found)
+
+
+def test_a_no_op_leaves_the_revision_and_another_open_page_still_saves() -> None:
+    """His thirteenth round, 7: a submission that records nothing new writes only its
+    acceptance, so a page built before it still saves."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, B, selection=()))
+    other_page = review_of(store, B)
+    before = revision(store)
+    nothing = saved(save(store, B, selection=()))
+
+    assert nothing.report_id is None
+    assert revision(store) == before
+    cell = row(other_page, "Cell Diagram")
+    later = saved(save(store, B, other_page, selection={cell.key}))
+    assert later.updated == 1
+    assert revision(store) == before + 1
+
+
+def presence_alone(store: ProjectStateStore) -> SaveOutcome:
+    return save(store, B, selection=())
+
+
+def an_answer_alone(store: ProjectStateStore) -> SaveOutcome:
+    renamed = variant(RENAMED)
+    review = review_of(store, renamed)
+    answer = same(row(review, "Seed Germination Journal"))
+    return save(store, renamed, review, matches=[answer], selection=())
+
+
+def a_different_answer_alone(store: ProjectStateStore) -> SaveOutcome:
+    renamed = variant(RENAMED)
+    review = review_of(store, renamed)
+    answer = different(row(review, "Seed Germination Journal"))
+    return save(store, renamed, review, matches=[answer], selection=())
+
+
+def an_unreadable_score_answered(store: ProjectStateStore) -> SaveOutcome:
+    draft = variant(CELL_EX, CELL_DUE)
+    review = review_of(store, draft)
+    return save(store, draft, review, matches=[same(row(review, "Cell Diagram"))], selection=())
+
+
+@pytest.mark.parametrize(
+    "submission",
+    [presence_alone, an_answer_alone, a_different_answer_alone, an_unreadable_score_answered],
+)
+def test_presence_or_an_answer_alone_raises_the_revision_and_returns_another_open_page(
+    submission: Callable[[ProjectStateStore], SaveOutcome],
+) -> None:
+    """New presence or a matching answer is a change with no grade value: the revision rises,
+    and a page built before it comes back for review, writing nothing."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    other_page = review_of(store, variant(CELL_SCORE, OSMOSIS_GONE))
+    before = revision(store)
+    outcome = saved(submission(store))
+
+    assert (outcome.added, outcome.updated) == (0, 0)
+    assert outcome.report_id is not None
+    assert revision(store) == before + 1
+    changes = store._connection.total_changes
+    returned = save(store, variant(CELL_SCORE, OSMOSIS_GONE), other_page)
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.REVISION
+    assert store._connection.total_changes == changes
 
 
 def test_an_answer_kept_without_a_value_is_recorded_and_replayed() -> None:

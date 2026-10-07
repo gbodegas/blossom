@@ -1039,8 +1039,8 @@ class GradebookRecords:
     ) -> GradeReportSaved:
         """Every write of a save that passed its checks, inside the save's one grade write: the
         identity answer, the setup, the selected values, the rows shown and the "different"
-        answers kept, in the report they join or make when anything is new, the revision and the
-        acceptance."""
+        answers kept, in the report they join or make, and the revision, when anything is new;
+        and the acceptance."""
         header = draft.header
         now = self._stamp()
         line = header.student_line
@@ -1119,7 +1119,11 @@ class GradebookRecords:
                     by=by,
                     now=now,
                 )
-        self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
+        # Only a save that records something in the class and term raises its revision: a no-op
+        # writes its acceptance alone, for its retry, and other open pages stay valid. Setup and
+        # identity answers are held by the recheck of answers instead.
+        if report_id is not None:
+            self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
         already = sum(1 for item in review.items if item.status in ALREADY)
         changed = sum(
             1 for item in review.items if item.key in chosen and item.status is ItemStatus.CHANGED

@@ -70,6 +70,13 @@ ANOTHER_CAPTURE = draft_of(
 MOVED = draft_of(REPORT.replace("| Missing    | 09/26   |", "| Missing    | 09/29   |"))
 """Another capture: Cell Diagram's due date moved, a question a parent answers."""
 MOVED_AGAIN = draft_of(REPORT.replace("| Missing    | 09/26   |", "| Missing    | 09/30   |"))
+EXCUSED_MOVED = draft_of(
+    REPORT.replace("| 7.0     | 10.0    |", "| EX      | 10.0    |").replace(
+        "| Missing    | 09/26   |", "| Missing    | 10/01   |"
+    )
+)
+"""Another capture: Cell Diagram's score written "EX" and its due date moved, a question a parent
+answers though the score can't be read."""
 
 
 def saved_report(outcome: object) -> GradeReportSaved:
@@ -89,6 +96,28 @@ def answered_matches(store: ProjectStateStore, draft: GradeReportDraft, *, same:
     answers = dataclasses.replace(grade_answers(review), matches=tuple(matches))
     selection = review.ready | {answer.row_key for answer in matches}
     return save_grade(store, draft, key=KEY, review=review, answers=answers, selection=selection)
+
+
+def answered_unreadable(store: ProjectStateStore) -> object:
+    """A parent's save of ``EXCUSED_MOVED`` answering its question with the first candidate and
+    selecting nothing: presence alone."""
+    review = store.review_grade_report(EXCUSED_MOVED, capture_key(EXCUSED_MOVED), key=KEY)
+    matches = []
+    for item in review.rows:
+        if item.question is not None:
+            matches.append(MatchAnswer(item.key, item.question.ids, item.question.ids[0]))
+    assert len(matches) == 1
+    answers = dataclasses.replace(grade_answers(review), matches=tuple(matches))
+    return save_grade(store, EXCUSED_MOVED, key=KEY, review=review, answers=answers, selection=())
+
+
+def records_nothing_new(store: ProjectStateStore) -> object:
+    """``EXCUSED_MOVED`` again under a fresh page, nothing selected: every row is on record, so
+    only the acceptance is written."""
+    outcome = save_grade(store, EXCUSED_MOVED, key=KEY, selection=())
+    assert isinstance(outcome, GradeReportSaved), outcome
+    assert (outcome.report_id, outcome.shown, outcome.answers_kept) == (None, 0, 0)
+    return outcome
 
 
 def expect(kind: type, outcome: object) -> object:
@@ -156,6 +185,14 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
         (
             "a moved due date answered a different assignment",
             lambda: expect(GradeReportSaved, answered_matches(store, MOVED_AGAIN, same=False)),
+        ),
+        (
+            "a score that can't be read, its question answered",
+            lambda: expect(GradeReportSaved, answered_unreadable(store)),
+        ),
+        (
+            "a submission that records nothing new",
+            lambda: records_nothing_new(store),
         ),
         (
             "the secret replaced, confirmed again",
@@ -319,7 +356,7 @@ def test_g_i1_no_grade_save_changes_anything_outside_the_gradebook(
 
     assert any(name.endswith("assignments") for name in before)
     assert seen == [(label, True) for label, _ in seen]
-    assert len(accepted) == 8
+    assert len(accepted) == 10
 
 
 def test_g_i8_a_retry_writes_nothing_and_returns_the_recorded_outcome(

@@ -634,3 +634,110 @@ def test_a_refused_different_record_leaves_nothing_of_the_save(
     saved = save_grade(store, RENAMED, key=KEY, review=review, answers=answers, selection=())
     assert isinstance(saved, GradeReportSaved)
     assert (saved.shown, saved.answers_kept) == (3, 1)
+
+
+NO_OP: tuple[Site, ...] = (
+    (sqlite3.SQLITE_INSERT, "grade_terms"),
+    (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+)
+"""Every write statement of a submission that records nothing new: the term, kept when on
+record, and the acceptance, for its retry. The revision stays."""
+EXCUSED_MOVED = draft_of(
+    REPORT.replace("| 7.0     | 10.0    |", "| EX      | 10.0    |").replace(
+        "| Missing    | 09/26   |", "| Missing    | 09/29   |"
+    )
+)
+"""A newer capture: Cell Diagram's score written "EX" and its due date moved."""
+
+
+def no_op_page(store: ProjectStateStore) -> tuple[GradeReview, GradeAnswers, GradeReportDraft]:
+    """Wren's report saved, then a fresh page of it: every value Saved, every row on record."""
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    review = review_of(store)
+    return review, grade_answers(review), WREN
+
+
+def unreadable_page(
+    store: ProjectStateStore,
+) -> tuple[GradeReview, GradeAnswers, GradeReportDraft]:
+    """Wren's report saved, then the page of ``EXCUSED_MOVED`` answering "Same assignment" for
+    the row whose score can't be read."""
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    review = store.review_grade_report(EXCUSED_MOVED, capture_key(EXCUSED_MOVED), key=KEY)
+    (asked,) = [item for item in review.rows if item.question is not None]
+    assert asked.question is not None
+    answer = MatchAnswer(asked.key, asked.question.ids, asked.question.ids[0])
+    return review, dataclasses.replace(grade_answers(review), matches=(answer,)), EXCUSED_MOVED
+
+
+PAGES = {
+    "no-op": (no_op_page, NO_OP),
+    "unreadable": (unreadable_page, PRESENCE),
+}
+"""Each submission with no value selected that this module checks site by site, with its
+statements."""
+
+
+@pytest.mark.parametrize("scenario", list(PAGES))
+def test_a_no_op_or_an_answered_unreadable_score_writes_exactly_the_named_statements(
+    opened: Callable[[str], ProjectStateStore], scenario: str
+) -> None:
+    """A no-op writes its term and its acceptance alone, with no revision; an answer for a row
+    whose score can't be read writes a save of presence alone."""
+    store = opened("first use")
+    page, sites = PAGES[scenario]
+    review, answers, draft = page(store)
+    seen: set[Site] = set()
+
+    def note(action: int, table: str | None, *_: object) -> int:
+        if action in WRITES and table is not None:
+            seen.add((action, table))
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(note)
+    outcome = save_grade(store, draft, key=KEY, review=review, answers=answers, selection=())
+    store._connection.set_authorizer(None)
+
+    assert isinstance(outcome, GradeReportSaved)
+    assert (outcome.added, outcome.updated) == (0, 0)
+    if scenario == "no-op":
+        assert (outcome.report_id, outcome.shown) == (None, 0)
+        assert seen == set(NO_OP)
+    else:
+        assert (outcome.shown, outcome.answers_kept) == (4, 1)
+        assert seen == {*PRESENCE, UPSERT_ARM}
+
+
+NEW_SITES = [(scenario, site) for scenario, (_, sites) in PAGES.items() for site in sites]
+
+
+@pytest.mark.parametrize(
+    ("scenario", "site"),
+    NEW_SITES,
+    ids=[f"{scenario}-{table}" for scenario, (_, table) in NEW_SITES],
+)
+def test_a_refused_no_op_or_answered_unreadable_score_leaves_nothing_of_it(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path, scenario: str, site: Site
+) -> None:
+    """Each refused at each of its statements three times inside a caller's transaction leaves
+    the file as it was, with the caller's writes kept; lifted, the same page saves once."""
+    store = opened("first use")
+    review, answers, draft = PAGES[scenario][0](store)
+    before, rows = world(path), assignments(store)
+
+    def again() -> object:
+        return save_grade(store, draft, key=KEY, review=review, answers=answers, selection=())
+
+    for attempt in range(3):
+        store._connection.set_authorizer(refusing(site))
+        with store.comparing_and_writing():
+            unrelated(store, f"before-{attempt}")
+            with pytest.raises(GradeReportNotSaved):
+                again()
+            unrelated(store, f"after-{attempt}")
+        store._connection.set_authorizer(None)
+
+        assert world(path) == before
+        assert assignments(store) == rows + 2 * (attempt + 1)
+    assert isinstance(again(), GradeReportSaved)
+    assert isinstance(again(), AlreadyRecorded)
