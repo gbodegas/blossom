@@ -2497,11 +2497,16 @@ def test_a_run_canceled_while_it_ends_out_of_time_keeps_one_account_of_how_it_en
 
 
 class HeldStoreCall:
-    """Wraps one drafts store method: its first call starts another connection's hold on the
-    file's write lock for ``held`` seconds, or until the test ends it sooner, sets
-    ``holding`` once the hold has begun, and asks the event loop for a callback 0.05 seconds
-    on, recording how late it ran. One use of the other connection runs at a time, so
-    closing it waits for a first call still waiting for the file."""
+    """Wraps one drafts store method: its first call whose BEGIN succeeds before ``close()``
+    starts another connection's hold on the file's write lock for at least ``held`` seconds,
+    or until the test ends it sooner, sets ``holding`` once the hold has begun, and asks the
+    event loop for a callback 0.05 seconds on, recording how late it ran. One use of the
+    other connection runs at a time, so closing it waits for a first call still waiting for
+    the file.
+
+    ``end_hold()`` comes only after ``holding``, and ``end_hold()`` and ``close()`` only on the
+    event loop's thread. ``close()`` keeps that thread until the hold ends, so nothing is timed
+    across it."""
 
     def __init__(
         self,
@@ -2543,8 +2548,14 @@ class HeldStoreCall:
                 self.ended = True
                 self.other.execute("ROLLBACK")
 
+    def in_force(self) -> bool:
+        """Whether the hold has begun and not yet ended."""
+        with self.using:
+            return bool(self.releases) and not self.ended
+
     def end_hold(self) -> None:
         """End the hold now, before its timer, once the test has what it held the file for."""
+        assert self.holding.is_set(), "a hold ends only once it has begun"
         for release in self.releases:
             release.cancel()
         self.release()
@@ -2621,7 +2632,7 @@ def test_a_write_as_a_run_ends_waits_for_the_drafts_file_off_the_event_loop(
                         state,
                         budget=RunBudget(seconds=0.2),
                     )
-                late_by = await held.late_by
+                late_by = await asyncio.wait_for(asyncio.shield(held.late_by), timeout=STORE_WAIT)
             finally:
                 held.close()
             await detached_done(state)
@@ -2783,14 +2794,16 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, times: int
 ) -> None:
     """A run canceled, once or twice, while it records a review a thread holds and the drafts
-    file is held lets the decision lock go without waiting for the write, which lands on
-    its own. The review stands and today's plan stays. The file's hold ends once the lock is
-    let go, so the canceled run's ending, which waits only its grace for the store, finds the
-    write landed."""
+    file is held lets the decision lock go without waiting for the write: it lets it go
+    once, while the file is still held, and the write lands on its own. The review stands
+    and today's plan stays. The file's hold ends once the lock is let go, so the canceled
+    run's ending, which waits only its grace for the store, finds the write landed."""
     state = file_backed_application(tmp_path)
     try:
 
-        async def scenario() -> tuple[str, list[float], list[float], DraftRecord | None]:
+        async def scenario() -> tuple[
+            str, list[float], list[float], list[bool], DraftRecord | None
+        ]:
             first = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
             assert first.draft_id is not None
             monkeypatch.setattr(state.drafts, "record_decision", failing_once_then(state.drafts))
@@ -2803,10 +2816,11 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
                 )
             loop = asyncio.get_running_loop()
             held = HeldStoreCall(
-                state.drafts.record_decision, tmp_path / "blossom.sqlite3", 0.5, loop
+                state.drafts.record_decision, tmp_path / "blossom.sqlite3", 1.0, loop
             )
             recorded: list[float] = []
             releases: list[float] = []
+            held_at_release: list[bool] = []
             release = state.decision_lock.release
 
             def noted(*args: object, **kwargs: object) -> object:
@@ -2817,6 +2831,7 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
 
             def let_go() -> None:
                 releases.append(monotonic())
+                held_at_release.append(held.in_force())
                 release()
 
             monkeypatch.setattr(state.drafts, "record_decision", noted)
@@ -2843,9 +2858,10 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
                 await asyncio.sleep(0.05)
             await detached_done(state)
             monkeypatch.undo()
-            return first.thread_id, recorded, releases, state.drafts.get(first.draft_id)
+            reviewed = state.drafts.get(first.draft_id)
+            return first.thread_id, recorded, releases, held_at_release, reviewed
 
-        first, recorded, releases, reviewed = asyncio.run(scenario())
+        first, recorded, releases, held_at_release, reviewed = asyncio.run(scenario())
         latest = state.drafts.latest_for(PLAN_DATE)
         running = state.drafts.running_threads()
     finally:
@@ -2853,6 +2869,7 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
 
     assert len(recorded) == 1
     assert releases
+    assert held_at_release == [True]
     assert not state.decision_lock.locked()
     assert reviewed is not None
     assert reviewed.decision == "approved"
