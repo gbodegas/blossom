@@ -1575,6 +1575,11 @@ application's own is pinned below as it is, and a real server is timed against i
 CLOCK_TICK: Final = 0.05
 """How early an event loop may run a timer: it runs every timer due within its clock's
 resolution, which is about 16 milliseconds on Windows."""
+ROOMY_DEADLINE: Final = 2.0
+"""The deadline given to the cases that must be answered before it, a body whole within it
+and a client that goes away: a busy machine can hold a short pause well past its time, and
+this leaves seconds for that, while a copy wrongly held to the deadline still takes all of
+it."""
 
 
 @dataclass(frozen=True)
@@ -1685,20 +1690,26 @@ def trickled(body: bytes, pieces: int, pause: float) -> list[tuple[float, bytes]
 
 def deadline_cases(
     press: str, seeded: Seeded
-) -> dict[str, tuple[list[tuple[float, bytes]], str, str | None]]:
-    """Each pace a body of 600 bytes can come at, how the connection ends, and the words the
-    copy is to show, or ``None`` when no copy is to be made."""
+) -> dict[str, tuple[list[tuple[float, bytes]], str, str | None, float]]:
+    """Each pace a body of 600 bytes can come at, how the connection ends, the words the copy
+    is to show, or ``None`` when no copy is to be made, and the deadline the case is given."""
     small = sized(press, seeded, 600)
     return {
-        "no body arrives": ([], "stay", None),
-        "a part arrives, then nothing": ([(0.0, small[:300])], "stay", None),
-        "it trickles in past the deadline": (trickled(small, 6, SHORT_DEADLINE / 3), "end", None),
+        "no body arrives": ([], "stay", None, SHORT_DEADLINE),
+        "a part arrives, then nothing": ([(0.0, small[:300])], "stay", None, SHORT_DEADLINE),
+        "it trickles in past the deadline": (
+            trickled(small, 6, SHORT_DEADLINE / 3),
+            "end",
+            None,
+            SHORT_DEADLINE,
+        ),
         "it arrives whole within the deadline": (
             trickled(small, 3, SHORT_DEADLINE / 8),
             "end",
             TYPED[press],
+            ROOMY_DEADLINE,
         ),
-        "the client goes away": ([(0.0, small[:300])], "disconnect", None),
+        "the client goes away": ([(0.0, small[:300])], "disconnect", None, ROOMY_DEADLINE),
     }
 
 
@@ -1712,7 +1723,6 @@ def test_the_refusal_copy_is_given_up_at_its_deadline(
     still arriving when the deadline passes gives the same 403 without a copy, answered at
     the deadline while the client is still there, with nothing left reading. A body whole
     within the deadline keeps its copy. No store is read and the lock is not taken."""
-    monkeypatch.setattr(form_routes, "COPY_DEADLINE", SHORT_DEADLINE)
     family = tree == "the family's, by her"
     with household(tmp_path, "her" if family else "parent") as client:
         seeded = seed(client)
@@ -1722,7 +1732,8 @@ def test_the_refusal_copy_is_given_up_at_its_deadline(
         headers = [FORM_HEADER, ("content-length", str(len(small)))]
         before = everything_kept(client)
         results: dict[str, Paced] = {}
-        for name, (steps, then, typed) in deadline_cases(press, seeded).items():
+        for name, (steps, then, typed, deadline) in deadline_cases(press, seeded).items():
+            monkeypatch.setattr(form_routes, "COPY_DEADLINE", deadline)
             with watched(client) as watch:
                 answer = paced(client, path, steps, headers, then=then)  # type: ignore[arg-type]
             results[name] = answer
@@ -1745,10 +1756,10 @@ def test_the_refusal_copy_is_given_up_at_its_deadline(
             answer.answered_after,
         )
     assert (
-        results["it arrives whole within the deadline"].answered_after < SHORT_DEADLINE - CLOCK_TICK
+        results["it arrives whole within the deadline"].answered_after < ROOMY_DEADLINE - CLOCK_TICK
     )
     assert results["the client goes away"].said_gone
-    assert results["the client goes away"].answered_after < SHORT_DEADLINE
+    assert results["the client goes away"].answered_after < ROOMY_DEADLINE
 
 
 def test_the_copy_deadline_is_five_seconds() -> None:
