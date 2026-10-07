@@ -214,11 +214,12 @@ class ReviewItem:
 @dataclass(frozen=True)
 class ClassQuestion:
     """The class: the one an alias matched, or the name offered for a new class and the year's
-    classes it may be the same as, each an ID and a display name."""
+    classes it may be the same as, each an ID, a display name and the scope revision of its
+    class and term (None when they hold nothing yet)."""
 
     matched: str | None
     offered_name: str
-    existing: tuple[tuple[str, str], ...]
+    existing: tuple[tuple[str, str, int | None], ...]
 
 
 @dataclass(frozen=True)
@@ -278,7 +279,8 @@ ANSWERS_FOR: Final[Mapping[IdentityStatus, frozenset[IdentityAnswer]]] = {
 class GradeAnswers:
     """The answers a review page sends: about the line, with the form of the line it answered;
     the year and term confirmed at the first setup; the year and its first month; the class, as a
-    new one's display name or the ID of the class it is the same as; and the matching answers."""
+    new one's display name or the ID of the class it is the same as, with the scope revision the
+    page showed for it; and the matching answers."""
 
     identity: IdentityAnswer
     identity_form: str | None
@@ -286,16 +288,18 @@ class GradeAnswers:
     first_month: tuple[str, int] | None = None
     new_class: str | None = None
     same_class: str | None = None
+    same_class_revision: int | None = None
     matches: tuple[MatchAnswer, ...] = ()
 
 
 @dataclass(frozen=True)
 class ReviewPage:
-    """What a page carries besides its answers: its acceptance ID and the revision it was built
-    on."""
+    """What a page carries besides its answers: its acceptance ID, the revision it was built
+    on, and the capture key of the report it reviewed."""
 
     acceptance_id: str
     revision: int | None
+    source_key: str
 
 
 @dataclass(frozen=True)
@@ -324,8 +328,11 @@ class AlreadyRecorded:
 class ReturnReason(StrEnum):
     """Why a save returned the review and wrote nothing."""
 
+    SOURCE = "source"
+    """The page reviewed another reading of the report: its capture key differs."""
     REVISION = "revision"
-    """The class and term changed while the page was open."""
+    """The class and term, or the class the page chose as the same, changed while the page was
+    open."""
     ANSWERS = "answers"
     """An answer answers no question asked now, or a question is unanswered."""
     SELECTION = "selection"
@@ -374,7 +381,7 @@ class OnRecord:
     context: bool
     year_known: bool
     matched: str | None
-    existing: tuple[tuple[str, str], ...]
+    existing: tuple[tuple[str, str, int | None], ...]
     revision: int | None
     held: ClassRecord
     saved: Mapping[str, str | None]
@@ -637,7 +644,7 @@ def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
     if question.matched is not None:
         return answers.new_class is None and answers.same_class is None
     if answers.same_class is not None:
-        offered = {class_id for class_id, _ in question.existing}
+        offered = {class_id for class_id, _, _ in question.existing}
         return answers.new_class is None and answers.same_class in offered
     return answers.new_class is not None and bool(folded(answers.new_class))
 

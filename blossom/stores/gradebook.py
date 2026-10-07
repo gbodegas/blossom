@@ -629,11 +629,12 @@ class GradebookRecords:
             return self._review_locked(draft, source_key, key, same_class=None)
 
     def current_values(self, class_id: str, term: str) -> CurrentValues:
-        """Each target's current value in her class and term: from the current report with the
-        highest acceptance order that supplied it, with that report and its order. A read alone."""
+        """Each target's current value in her class and term, the term however its label is
+        spaced: from the current report with the highest acceptance order that supplied it, with
+        that report and its order. A read alone."""
         with self._lock:
             student_id = self._her_name_record()[0]
-            return self._class_record(student_id, class_id, term).current
+            return self._class_record(student_id, class_id, folded(term)).current
 
     def save_grade_report(
         self,
@@ -670,7 +671,13 @@ class GradebookRecords:
                     into = self._review_locked(
                         draft, source_key, key, same_class=answers.same_class
                     )
-                if review.revision != page.revision:
+                if page.source_key != source_key:
+                    return ReviewReturned(into, ReturnReason.SOURCE)
+                if review.revision != page.revision or (
+                    answers.same_class is not None
+                    and self._revision_of(student_id, answers.same_class, draft)
+                    != answers.same_class_revision
+                ):
                     return ReviewReturned(into, ReturnReason.REVISION)
                 if not answers_asked(review, answers) or not matches_asked(into, answers.matches):
                     return ReviewReturned(into, ReturnReason.ANSWERS)
@@ -713,21 +720,18 @@ class GradebookRecords:
         header = draft.header
         student_id, check, forms = self._her_name_record()
         identity = identity_among(key, header.student_line, check=check, forms=forms)
-        year, term = header.year_label, header.term_label
+        year, term = header.year_label, folded(header.term_label)
         alias = self._connection.execute(
             ALIAS_MATCHED, (student_id, year, matched_as(header))
         ).fetchone()
         matched = None if alias is None else str(alias[0])
         existing = tuple(
-            (str(row[0]), str(row[1]))
+            (str(row[0]), str(row[1]), self._revision_of(student_id, str(row[0]), draft))
             for row in self._connection.execute(CLASSES_OF_YEAR, (student_id, year))
         )
-        revision = None
-        if matched is not None:
-            held = self._connection.execute(REVISION_OF, (student_id, matched, term)).fetchone()
-            revision = None if held is None else int(held[0])
+        revision = None if matched is None else self._revision_of(student_id, matched, draft)
         reviewed = matched
-        if reviewed is None and same_class in {class_id for class_id, _ in existing}:
+        if reviewed is None and same_class in {class_id for class_id, _, _ in existing}:
             reviewed = same_class
         held = NOTHING_HELD
         if reviewed is not None:
@@ -810,6 +814,12 @@ class GradebookRecords:
             decided={evidence: frozenset(results) for evidence, results in decided.items()},
         )
 
+    def _revision_of(self, student_id: str, class_id: str, draft: GradeReportDraft) -> int | None:
+        """The scope revision of ``class_id`` in the report's term, None when it holds nothing."""
+        term = folded(draft.header.term_label)
+        held = self._connection.execute(REVISION_OF, (student_id, class_id, term)).fetchone()
+        return None if held is None else int(held[0])
+
     def _recorded(self, student_id: str, acceptance_id: str) -> tuple[GradeReportSaved, str] | None:
         """The outcome recorded under ``acceptance_id`` for her, with its source key."""
         row = self._connection.execute(RECORDED, (student_id, acceptance_id)).fetchone()
@@ -852,7 +862,7 @@ class GradebookRecords:
                 self.confirm_name_again(key, line, by)
             else:
                 self.add_name_form(key, line, by)
-        year, term = header.year_label, header.term_label
+        year, term = header.year_label, folded(header.term_label)
         if answers.setup is not None:
             current_year, current_term = answers.setup
             self._connection.execute(
@@ -950,7 +960,7 @@ class GradebookRecords:
     ) -> str:
         """The capture's latest report in the class and term, which its rest joins; or a new
         report, next in acceptance order, current."""
-        term = draft.header.term_label
+        term = folded(draft.header.term_label)
         latest = self._connection.execute(
             LATEST_OF_CAPTURE, (student_id, class_id, term, source_key)
         ).fetchone()
@@ -1019,7 +1029,7 @@ class GradebookRecords:
             result_id = item.result_id
             if result_id is None:
                 result_id = f"result-{uuid.uuid4().hex}"
-                term = draft.header.term_label
+                term = folded(draft.header.term_label)
                 self._connection.execute(ADD_RESULT, (result_id, student_id, class_id, term, now))
             cells = [text for value in (category.name, *row.cells()) for text in _cell(value)]
             self._connection.execute(

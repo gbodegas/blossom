@@ -1858,7 +1858,7 @@ def save_grade(
         draft,
         capture_key(draft),
         key=key,
-        page=ReviewPage(review.acceptance_id, review.revision),
+        page=ReviewPage(review.acceptance_id, review.revision, review.source_key),
         answers=answers or grade_answers(review),
         selection=frozenset(review.ready if selection is None else selection),
         role="parent",
