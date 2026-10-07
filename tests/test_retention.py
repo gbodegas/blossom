@@ -1919,9 +1919,11 @@ def test_a_publication_waiting_on_the_drafts_file_ends_at_the_runs_limit(
 
 
 class HeldFile:
-    """Settles a run through the drafts store while another connection holds the file's
-    write lock for ``held`` seconds from just before the settle. Each settle asks the event
-    loop for a callback 0.05 seconds on and records how late it ran."""
+    """Settles a run through the drafts store while another connection holds the file for
+    ``held`` seconds from just before the settle, begun with ``hold``: ``BEGIN EXCLUSIVE``
+    keeps out readers too, ``BEGIN IMMEDIATE`` only the writer, as another write holds it.
+    Each settle asks the event loop for a callback 0.05 seconds on and records how late it
+    ran."""
 
     def __init__(
         self,
@@ -1929,10 +1931,13 @@ class HeldFile:
         path: pathlib.Path,
         held: float,
         loop: asyncio.AbstractEventLoop,
+        *,
+        hold: str = "BEGIN EXCLUSIVE",
     ) -> None:
         self.settle = state.drafts.settle_run
         self.other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.held = held
+        self.hold = hold
         self.loop = loop
         self.releases: list[threading.Timer] = []
         self.started = asyncio.Event()
@@ -1941,7 +1946,7 @@ class HeldFile:
 
     def __call__(self, run_id: str, **arguments: Any) -> Settled:  # noqa: ANN401
         if self.held and not self.releases:
-            self.other.execute("BEGIN EXCLUSIVE")
+            self.other.execute(self.hold)
             self.releases.append(threading.Timer(self.held, self.release))
             self.releases[0].start()
         due = monotonic()
@@ -1978,8 +1983,12 @@ def file_backed_application(
 
 
 @pytest.mark.parametrize(
-    ("held", "seconds", "outcome"),
-    [(0.7, 5.0, "accepted"), (2.3, 1.0, "timed_out"), (0.0, 5.0, "accepted")],
+    ("held", "seconds", "outcome", "hold"),
+    [
+        (0.7, 5.0, "accepted", "BEGIN EXCLUSIVE"),
+        (2.3, 1.0, "timed_out", "BEGIN IMMEDIATE"),
+        (0.0, 5.0, "accepted", "BEGIN EXCLUSIVE"),
+    ],
 )
 def test_the_server_goes_on_answering_while_a_publication_waits_for_the_drafts_file(
     monkeypatch: pytest.MonkeyPatch,
@@ -1987,17 +1996,20 @@ def test_the_server_goes_on_answering_while_a_publication_waits_for_the_drafts_f
     held: float,
     seconds: float,
     outcome: str,
+    hold: str,
 ) -> None:
     """A callback due on the same event loop 0.05 seconds after the publication starts runs
     on time, whether the run waits for the file and publishes, runs out of time first, or
-    finds the file free."""
+    finds the file free. The run that runs out of time meets the writer held, as another
+    write holds it: on Windows, a wait against a file that keeps out readers too runs most
+    of a second past its busy timeout, close to the whole grace."""
     state = file_backed_application(tmp_path)
     try:
 
         async def scenario() -> tuple[str, PlanRunView, float, DraftRecord | None]:
             first = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
             contended = HeldFile(
-                state, tmp_path / "blossom.sqlite3", held, asyncio.get_running_loop()
+                state, tmp_path / "blossom.sqlite3", held, asyncio.get_running_loop(), hold=hold
             )
             monkeypatch.setattr(state.drafts, "settle_run", contended)
             try:
