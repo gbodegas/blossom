@@ -933,8 +933,9 @@ class ApprovalView(BaseModel):
     steps: list[StepRecord] = []
     """How the plan was made, read from the same snapshot as the draft."""
     stale: str | None = None
-    """Why this draft is not approved as it stands, when her signal has changed
-    since it was made; ``None`` while the draft still fits the evening."""
+    """Why this draft is not approved as it stands: her signal has changed since it was
+    made, its saved blocks are over the limit that applies now, or the work it was made
+    from reads differently; ``None`` while the draft still fits the evening."""
     reported_done: str | None = None
     """That today's plan includes work she reports as done as things stand; ``None`` for
     any other plan, and while it includes none."""
