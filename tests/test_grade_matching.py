@@ -1358,10 +1358,11 @@ def undated(*changes: tuple[str, str]) -> GradeReportDraft:
 
 
 def test_a_row_whose_due_wasnt_captured_asks_and_an_answer_records_only_which_it_is() -> None:
-    """His fourteenth round, 5: the row never matches by itself, asks which assignment it is and
-    offers a choice; the parent's answer records it as shown, its date kept not captured, and it
-    is never selectable. The reading is incomplete, so no absence follows; the same capture
-    replays the answer, and another capture lacking dates asks again."""
+    """His fourteenth and sixteenth rounds: the row never matches by itself, asks which
+    assignment it is and offers a choice; the parent's answer records it as shown, its date kept
+    not captured, and its equal score then reads Saved beside "Due date not captured", so it
+    isn't offered. The reading is incomplete, so no absence follows; the same capture replays
+    the answer, and another capture lacking dates asks again."""
     store = in_memory()
     first = saved(save(store, A, complete=True))
     held = review_of(store, A)
@@ -1372,10 +1373,11 @@ def test_a_row_whose_due_wasnt_captured_asks_and_an_answer_records_only_which_it
     seed, cell = row(review, "Seed Germination Log"), row(review, "Cell Diagram")
 
     for item in (seed, cell):
-        assert (item.status, item.result_id, item.how) == (
+        assert (item.status, item.result_id, item.how, item.due_not_captured) == (
             ItemStatus.DUE_NOT_CAPTURED,
             None,
             None,
+            True,
         )
         assert item.key not in review.ready
     assert seed.question is not None
@@ -1384,10 +1386,11 @@ def test_a_row_whose_due_wasnt_captured_asks_and_an_answer_records_only_which_it
     answers = [same(seed), same(cell)]
     settled = answered_review(store, draft, *answers)
     answered = row(settled, "Seed Germination Log")
-    assert (answered.status, answered.result_id, answered.how) == (
-        ItemStatus.DUE_NOT_CAPTURED,
+    assert (answered.status, answered.result_id, answered.how, answered.due_not_captured) == (
+        ItemStatus.SAVED,
         seed_id,
         "answer",
+        True,
     )
     assert answered.key not in settled.ready
     refused = save(store, draft, review, matches=answers, selection={seed.key})
@@ -1419,11 +1422,12 @@ def test_a_row_whose_due_wasnt_captured_asks_and_an_answer_records_only_which_it
     replay = review_of(store, draft)
     again = row(replay, "Seed Germination Log")
     assert (again.status, again.result_id, again.how, again.question) == (
-        ItemStatus.DUE_NOT_CAPTURED,
+        ItemStatus.SAVED,
         seed_id,
         "same_capture",
         None,
     )
+    assert again.due_not_captured
     assert again.key not in replay.ready
     other = review_of(store, undated(OSMOSIS_GONE, CELL_SCORE))
     asked = row(other, "Seed Germination Log")
@@ -1438,8 +1442,10 @@ def test_a_row_whose_due_wasnt_captured_asks_and_an_answer_records_only_which_it
 
 
 def test_a_row_whose_due_wasnt_captured_and_no_result_fits_is_offered_a_choice_only() -> None:
-    """With no candidate, the row is no proposed new assignment: it can't be selected, records
-    nothing unanswered, and "Choose an existing assignment" records which assignment it is."""
+    """With no candidate, the row is no proposed new assignment: it can't be selected before a
+    choice and records nothing unanswered. "Choose an existing assignment" records which
+    assignment it is, and its value then reads Changed beside "Due date not captured" and can be
+    ticked, in this review and when the same capture replays the choice."""
     store = in_memory()
     saved(save(store, A, complete=True))
     cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
@@ -1454,10 +1460,18 @@ def test_a_row_whose_due_wasnt_captured_and_no_result_fits_is_offered_a_choice_o
     )
     assert cell_id in leaf.choices
     assert leaf.key not in review.ready
-    for matches in ([], [chosen(leaf, cell_id)]):
-        refused = save(store, draft, review, matches=matches, selection={leaf.key})
-        assert isinstance(refused, ReviewReturned)
-        assert refused.why is ReturnReason.SELECTION
+    refused = save(store, draft, review, selection={leaf.key})
+    assert isinstance(refused, ReviewReturned)
+    assert refused.why is ReturnReason.SELECTION
+    settled = answered_review(store, draft, chosen(leaf, cell_id))
+    choice = row(settled, "Leaf Sketch")
+    assert (choice.status, choice.result_id, choice.how, choice.due_not_captured) == (
+        ItemStatus.CHANGED,
+        cell_id,
+        "chosen",
+        True,
+    )
+    assert choice.key in settled.ready
     outcome = saved(save(store, draft, review, matches=[chosen(leaf, cell_id)], selection=()))
 
     assert (outcome.added, outcome.updated, outcome.answers_kept) == (0, 0, 1)
@@ -1465,17 +1479,19 @@ def test_a_row_whose_due_wasnt_captured_and_no_result_fits_is_offered_a_choice_o
     assert seed.key not in records(store, outcome.report_id)
     assert observed(store, outcome.report_id) == 0
     assert len(results(store)) == 4
-    again = row(review_of(store, draft), "Leaf Sketch")
+    replay = review_of(store, draft)
+    again = row(replay, "Leaf Sketch")
     assert (again.status, again.result_id, again.how) == (
-        ItemStatus.DUE_NOT_CAPTURED,
+        ItemStatus.CHANGED,
         cell_id,
         "same_capture",
     )
+    assert again.key in replay.ready
 
 
 def test_a_row_missing_its_due_date_with_a_score_that_cant_be_read_keeps_couldnt_read() -> None:
     """Both rules at once: the row asks, its answer records which assignment it is, and the
-    score warning stays."""
+    score warning stays: the value can't be selected, before or after the match."""
     store = in_memory()
     saved(save(store, A, complete=True))
     cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
@@ -1483,10 +1499,25 @@ def test_a_row_missing_its_due_date_with_a_score_that_cant_be_read_keeps_couldnt
     review = review_of(store, draft)
     cell = row(review, "Cell Diagram")
 
-    assert (cell.status, cell.result_id) == (ItemStatus.UNREADABLE, None)
+    assert (cell.status, cell.result_id, cell.due_not_captured) == (
+        ItemStatus.UNREADABLE,
+        None,
+        True,
+    )
     assert cell.question is not None
     assert cell.question.ids == (cell_id,)
     assert cell_id in cell.choices
+    settled = answered_review(store, draft, same(cell))
+    answered = row(settled, "Cell Diagram")
+    assert (answered.status, answered.result_id, answered.how) == (
+        ItemStatus.UNREADABLE,
+        cell_id,
+        "answer",
+    )
+    assert answered.key not in settled.ready
+    refused = save(store, draft, review, matches=[same(cell)], selection={cell.key})
+    assert isinstance(refused, ReviewReturned)
+    assert refused.why is ReturnReason.SELECTION
     kept = saved(save(store, draft, review, matches=[same(cell)], selection=()))
 
     assert records(store, kept.report_id)[cell.key] == (cell_id, "answer")
@@ -1551,7 +1582,9 @@ def undated_different_kept(store: ProjectStateStore) -> tuple[str, str, GradeRep
 def test_a_different_answer_for_a_row_whose_due_wasnt_captured_replays_in_its_capture() -> None:
     """His fifteenth round: kept by the submission for the same capture and row, against the
     candidate it turned down; it creates no assignment, presence or value, the row stays Due date
-    not captured and unselectable, a retry writes nothing, and the answer stays open to change."""
+    not captured and unselectable, a retry writes nothing, and the answer stays open to change.
+    Once an existing assignment is chosen, the same capture replays the choice and its value
+    reads Changed."""
     store = in_memory()
     first = saved(save(store, A, complete=True)).report_id or ""
     seed = row(review_of(store, A), "Seed Germination Log").result_id or ""
@@ -1602,10 +1635,11 @@ def test_a_different_answer_for_a_row_whose_due_wasnt_captured_replays_in_its_ca
     assert observed(store, kept.report_id) == 0
     assert len(results(store)) == 4
     again = row(review_of(store, draft), "Seed Germination Journal")
-    assert (again.status, again.result_id, again.how) == (
-        ItemStatus.DUE_NOT_CAPTURED,
+    assert (again.status, again.result_id, again.how, again.due_not_captured) == (
+        ItemStatus.CHANGED,
         seed,
         "same_capture",
+        True,
     )
 
 
@@ -1671,3 +1705,187 @@ def test_a_different_answer_for_an_undated_row_whose_score_cant_be_read_keeps_it
         assert item.question.ids == (cell_id,)
         assert cell_id in item.choices
         assert item.key not in later.ready
+
+
+# ------------------------------------------------------------- a matched row missing its due date
+
+
+CELL_NINE = ("| Cell Diagram             | 7.0 ", "| Cell Diagram             | 9.0 ")
+
+
+def due_saved(store: ProjectStateStore, report_id: str | None) -> list[tuple[str, str, str, str]]:
+    """Each result observation of a report: its result, points, and due text and presence."""
+    found = store._connection.execute(
+        "SELECT result_id, points_text, due_text, due_presence FROM grade_result_observations "
+        "WHERE report_id = ?",
+        (report_id,),
+    )
+    return [(str(one[0]), str(one[1]), str(one[2]), str(one[3])) for one in found]
+
+
+def test_a_matched_row_missing_its_due_date_can_be_ticked_and_keeps_it_not_captured() -> None:
+    """His sixteenth round: before the match the row can't be selected; the parent's answer
+    makes its changed score Changed beside "Due date not captured", and ticked, it is saved as an
+    observation of the matched result whose due date stays not captured, never the result's.
+    A retry writes nothing, and the same capture replays it as Saved."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+    draft = undated(CELL_SCORE)
+    review = review_of(store, draft)
+    cell = row(review, "Cell Diagram")
+
+    assert (cell.status, cell.result_id, cell.due_not_captured) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        None,
+        True,
+    )
+    refused = save(store, draft, review, selection={cell.key})
+    assert isinstance(refused, ReviewReturned)
+    assert refused.why is ReturnReason.SELECTION
+    settled = answered_review(store, draft, same(cell))
+    answered = row(settled, "Cell Diagram")
+    assert (answered.status, answered.result_id, answered.how, answered.due_not_captured) == (
+        ItemStatus.CHANGED,
+        cell_id,
+        "answer",
+        True,
+    )
+    assert answered.current is not None
+    assert text_of(answered.current, "points") == "7.0"
+    assert answered.key in settled.ready
+    outcome = saved(save(store, draft, review, matches=[same(cell)], selection={cell.key}))
+
+    assert (outcome.added, outcome.updated) == (0, 1)
+    assert outcome.accepted == ((cell.key, cell_id),)
+    assert records(store, outcome.report_id)[cell.key] == (cell_id, "answer")
+    assert due_saved(store, outcome.report_id) == [(cell_id, "8.0", "", "not_captured")]
+    assert len(results(store)) == 4
+    current = store.current_values(class_of(store), "T1").results[cell_id]
+    assert current.report_id == outcome.report_id
+    assert (current.cells["points"], current.cells["due"]) == (
+        (Presence.REPORTED, "8.0"),
+        (Presence.NOT_CAPTURED, ""),
+    )
+    assert current.not_shown is None
+    changes = store._connection.total_changes
+    retried = save(store, draft, review, matches=[same(cell)], selection={cell.key})
+    assert isinstance(retried, AlreadyRecorded)
+    assert store._connection.total_changes == changes
+    replay = review_of(store, draft)
+    again = row(replay, "Cell Diagram")
+    assert (again.status, again.result_id, again.how, again.due_not_captured) == (
+        ItemStatus.SAVED,
+        cell_id,
+        "same_capture",
+        True,
+    )
+    assert again.key not in replay.ready
+
+
+def test_a_matched_row_missing_its_due_date_left_unticked_saves_only_which_it_is() -> None:
+    """His sixteenth round: matching without ticking saves only the row record, no value; the
+    same capture replays the match with its value still Changed and selectable, and ticking it
+    then accepts the value into the capture's report, keeping the row's one record."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True)).report_id
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+    draft = undated(CELL_SCORE)
+    review = review_of(store, draft)
+    cell = row(review, "Cell Diagram")
+    kept = saved(save(store, draft, review, matches=[same(cell)], selection=()))
+
+    assert (kept.added, kept.updated, kept.accepted) == (0, 0, ())
+    assert (kept.shown, kept.answers_kept) == (3, 1)
+    assert records(store, kept.report_id)[cell.key] == (cell_id, "answer")
+    assert observed(store, kept.report_id) == 0
+    current = store.current_values(class_of(store), "T1").results[cell_id]
+    assert (current.report_id, text_of(current, "points"), text_of(current, "due")) == (
+        first,
+        "7.0",
+        "09/26",
+    )
+    replay = review_of(store, draft)
+    again = row(replay, "Cell Diagram")
+    assert (again.status, again.result_id, again.how, again.question) == (
+        ItemStatus.CHANGED,
+        cell_id,
+        "same_capture",
+        None,
+    )
+    assert again.due_not_captured
+    assert again.key in replay.ready
+    later = saved(save(store, draft, replay, selection={again.key}))
+
+    assert later.report_id == kept.report_id
+    assert (later.updated, later.accepted) == (1, ((cell.key, cell_id),))
+    assert records(store, kept.report_id)[cell.key] == (cell_id, "answer")
+    (count,) = store._connection.execute(
+        "SELECT COUNT(*) FROM grade_match_decisions WHERE row_key = ?", (cell.key,)
+    ).fetchone()
+    assert count == 1
+    assert due_saved(store, kept.report_id) == [(cell_id, "8.0", "", "not_captured")]
+
+
+def test_a_matched_row_missing_its_due_date_reads_matches_earlier_or_shown_in_a_newer_report() -> (
+    None
+):
+    """Its status is the ordinary one against the matched result, the due date left out of the
+    comparison on both sides: A's score after newer B replaced it matches an earlier saved value,
+    and a changed score in a capture whose report comes before B's is shown in a newer report.
+    Neither is offered."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+    before_b = undated(CELL_NINE)
+    first_look = review_of(store, before_b)
+    seed = row(first_look, "Seed Germination Log")
+    saved(save(store, before_b, first_look, matches=[same(seed)], selection=()))
+    newer = saved(save(store, B))
+    assert dict(newer.accepted).get(row(review_of(store, B), "Cell Diagram").key) == cell_id
+
+    for draft, status, covered in (
+        (undated(), ItemStatus.MATCHES_EARLIER, False),
+        (before_b, ItemStatus.CHANGED, True),
+    ):
+        asked = row(review_of(store, draft), "Cell Diagram")
+        settled = answered_review(store, draft, same(asked))
+        item = row(settled, "Cell Diagram")
+
+        assert (item.status, item.result_id, item.covered, item.due_not_captured) == (
+            status,
+            cell_id,
+            covered,
+            True,
+        )
+        assert item.key not in settled.ready
+
+
+def test_after_a_value_saved_from_a_copy_missing_its_dates_the_next_dated_capture_asks() -> None:
+    """Rev 3k, 9.3 point 2, as built: a result's evidence and shown due date come from its
+    observation in the highest acceptance order, so after a value saved from a copy missing its
+    dates the result shows its due date as not captured, and the next dated capture of it asks
+    "Same assignment?" rather than matching by itself. Answered, its value reads Changed by the
+    due date it now supplies."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+    draft = undated(CELL_SCORE)
+    cell = row(review_of(store, draft), "Cell Diagram")
+    saved(save(store, draft, matches=[same(cell)], selection={cell.key}))
+    current = store.current_values(class_of(store), "T1").results[cell_id]
+    assert current.cells["due"] == (Presence.NOT_CAPTURED, "")
+    review = review_of(store, B)
+    asked, seed = row(review, "Cell Diagram"), row(review, "Seed Germination Log")
+
+    assert (asked.status, asked.result_id, asked.how) == (ItemStatus.NEEDS_ANSWER, None, None)
+    assert asked.question is not None
+    assert (asked.question.kind, asked.question.ids) == (QuestionKind.WHICH, (cell_id,))
+    assert asked.key not in review.ready
+    assert (seed.status, seed.how) == (ItemStatus.SAVED, "exact")
+    answered = row(answered_review(store, B, same(asked)), "Cell Diagram")
+    assert (answered.status, answered.result_id, answered.due_not_captured) == (
+        ItemStatus.CHANGED,
+        cell_id,
+        False,
+    )

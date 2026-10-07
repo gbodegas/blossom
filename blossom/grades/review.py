@@ -16,13 +16,15 @@ same capture and row only); an open row may also be one of her results the paren
 Each value's status compares it with its target's current value, as accepted school values:
 "Saved", equal to it; "Matches an earlier saved value", equal to a value a newer one replaced;
 "Changed", it differs; "New", no target; "Needs your answer", a matching question is open;
-"Couldn't read", a cell is unreadable; "Due date not captured", the copy left out a row's due
-cell. A row with a value that can't be read but whose identity reads, or whose category and
-title read but whose due date wasn't captured, still asks its question, or offers her results
-to choose from, and keeps its status before and after an answer, which records only which
-result it is. A due date that wasn't captured is never evidence, so such a row resolves only
-through its own capture's records or the parent's answer or choice. Only a New or Changed value
-can be selected, and only when no current report newer than the one its capture's rest joins
+"Couldn't read", a cell is unreadable; "Due date not captured", the copy left out the due cell
+of a row that resolves to none of her results. A row with a value that can't be read but whose
+identity reads, or whose category and title read but whose due date wasn't captured, still asks
+its question, or offers her results to choose from; an answer records which result it is, never
+its value. A due date that wasn't captured is never evidence, so such a row resolves only
+through its own capture's records or the parent's answer or choice; then its value takes its
+status as any other does, compared without the due date, which is neither the same nor a
+change, while a value that can't be read stays "Couldn't read". Only a New or Changed value can
+be selected, and only when no current report newer than the one its capture's rest joins
 supplied or showed its target.
 
 The questions a review asks are the identity of the student line, the first setup, the first
@@ -173,7 +175,7 @@ class ItemStatus(StrEnum):
     """"Couldn't read": a cell is unreadable. Never offered, whether or not the row asks."""
     DUE_NOT_CAPTURED = "due_not_captured"
     """"Due date not captured": the row's category and title read, its due cell wasn't in the
-    copy. Never offered; the parent's answer or choice records only which result it is."""
+    copy, and it resolves to none of her results. Never offered."""
 
 
 class QuestionKind(StrEnum):
@@ -181,7 +183,7 @@ class QuestionKind(StrEnum):
 
     DUE_CHANGED = "due_changed"
     """"Same assignment, due date changed from A to B?": one candidate, the same title, the
-    row's due date read."""
+    row's due date and the candidate's both read."""
     RENAMED = "renamed"
     """"Same assignment, renamed from 'X'?": one candidate, another title."""
     WHICH = "which"
@@ -247,6 +249,9 @@ class ReviewItem:
     assignment" offers: her results in the class and term no such row resolved to."""
     remembered: bool = False
     """A stored "A different assignment" answers the row's question, which stays open to change."""
+    due_not_captured: bool = False
+    """The copy left out the row's due cell: "Due date not captured" shows beside its value,
+    whatever its status."""
 
 
 @dataclass(frozen=True)
@@ -464,15 +469,24 @@ UNREAD: Final = frozenset({Presence.UNREADABLE, Presence.NOT_CAPTURED})
 
 
 def status_against(
-    held: ClassRecord, target: str, cells: Mapping[str, Cell], current: CurrentValue | None
+    held: ClassRecord,
+    target: str,
+    cells: Mapping[str, Cell],
+    current: CurrentValue | None,
+    *,
+    left_out: Collection[str] = (),
 ) -> ItemStatus:
-    """A value's status against its target: Saved when equal to the current value, Matches an
-    earlier saved value when equal to another accepted one, else Changed, or New with no
-    current value."""
-    value = compared(cells)
-    if current is not None and compared(current.cells) == value:
+    """A value's status against its target, the fields in ``left_out`` compared on neither side:
+    Saved when equal to the current value, Matches an earlier saved value when equal to another
+    accepted one, else Changed, or New with no current value."""
+
+    def kept(value: Compared) -> Compared:
+        return tuple(one for one in value if one[0] not in left_out)
+
+    value = kept(compared(cells))
+    if current is not None and kept(compared(current.cells)) == value:
         return ItemStatus.SAVED
-    if value in held.accepted.get(target, frozenset()):
+    if value in {kept(one) for one in held.accepted.get(target, frozenset())}:
         return ItemStatus.MATCHES_EARLIER
     return ItemStatus.NEW if current is None else ItemStatus.CHANGED
 
@@ -515,7 +529,8 @@ class _Row:
     """Its category, title and due date were read, so it can match though a value can't."""
     undated: bool
     """Its category and title were read and its due date wasn't captured: it resolves only
-    through its capture's records or the parent's answer or choice, and is never selected."""
+    through its capture's records or the parent's answer or choice, and can't be selected until
+    then."""
 
 
 class _Matching:
@@ -618,7 +633,12 @@ class _Matching:
             seen = evidence_of(latest[found[0]])
             if _title(seen) != _title(row.evidence):
                 kind = QuestionKind.RENAMED
-            elif row.identified and seen[0] == row.evidence[0] and seen[2] != row.evidence[2]:
+            elif (
+                row.identified
+                and seen[2][0] not in UNREAD
+                and seen[0] == row.evidence[0]
+                and seen[2] != row.evidence[2]
+            ):
                 kind = QuestionKind.DUE_CHANGED
         return MatchQuestion(kind, tuple(Candidate(result, latest[result]) for result in found))
 
@@ -643,8 +663,8 @@ def _rows_of(draft: GradeReportDraft) -> list[_Row]:
 
 
 def _kept(row: _Row) -> ItemStatus | None:
-    """The status a row keeps whatever it resolves to, since it is never selected: Couldn't read
-    when a value can't be read, else Due date not captured; None for any other row."""
+    """The status a row keeps while it resolves to none of her results: Couldn't read when a
+    value can't be read, kept once it resolves too, else Due date not captured; None otherwise."""
     if row.unreadable:
         return ItemStatus.UNREADABLE
     if row.undated:
@@ -695,7 +715,8 @@ def _resolved_rows(
     asked now or a choice bound to the results offered, as a new result, or with its question
     open. A row whose identity reads but a value doesn't asks as any row does and stays
     Couldn't read, a row missing only its due date asks the same way and stays Due date not
-    captured, and a row with an unreadable cell whose identity doesn't read asks nothing."""
+    captured until it resolves, and a row with an unreadable cell whose identity doesn't read
+    asks nothing."""
     held = on_record.held
     matching = _Matching(rows, on_record)
     answered = {answer.row_key: answer for answer in matches}
@@ -704,10 +725,11 @@ def _resolved_rows(
         row: _Row, result: str, how: MatchedHow, asked: MatchQuestion | None
     ) -> ReviewItem:
         current = held.current.results.get(result)
-        kept = _kept(row)
-        if kept is not None:
-            return ReviewItem(row.key, kept, result, current, asked, how)
-        status = status_against(held, result, row.cells, current)
+        if row.unreadable:
+            return ReviewItem(row.key, ItemStatus.UNREADABLE, result, current, asked, how)
+        # A due date the copy left out is neither the same as the result's nor a change to it.
+        left_out = ("due",) if row.undated else ()
+        status = status_against(held, result, row.cells, current, left_out=left_out)
         if row.key in on_record.saved and status in OFFERED:
             status = ItemStatus.SAVED
         covered = status in OFFERED and on_record.covers(result)
@@ -727,7 +749,7 @@ def _resolved_rows(
     def opened(row: _Row) -> ReviewItem:
         item = asking(row)
         kept = _kept(row)
-        if kept is not None and item.status is not kept:
+        if kept is not None and item.result_id is None:
             return replace(item, status=kept)
         return item
 
@@ -771,7 +793,12 @@ def _resolved_rows(
             items.append(ReviewItem(row.key, ItemStatus.UNREADABLE))
         else:
             items.append(opened(row))
-    return tuple(items)
+    return tuple(
+        replace(item, due_not_captured=True)
+        if row.cells["due"][0] is Presence.NOT_CAPTURED
+        else item
+        for row, item in zip(rows, items, strict=True)
+    )
 
 
 def review_from(
