@@ -204,8 +204,8 @@ def test_a_first_save_writes_exactly_the_expected_rows_and_raises_the_revision()
     assert one(store, "SELECT display_name FROM grade_classes") == [("Biology",)]
     assert one(store, "SELECT code, name FROM grade_class_aliases") == [("07 BIO - C", "Biology")]
     assert one(
-        store, "SELECT source_key, acceptance_order, use, reader, coverage FROM grade_reports"
-    ) == [(capture_key(WREN_DRAFT), 1, "current", "text", "full")]
+        store, "SELECT source_key, acceptance_order, use, reader, result_rows FROM grade_reports"
+    ) == [(capture_key(WREN_DRAFT), 1, "current", "text", 4)]
     assert one(store, "SELECT DISTINCT how FROM grade_match_decisions") == [("new",)]
     assert one(store, "SELECT revision FROM grade_scope_revisions") == [(1,)]
     assert one(
@@ -680,6 +680,37 @@ def test_her_own_role_saves_nothing() -> None:
     assert counted(store) == {
         table: 1 if table == "grade_student" else 0 for table in GRADEBOOK_TABLES
     }
+
+
+def test_a_row_record_names_a_result_unless_it_is_a_remembered_different_answer() -> None:
+    """A row record names its result and keeps no rejected candidates, except a remembered "A
+    different assignment", which names no result and keeps the candidates it turned down."""
+    store = in_memory()
+    saved(save(store))
+    (report_id, student_id) = store._connection.execute(
+        "SELECT report_id, student_id FROM grade_reports"
+    ).fetchone()
+
+    def record(row: str, result: str | None, how: str, rejected: str | None) -> None:
+        store._connection.execute(
+            "INSERT INTO grade_match_decisions (report_id, row_key, student_id, evidence, "
+            "occurrence, result_id, how, rejected, decided_by, decided_at) "
+            "VALUES (?, ?, ?, '[]', 1, ?, ?, ?, 'parent', 'now')",
+            (report_id, row, student_id, result, how, rejected),
+        )
+
+    record("kept", None, "different", '[["result-a", "[]"]]')
+    for row, result, how, rejected in (
+        ("no result", None, "answer", None),
+        ("a result", "result-a", "different", '[["result-a", "[]"]]'),
+        ("nothing turned down", None, "different", None),
+        ("turned down too", "result-a", "chosen", '[["result-b", "[]"]]'),
+        ("unknown how", "result-a", "guessed", None),
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            record(row, result, how, rejected)
+    for how in ("reused", "chosen"):
+        record(how, "result-a", how, None)
 
 
 def deny_the_acceptance(action: int, table: str | None, *_: object) -> int:

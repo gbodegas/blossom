@@ -197,12 +197,14 @@ def test_a_refused_release_takes_back_the_whole_save(
     assert isinstance(save_grade(store, WREN, key=KEY, review=review), GradeReportSaved)
 
 
+@pytest.mark.parametrize("joined", [True, False], ids=["joined", "standalone"])
 def test_a_transaction_sqlite_ends_is_lost_and_never_a_refusal(
-    opened: Callable[[str], ProjectStateStore], path: pathlib.Path
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path, joined: bool
 ) -> None:
-    """An interrupt at the report's insert makes SQLite roll back the caller's whole
-    transaction: nothing of the save remains, the caller's earlier write is gone too, and the
-    caller hears that its transaction was lost, which a refusal's handler doesn't catch."""
+    """An interrupt at the report's insert makes SQLite roll back the whole transaction:
+    nothing of the save remains, a caller's earlier write is gone too, and the caller hears
+    that the transaction was lost, from the interrupt itself, which a refusal's handler
+    doesn't catch. The same holds for a save of its own."""
     store = opened("first use")
     review = review_of(store)
     before, rows = world(path), assignments(store)
@@ -220,18 +222,60 @@ def test_a_transaction_sqlite_ends_is_lost_and_never_a_refusal(
         return 0
 
     def caller() -> None:
+        if not joined:
+            save_grade(store, WREN, key=KEY, review=review)
+            return
         with store.comparing_and_writing():
             unrelated(store, "before")
             save_grade(store, WREN, key=KEY, review=review)
 
     store._connection.set_authorizer(arm)
     store._connection.set_progress_handler(interrupt, 1)
-    with pytest.raises(gradebook.GradeTransactionLost):
+    with pytest.raises(gradebook.GradeTransactionLost) as lost:
         caller()
     store._connection.set_progress_handler(None, 1)
     store._connection.set_authorizer(None)
 
     assert not issubclass(gradebook.GradeTransactionLost, GradeReportNotSaved)
+    assert isinstance(lost.value.__cause__, sqlite3.OperationalError)
+    assert "interrupt" in str(lost.value.__cause__)
+    assert not store._connection.in_transaction
+    assert world(path) == before
+    assert assignments(store) == rows
+    assert isinstance(save_grade(store, WREN, key=KEY, review=review), GradeReportSaved)
+
+
+@pytest.mark.parametrize("joined", [True, False], ids=["joined", "standalone"])
+def test_a_failed_cleanup_is_a_lost_transaction_never_a_refusal(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path, joined: bool
+) -> None:
+    """The acceptance is refused, and so is the rollback to the save's savepoint: the save
+    can't say its writes were taken back, so it raises a lost transaction from the refusal,
+    and a caller that abandons its block keeps nothing of it."""
+    store = opened("first use")
+    review = review_of(store)
+    before, rows = world(path), assignments(store)
+
+    def caller() -> None:
+        if not joined:
+            save_grade(store, WREN, key=KEY, review=review)
+            return
+        with store.comparing_and_writing():
+            unrelated(store, "before")
+            save_grade(store, WREN, key=KEY, review=review)
+
+    store._connection.set_authorizer(
+        refusing(
+            (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+            (sqlite3.SQLITE_SAVEPOINT, "ROLLBACK", "grade_save"),
+        )
+    )
+    with pytest.raises(gradebook.GradeTransactionLost) as lost:
+        caller()
+    store._connection.set_authorizer(None)
+
+    assert isinstance(lost.value.__cause__, sqlite3.DatabaseError)
+    assert not store._connection.in_transaction
     assert world(path) == before
     assert assignments(store) == rows
     assert isinstance(save_grade(store, WREN, key=KEY, review=review), GradeReportSaved)

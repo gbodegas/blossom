@@ -37,7 +37,6 @@ from blossom.clock import Clock
 from blossom.grades.draft import (
     GradeReportDraft,
     GradeValue,
-    Presence,
     ReportHeader,
     folded,
     row_evidence,
@@ -189,7 +188,7 @@ CREATE TABLE IF NOT EXISTS grade_reports (
     reader TEXT NOT NULL CHECK (reader IN ('text', 'screenshot')),
     imported_at TEXT NOT NULL,
     as_of TEXT,
-    coverage TEXT NOT NULL CHECK (coverage IN ('full', 'partial')),
+    result_rows INTEGER NOT NULL CHECK (result_rows >= 0),
     UNIQUE (student_id, class_id, term_label, acceptance_order)
 )
 """,
@@ -267,11 +266,16 @@ CREATE TABLE IF NOT EXISTS grade_match_decisions (
     student_id TEXT NOT NULL,
     evidence TEXT NOT NULL,
     occurrence INTEGER NOT NULL CHECK (occurrence >= 1),
-    result_id TEXT NOT NULL,
-    how TEXT NOT NULL CHECK (how IN ('new', 'same_capture', 'exact', 'answer')),
+    result_id TEXT,
+    how TEXT NOT NULL CHECK (
+        how IN ('new', 'same_capture', 'exact', 'reused', 'answer', 'chosen', 'different')
+    ),
+    rejected TEXT,
     decided_by TEXT NOT NULL CHECK (decided_by {WHO}),
     decided_at TEXT NOT NULL,
-    PRIMARY KEY (report_id, row_key)
+    PRIMARY KEY (report_id, row_key),
+    CHECK ((how = 'different') = (result_id IS NULL)),
+    CHECK ((how = 'different') = (rejected IS NOT NULL))
 )
 """,
     """
@@ -299,12 +303,23 @@ CREATE TABLE IF NOT EXISTS grade_acceptances (
     updated INTEGER NOT NULL,
     already_saved INTEGER NOT NULL,
     left_to_check INTEGER NOT NULL,
+    shown INTEGER NOT NULL CHECK (shown >= 0),
+    answers_kept INTEGER NOT NULL CHECK (answers_kept >= 0),
+    complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
     accepted_at TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role {WHO})
 )
 """,
 )
-"""The tables a save of a report writes, each row carrying her student ID."""
+"""The tables a save of a report writes, each row carrying her student ID.
+
+A report keeps its number of result rows. A row record names the result its row resolved to and
+how: automatically (``same_capture``, ``exact``, ``reused``), by the parent's answer (``answer``,
+or ``chosen`` from her assignments), or ``new``. A remembered "A different assignment" is
+``different``: it names no result, and ``rejected`` keeps the candidates it turned down, each
+with its matching evidence. An acceptance keeps its counts of rows recorded as shown and answers
+kept, and whether its reading was complete. Until the reader reports where its unrecognized
+lines fell, no reading counts as complete, so every acceptance records 0."""
 
 CONTEXT_ON_RECORD: Final = "SELECT 1 FROM grade_context WHERE student_id = ?"
 YEAR_ON_RECORD: Final = "SELECT 1 FROM grade_years WHERE student_id = ? AND label = ?"
@@ -328,8 +343,8 @@ ACCEPTED_FROM_SOURCE: Final = (
     "SELECT accepted FROM grade_acceptances WHERE student_id = ? AND kind = ? AND source_key = ?"
 )
 RECORDED: Final = (
-    "SELECT source_key, report_id, accepted, added, updated, already_saved, left_to_check "
-    "FROM grade_acceptances WHERE student_id = ? AND acceptance_id = ?"
+    "SELECT source_key, report_id, accepted, added, updated, already_saved, left_to_check, "
+    "shown, answers_kept FROM grade_acceptances WHERE student_id = ? AND acceptance_id = ?"
 )
 SET_CONTEXT: Final = (
     "INSERT INTO grade_context (student_id, year_label, term_label, set_by, set_at) "
@@ -362,7 +377,7 @@ NEXT_ORDER: Final = (
 )
 ADD_REPORT: Final = (
     "INSERT INTO grade_reports (report_id, student_id, class_id, term_label, source_key, "
-    "acceptance_order, use, reader, imported_at, as_of, coverage) "
+    "acceptance_order, use, reader, imported_at, as_of, result_rows) "
     "VALUES (?, ?, ?, ?, ?, ?, 'current', 'text', ?, NULL, ?)"
 )
 ADD_TERM_OBSERVATION: Final = (
@@ -399,7 +414,8 @@ RAISE_REVISION: Final = (
 ADD_ACCEPTANCE: Final = (
     "INSERT INTO grade_acceptances (acceptance_id, student_id, kind, source_key, report_id, "
     "accepted, identity_status, identity_answer, identity_form, added, updated, already_saved, "
-    "left_to_check, accepted_at, role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "left_to_check, shown, answers_kept, complete, accepted_at, role) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
 )
 
 
@@ -428,9 +444,11 @@ UNDO_SAVEPOINT: Final = "ROLLBACK TO grade_save"
 
 @dataclass
 class Boundary:
-    """What became of one savepoint's write after a failure: taken back, or not."""
+    """What became of one savepoint's write after a failure: the failure itself, and whether the
+    write was taken back with the transaction still active."""
 
     taken_back: bool = True
+    failure: BaseException | None = None
 
 
 @contextmanager
@@ -449,7 +467,8 @@ def all_or_none(connection: sqlite3.Connection) -> Iterator[Boundary]:
     try:
         yield boundary
         connection.execute(RELEASE_SAVEPOINT)
-    except BaseException:
+    except BaseException as error:
+        boundary.failure = error
         boundary.taken_back = connection.in_transaction and _rolled_back(connection)
         raise
 
@@ -495,9 +514,10 @@ class GradeReportNotSaved(RuntimeError):
 
 
 class GradeTransactionLost(RuntimeError):
-    """A grade write joined a caller's transaction, and that transaction can't be trusted: SQLite
-    ended it, which took back everything in it, the caller's earlier work included, or the write
-    couldn't be taken back. Not a refusal: the caller must not commit what its block wrote."""
+    """A grade write's transaction can't be trusted, and the operation must be abandoned: SQLite
+    ended it, which rolled back all its uncommitted work, a caller's earlier work included, or
+    the cleanup after a failure itself failed. Not a refusal, and no claim that a caller's work
+    was kept. The original error is its cause."""
 
 
 def _report_refused(error: BaseException) -> Exception:
@@ -556,11 +576,15 @@ class GradebookRecords:
         """Every grade write's one entry: the store's lock, the writer's transaction (its own,
         or a caller's it joins), and one savepoint around the whole write (``all_or_none``).
 
-        Entries nest, and only the outermost decides what its caller hears when the write fails.
-        A write joined to a caller's transaction that SQLite ended, or that couldn't be taken
-        back, raises ``GradeTransactionLost``. Otherwise nothing of the write remains: a refusal
-        of the file is ``refused(error)``, and any other exception is raised as itself. A joined
-        write's outcome stands only once the caller's own block commits."""
+        Entries nest, and only the outermost decides what its caller hears when the write fails,
+        from the transaction's actual state, never the error's code: SQLite's errors may end a
+        transaction, and don't always. When the rollback to the savepoint worked with the
+        transaction still active, nothing of the write remains and a caller's earlier work
+        stays: a refusal of the file is ``refused(error)``, and any other exception is raised as
+        itself. When SQLite ended the transaction, or a cleanup failed, it raises
+        ``GradeTransactionLost`` from the original error: the caller abandons the operation,
+        never treating it as a refusal. A joined write's outcome stands only once the caller's
+        own block commits."""
         with self._lock:
             outermost = self._grade_depth == 0
             joined = self._connection.in_transaction
@@ -572,9 +596,15 @@ class GradebookRecords:
             except BaseException as error:
                 if not outermost:
                     raise
-                if joined and boundary is not None and not boundary.taken_back:
-                    msg = f"the transaction holding a grade write was lost: {type(error).__name__}"
-                    raise GradeTransactionLost(msg) from error
+                original = (
+                    error if boundary is None or boundary.failure is None else boundary.failure
+                )
+                cleaned = boundary is None or boundary.taken_back
+                if not cleaned or (not joined and self._connection.in_transaction):
+                    msg = (
+                        f"the transaction holding a grade write was lost: {type(original).__name__}"
+                    )
+                    raise GradeTransactionLost(msg) from original
                 if isinstance(error, sqlite3.Error):
                     raise refused(error) from error
                 raise
@@ -779,7 +809,7 @@ class GradebookRecords:
         row = self._connection.execute(RECORDED, (student_id, acceptance_id)).fetchone()
         if row is None:
             return None
-        source_key, report_id, accepted, added, updated, already_saved, left = row
+        source_key, report_id, accepted, added, updated, already_saved, left, shown, kept = row
         outcome = GradeReportSaved(
             acceptance_id=acceptance_id,
             report_id=report_id,
@@ -787,6 +817,8 @@ class GradebookRecords:
             updated=updated,
             already_saved=already_saved,
             left=left,
+            shown=shown,
+            answers_kept=kept,
             accepted=tuple(
                 (str(item_key), None if result_id is None else str(result_id))
                 for item_key, result_id in json.loads(accepted)
@@ -863,6 +895,8 @@ class GradebookRecords:
                 outcome.updated,
                 outcome.already_saved,
                 outcome.left,
+                outcome.shown,
+                outcome.answers_kept,
                 now,
                 by,
             ),
@@ -920,9 +954,9 @@ class GradebookRecords:
             return str(latest[0])
         (order,) = self._connection.execute(NEXT_ORDER, (student_id, class_id, term)).fetchone()
         report_id = f"report-{uuid.uuid4().hex}"
-        coverage = "partial" if draft.term.percent.presence is Presence.NOT_CAPTURED else "full"
+        rows = sum(len(category.rows) for category in draft.categories)
         self._connection.execute(
-            ADD_REPORT, (report_id, student_id, class_id, term, source_key, order, now, coverage)
+            ADD_REPORT, (report_id, student_id, class_id, term, source_key, order, now, rows)
         )
         return report_id
 

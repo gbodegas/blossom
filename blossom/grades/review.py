@@ -183,7 +183,8 @@ class ReviewPage:
 @dataclass(frozen=True)
 class GradeReportSaved:
     """A committed save: its acceptance, the report it went into (None when no value was
-    accepted), its counts, and each accepted key with the result it resolved to."""
+    accepted), its counts, each accepted key with the result it resolved to, and how many rows
+    it recorded as shown and answers it kept."""
 
     acceptance_id: str
     report_id: str | None
@@ -192,6 +193,8 @@ class GradeReportSaved:
     already_saved: int
     left: int
     accepted: tuple[tuple[str, str | None], ...]
+    shown: int = 0
+    answers_kept: int = 0
 
 
 @dataclass(frozen=True)
