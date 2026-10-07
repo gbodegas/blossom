@@ -12,6 +12,7 @@ import hashlib
 import json
 import pathlib
 import re
+import secrets
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -49,6 +50,7 @@ from blossom.routes.student import (
     CHOOSE_ONE,
     GONE,
     IN_PLACE_COOKIE,
+    IN_PLACE_LANDING_DIGITS,
     IN_PLACE_MAX,
     NOT_HERS_TO_UPDATE,
     NOT_SAVED,
@@ -698,18 +700,32 @@ def test_two_saves_before_either_lands_each_keep_their_own_card_in_place(
     assert sorted(placed(returned)[1]) == sorted([ESSAY, SYLLABUS])
 
 
+LETTERED_LANDING: Final = "c0ffee00c0ffee00"
+"""A landing with letters in it. A random one has none about once in 1,850 draws, and then its
+upper case names the same landing."""
+
+
 @pytest.mark.parametrize(
     "named",
     ["", "{l}{l}", "{l}&landing={l}", "{u}", "{l}0", "{s}", " {l}", "{l} ", "%20{l}", "x{s}"],
 )
-def test_her_week_reads_only_the_cards_of_the_landing_its_address_names(named: str) -> None:
+def test_her_week_reads_only_the_cards_of_the_landing_its_address_names(
+    named: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Only an address that names a landing once, as these pages write it, reads the cards
     left for it; any other value neither reads nor clears them, and the landing still finds
-    them after."""
+    them after. The landing is one with letters, so its upper case is another address."""
+    drawn = secrets.token_hex
+
+    def landing_or_drawn(nbytes: int | None = None) -> str:
+        return LETTERED_LANDING if nbytes == IN_PLACE_LANDING_DIGITS // 2 else drawn(nbytes)
+
+    monkeypatch.setattr(secrets, "token_hex", landing_or_drawn)
     with browser() as client:
         before = client.get(PAGE, headers=PAGE_HEADERS).text
         answer = save(client, card_for(before, ESSAY), "done")
         landing = landing_in(answer.headers["location"])
+        assert landing == LETTERED_LANDING
         value = named.format(l=landing, u=landing.upper(), s=landing[:-1])
         asked = client.get(f"{PAGE}?landing={value}", headers=PAGE_HEADERS)
         landed = redirected(client, answer)
