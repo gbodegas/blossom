@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""The reader for a gradebook report pasted as text: a closed set of line classes, never an
-interpreter.
+"""The reader for a gradebook report pasted as text: a closed set of line classes, read by a
+closed set of states, never an interpreter.
 
-Each line class is known only in its place. Before the header: the report's title, Print, and a
-selector repeating the header's class, its term or the class name. After the header, up to the
-term grade: the PERCENT label once before the class name, the class name, the categories with
-their column headers, result rows and averages, and the term grade itself. A table with nothing
-in it is layout anywhere. Any other line, and any line out of its place, is kept, verbatim and
-in order, as a line the reader didn't recognize, and it never changes the draft or the capture
-key. A second title, or a title after the header, is another report, and the paste isn't read.
+Each line is classed by a fixed precedence, then read by the state it arrives in. Before the
+header: the report's title, Print, and a selector repeating the header's class, its term or the
+class name. After the header: the PERCENT label once, the class name, then each category with its
+column header, its result rows and its average, and last the term grade. A value is read only
+under the structure directly above it, in its own category, and a structure that interrupts a
+category closes it. Blank lines and tables with nothing in them are layout anywhere. Any other
+line, and any line out of its place, is kept, verbatim and in order, as a line the reader didn't
+recognize, and it never changes the draft or the capture key. A second title, a title after the
+header, or anything but one header means the paste isn't read.
 
 Print, the selectors and a wrapped title are read narrowly, as the one known report shape has
 them, and a result row a copy wraps isn't joined: a line the reader can't be sure of stays
@@ -64,6 +66,60 @@ COLUMNS: dict[str, tuple[str, type[GradeValue]]] = {
 }
 """Each column a result table may have, the row field it fills, and the kind of value it holds.
 A column the table leaves out is not captured in each of its rows."""
+
+
+class State(StrEnum):
+    """Where the reader is in a report: each line is read by the state it arrives in."""
+
+    BEFORE = "before"
+    """Before the title and the header."""
+    TITLED = "titled"
+    """After the title, before the header."""
+    HEADED = "headed"
+    """After the header, before the PERCENT label, the class name or any category."""
+    PERCENT_READ = "percent_read"
+    """After the PERCENT label, before the class name or any category."""
+    NAMED = "named"
+    """After the class name, before any category."""
+    NEEDS_COLUMNS = "needs_columns"
+    """A category has begun, with no column header yet."""
+    ROWS = "rows"
+    """A category with a column header in force."""
+    LABELED = "labeled"
+    """The category's average label is read, with only blank or layout lines since."""
+    LABELED_AFTER_OTHER = "labeled_after_other"
+    """The category's average label is read, and a line the reader didn't know came since."""
+    CLOSED = "closed"
+    """The category takes nothing more: its average is read, or a structure interrupted it."""
+    AFTER_TERM = "after_term"
+    """The term grade is read."""
+
+
+class LineClass(StrEnum):
+    """What a line is, by a fixed precedence, before its place is weighed."""
+
+    BLANK = "blank"
+    TITLE = "title"
+    PRINT = "print"
+    PERCENT = "percent"
+    LABEL = "label"
+    VALUE = "value"
+    OTHER = "other"
+    LAYOUT = "layout"
+    CLASS_TABLE = "class_table"
+    CATEGORY = "category"
+    TERM = "term"
+    COLUMNS = "columns"
+    ROW = "row"
+    HEADER = "header"
+
+
+IN_A_CATEGORY = frozenset(
+    {State.NEEDS_COLUMNS, State.ROWS, State.LABELED, State.LABELED_AFTER_OTHER, State.CLOSED}
+)
+"""The states with a category open."""
+TAKES_A_CATEGORY = frozenset({State.HEADED, State.PERCENT_READ, State.NAMED}) | IN_A_CATEGORY
+"""The states a category line or the term grade is read in."""
 
 
 class NotRead(StrEnum):
@@ -165,23 +221,16 @@ def header_rows(lines: list[str]) -> list[tuple[int, list[str], list[str]]]:
 
 
 class _Category:
-    """A category while its lines are read."""
+    """A category while its lines are read: data only, since the reader's state says what each
+    next line may be."""
 
     def __init__(self, name: GradeValue, weight: GradeNumber) -> None:
         self.name = name
         self.weight = weight
         self.columns: list[str] | None = None
         self.rows: list[list[str]] = []
-        self.labeled = False
         self.average: GradeNumber | None = None
-
-    def awaits_average(self) -> bool:
-        return self.labeled and self.average is None
-
-    def close(self) -> None:
-        """At the next category or the term grade, an average label with no value is blank."""
-        if self.awaits_average():
-            self.average = GradeNumber.read("")
+        """The average as read; ``None`` leaves it not captured."""
 
     def built(self, seen: dict[Evidence, int]) -> GradeCategory:
         """The category as read, each row's occurrence counted in ``seen`` across the report."""
@@ -217,6 +266,56 @@ def title_starts(lines: list[str]) -> list[int]:
     return starts
 
 
+def line_class(lines: list[str], index: int, header: int) -> tuple[LineClass, int]:
+    """What the line at ``index`` is, and how many lines it takes: the header by its place at
+    ``header``, then the first class that fits, in the order the enum lists them."""
+    line = lines[index]
+    if index == header:
+        return LineClass.HEADER, 3
+    cells = cells_of(line)
+    if cells is None:
+        if not line.strip():
+            return LineClass.BLANK, 1
+        if taken := title_lines(lines, index):
+            return LineClass.TITLE, taken
+        text = bare(line)
+        for plain, written in (
+            (LineClass.PRINT, folded(text) == PRINT),
+            (LineClass.PERCENT, text == PERCENT),
+            (LineClass.LABEL, folded(text) == CATEGORY_AVERAGE),
+            (LineClass.VALUE, is_bold_or_number(line)),
+        ):
+            if written:
+                return plain, 1
+        return LineClass.OTHER, 1
+    if is_layout(cells):
+        return LineClass.LAYOUT, 1
+    rule = cells_of(lines[index + 1]) if index + 1 < len(lines) else None
+    for table, shaped in (
+        (LineClass.CLASS_TABLE, len(cells) == 1 and rule is not None and is_separator(rule)),
+        (LineClass.CATEGORY, len(cells) == 3 and not cells[1] and bool(WEIGHT.fullmatch(cells[2]))),
+        (LineClass.TERM, is_term_grade(cells)),
+        (LineClass.COLUMNS, is_column_header(cells)),
+    ):
+        if shaped:
+            return table, 1
+    return LineClass.ROW, 1
+
+
+def weight_of(cell: str) -> str:
+    """The text a category's ``Weight = N`` cell gives for its weight."""
+    written = WEIGHT.fullmatch(cell)
+    return "" if written is None else written[1]
+
+
+def closed(category: _Category, state: State) -> None:
+    """Close ``category`` as a category line or the term grade arrives in ``state``: a label with
+    only blank or layout lines after it is a blank average; any other close keeps the average as
+    it stands, read or not captured."""
+    if state is State.LABELED:
+        category.average = GradeNumber.read("")
+
+
 def read_grade_report(text: str) -> GradeReportReading:
     """Read pasted report text into its draft, or into the reason it can't be read, keeping
     every line outside the line classes or out of its place."""
@@ -234,78 +333,63 @@ def read_grade_report(text: str) -> GradeReportReading:
     categories: list[_Category] = []
     term: TermResult | None = None
     class_name: str | None = None
-    percent = False
+    state = State.BEFORE
     index = 0
     while index < len(lines):
         line = lines[index]
-        step = 1
-        before = index < start
-        body = index >= start + 3 and term is None
-        current = categories[-1] if body and categories else None
-        cells = cells_of(line)
-        if start <= index < start + 3 or not line.strip():
-            pass
-        elif cells is None:
-            if before and (taken := title_lines(lines, index)):
-                step = taken
-            elif before and folded(bare(line)) == PRINT:
+        kind, step = line_class(lines, index, start)
+        cells = cells_of(line) or []
+        match state, kind:
+            case _, LineClass.BLANK | LineClass.LAYOUT:
                 pass
-            elif (
-                body
-                and bare(line) == PERCENT
-                and not percent
-                and class_name is None
-                and not categories
-            ):
-                percent = True
-            elif folded(bare(line)) == CATEGORY_AVERAGE:
-                if current and not current.labeled:
-                    current.labeled = True
-                else:
-                    unrecognized.append((index, line))
-            elif current and current.awaits_average() and is_bold_or_number(line):
-                current.average = GradeNumber.read(bare(line))
-            else:
+            case State.BEFORE, LineClass.TITLE:
+                state = State.TITLED
+            case State.BEFORE | State.TITLED, LineClass.PRINT:
+                pass
+            case State.BEFORE | State.TITLED, LineClass.HEADER:
+                state = State.HEADED
+            case State.HEADED, LineClass.PERCENT:
+                state = State.PERCENT_READ
+            case State.HEADED | State.PERCENT_READ, LineClass.CLASS_TABLE:
+                class_name = cells[0]
+                state = State.NAMED
+            case _, LineClass.CATEGORY if state in TAKES_A_CATEGORY:
+                if state in IN_A_CATEGORY:
+                    closed(categories[-1], state)
+                name, weight = GradeValue.read(cells[0]), GradeNumber.read(weight_of(cells[2]))
+                categories.append(_Category(name, weight))
+                state = State.NEEDS_COLUMNS
+            case _, LineClass.TERM if state in TAKES_A_CATEGORY:
+                if state in IN_A_CATEGORY:
+                    closed(categories[-1], state)
+                term = TermResult(
+                    percent=GradeNumber.read(cells[1]), letter=GradeValue.read(cells[2])
+                )
+                state = State.AFTER_TERM
+            case State.NEEDS_COLUMNS, LineClass.COLUMNS:
+                categories[-1].columns = cells
+                state = State.ROWS
+            case State.NEEDS_COLUMNS | State.ROWS, LineClass.LABEL:
+                state = State.LABELED
+            case State.ROWS, LineClass.ROW if len(cells) == len(categories[-1].columns or ()):
+                categories[-1].rows.append(cells)
+            case State.ROWS, LineClass.COLUMNS:
                 unrecognized.append((index, line))
-        elif is_layout(cells):
-            pass
-        elif not body:
-            unrecognized.append((index, line))
-        elif (
-            len(cells) == 1
-            and class_name is None
-            and not categories
-            and index + 1 < len(lines)
-            and (rule := cells_of(lines[index + 1])) is not None
-            and is_separator(rule)
-        ):
-            class_name = cells[0]
-        elif len(cells) == 3 and not cells[1] and (weight := WEIGHT.fullmatch(cells[2])):
-            if current:
-                current.close()
-            categories.append(_Category(GradeValue.read(cells[0]), GradeNumber.read(weight[1])))
-        elif is_term_grade(cells):
-            if current:
-                current.close()
-            term = TermResult(percent=GradeNumber.read(cells[1]), letter=GradeValue.read(cells[2]))
-        elif (
-            is_column_header(cells)
-            and current
-            and not current.labeled
-            and current.columns in (None, cells)
-        ):
-            current.columns = cells
-        elif (
-            not is_column_header(cells)
-            and not is_term_grade(cells)
-            and current
-            and not current.labeled
-            and current.columns is not None
-            and len(cells) == len(current.columns)
-        ):
-            current.rows.append(cells)
-        else:
-            unrecognized.append((index, line))
+                state = State.CLOSED
+            case State.LABELED | State.LABELED_AFTER_OTHER, LineClass.VALUE:
+                categories[-1].average = GradeNumber.read(bare(line))
+                state = State.CLOSED
+            case State.LABELED, LineClass.PRINT | LineClass.PERCENT | LineClass.OTHER:
+                unrecognized.append((index, line))
+                state = State.LABELED_AFTER_OTHER
+            case (
+                State.LABELED | State.LABELED_AFTER_OTHER,
+                LineClass.COLUMNS | LineClass.ROW | LineClass.CLASS_TABLE | LineClass.LABEL,
+            ):
+                unrecognized.append((index, line))
+                state = State.CLOSED
+            case _:
+                unrecognized.append((index, line))
         index += step
     selectors = {folded(bottom[0]), folded(bottom[1])} | (
         {folded(class_name)} if class_name else set()

@@ -393,6 +393,81 @@ def test_print_and_the_selectors_are_known_only_before_the_header() -> None:
             assert reading.capture_key == seed.capture_key
 
 
+REORDERED_RESULT = (
+    "| **Assignment** | **Max** | **Pts** | **Avg** | **Status** | **Due** | **Curve** "
+    "| **Bonus** | **Penalty** | **Weight** | **Note** |\n"
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+    "| Leaf Rubbing | 10.0 | 9.0 | 90.0 | Valid | 09/29 | 0.0 | 0.0 |  | 1.0 |  |\n"
+)
+"""A column header that differs from its category's, as another report's table would bring
+one, then a result under it."""
+
+HOMEWORK_ROWS = ["Seed Germination Log", "Cell Diagram"]
+LABS_LINE = "| **Labs** |   | **Weight = 25.0** |\n"
+
+
+def homework_of(draft: GradeReportDraft) -> tuple[GradeNumber, list[str]]:
+    homework = draft.categories[0]
+    return homework.average, [row.assignment.text for row in homework.rows]
+
+
+def test_a_conflicting_column_header_closes_its_category_and_its_rows_stay_visible() -> None:
+    """Rows are decoded only under the header they sit under: after one that differs, the
+    category takes nothing more, its average included."""
+    _, seed = read(REPORT)
+    rows = REPORT[REPORT.index("| Seed Germination Log") : REPORT.index("|                 |")]
+    reading, draft = read(homework_rows_replaced(rows + REORDERED_RESULT))
+    lines = REORDERED_RESULT.splitlines()
+    assert reading.unrecognized == (lines[0], lines[2], "**Category Average**", "**80.0**")
+    assert homework_of(draft) == (GradeNumber.not_captured(), HOMEWORK_ROWS)
+    assert draft.categories[1:] == seed.categories[1:]
+
+
+@pytest.mark.parametrize("shown", ["**Print**", "**PERCENT**"])
+def test_a_bold_structure_line_after_a_label_stays_visible_and_the_average_is_read(
+    shown: str,
+) -> None:
+    seed, draft = read(REPORT)
+    reading, again = read(replaced_once(REPORT, "**80.0**\n", f"{shown}\n\n**80.0**\n"))
+    assert reading.unrecognized == (shown,)
+    assert again == draft
+    assert reading.capture_key == seed.capture_key
+
+
+def test_a_line_after_a_blank_category_s_label_leaves_its_average_not_captured() -> None:
+    label = REPORT.index("**Category Average**", REPORT.index("| **Quizzes** |"))
+    end = label + len("**Category Average**")
+    reading, draft = read(f"{REPORT[:end]}\n\n**PERCENT**{REPORT[end:]}")
+    assert reading.unrecognized == ("**PERCENT**",)
+    assert draft.categories[2].average == GradeNumber.not_captured()
+
+
+def test_a_value_never_binds_to_a_category_whose_label_a_structure_followed() -> None:
+    """Homework's value and Labs' category line are lost: Labs' table, label and value stay
+    visible, and Homework's average is not captured rather than Labs'."""
+    changed = replaced_once(replaced_once(REPORT, "**80.0**\n", ""), LABS_LINE, "")
+    reading, draft = read(changed)
+    assert homework_of(draft) == (GradeNumber.not_captured(), HOMEWORK_ROWS)
+    assert [category.name.text for category in draft.categories] == [
+        "Homework / Practice",
+        "Quizzes",
+        "Tests /Projects",
+    ]
+    assert "**83.8**" in reading.unrecognized
+
+
+def test_rows_after_a_lost_category_line_never_join_the_category_above() -> None:
+    """Homework's label and Labs' category line are lost: Labs' header puts Homework in doubt,
+    so Labs' rows and both values stay visible."""
+    label = REPORT.index("**Category Average**\n")
+    changed = REPORT[:label] + REPORT[label + len("**Category Average**\n") :]
+    reading, draft = read(replaced_once(changed, LABS_LINE, ""))
+    assert homework_of(draft) == (GradeNumber.not_captured(), HOMEWORK_ROWS)
+    assert "**80.0**" in reading.unrecognized
+    assert "**83.8**" in reading.unrecognized
+    assert any(line.startswith("| Microscope Practice") for line in reading.unrecognized)
+
+
 def test_a_paste_without_the_header_is_not_read_and_keeps_its_lines() -> None:
     text = REPORT.replace("| **Bramble, Wren** | **2026-2027** | **Teacher, Example** |\n", "")
     reading = read_grade_report(text)
