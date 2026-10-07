@@ -10,10 +10,16 @@ changed, and the key check, empty until the first confirmed form. A confirmed fo
 hash of a student line, never the line. Every row carries her student ID, and nothing is read
 under another. Nothing here changes any other table.
 
-A save of a report is one transaction: a recorded acceptance ID returns what it recorded, a
+A save of a report is one write: a recorded acceptance ID returns what it recorded, a
 changed class and term or an answer to a question the review doesn't ask now returns the
 review, and otherwise the answers, the selected values and an acceptance record are written
 together.
+
+Every grade write goes through one entry: the store's lock, the writer's transaction (its own,
+or a caller's it joins), and one savepoint around the whole write. A failure leaves none of the
+write behind, inside a caller's transaction too, and the caller's other work there stays. When
+SQLite itself ends a caller's transaction, everything in it is gone, and the caller hears that
+its transaction was lost, never a refusal it might go on from.
 """
 
 import json
@@ -21,8 +27,8 @@ import secrets
 import sqlite3
 import threading
 import uuid
-from collections.abc import Collection, Iterator
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import Callable, Collection, Iterator
+from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Final, Literal, cast, get_args
@@ -412,18 +418,49 @@ def matched_as(header: ReportHeader) -> str:
     return json.dumps([fold(header.class_code), fold(header.class_name)], ensure_ascii=False)
 
 
+SAVEPOINT: Final = "grade_save"
+"""The savepoint every grade write runs inside. A fixed name, since it is written into SQL; a
+write nested in another opens its own under the same name, and SQLite takes the latest."""
+
+
+@dataclass
+class Boundary:
+    """What became of one savepoint's write after a failure: taken back, or not."""
+
+    taken_back: bool = True
+
+
 @contextmanager
-def all_or_none(connection: sqlite3.Connection) -> Iterator[None]:
-    """The writes in the block land together or not at all, inside a caller's transaction too: a
-    failure takes back what the block began before it goes on, so no caller commits half."""
-    connection.execute("SAVEPOINT name_forms")
+def all_or_none(connection: sqlite3.Connection) -> Iterator[Boundary]:
+    """The writes in the block land together or not at all, inside a caller's transaction too.
+
+    It opens only inside a transaction, so the writer's ``BEGIN IMMEDIATE`` stays the only begin
+    and its commit the only commit. A failure, the savepoint's own release included, takes back
+    what the block began before it goes on. ``taken_back`` says whether that worked: it can't
+    when SQLite has ended the transaction, or refuses the rollback."""
+    if not connection.in_transaction:
+        msg = "a grade write's savepoint opens only inside the writer's transaction"
+        raise RuntimeError(msg)
+    boundary = Boundary()
+    connection.execute(f"SAVEPOINT {SAVEPOINT}")
     try:
-        yield
+        yield boundary
+        connection.execute(f"RELEASE {SAVEPOINT}")
     except BaseException:
-        connection.execute("ROLLBACK TO name_forms")
-        connection.execute("RELEASE name_forms")
+        boundary.taken_back = connection.in_transaction and _rolled_back(connection)
         raise
-    connection.execute("RELEASE name_forms")
+
+
+def _rolled_back(connection: sqlite3.Connection) -> bool:
+    """Whether the latest savepoint's writes were taken back. A release refused after that leaves
+    an empty savepoint, which holds nothing."""
+    try:
+        connection.execute(f"ROLLBACK TO {SAVEPOINT}")
+    except sqlite3.Error:
+        return False
+    with suppress(sqlite3.Error):
+        connection.execute(f"RELEASE {SAVEPOINT}")
+    return True
 
 
 def new_student_id() -> str:
@@ -445,11 +482,31 @@ class AnswerNotAsked(ValueError):
 
 
 class NameFormNotSaved(RuntimeError):
-    """The file refused a write of her name forms; whatever was begun was rolled back with it."""
+    """The file refused a write of her name forms. Nothing of the write remains, and a caller's
+    transaction it joined is still open, with the caller's other work in it."""
 
 
 class GradeReportNotSaved(RuntimeError):
-    """The file refused a save of a report; the whole save was rolled back with it."""
+    """The file refused a save of a report. Nothing of the save remains, and a caller's
+    transaction it joined is still open, with the caller's other work in it."""
+
+
+class GradeTransactionLost(RuntimeError):
+    """A grade write joined a caller's transaction, and that transaction can't be trusted: SQLite
+    ended it, which took back everything in it, the caller's earlier work included, or the write
+    couldn't be taken back. Not a refusal: the caller must not commit what its block wrote."""
+
+
+def _report_refused(error: BaseException) -> Exception:
+    return GradeReportNotSaved(f"the grade report could not be saved: {type(error).__name__}")
+
+
+def _form_refused(error: BaseException) -> Exception:
+    return NameFormNotSaved(f"the name form could not be saved: {type(error).__name__}")
+
+
+def _confirmation_refused(error: BaseException) -> Exception:
+    return NameFormNotSaved(f"her name could not be confirmed again: {type(error).__name__}")
 
 
 @dataclass(frozen=True)
@@ -479,13 +536,47 @@ class GradebookRecords:
     _connection: sqlite3.Connection
     _lock: "threading.RLock"
     _clock: Clock
+    _grade_depth: int = 0
+    """How many grade writes are open, nested, under the lock; only the outermost answers."""
 
     def _writing(self) -> AbstractContextManager[None]:
         raise NotImplementedError
 
     def comparing_and_writing(self) -> AbstractContextManager[None]:
-        """The store's lock and its reserved writer, which the store of the record supplies."""
+        """The store's lock and its reserved writer, which the store of the record supplies. A
+        writer reserved by ``BEGIN IMMEDIATE`` holds out other connections; a caller's deferred
+        transaction is joined without that, and a write can then meet a busy file."""
         raise NotImplementedError
+
+    @contextmanager
+    def _grade_write(self, refused: Callable[[BaseException], Exception]) -> Iterator[None]:
+        """Every grade write's one entry: the store's lock, the writer's transaction (its own,
+        or a caller's it joins), and one savepoint around the whole write (``all_or_none``).
+
+        Entries nest, and only the outermost decides what its caller hears when the write fails.
+        A write joined to a caller's transaction that SQLite ended, or that couldn't be taken
+        back, raises ``GradeTransactionLost``. Otherwise nothing of the write remains: a refusal
+        of the file is ``refused(error)``, and any other exception is raised as itself. A joined
+        write's outcome stands only once the caller's own block commits."""
+        with self._lock:
+            outermost = self._grade_depth == 0
+            joined = self._connection.in_transaction
+            boundary: Boundary | None = None
+            self._grade_depth += 1
+            try:
+                with self._writing(), all_or_none(self._connection) as boundary:
+                    yield
+            except BaseException as error:
+                if not outermost:
+                    raise
+                if joined and boundary is not None and not boundary.taken_back:
+                    msg = f"the transaction holding a grade write was lost: {type(error).__name__}"
+                    raise GradeTransactionLost(msg) from error
+                if isinstance(error, sqlite3.Error):
+                    raise refused(error) from error
+                raise
+            finally:
+                self._grade_depth -= 1
 
     def _create_gradebook_tables(self) -> None:
         """The tables, and her record on a file without one, in the caller's transaction."""
@@ -524,26 +615,21 @@ class GradebookRecords:
         is kept, and the first form sets the key check. A form already confirmed writes nothing;
         any other question about the line, a replaced key's included, is ``AnswerNotAsked``."""
         confirmer = _confirmer(role)
-        try:
-            with self._lock, self._writing():
-                student_id, check, forms = self._her_name_record()
-                identity = identity_among(key, student_line, check=check, forms=forms)
-                if identity.form is None:
-                    raise AnswerNotAsked(identity)
-                if identity.status is IdentityStatus.MATCHES:
-                    return NameFormStood(identity.form)
-                if identity.status not in (IdentityStatus.FIRST_USE, IdentityStatus.NOT_CONFIRMED):
-                    raise AnswerNotAsked(identity)
-                with all_or_none(self._connection):
-                    self._connection.execute(
-                        ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
-                    )
-                    if check is None:
-                        self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
-                return NameFormAdded(identity.form)
-        except sqlite3.Error as error:
-            msg = f"the name form could not be saved: {type(error).__name__}"
-            raise NameFormNotSaved(msg) from error
+        with self._grade_write(_form_refused):
+            student_id, check, forms = self._her_name_record()
+            identity = identity_among(key, student_line, check=check, forms=forms)
+            if identity.form is None:
+                raise AnswerNotAsked(identity)
+            if identity.status is IdentityStatus.MATCHES:
+                return NameFormStood(identity.form)
+            if identity.status not in (IdentityStatus.FIRST_USE, IdentityStatus.NOT_CONFIRMED):
+                raise AnswerNotAsked(identity)
+            self._connection.execute(
+                ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
+            )
+            if check is None:
+                self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
+            return NameFormAdded(identity.form)
 
     def confirm_name_again(
         self, key: bytes, student_line: str, role: ConfirmedBy
@@ -552,26 +638,21 @@ class GradebookRecords:
         replaced by this line's, and the key check by one under ``key``, together. A line that
         already matches writes nothing; any other question is ``AnswerNotAsked``."""
         confirmer = _confirmer(role)
-        try:
-            with self._lock, self._writing():
-                student_id, check, forms = self._her_name_record()
-                identity = identity_among(key, student_line, check=check, forms=forms)
-                if identity.form is None:
-                    raise AnswerNotAsked(identity)
-                if identity.status is IdentityStatus.MATCHES:
-                    return NameFormStood(identity.form)
-                if identity.status is not IdentityStatus.CONFIRM_AGAIN:
-                    raise AnswerNotAsked(identity)
-                with all_or_none(self._connection):
-                    self._connection.execute(DROP_HER_FORMS, (student_id,))
-                    self._connection.execute(
-                        ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
-                    )
-                    self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
-                return NameConfirmedAgain(identity.form)
-        except sqlite3.Error as error:
-            msg = f"her name could not be confirmed again: {type(error).__name__}"
-            raise NameFormNotSaved(msg) from error
+        with self._grade_write(_confirmation_refused):
+            student_id, check, forms = self._her_name_record()
+            identity = identity_among(key, student_line, check=check, forms=forms)
+            if identity.form is None:
+                raise AnswerNotAsked(identity)
+            if identity.status is IdentityStatus.MATCHES:
+                return NameFormStood(identity.form)
+            if identity.status is not IdentityStatus.CONFIRM_AGAIN:
+                raise AnswerNotAsked(identity)
+            self._connection.execute(DROP_HER_FORMS, (student_id,))
+            self._connection.execute(
+                ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
+            )
+            self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
+            return NameConfirmedAgain(identity.form)
 
     def review_grade_report(
         self, draft: GradeReportDraft, source_key: str, *, key: bytes
@@ -592,54 +673,50 @@ class GradebookRecords:
         selection: Collection[str],
         role: ConfirmedBy,
     ) -> SaveOutcome:
-        """The parent's save of the values ``selection`` names, in one transaction. A recorded
-        acceptance ID returns its outcome; a changed revision, an answer to no question asked
-        now, or a value not New returns the review; each of these writes nothing."""
+        """The parent's save of the values ``selection`` names, as one grade write: inside its
+        own transaction, or a caller's it joins, where a failure leaves none of it (see
+        ``_grade_write``). A recorded acceptance ID returns its outcome; a changed revision, an
+        answer to no question asked now, or a value not New returns the review; each of these
+        writes nothing."""
         confirmer = _confirmer(role)
         chosen = frozenset(selection)
-        try:
-            with self.comparing_and_writing():
-                student_id = self._her_name_record()[0]
-                recorded = self._recorded(student_id, page.acceptance_id)
-                if recorded is not None:
-                    outcome, recorded_source = recorded
-                    covered = {item_key for item_key, _ in outcome.accepted}
-                    if recorded_source != source_key:
-                        covered = set()
-                    return AlreadyRecorded(outcome, chosen - covered)
-                if answers.identity is IdentityAnswer.NOT_HERS:
-                    return NotHers()
-                review = self._review_locked(draft, source_key, key, same_class=None)
-                into = review
-                if answers.same_class is not None:
-                    into = self._review_locked(
-                        draft, source_key, key, same_class=answers.same_class
-                    )
-                if page.source_key != source_key:
-                    return ReviewReturned(into, ReturnReason.SOURCE)
-                if review.revision != page.revision or (
-                    answers.same_class is not None
-                    and self._revision_of(student_id, answers.same_class, draft)
-                    != answers.same_class_revision
-                ):
-                    return ReviewReturned(into, ReturnReason.REVISION)
-                if not answers_asked(review, answers):
-                    return ReviewReturned(into, ReturnReason.ANSWERS)
-                if not chosen <= into.ready:
-                    return ReviewReturned(into, ReturnReason.SELECTION)
-                return self._write_save(
-                    draft,
-                    into,
-                    answers,
-                    chosen,
-                    key=key,
-                    by=confirmer,
-                    student_id=student_id,
-                    acceptance_id=page.acceptance_id,
-                )
-        except (sqlite3.Error, NameFormNotSaved) as error:
-            msg = f"the grade report could not be saved: {type(error).__name__}"
-            raise GradeReportNotSaved(msg) from error
+        with self._grade_write(_report_refused):
+            student_id = self._her_name_record()[0]
+            recorded = self._recorded(student_id, page.acceptance_id)
+            if recorded is not None:
+                outcome, recorded_source = recorded
+                covered = {item_key for item_key, _ in outcome.accepted}
+                if recorded_source != source_key:
+                    covered = set()
+                return AlreadyRecorded(outcome, chosen - covered)
+            if answers.identity is IdentityAnswer.NOT_HERS:
+                return NotHers()
+            review = self._review_locked(draft, source_key, key, same_class=None)
+            into = review
+            if answers.same_class is not None:
+                into = self._review_locked(draft, source_key, key, same_class=answers.same_class)
+            if page.source_key != source_key:
+                return ReviewReturned(into, ReturnReason.SOURCE)
+            if review.revision != page.revision or (
+                answers.same_class is not None
+                and self._revision_of(student_id, answers.same_class, draft)
+                != answers.same_class_revision
+            ):
+                return ReviewReturned(into, ReturnReason.REVISION)
+            if not answers_asked(review, answers):
+                return ReviewReturned(into, ReturnReason.ANSWERS)
+            if not chosen <= into.ready:
+                return ReviewReturned(into, ReturnReason.SELECTION)
+            return self._write_save(
+                draft,
+                into,
+                answers,
+                chosen,
+                key=key,
+                by=confirmer,
+                student_id=student_id,
+                acceptance_id=page.acceptance_id,
+            )
 
     def _review_locked(
         self, draft: GradeReportDraft, source_key: str, key: bytes, *, same_class: str | None
@@ -726,7 +803,7 @@ class GradebookRecords:
         student_id: str,
         acceptance_id: str,
     ) -> GradeReportSaved:
-        """Every write of a save that passed its checks, in the caller's transaction: the
+        """Every write of a save that passed its checks, inside the save's one grade write: the
         identity answer, the setup, the selected values, the revision and the acceptance."""
         header = draft.header
         now = self._stamp()
