@@ -21,8 +21,8 @@ import secrets
 import sqlite3
 import threading
 import uuid
-from collections.abc import Collection
-from contextlib import AbstractContextManager
+from collections.abc import Collection, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Final, Literal, cast, get_args
@@ -412,6 +412,20 @@ def matched_as(header: ReportHeader) -> str:
     return json.dumps([fold(header.class_code), fold(header.class_name)], ensure_ascii=False)
 
 
+@contextmanager
+def all_or_none(connection: sqlite3.Connection) -> Iterator[None]:
+    """The writes in the block land together or not at all, inside a caller's transaction too: a
+    failure takes back what the block began before it goes on, so no caller commits half."""
+    connection.execute("SAVEPOINT name_forms")
+    try:
+        yield
+    except BaseException:
+        connection.execute("ROLLBACK TO name_forms")
+        connection.execute("RELEASE name_forms")
+        raise
+    connection.execute("RELEASE name_forms")
+
+
 def new_student_id() -> str:
     """A random ID for her student record, drawn from nothing about her."""
     return f"student-{secrets.token_hex(16)}"
@@ -520,11 +534,12 @@ class GradebookRecords:
                     return NameFormStood(identity.form)
                 if identity.status not in (IdentityStatus.FIRST_USE, IdentityStatus.NOT_CONFIRMED):
                     raise AnswerNotAsked(identity)
-                self._connection.execute(
-                    ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
-                )
-                if check is None:
-                    self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
+                with all_or_none(self._connection):
+                    self._connection.execute(
+                        ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
+                    )
+                    if check is None:
+                        self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
                 return NameFormAdded(identity.form)
         except sqlite3.Error as error:
             msg = f"the name form could not be saved: {type(error).__name__}"
@@ -547,11 +562,12 @@ class GradebookRecords:
                     return NameFormStood(identity.form)
                 if identity.status is not IdentityStatus.CONFIRM_AGAIN:
                     raise AnswerNotAsked(identity)
-                self._connection.execute(DROP_HER_FORMS, (student_id,))
-                self._connection.execute(
-                    ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
-                )
-                self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
+                with all_or_none(self._connection):
+                    self._connection.execute(DROP_HER_FORMS, (student_id,))
+                    self._connection.execute(
+                        ADD_FORM, (student_id, identity.form, confirmer, self._stamp())
+                    )
+                    self._connection.execute(SET_KEY_CHECK, (key_check(key), student_id))
                 return NameConfirmedAgain(identity.form)
         except sqlite3.Error as error:
             msg = f"her name could not be confirmed again: {type(error).__name__}"
