@@ -16,8 +16,11 @@ parent chooses.
 Each value's status compares it with its target's current value, as accepted school values:
 "Saved", equal to it; "Matches an earlier saved value", equal to a value a newer one replaced;
 "Changed", it differs; "New", no target; "Needs your answer", a matching question is open;
-"Couldn't read", a cell is unreadable. Only a New or Changed value can be selected, and only when
-no current report newer than the one its capture's rest joins supplied or showed its target.
+"Couldn't read", a cell is unreadable; "Shown in a newer report", a current report newer than the
+one its capture's rest joins supplied or showed its target. Only a New or Changed value can be
+selected, and a value that matches an earlier saved one only under the parent's choice of
+current for the new report a save makes. That choice starts on "Keep as an earlier report" when
+any value repeats one a newer report replaced, and on current otherwise.
 
 The questions a review asks are the identity of the student line, the first setup, the first
 month of a year not on record, and the class when no alias matches. The answers a page sends are
@@ -30,7 +33,7 @@ from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Final, Literal, get_args
 
 from blossom.grades.draft import (
     Evidence,
@@ -164,6 +167,9 @@ class ItemStatus(StrEnum):
     NEEDS_ANSWER = "needs_answer"
     """"Needs your answer": a matching question is open."""
     UNREADABLE = "unreadable"
+    COVERED = "covered"
+    """"Shown in a newer report": a New or Changed value this capture's rest can't change, since a
+    current report newer than the one it joins supplied or showed its target. Not offered."""
 
 
 class QuestionKind(StrEnum):
@@ -229,8 +235,8 @@ class ReviewItem:
     question: MatchQuestion | None = None
     how: MatchedHow | None = None
     covered: bool = False
-    """A New or Changed value this capture's rest can't change: a current report newer than the
-    one it joins supplied or showed its target. Not offered."""
+    """A value read "Shown in a newer report": a current report newer than the one this capture's
+    rest joins supplied or showed its target. Not offered."""
     choices: tuple[str, ...] = ()
     """For a row no record, equal evidence or reuse resolved, the results "Choose an existing
     assignment" offers: her results in the class and term no such row resolved to."""
@@ -249,11 +255,28 @@ class ClassQuestion:
     existing: tuple[tuple[str, str, int | None], ...]
 
 
+ReportUse = Literal["current", "earlier"]
+"""A report's use: current, or kept as an earlier report, which supplies no current value."""
+
+
+@dataclass(frozen=True)
+class UseChoice:
+    """The report-level choice for the new report a save makes: "Use this as the current school
+    record" ("Use these values where this report provides them" for a partial reading) or "Keep
+    as an earlier report", starting on ``default``. ``repeats`` holds the keys of the values that
+    repeat one a newer report replaced: "This report repeats values a newer report replaced."
+    """
+
+    default: ReportUse
+    repeats: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class GradeReview:
     """What a report would do: a fresh acceptance ID for the page, the questions, the scope
-    revision of the class and term (None when they hold nothing yet), and each value's status in
-    the report's order."""
+    revision of the class and term (None when they hold nothing yet), each value's status in
+    the report's order, and the report-level choice, None when a save joins the capture's
+    latest report or making the new report current would change nothing."""
 
     acceptance_id: str
     source_key: str
@@ -265,6 +288,7 @@ class GradeReview:
     term: ReviewItem | None
     categories: tuple[ReviewItem, ...]
     rows: tuple[ReviewItem, ...]
+    use: UseChoice | None = None
 
     @property
     def items(self) -> tuple[ReviewItem, ...]:
@@ -277,6 +301,16 @@ class GradeReview:
         covers."""
         return frozenset(
             item.key for item in self.items if item.status in OFFERED and not item.covered
+        )
+
+    @property
+    def back_to(self) -> frozenset[str]:
+        """The keys of the values that match an earlier saved one, which a save may also select
+        under the parent's choice of current: each goes back to its value from its "from"."""
+        return frozenset(
+            item.key
+            for item in self.items
+            if self.use is not None and item.status is ItemStatus.MATCHES_EARLIER
         )
 
 
@@ -320,6 +354,8 @@ class GradeAnswers:
     same_class: str | None = None
     same_class_revision: int | None = None
     matches: tuple[MatchAnswer, ...] = ()
+    use: ReportUse | None = None
+    """The report-level choice, or None for its default."""
 
 
 @dataclass(frozen=True)
@@ -438,6 +474,10 @@ class OnRecord:
 
 OFFERED: Final = frozenset({ItemStatus.NEW, ItemStatus.CHANGED})
 """The statuses a save may select."""
+CURRENT_COULD_CHANGE: Final = frozenset(
+    {ItemStatus.NEW, ItemStatus.CHANGED, ItemStatus.MATCHES_EARLIER, ItemStatus.NEEDS_ANSWER}
+)
+"""The statuses of values a current report could make current, an answer given first."""
 
 
 def _unreadable(*values: GradeValue) -> bool:
@@ -672,6 +712,8 @@ def _resolved_rows(
         if row.key in on_record.saved and status in OFFERED:
             status = ItemStatus.SAVED
         covered = status in OFFERED and on_record.covers(result)
+        if covered:
+            status = ItemStatus.COVERED
         return ReviewItem(row.key, status, result, current, asked, how, covered)
 
     exact = {}
@@ -748,6 +790,8 @@ def review_from(
         if key in on_record.saved and status in OFFERED:
             status = ItemStatus.SAVED
         covered = status in OFFERED and on_record.covers(key)
+        if covered:
+            status = ItemStatus.COVERED
         return ReviewItem(key, status, current=current, covered=covered)
 
     header = draft.header
@@ -765,6 +809,9 @@ def review_from(
         for key, category in zip(category_keys(draft), draft.categories, strict=True)
     )
     term_cells = cells_of(TERM_FIELDS, (term.percent, term.letter))
+    term_item = item(TERM_KEY, term_cells, held.current.term) if captured else None
+    rows = _resolved_rows(on_record, _rows_of(draft), matches)
+    values = (*(() if term_item is None else (term_item,)), *categories, *rows)
     return GradeReview(
         acceptance_id=acceptance_id,
         source_key=source_key,
@@ -777,10 +824,29 @@ def review_from(
             existing=on_record.existing,
         ),
         revision=on_record.revision,
-        term=item(TERM_KEY, term_cells, held.current.term) if captured else None,
+        term=term_item,
         categories=categories,
-        rows=_resolved_rows(on_record, _rows_of(draft), matches),
+        rows=rows,
+        use=None if on_record.joins is not None else _use_choice(held, values, rows),
     )
+
+
+def _use_choice(
+    held: ClassRecord, values: tuple[ReviewItem, ...], rows: tuple[ReviewItem, ...]
+) -> UseChoice | None:
+    """The choice for the new report a save makes, or None when making it current would change
+    nothing: no value it could make current, no current result whose last showing it would
+    move, and no current result it could show as absent, every row resolved."""
+    current = held.current.results
+    named = {item.result_id for item in rows if item.result_id is not None}
+    if not (
+        any(item.status in CURRENT_COULD_CHANGE for item in values)
+        or not named.isdisjoint(current)
+        or (all(item.result_id is not None for item in rows) and not current.keys() <= named)
+    ):
+        return None
+    repeats = tuple(item.key for item in values if item.status is ItemStatus.MATCHES_EARLIER)
+    return UseChoice("earlier" if repeats else "current", repeats)
 
 
 def is_current_context(setup: tuple[str, str]) -> bool:
@@ -815,6 +881,12 @@ def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
         offered = {class_id for class_id, _, _ in question.existing}
         return answers.new_class is None and answers.same_class in offered
     return answers.new_class is not None and bool(folded(answers.new_class))
+
+
+def use_asked(review: GradeReview, use: str | None) -> bool:
+    """Whether ``use`` answers the report-level choice ``review`` offers now: one of its two
+    answers, or None for its default; and only None when it offers none."""
+    return use is None or (review.use is not None and use in get_args(ReportUse))
 
 
 def matches_asked(review: GradeReview, matches: Collection[MatchAnswer]) -> bool:

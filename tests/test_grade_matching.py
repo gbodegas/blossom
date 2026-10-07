@@ -13,6 +13,7 @@ import dataclasses
 import json
 import sqlite3
 from collections.abc import Collection
+from typing import cast
 
 from blossom.grades.draft import GradeReportDraft, Presence, capture_key
 from blossom.grades.identity import name_form_key
@@ -25,10 +26,12 @@ from blossom.grades.review import (
     MatchAnswer,
     QuestionKind,
     ReportAt,
+    ReportUse,
     ReturnReason,
     ReviewItem,
     ReviewReturned,
     SaveOutcome,
+    UseChoice,
 )
 from blossom.grades.text_reader import read_grade_report, reading_complete
 from blossom.stores.project_state import ProjectStateStore
@@ -98,12 +101,16 @@ def save(
     matches: Collection[MatchAnswer] = (),
     selection: Collection[str] | None = None,
     complete: bool = False,
+    use: str | None = None,
 ) -> SaveOutcome:
     """A parent's save with every setup question answered, ``matches`` as the matching answers,
-    and the ready values plus the answered rows selected unless ``selection`` says otherwise; its
-    reading incomplete unless ``complete``."""
+    ``use`` as the report-level choice (its default when None), and the ready values plus the
+    answered rows selected unless ``selection`` says otherwise; its reading incomplete unless
+    ``complete``."""
     review = review or review_of(store, draft)
-    answers = dataclasses.replace(grade_answers(review), matches=tuple(matches))
+    answers = dataclasses.replace(
+        grade_answers(review), matches=tuple(matches), use=cast("ReportUse | None", use)
+    )
     if selection is None:
         selection = review.ready | {answer.row_key for answer in matches}
     return save_grade(
@@ -374,11 +381,10 @@ def test_a_history_only_repeat_changes_nothing_current() -> None:
     and importing it again offers nothing and leaves every current value as it was."""
     store = in_memory()
     first = saved(save(store, A))
-    newer = saved(save(store, B))
-    store._connection.execute(
-        "UPDATE grade_reports SET use = 'earlier' WHERE report_id = ?", (newer.report_id,)
-    )
-    store._connection.commit()
+    offered = review_of(store, B)
+    assert offered.use == UseChoice("current", ())
+    newer = saved(save(store, B, offered, use="earlier"))
+    assert use_of(store, newer.report_id) == "earlier"
     class_id = class_of(store)
     before = store.current_values(class_id, "T1")
     review = review_of(store, B)
@@ -387,6 +393,7 @@ def test_a_history_only_repeat_changes_nothing_current() -> None:
     assert {value.report_id for value in before.results.values()} == {first.report_id}
     assert row(review, "Cell Diagram").status is ItemStatus.MATCHES_EARLIER
     assert review.ready == frozenset()
+    assert review.use is None
     assert store.current_values(class_id, "T1") == before
 
 
@@ -669,8 +676,9 @@ def test_an_older_capture_s_rest_after_a_newer_report_showed_the_result_is_not_o
     rest = review_of(store, k)
     cell = row(rest, "Cell Diagram")
 
-    assert (cell.status, cell.covered) == (ItemStatus.CHANGED, True)
+    assert (cell.status, cell.covered) == (ItemStatus.COVERED, True)
     assert cell.key not in rest.ready
+    assert rest.use is None
     value = store.current_values(class_of(store), "T1").results[cell.result_id or ""]
     assert (text_of(value, "points"), value.order) == ("7.0", 1)
     assert value.last_shown is not None
@@ -1044,3 +1052,259 @@ def test_reordered_identical_rows_ask_and_conflicting_answers_never_save() -> No
     seven = IXL.replace("9.0", "7.0", 1)
     third = review_of(store, variant(text=IXL_REPORT.replace(f"{IXL}\n{IXL}", f"{seven}\n{IXL}")))
     assert {row(third, "IXL", n).status for n in (1, 2)} == {ItemStatus.NEEDS_ANSWER}
+
+
+# ------------------------------------------------------------- the report-level choice (rule 5)
+
+
+def use_of(store: ProjectStateStore, report_id: str | None) -> str:
+    (use,) = store._connection.execute(
+        "SELECT use FROM grade_reports WHERE report_id = ?", (report_id,)
+    ).fetchone()
+    return str(use)
+
+
+def reports_of(store: ProjectStateStore) -> int:
+    (count,) = store._connection.execute("SELECT COUNT(*) FROM grade_reports").fetchone()
+    return int(count)
+
+
+AGAIN = variant(text=IXL_REPORT)
+"""Another capture of A with two IXL rows added: its Cell Diagram reads 7.0, as A's did."""
+UNREAD_DUES = tuple(
+    (f"| {due}   |", f"| {due[:-1]}x   |") for due in ("09/22", "09/26", "09/24", "10/02")
+)
+"""Every row's due date made unreadable: no row's identity can be read."""
+
+
+def test_a_new_report_starts_on_current_and_is_saved_as_current() -> None:
+    store = in_memory()
+    first = review_of(store, A)
+    assert first.use == UseChoice("current", ())
+    one = saved(save(store, A, first))
+    newer = review_of(store, B)
+    assert newer.use == UseChoice("current", ())
+    two = saved(save(store, B, newer))
+
+    assert (use_of(store, one.report_id), use_of(store, two.report_id)) == ("current", "current")
+    cell = row(newer, "Cell Diagram").result_id or ""
+    value = store.current_values(class_of(store), "T1").results[cell]
+    assert (text_of(value, "points"), value.report_id) == ("8.0", two.report_id)
+
+
+def test_a_s_rest_in_another_capture_after_newer_b_starts_on_earlier_and_b_stays_current() -> None:
+    """A saved without its IXL rows; B, newer, changes Cell Diagram; a clipped copy of A brings
+    the IXL rows back with A's 7.0. It repeats a value B replaced, so it starts on "Keep as an
+    earlier report", and saved so it supplies nothing current: B stays current."""
+    store = in_memory()
+    full = review_of(store, AGAIN)
+    ixl = {row(full, "IXL", n).key for n in (1, 2)}
+    saved(save(store, AGAIN, full, selection=full.ready - ixl))
+    newer = saved(save(store, B))
+    before = store.current_values(class_of(store), "T1")
+    rest = variant(text=IXL_REPORT[: IXL_REPORT.index("|          |   |                   |")])
+    review = review_of(store, rest)
+    cell = row(review, "Cell Diagram")
+
+    assert review.use == UseChoice("earlier", (cell.key,))
+    assert cell.status is ItemStatus.MATCHES_EARLIER
+    assert review.ready == ixl
+    kept = saved(save(store, rest, review))
+    assert kept.added == 2
+    assert use_of(store, kept.report_id) == "earlier"
+    after = store.current_values(class_of(store), "T1")
+    assert after == before
+    assert after.results[cell.result_id or ""].report_id == newer.report_id
+    assert len(results(store)) == 6
+
+
+def test_the_parent_may_still_choose_current_and_bring_a_value_back() -> None:
+    """A teacher's 7.0, then 8.0, then 7.0 again in another capture: the review starts on
+    earlier, the value reads Matches an earlier saved value with 8.0 as its "from", and only the
+    parent's choice of current brings it back. A retry of that choice writes nothing."""
+    store = in_memory()
+    saved(save(store, A))
+    replaced = saved(save(store, B))
+    review = review_of(store, AGAIN)
+    cell = row(review, "Cell Diagram")
+
+    assert review.use == UseChoice("earlier", (cell.key,))
+    assert cell.current is not None
+    assert (cell.status, text_of(cell.current, "points")) == (ItemStatus.MATCHES_EARLIER, "8.0")
+    assert cell.key in review.back_to
+    assert cell.key not in review.ready
+    for use in (None, "earlier"):
+        refused = save(store, AGAIN, review, selection={cell.key}, use=use)
+        assert isinstance(refused, ReviewReturned)
+        assert refused.why is ReturnReason.SELECTION
+    back = saved(save(store, AGAIN, review, selection={cell.key}, use="current"))
+    current = store.current_values(class_of(store), "T1")
+    value = current.results[cell.result_id or ""]
+
+    assert (back.added, back.updated) == (0, 1)
+    assert use_of(store, back.report_id) == "current"
+    assert (text_of(value, "points"), value.report_id, value.order) == ("7.0", back.report_id, 3)
+    held = store._connection.execute(
+        "SELECT report_id FROM grade_result_observations WHERE result_id = ?", (cell.result_id,)
+    ).fetchall()
+    assert len(held) == 3
+    assert (replaced.report_id,) in held
+    count = reports_of(store)
+    retry = save(store, AGAIN, review, selection={cell.key}, use="current")
+    assert isinstance(retry, AlreadyRecorded)
+    assert retry.saved == back
+    assert reports_of(store) == count
+    assert store.current_values(class_of(store), "T1") == current
+
+
+def test_a_value_the_page_never_showed_as_matching_an_earlier_one_never_goes_back() -> None:
+    """G-I8: B moved Cell Diagram and changed its score; another capture with A's very cells asks
+    first and, answered, matches the value B replaced. It can't be brought back in that save,
+    since the page started on current without saying why not."""
+    store = in_memory()
+    saved(save(store, A))
+    moved = variant(CELL_SCORE, CELL_DUE)
+    first = review_of(store, moved)
+    saved(save(store, moved, first, matches=[same(row(first, "Cell Diagram"))]))
+    review = review_of(store, AGAIN)
+    cell = row(review, "Cell Diagram")
+    assert (cell.status, review.use) == (ItemStatus.NEEDS_ANSWER, UseChoice("current", ()))
+    assert cell.question is not None
+    answer = [same(cell)]
+    returned = save(store, AGAIN, review, matches=answer, selection={cell.key}, use="current")
+
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.SELECTION
+    assert reports_of(store) == 2
+    shown = saved(save(store, AGAIN, review, matches=answer, selection=(), use="current"))
+    value = store.current_values(class_of(store), "T1").results[cell.question.ids[0]]
+    assert (text_of(value, "points"), value.order, value.last_shown) == (
+        "8.0",
+        2,
+        ReportAt(shown.report_id or "", 3),
+    )
+
+
+def test_the_choice_is_not_offered_when_it_would_change_nothing() -> None:
+    """A copy whose term and categories are saved and whose rows can't be identified would change
+    no current value, last showing or absence: no choice, and an answer to one returns the
+    review."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    before = store.current_values(class_of(store), "T1")
+    draft = variant(*UNREAD_DUES)
+    review = review_of(store, draft)
+
+    assert {item.status for item in review.rows} == {ItemStatus.UNREADABLE}
+    assert review.use is None
+    for use in ("current", "earlier", "now"):
+        returned = save(store, draft, review, use=use)
+        assert isinstance(returned, ReviewReturned)
+        assert returned.why is ReturnReason.ANSWERS
+    outcome = saved(save(store, draft, review, complete=True))
+    assert outcome.report_id is None
+    assert store.current_values(class_of(store), "T1") == before
+
+
+def test_an_answer_not_among_the_choices_returns_the_review() -> None:
+    store = in_memory()
+    saved(save(store, A))
+    review = review_of(store, B)
+    returned = save(store, B, review, use="now")
+
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.ANSWERS
+    assert reports_of(store) == 1
+
+
+def test_a_presence_only_report_takes_the_default_and_kept_as_earlier_shows_nothing() -> None:
+    """4.3a: a submission of presence alone makes a report with rule 5's default use. Kept as
+    earlier, it moves no last showing and proves no absence."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, B, complete=True))
+    before = store.current_values(class_of(store), "T1")
+    review = review_of(store, AGAIN)
+    kept = saved(save(store, AGAIN, review, selection=(), complete=True))
+
+    assert (kept.shown, kept.report_id is not None) == (4, True)
+    assert use_of(store, kept.report_id) == "earlier"
+    assert store.current_values(class_of(store), "T1") == before
+
+
+def test_a_partial_report_kept_as_earlier_changes_nothing_current() -> None:
+    """His case list: a clipped copy with a changed score starts on current; kept as earlier, it
+    supplies nothing, and its own rest joins it with no choice offered."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    before = store.current_values(class_of(store), "T1")
+    partial = variant(CELL_SCORE, text=CLIPPED)
+    review = review_of(store, partial)
+
+    assert review.use == UseChoice("current", ())
+    kept = saved(save(store, partial, review, use="earlier"))
+    assert kept.updated == 1
+    assert use_of(store, kept.report_id) == "earlier"
+    assert store.current_values(class_of(store), "T1") == before
+    assert review_of(store, partial).use is None
+
+
+def test_a_capture_s_rest_joins_its_latest_report_kept_as_earlier() -> None:
+    """Rule 4: the rest of a capture kept as earlier joins that report, still earlier, with no
+    choice offered, and changes nothing current."""
+    store = in_memory()
+    saved(save(store, A))
+    saved(save(store, B))
+    review = review_of(store, AGAIN)
+    kept = saved(save(store, AGAIN, review, selection={row(review, "IXL", 1).key}))
+    assert use_of(store, kept.report_id) == "earlier"
+    before = store.current_values(class_of(store), "T1")
+    count = reports_of(store)
+    rest = review_of(store, AGAIN)
+    second = row(rest, "IXL", 2)
+
+    assert rest.use is None
+    assert second.key in rest.ready
+    later = saved(save(store, AGAIN, rest, selection={second.key}))
+    assert later.report_id == kept.report_id
+    assert reports_of(store) == count
+    assert use_of(store, kept.report_id) == "earlier"
+    assert store.current_values(class_of(store), "T1") == before
+
+
+def test_a_title_date_and_max_change_chosen_keeps_the_id_and_its_history() -> None:
+    """His case list: Osmosis renamed, moved and given another max, chosen as the same
+    assignment, keeps its result ID with both observations; A again resolves its row to that ID
+    through its own records and reads Matches an earlier saved value."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    draft = variant(TAKEN_OVER)
+    review = review_of(store, draft)
+    saved(save(store, draft, review, matches=[chosen(row(review, "Potato Lab"), osmosis)]))
+    held = store._connection.execute(
+        "SELECT COUNT(*) FROM grade_result_observations WHERE result_id = ?", (osmosis,)
+    ).fetchone()
+    back = review_of(store, A)
+    item = row(back, "Osmosis with Potato Slices")
+
+    assert held == (2,)
+    assert (item.result_id, item.how) == (osmosis, "same_capture")
+    assert item.status is ItemStatus.MATCHES_EARLIER
+    assert back.use is None
+
+
+def test_an_explicit_answer_kept_in_an_earlier_report_still_counts_for_matching() -> None:
+    """Matching isn't use: a "Same assignment" answer saved in a report kept as earlier is
+    reused for the same evidence in another capture."""
+    store = in_memory()
+    saved(save(store, A))
+    draft = variant(MOVED)
+    review = review_of(store, draft)
+    moved = row(review, "Microscope Practice")
+    assert moved.question is not None
+    kept = saved(save(store, draft, review, matches=[same(moved)], selection=(), use="earlier"))
+    assert use_of(store, kept.report_id) == "earlier"
+    other = row(review_of(store, variant(MOVED, CELL_SCORE)), "Microscope Practice")
+
+    assert (other.result_id, other.how) == (moved.question.ids[0], "reused")

@@ -5,7 +5,8 @@
 G-I1: no gradebook write changes anything outside the gradebook's own tables, read as a closed
 world from ``sqlite_master`` with the checkpoint and trace files beside it, so a table added later
 is covered unless it is named a gradebook table. G-I7: current values are per target, and a
-report kept as earlier changes none. G-I8: a retry writes nothing and returns what was recorded.
+report kept as earlier changes none. G-I8: a retry writes nothing and returns what was recorded,
+and a value a newer report replaced comes back only under the parent's choice of current.
 G-I13: no gradebook table, and no log line, holds a student's name. G-I15: every gradebook row
 carries her one student ID, and nothing is looked up under another. G-I16: a result is its
 stable ID, and an ambiguous match never saves without a parent's answer. G-I17: no grade save
@@ -70,6 +71,20 @@ ANOTHER_CAPTURE = draft_of(
 MOVED = draft_of(REPORT.replace("| Missing    | 09/26   |", "| Missing    | 09/29   |"))
 """Another capture: Cell Diagram's due date moved, a question a parent answers."""
 MOVED_AGAIN = draft_of(REPORT.replace("| Missing    | 09/26   |", "| Missing    | 09/30   |"))
+SEED = "| Seed Germination Log | 18.0 "
+KEPT = draft_of(REPORT.replace(SEED, "| Seed Germination Log | 19.0 "))
+"""Another capture with A's Cell Diagram after a newer 8.0, and Seed changed: kept as earlier."""
+BACK = draft_of(REPORT.replace(SEED, "| Seed Germination Log | 17.0 "))
+"""A third such capture, its Cell Diagram brought back under the parent's choice of current."""
+
+
+def chosen_current(store: ProjectStateStore, draft: GradeReportDraft) -> object:
+    """A parent's save of ``draft`` under the choice of current, selecting every value it offers,
+    those that go back to a value a newer report replaced included."""
+    review = store.review_grade_report(draft, capture_key(draft), key=KEY)
+    answers = dataclasses.replace(grade_answers(review), use="current")
+    selection = review.ready | review.back_to
+    return save_grade(store, draft, key=KEY, review=review, answers=answers, selection=selection)
 
 
 def saved_report(outcome: object) -> GradeReportSaved:
@@ -148,6 +163,14 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
         (
             "another capture's changed value",
             lambda: expect(GradeReportSaved, save_grade(store, ANOTHER_CAPTURE, key=KEY)),
+        ),
+        (
+            "a capture kept as an earlier report by its default",
+            lambda: expect(GradeReportSaved, save_grade(store, KEPT, key=KEY)),
+        ),
+        (
+            "a value back under the choice of current",
+            lambda: expect(GradeReportSaved, chosen_current(store, BACK)),
         ),
         (
             "a moved due date answered the same",
@@ -319,7 +342,7 @@ def test_g_i1_no_grade_save_changes_anything_outside_the_gradebook(
 
     assert any(name.endswith("assignments") for name in before)
     assert seen == [(label, True) for label, _ in seen]
-    assert len(accepted) == 8
+    assert len(accepted) == 10
 
 
 def test_g_i8_a_retry_writes_nothing_and_returns_the_recorded_outcome(
@@ -383,14 +406,51 @@ def test_g_i7_current_values_are_per_target_and_an_earlier_report_supplies_none(
     assert supplied == sorted([str(first.report_id)] * 3 + [str(newer.report_id)])
     assert current.term is not None
     assert current.term.report_id == first.report_id
-    store._connection.execute(
-        "UPDATE grade_reports SET use = 'earlier' WHERE report_id = ?", (newer.report_id,)
-    )
-    store._connection.commit()
-    kept = store.current_values(class_id, "T1")
     store.close()
+    other = ProjectStateStore.open(tmp_path / "earlier.sqlite3", fixture_clock())
+    first = saved_report(save_grade(other, WREN_REPORT, key=KEY))
+    review = other.review_grade_report(ANOTHER_CAPTURE, capture_key(ANOTHER_CAPTURE), key=KEY)
+    answers = dataclasses.replace(grade_answers(review), use="earlier")
+    saved_report(save_grade(other, ANOTHER_CAPTURE, key=KEY, review=review, answers=answers))
+    (class_id,) = other._connection.execute("SELECT class_id FROM grade_classes").fetchone()
+    kept = other.current_values(class_id, "T1")
+    other.close()
 
     assert {value.report_id for value in kept.results.values()} == {first.report_id}
+
+
+def test_g_i8_values_become_current_only_through_the_deliberate_current_choice(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A value a newer report replaced comes back only under the parent's choice of current:
+    never by a default, a retry or a re-import, which leave every current value as it was."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    saved_report(save_grade(store, WREN_REPORT, key=KEY))
+    saved_report(save_grade(store, ANOTHER_CAPTURE, key=KEY))
+    (class_id,) = store._connection.execute("SELECT class_id FROM grade_classes").fetchone()
+    replaced = store.current_values(class_id, "T1")
+    review = store.review_grade_report(KEPT, capture_key(KEPT), key=KEY)
+    everything = review.ready | review.back_to
+
+    assert review.use is not None
+    assert review.use.default == "earlier"
+    by_default = save_grade(store, KEPT, key=KEY, review=review, selection=everything)
+    assert isinstance(by_default, ReviewReturned)
+    assert by_default.why is ReturnReason.SELECTION
+    kept = saved_report(save_grade(store, KEPT, key=KEY, review=review))
+    assert isinstance(save_grade(store, KEPT, key=KEY, review=review), AlreadyRecorded)
+    again = store.review_grade_report(KEPT, capture_key(KEPT), key=KEY)
+    assert (again.use, again.back_to) == (None, frozenset())
+    saved_report(save_grade(store, KEPT, key=KEY, review=again))
+    assert store.current_values(class_id, "T1") == replaced
+    back = saved_report(chosen_current(store, BACK))
+    now = store.current_values(class_id, "T1")
+    store.close()
+
+    cell = next(item for item in review.rows if '"Cell Diagram"' in item.key)
+    value = now.results[cell.result_id or ""]
+    assert kept.report_id != back.report_id
+    assert (value.report_id, value.cells["points"][1]) == (back.report_id, "7.0")
 
 
 def test_g_i16_an_ambiguous_match_saves_only_with_the_parent_s_answer_and_keeps_the_id(

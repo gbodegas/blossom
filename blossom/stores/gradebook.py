@@ -14,9 +14,11 @@ A save of a report is one write: a recorded acceptance ID returns what it record
 changed class and term or an answer to a question the review doesn't ask now returns the
 review, and otherwise the answers, the selected values, a row record for each row shown with a
 reliable match, and an acceptance record are written together. A selected row matched to one of
-her results adds its observation to that result; any other makes a new result. Current values
-are read, never stored: each target's comes from the current report with the highest acceptance
-order that supplied it, and a result's also says the newest current report that showed it.
+her results adds its observation to that result; any other makes a new result. A new report
+takes the parent's report-level choice, or its default, as its use; a capture's rest joins its
+latest report with that report's use. Current values are read, never stored: each target's comes
+from the current report with the highest acceptance order that supplied it, and a result's also
+says the newest current report that showed it.
 
 Every grade write goes through one entry: the store's lock, the writer's transaction (its own,
 or a caller's it joins), and one savepoint around the whole write. A failure leaves none of the
@@ -69,6 +71,7 @@ from blossom.grades.review import (
     NotHers,
     OnRecord,
     ReportAt,
+    ReportUse,
     ReturnReason,
     ReviewPage,
     ReviewReturned,
@@ -81,6 +84,7 @@ from blossom.grades.review import (
     rejected_text,
     review_from,
     row_key,
+    use_asked,
 )
 
 GRADEBOOK_TABLES: Final = (
@@ -447,7 +451,7 @@ NEXT_ORDER: Final = (
 ADD_REPORT: Final = (
     "INSERT INTO grade_reports (report_id, student_id, class_id, term_label, source_key, "
     "acceptance_order, use, reader, imported_at, as_of, result_rows) "
-    "VALUES (?, ?, ?, ?, ?, ?, 'current', 'text', ?, NULL, ?)"
+    "VALUES (?, ?, ?, ?, ?, ?, ?, 'text', ?, NULL, ?)"
 )
 ADD_TERM_OBSERVATION: Final = (
     "INSERT INTO grade_term_observations (report_id, student_id, percent_text, "
@@ -819,7 +823,11 @@ class GradebookRecords:
                 != answers.same_class_revision
             ):
                 return ReviewReturned(into, ReturnReason.REVISION)
-            if not answers_asked(review, answers) or not matches_asked(into, answers.matches):
+            if (
+                not answers_asked(review, answers)
+                or not matches_asked(into, answers.matches)
+                or not use_asked(into, answers.use)
+            ):
                 return ReviewReturned(into, ReturnReason.ANSWERS)
             settled = into
             if answers.matches:
@@ -830,8 +838,16 @@ class GradebookRecords:
                     same_class=answers.same_class,
                     matches=answers.matches,
                 )
-            if not chosen <= settled.ready:
+            # A value goes back to one a newer report replaced only under the parent's choice
+            # of current, and only when the page showed it as matching an earlier saved value.
+            allowed = settled.ready
+            if answers.use == "current":
+                allowed |= into.back_to & settled.back_to
+            if not chosen <= allowed:
                 return ReviewReturned(into, ReturnReason.SELECTION)
+            use: ReportUse = answers.use or (
+                "current" if settled.use is None else settled.use.default
+            )
             return self._write_save(
                 draft,
                 settled,
@@ -842,6 +858,7 @@ class GradebookRecords:
                 student_id=student_id,
                 acceptance_id=page.acceptance_id,
                 complete=complete,
+                use=use,
             )
 
     def _review_locked(
@@ -1036,11 +1053,12 @@ class GradebookRecords:
         student_id: str,
         acceptance_id: str,
         complete: bool,
+        use: ReportUse,
     ) -> GradeReportSaved:
         """Every write of a save that passed its checks, inside the save's one grade write: the
         identity answer, the setup, the selected values, the rows shown and the "different"
-        answers kept, in the report they join or make when anything is new, the revision and the
-        acceptance."""
+        answers kept, in the report they join, with its use, or make with ``use`` when anything
+        is new, the revision and the acceptance."""
         header = draft.header
         now = self._stamp()
         line = header.student_line
@@ -1088,7 +1106,7 @@ class GradebookRecords:
         accepted: list[tuple[str, str | None]] = []
         if chosen or shown or different:
             report_id = joined or self._new_report(
-                draft, class_id, review.source_key, student_id, now
+                draft, class_id, review.source_key, student_id, now, use=use
             )
             accepted = self._observe(
                 draft, review, chosen, report_id, class_id, student_id=student_id, by=by, now=now
@@ -1120,10 +1138,10 @@ class GradebookRecords:
                     now=now,
                 )
         self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
-        already = sum(1 for item in review.items if item.status in ALREADY)
-        changed = sum(
-            1 for item in review.items if item.key in chosen and item.status is ItemStatus.CHANGED
+        already = sum(
+            1 for item in review.items if item.status in ALREADY and item.key not in chosen
         )
+        changed = sum(1 for item in review.items if item.key in chosen and item.status in UPDATES)
         outcome = GradeReportSaved(
             acceptance_id=acceptance_id,
             report_id=report_id,
@@ -1198,16 +1216,23 @@ class GradebookRecords:
         return class_id
 
     def _new_report(
-        self, draft: GradeReportDraft, class_id: str, source_key: str, student_id: str, now: str
+        self,
+        draft: GradeReportDraft,
+        class_id: str,
+        source_key: str,
+        student_id: str,
+        now: str,
+        *,
+        use: ReportUse,
     ) -> str:
-        """A new report of the capture, next in acceptance order, current, with its number of
+        """A new report of the capture, next in acceptance order, with its use and its number of
         result rows."""
         term = folded(draft.header.term_label)
         (order,) = self._connection.execute(NEXT_ORDER, (student_id, class_id, term)).fetchone()
         report_id = f"report-{uuid.uuid4().hex}"
         rows = sum(len(category.rows) for category in draft.categories)
         self._connection.execute(
-            ADD_REPORT, (report_id, student_id, class_id, term, source_key, order, now, rows)
+            ADD_REPORT, (report_id, student_id, class_id, term, source_key, order, use, now, rows)
         )
         return report_id
 
@@ -1362,7 +1387,10 @@ def _cells(fields: tuple[str, ...], row: tuple[object, ...]) -> dict[str, Cell]:
 
 
 ALREADY: Final = frozenset({ItemStatus.SAVED, ItemStatus.MATCHES_EARLIER})
-"""The statuses an outcome counts as already saved."""
+"""The statuses an outcome counts as already saved, unless selected."""
+UPDATES: Final = frozenset({ItemStatus.CHANGED, ItemStatus.MATCHES_EARLIER})
+"""The statuses of selected values an outcome counts as updated: changed, or back to a value a
+newer report replaced."""
 EXPLICIT: Final = frozenset({"answer", "chosen"})
 """How a row record counts as the parent's explicit answer, whether its row was shown or
 accepted."""
