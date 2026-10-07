@@ -554,7 +554,10 @@ def test_the_same_class_answer_saves_into_that_class_with_an_alias() -> None:
         store,
         review=review,
         answers=GradeAnswers(
-            identity=answers.identity, identity_form=answers.identity_form, same_class=chemistry[0]
+            identity=answers.identity,
+            identity_form=answers.identity_form,
+            same_class=chemistry[0],
+            same_class_revision=chemistry[2],
         ),
         selection=(),
     )
@@ -568,6 +571,56 @@ def test_the_same_class_answer_saves_into_that_class_with_an_alias() -> None:
     after = review_of(store)
     assert after.class_question.matched == chemistry[0]
     assert set(statuses(after)) == {ItemStatus.NEEDS_MATCHING}
+
+
+def test_a_page_for_another_reading_of_the_report_saves_nothing() -> None:
+    """A page reviewed one capture; a save that brings another, a score changed, returns the
+    review rather than saving values nobody saw."""
+    store = in_memory()
+    review = review_of(store)
+    changes = store._connection.total_changes
+
+    outcome = save_grade(store, EIGHT_DRAFT, key=KEY, review=review, answers=answers_to(review))
+
+    assert store._connection.total_changes == changes
+    assert returned(outcome, ReturnReason.SOURCE).source_key == capture_key(EIGHT_DRAFT)
+
+
+def test_the_same_class_answer_is_held_to_the_revision_its_page_showed() -> None:
+    """The class a page offered as the same is rechecked by its own scope revision: a save that
+    changed it meanwhile returns the review."""
+    store = in_memory()
+    saved(save(store))
+    other_code = draft_of(
+        REPORT.replace("**T1**", "**T2**")
+        .replace("07 BIO - C", "07 BIO - D")
+        .replace("Biology", "Biology Lab")
+    )
+    review = review_of(store, other_code)
+    (biology,) = review.class_question.existing
+    saved(save(store, draft_of(REPORT.replace("**T1**", "**T2**"))))
+    changes = store._connection.total_changes
+    answers = dataclasses.replace(answers_to(review), new_class=None, same_class=biology[0])
+
+    outcome = save_grade(store, other_code, key=KEY, review=review, answers=answers)
+
+    assert store._connection.total_changes == changes
+    returned(outcome, ReturnReason.REVISION)
+
+
+def test_a_term_spaced_another_way_is_the_same_term() -> None:
+    """The capture key folds a term's spaces, and so does every scope: a second paste of the
+    same report with its term spaced another way saves into the same term."""
+    store = in_memory()
+    saved(save(store, draft_of(REPORT.replace("**T1**", "**Term 1**"))))
+    again = draft_of(REPORT.replace("**T1**", "**Term  1**"))
+    review = review_of(store, again)
+
+    saved(save_grade(store, again, key=KEY, review=review, answers=answers_to(review)))
+
+    assert set(statuses(review)) == {ItemStatus.SAVED}
+    assert one(store, "SELECT label FROM grade_terms") == [("Term 1",)]
+    assert one(store, "SELECT term_label, revision FROM grade_scope_revisions") == [("Term 1", 2)]
 
 
 def test_needs_matching_values_cannot_be_selected() -> None:
@@ -619,7 +672,7 @@ def test_her_own_role_saves_nothing() -> None:
             WREN_DRAFT,
             capture_key(WREN_DRAFT),
             key=KEY,
-            page=ReviewPage(review.acceptance_id, review.revision),
+            page=ReviewPage(review.acceptance_id, review.revision, review.source_key),
             answers=answers_to(review),
             selection=review.ready,
             role="student",  # type: ignore[arg-type]
