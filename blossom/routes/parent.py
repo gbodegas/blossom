@@ -151,6 +151,7 @@ from blossom.stores.help_requests import (
     UpdateFormUsed,
     UpdateTooLong,
     UpdateWithoutWords,
+    WrittenUnreadable,
     kept_words,
     new_update_id,
     update_id_from,
@@ -812,8 +813,8 @@ def move_request(
 ) -> HelpRequest:
     """Take a request up, add an update to it, or close it. Words past the cap are 422 before
     anything is read; then an unknown request is 404, an update with no words 422, a move its
-    state or its form refuses 409, and one on a request that can't be read 500, with nothing
-    written. Any other step is 422."""
+    state or its form refuses 409, and one on a request read as unreadable before anything is
+    written 500. Any other step is 422."""
     store = state.help_requests
     try:
         if step == "accept":
@@ -1539,10 +1540,10 @@ def help_from_the_page(
     words as typed: in the request's own box while the request is open there, marked and
     focused when the words are what was refused, with a way to the box when the refusal
     says they are below, and under the problem otherwise. A request whose row can't be read
-    is refused there too, 500, with nothing written. A move the file refuses is rolled back
-    and answered at once on the family page's stand-in, which reads no store, 500, with the
-    words as typed. A refusal whose page can't be read keeps its status there, with the
-    words.
+    is refused there too, 500, before anything is written. A move the file refuses, or one
+    whose request can't be read back after its write, is rolled back and answered at once
+    on the family page's stand-in, which reads no store, 500, with the words as typed. A
+    refusal whose page can't be read keeps its status there, with the words.
     """
     typed = FamilyKept(reply=response)
     try:
@@ -1577,7 +1578,7 @@ def help_from_the_page(
         elif words:
             kept = HelpReplyKept(request_id, response, below=said in WORDS_BELOW)
         return refused_on_the_page(request, state, said, error.status_code, typed, help_reply=kept)
-    except sqlite3.Error as error:
+    except (sqlite3.Error, WrittenUnreadable) as error:
         logger.warning(
             "a parent's move on her request could not be saved: %s", type(error).__name__
         )

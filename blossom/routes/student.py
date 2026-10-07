@@ -381,6 +381,9 @@ NOT_HERE_ANY_MORE: Final = "That request is not here any more; nothing was chang
 REQUEST_UNREADABLE: Final = "This request for help can't be read right now, so nothing was changed."
 """What a move on a request the store can't read says, on either page and in JSON: the move
 read the row, refused it, and wrote nothing."""
+ASK_ANEW: Final = "If you still need help, you can send a new request."
+"""What her week adds, beside her ask form, to the line counting requests that can't be read:
+her form keeps a new request under a fresh id and leaves those rows as they are."""
 UNREADABLE_COUNT: Final = "Help-Requests-Unreadable"
 """The header each JSON list of her requests sends: how many kept requests it set apart
 because they can't be read, 0 when none."""
@@ -779,12 +782,14 @@ def help_requests_shown(state: ApplicationState, listed: HelpListed) -> list[Hel
     return [help_view(state, request, about) for request in requests]
 
 
-def set_apart(count: int) -> str | None:
+def set_apart(count: int, *, hers: bool = False) -> str | None:
     """What a help list says of the requests it set apart because they can't be read, or
-    ``None`` when it set none apart: how many, and nothing they hold."""
+    ``None`` when it set none apart: how many, and nothing they hold. Beside her own ask
+    form, ``hers``, it adds that she can send a new request."""
     if not count:
         return None
-    return f"{count} request{'' if count == 1 else 's'} for help can't be read right now."
+    said = f"{count} request{'' if count == 1 else 's'} for help can't be read right now."
+    return f"{said} {ASK_ANEW}" if hers else said
 
 
 @dataclass(frozen=True)
@@ -1544,7 +1549,9 @@ def build_student_due_this_week_view(
         help_recent=[] if groups is None else help_views(groups.recent),
         help_earlier=[] if groups is None else help_views(groups.earlier),
         help_unavailable=groups is None,
-        help_set_apart=None if groups is None else set_apart(groups.unreadable),
+        help_set_apart=(
+            None if groups is None else set_apart(groups.unreadable, hers=viewer != "parent")
+        ),
         viewer=viewer,
         can_update=viewer != "parent",
         nothing_to_plan=not window.active(),

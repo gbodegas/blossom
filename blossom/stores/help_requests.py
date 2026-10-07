@@ -299,6 +299,12 @@ class UnreadableHelpRequest(ValueError):
         super().__init__(f"{named} cannot be read: {why}" if why else f"{named} cannot be read")
 
 
+class WrittenUnreadable(RuntimeError):
+    """Raised when a move reads its request back after writing and can't read it. The move
+    is rolled back whole, as for any failed save, and this is no refusal made before a
+    write, so it is never ``UnreadableHelpRequest``."""
+
+
 @dataclass(frozen=True)
 class HelpHeld:
     """Every request kept, from one statement, and the instant its cutoff was taken from, so
@@ -631,7 +637,7 @@ class HelpRequestsStore:
                 if words is not None:
                     update = ParentUpdate(update_id=form, body=words, written_at=now)
                     self._append(request_id, "accepted", update)
-                return self._read(request_id, now)
+                return self._written(request_id, now)
             if retried(current, form, words):
                 return current
             if current.state == "resolved":
@@ -661,7 +667,7 @@ class HelpRequestsStore:
                 raise UpdateWithoutWords(msg)
             update = ParentUpdate(update_id=form, body=words, written_at=now)
             if self._append(request_id, "accepted", update):
-                return self._read(request_id, now)
+                return self._written(request_id, now)
             if retried(current, form, words):
                 return current
             if current.state == "resolved":
@@ -694,7 +700,7 @@ class HelpRequestsStore:
                 update = ParentUpdate(update_id=form, body=words, written_at=now)
                 self._append(request_id, current.state, update)
             self._connection.execute(CLOSE, (now.isoformat(), now.isoformat(), request_id))
-            return self._read(request_id, now)
+            return self._written(request_id, now)
 
     @contextmanager
     def _writing(self) -> Iterator[datetime]:
@@ -795,6 +801,14 @@ class HelpRequestsStore:
             msg = f"no help request {request_id!r}"
             raise KeyError(msg)
         return request_from(row)
+
+    def _written(self, request_id: str, now: datetime) -> HelpRequest:
+        """The request as a move just wrote it, read inside the move's transaction. A row
+        that can't be read back is ``WrittenUnreadable``, which rolls the move back whole."""
+        try:
+            return self._read(request_id, now)
+        except UnreadableHelpRequest as refused:
+            raise WrittenUnreadable(str(refused)) from None
 
     def _held_rows(self, statement: str, parameters: tuple[object, ...]) -> list[sqlite3.Row]:
         """The rows a read returns with each text column as its stored bytes, ``HeldText``, so
