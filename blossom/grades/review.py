@@ -439,14 +439,15 @@ class _Matching:
     def __init__(self, rows: list[_Row], on_record: OnRecord) -> None:
         self.held = on_record.held
         self.alike = Counter(row.evidence for row in rows)
-        self.titles = {_title(row.evidence) for row in rows}
         self.taken = {
             result for row in rows if (result := on_record.saved.get(row.key)) is not None
         }
 
     def candidates(self, row: _Row) -> list[str]:
-        """Her results the row may be: those with its title; for a row no title matches, those
-        missing from this report that share its category and its due text or its max points."""
+        """Her results the row may be, among those no row of this report has resolved to: those
+        with its title; for a row no title matches, those that share its category and its due
+        text or its max points. A result another row may still be stays a candidate, since
+        either row may be it until one resolves to it."""
         latest = self.held.latest
         free = {
             result: evidence_of(latest[result]) for result in latest if result not in self.taken
@@ -458,8 +459,7 @@ class _Matching:
         return [
             result
             for result, seen in free.items()
-            if _title(seen) not in self.titles
-            and seen[0] == row.evidence[0]
+            if seen[0] == row.evidence[0]
             and (
                 seen[2] == row.evidence[2]
                 or compared({"max": latest[result].cells["max_points"]}) == most

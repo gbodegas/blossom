@@ -319,6 +319,33 @@ def test_a_stored_decision_disagreeing_with_an_exact_match_asks() -> None:
     assert set(item.question.ids) == {cell, new_cell}
 
 
+def test_a_renamed_row_asks_about_a_result_no_row_has_resolved_to() -> None:
+    """Cell Diagram moves to 09/29, and Cell Drawing comes due 09/26 in its category. Either
+    row may be the Cell Diagram result until one resolves to it, so both ask, and no two
+    answers can name it."""
+    store = in_memory()
+    saved(save(store, A))
+    cell = row(review_of(store, A), "Cell Diagram").result_id
+    moved_cell = CELL.replace("| 09/26   |", "| 09/29   |")
+    drawing = CELL.replace("Cell Diagram", "Cell Drawing")
+    both = variant(text=REPORT.replace(CELL, f"{moved_cell}\n{drawing}"))
+    review = review_of(store, both)
+    moved, renamed = row(review, "Cell Diagram"), row(review, "Cell Drawing")
+
+    assert moved.question is not None
+    assert moved.question.kind is QuestionKind.DUE_CHANGED
+    assert renamed.status is ItemStatus.NEEDS_ANSWER
+    assert renamed.question is not None
+    assert renamed.question.kind is QuestionKind.RENAMED
+    assert renamed.question.ids == (cell,)
+    twice = save(store, both, review, matches=[same(moved), same(renamed)])
+    assert isinstance(twice, ReviewReturned)
+    assert twice.why is ReturnReason.ANSWERS
+    outcome = saved(save(store, both, review, matches=[different(moved), same(renamed)]))
+    assert dict(outcome.accepted)[renamed.key] == cell
+    assert len(results(store)) == 5
+
+
 # ------------------------------------------------------------- current values per target
 
 
@@ -394,6 +421,44 @@ def test_a_result_missing_from_a_newer_full_report_is_last_seen_in_its_own() -> 
     assert [value.last_seen for key, value in current.results.items() if key != osmosis] == [
         False
     ] * 3
+
+
+CELL_NINE = ("| Cell Diagram             | 7.0 ", "| Cell Diagram             | 9.0 ")
+"""Cell Diagram's score changed from 7.0 to 9.0."""
+
+
+def test_a_result_shown_again_by_the_newest_full_report_is_not_last_seen() -> None:
+    """Osmosis is left out of full report B, then shown unchanged by a newer full report: that
+    report saw it last, so it isn't last seen in A, and its value stays A's."""
+    store = in_memory()
+    first = saved(save(store, A))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    saved(save(store, variant(CELL_SCORE, (f"{OSMOSIS}\n", ""))))
+    newest = saved(save(store, variant(CELL_NINE)))
+    current = store.current_values(class_of(store), "T1")
+
+    assert current.results[osmosis].last_seen is False
+    assert current.results[osmosis].report_id == first.report_id
+    cell = row(review_of(store, A), "Cell Diagram").result_id or ""
+    assert current.results[cell].report_id == newest.report_id
+
+
+def test_a_result_shown_again_by_a_newer_partial_report_is_not_last_seen() -> None:
+    """Osmosis is left out of full report B, then shown unchanged by a newer copy without a
+    term grade. A partial report doesn't say what is missing, but it does say what is there."""
+    store = in_memory()
+    saved(save(store, A))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    saved(save(store, variant(CELL_SCORE, (f"{OSMOSIS}\n", ""))))
+    no_term = REPORT[: REPORT.index("| **Term Grade**")]
+    partial = saved(save(store, variant(CELL_NINE, text=no_term)))
+    current = store.current_values(class_of(store), "T1")
+
+    coverage = store._connection.execute(
+        "SELECT coverage FROM grade_reports WHERE report_id = ?", (partial.report_id,)
+    ).fetchall()
+    assert coverage == [("partial",)]
+    assert current.results[osmosis].last_seen is False
 
 
 # ------------------------------------------------------------- answers bound to their questions

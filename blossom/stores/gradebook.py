@@ -792,16 +792,24 @@ class GradebookRecords:
         for report_id, evidence, result in self._connection.execute(DECIDED, scope):
             decided.setdefault(str(evidence), set()).add(str(result))
             held_by.setdefault(str(report_id), set()).add(str(result))
-        newer_full = [
-            (order, report_id)
-            for report_id, (order, use, coverage) in reports.items()
-            if use == "current" and coverage == "full"
-        ]
+        # A result is last seen when the newest full current report is newer than every current
+        # report that showed it; a partial report says what is there, never what is missing.
+        newest_full = max(
+            (
+                order
+                for order, use, coverage in reports.values()
+                if use == "current" and coverage == "full"
+            ),
+            default=0,
+        )
+        seen: dict[str, int] = {}
+        for report_id, shown in held_by.items():
+            order, use, _ = reports[report_id]
+            if use == "current":
+                for result in shown:
+                    seen[result] = max(seen.get(result, 0), order)
         for result, value in current["result"].items():
-            if any(
-                order > value.order and result not in held_by.get(report_id, set())
-                for order, report_id in newer_full
-            ):
+            if newest_full > seen.get(result, value.order):
                 current["result"][result] = replace(value, last_seen=True)
         return ClassRecord(
             current=CurrentValues(
