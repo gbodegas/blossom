@@ -1,0 +1,619 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
+"""The grade review and the save, for new results and a capture saved again.
+
+A review says what a pasted report would do and writes nothing: her identity, the setup questions,
+and each value's status. A save is one transaction that rechecks the page against the record,
+then writes the parent's selection with an acceptance record, or writes nothing and says why.
+"""
+
+import pathlib
+import sqlite3
+from collections.abc import Callable, Collection
+
+import pytest
+
+from blossom.grades.draft import GradeReportDraft, capture_key
+from blossom.grades.identity import IdentityStatus, key_check, name_form, name_form_key
+from blossom.grades.review import (
+    TERM_KEY,
+    AlreadyRecorded,
+    GradeAnswers,
+    GradeReportSaved,
+    GradeReview,
+    IdentityAnswer,
+    ItemStatus,
+    NotHers,
+    ReturnReason,
+    ReviewPage,
+    ReviewReturned,
+    SaveOutcome,
+)
+from blossom.grades.text_reader import read_grade_report
+from blossom.stores.gradebook import GRADEBOOK_TABLES, GradeReportNotSaved
+from blossom.stores.project_state import ProjectStateStore
+from tests.support import FIXTURES, as_stored, fixture_clock, grade_answers, save_grade
+
+REPORT = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
+"""Wren's synthetic report: Biology, 2026-2027, T1, four categories and four results."""
+WREN = "Bramble, Wren"
+LINNET = "Bramble, Linnet"
+KEY = name_form_key(b"5" * 64)
+NEW_KEY = name_form_key(b"6" * 64)
+SEVEN = "| Cell Diagram             | 7.0 "
+
+
+def draft_of(text: str = REPORT) -> GradeReportDraft:
+    reading = read_grade_report(text)
+    assert reading.draft is not None, reading.not_read
+    return reading.draft
+
+
+WREN_DRAFT = draft_of()
+LINNET_DRAFT = draft_of(REPORT.replace("**Bramble, Wren**", "**Bramble, Linnet**"))
+MISSING_DRAFT = draft_of(REPORT.replace("**Bramble, Wren**", ""))
+EIGHT_DRAFT = draft_of(REPORT.replace(SEVEN, SEVEN.replace("7.0", "8.0")))
+"""Another capture of the same class and term: one score differs."""
+CHEMISTRY_DRAFT = draft_of(
+    REPORT.replace("07 BIO - C", "07 CHEM - A").replace("Biology", "Chemistry")
+)
+"""A report for another class in the same year and term."""
+UNREADABLE_DRAFT = draft_of(REPORT.replace("| 7.0     | 10.0    |", "| 7,0     | 10.0    |"))
+
+
+def in_memory() -> ProjectStateStore:
+    return ProjectStateStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+
+
+def review_of(
+    store: ProjectStateStore, draft: GradeReportDraft = WREN_DRAFT, *, key: bytes = KEY
+) -> GradeReview:
+    return store.review_grade_report(draft, capture_key(draft), key=key)
+
+
+answers_to = grade_answers
+
+
+def save(
+    store: ProjectStateStore,
+    draft: GradeReportDraft = WREN_DRAFT,
+    review: GradeReview | None = None,
+    *,
+    key: bytes = KEY,
+    answers: GradeAnswers | None = None,
+    selection: Collection[str] | None = None,
+) -> SaveOutcome:
+    """A parent's save of Wren's report unless another is named, under the first key."""
+    return save_grade(store, draft, key=key, review=review, answers=answers, selection=selection)
+
+
+def gradebook_of(store: ProjectStateStore) -> dict[str, list[tuple[object, ...]]]:
+    return {table: as_stored(store, table) for table in GRADEBOOK_TABLES}
+
+
+def counted(store: ProjectStateStore) -> dict[str, int]:
+    return {table: len(rows) for table, rows in gradebook_of(store).items()}
+
+
+def statuses(review: GradeReview) -> list[ItemStatus]:
+    return [item.status for item in review.items]
+
+
+def one(store: ProjectStateStore, sql: str, *values: object) -> list[tuple[object, ...]]:
+    return store._connection.execute(sql, values).fetchall()
+
+
+def returned(outcome: SaveOutcome, why: ReturnReason) -> GradeReview:
+    assert isinstance(outcome, ReviewReturned), outcome
+    assert outcome.why is why
+    return outcome.review
+
+
+def saved(outcome: SaveOutcome) -> GradeReportSaved:
+    assert isinstance(outcome, GradeReportSaved), outcome
+    return outcome
+
+
+# ------------------------------------------------------------- the review
+
+
+def test_a_first_review_asks_every_setup_question_and_writes_nothing() -> None:
+    store = in_memory()
+    changes = store._connection.total_changes
+    review = review_of(store)
+
+    assert store._connection.total_changes == changes
+    assert review.source_key == capture_key(WREN_DRAFT)
+    assert review.identity.status is IdentityStatus.FIRST_USE
+    assert review.identity.form == name_form(KEY, WREN)
+    assert review.setup == ("2026-2027", "T1")
+    assert review.first_month == "2026-2027"
+    assert (review.class_question.matched, review.class_question.offered_name) == (
+        None,
+        "Biology",
+    )
+    assert review.class_question.existing == ()
+    assert review.revision is None
+    assert review.term is not None
+    assert [len(review.categories), len(review.rows)] == [4, 4]
+    assert set(statuses(review)) == {ItemStatus.NEW}
+    assert review.ready == frozenset(item.key for item in review.items)
+    assert review_of(store).acceptance_id != review.acceptance_id
+
+
+# ------------------------------------------------------------- a first save, and its rest
+
+
+def test_a_first_save_writes_exactly_the_expected_rows_and_raises_the_revision() -> None:
+    store = in_memory()
+    review = review_of(store)
+    outcome = saved(save(store, review=review))
+
+    assert (outcome.added, outcome.updated, outcome.already_saved, outcome.left) == (9, 0, 0, 0)
+    assert outcome.acceptance_id == review.acceptance_id
+    assert counted(store) == {
+        "grade_student": 1,
+        "grade_name_forms": 1,
+        "grade_context": 1,
+        "grade_years": 1,
+        "grade_terms": 1,
+        "grade_classes": 1,
+        "grade_class_aliases": 1,
+        "grade_reports": 1,
+        "grade_term_observations": 1,
+        "grade_category_observations": 4,
+        "grade_results": 4,
+        "grade_result_observations": 4,
+        "grade_match_decisions": 4,
+        "grade_scope_revisions": 1,
+        "grade_acceptances": 1,
+    }
+    assert one(store, "SELECT year_label, term_label FROM grade_context") == [("2026-2027", "T1")]
+    assert one(store, "SELECT label, first_month FROM grade_years") == [("2026-2027", 8)]
+    assert one(store, "SELECT display_name FROM grade_classes") == [("Biology",)]
+    assert one(store, "SELECT code, name FROM grade_class_aliases") == [("07 BIO - C", "Biology")]
+    assert one(
+        store, "SELECT source_key, acceptance_order, use, reader, coverage FROM grade_reports"
+    ) == [(capture_key(WREN_DRAFT), 1, "current", "text", "full")]
+    assert one(store, "SELECT DISTINCT how FROM grade_match_decisions") == [("new",)]
+    assert one(store, "SELECT revision FROM grade_scope_revisions") == [(1,)]
+    assert one(
+        store,
+        "SELECT kind, source_key, report_id, identity_status, identity_answer, identity_form, "
+        "added, updated, already_saved, left_to_check, role FROM grade_acceptances",
+    ) == [
+        (
+            "grade_text",
+            capture_key(WREN_DRAFT),
+            outcome.report_id,
+            "first_use",
+            "hers",
+            name_form(KEY, WREN),
+            9,
+            0,
+            0,
+            0,
+            "parent",
+        )
+    ]
+    again = review_of(store)
+    assert again.identity.status is IdentityStatus.MATCHES
+    assert (again.setup, again.first_month, again.revision) == (None, None, 1)
+    assert again.class_question.matched is not None
+    assert set(statuses(again)) == {ItemStatus.SAVED}
+    assert again.ready == frozenset()
+    assert {item.result_id for item in again.rows} == {
+        row[0] for row in one(store, "SELECT result_id FROM grade_results")
+    }
+
+
+def test_a_partial_save_then_the_rest_joins_the_same_report() -> None:
+    store = in_memory()
+    first = review_of(store)
+    chosen = {TERM_KEY, first.categories[0].key, first.rows[0].key}
+    partial = saved(save(store, review=first, selection=chosen))
+    middle = review_of(store)
+    rest = saved(save(store, review=middle))
+
+    assert [item.status for item in middle.items if item.key in chosen] == [ItemStatus.SAVED] * 3
+    assert middle.ready == frozenset(item.key for item in first.items) - chosen
+    assert (partial.added, partial.left) == (3, 6)
+    assert (rest.added, rest.already_saved, rest.left) == (6, 3, 0)
+    assert rest.report_id == partial.report_id
+    assert one(store, "SELECT COUNT(*) FROM grade_reports") == [(1,)]
+    assert one(store, "SELECT COUNT(*) FROM grade_results") == [(4,)]
+    assert one(store, "SELECT COUNT(*) FROM grade_acceptances") == [(2,)]
+    assert one(store, "SELECT revision FROM grade_scope_revisions") == [(2,)]
+    assert set(statuses(review_of(store))) == {ItemStatus.SAVED}
+
+
+def test_a_restart_keeps_a_committed_save(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "blossom.sqlite3"
+    store = ProjectStateStore.open(path, fixture_clock())
+    saved(save(store))
+    store.close()
+    again = ProjectStateStore.open(path, fixture_clock())
+    review = review_of(again)
+    again.close()
+
+    assert review.identity.status is IdentityStatus.MATCHES
+    assert set(statuses(review)) == {ItemStatus.SAVED}
+
+
+# ------------------------------------------------------------- his tenth-round cases
+
+
+def test_identical_reports_for_two_siblings_ask_whose_report_it_is() -> None:
+    store = in_memory()
+    saved(save(store))
+    before = gradebook_of(store)
+    review = review_of(store, LINNET_DRAFT)
+
+    assert capture_key(LINNET_DRAFT) == capture_key(WREN_DRAFT)
+    assert review.identity.status is IdentityStatus.NOT_CONFIRMED
+    assert review.identity.form == name_form(KEY, LINNET)
+    assert set(statuses(review)) == {ItemStatus.SAVED}
+    assert gradebook_of(store) == before
+
+
+def test_identical_reports_for_two_siblings_not_hers_saves_nothing() -> None:
+    store = in_memory()
+    saved(save(store))
+    before = gradebook_of(store)
+    review = review_of(store, LINNET_DRAFT)
+
+    outcome = save(store, LINNET_DRAFT, review, answers=answers_to(review, IdentityAnswer.NOT_HERS))
+
+    assert isinstance(outcome, NotHers)
+    assert gradebook_of(store) == before
+
+
+def test_identical_reports_for_two_siblings_misread_saves_only_an_acceptance_record() -> None:
+    store = in_memory()
+    saved(save(store))
+    before = gradebook_of(store)
+    review = review_of(store, LINNET_DRAFT)
+
+    outcome = saved(
+        save(store, LINNET_DRAFT, review, answers=answers_to(review, IdentityAnswer.MISREAD))
+    )
+
+    after = gradebook_of(store)
+    assert (outcome.added, outcome.already_saved, outcome.report_id) == (0, 9, None)
+    assert {table for table in GRADEBOOK_TABLES if after[table] != before[table]} == {
+        "grade_acceptances",
+        "grade_scope_revisions",
+    }
+    assert len(after["grade_acceptances"]) == 2
+    assert after["grade_name_forms"] == before["grade_name_forms"]
+    assert one(
+        store,
+        "SELECT identity_status, identity_answer, identity_form, report_id FROM grade_acceptances "
+        "WHERE acceptance_id = ?",
+        review.acceptance_id,
+    ) == [("not_confirmed", "misread", name_form(KEY, LINNET), None)]
+    assert review_of(store, LINNET_DRAFT).identity.status is IdentityStatus.NOT_CONFIRMED
+
+
+def test_identical_reports_for_two_siblings_a_shown_match_answers_nothing() -> None:
+    store = in_memory()
+    saved(save(store))
+    before = gradebook_of(store)
+    review = review_of(store, LINNET_DRAFT)
+
+    outcome = save(store, LINNET_DRAFT, review, answers=answers_to(review, IdentityAnswer.SHOWN))
+
+    returned(outcome, ReturnReason.ANSWERS)
+    assert gradebook_of(store) == before
+
+
+def test_a_report_with_its_student_line_missing_needs_confirmation_and_adds_no_form() -> None:
+    store = in_memory()
+    review = review_of(store, MISSING_DRAFT)
+    assert (review.identity.status, review.identity.form) == (IdentityStatus.MISSING, None)
+
+    for unasked in (IdentityAnswer.SHOWN, IdentityAnswer.HERS, IdentityAnswer.MISREAD):
+        outcome = save(store, MISSING_DRAFT, review, answers=answers_to(review, unasked))
+        returned(outcome, ReturnReason.ANSWERS)
+        assert counted(store)["grade_acceptances"] == 0
+    confirmed = saved(save(store, MISSING_DRAFT, review))
+
+    assert confirmed.added == 9
+    assert one(store, "SELECT COUNT(*) FROM grade_name_forms") == [(0,)]
+    assert one(store, "SELECT key_check FROM grade_student") == [(None,)]
+    assert one(store, "SELECT identity_status, identity_answer FROM grade_acceptances") == [
+        ("missing", "confirmed")
+    ]
+
+
+def test_the_student_line_changed_after_its_answer_returns_the_review() -> None:
+    """Another paste into the same review: the same capture, another line, so the answer the
+    page holds was made for a line that isn't read now."""
+    store = in_memory()
+    review = review_of(store)
+
+    outcome = save(store, LINNET_DRAFT, review, answers=answers_to(review))
+
+    again = returned(outcome, ReturnReason.ANSWERS)
+    assert again.identity.form == name_form(KEY, LINNET)
+    assert counted(store) == {
+        table: 1 if table == "grade_student" else 0 for table in GRADEBOOK_TABLES
+    }
+
+
+def test_a_genuine_retry_writes_nothing_and_returns_the_recorded_outcome() -> None:
+    store = in_memory()
+    review = review_of(store)
+    first = saved(save(store, review=review))
+    before = gradebook_of(store)
+    changes = store._connection.total_changes
+
+    retry = save(store, review=review, answers=answers_to(review))
+
+    assert retry == AlreadyRecorded(first, frozenset())
+    assert store._connection.total_changes == changes
+    assert gradebook_of(store) == before
+
+
+def test_the_same_id_with_another_selection_returns_the_outcome_and_the_uncovered_rows() -> None:
+    store = in_memory()
+    review = review_of(store)
+    first = saved(save(store, review=review, selection={TERM_KEY, review.rows[0].key}))
+    before = gradebook_of(store)
+
+    retry = save(store, review=review, selection={TERM_KEY, review.rows[1].key})
+
+    assert retry == AlreadyRecorded(first, frozenset({review.rows[1].key}))
+    assert gradebook_of(store) == before
+
+
+def test_the_secret_replaced_asks_again_and_confirming_keeps_the_first_acceptance() -> None:
+    store = in_memory()
+    saved(save(store))
+    first_acceptance = gradebook_of(store)["grade_acceptances"]
+    review = review_of(store, key=NEW_KEY)
+
+    assert review.source_key == capture_key(WREN_DRAFT)
+    assert review.identity.status is IdentityStatus.CONFIRM_AGAIN
+    assert review.identity.form == name_form(NEW_KEY, WREN)
+    assert set(statuses(review)) == {ItemStatus.SAVED}
+    outcome = saved(save(store, review=review, key=NEW_KEY))
+
+    assert (outcome.added, outcome.already_saved) == (0, 9)
+    assert one(store, "SELECT name_form FROM grade_name_forms") == [(name_form(NEW_KEY, WREN),)]
+    assert one(store, "SELECT key_check FROM grade_student") == [(key_check(NEW_KEY),)]
+    assert gradebook_of(store)["grade_acceptances"][:1] == first_acceptance
+    after = review_of(store, key=NEW_KEY)
+    assert after.identity.status is IdentityStatus.MATCHES
+    assert set(statuses(after)) == {ItemStatus.SAVED}
+
+
+def test_lookups_are_scoped_to_her_student_id() -> None:
+    """An acceptance and a report kept under another student ID, for the same capture, resolve
+    nothing of hers."""
+    store = in_memory()
+    other = in_memory()
+    saved(save(other))
+    for table in ("grade_acceptances", "grade_reports"):
+        for row in one(other, f"SELECT * FROM {table}"):  # noqa: S608
+            marks = ", ".join("?" * len(row))
+            store._connection.execute(f"INSERT INTO {table} VALUES ({marks})", row)  # noqa: S608
+    store._connection.commit()
+    assert one(store, "SELECT COUNT(*) FROM grade_acceptances") == [(1,)]
+    assert store.student_id() != other.student_id()
+
+    review = review_of(store)
+
+    assert set(statuses(review)) == {ItemStatus.NEW}
+    assert saved(save(store, review=review)).added == 9
+
+
+# ------------------------------------------------------------- what a save refuses
+
+
+def test_a_stale_revision_returns_the_review_and_writes_nothing() -> None:
+    store = in_memory()
+    first = review_of(store)
+    saved(save(store, review=first, selection={TERM_KEY}))
+    one_tab, another_tab = review_of(store), review_of(store)
+    saved(save(store, review=one_tab))
+    before = gradebook_of(store)
+
+    outcome = save(store, review=another_tab)
+
+    again = returned(outcome, ReturnReason.REVISION)
+    assert (another_tab.revision, again.revision) == (1, 2)
+    assert set(statuses(again)) == {ItemStatus.SAVED}
+    assert gradebook_of(store) == before
+
+
+def stale_identity(store: ProjectStateStore, review: GradeReview) -> GradeAnswers:
+    """The page answered "Yes, this is her name"; another tab confirmed it meanwhile."""
+    store.add_name_form(KEY, WREN, "parent")
+    return answers_to(review)
+
+
+def stale_setup(store: ProjectStateStore, review: GradeReview) -> GradeAnswers:
+    """The page confirmed the year and term; another class's save set them meanwhile, and
+    confirmed her line, so the line is answered as shown."""
+    saved(save(store, CHEMISTRY_DRAFT))
+    answers = answers_to(review, month=None)
+    return GradeAnswers(
+        identity=IdentityAnswer.SHOWN,
+        identity_form=answers.identity_form,
+        setup=answers.setup,
+        new_class=answers.new_class,
+    )
+
+
+def stale_month(store: ProjectStateStore, review: GradeReview) -> GradeAnswers:
+    """The page named the year's first month; another class's save confirmed the year
+    meanwhile. The setup, which the review doesn't ask now, is left out."""
+    saved(save(store, CHEMISTRY_DRAFT))
+    answers = answers_to(review)
+    return GradeAnswers(
+        identity=IdentityAnswer.SHOWN,
+        identity_form=answers.identity_form,
+        first_month=answers.first_month,
+        new_class=answers.new_class,
+    )
+
+
+def unknown_class(store: ProjectStateStore, review: GradeReview) -> GradeAnswers:
+    """The page names, as the same class, one the year doesn't have."""
+    answers = answers_to(review)
+    return GradeAnswers(
+        identity=answers.identity,
+        identity_form=answers.identity_form,
+        setup=answers.setup,
+        first_month=answers.first_month,
+        same_class="class-of-no-year",
+    )
+
+
+def unanswered_class(store: ProjectStateStore, review: GradeReview) -> GradeAnswers:
+    """The page sends no answer to the class it asked about."""
+    answers = answers_to(review)
+    return GradeAnswers(
+        identity=answers.identity,
+        identity_form=answers.identity_form,
+        setup=answers.setup,
+        first_month=answers.first_month,
+    )
+
+
+@pytest.mark.parametrize(
+    "stale", [stale_identity, stale_setup, stale_month, unknown_class, unanswered_class]
+)
+def test_every_stale_answer_returns_the_review_and_writes_nothing(
+    stale: Callable[[ProjectStateStore, GradeReview], GradeAnswers],
+) -> None:
+    store = in_memory()
+    review = review_of(store)
+    answers = stale(store, review)
+    before = gradebook_of(store)
+
+    outcome = save(store, review=review, answers=answers)
+
+    returned(outcome, ReturnReason.ANSWERS)
+    assert gradebook_of(store) == before
+
+
+def test_a_class_matched_since_the_page_was_made_returns_the_review() -> None:
+    store = in_memory()
+    review = review_of(store)
+    saved(save(store, EIGHT_DRAFT))
+    before = gradebook_of(store)
+
+    outcome = save(store, review=review, answers=answers_to(review, IdentityAnswer.SHOWN))
+
+    again = returned(outcome, ReturnReason.REVISION)
+    assert again.class_question.matched is not None
+    assert gradebook_of(store) == before
+
+
+def test_the_same_class_answer_saves_into_that_class_with_an_alias() -> None:
+    store = in_memory()
+    saved(save(store, CHEMISTRY_DRAFT))
+    review = review_of(store)
+    (chemistry,) = review.class_question.existing
+    answers = answers_to(review)
+
+    outcome = save(
+        store,
+        review=review,
+        answers=GradeAnswers(
+            identity=answers.identity, identity_form=answers.identity_form, same_class=chemistry[0]
+        ),
+        selection=(),
+    )
+
+    assert saved(outcome).added == 0
+    assert one(store, "SELECT COUNT(*) FROM grade_classes") == [(1,)]
+    assert one(store, "SELECT code FROM grade_class_aliases ORDER BY code") == [
+        ("07 BIO - C",),
+        ("07 CHEM - A",),
+    ]
+    after = review_of(store)
+    assert after.class_question.matched == chemistry[0]
+    assert set(statuses(after)) == {ItemStatus.NEEDS_MATCHING}
+
+
+def test_needs_matching_values_cannot_be_selected() -> None:
+    store = in_memory()
+    saved(save(store))
+    review = review_of(store, EIGHT_DRAFT)
+    before = gradebook_of(store)
+
+    assert set(statuses(review)) == {ItemStatus.NEEDS_MATCHING}
+    assert review.ready == frozenset()
+    for chosen in (TERM_KEY, review.categories[0].key, review.rows[1].key):
+        returned(save(store, EIGHT_DRAFT, review, selection={chosen}), ReturnReason.SELECTION)
+        assert gradebook_of(store) == before
+    nothing = saved(save(store, EIGHT_DRAFT, review, selection=()))
+    assert (nothing.added, nothing.left, nothing.report_id) == (0, 9, None)
+    assert one(store, "SELECT COUNT(*) FROM grade_results") == [(4,)]
+
+
+def test_unreadable_rows_cannot_be_selected() -> None:
+    store = in_memory()
+    review = review_of(store, UNREADABLE_DRAFT)
+    cell_diagram = review.rows[1]
+
+    assert cell_diagram.status is ItemStatus.UNREADABLE
+    assert cell_diagram.key not in review.ready
+    outcome = save(store, UNREADABLE_DRAFT, review, selection=review.ready | {cell_diagram.key})
+    returned(outcome, ReturnReason.SELECTION)
+    assert counted(store)["grade_acceptances"] == 0
+    rest = saved(save(store, UNREADABLE_DRAFT, review))
+    assert (rest.added, rest.left) == (8, 1)
+
+
+def test_a_key_the_review_never_offered_returns_the_review() -> None:
+    store = in_memory()
+    review = review_of(store)
+
+    outcome = save(store, review=review, selection={'["row", "made up"]'})
+
+    returned(outcome, ReturnReason.SELECTION)
+    assert counted(store)["grade_acceptances"] == 0
+
+
+def test_her_own_role_saves_nothing() -> None:
+    store = in_memory()
+    review = review_of(store)
+
+    with pytest.raises(ValueError, match="parent"):
+        store.save_grade_report(
+            WREN_DRAFT,
+            capture_key(WREN_DRAFT),
+            key=KEY,
+            page=ReviewPage(review.acceptance_id, review.revision),
+            answers=answers_to(review),
+            selection=review.ready,
+            role="student",  # type: ignore[arg-type]
+        )
+    assert counted(store) == {
+        table: 1 if table == "grade_student" else 0 for table in GRADEBOOK_TABLES
+    }
+
+
+def deny_the_acceptance(action: int, table: str | None, *_: object) -> int:
+    """Refuse the acceptance record, the last write of a save, as a failing file refuses it."""
+    refused = action == sqlite3.SQLITE_INSERT and table == "grade_acceptances"
+    return sqlite3.SQLITE_DENY if refused else sqlite3.SQLITE_OK
+
+
+def test_a_save_whose_acceptance_record_is_refused_saves_nothing() -> None:
+    store = in_memory()
+    review = review_of(store)
+    store._connection.set_authorizer(deny_the_acceptance)
+
+    with pytest.raises(GradeReportNotSaved):
+        save(store, review=review)
+
+    store._connection.set_authorizer(None)
+    assert counted(store) == {
+        table: 1 if table == "grade_student" else 0 for table in GRADEBOOK_TABLES
+    }
+    assert saved(save(store, review=review)).added == 9

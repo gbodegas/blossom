@@ -220,6 +220,15 @@ Three files under `.local/` outlive a restart:
   `grade_student`, one row with a random ID made at the first start and the
   key check for her name forms, and `grade_name_forms`, the keyed forms of
   the student lines a parent confirmed as hers, never the names themselves.
+  Thirteen more keep the grade reports a parent accepted, each row under her
+  student ID: `grade_context`, the current school year and term;
+  `grade_years`, `grade_terms`, `grade_classes` and `grade_class_aliases`;
+  `grade_reports`, with `grade_term_observations`,
+  `grade_category_observations` and `grade_result_observations`, the values
+  as written; `grade_results` and `grade_match_decisions`, which result each
+  row is; `grade_scope_revisions`, raised by every save of a class and term;
+  and `grade_acceptances`, one record of each save, which a repeated press
+  is answered from.
   A file from before any of them gains the tables on the first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.

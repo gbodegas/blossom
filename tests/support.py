@@ -69,6 +69,15 @@ from blossom.captures import (
 from blossom.clock import Clock, FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
 from blossom.drafts import Draft
+from blossom.grades.draft import GradeReportDraft, capture_key
+from blossom.grades.identity import IdentityStatus
+from blossom.grades.review import (
+    GradeAnswers,
+    GradeReview,
+    IdentityAnswer,
+    ReviewPage,
+    SaveOutcome,
+)
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.intake import PASTE_DAY, identity
 from blossom.noticing import Noticing, Verdict
@@ -1806,6 +1815,54 @@ def closed_world(
         finally:
             connection.close()
     return world
+
+
+def grade_answers(
+    review: GradeReview, identity: IdentityAnswer | None = None, *, month: int | None = 8
+) -> GradeAnswers:
+    """An answer to every question ``review`` asks: the match shown, "These are her grades" for
+    a missing line, or else "Yes, this is her name"; the offered year and term; ``month`` as the
+    year's first month, left unconfirmed when None; and the offered name for a new class."""
+    if identity is None:
+        identity = {
+            IdentityStatus.MATCHES: IdentityAnswer.SHOWN,
+            IdentityStatus.MISSING: IdentityAnswer.CONFIRMED,
+        }.get(review.identity.status, IdentityAnswer.HERS)
+    question = review.class_question
+    first_month = None
+    if review.first_month is not None and month is not None:
+        first_month = (review.first_month, month)
+    return GradeAnswers(
+        identity=identity,
+        identity_form=review.identity.form,
+        setup=review.setup,
+        first_month=first_month,
+        new_class=None if question.matched is not None else question.offered_name,
+    )
+
+
+def save_grade(
+    store: ProjectStateStore,
+    draft: GradeReportDraft,
+    *,
+    key: bytes,
+    review: GradeReview | None = None,
+    answers: GradeAnswers | None = None,
+    selection: Collection[str] | None = None,
+) -> SaveOutcome:
+    """A parent's save of ``draft`` from the page ``review`` made, a fresh review when none is
+    given, with ``answers`` or an answer to every question, and every ready value selected
+    unless ``selection`` says otherwise."""
+    review = review or store.review_grade_report(draft, capture_key(draft), key=key)
+    return store.save_grade_report(
+        draft,
+        capture_key(draft),
+        key=key,
+        page=ReviewPage(review.acceptance_id, review.revision),
+        answers=answers or grade_answers(review),
+        selection=frozenset(review.ready if selection is None else selection),
+        role="parent",
+    )
 
 
 class HeldByAnother:
