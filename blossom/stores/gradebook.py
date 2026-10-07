@@ -78,6 +78,7 @@ from blossom.grades.review import (
     compared,
     evidence_text,
     matches_asked,
+    rejected_text,
     review_from,
     row_key,
 )
@@ -398,12 +399,13 @@ RESULTS_OBSERVED: Final = (
     "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? ORDER BY o.position"
 )
 DECIDED: Final = (
-    "SELECT o.report_id, o.evidence, o.result_id, o.how FROM grade_match_decisions AS o "
+    "SELECT o.report_id, o.evidence, o.result_id, o.how, o.rejected "
+    "FROM grade_match_decisions AS o "
     "JOIN grade_reports AS r ON r.report_id = o.report_id AND r.student_id = o.student_id "
     "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ?"
 )
 ROW_DECIDED: Final = (
-    "SELECT result_id FROM grade_match_decisions "
+    "SELECT result_id, rejected FROM grade_match_decisions "
     "WHERE student_id = ? AND report_id = ? AND row_key = ?"
 )
 ACCEPTED_FROM_SOURCE: Final = (
@@ -471,7 +473,11 @@ ADD_RESULT_OBSERVATION: Final = (
 )
 ADD_MATCH_DECISION: Final = (
     "INSERT INTO grade_match_decisions (report_id, row_key, student_id, evidence, occurrence, "
-    "result_id, how, decided_by, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "result_id, how, rejected, decided_by, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+DECIDE_DIFFERENT_AGAIN: Final = (
+    "UPDATE grade_match_decisions SET result_id = ?, how = ?, rejected = ?, decided_by = ?, "
+    "decided_at = ? WHERE student_id = ? AND report_id = ? AND row_key = ? AND how = 'different'"
 )
 RAISE_REVISION: Final = (
     "INSERT INTO grade_scope_revisions (student_id, class_id, term_label, revision) "
@@ -905,8 +911,8 @@ class GradebookRecords:
         """What her class and term hold, read under her student ID: each target's current value,
         with a result's last showing and the newest report that supports its absence; every
         accepted value of each target; each result's latest observation; the results stored
-        decisions gave each row evidence; and the newest current report that supplied or showed
-        each target."""
+        decisions gave each row evidence, and the candidates each "different" one turned down;
+        and the newest current report that supplied or showed each target."""
         scope = (student_id, class_id, term)
         reports = {
             str(report_id): (int(order), str(use), int(rows))
@@ -947,9 +953,11 @@ class GradebookRecords:
             showing(target, report_id)
         decided: dict[str, set[str]] = {}
         explicit: dict[str, set[str]] = {}
+        different: dict[str, set[str]] = {}
         resolved: Counter[str] = Counter()
-        for report_id, evidence, result, how in self._connection.execute(DECIDED, scope):
+        for report_id, evidence, result, how, rejected in self._connection.execute(DECIDED, scope):
             if result is None:
+                different.setdefault(str(evidence), set()).add(str(rejected))
                 continue
             decided.setdefault(str(evidence), set()).add(str(result))
             if how in EXPLICIT:
@@ -985,6 +993,7 @@ class GradebookRecords:
             decided={evidence: frozenset(results) for evidence, results in decided.items()},
             newest={target: report.order for target, report in newest.items()},
             explicit={evidence: frozenset(results) for evidence, results in explicit.items()},
+            different={evidence: frozenset(texts) for evidence, texts in different.items()},
         )
 
     def _revision_of(self, student_id: str, class_id: str, draft: GradeReportDraft) -> int | None:
@@ -1029,8 +1038,9 @@ class GradebookRecords:
         complete: bool,
     ) -> GradeReportSaved:
         """Every write of a save that passed its checks, inside the save's one grade write: the
-        identity answer, the setup, the selected values and the rows shown, in the report they
-        join or make when anything is new, the revision and the acceptance."""
+        identity answer, the setup, the selected values, the rows shown and the "different"
+        answers kept, in the report they join or make when anything is new, the revision and the
+        acceptance."""
         header = draft.header
         now = self._stamp()
         line = header.student_line
@@ -1056,18 +1066,27 @@ class GradebookRecords:
             LATEST_OF_CAPTURE, (student_id, class_id, term, review.source_key)
         ).fetchone()
         joined = None if latest is None else str(latest[0])
-        shown = [
-            (item.key, item.result_id, item.how)
-            for item in review.rows
-            if item.key not in chosen
-            and item.result_id is not None
-            and item.how is not None
-            and item.status is not ItemStatus.NEEDS_ANSWER
-            and (joined is None or self._decided(joined, item.key, student_id) is None)
-        ]
+        # Rows not selected: each one shown with a reliable match gets its record, and each one
+        # answered "A different assignment" now keeps that answer. A remembered "different" in
+        # the report joined becomes the record of what the row resolved to now.
+        shown: list[tuple[str, str, str, bool]] = []
+        different: list[tuple[str, str, bool]] = []
+        for item in review.rows:
+            if item.key in chosen or item.status is ItemStatus.NEEDS_ANSWER:
+                continue
+            record = None if joined is None else self._decided(joined, item.key, student_id)
+            if record is not None and record[0] is not None:
+                continue
+            in_place = record is not None
+            if item.result_id is not None and item.how is not None:
+                shown.append((item.key, item.result_id, item.how, in_place))
+            elif item.how == "answer" and item.question is not None and not item.remembered:
+                rejected = rejected_text(item.question)
+                if record is None or record[1] != rejected:
+                    different.append((item.key, rejected, in_place))
         report_id = None
         accepted: list[tuple[str, str | None]] = []
-        if chosen or shown:
+        if chosen or shown or different:
             report_id = joined or self._new_report(
                 draft, class_id, review.source_key, student_id, now
             )
@@ -1075,7 +1094,7 @@ class GradebookRecords:
                 draft, review, chosen, report_id, class_id, student_id=student_id, by=by, now=now
             )
             evidence = _rows_by_key(draft)
-            for item_key, result_id, how in shown:
+            for item_key, result_id, how, in_place in shown:
                 self._decide(
                     report_id,
                     item_key,
@@ -1083,6 +1102,20 @@ class GradebookRecords:
                     *evidence[item_key],
                     result_id,
                     how,
+                    in_place=in_place,
+                    by=by,
+                    now=now,
+                )
+            for item_key, rejected, in_place in different:
+                self._decide(
+                    report_id,
+                    item_key,
+                    student_id,
+                    *evidence[item_key],
+                    None,
+                    "different",
+                    rejected=rejected,
+                    in_place=in_place,
                     by=by,
                     now=now,
                 )
@@ -1100,7 +1133,7 @@ class GradebookRecords:
             left=len(review.items) - len(chosen) - already,
             accepted=tuple(sorted(accepted, key=lambda pair: pair[0])),
             shown=len(shown),
-            answers_kept=sum(1 for _, _, how in shown if how in EXPLICIT),
+            answers_kept=sum(1 for _, _, how, _ in shown if how in EXPLICIT) + len(different),
         )
         self._connection.execute(
             ADD_ACCEPTANCE,
@@ -1225,7 +1258,8 @@ class GradebookRecords:
             item = resolved[item_key]
             if item_key not in chosen:
                 continue
-            recorded = self._decided(report_id, item_key, student_id)
+            record = self._decided(report_id, item_key, student_id)
+            recorded = None if record is None else record[0]
             if recorded is not None and recorded != item.result_id:
                 msg = "a row shown first is accepted only as the result its record names"
                 raise RuntimeError(msg)
@@ -1247,18 +1281,27 @@ class GradebookRecords:
                     row,
                     result_id,
                     item.how or "new",
+                    in_place=record is not None,
                     by=by,
                     now=now,
                 )
             accepted.append((item_key, result_id))
         return accepted
 
-    def _decided(self, report_id: str, item_key: str, student_id: str) -> str | None:
-        """The result the row's record in ``report_id`` names, or None when it has no record
-        there, or one naming no result."""
+    def _decided(
+        self, report_id: str, item_key: str, student_id: str
+    ) -> tuple[str | None, str | None] | None:
+        """The row's record in ``report_id``: the result it names, or None for a remembered "A
+        different assignment" with the candidates it turned down; None when it has no record."""
         held = self._connection.execute(ROW_DECIDED, (student_id, report_id, item_key))
         found = held.fetchone()
-        return None if found is None or found[0] is None else str(found[0])
+        if found is None:
+            return None
+        result_id, rejected = found
+        return (
+            None if result_id is None else str(result_id),
+            None if rejected is None else str(rejected),
+        )
 
     def _decide(
         self,
@@ -1267,19 +1310,38 @@ class GradebookRecords:
         student_id: str,
         category_name: GradeValue,
         row: GradeRow,
-        result_id: str,
+        result_id: str | None,
         how: str,
         *,
+        rejected: str | None = None,
+        in_place: bool = False,
         by: ConfirmedBy,
         now: str,
     ) -> None:
         """A row's match decision in ``report_id``: its evidence and occurrence, the result it
-        resolved to, and how. A row the report shows without accepting its value gets one without
-        an observation, so the report counts as showing that result."""
+        resolved to, or none with the candidates "different" turned down, and how. With
+        ``in_place``, the row's remembered "different" there becomes this decision."""
+        if in_place:
+            again = (result_id, how, rejected, by, now, student_id, report_id, item_key)
+            if self._connection.execute(DECIDE_DIFFERENT_AGAIN, again).rowcount != 1:
+                msg = "only a remembered different assignment is decided again in place"
+                raise RuntimeError(msg)
+            return
         evidence = evidence_text(row_evidence(category_name, row))
         self._connection.execute(
             ADD_MATCH_DECISION,
-            (report_id, item_key, student_id, evidence, row.occurrence, result_id, how, by, now),
+            (
+                report_id,
+                item_key,
+                student_id,
+                evidence,
+                row.occurrence,
+                result_id,
+                how,
+                rejected,
+                by,
+                now,
+            ),
         )
 
     def _stamp(self) -> str:

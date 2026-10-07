@@ -9,6 +9,7 @@ SQLite itself ends the caller's transaction, everything in it is gone, and the s
 with an error that is not a refusal, so no caller commits the rest of its block alone.
 """
 
+import dataclasses
 import pathlib
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -17,12 +18,25 @@ import pytest
 
 from blossom.grades.draft import GradeReportDraft, capture_key
 from blossom.grades.identity import name_form_key
-from blossom.grades.review import AlreadyRecorded, GradeReportSaved, GradeReview
+from blossom.grades.review import (
+    AlreadyRecorded,
+    GradeAnswers,
+    GradeReportSaved,
+    GradeReview,
+    MatchAnswer,
+)
 from blossom.grades.text_reader import read_grade_report
 from blossom.stores import gradebook
 from blossom.stores.gradebook import GradeReportNotSaved
 from blossom.stores.project_state import ProjectStateStore
-from tests.support import FIXTURES, a_row, closed_world, fixture_clock, save_grade
+from tests.support import (
+    FIXTURES,
+    a_row,
+    closed_world,
+    fixture_clock,
+    grade_answers,
+    save_grade,
+)
 
 REPORT = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
 KEY = name_form_key(b"5" * 64)
@@ -496,3 +510,127 @@ def test_a_later_row_record_refused_leaves_nothing_of_the_save(
     saved = save_grade(store, EIGHT, key=KEY, review=review, selection=())
     assert isinstance(saved, GradeReportSaved)
     assert saved.shown == 4
+
+
+RENAMED = draft_of(REPORT.replace("| Seed Germination Log |", "| Seed Germination Journal |"))
+"""A newer capture: Seed Germination Log renamed, a question about its one candidate."""
+RESOLVED: tuple[Site, ...] = (
+    (sqlite3.SQLITE_INSERT, "grade_terms"),
+    (sqlite3.SQLITE_UPDATE, "grade_match_decisions"),
+    (sqlite3.SQLITE_INSERT, "grade_scope_revisions"),
+    (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+)
+"""Every write statement of a save that answers "Same assignment" for a row whose remembered
+"A different assignment" its report keeps: the term, the record changed in place, the revision
+and the acceptance."""
+
+
+def renamed_page(store: ProjectStateStore, *, same: bool) -> tuple[GradeReview, GradeAnswers]:
+    """The page of the renamed capture, with its row answered "A different assignment", or
+    "Same assignment" when ``same``."""
+    review = store.review_grade_report(RENAMED, capture_key(RENAMED), key=KEY)
+    (asked,) = [item for item in review.rows if item.question is not None]
+    assert asked.question is not None
+    named = asked.question.ids[0] if same else None
+    answer = MatchAnswer(asked.key, asked.question.ids, named)
+    return review, dataclasses.replace(grade_answers(review), matches=(answer,))
+
+
+def different_page(store: ProjectStateStore, *, kept: bool) -> tuple[GradeReview, GradeAnswers]:
+    """Wren's report saved, then the renamed capture's page answering "A different assignment";
+    when ``kept``, that answer saved first and the page answering "Same assignment"."""
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    if not kept:
+        return renamed_page(store, same=False)
+    review, answers = renamed_page(store, same=False)
+    kept_first = save_grade(store, RENAMED, key=KEY, review=review, answers=answers, selection=())
+    assert isinstance(kept_first, GradeReportSaved)
+    return renamed_page(store, same=True)
+
+
+@pytest.mark.parametrize("kept", [False, True], ids=["different", "resolved"])
+def test_a_save_of_answers_alone_writes_exactly_the_named_statements(
+    opened: Callable[[str], ProjectStateStore], kept: bool
+) -> None:
+    """A "different" answer kept writes a report's statements; resolving it later changes its
+    record in place."""
+    store = opened("first use")
+    review, answers = different_page(store, kept=kept)
+    seen: set[Site] = set()
+
+    def note(action: int, table: str | None, *_: object) -> int:
+        if action in WRITES and table is not None:
+            seen.add((action, table))
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(note)
+    outcome = save_grade(store, RENAMED, key=KEY, review=review, answers=answers, selection=())
+    store._connection.set_authorizer(None)
+
+    assert isinstance(outcome, GradeReportSaved)
+    assert outcome.answers_kept == 1
+    assert seen == {*(RESOLVED if kept else PRESENCE), UPSERT_ARM}
+
+
+ANSWER_SITES = [(False, site) for site in PRESENCE] + [(True, site) for site in RESOLVED]
+
+
+@pytest.mark.parametrize(
+    ("kept", "site"),
+    ANSWER_SITES,
+    ids=[f"{'resolved' if kept else 'different'}-{table}" for kept, (_, table) in ANSWER_SITES],
+)
+def test_a_refused_write_of_answers_alone_leaves_nothing_of_it(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path, kept: bool, site: Site
+) -> None:
+    """A "different" answer kept, or later resolved in place, refused at each statement three
+    times inside a caller's transaction, leaves the file as it was, with the caller's writes
+    kept; lifted, the same page saves once."""
+    store = opened("first use")
+    review, answers = different_page(store, kept=kept)
+    before, rows = world(path), assignments(store)
+
+    def again() -> object:
+        return save_grade(store, RENAMED, key=KEY, review=review, answers=answers, selection=())
+
+    for attempt in range(3):
+        store._connection.set_authorizer(refusing(site))
+        with store.comparing_and_writing():
+            unrelated(store, f"before-{attempt}")
+            with pytest.raises(GradeReportNotSaved):
+                again()
+            unrelated(store, f"after-{attempt}")
+        store._connection.set_authorizer(None)
+
+        assert world(path) == before
+        assert assignments(store) == rows + 2 * (attempt + 1)
+    assert isinstance(again(), GradeReportSaved)
+    assert isinstance(again(), AlreadyRecorded)
+
+
+def test_a_refused_different_record_leaves_nothing_of_the_save(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path
+) -> None:
+    """The "different" record refused by a TEMP trigger keyed on it, after the rows shown were
+    recorded: nothing of the save remains."""
+    store = opened("first use")
+    review, answers = different_page(store, kept=False)
+    before, rows = world(path), assignments(store)
+    store._connection.execute(
+        "CREATE TEMP TRIGGER refuse_different BEFORE INSERT ON grade_match_decisions "
+        "WHEN NEW.how = 'different' BEGIN SELECT RAISE(ABORT, 'refused'); END"
+    )
+
+    for attempt in range(3):
+        with store.comparing_and_writing():
+            unrelated(store, f"before-{attempt}")
+            with pytest.raises(GradeReportNotSaved):
+                save_grade(store, RENAMED, key=KEY, review=review, answers=answers, selection=())
+            unrelated(store, f"after-{attempt}")
+
+        assert world(path) == before
+        assert assignments(store) == rows + 2 * (attempt + 1)
+    store._connection.execute("DROP TRIGGER temp.refuse_different")
+    saved = save_grade(store, RENAMED, key=KEY, review=review, answers=answers, selection=())
+    assert isinstance(saved, GradeReportSaved)
+    assert (saved.shown, saved.answers_kept) == (3, 1)

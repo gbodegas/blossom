@@ -9,7 +9,9 @@ capture's own acceptance and row records, which settle which result it is, never
 was accepted; then by evidence: only equal evidence, unique in the report and in one result, that
 no stored decision gives another result, matches without asking; then by the parent's explicit
 answer for the same evidence, reused only when nothing makes it ambiguous. Otherwise a parent
-answers which result it is, or that it is a different assignment.
+answers which result it is, or that it is a different assignment, which stands for the same
+evidence and the same candidates until changed; an open row may also be one of her results the
+parent chooses.
 
 Each value's status compares it with its target's current value, as accepted school values:
 "Saved", equal to it; "Matches an earlier saved value", equal to a value a newer one replaced;
@@ -200,16 +202,19 @@ class MatchQuestion:
 @dataclass(frozen=True)
 class MatchAnswer:
     """A parent's answer to a row's question, bound to the candidates it was asked with: the
-    result it is, or None for "A different assignment"."""
+    result it is, or None for "A different assignment". With ``chosen``, "Choose an existing
+    assignment", bound to the results the row offered."""
 
     row_key: str
     candidates: tuple[str, ...]
     result_id: str | None
+    chosen: bool = False
 
 
-MatchedHow = Literal["same_capture", "exact", "reused", "answer"]
+MatchedHow = Literal["same_capture", "exact", "reused", "answer", "chosen"]
 """How a row resolved: through its own capture's records, by equal evidence, by a parent's
-explicit answer for the same evidence reused, or by an answer now."""
+explicit answer for the same evidence reused, by an answer now, or by an existing assignment
+chosen now."""
 
 
 @dataclass(frozen=True)
@@ -226,6 +231,11 @@ class ReviewItem:
     covered: bool = False
     """A New or Changed value this capture's rest can't change: a current report newer than the
     one it joins supplied or showed its target. Not offered."""
+    choices: tuple[str, ...] = ()
+    """For a row no record, equal evidence or reuse resolved, the results "Choose an existing
+    assignment" offers: her results in the class and term no such row resolved to."""
+    remembered: bool = False
+    """A stored "A different assignment" answers the row's question, which stays open to change."""
 
 
 @dataclass(frozen=True)
@@ -393,6 +403,9 @@ class ClassRecord:
     explicit: Mapping[str, frozenset[str]] = field(default_factory=dict)
     """The results the parent's explicit answers (``answer`` or ``chosen``) gave each row
     evidence, shown or accepted."""
+    different: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    """The candidates each stored "A different assignment" for a row evidence turned down, as
+    ``rejected_text`` writes them."""
 
 
 NOTHING_HELD: Final = ClassRecord(CurrentValues(None, {}, {}), {}, {}, {}, {})
@@ -457,6 +470,18 @@ def evidence_of(value: CurrentValue) -> Evidence:
         return cells[field][0], folded(cells[field][1])
 
     return one("category"), one("assignment"), one("due")
+
+
+def rejected_text(question: MatchQuestion) -> str:
+    """The candidates "A different assignment" to ``question`` turns down, each result ID with its
+    matching evidence, in one fixed form: what a ``different`` record keeps."""
+    ordered = sorted(question.candidates, key=lambda candidate: candidate.result_id)
+    return _key(
+        *(
+            [one.result_id, [[presence.value, text] for presence, text in evidence_of(one.last)]]
+            for one in ordered
+        )
+    )
 
 
 def _title(evidence: Evidence) -> tuple[Presence, str]:
@@ -547,6 +572,17 @@ class _Matching:
             return None
         return result
 
+    def remembered(self, row: _Row, asked: MatchQuestion) -> bool:
+        """Whether a stored "A different assignment" answers ``asked``: every one stored for the
+        row's evidence turned down exactly the candidates asked now, with the same evidence, no
+        stored decision names a result for that evidence, and no other row has it."""
+        if not row.identified or self.alike[row.evidence] != 1:
+            return False
+        text = evidence_text(row.evidence)
+        if self.held.decided.get(text):
+            return False
+        return self.held.different.get(text, frozenset()) == {rejected_text(asked)}
+
     def question(self, row: _Row) -> MatchQuestion | None:
         """The question the row asks, or None when no result may be it."""
         found = self.candidates(row)
@@ -586,6 +622,11 @@ def _binds(answer: MatchAnswer, question: MatchQuestion) -> bool:
     )
 
 
+def _chooses(answer: MatchAnswer, choices: tuple[str, ...]) -> bool:
+    """Whether ``answer`` chooses among ``choices``: the same results offered, and one of them."""
+    return answer.chosen and answer.candidates == choices and answer.result_id in choices
+
+
 def _reused(rows: list[_Row], matching: _Matching, settled: set[str]) -> dict[str, str]:
     """The rows an explicit answer is reused for, after this capture's records and the exact
     matches: a result two rows would reuse is reused by neither, and a reuse waits while a row
@@ -613,9 +654,10 @@ def _resolved_rows(
     on_record: OnRecord, rows: list[_Row], matches: Collection[MatchAnswer]
 ) -> tuple[ReviewItem, ...]:
     """Each row resolved: through this capture's acceptance or row records (identity only for a
-    row it showed), by equal evidence, by an answer bound to the question asked now, as a new
-    result, or with its question open. A row whose identity reads but a value doesn't resolves
-    only through its capture or equal evidence, and can't be selected."""
+    row it showed), by equal evidence, by a reused answer, by an answer bound to the question
+    asked now or a choice bound to the results offered, as a new result, or with its question
+    open. A row whose identity reads but a value doesn't resolves only through its capture,
+    equal evidence or reuse, and can't be selected."""
     held = on_record.held
     matching = _Matching(rows, on_record)
     answered = {answer.row_key: answer for answer in matches}
@@ -641,6 +683,35 @@ def _resolved_rows(
     matching.taken |= set(exact.values())
     reused = _reused(rows, matching, settled={*on_record.saved, *on_record.shown, *exact})
     matching.taken |= set(reused.values())
+    free = tuple(result for result in held.latest if result not in matching.taken)
+
+    def opened(row: _Row) -> ReviewItem:
+        asked = matching.question(row)
+        choices = free if row.identified else ()
+        answer = answered.get(row.key)
+        if answer is not None and answer.chosen:
+            if answer.result_id is not None and _chooses(answer, choices):
+                return resolved(row, answer.result_id, "chosen", asked)
+            answer = None
+        if asked is None:
+            return ReviewItem(row.key, ItemStatus.NEW, choices=choices)
+        if answer is not None and _binds(answer, asked):
+            if answer.result_id is not None:
+                return resolved(row, answer.result_id, "answer", asked)
+            return ReviewItem(
+                row.key, ItemStatus.NEW, question=asked, how="answer", choices=choices
+            )
+        if matching.remembered(row, asked):
+            return ReviewItem(
+                row.key,
+                ItemStatus.NEW,
+                question=asked,
+                how="answer",
+                choices=choices,
+                remembered=True,
+            )
+        return ReviewItem(row.key, ItemStatus.NEEDS_ANSWER, question=asked, choices=choices)
+
     items = []
     for row in rows:
         saved_as = on_record.saved.get(row.key) or on_record.shown.get(row.key)
@@ -652,14 +723,8 @@ def _resolved_rows(
             items.append(resolved(row, reused[row.key], "reused", None))
         elif row.unreadable:
             items.append(ReviewItem(row.key, ItemStatus.UNREADABLE))
-        elif (asked := matching.question(row)) is None:
-            items.append(ReviewItem(row.key, ItemStatus.NEW))
-        elif (answer := answered.get(row.key)) is None or not _binds(answer, asked):
-            items.append(ReviewItem(row.key, ItemStatus.NEEDS_ANSWER, question=asked))
-        elif answer.result_id is None:
-            items.append(ReviewItem(row.key, ItemStatus.NEW, question=asked, how="answer"))
         else:
-            items.append(resolved(row, answer.result_id, "answer", asked))
+            items.append(opened(row))
     return tuple(items)
 
 
@@ -754,14 +819,20 @@ def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
 
 def matches_asked(review: GradeReview, matches: Collection[MatchAnswer]) -> bool:
     """Whether each matching answer answers a question ``review`` asks now, bound to the same
-    candidates, at most one per row, and no two naming the same result."""
-    questions = {item.key: item.question for item in review.rows if item.question is not None}
+    candidates, or chooses among the results a row offers now, at most one per row, and no two
+    naming the same result."""
+    by_key = {item.key: item for item in review.rows}
     rows = [answer.row_key for answer in matches]
     named = [answer.result_id for answer in matches if answer.result_id is not None]
     if len(set(rows)) != len(rows) or len(set(named)) != len(named):
         return False
     for answer in matches:
-        asked = questions.get(answer.row_key)
-        if asked is None or not _binds(answer, asked):
+        item = by_key.get(answer.row_key)
+        if item is None:
+            return False
+        if answer.chosen:
+            if not _chooses(answer, item.choices):
+                return False
+        elif item.question is None or not _binds(answer, item.question):
             return False
     return True

@@ -10,6 +10,7 @@ matches an earlier saved value, and only a New or Changed value can be selected.
 """
 
 import dataclasses
+import json
 import sqlite3
 from collections.abc import Collection
 
@@ -834,3 +835,212 @@ def test_a_stored_automatic_decision_for_another_result_blocks_the_reuse() -> No
 
     assert seed != cell
     assert (asked.status, asked.how) == (ItemStatus.NEEDS_ANSWER, None)
+
+
+# ------------------------------------------------------------- remembered answers and choices
+
+
+def chosen(item: ReviewItem, result_id: str | None) -> MatchAnswer:
+    """ "Choose an existing assignment" for ``item``, naming ``result_id`` among its choices."""
+    return MatchAnswer(item.key, item.choices, result_id, chosen=True)
+
+
+def different_kept(store: ProjectStateStore) -> tuple[str, GradeReportSaved]:
+    """A saved complete; Seed Germination Log renamed Journal in a capture of its own, answered
+    "A different assignment" and saved with no value selected: the rejected result, and the
+    outcome."""
+    saved(save(store, A, complete=True))
+    seed = row(review_of(store, A), "Seed Germination Log").result_id or ""
+    renamed = variant(RENAMED)
+    review = review_of(store, renamed)
+    journal = row(review, "Seed Germination Journal")
+    outcome = save(
+        store, renamed, review, matches=[different(journal)], selection=(), complete=True
+    )
+    return seed, saved(outcome)
+
+
+def test_a_different_answer_kept_without_a_value_is_remembered_and_changeable() -> None:
+    """His twelfth round: the answer is kept with the candidate it turned down and its evidence;
+    it creates nothing, shows nothing and resolves nothing, and the same evidence with the same
+    candidate is not asked again, though the answer stays open to change."""
+    store = in_memory()
+    seed, kept = different_kept(store)
+    journal_key = row(review_of(store, variant(RENAMED)), "Seed Germination Journal").key
+
+    assert (kept.added, kept.updated, kept.shown, kept.answers_kept) == (0, 0, 3, 1)
+    assert records(store, kept.report_id)[journal_key] == (None, "different")
+    (rejected,) = store._connection.execute(
+        "SELECT rejected FROM grade_match_decisions WHERE row_key = ?", (journal_key,)
+    ).fetchone()
+    evidence = [["reported", "Homework / Practice"], ["reported", "Seed Germination Log"]]
+    assert json.loads(rejected) == [[seed, [*evidence, ["reported", "09/22"]]]]
+    assert len(results(store)) == 4
+    assert store.current_values(class_of(store), "T1").results[seed].not_shown is None
+    for draft in (variant(RENAMED), variant(RENAMED, CELL_SCORE)):
+        item = row(review_of(store, draft), "Seed Germination Journal")
+
+        assert (item.status, item.result_id, item.remembered) == (ItemStatus.NEW, None, True)
+        assert item.question is not None
+        assert item.question.ids == (seed,)
+        assert seed in item.choices
+
+
+def test_a_remembered_different_asks_again_for_twins_or_another_candidate() -> None:
+    """Indistinguishable rows, or a candidate the answer never saw, ask again."""
+    store = in_memory()
+    seed, _ = different_kept(store)
+    twins = review_of(store, seed_rows("Seed Germination Journal", "Seed Germination Journal"))
+    for occurrence in (1, 2):
+        item = row(twins, "Seed Germination Journal", occurrence)
+        assert (item.status, item.remembered) == (ItemStatus.NEEDS_ANSWER, False)
+    saved(save(store, WITH_LEAF))
+    item = row(review_of(store, variant(RENAMED)), "Seed Germination Journal")
+
+    assert (item.status, item.remembered) == (ItemStatus.NEEDS_ANSWER, False)
+    assert item.question is not None
+    assert seed in item.question.ids
+    assert len(item.question.ids) == 2
+
+
+LEAF = SEED.replace("Seed Germination Log", "Leaf Sketch", 1).replace("09/22", "09/30")
+WITH_LEAF = variant((SEED, f"{SEED}\n{LEAF}"))
+"""A capture adding Leaf Sketch to Homework / Practice, with Seed Germination Log's max points."""
+
+
+def test_a_different_answered_again_for_another_candidate_keeps_one_record() -> None:
+    """In the report that kept it, "A different assignment" answered again once a new candidate
+    appeared turns down both in the row's one record, and is remembered for both."""
+    store = in_memory()
+    seed, kept = different_kept(store)
+    saved(save(store, WITH_LEAF))
+    renamed = variant(RENAMED)
+    review = review_of(store, renamed)
+    journal = row(review, "Seed Germination Journal")
+    assert journal.question is not None
+    again = saved(save(store, renamed, review, matches=[different(journal)], selection=()))
+
+    assert again.report_id == kept.report_id
+    assert (again.shown, again.answers_kept) == (0, 1)
+    assert records(store, kept.report_id)[journal.key] == (None, "different")
+    (rejected,) = store._connection.execute(
+        "SELECT rejected FROM grade_match_decisions WHERE row_key = ?", (journal.key,)
+    ).fetchone()
+    assert {one[0] for one in json.loads(rejected)} == {seed, *journal.question.ids}
+    assert len(journal.question.ids) == 2
+    item = row(review_of(store, renamed), "Seed Germination Journal")
+    assert (item.status, item.remembered) == (ItemStatus.NEW, True)
+
+
+def test_a_row_answered_different_that_later_resolves_keeps_its_one_record() -> None:
+    """Answered "Same assignment", chosen, or selected as new, the row's remembered answer in
+    its report becomes the record of the result it resolved to, in place."""
+    for way in ("same", "chosen", "new"):
+        store = in_memory()
+        seed, kept = different_kept(store)
+        renamed = variant(RENAMED)
+        review = review_of(store, renamed)
+        journal = row(review, "Seed Germination Journal")
+        assert journal.choices == (seed,)
+        matches = {"same": [same(journal)], "chosen": [chosen(journal, seed)], "new": []}[way]
+        selection = {journal.key} if way == "new" else set()
+        later = saved(save(store, renamed, review, matches=matches, selection=selection))
+
+        assert later.report_id == kept.report_id, way
+        held = records(store, kept.report_id)
+        assert len(held) == 4
+        result, how = held[journal.key]
+        assert how == {"same": "answer", "chosen": "chosen", "new": "answer"}[way]
+        assert (result == seed) is (way != "new")
+        assert len(results(store)) == (5 if way == "new" else 4)
+        assert (later.shown, later.answers_kept) == ((0, 0) if way == "new" else (1, 1))
+
+
+TAKEN_OVER = (
+    OSMOSIS,
+    OSMOSIS.replace("Osmosis with Potato Slices", "Potato Lab                ")
+    .replace("| 40.0    |", "| 50.0    |")
+    .replace("10/02", "10/03"),
+)
+"""Osmosis's title, due date and max points all changed: a New row."""
+
+
+def test_choose_an_existing_assignment_keeps_the_result_for_a_new_row() -> None:
+    """His eleventh round, 3: a row with no candidate offers her results no other row resolved
+    to; the choice keeps the result's ID, is recorded as the parent's, and is checked again."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    draft = variant(TAKEN_OVER)
+    review = review_of(store, draft)
+    lab = row(review, "Potato Lab")
+
+    assert (lab.status, lab.question, lab.choices) == (ItemStatus.NEW, None, (osmosis,))
+    stale = MatchAnswer(lab.key, (*lab.choices, "result-of-no-one"), osmosis, chosen=True)
+    taken = chosen(lab, row(review, "Cell Diagram").result_id)
+    for wrong in (stale, taken):
+        returned = save(store, draft, review, matches=[wrong])
+        assert isinstance(returned, ReviewReturned)
+        assert returned.why is ReturnReason.ANSWERS
+    outcome = saved(save(store, draft, review, matches=[chosen(lab, osmosis)]))
+
+    assert (outcome.added, outcome.updated) == (0, 1)
+    assert records(store, outcome.report_id)[lab.key] == (osmosis, "chosen")
+    assert len(results(store)) == 4
+    value = store.current_values(class_of(store), "T1").results[osmosis]
+    assert (text_of(value, "assignment"), text_of(value, "due")) == ("Potato Lab", "10/03")
+
+
+def test_two_rows_choosing_one_result_return_the_review() -> None:
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    other = TAKEN_OVER[1].replace("Potato Lab", "Potato Test")
+    draft = variant((OSMOSIS, f"{TAKEN_OVER[1]}\n{other}"))
+    review = review_of(store, draft)
+    lab, test = row(review, "Potato Lab"), row(review, "Potato Test")
+    returned = save(store, draft, review, matches=[chosen(lab, osmosis), chosen(test, osmosis)])
+
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.ANSWERS
+    assert len(results(store)) == 4
+
+
+def test_reordered_identical_rows_ask_and_conflicting_answers_never_save() -> None:
+    """His case list: IXL twins in another order ask which; two answers naming one result
+    return the review; crossed answers keep both results, replay through their records, and
+    leave the evidence's answers in conflict, so a third capture asks again."""
+    store = in_memory()
+    saved(save(store, variant(text=IXL_REPORT)))
+    again = review_of(store, variant(text=IXL_REPORT))
+    first, second = row(again, "IXL", 1).result_id, row(again, "IXL", 2).result_id
+    eight = IXL.replace("9.0", "8.0", 1)
+    swapped = variant(text=IXL_REPORT.replace(f"{IXL}\n{IXL}", f"{eight}\n{IXL}"))
+    review = review_of(store, swapped)
+    one, two = row(review, "IXL", 1), row(review, "IXL", 2)
+
+    for item in (one, two):
+        assert (item.status, item.how, item.remembered) == (ItemStatus.NEEDS_ANSWER, None, False)
+    assert one.question is not None
+    assert two.question is not None
+    clash = [
+        MatchAnswer(one.key, one.question.ids, first),
+        MatchAnswer(two.key, two.question.ids, first),
+    ]
+    returned = save(store, swapped, review, matches=clash)
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.ANSWERS
+    crossed = [
+        MatchAnswer(one.key, one.question.ids, second),
+        MatchAnswer(two.key, two.question.ids, first),
+    ]
+    outcome = saved(save(store, swapped, review, matches=crossed, selection=()))
+
+    assert records(store, outcome.report_id)[one.key] == (second, "answer")
+    assert records(store, outcome.report_id)[two.key] == (first, "answer")
+    assert len(results(store)) == 6
+    replay = review_of(store, swapped)
+    assert (row(replay, "IXL", 1).result_id, row(replay, "IXL", 1).how) == (second, "same_capture")
+    seven = IXL.replace("9.0", "7.0", 1)
+    third = review_of(store, variant(text=IXL_REPORT.replace(f"{IXL}\n{IXL}", f"{seven}\n{IXL}")))
+    assert {row(third, "IXL", n).status for n in (1, 2)} == {ItemStatus.NEEDS_ANSWER}
