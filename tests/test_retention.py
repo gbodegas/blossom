@@ -2498,8 +2498,10 @@ def test_a_run_canceled_while_it_ends_out_of_time_keeps_one_account_of_how_it_en
 
 class HeldStoreCall:
     """Wraps one drafts store method: its first call starts another connection's hold on the
-    file's write lock for ``held`` seconds, or until the test ends it sooner, and asks the
-    event loop for a callback 0.05 seconds on, recording how late it ran."""
+    file's write lock for ``held`` seconds, or until the test ends it sooner, sets
+    ``holding`` once the hold has begun, and asks the event loop for a callback 0.05 seconds
+    on, recording how late it ran. One use of the other connection runs at a time, so
+    closing it waits for a first call still waiting for the file."""
 
     def __init__(
         self,
@@ -2514,25 +2516,29 @@ class HeldStoreCall:
         self.loop = loop
         self.releases: list[threading.Timer] = []
         self.late_by: asyncio.Future[float] = loop.create_future()
-        self.ending = threading.Lock()
+        self.holding = asyncio.Event()
+        self.using = threading.Lock()
         self.ended = False
+        self.closed = False
 
     def __call__(self, *args: object, **kwargs: object) -> object:
-        if not self.releases:
-            self.other.execute("BEGIN EXCLUSIVE")
-            self.releases.append(threading.Timer(self.held, self.release))
-            self.releases[0].start()
-            due = monotonic()
+        with self.using:
+            if not self.releases and not self.closed:
+                self.other.execute("BEGIN EXCLUSIVE")
+                self.releases.append(threading.Timer(self.held, self.release))
+                self.releases[0].start()
+                due = monotonic()
 
-            def ran() -> None:
-                self.late_by.set_result(monotonic() - due)
+                def ran() -> None:
+                    self.late_by.set_result(monotonic() - due)
 
-            self.loop.call_soon_threadsafe(self.loop.call_later, 0.05, ran)
+                self.loop.call_soon_threadsafe(self.loop.call_later, 0.05, ran)
+                self.loop.call_soon_threadsafe(self.holding.set)
         return self.call(*args, **kwargs)
 
     def release(self) -> None:
         """End the hold once, whichever of its timer and the test ends it first."""
-        with self.ending:
+        with self.using:
             if self.releases and not self.ended:
                 self.ended = True
                 self.other.execute("ROLLBACK")
@@ -2544,10 +2550,15 @@ class HeldStoreCall:
         self.release()
 
     def close(self) -> None:
+        """Close the other connection once nothing uses it: a first call still waiting for
+        the file takes it first, no hold begins after, and a hold that began ends."""
+        with self.using:
+            self.closed = True
         for release in self.releases:
             release.join(timeout=STORE_WAIT)
             assert not release.is_alive()
-        self.other.close()
+        with self.using:
+            self.other.close()
 
 
 @pytest.mark.parametrize(
@@ -2710,13 +2721,7 @@ def test_a_run_for_another_evening_starts_on_time_while_an_expired_run_waits_to_
             first = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
             loop = asyncio.get_running_loop()
             held = HeldStoreCall(state.drafts.end_run, tmp_path / "blossom.sqlite3", 0.9, loop)
-            ending = asyncio.Event()
-
-            def noted(*args: object, **kwargs: object) -> object:
-                loop.call_soon_threadsafe(ending.set)
-                return held(*args, **kwargs)
-
-            monkeypatch.setattr(state.drafts, "end_run", noted)
+            monkeypatch.setattr(state.drafts, "end_run", held)
             try:
                 late = asyncio.create_task(
                     plan_evening(
@@ -2728,7 +2733,7 @@ def test_a_run_for_another_evening_starts_on_time_while_an_expired_run_waits_to_
                         budget=RunBudget(seconds=0.2),
                     )
                 )
-                await asyncio.wait_for(ending.wait(), timeout=STORE_WAIT)
+                await asyncio.wait_for(held.holding.wait(), timeout=STORE_WAIT)
                 await asyncio.sleep(0.05)
                 tomorrow = PLAN_DATE + timedelta(days=1)
                 other = asyncio.create_task(
@@ -2800,13 +2805,11 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
             held = HeldStoreCall(
                 state.drafts.record_decision, tmp_path / "blossom.sqlite3", 0.5, loop
             )
-            recording = asyncio.Event()
             recorded: list[float] = []
             releases: list[float] = []
             release = state.decision_lock.release
 
             def noted(*args: object, **kwargs: object) -> object:
-                loop.call_soon_threadsafe(recording.set)
                 try:
                     return held(*args, **kwargs)
                 finally:
@@ -2822,7 +2825,7 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
                 late = asyncio.create_task(
                     plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
                 )
-                await asyncio.wait_for(recording.wait(), timeout=STORE_WAIT)
+                await asyncio.wait_for(held.holding.wait(), timeout=STORE_WAIT)
                 await asyncio.sleep(0.05)
                 for _ in range(times):
                     late.cancel()
