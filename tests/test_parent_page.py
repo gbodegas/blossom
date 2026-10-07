@@ -422,7 +422,7 @@ def test_approving_from_the_page_moves_the_draft_to_decided() -> None:
     assert "No plans need your review." in page
     assert "<strong>Looks good.</strong>" in page
     assert "Said on her page" not in page
-    assert "Reason: looks right." in page
+    assert "Note about this plan: looks right." in page
     assert ", 2026, " in page
     assert record["status"] == "APPROVED_FOR_MANUAL_SEND"
     assert record["decision"] == "approved"
@@ -439,7 +439,7 @@ def test_refusing_from_the_page_keeps_the_draft_a_draft() -> None:
         record = client.get(f"/parent/approvals/{draft_id}").json()
 
     assert "<strong>Change asked.</strong> The plan stays as it was until she plans again." in page
-    assert "Reason: too late in the evening." in page
+    assert "Note about this plan: too late in the evening." in page
     assert record["status"] == "DRAFT"
     assert record["decision"] == "rejected"
 

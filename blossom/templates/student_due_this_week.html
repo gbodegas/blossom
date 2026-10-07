@@ -136,7 +136,7 @@
         <p class="confidence disagree" role="status"><strong>{{ plan_label }}.</strong> {{ view.plan.stale }}</p>
       {% endif %}
     {% elif view.plan_uses_limit and parent %}
-      <p class="note">This plan already uses the smaller budget, {{ view.budget_minutes }} minutes.</p>
+      <p class="note">This plan fits within today's {{ view.budget_minutes }}-minute limit.</p>
     {% endif %}
     {#
       The reviewer's verdict is not a check that failed. When it could not
@@ -154,11 +154,11 @@
       the plan saved after it already is, when its blocks fit the minutes set now.
       Undo 'Too much right now' sits under those words, which describe it. Each press
       keeps a row of its own, and the evening stays shorter while any is left, so
-      after an Undo, or a Remove below, the line on the one page it lands on, told by
-      a mark in that landing's cookie and never by the address, says she removed her
-      request and then what still stands: a shorter plan still asked for, with the
-      Undo for the request left, or, with none left, that her saved plan has not
-      changed. Neither press plans anything. Saying today is too much, and undoing it,
+      an Undo, or a Remove below, lands on this line, which takes the focus, and on
+      the one page it lands on, told by a mark in that landing's cookie and never by
+      the address, the line says she removed her request and then what still stands:
+      a shorter plan still asked for, with the Undo for the request left, or, with
+      none left, that her saved plan has not changed. Neither press plans anything. Saying today is too much, and undoing it,
       are hers alone: a parent reads what she said and meets neither control, and
       nothing takes their place.
     #}
@@ -166,15 +166,15 @@
       {% if parent %}
         {% if view.too_much %}
           <p class="confidence disagree">
-            <strong>She said it was too much</strong> at {{ view.too_much.given_local|clock }}.
-            Her next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
+            <strong>A shorter plan is requested for today.</strong> She said it was too much at {{ view.too_much.given_local|clock }}.
+            Her next plan will use up to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
             {% if not view.plan and not view.nothing_to_plan %}Nothing has been planned yet; the next plan will be the shorter one.{% endif %}
             {% if view.too_much.detail %}She added <q>{{ view.too_much.detail }}</q>.{% endif %}
           </p>
         {% endif %}
       {% elif view.too_much %}
         <div class="too-much">
-          <p class="note" id="too-much-state"{% if signal_removed %} role="status"{% endif %}>{% if signal_removed %}You removed your request. A shorter plan is still requested for today.{% else %}<strong>A shorter plan is requested for today.</strong>{% endif %} {% if view.plan_uses_limit %}Your saved plan already uses the {{ view.budget_minutes }}-minute limit.{% else %}Your next plan will use up to {{ view.budget_minutes }} minutes.{% endif %}{% if view.too_much.detail %} You added <q>{{ view.too_much.detail }}</q>.{% endif %}</p>
+          <p class="note" id="too-much-state" tabindex="-1"{% if signal_removed %} role="status"{% endif %}>{% if signal_removed %}You removed your request. A shorter plan is still requested for today.{% else %}<strong>A shorter plan is requested for today.</strong>{% endif %} {% if view.plan_uses_limit %}Your saved plan fits within today's {{ view.budget_minutes }}-minute limit.{% else %}Your next plan will use up to {{ view.budget_minutes }} minutes.{% endif %}{% if view.too_much.detail %} You added <q>{{ view.too_much.detail }}</q>.{% endif %}</p>
           <div class="actions">
             <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="action">
               <button type="submit" class="secondary" aria-describedby="too-much-state">Undo 'Too much right now'</button>
@@ -182,7 +182,7 @@
           </div>
         </div>
       {% elif signal_removed %}
-        <p class="note" id="too-much-state" role="status">You removed your request.{% if view.plan %} Your saved plan has not changed.{% endif %}</p>
+        <p class="note" id="too-much-state" tabindex="-1" role="status">You removed your request.{% if view.plan %} Your saved plan has not changed.{% endif %}</p>
       {% endif %}
     {% endset %}
     {% set signal_press %}

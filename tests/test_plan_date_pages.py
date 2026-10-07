@@ -917,7 +917,7 @@ def test_each_plan_still_in_force_shows_what_stands_and_the_rest_read_as_saved(
         assert HISTORY in found
     rejected = article_of(family, refused)
     assert "<strong>Change asked.</strong>" in rejected
-    assert "Reason: Start with the outline." in rejected
+    assert "Note about this plan: Start with the outline." in rejected
     assert "Looks good." not in rejected
     assert next_snapshot.operative == {plan.draft_id for plan in live[1:]}
     assert "As things stand" not in plan_on(next_day, today_second)

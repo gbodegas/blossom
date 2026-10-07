@@ -48,6 +48,7 @@ from blossom.stores.workload_signals import (
 )
 from blossom.views import StudentDueThisWeekView, WeekView, WorkloadSignalView
 from tests.support import (
+    ARRIVAL_CUE,
     FIXTURE_TIMEZONE,
     HERS,
     OBSERVED_AT,
@@ -57,6 +58,7 @@ from tests.support import (
     Scripted,
     accepting,
     changed_by_hand,
+    declared_for,
     drafts_in_memory,
     fixture_clock,
     fixture_settings,
@@ -389,14 +391,14 @@ def test_taking_it_back_from_the_page_restores_the_evening() -> None:
 UNDO = "Undo 'Too much right now'"
 REQUESTED = "<strong>A shorter plan is requested for today.</strong>"
 NEXT_PLAN = "Your next plan will use up to 75 minutes."
-SAVED_PLAN = "Your saved plan already uses the 75-minute limit."
+SAVED_PLAN = "Your saved plan fits within today's 75-minute limit."
 REMOVED = "You removed your request."
 UNCHANGED = "Your saved plan has not changed."
 STILL = "A shorter plan is still requested for today."
 PAGE = "/student/due-this-week"
 STATE = re.compile(
-    r'<div class="too-much">\s*<p class="note" id="too-much-state"( role="status")?>(.*?)</p>'
-    r'\s*<div class="actions">(.*?)</div>\s*</div>',
+    r'<div class="too-much">\s*<p class="note" id="too-much-state" tabindex="-1"( role="status")?>'
+    r'(.*?)</p>\s*<div class="actions">(.*?)</div>\s*</div>',
     re.S,
 )
 """The state line and the Undo beside it: whether it is said as news, its words, its control."""
@@ -426,8 +428,9 @@ def todays_draft(client: TestClient) -> object:
 
 
 def landed_at(location: str) -> str:
-    """Her week at the landing an Undo's redirect names, which is new for every press."""
-    return f"{PAGE}?landing={landing_in(location)}"
+    """Her week at the landing an Undo's redirect names, which is new for every press, at the
+    line that says what stands."""
+    return f"{PAGE}?landing={landing_in(location)}#too-much-state"
 
 
 def undo(client: TestClient, signal_id: str) -> str:
@@ -510,7 +513,9 @@ def test_undo_removes_her_request_says_so_and_leaves_the_plan_as_saved(plan: boo
         kept = todays_draft(client)
 
     today = today_of(page)
-    line = re.search(r'<p class="note" id="too-much-state" role="status">(.*?)</p>', today, re.S)
+    line = re.search(
+        r'<p class="note" id="too-much-state" tabindex="-1" role="status">(.*?)</p>', today, re.S
+    )
     assert line is not None
     assert said(line.group(1)) == (f"{REMOVED} {UNCHANGED}" if plan else REMOVED)
     assert left == []
@@ -524,6 +529,12 @@ def test_undo_removes_her_request_says_so_and_leaves_the_plan_as_saved(plan: boo
         assert never not in today, never
     assert "taken back" not in page
     assert "withdr" not in page
+
+
+def test_the_line_an_undo_lands_on_takes_the_arrival_cue() -> None:
+    """Undo 'Too much right now' and a Remove land on the line that says what stands, with a
+    request left or none: a place to land, marked by the arrival cue when the focus arrives."""
+    assert declared_for("#too-much-state:focus") == [ARRIVAL_CUE]
 
 
 def test_with_two_requests_each_undo_says_what_still_stands() -> None:
@@ -942,15 +953,15 @@ def test_a_saved_plan_is_said_to_use_the_limit_only_when_its_blocks_fit_the_limi
     assert state is not None
     if fits:
         assert said(state.group(2)) == (
-            f"{REQUESTED} Your saved plan already uses the {now}-minute limit."
+            f"{REQUESTED} Your saved plan fits within today's {now}-minute limit."
         )
         assert "Plan again</button>" in hers
-        assert f"This plan already uses the smaller budget, {now} minutes." in said(theirs)
+        assert f"This plan fits within today's {now}-minute limit." in said(theirs)
     else:
         assert said(state.group(2)) == f"{REQUESTED} Your next plan will use up to {now} minutes."
         assert "Make a smaller plan</button>" in hers
-        assert "already uses" not in theirs
-        assert f"held to {now} minutes instead of {DEFAULT_EVENING_MINUTES}." in said(theirs)
+        assert "fits within" not in theirs
+        assert f"will use up to {now} minutes instead of {DEFAULT_EVENING_MINUTES}." in said(theirs)
     assert ("Make a smaller plan" in hers) is not fits
     assert "kept to 75 minutes" in hers
     assert kept == saved
@@ -970,7 +981,7 @@ def test_an_undo_that_leaves_a_request_measures_the_saved_plan_against_the_limit
     state = STATE.search(landing)
     assert state is not None
     plan = (
-        f"Your saved plan already uses the {now}-minute limit."
+        f"Your saved plan fits within today's {now}-minute limit."
         if fits
         else f"Your next plan will use up to {now} minutes."
     )
@@ -995,7 +1006,7 @@ def test_a_saved_plan_whose_blocks_cant_be_read_is_said_neither_to_fit_nor_to_be
     assert said(state.group(2)) == f"{REQUESTED} {NEXT_PLAN}"
     assert "Plan again</button>" in hers
     assert "Make a smaller plan" not in hers
-    assert "already uses" not in theirs
+    assert "fits within" not in theirs
 
 
 @pytest.mark.parametrize(
@@ -1019,4 +1030,4 @@ def test_a_saved_plan_read_as_changed_offers_what_the_limit_set_now_calls_for(
         theirs = as_a_parent(client)
 
     assert f"<strong>{label}.</strong>" in hers
-    assert "already uses" not in theirs
+    assert "fits within" not in theirs

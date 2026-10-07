@@ -310,7 +310,7 @@ def test_a_reviewers_reason_ends_once_wherever_it_is_shown(reason: str, shown: s
         planned(client)
         later = client.get("/parent", headers=PAGE_HEADERS).text
 
-    ends_once = re.compile(rf"Reason: {shown}\s*<span class=\"when\">")
+    ends_once = re.compile(rf"Note about this plan: {shown}\s*<span class=\"when\">")
     reviewed = todays[todays.index("<h2>Today's reviewed plan</h2>") :]
     earlier = later[later.index("<summary>Earlier plans</summary>") :]
     assert ends_once.search(reviewed[: reviewed.index("</article>")])

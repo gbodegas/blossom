@@ -319,7 +319,9 @@ class ParentPress:
 
 
 NOT_HERS_TO_UPDATE = "Sign in as the student to update."
-NOT_HERS_TO_SIGNAL = "Sign in as the student to say today is too much or take it back."
+NOT_HERS_TO_SIGNAL = (
+    "Sign in as the student to press Too much right now or Undo 'Too much right now'."
+)
 NOT_HERS_TO_ASK = "Sign in as the student to ask for help or take a request back."
 PARENT_PRESSES = {
     "her update": ParentPress(REPORT, "Update not saved", NOT_HERS_TO_UPDATE, HER_PAGE),

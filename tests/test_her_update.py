@@ -978,6 +978,11 @@ JOURNEYS: Final[dict[str, tuple[list[Press], str, str | None]]] = {
         UNDONE_TO_NOT_YET,
         "not_yet",
     ),
+    "Done, then Not yet, then a note edit": (
+        [("done", "", False), ("not_yet", "Two pages left.", True), ("not_yet", "One left.", True)],
+        UNDONE_TO_NOT_YET,
+        "not_yet",
+    ),
     "Done, then a note edit": (
         [("done", "", False), ("done", "Both pages.", True)],
         UNDONE_STILL_DONE,

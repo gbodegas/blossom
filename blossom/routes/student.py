@@ -295,7 +295,7 @@ UPDATE_UNDONE: Final = "Your update is undone."
 """What an Undo is said to have done when the undo its address names is not her latest event:
 an update saved after it, an address that names no undo, or updates that cannot be read."""
 UNDONE_TO_NOTHING: Final = "Last update undone. No update is recorded."
-UNDONE_TO_NOT_YET: Final = "Last update undone. This is Not yet again."
+UNDONE_TO_NOT_YET: Final = "Last update undone. This is marked Not yet."
 UNDONE_STILL_DONE: Final = "Last update undone. This is still Done."
 UNDONE_DONE_AGAIN: Final = "Last update undone. This is Done again."
 """What Undo last update restored: no update, a Not yet, the Done a note edit was made on, or
@@ -353,7 +353,9 @@ BAD_FORM: Final = (
     "Choose and save again."
 )
 NOT_HERS_TO_ASK: Final = "Sign in as the student to ask for help or take a request back."
-NOT_HERS_TO_SIGNAL: Final = "Sign in as the student to say today is too much or take it back."
+NOT_HERS_TO_SIGNAL: Final = (
+    "Sign in as the student to press Too much right now or Undo 'Too much right now'."
+)
 HELP_FORM_NOT_WHOLE: Final = (
     "That form carried a field twice, left one out, or had one this page doesn't send, so "
     "nothing was sent. Your words are below; ask again."
@@ -480,6 +482,9 @@ SIGNAL_REMOVED: Final = "r"
 """The whole of the cookie Undo 'Too much right now' or a Remove leaves, so the one page that
 answers it says she removed her request, beside what still stands. No form or address
 carries it, and ``InPlace.read`` passes over it."""
+TOO_MUCH_STATE: Final = "too-much-state"
+"""The id of the line on her week that says where her request for a shorter plan stands, where
+Undo 'Too much right now' and a Remove land, with the focus, as a save lands on its card."""
 WELL_DONE: Final = "Done. Nice work."
 """The words a save that has just made a card Done is met with, beside a small petal, on the
 one page that answers it."""
@@ -1844,8 +1849,8 @@ def sent_done_to_the_details(location: str, assignment_id: str) -> RedirectRespo
 
 def sent_removed(location: str) -> RedirectResponse:
     """The redirect to her week after a signal of hers is removed: its address names a new
-    landing, and the cookie named for it tells that one page, and no other, that she removed
-    her request. It holds no card."""
+    landing and the line that says what stands, and the cookie named for the landing tells
+    that one page, and no other, that she removed her request. It holds no card."""
     landing = secrets.token_hex(IN_PLACE_LANDING_DIGITS // 2)
     moved = RedirectResponse(
         str(URL(location).include_query_params(**{IN_PLACE_LANDING: landing})),
@@ -2303,10 +2308,11 @@ def due_this_week(
     refresh, a return, or Back to an address asks for the week grouped by its updates. When
     the record cannot be read, the page that says so leaves the cards again for its landing,
     and its Try again carries them in ``in_place``, so a try made after the cookie is gone
-    still finds them where they were. A save that has just made a card Done says so in its
-    cookie, and that one page meets the card with a few words beside a small petal, and is
-    sent to be kept by no cache, so a step back or forward through history asks again. The
-    page that reads a removed signal's mark is sent the same way.
+    still finds them where they were; after a removal, its Try again lands on the line that
+    says what stands, as the removal's redirect does. A save that has just made a card Done
+    says so in its cookie, and that one page meets the card with a few words beside a small
+    petal, and is sent to be kept by no cache, so a step back or forward through history
+    asks again. The page that reads a removed signal's mark is sent the same way.
     """
     landing = landing_asked(request)
     if in_place is not None:
@@ -2353,6 +2359,8 @@ def due_this_week(
         )
     except sqlite3.Error as error:
         again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
+        if removed:
+            again = f"{again}#{TOO_MUCH_STATE}"
         unreadable = week_unreadable(request, error, again=again)
         return unreadable if landing is None else leave_in_place(unreadable, kept, landing)
     if landing is not None and left is not None:
@@ -3816,10 +3824,11 @@ async def too_much_from_the_page(request: Request, state: State) -> Response:
 @router.post("/actions/take-back/{signal_id}", response_class=HTMLResponse, include_in_schema=False)
 async def take_back_from_the_page(request: Request, signal_id: str, state: State) -> Response:
     """Remove a signal from her page, by Undo 'Too much right now' or a Remove, and return to
-    her week, where only the page the redirect lands on says she removed her request, beside
-    what still stands. A signal already gone is not an error here, and is answered the same
-    way. A parent is answered 403 before the signal is looked up: the signal is hers to take
-    back. A removal the file refuses is rolled back and said at the top of her week, 500."""
+    her week, on the line that says what stands, where only the page the redirect lands on says
+    she removed her request, beside what still stands. A signal already gone is not an error
+    here, and is answered the same way. A parent is answered 403 before the signal is looked
+    up: the signal is hers to take back. A removal the file refuses is rolled back and said at
+    the top of her week, 500."""
     if viewer_of(request) == "parent":
         return not_hers(request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL)
     try:
@@ -3827,7 +3836,7 @@ async def take_back_from_the_page(request: Request, signal_id: str, state: State
     except sqlite3.Error as error:
         logger.warning("her signal could not be taken back: %s", type(error).__name__)
         return signal_not_saved(request, state)
-    return sent_removed(PAGE)
+    return sent_removed(address(PAGE, fragment=TOO_MUCH_STATE))
 
 
 def signal_not_saved(request: Request, state: ApplicationState) -> HTMLResponse:

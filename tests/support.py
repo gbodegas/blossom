@@ -1130,7 +1130,7 @@ NONE_APPLIES = '<p class="source">No instruction from the school applies now.</p
 KEY = "not-a-key-and-never-sent"
 """A key that lets the plan button show for scripted graphs; nothing is ever sent with it."""
 UNDONE_TO_NOTHING = "Last update undone. No update is recorded."
-UNDONE_TO_NOT_YET = "Last update undone. This is Not yet again."
+UNDONE_TO_NOT_YET = "Last update undone. This is marked Not yet."
 UNDONE_STILL_DONE = "Last update undone. This is still Done."
 UNDONE_DONE_AGAIN = "Last update undone. This is Done again."
 """What Undo last update says where it lands, by what it restored: no update, a Not yet, the
