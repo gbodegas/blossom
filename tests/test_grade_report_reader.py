@@ -434,12 +434,20 @@ def test_a_bold_structure_line_after_a_label_stays_visible_and_the_average_is_re
     assert reading.capture_key == seed.capture_key
 
 
-def test_a_line_after_a_blank_category_s_label_leaves_its_average_not_captured() -> None:
+@pytest.mark.parametrize("shown", ["**PERCENT**", PRINT_TIME])
+def test_a_line_after_a_blank_category_s_label_stays_visible_and_changes_nothing(
+    shown: str,
+) -> None:
+    """A print time or a stray label between a blank category's label and the next category is
+    shown, and neither the blank average nor the capture key moves."""
+    seed, draft = read(REPORT)
     label = REPORT.index("**Category Average**", REPORT.index("| **Quizzes** |"))
     end = label + len("**Category Average**")
-    reading, draft = read(f"{REPORT[:end]}\n\n**PERCENT**{REPORT[end:]}")
-    assert reading.unrecognized == ("**PERCENT**",)
-    assert draft.categories[2].average == GradeNumber.not_captured()
+    reading, again = read(f"{REPORT[:end]}\n\n{shown}{REPORT[end:]}")
+    assert reading.unrecognized == (shown,)
+    assert again == draft
+    assert again.categories[2].average.presence is Presence.BLANK
+    assert reading.capture_key == seed.capture_key
 
 
 def test_a_value_never_binds_to_a_category_whose_label_a_structure_followed() -> None:

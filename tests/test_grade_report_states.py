@@ -61,7 +61,6 @@ PREFIXES: dict[State, str] = {
     State.NEEDS_COLUMNS: IN_A_CATEGORY,
     State.ROWS: WITH_A_ROW,
     State.LABELED: f"{WITH_A_ROW}\n{LABEL}",
-    State.LABELED_AFTER_OTHER: f"{WITH_A_ROW}\n{LABEL}\nPrinted 10/06/2026 9:21 PM",
     State.CLOSED: f"{WITH_A_ROW}\n{LABEL}\n**80.0**",
     State.AFTER_TERM: f"{WITH_A_ROW}\n{LABEL}\n**80.0**\n{TERM}",
 }
@@ -151,15 +150,6 @@ MATRIX: dict[State, dict[str, Cell]] = {
     State.LABELED: matrix_row(
         State.LABELED,
         value=(KEPT, State.CLOSED),
-        print=(SHOWN, State.LABELED_AFTER_OTHER),
-        percent=(SHOWN, State.LABELED_AFTER_OTHER),
-        other=(SHOWN, State.LABELED_AFTER_OTHER),
-        **dict.fromkeys(INTERRUPTING, (SHOWN, State.CLOSED)),
-        **CLOSING,
-    ),
-    State.LABELED_AFTER_OTHER: matrix_row(
-        State.LABELED_AFTER_OTHER,
-        value=(KEPT, State.CLOSED),
         **dict.fromkeys(INTERRUPTING, (SHOWN, State.CLOSED)),
         **CLOSING,
     ),
@@ -179,7 +169,6 @@ COMPLETIONS: dict[State, str] = {
             State.NEEDS_COLUMNS,
             State.ROWS,
             State.LABELED,
-            State.LABELED_AFTER_OTHER,
             State.CLOSED,
         ),
         TERM,
@@ -247,10 +236,6 @@ PROBES: dict[State, list[tuple[str, Check]]] = {
     State.LABELED: [
         (f"{PROBE_CATEGORY}\n{TERM}", lambda r: last(r, 2)[1] is Presence.BLANK),
     ],
-    State.LABELED_AFTER_OTHER: [
-        (f"**42.5**\n{TERM}", lambda r: not shown(r, "**42.5**")),
-        (f"{PROBE_CATEGORY}\n{TERM}", lambda r: last(r, 2)[1] is Presence.NOT_CAPTURED),
-    ],
     State.CLOSED: [
         (
             f"**42.5**\n{LABEL}\n{PROBE_CATEGORY}\n{TERM}",
@@ -315,7 +300,6 @@ END_OF_INPUT: dict[State, tuple[Presence | None, Presence]] = {
     State.NEEDS_COLUMNS: (Presence.NOT_CAPTURED, Presence.NOT_CAPTURED),
     State.ROWS: (Presence.NOT_CAPTURED, Presence.NOT_CAPTURED),
     State.LABELED: (Presence.NOT_CAPTURED, Presence.NOT_CAPTURED),
-    State.LABELED_AFTER_OTHER: (Presence.NOT_CAPTURED, Presence.NOT_CAPTURED),
     State.CLOSED: (Presence.REPORTED, Presence.NOT_CAPTURED),
     State.AFTER_TERM: (Presence.REPORTED, Presence.REPORTED),
 }
