@@ -1849,10 +1849,11 @@ def save_grade(
     review: GradeReview | None = None,
     answers: GradeAnswers | None = None,
     selection: Collection[str] | None = None,
+    complete: bool = False,
 ) -> SaveOutcome:
     """A parent's save of ``draft`` from the page ``review`` made, a fresh review when none is
     given, with ``answers`` or an answer to every question, and every ready value selected
-    unless ``selection`` says otherwise."""
+    unless ``selection`` says otherwise; its reading incomplete unless ``complete``."""
     review = review or store.review_grade_report(draft, capture_key(draft), key=key)
     return store.save_grade_report(
         draft,
@@ -1862,6 +1863,7 @@ def save_grade(
         answers=answers or grade_answers(review),
         selection=frozenset(review.ready if selection is None else selection),
         role="parent",
+        complete=complete,
     )
 
 

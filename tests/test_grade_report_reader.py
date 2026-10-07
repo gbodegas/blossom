@@ -24,7 +24,13 @@ from blossom.grades.draft import (
     canonical,
     capture_key,
 )
-from blossom.grades.text_reader import GradeReportReading, NotRead, read_grade_report
+from blossom.grades.text_reader import (
+    GradeReportReading,
+    LinePlace,
+    NotRead,
+    read_grade_report,
+    reading_complete,
+)
 from blossom.settings import PACKAGE_ROOT
 from tests.support import FIXTURES
 
@@ -644,3 +650,78 @@ def test_the_reader_imports_no_logging_and_nothing_that_reaches_a_model() -> Non
 def test_the_capture_key_is_the_draft_s_own() -> None:
     reading, draft = read(REPORT)
     assert reading.capture_key == capture_key(draft)
+
+
+# ------------------------------------------------------------- where unread lines fell
+
+
+TERM_ROW = REPORT[
+    REPORT.index("| **Term Grade**") : REPORT.index("\n", REPORT.index("| **Term Grade**")) + 1
+]
+"""The Term Grade row as the fixture writes it."""
+BODY_LINE = "Updated 10/06/2026"
+"""A line no class knows, of the kind a copy may carry."""
+
+
+def test_the_fixture_reads_complete() -> None:
+    reading, _ = read(REPORT)
+    assert (reading.unrecognized, reading.places) == ((), ())
+    assert reading_complete(reading) is True
+
+
+def test_each_unrecognized_line_says_where_it_fell_and_changes_nothing_else() -> None:
+    """Before the header, between it and the Term Grade row, or after that row; the draft and
+    the capture key stay the fixture's."""
+    seed, draft = read(REPORT)
+    labs = "| **Labs** |"
+    text = f"{PRINT_TIME}\n{REPORT.replace(labs, f'{BODY_LINE}\n\n{labs}', 1)}\n{PRINT_TIME}\n"
+    reading, again = read(text)
+
+    assert reading.unrecognized == (PRINT_TIME, BODY_LINE, PRINT_TIME)
+    assert reading.places == (
+        LinePlace.BEFORE_HEADER,
+        LinePlace.BEFORE_TERM,
+        LinePlace.AFTER_TERM,
+    )
+    assert again == draft
+    assert reading.capture_key == seed.capture_key
+    assert reading_complete(reading) is False
+
+
+def test_lines_before_the_header_or_text_after_the_term_keep_a_reading_complete() -> None:
+    reading, _ = read(f"{PRINT_TIME}\n{REPORT}\n{PRINT_TIME}\n")
+    assert reading.places == (LinePlace.BEFORE_HEADER, LinePlace.AFTER_TERM)
+    assert reading_complete(reading) is True
+
+
+def test_a_term_grade_row_placed_before_a_category_is_incomplete() -> None:
+    """The categories after it go unplaced as table lines after the Term Grade row, so the
+    reading can't say what the report doesn't show."""
+    labs = (
+        "|          |   |                   |\n| -------- | - | ----------------- |\n| **Labs** |"
+    )
+    assert REPORT.count(labs) == 1
+    moved = REPORT.replace(TERM_ROW, "").replace(labs, f"{TERM_ROW}\n{labs}", 1)
+    reading, draft = read(moved)
+
+    assert draft.term.percent.presence is Presence.REPORTED
+    assert len(draft.categories) == 1
+    assert LinePlace.AFTER_TERM in reading.places
+    assert reading_complete(reading) is False
+
+
+def test_a_reading_without_a_term_grade_row_is_incomplete() -> None:
+    reading, _ = read(REPORT.replace(TERM_ROW, ""))
+    assert reading_complete(reading) is False
+
+
+def test_a_category_whose_average_was_not_read_is_incomplete() -> None:
+    reading, draft = read(REPORT.replace("**Category Average**", "**Average**", 1))
+    assert draft.categories[0].average.presence is Presence.NOT_CAPTURED
+    assert reading_complete(reading) is False
+
+
+def test_a_reading_with_no_draft_places_nothing_and_is_incomplete() -> None:
+    reading = read_grade_report("nothing here")
+    assert reading.places == ()
+    assert reading_complete(reading) is False

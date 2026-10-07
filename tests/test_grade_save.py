@@ -24,6 +24,7 @@ from blossom.grades.review import (
     GradeReview,
     IdentityAnswer,
     ItemStatus,
+    MatchAnswer,
     NotHers,
     ReturnReason,
     ReviewPage,
@@ -294,6 +295,32 @@ def test_identical_reports_for_two_siblings_not_hers_saves_nothing() -> None:
     review = review_of(store, LINNET_DRAFT)
 
     outcome = save(store, LINNET_DRAFT, review, answers=answers_to(review, IdentityAnswer.NOT_HERS))
+
+    assert isinstance(outcome, NotHers)
+    assert gradebook_of(store) == before
+
+
+def test_a_sibling_s_newer_report_answered_not_hers_records_no_presence_and_no_answer() -> None:
+    """A sibling's report whose rows match Wren's results, with a changed score and a matching
+    answer given: "Not hers" records no row as shown, keeps no answer and accepts nothing."""
+    store = in_memory()
+    saved(save(store))
+    sibling = draft_of(
+        REPORT.replace("**Bramble, Wren**", "**Bramble, Linnet**")
+        .replace(SEVEN, SEVEN.replace("7.0", "8.0"))
+        .replace("| Seed Germination Log |", "| Seed Germination Journal |")
+    )
+    review = review_of(store, sibling)
+    asked = [item for item in review.rows if item.question is not None]
+    before = gradebook_of(store)
+    assert len(asked) == 1
+    assert asked[0].question is not None
+    answers = dataclasses.replace(
+        answers_to(review, IdentityAnswer.NOT_HERS),
+        matches=(MatchAnswer(asked[0].key, asked[0].question.ids, asked[0].question.ids[0]),),
+    )
+
+    outcome = save(store, sibling, review, answers=answers, selection=())
 
     assert isinstance(outcome, NotHers)
     assert gradebook_of(store) == before
@@ -625,7 +652,8 @@ def test_a_term_spaced_another_way_is_the_same_term() -> None:
 
 def test_another_capture_s_saved_values_cannot_be_selected() -> None:
     """Another capture of the class and term: its values equal to the saved ones read Saved and
-    can't be selected; only the changed score is offered, and an empty save adds nothing."""
+    can't be selected; only the changed score is offered. A save with nothing selected accepts
+    no value, and records the four rows the report shows."""
     store = in_memory()
     saved(save(store))
     review = review_of(store, EIGHT_DRAFT)
@@ -638,8 +666,18 @@ def test_another_capture_s_saved_values_cannot_be_selected() -> None:
         returned(save(store, EIGHT_DRAFT, review, selection={chosen}), ReturnReason.SELECTION)
         assert gradebook_of(store) == before
     nothing = saved(save(store, EIGHT_DRAFT, review, selection=()))
-    assert (nothing.added, nothing.updated, nothing.left, nothing.report_id) == (0, 0, 1, None)
+    assert (nothing.added, nothing.updated, nothing.left) == (0, 0, 1)
+    assert (nothing.shown, nothing.answers_kept, nothing.accepted) == (4, 0, ())
+    assert nothing.report_id is not None
     assert one(store, "SELECT COUNT(*) FROM grade_results") == [(4,)]
+    after = gradebook_of(store)
+    for table in ("grade_result_observations", "grade_term_observations", "grade_results"):
+        assert after[table] == before[table]
+    assert one(
+        store,
+        "SELECT how, COUNT(*) FROM grade_match_decisions WHERE report_id = ? GROUP BY how",
+        nothing.report_id,
+    ) == [("exact", 4)]
 
 
 def test_unreadable_rows_cannot_be_selected() -> None:
@@ -679,6 +717,7 @@ def test_her_own_role_saves_nothing() -> None:
             answers=answers_to(review),
             selection=review.ready,
             role="student",  # type: ignore[arg-type]
+            complete=True,
         )
     assert counted(store) == {
         table: 1 if table == "grade_student" else 0 for table in GRADEBOOK_TABLES

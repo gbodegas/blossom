@@ -17,17 +17,19 @@ from blossom.grades.draft import GradeReportDraft, Presence, capture_key
 from blossom.grades.identity import name_form_key
 from blossom.grades.review import (
     TERM_KEY,
+    AlreadyRecorded,
     GradeReportSaved,
     GradeReview,
     ItemStatus,
     MatchAnswer,
     QuestionKind,
+    ReportAt,
     ReturnReason,
     ReviewItem,
     ReviewReturned,
     SaveOutcome,
 )
-from blossom.grades.text_reader import read_grade_report
+from blossom.grades.text_reader import read_grade_report, reading_complete
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import FIXTURES, fixture_clock, grade_answers, save_grade
 
@@ -61,6 +63,13 @@ def variant(*changes: tuple[str, str], text: str = REPORT) -> GradeReportDraft:
     return reading.draft
 
 
+def whole(*changes: tuple[str, str], text: str = REPORT) -> bool:
+    """Whether the reading of ``text`` with ``changes`` is complete."""
+    for old, new in changes:
+        text = text.replace(old, new)
+    return reading_complete(read_grade_report(text))
+
+
 A = variant()
 B = variant(CELL_SCORE)
 """A newer report: Cell Diagram's score changed from 7.0 to 8.0."""
@@ -87,14 +96,24 @@ def save(
     *,
     matches: Collection[MatchAnswer] = (),
     selection: Collection[str] | None = None,
+    complete: bool = False,
 ) -> SaveOutcome:
     """A parent's save with every setup question answered, ``matches`` as the matching answers,
-    and the ready values plus the answered rows selected unless ``selection`` says otherwise."""
+    and the ready values plus the answered rows selected unless ``selection`` says otherwise; its
+    reading incomplete unless ``complete``."""
     review = review or review_of(store, draft)
     answers = dataclasses.replace(grade_answers(review), matches=tuple(matches))
     if selection is None:
         selection = review.ready | {answer.row_key for answer in matches}
-    return save_grade(store, draft, key=KEY, review=review, answers=answers, selection=selection)
+    return save_grade(
+        store,
+        draft,
+        key=KEY,
+        review=review,
+        answers=answers,
+        selection=selection,
+        complete=complete,
+    )
 
 
 def saved(outcome: SaveOutcome) -> GradeReportSaved:
@@ -382,11 +401,12 @@ def test_a_clipped_copy_of_a_is_all_saved() -> None:
 
 def test_a_partial_report_without_a_term_total_leaves_the_earlier_total_current() -> None:
     store = in_memory()
-    first = saved(save(store, A))
+    first = saved(save(store, A, complete=whole()))
     partial = variant(CELL_SCORE, text=CLIPPED)
     review = review_of(store, partial)
     assert review.ready == {row(review, "Cell Diagram").key}
-    later = saved(save(store, partial, review))
+    assert whole(CELL_SCORE, text=CLIPPED) is False
+    later = saved(save(store, partial, review, complete=whole(CELL_SCORE, text=CLIPPED)))
     current = store.current_values(class_of(store), "T1")
 
     assert current.term is not None
@@ -394,32 +414,35 @@ def test_a_partial_report_without_a_term_total_leaves_the_earlier_total_current(
     assert text_of(current.term, "percent") == "81.9"
     cell = row(review, "Cell Diagram").result_id or ""
     assert (current.results[cell].report_id, current.results[cell].order) == (later.report_id, 2)
-    coverage = store._connection.execute(
-        "SELECT coverage FROM grade_reports WHERE report_id = ?", (later.report_id,)
+    complete = store._connection.execute(
+        "SELECT complete FROM grade_acceptances WHERE report_id = ?", (later.report_id,)
     ).fetchall()
-    assert coverage == [("partial",)]
-    assert not any(value.last_seen for value in current.results.values())
+    assert complete == [(0,)]
+    assert not any(value.not_shown for value in current.results.values())
 
 
-def test_a_result_missing_from_a_newer_full_report_is_last_seen_in_its_own() -> None:
+def test_a_result_missing_from_a_newer_complete_report_is_not_shown_in_it() -> None:
+    """A complete, fully resolved current report without Osmosis supports "Not shown in this
+    report"; Osmosis keeps its score from A and was last shown in A. The rows the newer report
+    repeats unchanged were last shown in it, their scores still A's."""
     store = in_memory()
-    first = saved(save(store, A))
+    first = saved(save(store, A, complete=whole()))
     osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
     without = variant(CELL_SCORE, (f"{OSMOSIS}\n", ""))
-    newer = saved(save(store, without))
+    newer = saved(save(store, without, complete=whole(CELL_SCORE, (f"{OSMOSIS}\n", ""))))
     current = store.current_values(class_of(store), "T1")
 
     cell = row(review_of(store, A), "Cell Diagram").result_id or ""
-    assert (current.results[osmosis].report_id, current.results[osmosis].last_seen) == (
-        first.report_id,
-        True,
-    )
+    by_a = ReportAt(first.report_id or "", 1)
+    by_newer = ReportAt(newer.report_id or "", 2)
+    value = current.results[osmosis]
+    assert (value.report_id, value.last_shown, value.not_shown) == (first.report_id, by_a, by_newer)
     assert current.results[cell].report_id == newer.report_id
-    assert {
-        current.results[key].report_id for key in current.results if key not in (cell, osmosis)
-    } == {first.report_id}
-    assert [value.last_seen for key, value in current.results.items() if key != osmosis] == [
-        False
+    others = [key for key in current.results if key not in (cell, osmosis)]
+    assert {current.results[key].report_id for key in others} == {first.report_id}
+    assert {current.results[key].last_shown for key in (*others, cell)} == {by_newer}
+    assert [value.not_shown for key, value in current.results.items() if key != osmosis] == [
+        None
     ] * 3
 
 
@@ -427,38 +450,42 @@ CELL_NINE = ("| Cell Diagram             | 7.0 ", "| Cell Diagram             | 
 """Cell Diagram's score changed from 7.0 to 9.0."""
 
 
-def test_a_result_shown_again_by_the_newest_full_report_is_not_last_seen() -> None:
-    """Osmosis is left out of full report B, then shown unchanged by a newer full report: that
-    report saw it last, so it isn't last seen in A, and its value stays A's."""
+def test_a_result_shown_again_by_the_newest_complete_report_is_shown_there() -> None:
+    """Osmosis is left out of complete report B, then shown unchanged by a newer complete report:
+    it was last shown in that one, B's absence is older than that showing, and its value stays
+    A's."""
     store = in_memory()
-    first = saved(save(store, A))
+    first = saved(save(store, A, complete=True))
     osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
-    saved(save(store, variant(CELL_SCORE, (f"{OSMOSIS}\n", ""))))
-    newest = saved(save(store, variant(CELL_NINE)))
+    saved(save(store, variant(CELL_SCORE, (f"{OSMOSIS}\n", "")), complete=True))
+    newest = saved(save(store, variant(CELL_NINE), complete=True))
     current = store.current_values(class_of(store), "T1")
 
-    assert current.results[osmosis].last_seen is False
+    assert current.results[osmosis].not_shown is None
+    assert current.results[osmosis].last_shown == ReportAt(newest.report_id or "", 3)
     assert current.results[osmosis].report_id == first.report_id
     cell = row(review_of(store, A), "Cell Diagram").result_id or ""
     assert current.results[cell].report_id == newest.report_id
 
 
-def test_a_result_shown_again_by_a_newer_partial_report_is_not_last_seen() -> None:
-    """Osmosis is left out of full report B, then shown unchanged by a newer copy without a
+def test_a_result_shown_again_by_a_newer_partial_report_is_shown_there() -> None:
+    """Osmosis is left out of complete report B, then shown unchanged by a newer copy without a
     term grade. A partial report doesn't say what is missing, but it does say what is there."""
     store = in_memory()
-    saved(save(store, A))
+    saved(save(store, A, complete=True))
     osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
-    saved(save(store, variant(CELL_SCORE, (f"{OSMOSIS}\n", ""))))
+    saved(save(store, variant(CELL_SCORE, (f"{OSMOSIS}\n", "")), complete=True))
     no_term = REPORT[: REPORT.index("| **Term Grade**")]
-    partial = saved(save(store, variant(CELL_NINE, text=no_term)))
+    assert whole(text=no_term) is False
+    partial = saved(save(store, variant(CELL_NINE, text=no_term), complete=False))
     current = store.current_values(class_of(store), "T1")
 
-    coverage = store._connection.execute(
-        "SELECT coverage FROM grade_reports WHERE report_id = ?", (partial.report_id,)
+    complete = store._connection.execute(
+        "SELECT complete FROM grade_acceptances WHERE report_id = ?", (partial.report_id,)
     ).fetchall()
-    assert coverage == [("partial",)]
-    assert current.results[osmosis].last_seen is False
+    assert complete == [(0,)]
+    assert current.results[osmosis].not_shown is None
+    assert current.results[osmosis].last_shown == ReportAt(partial.report_id or "", 3)
 
 
 # ------------------------------------------------------------- answers bound to their questions
@@ -486,3 +513,324 @@ def test_matching_answers_bound_to_no_question_asked_now_return_the_review() -> 
     assert unanswered.why is ReturnReason.SELECTION
     assert store._connection.total_changes == before
     assert TERM_KEY not in review.ready
+
+
+# ------------------------------------------------------------- presence and provenance
+
+
+def records(store: ProjectStateStore, report_id: str | None) -> dict[str, tuple[str | None, str]]:
+    """Each row record of a report: its row key, with the result it names and how."""
+    found = store._connection.execute(
+        "SELECT row_key, result_id, how FROM grade_match_decisions WHERE report_id = ?",
+        (report_id,),
+    )
+    return {str(key): (result, str(how)) for key, result, how in found}
+
+
+def observed(store: ProjectStateStore, report_id: str | None) -> int:
+    (count,) = store._connection.execute(
+        "SELECT COUNT(*) FROM grade_result_observations WHERE report_id = ?", (report_id,)
+    ).fetchone()
+    return int(count)
+
+
+OSMOSIS_GONE = (f"{OSMOSIS}\n", "")
+"""Osmosis left out of a copy."""
+
+
+def test_unchanged_and_unselected_changed_rows_are_recorded_as_shown_and_accept_nothing() -> None:
+    """A newer report's unchanged rows and its Changed row left unselected are recorded as
+    shown, each with its result and how it matched; no value is accepted, the outcome says no
+    grade value changed, and the Changed score stays A's."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    review_b = review_of(store, B)
+    cell = row(review_b, "Cell Diagram")
+    presence = saved(save(store, B, review_b, selection=()))
+
+    assert (presence.added, presence.updated, presence.accepted) == (0, 0, ())
+    assert (presence.shown, presence.answers_kept) == (4, 0)
+    assert records(store, presence.report_id) == {
+        item.key: (item.result_id, "exact") for item in review_b.rows
+    }
+    assert observed(store, presence.report_id) == 0
+    current = store.current_values(class_of(store), "T1")
+    by_b = ReportAt(presence.report_id or "", 2)
+    assert text_of(current.results[cell.result_id or ""], "points") == "7.0"
+    assert {value.order for value in current.results.values()} == {1}
+    assert {value.last_shown for value in current.results.values()} == {by_b}
+    assert current.term is not None
+    assert current.term.order == 1
+
+
+def test_a_row_shown_first_is_still_changed_and_accepted_later_keeps_its_one_record() -> None:
+    """Rule 0 replays the shown row for its identity only: it stays Changed and selectable, and
+    accepting it adds its observation to the same report, under the record it already has."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    presence = saved(save(store, B, selection=()))
+    again = review_of(store, B)
+    cell = row(again, "Cell Diagram")
+
+    assert (cell.status, cell.how) == (ItemStatus.CHANGED, "same_capture")
+    assert again.ready == {cell.key}
+    later = saved(save(store, B, again))
+
+    assert later.report_id == presence.report_id
+    assert (later.added, later.updated, later.shown) == (0, 1, 0)
+    assert records(store, presence.report_id)[cell.key] == (cell.result_id, "exact")
+    assert len(records(store, presence.report_id)) == 4
+    current = store.current_values(class_of(store), "T1")
+    assert text_of(current.results[cell.result_id or ""], "points") == "8.0"
+    assert current.results[cell.result_id or ""].report_id == presence.report_id
+
+
+def test_a_supplies_b_repeats_and_c_omits_keep_source_last_shown_and_absence_apart() -> None:
+    """His example: the score came from A, the assignment was last shown in B, and complete,
+    fully resolved C says it doesn't show it."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    b = saved(save(store, variant(CELL_SCORE), selection=(), complete=True))
+    c = saved(save(store, variant(CELL_NINE, OSMOSIS_GONE), selection=(), complete=True))
+    value = store.current_values(class_of(store), "T1").results[osmosis]
+
+    assert value.report_id == first.report_id
+    assert value.last_shown == ReportAt(b.report_id or "", 2)
+    assert value.not_shown == ReportAt(c.report_id or "", 3)
+
+
+def test_absence_needs_a_complete_reading_and_every_row_resolved() -> None:
+    """An incomplete reading, or a row left unresolved, keeps a report from saying what it
+    doesn't show."""
+    for complete, change in ((False, ()), (True, (RENAMED,))):
+        store = in_memory()
+        saved(save(store, A, complete=True))
+        osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+        without = variant(OSMOSIS_GONE, *change)
+        newer = saved(save(store, without, selection=(), complete=complete))
+        value = store.current_values(class_of(store), "T1").results[osmosis]
+
+        assert newer.report_id is not None
+        assert value.not_shown is None
+        assert value.last_shown == ReportAt(value.report_id, 1)
+
+
+def test_a_couldnt_read_row_records_nothing_and_blocks_absence() -> None:
+    """A row whose due date can't be read has no reliable identity: it records no presence, and
+    its report isn't fully resolved."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    draft = variant(OSMOSIS_GONE, ("| Missing    | 09/26   |", "| Missing    | 09/2x   |"))
+    review = review_of(store, draft)
+    unread = [item for item in review.rows if item.status is ItemStatus.UNREADABLE]
+    newer = saved(save(store, draft, review, selection=(), complete=True))
+
+    assert [item.result_id for item in unread] == [None]
+    assert unread[0].key not in records(store, newer.report_id)
+    assert newer.shown == 2
+    value = store.current_values(class_of(store), "T1").results[osmosis]
+    assert value.not_shown is None
+
+
+def test_a_row_with_an_unreadable_score_and_readable_identity_is_shown_not_accepted() -> None:
+    """His twelfth round: "EX" as a score is never read as anything, the row stays Couldn't
+    read, and its match records the assignment as shown while the score stays A's."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    excused = variant(("| Cell Diagram             | 7.0 ", "| Cell Diagram             | EX  "))
+    review = review_of(store, excused)
+    cell = row(review, "Cell Diagram")
+
+    assert (cell.status, cell.how) == (ItemStatus.UNREADABLE, "exact")
+    assert cell.key not in review.ready
+    newer = saved(save(store, excused, review, selection=(), complete=True))
+    assert records(store, newer.report_id)[cell.key] == (cell.result_id, "exact")
+    value = store.current_values(class_of(store), "T1").results[cell.result_id or ""]
+    assert text_of(value, "points") == "7.0"
+    assert value.order == 1
+    assert value.last_shown == ReportAt(newer.report_id or "", 2)
+
+
+def test_an_older_capture_s_rest_after_a_newer_report_showed_the_result_is_not_offered() -> None:
+    """A saves Cell at 7.0; K saves only Osmosis; L, the newest, shows Cell at 7.0. K's rest
+    can't put its 8.0 over the newer showing: it isn't offered."""
+    osmosis_32 = ("| 31.0    | 40.0    |", "| 32.0    | 40.0    |")
+    osmosis_33 = ("| 31.0    | 40.0    |", "| 33.0    | 40.0    |")
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    k = variant(CELL_SCORE, osmosis_32)
+    first = review_of(store, k)
+    osmosis = row(first, "Osmosis with Potato Slices")
+    saved(save(store, k, first, selection={osmosis.key}))
+    saved(save(store, variant(osmosis_33), selection=()))
+    rest = review_of(store, k)
+    cell = row(rest, "Cell Diagram")
+
+    assert (cell.status, cell.covered) == (ItemStatus.CHANGED, True)
+    assert cell.key not in rest.ready
+    value = store.current_values(class_of(store), "T1").results[cell.result_id or ""]
+    assert (text_of(value, "points"), value.order) == ("7.0", 1)
+    assert value.last_shown is not None
+    assert value.last_shown.order == 3
+
+
+def test_one_capture_read_complete_once_and_incomplete_once_proves_no_absence() -> None:
+    """Two submissions of one capture join one report; one incomplete reading keeps it from
+    proving absence."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    without = variant(CELL_SCORE, OSMOSIS_GONE)
+    cell = row(review_of(store, without), "Cell Diagram")
+    first = saved(save(store, without, selection=(), complete=True))
+    assert store.current_values(class_of(store), "T1").results[osmosis].not_shown is not None
+    second = saved(save(store, without, selection={cell.key}, complete=False))
+
+    assert second.report_id == first.report_id
+    assert store.current_values(class_of(store), "T1").results[osmosis].not_shown is None
+
+
+def test_a_submission_that_records_nothing_new_makes_no_report_and_its_retry_is_a_no_op() -> None:
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, B, selection=()))
+    reports = store._connection.execute("SELECT COUNT(*) FROM grade_reports").fetchone()
+    review = review_of(store, B)
+    nothing = saved(save(store, B, review, selection=()))
+
+    assert (nothing.report_id, nothing.shown, nothing.added, nothing.updated) == (None, 0, 0, 0)
+    assert store._connection.execute("SELECT COUNT(*) FROM grade_reports").fetchone() == reports
+    before = store._connection.total_changes
+    assert isinstance(save(store, B, review, selection=()), AlreadyRecorded)
+    assert store._connection.total_changes == before
+
+
+def test_an_answer_kept_without_a_value_is_recorded_and_replayed() -> None:
+    """Saving only a matching answer keeps it as shown and says no grade value changed; a retry
+    writes nothing; the capture again resolves the row to that result through its record."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    renamed = variant(RENAMED, CELL_SCORE)
+    review = review_of(store, renamed)
+    seed = row(review, "Seed Germination Journal")
+    answer = same(seed)
+    kept = saved(save(store, renamed, review, matches=[answer], selection=()))
+
+    assert (kept.added, kept.updated, kept.answers_kept) == (0, 0, 1)
+    assert records(store, kept.report_id)[seed.key] == (answer.result_id, "answer")
+    before = store._connection.total_changes
+    retry = save(store, renamed, review, matches=[answer], selection=())
+    assert isinstance(retry, AlreadyRecorded)
+    assert retry.saved == kept
+    assert store._connection.total_changes == before
+    again = row(review_of(store, renamed), "Seed Germination Journal")
+    assert (again.result_id, again.how, again.question) == (answer.result_id, "same_capture", None)
+
+
+# ------------------------------------------------------------- reusing explicit answers
+
+
+SEED = REPORT[REPORT.index("| Seed Germination Log |") : REPORT.index("\n", REPORT.index("| Seed"))]
+"""Seed Germination Log's row as the fixture writes it."""
+
+
+def seed_rows(*titles: str) -> GradeReportDraft:
+    """A capture whose Seed Germination Log row is replaced by rows with ``titles``, alike in
+    every other cell."""
+    rows = "\n".join(SEED.replace("Seed Germination Log", title, 1) for title in titles)
+    return variant((SEED, rows), CELL_NINE)
+
+
+def kept_answer(store: ProjectStateStore, title: str) -> str:
+    """Seed Germination Log renamed ``title`` in a capture of its own, answered "Same
+    assignment" and saved with no value selected: the result the answer names."""
+    renamed = variant((SEED, SEED.replace("Seed Germination Log", title, 1)))
+    review = review_of(store, renamed)
+    answer = same(row(review, title))
+    saved(save(store, renamed, review, matches=[answer], selection=()))
+    return answer.result_id or ""
+
+
+def test_an_answer_kept_without_a_value_is_reused_for_the_same_evidence() -> None:
+    """The same normalized evidence returns in another capture: the answer is reused without
+    asking, and recorded as automatic."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    seed = kept_answer(store, "Seed Germination Journal")
+    later = seed_rows("Seed Germination Journal")
+    review = review_of(store, later)
+    journal = row(review, "Seed Germination Journal")
+
+    assert (journal.result_id, journal.how, journal.question) == (seed, "reused", None)
+    c = saved(save(store, later, review, selection=()))
+    assert records(store, c.report_id)[journal.key] == (seed, "reused")
+    assert c.answers_kept == 0
+
+
+def test_two_rows_that_would_reuse_one_result_both_ask() -> None:
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    seed = kept_answer(store, "Seed Germination Journal")
+    assert kept_answer(store, "Seed Germination Diary") == seed
+    review = review_of(store, seed_rows("Seed Germination Journal", "Seed Germination Diary"))
+
+    for title in ("Seed Germination Journal", "Seed Germination Diary"):
+        item = row(review, title)
+        assert (item.status, item.how) == (ItemStatus.NEEDS_ANSWER, None)
+        assert item.question is not None
+        assert item.question.ids == (seed,)
+
+
+def test_an_exact_match_comes_before_a_reused_answer() -> None:
+    """The result the unchanged row matches exactly isn't reused for the renamed one."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    seed = kept_answer(store, "Seed Germination Journal")
+    review = review_of(store, seed_rows("Seed Germination Log", "Seed Germination Journal"))
+    log, journal = row(review, "Seed Germination Log"), row(review, "Seed Germination Journal")
+
+    assert (log.result_id, log.how) == (seed, "exact")
+    assert (journal.status, journal.result_id, journal.how) == (ItemStatus.NEW, None, None)
+
+
+def test_a_reuse_waits_while_an_unresolved_row_may_be_that_result() -> None:
+    """Another row of the report, unresolved, has the answered result among its candidates: the
+    reuse waits, and both rows ask."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    seed = kept_answer(store, "Seed Germination Journal")
+    review = review_of(store, seed_rows("Seed Germination Journal", "Germination Notes"))
+    journal, notes = row(review, "Seed Germination Journal"), row(review, "Germination Notes")
+
+    assert (journal.status, journal.how) == (ItemStatus.NEEDS_ANSWER, None)
+    assert notes.question is not None
+    assert seed in notes.question.ids
+
+
+def test_a_stored_automatic_decision_for_another_result_blocks_the_reuse() -> None:
+    """An exact record for the same evidence naming another result conflicts with the answer:
+    the row asks."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    seed = kept_answer(store, "Seed Germination Journal")
+    later = seed_rows("Seed Germination Journal")
+    journal = row(review_of(store, later), "Seed Germination Journal")
+    (evidence,) = store._connection.execute(
+        "SELECT evidence FROM grade_match_decisions WHERE row_key = ? LIMIT 1", (journal.key,)
+    ).fetchone()
+    cell = row(review_of(store, A), "Cell Diagram").result_id
+    (report_id,) = store._connection.execute(
+        "SELECT report_id FROM grade_reports LIMIT 1"
+    ).fetchone()
+    store._connection.execute(
+        "INSERT INTO grade_match_decisions (report_id, row_key, student_id, evidence, occurrence, "
+        "result_id, how, decided_by, decided_at) SELECT ?, 'another-row', student_id, ?, 1, ?, "
+        "'exact', 'parent', '2026-10-07T00:00:00+00:00' FROM grade_student",
+        (report_id, evidence, cell),
+    )
+    asked = row(review_of(store, later), "Seed Germination Journal")
+
+    assert seed != cell
+    assert (asked.status, asked.how) == (ItemStatus.NEEDS_ANSWER, None)

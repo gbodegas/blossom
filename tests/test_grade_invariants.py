@@ -415,3 +415,46 @@ def test_g_i16_an_ambiguous_match_saves_only_with_the_parent_s_answer_and_keeps_
     assert asked.question is not None
     assert dict(outcome.accepted)[asked.key] == asked.question.ids[0]
     assert kept == results
+
+
+def test_g_i19_presence_comes_only_from_a_deliberate_submission_and_accepts_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A review records nothing, and "Not hers" nothing. A submission of presence alone records
+    each reliably matched row with how it matched, accepts no value, leaves every current value
+    and report use as it was, says no grade value changed, and its retry writes nothing."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    saved_report(save_grade(store, WREN_REPORT, key=KEY))
+    (class_id,) = store._connection.execute("SELECT class_id FROM grade_classes").fetchone()
+    before = store.current_values(class_id, "T1")
+    uses = store._connection.execute("SELECT report_id, use FROM grade_reports").fetchall()
+    changes = store._connection.total_changes
+    review = store.review_grade_report(ANOTHER_CAPTURE, capture_key(ANOTHER_CAPTURE), key=KEY)
+    not_hers = grade_answers(review, IdentityAnswer.NOT_HERS)
+    refused = save_grade(store, ANOTHER_CAPTURE, key=KEY, review=review, answers=not_hers)
+    untouched = store._connection.total_changes == changes
+
+    shown = saved_report(save_grade(store, ANOTHER_CAPTURE, key=KEY, review=review, selection=()))
+    after = store.current_values(class_id, "T1")
+    retried = store._connection.total_changes
+    retry = save_grade(store, ANOTHER_CAPTURE, key=KEY, review=review, selection=())
+    hows = store._connection.execute(
+        "SELECT how FROM grade_match_decisions WHERE report_id = ?", (shown.report_id,)
+    ).fetchall()
+    kept_uses = store._connection.execute(
+        "SELECT report_id, use FROM grade_reports WHERE report_id != ?", (shown.report_id,)
+    ).fetchall()
+    unchanged_after_retry = store._connection.total_changes == retried
+    store.close()
+
+    assert isinstance(refused, NotHers)
+    assert untouched
+    assert (shown.added, shown.updated, shown.accepted, shown.shown) == (0, 0, (), 4)
+    assert sorted(hows) == [("exact",)] * 4
+    assert {key: value.cells for key, value in after.results.items()} == {
+        key: value.cells for key, value in before.results.items()
+    }
+    assert after.term == before.term
+    assert kept_uses == uses
+    assert isinstance(retry, AlreadyRecorded)
+    assert unchanged_after_retry

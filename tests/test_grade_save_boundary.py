@@ -322,7 +322,7 @@ def test_any_other_exception_takes_back_the_save_and_is_raised_as_itself(
         msg = "injected after the setup's writes"
         raise LookupError(msg)
 
-    monkeypatch.setattr(store, "_report_of", broken)
+    monkeypatch.setattr(store, "_new_report", broken)
     with store.comparing_and_writing():
         unrelated(store, "before")
         with pytest.raises(LookupError):
@@ -395,3 +395,104 @@ def test_a_grade_savepoint_never_opens_outside_a_transaction() -> None:
     ):
         pass
     assert not connection.in_transaction
+
+
+EIGHT = draft_of(
+    REPORT.replace("| Cell Diagram             | 7.0 ", "| Cell Diagram             | 8.0 ")
+)
+"""A newer capture: Cell Diagram changed, its other rows as saved."""
+PRESENCE: tuple[Site, ...] = (
+    (sqlite3.SQLITE_INSERT, "grade_terms"),
+    (sqlite3.SQLITE_INSERT, "grade_reports"),
+    (sqlite3.SQLITE_INSERT, "grade_match_decisions"),
+    (sqlite3.SQLITE_INSERT, "grade_scope_revisions"),
+    (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+)
+"""Every write statement of a save of presence alone: the term, kept when on record, the report,
+its row records, the revision and the acceptance."""
+
+
+def presence_page(store: ProjectStateStore) -> GradeReview:
+    """Wren's report saved, then the page of a newer capture whose rows all match."""
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    return store.review_grade_report(EIGHT, capture_key(EIGHT), key=KEY)
+
+
+def test_a_save_of_presence_alone_writes_exactly_the_named_statements(
+    opened: Callable[[str], ProjectStateStore],
+) -> None:
+    store = opened("first use")
+    review = presence_page(store)
+    seen: set[Site] = set()
+
+    def note(action: int, table: str | None, *_: object) -> int:
+        if action in WRITES and table is not None:
+            seen.add((action, table))
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(note)
+    outcome = save_grade(store, EIGHT, key=KEY, review=review, selection=())
+    store._connection.set_authorizer(None)
+
+    assert isinstance(outcome, GradeReportSaved)
+    assert (outcome.added, outcome.updated, outcome.shown) == (0, 0, 4)
+    assert seen == {*PRESENCE, UPSERT_ARM}
+
+
+@pytest.mark.parametrize("site", PRESENCE, ids=[table for _, table in PRESENCE])
+def test_a_refused_write_of_presence_alone_leaves_nothing_of_it(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path, site: Site
+) -> None:
+    """A save of presence alone, refused at each of its statements three times inside a
+    caller's transaction, leaves the file as it was, with the caller's writes kept; lifted, the
+    same page saves once."""
+    store = opened("first use")
+    review = presence_page(store)
+    before, rows = world(path), assignments(store)
+
+    for attempt in range(3):
+        store._connection.set_authorizer(refusing(site))
+        with store.comparing_and_writing():
+            unrelated(store, f"before-{attempt}")
+            with pytest.raises(GradeReportNotSaved):
+                save_grade(store, EIGHT, key=KEY, review=review, selection=())
+            unrelated(store, f"after-{attempt}")
+        store._connection.set_authorizer(None)
+
+        assert world(path) == before
+        assert assignments(store) == rows + 2 * (attempt + 1)
+    assert isinstance(
+        save_grade(store, EIGHT, key=KEY, review=review, selection=()), GradeReportSaved
+    )
+    assert isinstance(
+        save_grade(store, EIGHT, key=KEY, review=review, selection=()), AlreadyRecorded
+    )
+
+
+def test_a_later_row_record_refused_leaves_nothing_of_the_save(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path
+) -> None:
+    """The row record statement refused only at a later row, by a TEMP trigger keyed on that row,
+    after the earlier rows' records ran: nothing of the save remains."""
+    store = opened("first use")
+    review = presence_page(store)
+    later = review.rows[2].key
+    before, rows = world(path), assignments(store)
+    store._connection.execute(
+        "CREATE TEMP TRIGGER refuse_later_record BEFORE INSERT ON grade_match_decisions "
+        f"WHEN NEW.row_key = '{later}' BEGIN SELECT RAISE(ABORT, 'refused'); END"
+    )
+
+    for attempt in range(3):
+        with store.comparing_and_writing():
+            unrelated(store, f"before-{attempt}")
+            with pytest.raises(GradeReportNotSaved):
+                save_grade(store, EIGHT, key=KEY, review=review, selection=())
+            unrelated(store, f"after-{attempt}")
+
+        assert world(path) == before
+        assert assignments(store) == rows + 2 * (attempt + 1)
+    store._connection.execute("DROP TRIGGER temp.refuse_later_record")
+    saved = save_grade(store, EIGHT, key=KEY, review=review, selection=())
+    assert isinstance(saved, GradeReportSaved)
+    assert saved.shown == 4

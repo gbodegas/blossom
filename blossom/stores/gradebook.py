@@ -12,10 +12,11 @@ under another. Nothing here changes any other table.
 
 A save of a report is one write: a recorded acceptance ID returns what it recorded, a
 changed class and term or an answer to a question the review doesn't ask now returns the
-review, and otherwise the answers, the selected values and an acceptance record are written
-together. A selected row matched to one of her results adds its observation to that result; any
-other makes a new result. Current values are read, never stored: each target's comes from the
-current report with the highest acceptance order that supplied it.
+review, and otherwise the answers, the selected values, a row record for each row shown with a
+reliable match, and an acceptance record are written together. A selected row matched to one of
+her results adds its observation to that result; any other makes a new result. Current values
+are read, never stored: each target's comes from the current report with the highest acceptance
+order that supplied it, and a result's also says the newest current report that showed it.
 
 Every grade write goes through one entry: the store's lock, the writer's transaction (its own,
 or a caller's it joins), and one savepoint around the whole write. A failure leaves none of the
@@ -29,6 +30,7 @@ import secrets
 import sqlite3
 import threading
 import uuid
+from collections import Counter
 from collections.abc import Callable, Collection, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, replace
@@ -40,6 +42,7 @@ from blossom.grades.draft import (
     GradeReportDraft,
     GradeRow,
     GradeValue,
+    Presence,
     ReportHeader,
     folded,
     row_evidence,
@@ -65,6 +68,7 @@ from blossom.grades.review import (
     MatchAnswer,
     NotHers,
     OnRecord,
+    ReportAt,
     ReturnReason,
     ReviewPage,
     ReviewReturned,
@@ -333,8 +337,8 @@ how: automatically (``same_capture``, ``exact``, ``reused``), by the parent's an
 or ``chosen`` from her assignments), or ``new``. A remembered "A different assignment" is
 ``different``: it names no result, and ``rejected`` keeps the candidates it turned down, each
 with its matching evidence. An acceptance keeps its counts of rows recorded as shown and answers
-kept, and whether its reading was complete. Until the reader reports where its unrecognized
-lines fell, no reading counts as complete, so every acceptance records 0."""
+kept, and whether its reading was complete; a report is complete when every acceptance into it
+was."""
 
 CONTEXT_ON_RECORD: Final = "SELECT 1 FROM grade_context WHERE student_id = ?"
 YEAR_ON_RECORD: Final = "SELECT 1 FROM grade_years WHERE student_id = ? AND label = ?"
@@ -351,8 +355,23 @@ REVISION_OF: Final = (
     "WHERE student_id = ? AND class_id = ? AND term_label = ?"
 )
 SCOPE_REPORTS: Final = (
-    "SELECT report_id, acceptance_order, use, coverage FROM grade_reports "
+    "SELECT report_id, acceptance_order, use, result_rows FROM grade_reports "
     "WHERE student_id = ? AND class_id = ? AND term_label = ?"
+)
+SCOPE_COMPLETE: Final = (
+    "SELECT a.report_id, MIN(a.complete) FROM grade_acceptances AS a JOIN grade_reports AS r "
+    "ON r.report_id = a.report_id AND r.student_id = a.student_id "
+    "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? GROUP BY a.report_id"
+)
+CAPTURE_SHOWN: Final = (
+    "SELECT d.row_key, d.result_id FROM grade_match_decisions AS d JOIN grade_reports AS r "
+    "ON r.report_id = d.report_id AND r.student_id = d.student_id "
+    "WHERE r.student_id = ? AND r.reader = 'text' AND r.source_key = ? "
+    "AND d.result_id IS NOT NULL"
+)
+CAPTURE_JOINS: Final = (
+    "SELECT MAX(acceptance_order) FROM grade_reports "
+    "WHERE student_id = ? AND class_id = ? AND term_label = ? AND source_key = ?"
 )
 TERMS_OBSERVED: Final = (
     "SELECT o.report_id, o.percent_text, o.percent_presence, o.letter_text, o.letter_presence "
@@ -379,12 +398,13 @@ RESULTS_OBSERVED: Final = (
     "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? ORDER BY o.position"
 )
 DECIDED: Final = (
-    "SELECT o.report_id, o.evidence, o.result_id FROM grade_match_decisions AS o "
+    "SELECT o.report_id, o.evidence, o.result_id, o.how FROM grade_match_decisions AS o "
     "JOIN grade_reports AS r ON r.report_id = o.report_id AND r.student_id = o.student_id "
     "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ?"
 )
 ROW_DECIDED: Final = (
-    "SELECT 1 FROM grade_match_decisions WHERE student_id = ? AND report_id = ? AND row_key = ?"
+    "SELECT result_id FROM grade_match_decisions "
+    "WHERE student_id = ? AND report_id = ? AND row_key = ?"
 )
 ACCEPTED_FROM_SOURCE: Final = (
     "SELECT accepted FROM grade_acceptances WHERE student_id = ? AND kind = ? AND source_key = ?"
@@ -462,7 +482,7 @@ ADD_ACCEPTANCE: Final = (
     "INSERT INTO grade_acceptances (acceptance_id, student_id, kind, source_key, report_id, "
     "accepted, identity_status, identity_answer, identity_form, added, updated, already_saved, "
     "left_to_check, shown, answers_kept, complete, accepted_at, role) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -760,12 +780,14 @@ class GradebookRecords:
         answers: GradeAnswers,
         selection: Collection[str],
         role: ConfirmedBy,
+        complete: bool,
     ) -> SaveOutcome:
-        """The parent's save of the values ``selection`` names, as one grade write: inside its
-        own transaction, or a caller's it joins, where a failure leaves none of it (see
-        ``_grade_write``). A recorded acceptance ID returns its outcome; a changed revision, an
-        answer to no question asked now, or a value neither New nor Changed returns the review;
-        each of these writes nothing."""
+        """The parent's save of the values ``selection`` names, with the rows the report shows
+        and the answers given, as one grade write: inside its own transaction, or a caller's it
+        joins, where a failure leaves none of it (see ``_grade_write``). ``complete`` is
+        ``reading_complete`` of the reading the draft came from. A recorded acceptance ID returns
+        its outcome; a changed revision, an answer to no question asked now, or a value not
+        offered returns the review; each of these writes nothing."""
         confirmer = _confirmer(role)
         chosen = frozenset(selection)
         with self._grade_write(_report_refused):
@@ -813,6 +835,7 @@ class GradebookRecords:
                 by=confirmer,
                 student_id=student_id,
                 acceptance_id=page.acceptance_id,
+                complete=complete,
             )
 
     def _review_locked(
@@ -843,14 +866,25 @@ class GradebookRecords:
         if reviewed is None and same_class in {class_id for class_id, _, _ in existing}:
             reviewed = same_class
         held = NOTHING_HELD
+        joins = None
         if reviewed is not None:
             held = self._class_record(student_id, reviewed, term)
+            (joins,) = self._connection.execute(
+                CAPTURE_JOINS, (student_id, reviewed, term, source_key)
+            ).fetchone()
         saved: dict[str, str | None] = {}
         for (accepted,) in self._connection.execute(
             ACCEPTED_FROM_SOURCE, (student_id, TEXT_KIND, source_key)
         ):
             for item_key, result_id in json.loads(accepted):
                 saved[str(item_key)] = None if result_id is None else str(result_id)
+        shown = {
+            str(row_key): str(result_id)
+            for row_key, result_id in self._connection.execute(
+                CAPTURE_SHOWN, (student_id, source_key)
+            )
+            if row_key not in saved
+        }
         on_record = OnRecord(
             identity=identity,
             context=self._connection.execute(CONTEXT_ON_RECORD, (student_id,)).fetchone()
@@ -862,17 +896,25 @@ class GradebookRecords:
             revision=revision,
             held=held,
             saved=saved,
+            shown=shown,
+            joins=None if joins is None else int(joins),
         )
         return review_from(draft, source_key, new_acceptance_id(), on_record, matches)
 
     def _class_record(self, student_id: str, class_id: str, term: str) -> ClassRecord:
         """What her class and term hold, read under her student ID: each target's current value,
-        every accepted value of each target, each result's latest observation, and the results
-        stored decisions gave each row evidence."""
+        with a result's last showing and the newest report that supports its absence; every
+        accepted value of each target; each result's latest observation; the results stored
+        decisions gave each row evidence; and the newest current report that supplied or showed
+        each target."""
         scope = (student_id, class_id, term)
         reports = {
-            str(report_id): (int(order), str(use), str(coverage))
-            for report_id, order, use, coverage in self._connection.execute(SCOPE_REPORTS, scope)
+            str(report_id): (int(order), str(use), int(rows))
+            for report_id, order, use, rows in self._connection.execute(SCOPE_REPORTS, scope)
+        }
+        complete = {
+            str(report_id): bool(read_complete)
+            for report_id, read_complete in self._connection.execute(SCOPE_COMPLETE, scope)
         }
         observed: list[tuple[str, str, str, dict[str, Cell]]] = []
         for row in self._connection.execute(TERMS_OBSERVED, scope):
@@ -887,39 +929,51 @@ class GradebookRecords:
         current: dict[str, dict[str, CurrentValue]] = {"term": {}, "category": {}, "result": {}}
         accepted: dict[str, set[Compared]] = {}
         latest: dict[str, CurrentValue] = {}
-        held_by: dict[str, set[str]] = {}
+        newest: dict[str, ReportAt] = {}
+
+        def showing(target: str, report_id: str) -> None:
+            order, use, _ = reports[report_id]
+            if use == "current" and order > newest.get(target, ReportAt("", 0)).order:
+                newest[target] = ReportAt(report_id, order)
+
         for kind, target, report_id, cells in observed:
             order, use, _ = reports[report_id]
             value = CurrentValue(cells, report_id, order)
             accepted.setdefault(target, set()).add(compared(cells))
             if kind == "result":
                 latest[target] = value
-                held_by.setdefault(report_id, set()).add(target)
             if use == "current":
                 current[kind][target] = value
+            showing(target, report_id)
         decided: dict[str, set[str]] = {}
-        for report_id, evidence, result in self._connection.execute(DECIDED, scope):
+        explicit: dict[str, set[str]] = {}
+        resolved: Counter[str] = Counter()
+        for report_id, evidence, result, how in self._connection.execute(DECIDED, scope):
+            if result is None:
+                continue
             decided.setdefault(str(evidence), set()).add(str(result))
-            held_by.setdefault(str(report_id), set()).add(str(result))
-        # A result is last seen when the newest full current report is newer than every current
-        # report that showed it; a partial report says what is there, never what is missing.
-        newest_full = max(
+            if how in EXPLICIT:
+                explicit.setdefault(str(evidence), set()).add(str(result))
+            resolved[str(report_id)] += 1
+            showing(str(result), str(report_id))
+        # A report supports "Not shown in this report" only when it is current, every reading
+        # into it was complete, and each of its result rows has a record naming a result.
+        proving = sorted(
             (
-                order
-                for order, use, coverage in reports.values()
-                if use == "current" and coverage == "full"
+                ReportAt(report_id, order)
+                for report_id, (order, use, rows) in reports.items()
+                if use == "current"
+                and complete.get(report_id, False)
+                and resolved[report_id] == rows
             ),
-            default=0,
+            key=lambda report: report.order,
         )
-        seen: dict[str, int] = {}
-        for report_id, shown in held_by.items():
-            order, use, _ = reports[report_id]
-            if use == "current":
-                for result in shown:
-                    seen[result] = max(seen.get(result, 0), order)
         for result, value in current["result"].items():
-            if newest_full > seen.get(result, value.order):
-                current["result"][result] = replace(value, last_seen=True)
+            shown = newest[result]
+            absent = [report for report in proving if report.order > shown.order]
+            current["result"][result] = replace(
+                value, last_shown=shown, not_shown=absent[-1] if absent else None
+            )
         return ClassRecord(
             current=CurrentValues(
                 term=current["term"].get(TERM_KEY),
@@ -929,6 +983,8 @@ class GradebookRecords:
             accepted={target: frozenset(values) for target, values in accepted.items()},
             latest=latest,
             decided={evidence: frozenset(results) for evidence, results in decided.items()},
+            newest={target: report.order for target, report in newest.items()},
+            explicit={evidence: frozenset(results) for evidence, results in explicit.items()},
         )
 
     def _revision_of(self, student_id: str, class_id: str, draft: GradeReportDraft) -> int | None:
@@ -970,9 +1026,11 @@ class GradebookRecords:
         by: ConfirmedBy,
         student_id: str,
         acceptance_id: str,
+        complete: bool,
     ) -> GradeReportSaved:
         """Every write of a save that passed its checks, inside the save's one grade write: the
-        identity answer, the setup, the selected values, the revision and the acceptance."""
+        identity answer, the setup, the selected values and the rows shown, in the report they
+        join or make when anything is new, the revision and the acceptance."""
         header = draft.header
         now = self._stamp()
         line = header.student_line
@@ -994,13 +1052,40 @@ class GradebookRecords:
             )
         self._connection.execute(ADD_TERM, (student_id, year, term, now))
         class_id = self._class_of(header, review, answers, student_id=student_id, by=by, now=now)
+        latest = self._connection.execute(
+            LATEST_OF_CAPTURE, (student_id, class_id, term, review.source_key)
+        ).fetchone()
+        joined = None if latest is None else str(latest[0])
+        shown = [
+            (item.key, item.result_id, item.how)
+            for item in review.rows
+            if item.key not in chosen
+            and item.result_id is not None
+            and item.how is not None
+            and item.status is not ItemStatus.NEEDS_ANSWER
+            and (joined is None or self._decided(joined, item.key, student_id) is None)
+        ]
         report_id = None
         accepted: list[tuple[str, str | None]] = []
-        if chosen:
-            report_id = self._report_of(draft, class_id, review.source_key, student_id, now)
+        if chosen or shown:
+            report_id = joined or self._new_report(
+                draft, class_id, review.source_key, student_id, now
+            )
             accepted = self._observe(
                 draft, review, chosen, report_id, class_id, student_id=student_id, by=by, now=now
             )
+            evidence = _rows_by_key(draft)
+            for item_key, result_id, how in shown:
+                self._decide(
+                    report_id,
+                    item_key,
+                    student_id,
+                    *evidence[item_key],
+                    result_id,
+                    how,
+                    by=by,
+                    now=now,
+                )
         self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
         already = sum(1 for item in review.items if item.status in ALREADY)
         changed = sum(
@@ -1014,6 +1099,8 @@ class GradebookRecords:
             already_saved=already,
             left=len(review.items) - len(chosen) - already,
             accepted=tuple(sorted(accepted, key=lambda pair: pair[0])),
+            shown=len(shown),
+            answers_kept=sum(1 for _, _, how in shown if how in EXPLICIT),
         )
         self._connection.execute(
             ADD_ACCEPTANCE,
@@ -1033,6 +1120,7 @@ class GradebookRecords:
                 outcome.left,
                 outcome.shown,
                 outcome.answers_kept,
+                int(complete),
                 now,
                 by,
             ),
@@ -1076,17 +1164,12 @@ class GradebookRecords:
         )
         return class_id
 
-    def _report_of(
+    def _new_report(
         self, draft: GradeReportDraft, class_id: str, source_key: str, student_id: str, now: str
     ) -> str:
-        """The capture's latest report in the class and term, which its rest joins; or a new
-        report, next in acceptance order, current."""
+        """A new report of the capture, next in acceptance order, current, with its number of
+        result rows."""
         term = folded(draft.header.term_label)
-        latest = self._connection.execute(
-            LATEST_OF_CAPTURE, (student_id, class_id, term, source_key)
-        ).fetchone()
-        if latest is not None:
-            return str(latest[0])
         (order,) = self._connection.execute(NEXT_ORDER, (student_id, class_id, term)).fetchone()
         report_id = f"report-{uuid.uuid4().hex}"
         rows = sum(len(category.rows) for category in draft.categories)
@@ -1108,8 +1191,8 @@ class GradebookRecords:
         now: str,
     ) -> list[tuple[str, str | None]]:
         """The selected values as observations of ``report_id``; each row an observation of the
-        result it resolved to, or of a new one, with its match decision: each accepted key with
-        the result it resolved to."""
+        result it resolved to, or of a new one, with its match decision unless the report showed
+        the row first: each accepted key with the result it resolved to."""
         resolved = {item.key: item for item in review.rows}
         accepted: list[tuple[str, str | None]] = []
         if TERM_KEY in chosen:
@@ -1140,13 +1223,12 @@ class GradebookRecords:
         for position, (category, row) in enumerate(rows, start=1):
             item_key = row_key(category.name, row)
             item = resolved[item_key]
-            decision = (report_id, item_key, student_id, category.name, row)
             if item_key not in chosen:
-                shown, how = item.result_id, item.how
-                repeated = item.status in ALREADY and not self._decided(*decision[:3])
-                if repeated and shown is not None and how is not None:
-                    self._decide(*decision, shown, how, by=by, now=now)
                 continue
+            recorded = self._decided(report_id, item_key, student_id)
+            if recorded is not None and recorded != item.result_id:
+                msg = "a row shown first is accepted only as the result its record names"
+                raise RuntimeError(msg)
             result_id = item.result_id
             if result_id is None:
                 result_id = f"result-{uuid.uuid4().hex}"
@@ -1156,14 +1238,27 @@ class GradebookRecords:
             self._connection.execute(
                 ADD_RESULT_OBSERVATION, (report_id, result_id, student_id, position, *cells)
             )
-            self._decide(*decision, result_id, item.how or "new", by=by, now=now)
+            if recorded is None:
+                self._decide(
+                    report_id,
+                    item_key,
+                    student_id,
+                    category.name,
+                    row,
+                    result_id,
+                    item.how or "new",
+                    by=by,
+                    now=now,
+                )
             accepted.append((item_key, result_id))
         return accepted
 
-    def _decided(self, report_id: str, item_key: str, student_id: str) -> bool:
-        """Whether the row already has its match decision in ``report_id``."""
+    def _decided(self, report_id: str, item_key: str, student_id: str) -> str | None:
+        """The result the row's record in ``report_id`` names, or None when it has no record
+        there, or one naming no result."""
         held = self._connection.execute(ROW_DECIDED, (student_id, report_id, item_key))
-        return held.fetchone() is not None
+        found = held.fetchone()
+        return None if found is None or found[0] is None else str(found[0])
 
     def _decide(
         self,
@@ -1179,8 +1274,8 @@ class GradebookRecords:
         now: str,
     ) -> None:
         """A row's match decision in ``report_id``: its evidence and occurrence, the result it
-        resolved to, and how. A row the report repeats unchanged gets one without an observation,
-        so the report counts as showing that result."""
+        resolved to, and how. A row the report shows without accepting its value gets one without
+        an observation, so the report counts as showing that result."""
         evidence = evidence_text(row_evidence(category_name, row))
         self._connection.execute(
             ADD_MATCH_DECISION,
@@ -1206,6 +1301,18 @@ def _cells(fields: tuple[str, ...], row: tuple[object, ...]) -> dict[str, Cell]:
 
 ALREADY: Final = frozenset({ItemStatus.SAVED, ItemStatus.MATCHES_EARLIER})
 """The statuses an outcome counts as already saved."""
+EXPLICIT: Final = frozenset({"answer", "chosen"})
+"""How a row record counts as the parent's explicit answer, whether its row was shown or
+accepted."""
+
+
+def _rows_by_key(draft: GradeReportDraft) -> dict[str, tuple[GradeValue, GradeRow]]:
+    """Each result row of ``draft`` by its key, with its category's name."""
+    return {
+        row_key(category.name, row): (category.name, row)
+        for category in draft.categories
+        for row in category.rows
+    }
 
 
 def _confirmer(role: str) -> ConfirmedBy:
