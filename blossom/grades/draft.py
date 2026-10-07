@@ -21,10 +21,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 NUMBER = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
 """A number as the gradebook writes one: digits, then a point and digits, a minus at most."""
-MONTH_AND_DAY = re.compile(r"(?:0[1-9]|1[0-2])/(?:0[1-9]|[12][0-9]|3[01])")
+MONTH_AND_DAY = re.compile(r"(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])")
 """A due date as the gradebook writes it, MM/DD, with no year."""
-SCHOOL_YEAR = re.compile(r"[0-9]{4}-[0-9]{4}")
+LONGEST_MONTHS = (31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+"""The most days each month has in any year, February's in a leap year."""
+SCHOOL_YEAR = re.compile(r"([0-9]{4})-([0-9]{4})")
 """A school year's label, such as 2026-2027."""
+
+
+def is_school_year(text: str) -> bool:
+    """Whether ``text`` is a school year's label: two years in a row, such as 2026-2027."""
+    written = SCHOOL_YEAR.fullmatch(text)
+    return written is not None and int(written[2]) == int(written[1]) + 1
 
 
 class Presence(StrEnum):
@@ -38,10 +46,10 @@ class Presence(StrEnum):
 
 
 class GradeValue(BaseModel):
-    """One value as the report wrote it, with its presence. A reported or unreadable value keeps
-    its text, and a blank or uncaptured one has none."""
+    """One value as the report wrote it, with its presence: a reported value has its kind's form,
+    an unreadable one keeps text without it, and a blank or uncaptured one has no text."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     text: str
     presence: Presence
@@ -77,6 +85,9 @@ class GradeValue(BaseModel):
         if self.presence is Presence.REPORTED and not self.fits(self.text):
             msg = "a reported value has the form of its kind"
             raise ValueError(msg)
+        if self.presence is Presence.UNREADABLE and self.fits(self.text):
+            msg = "an unreadable value lacks the form of its kind"
+            raise ValueError(msg)
         return self
 
 
@@ -100,15 +111,16 @@ class DueText(GradeValue):
 
     @classmethod
     def fits(cls, text: str) -> bool:
-        """Whether ``text`` is a month and a day, MM/DD."""
-        return MONTH_AND_DAY.fullmatch(text) is not None
+        """Whether ``text`` is a month and a day, MM/DD, that some year has."""
+        written = MONTH_AND_DAY.fullmatch(text)
+        return written is not None and int(written[2]) <= LONGEST_MONTHS[int(written[1]) - 1]
 
 
 class ReportHeader(BaseModel):
     """The report's header as written. The student line is kept for the identity check alone and
     is left out of every repr and of the capture key; the teacher's cell is never kept."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     student_line: str | None = Field(repr=False)
     year_label: str
@@ -127,8 +139,8 @@ class ReportHeader(BaseModel):
     @field_validator("year_label")
     @classmethod
     def _is_a_school_year(cls, value: str) -> str:
-        if SCHOOL_YEAR.fullmatch(value) is None:
-            msg = "a school year is written as two years, such as 2026-2027"
+        if not is_school_year(value):
+            msg = "a school year is written as two years in a row, such as 2026-2027"
             raise ValueError(msg)
         return value
 
@@ -136,7 +148,7 @@ class ReportHeader(BaseModel):
 class TermResult(BaseModel):
     """The term grade the report gives: its percent and its letter, as written."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     percent: GradeNumber
     letter: GradeValue
@@ -146,7 +158,7 @@ class GradeRow(BaseModel):
     """One result row, every cell as written, and its occurrence: its place among the rows of
     this report with the same evidence, counting from 1."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     assignment: GradeValue
     points: GradeNumber
@@ -181,7 +193,7 @@ class GradeRow(BaseModel):
 class GradeCategory(BaseModel):
     """One category: its name, weight and average as written, then its rows in order."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     name: GradeValue
     weight: GradeNumber
@@ -213,7 +225,7 @@ class GradeReportDraft(BaseModel):
     """The validated reading of one report: its header, the term result and the categories in
     order. It holds what the report says and nothing the review could take as an answer."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     header: ReportHeader
     term: TermResult
