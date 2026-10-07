@@ -1533,3 +1533,141 @@ def test_a_missing_due_date_is_never_matching_evidence_and_never_equals_another(
     assert sketch.question.ids == ("result-0",)
     assert seed.question is None
     assert seed.choices == ("result-0", "result-1")
+
+
+def undated_different_kept(store: ProjectStateStore) -> tuple[str, str, GradeReportSaved]:
+    """A saved complete; Seed Germination Log renamed Journal in a copy missing the Homework /
+    Practice Due column, answered "A different assignment" and saved with no value selected:
+    the rejected result, A's report, and the outcome."""
+    first = saved(save(store, A, complete=True))
+    seed = row(review_of(store, A), "Seed Germination Log").result_id or ""
+    draft = undated(RENAMED)
+    review = review_of(store, draft)
+    journal = row(review, "Seed Germination Journal")
+    outcome = save(store, draft, review, matches=[different(journal)], selection=())
+    return seed, first.report_id or "", saved(outcome)
+
+
+def test_a_different_answer_for_a_row_whose_due_wasnt_captured_replays_in_its_capture() -> None:
+    """His fifteenth round: kept by the submission for the same capture and row, against the
+    candidate it turned down; it creates no assignment, presence or value, the row stays Due date
+    not captured and unselectable, a retry writes nothing, and the answer stays open to change."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True)).report_id or ""
+    seed = row(review_of(store, A), "Seed Germination Log").result_id or ""
+    draft = undated(RENAMED)
+    review = review_of(store, draft)
+    journal_key = row(review, "Seed Germination Journal").key
+    answer = different(row(review, "Seed Germination Journal"))
+    kept = saved(save(store, draft, review, matches=[answer], selection=()))
+
+    assert (kept.added, kept.updated, kept.accepted) == (0, 0, ())
+    assert (kept.shown, kept.answers_kept) == (2, 1)
+    assert records(store, kept.report_id)[journal_key] == (None, "different")
+    (rejected,) = store._connection.execute(
+        "SELECT rejected FROM grade_match_decisions WHERE row_key = ?", (journal_key,)
+    ).fetchone()
+    evidence = [["reported", "Homework / Practice"], ["reported", "Seed Germination Log"]]
+    assert json.loads(rejected) == [[seed, [*evidence, ["reported", "09/22"]]]]
+    assert observed(store, kept.report_id) == 0
+    assert len(results(store)) == 4
+    value = store.current_values(class_of(store), "T1").results[seed]
+    assert (value.report_id, value.last_shown) == (first, ReportAt(first, 1))
+    changes = store._connection.total_changes
+    assert isinstance(save(store, draft, review, matches=[answer], selection=()), AlreadyRecorded)
+    assert store._connection.total_changes == changes
+    replay = review_of(store, draft)
+    item = row(replay, "Seed Germination Journal")
+
+    assert (item.status, item.result_id, item.how, item.remembered) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        None,
+        "answer",
+        True,
+    )
+    assert item.question is not None
+    assert item.question.ids == (seed,)
+    assert seed in item.choices
+    assert item.key not in replay.ready
+    before = revision(store)
+    nothing = saved(save(store, draft, replay, selection=()))
+    assert (nothing.report_id, nothing.shown, nothing.answers_kept) == (None, 0, 0)
+    assert revision(store) == before
+    page = review_of(store, draft)
+    journal = row(page, "Seed Germination Journal")
+    later = saved(save(store, draft, page, matches=[chosen(journal, seed)], selection=()))
+
+    assert later.report_id == kept.report_id
+    assert records(store, kept.report_id)[journal_key] == (seed, "chosen")
+    assert observed(store, kept.report_id) == 0
+    assert len(results(store)) == 4
+    again = row(review_of(store, draft), "Seed Germination Journal")
+    assert (again.status, again.result_id, again.how) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        seed,
+        "same_capture",
+    )
+
+
+def test_a_remembered_different_for_a_row_whose_due_wasnt_captured_stays_in_its_capture() -> None:
+    """His fifteenth round: another capture whose row has the same title and its date missing
+    too asks again, and so does the same capture once a new candidate appears; "Choose an
+    existing assignment" stays open in both."""
+    store = in_memory()
+    seed, _, _ = undated_different_kept(store)
+    other = review_of(store, undated(RENAMED, CELL_SCORE))
+    item = row(other, "Seed Germination Journal")
+
+    assert (item.status, item.result_id, item.how, item.remembered) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        None,
+        None,
+        False,
+    )
+    assert item.question is not None
+    assert item.question.ids == (seed,)
+    assert seed in item.choices
+    assert item.key not in other.ready
+    saved(save(store, WITH_LEAF))
+    leaf = row(review_of(store, WITH_LEAF), "Leaf Sketch").result_id or ""
+    same_capture = review_of(store, undated(RENAMED))
+    item = row(same_capture, "Seed Germination Journal")
+
+    assert (item.status, item.result_id, item.how, item.remembered) == (
+        ItemStatus.DUE_NOT_CAPTURED,
+        None,
+        None,
+        False,
+    )
+    assert item.question is not None
+    assert set(item.question.ids) == {seed, leaf}
+    assert {seed, leaf} <= set(item.choices)
+    assert item.key not in same_capture.ready
+
+
+def test_a_different_answer_for_an_undated_row_whose_score_cant_be_read_keeps_its_warning() -> None:
+    """Both rules at once: remembered for its own capture only, with Couldn't read kept."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+    draft = undated(CELL_EX)
+    review = review_of(store, draft)
+    cell = row(review, "Cell Diagram")
+    kept = saved(save(store, draft, review, matches=[different(cell)], selection=()))
+
+    assert records(store, kept.report_id)[cell.key] == (None, "different")
+    assert observed(store, kept.report_id) == 0
+    for again, remembered in ((draft, True), (undated(CELL_EX, SEED_SCORE), False)):
+        later = review_of(store, again)
+        item = row(later, "Cell Diagram")
+
+        assert (item.status, item.result_id, item.remembered) == (
+            ItemStatus.UNREADABLE,
+            None,
+            remembered,
+        )
+        assert item.how == ("answer" if remembered else None)
+        assert item.question is not None
+        assert item.question.ids == (cell_id,)
+        assert cell_id in item.choices
+        assert item.key not in later.ready

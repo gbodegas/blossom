@@ -10,8 +10,8 @@ was accepted; then by evidence: only equal evidence, unique in the report and in
 no stored decision gives another result, matches without asking; then by the parent's explicit
 answer for the same evidence, reused only when nothing makes it ambiguous. Otherwise a parent
 answers which result it is, or that it is a different assignment, which stands for the same
-evidence and the same candidates until changed; an open row may also be one of her results the
-parent chooses.
+evidence and the same candidates until changed (for a row whose due date wasn't captured, for the
+same capture and row only); an open row may also be one of her results the parent chooses.
 
 Each value's status compares it with its target's current value, as accepted school values:
 "Saved", equal to it; "Matches an earlier saved value", equal to a value a newer one replaced;
@@ -428,7 +428,8 @@ class OnRecord:
     """What her record says about one report, read under her student ID: the line, the context,
     the year, the class, the scope revision, what the class reviewed holds, the keys this
     capture's acceptance records name, each with its result, the rows its row records showed
-    without accepting, each with its result, and the order of the report its rest joins."""
+    without accepting, each with its result, the order of the report its rest joins, and the
+    candidates each of its rows' "A different assignment" turned down."""
 
     identity: Identity
     context: bool
@@ -440,6 +441,9 @@ class OnRecord:
     saved: Mapping[str, str | None]
     shown: Mapping[str, str] = field(default_factory=dict)
     joins: int | None = None
+    turned_down: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    """By row key, the candidates each "A different assignment" this capture's row records keep
+    turned down in the class and term reviewed, as ``rejected_text`` writes them."""
 
     def covers(self, target: str) -> bool:
         """Whether a current report newer than the one this capture's rest joins supplied or
@@ -519,6 +523,7 @@ class _Matching:
 
     def __init__(self, rows: list[_Row], on_record: OnRecord) -> None:
         self.held = on_record.held
+        self.turned_down = on_record.turned_down
         self.alike = Counter(row.evidence for row in rows)
         self.taken = {
             result
@@ -591,7 +596,10 @@ class _Matching:
     def remembered(self, row: _Row, asked: MatchQuestion) -> bool:
         """Whether a stored "A different assignment" answers ``asked``: every one stored for the
         row's evidence turned down exactly the candidates asked now, with the same evidence, no
-        stored decision names a result for that evidence, and no other row has it."""
+        stored decision names a result for that evidence, and no other row has it. For a row
+        whose due date wasn't captured, only this capture's record for the same row counts."""
+        if row.undated:
+            return self.turned_down.get(row.key, frozenset()) == {rejected_text(asked)}
         if not row.identified or self.alike[row.evidence] != 1:
             return False
         text = evidence_text(row.evidence)

@@ -370,6 +370,12 @@ CAPTURE_SHOWN: Final = (
     "WHERE r.student_id = ? AND r.reader = 'text' AND r.source_key = ? "
     "AND d.result_id IS NOT NULL"
 )
+CAPTURE_TURNED_DOWN: Final = (
+    "SELECT d.row_key, d.rejected FROM grade_match_decisions AS d JOIN grade_reports AS r "
+    "ON r.report_id = d.report_id AND r.student_id = d.student_id "
+    "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? AND r.reader = 'text' "
+    "AND r.source_key = ? AND d.how = 'different'"
+)
 CAPTURE_JOINS: Final = (
     "SELECT MAX(acceptance_order) FROM grade_reports "
     "WHERE student_id = ? AND class_id = ? AND term_label = ? AND source_key = ?"
@@ -873,11 +879,16 @@ class GradebookRecords:
             reviewed = same_class
         held = NOTHING_HELD
         joins = None
+        turned_down: dict[str, set[str]] = {}
         if reviewed is not None:
             held = self._class_record(student_id, reviewed, term)
             (joins,) = self._connection.execute(
                 CAPTURE_JOINS, (student_id, reviewed, term, source_key)
             ).fetchone()
+            for item_key, rejected in self._connection.execute(
+                CAPTURE_TURNED_DOWN, (student_id, reviewed, term, source_key)
+            ):
+                turned_down.setdefault(str(item_key), set()).add(str(rejected))
         saved: dict[str, str | None] = {}
         for (accepted,) in self._connection.execute(
             ACCEPTED_FROM_SOURCE, (student_id, TEXT_KIND, source_key)
@@ -904,6 +915,7 @@ class GradebookRecords:
             saved=saved,
             shown=shown,
             joins=None if joins is None else int(joins),
+            turned_down={key: frozenset(texts) for key, texts in turned_down.items()},
         )
         return review_from(draft, source_key, new_acceptance_id(), on_record, matches)
 
