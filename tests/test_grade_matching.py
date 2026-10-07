@@ -1206,6 +1206,56 @@ def test_the_choice_is_not_offered_when_it_would_change_nothing() -> None:
     assert store.current_values(class_of(store), "T1") == before
 
 
+ROW_LINES = tuple(
+    line
+    for line in REPORT.splitlines()
+    if line.startswith(("| Seed", "| Cell", "| Microscope", "| Osmosis"))
+)
+NO_ROWS = tuple((f"{line}\n", "") for line in ROW_LINES)
+"""Every result row left out of a copy: its term and categories stay."""
+LAB_LOG = "| Lab Safety Log | 9.0 | 10.0 | 90.0 | Valid | 09/30 | 0.0 | 0.0 | | 1.0 | |"
+LAB_LOG_REPORT = REPORT.replace(CELL, f"{CELL}\n{LAB_LOG}")
+"""Another capture with one more homework row, Lab Safety Log."""
+
+
+def test_a_capture_with_no_rows_offers_no_choice_complete_or_not() -> None:
+    """A copy whose term and categories are saved and that has no result rows makes no report, so
+    it can't show an assignment as absent: no choice, complete or not, and an answer to one
+    returns the review."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    draft = variant(*NO_ROWS)
+
+    assert whole(*NO_ROWS)
+    assert review_of(store, draft).use is None
+    review = store.review_grade_report(draft, capture_key(draft), key=KEY, complete=True)
+    assert (review.rows, {item.status for item in review.items}) == ((), {ItemStatus.SAVED})
+    assert review.use is None
+    returned = save(store, draft, review, use="current", complete=True)
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.ANSWERS
+    assert saved(save(store, draft, review, complete=True)).report_id is None
+
+
+def test_absence_alone_offers_the_choice_only_for_a_complete_reading() -> None:
+    """Its one row names Lab Safety Log, which only a report kept as earlier holds, so no current
+    value or last showing could change: only a complete reading could show A's results as
+    absent, and only then is the choice offered."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, variant(text=LAB_LOG_REPORT), use="earlier", complete=True))
+    excused = (*NO_ROWS, (LAB_LOG, LAB_LOG.replace(" 9.0 ", " EX ")))
+    draft = variant(*excused, text=LAB_LOG_REPORT)
+    log = row(review_of(store, draft), "Lab Safety Log")
+
+    assert whole(*excused, text=LAB_LOG_REPORT)
+    assert (log.status, log.how) == (ItemStatus.UNREADABLE, "exact")
+    assert log.result_id not in store.current_values(class_of(store), "T1").results
+    assert review_of(store, draft).use is None
+    review = store.review_grade_report(draft, capture_key(draft), key=KEY, complete=True)
+    assert review.use == UseChoice("current", ())
+
+
 def test_an_answer_not_among_the_choices_returns_the_review() -> None:
     store = in_memory()
     saved(save(store, A))

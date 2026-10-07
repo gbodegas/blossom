@@ -765,12 +765,15 @@ class GradebookRecords:
             return NameConfirmedAgain(identity.form)
 
     def review_grade_report(
-        self, draft: GradeReportDraft, source_key: str, *, key: bytes
+        self, draft: GradeReportDraft, source_key: str, *, key: bytes, complete: bool = False
     ) -> GradeReview:
         """What saving ``draft`` would do, under a fresh acceptance ID: the identity of its
-        line, its setup questions, the scope revision, and each value's status. A read alone."""
+        line, its setup questions, the scope revision, each value's status, and the
+        report-level choice. ``complete`` is ``reading_complete`` of the reading the draft came
+        from; a reading not known complete never offers the choice for absence alone. A read
+        alone."""
         with self._lock:
-            return self._review_locked(draft, source_key, key, same_class=None)
+            return self._review_locked(draft, source_key, key, same_class=None, complete=complete)
 
     def current_values(self, class_id: str, term: str) -> CurrentValues:
         """Each target's current value in her class and term, the term however its label is
@@ -811,10 +814,12 @@ class GradebookRecords:
                 return AlreadyRecorded(outcome, chosen - covered)
             if answers.identity is IdentityAnswer.NOT_HERS:
                 return NotHers()
-            review = self._review_locked(draft, source_key, key, same_class=None)
+            review = self._review_locked(draft, source_key, key, same_class=None, complete=complete)
             into = review
             if answers.same_class is not None:
-                into = self._review_locked(draft, source_key, key, same_class=answers.same_class)
+                into = self._review_locked(
+                    draft, source_key, key, same_class=answers.same_class, complete=complete
+                )
             if page.source_key != source_key:
                 return ReviewReturned(into, ReturnReason.SOURCE)
             if review.revision != page.revision or (
@@ -837,6 +842,7 @@ class GradebookRecords:
                     key,
                     same_class=answers.same_class,
                     matches=answers.matches,
+                    complete=complete,
                 )
             # A value goes back to one a newer report replaced only under the parent's choice
             # of current, and only when the page showed it as matching an earlier saved value.
@@ -869,9 +875,11 @@ class GradebookRecords:
         *,
         same_class: str | None,
         matches: tuple[MatchAnswer, ...] = (),
+        complete: bool,
     ) -> GradeReview:
         """The review, the values' statuses read in the class an alias matched, or else in
-        ``same_class`` when it is one of the year's classes, with ``matches`` applied."""
+        ``same_class`` when it is one of the year's classes, with ``matches`` applied, for a
+        reading complete or not."""
         header = draft.header
         student_id, check, forms = self._her_name_record()
         identity = identity_among(key, header.student_line, check=check, forms=forms)
@@ -922,7 +930,9 @@ class GradebookRecords:
             shown=shown,
             joins=None if joins is None else int(joins),
         )
-        return review_from(draft, source_key, new_acceptance_id(), on_record, matches)
+        return review_from(
+            draft, source_key, new_acceptance_id(), on_record, matches, complete=complete
+        )
 
     def _class_record(self, student_id: str, class_id: str, term: str) -> ClassRecord:
         """What her class and term hold, read under her student ID: each target's current value,

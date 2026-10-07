@@ -776,9 +776,11 @@ def review_from(
     acceptance_id: str,
     on_record: OnRecord,
     matches: Collection[MatchAnswer] = (),
+    *,
+    complete: bool,
 ) -> GradeReview:
     """The review of ``draft`` against what her record says, in the report's order, with
-    ``matches`` applied to the questions they answer."""
+    ``matches`` applied to the questions they answer; ``complete`` is whether its reading was."""
     held = on_record.held
 
     def item(key: str, cells: Mapping[str, Cell], current: CurrentValue | None) -> ReviewItem:
@@ -827,22 +829,27 @@ def review_from(
         term=term_item,
         categories=categories,
         rows=rows,
-        use=None if on_record.joins is not None else _use_choice(held, values, rows),
+        use=None if on_record.joins is not None else _use_choice(held, values, rows, complete),
     )
 
 
 def _use_choice(
-    held: ClassRecord, values: tuple[ReviewItem, ...], rows: tuple[ReviewItem, ...]
+    held: ClassRecord,
+    values: tuple[ReviewItem, ...],
+    rows: tuple[ReviewItem, ...],
+    complete: bool,
 ) -> UseChoice | None:
     """The choice for the new report a save makes, or None when making it current would change
     nothing: no value it could make current, no current result whose last showing it would
-    move, and no current result it could show as absent, every row resolved."""
+    move, and no current result it could show as absent. Absence takes a complete reading with
+    at least one row, every row naming a result: a copy with no rows makes no report."""
     current = held.current.results
     named = {item.result_id for item in rows if item.result_id is not None}
+    resolved = bool(rows) and all(item.result_id is not None for item in rows)
     if not (
         any(item.status in CURRENT_COULD_CHANGE for item in values)
         or not named.isdisjoint(current)
-        or (all(item.result_id is not None for item in rows) and not current.keys() <= named)
+        or (complete and resolved and not current.keys() <= named)
     ):
         return None
     repeats = tuple(item.key for item in values if item.status is ItemStatus.MATCHES_EARLIER)
