@@ -114,8 +114,9 @@ HELP_POST = {
     "description": (
         "Ask for help today. ``payload`` is optional so an empty POST works. With a\n"
         "``request_id`` the same id sent again is the request it made, 200, and never a "
-        "second;\nwithout one every POST asks again, so a retry is not safe. ``HersToAsk`` "
-        "answers a\nparent 403 before the body is read."
+        "second;\nwithout one every POST asks again, so a retry is not safe. An id whose "
+        "request can't be\nread asks nothing, 500. ``HersToAsk`` answers a parent 403 before "
+        "the body is read."
     ),
     "operationId": "ask_for_help_student_help_requests_post",
     "requestBody": body_of("HelpRequestBody"),

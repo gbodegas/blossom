@@ -379,7 +379,7 @@ def stored_plan(client: TestClient, evening: date) -> DraftRecord:
     [
         ("the record", "read_everything"),
         ("her signal", "for_evening"),
-        ("her requests for help", "open_requests"),
+        ("her requests for help", "listed"),
     ],
 )
 def test_the_family_page_keeps_every_plan_in_force_as_saved_when_a_later_read_fails(
@@ -411,9 +411,9 @@ def test_the_family_page_keeps_every_plan_in_force_as_saved_when_a_later_read_fa
         watched(
             monkeypatch,
             state.help_requests,
-            "open_requests",
+            "listed",
             calls,
-            fails=target == "open_requests",
+            fails=target == "listed",
         )
         with caplog.at_level(logging.WARNING, logger="blossom.routes.parent"):
             shown = client.get("/parent?plan=x&refreshed=1", headers=PAGE_HEADERS)

@@ -125,7 +125,13 @@ from blossom.routes.runs import (
     tidy_later,
     tidy_thread,
 )
-from blossom.routes.student import help_view, notes_named_by
+from blossom.routes.student import (
+    REQUEST_UNREADABLE,
+    UNREADABLE_COUNT,
+    help_view,
+    notes_named_by,
+    set_apart,
+)
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import (
     INTERRUPTED,
@@ -805,8 +811,9 @@ def move_request(
     update_id: str | None = None,
 ) -> HelpRequest:
     """Take a request up, add an update to it, or close it. Words past the cap are 422 before
-    anything is read; then an unknown request is 404, an update with no words 422, and a move
-    its state or its form refuses 409. Any other step is 422."""
+    anything is read; then an unknown request is 404, an update with no words 422, a move its
+    state or its form refuses 409, and one on a request that can't be read 500, with nothing
+    written. Any other step is 422."""
     store = state.help_requests
     try:
         if step == "accept":
@@ -836,6 +843,13 @@ def move_request(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, detail=UPDATE_NEEDS_WORDS
         ) from error
+    except UnreadableHelpRequest as error:
+        logger.warning(
+            "a parent's move on her request could not be saved: %s", type(error).__name__
+        )
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, detail=REQUEST_UNREADABLE
+        ) from error
     raise HTTPException(
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail=f"{step!r} is not one of the three moves, accept, update or resolve.",
@@ -861,10 +875,13 @@ def moved_over_json(
 
 
 @router.get("/help-requests")
-def help_requests(state: State) -> list[HelpRequestView]:
+def help_requests(state: State, response: Response) -> list[HelpRequestView]:
     """Every request she has open, oldest first, then those resolved within two weeks, each
-    with the note it is about, read once for all of them."""
-    asked = [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
+    with the note it is about, read once for all of them. One that can't be read is left out
+    and counted in the ``Help-Requests-Unreadable`` header."""
+    listed = state.help_requests.listed()
+    response.headers[UNREADABLE_COUNT] = str(listed.unreadable)
+    asked = listed.every()
     named = notes_named_by(state, asked)
     return [help_view(state, request, named) for request in asked]
 
@@ -966,7 +983,8 @@ def review_page(
     working = next((record for record in shown if record.draft_id == records.current_id), None)
     # What she added as homework notes is read beside the record, in the same snapshot,
     # and is no part of it. The notes her requests are about come in one more statement.
-    asked = [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
+    listed = state.help_requests.listed()
+    asked = listed.every()
     with state.project_state.reading():
         everything = read_everything(
             state.project_state,
@@ -1027,6 +1045,7 @@ def review_page(
             "reason_max_length": REASON_MAX_LENGTH,
             "help_open": [help_view(state, r, named) for r in asked if r.open],
             "help_resolved": [help_view(state, r, named) for r in asked if not r.open],
+            "help_set_apart": set_apart(listed.unreadable),
             "update_ids": {r.request_id: new_update_id() for r in asked if r.open},
             "help_reply": help_reply,
             "help_reply_listed": help_reply is not None
@@ -1519,10 +1538,11 @@ def help_from_the_page(
     no form carries is refused. A step the family page refuses is said at its top with the
     words as typed: in the request's own box while the request is open there, marked and
     focused when the words are what was refused, with a way to the box when the refusal
-    says they are below, and under the problem otherwise. A move the file refuses, or a
-    request whose row can't be read, is rolled back and answered at once on the family
-    page's stand-in, which reads no store, 500, with the words as typed. A refusal whose
-    page can't be read keeps its status there, with the words.
+    says they are below, and under the problem otherwise. A request whose row can't be read
+    is refused there too, 500, with nothing written. A move the file refuses is rolled back
+    and answered at once on the family page's stand-in, which reads no store, 500, with the
+    words as typed. A refusal whose page can't be read keeps its status there, with the
+    words.
     """
     typed = FamilyKept(reply=response)
     try:
@@ -1557,7 +1577,7 @@ def help_from_the_page(
         elif words:
             kept = HelpReplyKept(request_id, response, below=said in WORDS_BELOW)
         return refused_on_the_page(request, state, said, error.status_code, typed, help_reply=kept)
-    except (sqlite3.Error, UnreadableHelpRequest) as error:
+    except sqlite3.Error as error:
         logger.warning(
             "a parent's move on her request could not be saved: %s", type(error).__name__
         )

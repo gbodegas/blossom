@@ -1669,7 +1669,10 @@ takes the focus. `take_back`
 reads with the retention cutoff, so a request resolved past retention before
 the sweep is missing. When the requests can't be read, the rest of the week
 still shows, Help says so and keeps her form, and nothing more about them is
-read.
+read. A single request whose row can't be read, text that isn't UTF-8
+included, is set apart instead: every list shows the rest and says how many
+can't be read, with nothing the row holds, and a move or take-back on it is
+refused and leaves the row as it is.
 
 Each form that asks carries an id the page made for it. The request is kept
 under that id in one transaction with the id's own record, the look for the

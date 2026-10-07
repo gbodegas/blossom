@@ -572,7 +572,7 @@
       {% if viewer == "parent" %}
         {% if view.help_unavailable %}
           <p class="problem" id="ask-for-help" tabindex="-1">Her requests for help can't be read right now. Refresh replies to try again. You can also open <a href="{{ family_help }}">Family review</a>.</p>
-        {% elif view.help_open or view.help_recent or view.help_earlier %}
+        {% elif view.help_open or view.help_recent or view.help_earlier or view.help_set_apart %}
           <p class="note" id="ask-for-help" tabindex="-1">Her requests for help are below. You can answer open ones on <a href="{{ family_help }}">Family review</a>.</p>
         {% else %}
           <p class="note" id="ask-for-help" tabindex="-1">No requests for help to show. When she asks, you can answer on <a href="{{ family_help }}">Family review</a>.</p>
@@ -584,6 +584,9 @@
           <input type="hidden" name="request_id" value="{{ help_request_id }}">
           <button type="submit" class="secondary">Ask a parent for help</button>
         </form>
+      {% endif %}
+      {% if view.help_set_apart %}
+        <p class="problem">{{ view.help_set_apart }}</p>
       {% endif %}
       {% if view.help_unavailable %}
         {% if not parent %}<p class="problem">Your requests for help can't be read right now. Refresh replies to check them before you ask again.</p>{% endif %}

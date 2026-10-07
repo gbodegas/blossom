@@ -83,9 +83,12 @@
       open here, marked and focused when the words are what was refused, with
       a way to the box when the problem says they are below, and under the
       problem at the top when the request is closed or gone. Every name says
-      the request by its own day and time.
+      the request by its own day and time. A request that can't be read is
+      counted in one line above them, with nothing it holds, and has no form.
     #}
-    {% if not help_open %}
+    {% if help_set_apart %}
+      <p class="problem">{{ help_set_apart }}</p>
+    {% elif not help_open %}
       <p class="empty quiet">No open help requests.</p>
     {% endif %}
     {% for ask in help_open %}

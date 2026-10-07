@@ -24,6 +24,8 @@ from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.routes import student as student_routes
+from blossom.routes.captures import NOTE_ASKED
+from blossom.routes.navigation import note_href
 from blossom.stores import help_requests as help_store
 from blossom.stores.help_requests import (
     HELP_RETENTION_DAYS,
@@ -49,6 +51,8 @@ from tests.support import (
     help_updates,
     refusing,
     signed_in_household,
+    state_of,
+    waiting_note,
     whole_form,
 )
 
@@ -212,6 +216,7 @@ def test_the_store_offers_no_way_to_read_a_pattern() -> None:
         "add_update",
         "resolve",
         "get",
+        "listed",
         "open_requests",
         "recently_resolved",
         "retained",
@@ -756,7 +761,8 @@ def test_a_start_that_meets_updates_it_cannot_read_leaves_them_and_names_no_word
     unreadable: str, tmp_path: pathlib.Path
 ) -> None:
     """Updates the pages can't read are never written at a start, even beside a reply that
-    differs from every update, and reading them is ``UnreadableHelpRequest`` in names alone."""
+    differs from every update. Reading the request is ``UnreadableHelpRequest`` in names alone,
+    and every list sets it apart."""
     path = tmp_path / "record.sqlite3"
     store = HelpRequestsStore.open(path, fixture_clock())
     asked = store.ask(PLAN_DATE).request_id
@@ -767,9 +773,11 @@ def test_a_start_that_meets_updates_it_cannot_read_leaves_them_and_names_no_word
 
     again = HelpRequestsStore.open(path, fixture_clock())
     held = again._connection.execute("SELECT parent_updates FROM help_requests").fetchone()[0]
+    kept = again.retained()
     with pytest.raises(help_store.UnreadableHelpRequest) as refused:
-        again.retained()
+        again.get(asked)
 
+    assert (kept.requests, kept.unreadable) == ((), 1)
     assert held == unreadable
     assert "zebra" not in str(refused.value)
     assert asked in str(refused.value)
@@ -2060,13 +2068,13 @@ def test_no_words_of_a_parents_update_reach_the_log(
     assert "zebra" not in caplog.text
 
 
-@pytest.mark.parametrize("step", ["update", "resolve"])
+@pytest.mark.parametrize("step", ["accept", "update", "resolve"])
 def test_a_move_on_a_row_that_can_not_be_read_keeps_the_words_and_writes_nothing(
     step: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A request whose updates turn unreadable after the page was made is refused when the move
-    reads it: the family page's stand-in keeps the words as typed, nothing is written, and the
-    log names the kind of failure alone."""
+    reads it: the family page says so with the words as typed, the request set apart, nothing
+    is written, and the log names the kind of failure alone."""
     with browser() as client:
         request_id = asked_for(client)
         client.post(f"/parent/help-requests/{request_id}/accept", json={})
@@ -2081,7 +2089,9 @@ def test_a_move_on_a_row_that_can_not_be_read_keeps_the_words_and_writes_nothing
         after = requests_held(client)
 
     assert answer.status_code == 500
-    assert "That could not be saved, and nothing was changed. Your reply is below." in answer.text
+    assert "<h1>Family review</h1>" in answer.text
+    assert f'id="problem">{escape(CANNOT_BE_READ)}</p>' in answer.text
+    assert str(escape(SET_APART)) in answer.text
     assert '<textarea id="kept-reply" rows="3" readonly>Synthetic zebra words</textarea>' in (
         answer.text
     )
@@ -2089,3 +2099,198 @@ def test_a_move_on_a_row_that_can_not_be_read_keeps_the_words_and_writes_nothing
     kind = "UnreadableHelpRequest"
     assert f"a parent's move on her request could not be saved: {kind}" in caplog.text
     assert "zebra" not in caplog.text
+
+
+# ------------------------------------------------------------ a request that can't be read
+
+
+SET_APART = "1 request for help can't be read right now."
+CANNOT_BE_READ = "This request for help can't be read right now, so nothing was changed."
+UNREADABLE_COUNT = "Help-Requests-Unreadable"
+DAMAGED_WORDS = "Synthetic zebra question"
+DAMAGES = {
+    "her words past the limit": (
+        "UPDATE help_requests SET note = note || printf('%.*c', 600, 'x') WHERE request_id = ?"
+    ),
+    "updates that are no list": (
+        "UPDATE help_requests SET parent_updates = 'Synthetic zebra, no list' WHERE request_id = ?"
+    ),
+    "words not UTF-8": (
+        "UPDATE help_requests SET note = CAST(CAST(note AS BLOB) || x'ff' AS TEXT) "
+        "WHERE request_id = ?"
+    ),
+}
+"""Three ways a kept request can't be read: a field past its limit, updates the store can't
+read as a list, and text whose bytes aren't UTF-8."""
+STORED = (
+    "SELECT hex(request_id) || '|' || hex(evening) || '|' || hex(asked_at) || '|' || hex(note)"
+    " || '|' || hex(state) || '|' || hex(accepted_at) || '|' || hex(resolved_at) || '|' ||"
+    " hex(response) || '|' || hex(capture_id) || '|' || hex(parent_updates)"
+    " FROM help_requests ORDER BY rowid"
+)
+"""Every kept request as its stored bytes, so a row whose text isn't UTF-8 is compared too."""
+
+
+def stored(client: TestClient) -> list[str]:
+    found = state_of(client).help_requests._connection.execute(STORED)
+    return [str(row[0]) for row in found.fetchall()]
+
+
+def three_requests(state: ApplicationState, how: str) -> tuple[str, str, str]:
+    """A readable open request, one damaged ``how``, and a readable closed one, asked in that
+    order; their ids."""
+    store, today = state.help_requests, state.clock.today()
+    waiting = store.ask(today, "Synthetic open question").request_id
+    damaged = store.ask(today, DAMAGED_WORDS).request_id
+    closed = store.ask(today, "Synthetic closed question").request_id
+    store.resolve(closed, "Synthetic closing words")
+    store._connection.execute(DAMAGES[how], (damaged,))
+    store._connection.commit()
+    return waiting, damaged, closed
+
+
+@pytest.mark.parametrize("how", list(DAMAGES))
+def test_the_family_page_sets_apart_a_request_it_cannot_read_and_shows_the_rest(how: str) -> None:
+    with browser() as client:
+        waiting, damaged, _ = three_requests(state_of(client), how)
+        page = client.get(FAMILY)
+
+    assert page.status_code == 200
+    assert f'id="reply-{waiting}"' in page.text
+    assert "Synthetic open question" in page.text
+    assert "Synthetic closing words" in page.text
+    assert str(escape(SET_APART)) in page.text
+    assert "No open help requests." not in page.text
+    assert damaged not in page.text
+    assert "zebra" not in page.text
+
+
+@pytest.mark.parametrize("how", list(DAMAGES))
+@pytest.mark.parametrize("path", ["/student/help-requests", "/parent/help-requests"])
+def test_the_json_lists_carry_the_readable_requests_and_count_the_rest(path: str, how: str) -> None:
+    with browser() as client:
+        whole = client.get(path)
+        waiting, _, closed = three_requests(state_of(client), how)
+        answer = client.get(path)
+
+    assert (whole.status_code, whole.headers.get(UNREADABLE_COUNT)) == (200, "0")
+    assert answer.status_code == 200
+    assert [item["request_id"] for item in answer.json()] == [waiting, closed]
+    assert answer.headers[UNREADABLE_COUNT] == "1"
+    assert "zebra" not in answer.text
+
+
+@pytest.mark.parametrize("how", list(DAMAGES))
+@pytest.mark.parametrize("reader", ["her", "a parent"])
+def test_her_week_sets_apart_a_request_it_cannot_read_and_shows_the_rest(
+    reader: str, how: str, tmp_path: pathlib.Path
+) -> None:
+    client = signed_in(tmp_path)
+    try:
+        waiting, damaged, closed = three_requests(state_of(client), how)
+        if reader == "a parent":
+            as_a_parent(client)
+        page = client.get(PAGE)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert page.status_code == 200
+    assert "Synthetic open question" in help_row(page.text, waiting)
+    assert "Synthetic closing words" in help_row(page.text, closed)
+    assert str(escape(SET_APART)) in page.text
+    assert "for help can&#39;t be read right now. Refresh replies" not in page.text
+    assert damaged not in page.text
+    assert "zebra" not in page.text
+    if reader == "a parent":
+        assert "Her requests for help are below." in page.text
+
+
+@pytest.mark.parametrize("how", list(DAMAGES))
+@pytest.mark.parametrize("step", ["accept", "update", "resolve"])
+def test_a_json_move_on_a_request_that_cannot_be_read_is_refused_and_writes_nothing(
+    step: str, how: str
+) -> None:
+    with browser() as client:
+        _, damaged, _ = three_requests(state_of(client), how)
+        before = stored(client)
+        answer = client.post(
+            f"/parent/help-requests/{damaged}/{step}", json={"response": "Synthetic zebra reply"}
+        )
+        after = stored(client)
+
+    assert answer.status_code == 500
+    assert answer.json() == {"detail": CANNOT_BE_READ}
+    assert after == before
+
+
+@pytest.mark.parametrize("how", list(DAMAGES))
+def test_her_take_back_of_a_request_that_cannot_be_read_is_refused_and_keeps_it(how: str) -> None:
+    with browser() as client:
+        _, damaged, _ = three_requests(state_of(client), how)
+        before = stored(client)
+        page = client.post(f"/student/actions/take-back-help/{damaged}")
+        json_answer = client.delete(f"/student/help-requests/{damaged}")
+        after = stored(client)
+
+    assert page.status_code == 500
+    assert str(escape(CANNOT_BE_READ)) in page.text
+    assert "<h1>My week</h1>" in page.text
+    assert (json_answer.status_code, json_answer.json()) == (500, {"detail": CANNOT_BE_READ})
+    assert after == before
+    assert "zebra" not in page.text + json_answer.text
+
+
+@pytest.mark.parametrize("how", list(DAMAGES))
+def test_her_json_ask_sent_again_over_a_request_that_cannot_be_read_asks_nothing(how: str) -> None:
+    with browser() as client:
+        _, damaged, _ = three_requests(state_of(client), how)
+        before = stored(client)
+        answer = client.post(
+            "/student/help-requests", json={"note": DAMAGED_WORDS, "request_id": damaged}
+        )
+        after = stored(client)
+
+    assert (answer.status_code, answer.json()) == (500, {"detail": CANNOT_BE_READ})
+    assert after == before
+
+
+@pytest.mark.parametrize("how", list(DAMAGES))
+def test_her_note_page_naming_a_request_that_cannot_be_read_shows_the_note(how: str) -> None:
+    with browser() as client:
+        state = state_of(client)
+        name = waiting_note(
+            state.project_state, course="Geometry", title="Questions 4-8", text="Page 12"
+        )
+        _, damaged, _ = three_requests(state, how)
+        page = client.get(note_href(name, asked=damaged))
+
+    assert page.status_code == 200
+    assert "Page 12" in page.text
+    assert str(escape(NOTE_ASKED)) not in page.text
+    assert "zebra" not in page.text
+
+
+def test_a_start_over_a_reply_that_is_not_utf_8_leaves_it_and_sets_it_apart(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "help.sqlite3"
+    first = HelpRequestsStore.open(path, fixture_clock())
+    readable = first.ask(PLAN_DATE, "Synthetic open question")
+    damaged = first.ask(PLAN_DATE, DAMAGED_WORDS)
+    first._connection.execute(
+        "UPDATE help_requests SET response = CAST(CAST(note AS BLOB) || x'ff' AS TEXT) "
+        "WHERE request_id = ?",
+        (damaged.request_id,),
+    )
+    first._connection.commit()
+    before = [str(row[0]) for row in first._connection.execute(STORED).fetchall()]
+    first.close()
+
+    again = HelpRequestsStore.open(path, fixture_clock())
+    after = [str(row[0]) for row in again._connection.execute(STORED).fetchall()]
+    held = again.retained()
+    again.close()
+
+    assert after == before
+    assert [request.request_id for request in held.requests] == [readable.request_id]
+    assert held.unreadable == 1

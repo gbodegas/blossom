@@ -129,6 +129,7 @@ from blossom.stores.help_requests import (
     HelpFormUsed,
     NotARequestId,
     UnknownCaptureReference,
+    UnreadableHelpRequest,
     new_request_id,
     request_id_from,
 )
@@ -882,7 +883,12 @@ def note_page(
     checking = mine and result is None and bool(asked)
     try:
         if checking and asked:
-            request_made = state.help_requests.get(asked[:TOKEN_MAX_LENGTH])
+            try:
+                request_made = state.help_requests.get(asked[:TOKEN_MAX_LENGTH])
+            except UnreadableHelpRequest as unread:
+                # A request that can't be read is said nowhere on the note's page.
+                logger.warning("a note's asked request can't be read: %s", type(unread).__name__)
+                request_made = None
             if request_made is not None and request_made.capture_id == note.capture_id:
                 result = NoteResult(NOTE_ASKED, stands=True)
         homework = in_homework(state, note)
