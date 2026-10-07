@@ -1867,6 +1867,23 @@ def save_grade(
     )
 
 
+def without_the_due_column(text: str, category: str) -> str:
+    """The report ``text`` with the Due column of ``category``'s result table left out, so each
+    of its rows has a due date that wasn't captured."""
+    lines, inside = [], False
+    for line in text.split("\n"):
+        if f"**{category}**" in line:
+            inside = True
+        elif "Weight =" in line:
+            inside = False
+        cells = line.split("|")
+        if inside and len(cells) == 13:
+            del cells[6]
+            line = "|".join(cells)
+        lines.append(line)
+    return "\n".join(lines)
+
+
 class HeldByAnother:
     """The household's file held by another program: a second connection that has begun an
     exclusive transaction, so every connection of the application waits for it and then

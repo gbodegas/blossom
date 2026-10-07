@@ -442,9 +442,9 @@ def read_grade_report(text: str) -> GradeReportReading:
 
 def reading_complete(reading: GradeReportReading) -> bool:
     """Whether a reading is complete enough to say what its report doesn't show: its term result
-    came from a Term Grade row, every category's average was read by its own structure, no line
-    it didn't recognize fell between the header and the Term Grade row, and no table line it
-    didn't place fell after it."""
+    came from a Term Grade row, every category's average was read by its own structure, every
+    result row's due cell was captured, no line it didn't recognize fell between the header and
+    the Term Grade row, and no table line it didn't place fell after it."""
     draft = reading.draft
     if draft is None:
         return False
@@ -452,6 +452,12 @@ def reading_complete(reading: GradeReportReading) -> bool:
     if Presence.NOT_CAPTURED in term:
         return False
     if any(category.average.presence is Presence.NOT_CAPTURED for category in draft.categories):
+        return False
+    if any(
+        row.due.presence is Presence.NOT_CAPTURED
+        for category in draft.categories
+        for row in category.rows
+    ):
         return False
     return not any(
         place is LinePlace.BEFORE_TERM
