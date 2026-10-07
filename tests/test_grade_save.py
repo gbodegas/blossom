@@ -567,22 +567,25 @@ def test_the_same_class_answer_saves_into_that_class_with_an_alias() -> None:
     ]
     after = review_of(store)
     assert after.class_question.matched == chemistry[0]
-    assert set(statuses(after)) == {ItemStatus.NEEDS_MATCHING}
+    assert set(statuses(after)) == {ItemStatus.SAVED}
 
 
-def test_needs_matching_values_cannot_be_selected() -> None:
+def test_another_capture_s_saved_values_cannot_be_selected() -> None:
+    """Another capture of the class and term: its values equal to the saved ones read Saved and
+    can't be selected; only the changed score is offered, and an empty save adds nothing."""
     store = in_memory()
     saved(save(store))
     review = review_of(store, EIGHT_DRAFT)
     before = gradebook_of(store)
 
-    assert set(statuses(review)) == {ItemStatus.NEEDS_MATCHING}
-    assert review.ready == frozenset()
-    for chosen in (TERM_KEY, review.categories[0].key, review.rows[1].key):
+    assert statuses(review).count(ItemStatus.CHANGED) == 1
+    assert set(statuses(review)) == {ItemStatus.SAVED, ItemStatus.CHANGED}
+    assert review.ready == {review.rows[1].key}
+    for chosen in (TERM_KEY, review.categories[0].key, review.rows[0].key):
         returned(save(store, EIGHT_DRAFT, review, selection={chosen}), ReturnReason.SELECTION)
         assert gradebook_of(store) == before
     nothing = saved(save(store, EIGHT_DRAFT, review, selection=()))
-    assert (nothing.added, nothing.left, nothing.report_id) == (0, 9, None)
+    assert (nothing.added, nothing.updated, nothing.left, nothing.report_id) == (0, 0, 1, None)
     assert one(store, "SELECT COUNT(*) FROM grade_results") == [(4,)]
 
 

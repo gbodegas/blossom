@@ -4,9 +4,15 @@
 
 Every value of a report has a key made from what it says, never from its place: the term result,
 each category by its name, and each result row by its evidence (category, title and due date)
-with its occurrence among the rows alike. Each value then has a status. Saved: this capture's own
-acceptance records name it. Couldn't read: a cell is unreadable. Needs matching: the class and
-term hold another capture's results. New: none of these. Only a New value can be selected.
+with its occurrence among the rows alike. A row resolves to one of her results first through this
+capture's own acceptance records, then by evidence: only equal evidence, unique in the report and
+in one result, that no stored decision gives another result, matches without asking. Otherwise a
+parent answers which result it is, or that it is a different assignment.
+
+Each value's status compares it with its target's current value, as accepted school values:
+"Saved", equal to it; "Matches an earlier saved value", equal to a value a newer one replaced;
+"Changed", it differs; "New", no target; "Needs your answer", a matching question is open;
+"Couldn't read", a cell is unreadable. Only a New or Changed value can be selected.
 
 The questions a review asks are the identity of the student line, the first setup, the first
 month of a year not on record, and the class when no alias matches. The answers a page sends are
@@ -16,10 +22,10 @@ asked now, or a question left unanswered, saves nothing.
 
 import json
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Final
+from typing import Final, Literal
 
 from blossom.grades.draft import (
     Evidence,
@@ -71,23 +77,138 @@ def category_keys(draft: GradeReportDraft) -> tuple[str, ...]:
     return tuple(keys)
 
 
+Cell = tuple[Presence, str]
+"""One cell as an observation keeps it: its presence and its text as written."""
+TERM_FIELDS: Final = ("percent", "letter")
+"""The cells of the term result, in order."""
+CATEGORY_FIELDS: Final = ("name", "weight", "average")
+"""The cells of a category, in order."""
+RESULT_FIELDS: Final = (
+    "category",
+    "assignment",
+    "points",
+    "max_points",
+    "average",
+    "status",
+    "due",
+    "curve",
+    "bonus",
+    "penalty",
+    "weight",
+    "note",
+)
+"""The cells of a result row, its category's name first, then Assignment to Note."""
+Compared = tuple[tuple[str, str, str], ...]
+"""A value as statuses compare it."""
+
+
+def cells_of(fields: Iterable[str], values: Iterable[GradeValue]) -> dict[str, Cell]:
+    """Each value of a draft as a cell, by its field."""
+    return {
+        field: (value.presence, value.text) for field, value in zip(fields, values, strict=True)
+    }
+
+
+def compared(cells: Mapping[str, Cell]) -> Compared:
+    """A value as statuses compare accepted school values: each field with its presence and its
+    text, spaces folded as the capture key folds them. Every status comparison goes through it."""
+    return tuple((field, presence.value, folded(text)) for field, (presence, text) in cells.items())
+
+
+@dataclass(frozen=True)
+class CurrentValue:
+    """A target's value as one accepted report gave it: its cells by field, that report and its
+    acceptance order, and for a result a newer full report left out, ``last_seen``: it reads
+    "last seen in" its own report."""
+
+    cells: Mapping[str, Cell]
+    report_id: str
+    order: int
+    last_seen: bool = False
+
+
+@dataclass(frozen=True)
+class CurrentValues:
+    """The current value of each target of a class and term: the term result, each category by its
+    key and each result by its ID, each from the current report with the highest acceptance
+    order that supplied it. An earlier report supplies none."""
+
+    term: CurrentValue | None
+    categories: Mapping[str, CurrentValue]
+    results: Mapping[str, CurrentValue]
+
+
 class ItemStatus(StrEnum):
     """What one value of a report is against her record."""
 
     NEW = "new"
     SAVED = "saved"
+    MATCHES_EARLIER = "matches_earlier"
+    """"Matches an earlier saved value": equal to a value a newer one replaced. Not offered."""
+    CHANGED = "changed"
+    NEEDS_ANSWER = "needs_answer"
+    """"Needs your answer": a matching question is open."""
     UNREADABLE = "unreadable"
-    NEEDS_MATCHING = "needs_matching"
+
+
+class QuestionKind(StrEnum):
+    """What a matching question asks about a row."""
+
+    DUE_CHANGED = "due_changed"
+    """"Same assignment, due date changed from A to B?": one candidate, the same title."""
+    RENAMED = "renamed"
+    """"Same assignment, renamed from 'X'?": one candidate, another title."""
+    WHICH = "which"
+    """Which of the candidates it is, or "A different assignment"."""
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """A result a row may be: its ID and its latest observation, with its last score, status and
+    due text."""
+
+    result_id: str
+    last: CurrentValue
+
+
+@dataclass(frozen=True)
+class MatchQuestion:
+    """The question a row asks before it can be selected, with its candidates."""
+
+    kind: QuestionKind
+    candidates: tuple[Candidate, ...]
+
+    @property
+    def ids(self) -> tuple[str, ...]:
+        """The candidates' result IDs, in order: what an answer is bound to."""
+        return tuple(candidate.result_id for candidate in self.candidates)
+
+
+@dataclass(frozen=True)
+class MatchAnswer:
+    """A parent's answer to a row's question, bound to the candidates it was asked with: the
+    result it is, or None for "A different assignment"."""
+
+    row_key: str
+    candidates: tuple[str, ...]
+    result_id: str | None
+
+
+MatchedHow = Literal["same_capture", "exact", "answer"]
+"""How a row resolved: through its own capture's acceptance, by equal evidence, or by an answer."""
 
 
 @dataclass(frozen=True)
 class ReviewItem:
-    """One value of the report: its key, its status, and for a saved row the result it resolved
-    to."""
+    """One value of the report: its key and status; for a row, the result it resolved to and how,
+    or its open question; and its target's current value, the "from" of a Changed value."""
 
     key: str
     status: ItemStatus
     result_id: str | None = None
+    current: CurrentValue | None = None
+    question: MatchQuestion | None = None
+    how: MatchedHow | None = None
 
 
 @dataclass(frozen=True)
@@ -124,8 +245,8 @@ class GradeReview:
 
     @property
     def ready(self) -> frozenset[str]:
-        """The keys of the values a save may select: the New ones."""
-        return frozenset(item.key for item in self.items if item.status is ItemStatus.NEW)
+        """The keys of the values a save may select: the New and Changed ones."""
+        return frozenset(item.key for item in self.items if item.status in OFFERED)
 
 
 class IdentityAnswer(StrEnum):
@@ -156,8 +277,8 @@ ANSWERS_FOR: Final[Mapping[IdentityStatus, frozenset[IdentityAnswer]]] = {
 @dataclass(frozen=True)
 class GradeAnswers:
     """The answers a review page sends: about the line, with the form of the line it answered;
-    the year and term confirmed at the first setup; the year and its first month; and the class,
-    as a new one's display name or the ID of the class it is the same as."""
+    the year and term confirmed at the first setup; the year and its first month; the class, as a
+    new one's display name or the ID of the class it is the same as; and the matching answers."""
 
     identity: IdentityAnswer
     identity_form: str | None
@@ -165,6 +286,7 @@ class GradeAnswers:
     first_month: tuple[str, int] | None = None
     new_class: str | None = None
     same_class: str | None = None
+    matches: tuple[MatchAnswer, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -227,10 +349,26 @@ SaveOutcome = GradeReportSaved | AlreadyRecorded | ReviewReturned | NotHers
 
 
 @dataclass(frozen=True)
+class ClassRecord:
+    """What the class and term reviewed hold: each target's current value, every value accepted
+    for each target as compared, each result's latest observation (its evidence), and the results
+    stored decisions gave each row evidence."""
+
+    current: CurrentValues
+    accepted: Mapping[str, frozenset[Compared]]
+    latest: Mapping[str, CurrentValue]
+    decided: Mapping[str, frozenset[str]]
+
+
+NOTHING_HELD: Final = ClassRecord(CurrentValues(None, {}, {}), {}, {}, {})
+"""The record of a class and term that hold no report, or of no class yet."""
+
+
+@dataclass(frozen=True)
 class OnRecord:
     """What her record says about one report, read under her student ID: the line, the context,
-    the year, the class, the scope revision, whether the class reviewed holds another capture's
-    report, and the keys this capture's acceptance records name, each with its result."""
+    the year, the class, the scope revision, what the class reviewed holds, and the keys this
+    capture's acceptance records name, each with its result."""
 
     identity: Identity
     context: bool
@@ -238,27 +376,204 @@ class OnRecord:
     matched: str | None
     existing: tuple[tuple[str, str], ...]
     revision: int | None
-    others: bool
+    held: ClassRecord
     saved: Mapping[str, str | None]
+
+
+OFFERED: Final = frozenset({ItemStatus.NEW, ItemStatus.CHANGED})
+"""The statuses a save may select."""
 
 
 def _unreadable(*values: GradeValue) -> bool:
     return any(value.presence is Presence.UNREADABLE for value in values)
 
 
-def review_from(
-    draft: GradeReportDraft, source_key: str, acceptance_id: str, on_record: OnRecord
-) -> GradeReview:
-    """The review of ``draft`` against what her record says, in the report's order."""
+def status_against(
+    held: ClassRecord, target: str, cells: Mapping[str, Cell], current: CurrentValue | None
+) -> ItemStatus:
+    """A value's status against its target: Saved when equal to the current value, Matches an
+    earlier saved value when equal to another accepted one, else Changed, or New with no
+    current value."""
+    value = compared(cells)
+    if current is not None and compared(current.cells) == value:
+        return ItemStatus.SAVED
+    if value in held.accepted.get(target, frozenset()):
+        return ItemStatus.MATCHES_EARLIER
+    return ItemStatus.NEW if current is None else ItemStatus.CHANGED
 
-    def item(key: str, unreadable: bool) -> ReviewItem:
-        if key in on_record.saved:
-            return ReviewItem(key, ItemStatus.SAVED, on_record.saved[key])
-        if unreadable:
+
+def evidence_of(value: CurrentValue) -> Evidence:
+    """A result's evidence, derived from an observation of it: its category, title and due date."""
+    cells = value.cells
+
+    def one(field: str) -> tuple[Presence, str]:
+        return cells[field][0], folded(cells[field][1])
+
+    return one("category"), one("assignment"), one("due")
+
+
+def _title(evidence: Evidence) -> tuple[Presence, str]:
+    """A title as candidates are found by it: its presence and its folded text, case folded."""
+    presence, text = evidence[1]
+    return presence, text.casefold()
+
+
+@dataclass(frozen=True)
+class _Row:
+    key: str
+    evidence: Evidence
+    cells: dict[str, Cell]
+    unreadable: bool
+
+
+class _Matching:
+    """The rows of one report against the results of the class and term reviewed."""
+
+    def __init__(self, rows: list[_Row], on_record: OnRecord) -> None:
+        self.held = on_record.held
+        self.alike = Counter(row.evidence for row in rows)
+        self.titles = {_title(row.evidence) for row in rows}
+        self.taken = {
+            result for row in rows if (result := on_record.saved.get(row.key)) is not None
+        }
+
+    def candidates(self, row: _Row) -> list[str]:
+        """Her results the row may be: those with its title; for a row no title matches, those
+        missing from this report that share its category and its due text or its max points."""
+        latest = self.held.latest
+        free = {
+            result: evidence_of(latest[result]) for result in latest if result not in self.taken
+        }
+        by_title = [result for result, seen in free.items() if _title(seen) == _title(row.evidence)]
+        if by_title:
+            return by_title
+        most = compared({"max": row.cells["max_points"]})
+        return [
+            result
+            for result, seen in free.items()
+            if _title(seen) not in self.titles
+            and seen[0] == row.evidence[0]
+            and (
+                seen[2] == row.evidence[2]
+                or compared({"max": latest[result].cells["max_points"]}) == most
+            )
+        ]
+
+    def exact(self, row: _Row) -> str | None:
+        """The one result whose evidence equals the row's, unique in the report, that no stored
+        decision for that evidence contradicts."""
+        if self.alike[row.evidence] != 1:
+            return None
+        latest = self.held.latest
+        equal = [
+            result for result in self.candidates(row) if evidence_of(latest[result]) == row.evidence
+        ]
+        stored = self.held.decided.get(evidence_text(row.evidence), frozenset())
+        if len(equal) != 1 or not stored <= {equal[0]}:
+            return None
+        return equal[0]
+
+    def question(self, row: _Row) -> MatchQuestion | None:
+        """The question the row asks, or None when no result may be it."""
+        found = self.candidates(row)
+        if not found:
+            return None
+        latest = self.held.latest
+        kind = QuestionKind.WHICH
+        if len(found) == 1:
+            seen = evidence_of(latest[found[0]])
+            if _title(seen) != _title(row.evidence):
+                kind = QuestionKind.RENAMED
+            elif seen[0] == row.evidence[0] and seen[2] != row.evidence[2]:
+                kind = QuestionKind.DUE_CHANGED
+        return MatchQuestion(kind, tuple(Candidate(result, latest[result]) for result in found))
+
+
+def _rows_of(draft: GradeReportDraft) -> list[_Row]:
+    return [
+        _Row(
+            key=row_key(category.name, row),
+            evidence=row_evidence(category.name, row),
+            cells=cells_of(RESULT_FIELDS, (category.name, *row.cells())),
+            unreadable=_unreadable(category.name, *row.cells()),
+        )
+        for category in draft.categories
+        for row in category.rows
+    ]
+
+
+def _binds(answer: MatchAnswer, question: MatchQuestion) -> bool:
+    """Whether ``answer`` answers ``question``: the same candidates, and one of them or none."""
+    return answer.candidates == question.ids and (
+        answer.result_id is None or answer.result_id in question.ids
+    )
+
+
+def _resolved_rows(
+    on_record: OnRecord, rows: list[_Row], matches: Collection[MatchAnswer]
+) -> tuple[ReviewItem, ...]:
+    """Each row resolved: through this capture's acceptance, by equal evidence, by an answer
+    bound to the question asked now, as a new result, or with its question open."""
+    held = on_record.held
+    matching = _Matching(rows, on_record)
+    answered = {answer.row_key: answer for answer in matches}
+
+    def resolved(
+        row: _Row, result: str, how: MatchedHow, asked: MatchQuestion | None
+    ) -> ReviewItem:
+        current = held.current.results.get(result)
+        status = status_against(held, result, row.cells, current)
+        if how == "same_capture" and status in OFFERED:
+            status = ItemStatus.SAVED
+        return ReviewItem(row.key, status, result, current, asked, how)
+
+    exact = {}
+    for row in rows:
+        if row.key not in on_record.saved and not row.unreadable:
+            found = matching.exact(row)
+            if found is not None:
+                exact[row.key] = found
+    matching.taken |= set(exact.values())
+    items = []
+    for row in rows:
+        saved_as = on_record.saved.get(row.key)
+        if saved_as is not None:
+            items.append(resolved(row, saved_as, "same_capture", None))
+        elif row.unreadable:
+            items.append(ReviewItem(row.key, ItemStatus.UNREADABLE))
+        elif row.key in exact:
+            items.append(resolved(row, exact[row.key], "exact", None))
+        elif (asked := matching.question(row)) is None:
+            items.append(ReviewItem(row.key, ItemStatus.NEW))
+        elif (answer := answered.get(row.key)) is None or not _binds(answer, asked):
+            items.append(ReviewItem(row.key, ItemStatus.NEEDS_ANSWER, question=asked))
+        elif answer.result_id is None:
+            items.append(ReviewItem(row.key, ItemStatus.NEW, question=asked, how="answer"))
+        else:
+            items.append(resolved(row, answer.result_id, "answer", asked))
+    return tuple(items)
+
+
+def review_from(
+    draft: GradeReportDraft,
+    source_key: str,
+    acceptance_id: str,
+    on_record: OnRecord,
+    matches: Collection[MatchAnswer] = (),
+) -> GradeReview:
+    """The review of ``draft`` against what her record says, in the report's order, with
+    ``matches`` applied to the questions they answer."""
+    held = on_record.held
+
+    def item(key: str, cells: Mapping[str, Cell], current: CurrentValue | None) -> ReviewItem:
+        if key not in on_record.saved and any(
+            presence is Presence.UNREADABLE for presence, _ in cells.values()
+        ):
             return ReviewItem(key, ItemStatus.UNREADABLE)
-        if on_record.others:
-            return ReviewItem(key, ItemStatus.NEEDS_MATCHING)
-        return ReviewItem(key, ItemStatus.NEW)
+        status = status_against(held, key, cells, current)
+        if key in on_record.saved and status in OFFERED:
+            status = ItemStatus.SAVED
+        return ReviewItem(key, status, current=current)
 
     header = draft.header
     term = draft.term
@@ -267,14 +582,14 @@ def review_from(
         Presence.NOT_CAPTURED,
     )
     categories = tuple(
-        item(key, _unreadable(category.name, category.weight, category.average))
+        item(
+            key,
+            cells_of(CATEGORY_FIELDS, (category.name, category.weight, category.average)),
+            held.current.categories.get(key),
+        )
         for key, category in zip(category_keys(draft), draft.categories, strict=True)
     )
-    rows = tuple(
-        item(row_key(category.name, row), _unreadable(category.name, *row.cells()))
-        for category in draft.categories
-        for row in category.rows
-    )
+    term_cells = cells_of(TERM_FIELDS, (term.percent, term.letter))
     return GradeReview(
         acceptance_id=acceptance_id,
         source_key=source_key,
@@ -287,9 +602,9 @@ def review_from(
             existing=on_record.existing,
         ),
         revision=on_record.revision,
-        term=item(TERM_KEY, _unreadable(term.percent, term.letter)) if captured else None,
+        term=item(TERM_KEY, term_cells, held.current.term) if captured else None,
         categories=categories,
-        rows=rows,
+        rows=_resolved_rows(on_record, _rows_of(draft), matches),
     )
 
 
@@ -325,3 +640,18 @@ def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
         offered = {class_id for class_id, _ in question.existing}
         return answers.new_class is None and answers.same_class in offered
     return answers.new_class is not None and bool(folded(answers.new_class))
+
+
+def matches_asked(review: GradeReview, matches: Collection[MatchAnswer]) -> bool:
+    """Whether each matching answer answers a question ``review`` asks now, bound to the same
+    candidates, at most one per row, and no two naming the same result."""
+    questions = {item.key: item.question for item in review.rows if item.question is not None}
+    rows = [answer.row_key for answer in matches]
+    named = [answer.result_id for answer in matches if answer.result_id is not None]
+    if len(set(rows)) != len(rows) or len(set(named)) != len(named):
+        return False
+    for answer in matches:
+        asked = questions.get(answer.row_key)
+        if asked is None or not _binds(answer, asked):
+            return False
+    return True
