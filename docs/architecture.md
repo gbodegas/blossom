@@ -1121,7 +1121,11 @@ recorded or taken back under the lock a decision holds, so
 the evening a decision was checked against cannot change before the decision
 lands. A signal that is gone was taken back or aged out, and the store does
 not say which, so the message names both rather than putting an action on her
-that she may not have taken.
+that she may not have taken. A start can also set a smaller limit than the one a
+waiting plan was held to: a waiting plan whose saved blocks are over the limit
+that applies now reads as stale the same way, with its own sentence on both
+pages, and is refused at approval. A plan kept as text alone can't be measured,
+and a plan for an evening that has passed isn't.
 
 Giving a signal and taking it back are hers alone. A parent signed in is
 answered 403 by the routes her page's buttons post to and by both JSON

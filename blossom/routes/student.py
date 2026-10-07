@@ -1050,6 +1050,7 @@ def read_a_plan(
             record,
             settings=state.settings,
             zone=state.clock.zone,
+            today=today,
             everything=everything if record.waiting else None,
         )
     match found:

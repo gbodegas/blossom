@@ -422,6 +422,7 @@ def stale_reason(
         state.project_state,
         settings=state.settings,
         zone=state.clock.zone,
+        today=today,
         everything=everything,
     ):
         case Staleness.SIGNALED_SINCE:

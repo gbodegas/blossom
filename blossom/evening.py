@@ -13,6 +13,7 @@ limit than the one a waiting plan was held to, and a plan over it does not fit.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
@@ -71,6 +72,7 @@ def staleness(
     *,
     settings: Settings,
     zone: ZoneInfo,
+    today: date,
     everything: Everything | None = None,
 ) -> Staleness | None:
     """How ``record`` fails to fit the evening as it stands now, or ``None`` while it fits.
@@ -78,8 +80,9 @@ def staleness(
     Her signal is measured first, since it changes the budget the checks held
     the plan to. Then a waiting plan's blocks as saved, against the limit set
     now in ``settings``, which a start can change after the plan is made; a
-    decided plan is a record, and a plan kept as text alone can't be measured,
-    so neither is measured against the limit. Then the window: with the
+    decided plan is a record, a plan for an evening before ``today`` can't be
+    planned again, and a plan kept as text alone can't be measured, so none of
+    them is measured against the limit. Then the window: with the
     record handed in, the week the run read for this evening is taken from it
     and its fingerprint compared to the one the draft carries; a draft from
     before plans carried one is not measured against the week. ``everything``
@@ -90,7 +93,8 @@ def staleness(
     signaled = bool(signals.for_evening(record.plan_date))
     if signaled != record.too_much:
         return Staleness.SIGNALED_SINCE if signaled else Staleness.SIGNAL_ENDED
-    minutes = saved_minutes(record, zone) if record.waiting else None
+    measured = record.waiting and record.plan_date >= today
+    minutes = saved_minutes(record, zone) if measured else None
     if minutes is not None and minutes > limit_now(record, settings):
         return Staleness.OVER_THE_LIMIT
     if record.inputs_digest is None:

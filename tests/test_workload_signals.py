@@ -1228,6 +1228,28 @@ def test_a_changed_signal_is_said_before_the_limit(tmp_path: pathlib.Path) -> No
     assert their_ended[0]["stale"] == THEIR_SIGNAL_ENDED
 
 
+def test_a_plan_read_after_its_evening_is_not_measured_against_the_limit_set_now(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The plan's own view, as any page reads it, measures a waiting plan only while its
+    evening hasn't passed: one read the day after can't be planned again, so the limit set
+    now doesn't make it stale, while the same plan read on its evening is."""
+    a_shorter_plan_saved(tmp_path)
+    with started(tmp_path, 40) as client:
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        record = state.drafts.latest_for(PLAN_DATE)
+        assert record is not None
+        on_its_evening = student_routes.read_a_plan(state, record, current=False, today=PLAN_DATE)
+        the_day_after = student_routes.read_a_plan(
+            state, record, current=False, today=PLAN_DATE + timedelta(days=1)
+        )
+
+    assert on_its_evening.view.stale == (
+        "This plan is longer than today's 40-minute limit. It stays until a new one is made."
+    )
+    assert the_day_after.view.stale is None
+
+
 def test_a_decided_plan_and_a_past_evening_are_not_measured_against_the_limit_set_now(
     tmp_path: pathlib.Path,
 ) -> None:
