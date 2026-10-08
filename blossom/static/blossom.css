@@ -603,6 +603,15 @@ article h2 {
   color: var(--text-soft);
 }
 
+/* Where a request stands and when it was asked or updated are the page's own words: a
+   short sentence, a weekday, a month, a time. On a phone with text at 200% the widest of
+   them, Wednesday, is wider than Help's line, so these lines keep each word whole and let
+   it reach into the panel's padding rather than break it. They still wrap between words. */
+.help-state,
+.help-when {
+  overflow-wrap: normal;
+}
+
 /* On the family page the form that moves a request stands apart from the request, so its
    field reads as a parent's own and not as a line of the request. A reply to her request
    is a sentence or two: its box starts two lines tall, not the height of the paste box,
@@ -1177,20 +1186,40 @@ pre.body {
 }
 
 /* On a phone with text at 200%, a card or Help leaves a line too short for the longest word
-   of a decision's button, of her Ask a parent for help in Help, or of a problem line in
-   Help, once the ordinary side padding is taken out. That padding gives way first, so a
-   word breaks only where the whole line can't hold it: it is 13vw - 1rem where that is
-   narrower, never less than nothing. A button keeps its ordinary padding on every screen
-   290 pixels or wider with ordinary text, and 580 pixels or wider with text at 200%; a
-   problem line on every screen 240 or 480 pixels or wider. The other ask forms, to sign in
-   and to ask about one note, keep their ordinary padding everywhere. */
+   of a decision's button, of her Ask a parent for help in Help or about one note, of a
+   button under her update on a card, or of a problem line in Help, once the ordinary side
+   padding is taken out. That padding gives way first, so a word breaks only where the whole
+   line can't hold it: it is 13vw - 1rem where that is narrower, never less than nothing. A
+   button keeps its ordinary padding on every screen 290 pixels or wider with ordinary text,
+   and 580 pixels or wider with text at 200%; a problem line on every screen 240 or 480
+   pixels or wider. The sign-in form keeps its ordinary padding everywhere. */
 .decision button,
-.help-panel .ask button {
+.help-panel .ask button,
+.homework-note .ask button,
+.update .actions button {
   padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);
 }
 
 .help-panel .problem {
   padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);
+}
+
+/* A plan waiting for review, its review accepted or unsettled, holds the decision form,
+   whose helper's longest word is wider than the card's line on a phone with text at 200%.
+   The card's side padding gives way the same way, from its ordinary 1.6rem, or 1.2rem on
+   a narrow screen, so the form's lines and controls widen together and stay in line. A
+   card keeps its ordinary padding on every screen 271 pixels or wider with ordinary text,
+   and 640 pixels or wider with text at 200%. */
+.draft.outcome-accepted,
+.draft.outcome-unsettled {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+@media (max-width: 30rem) {
+  .draft.outcome-accepted,
+  .draft.outcome-unsettled {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
 }
 
 label {
