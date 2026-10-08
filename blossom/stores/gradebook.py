@@ -964,8 +964,9 @@ class AcceptancesNotTied(RuntimeError):
         super().__init__(
             "Blossom couldn't start. Some saved import records have missing or inconsistent "
             f"report links. Affected records: {sum(counts)} ({cases}). This startup attempt did "
-            "not change or delete any grade records. Keep a copy of this file as it is and see "
-            f"the household guide before trying again. The guide is {path} in the Blossom "
+            "not change or delete any grade records. Leave this file and any files beside it "
+            "that start with the same name untouched, and see the household guide before "
+            f"trying again. The guide is {path} in the Blossom "
             f'folder, under "{heading}".'
         )
 
