@@ -2986,12 +2986,14 @@ def test_a_graph_that_comes_back_past_the_runs_limit_is_timed_out(
 
             async def held_after(*args: object, **kwargs: object) -> object:
                 result = await ainvoke(*args, **kwargs)
-                sleep(0.35)  # noqa: ASYNC251
+                sleep(1.2)  # noqa: ASYNC251
                 return result
 
             monkeypatch.setattr(graph, "ainvoke", held_after)
             kept = state.drafts.latest_for(PLAN_DATE)
-            late = await plan_evening(graph, PLAN_DATE, state, budget=RunBudget(seconds=0.2))
+            # A second is many times what three rounds take, so a busy machine still lets a
+            # run that ends itself finish inside it, and the hold outlasts it at any pace.
+            late = await plan_evening(graph, PLAN_DATE, state, budget=RunBudget(seconds=1.0))
             await detached_done(state)
             left = state.drafts.unpublished()
             latest = state.drafts.latest_for(PLAN_DATE)

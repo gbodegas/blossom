@@ -47,7 +47,8 @@ class Presence(StrEnum):
 
 class GradeValue(BaseModel):
     """One value as the report wrote it, with its presence: a reported value has its kind's form,
-    an unreadable one keeps text without it, and a blank or uncaptured one has no text."""
+    an unreadable one keeps text without it, and a blank or uncaptured one has no text. Text
+    keeps any space its cell held around it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -62,12 +63,12 @@ class GradeValue(BaseModel):
 
     @classmethod
     def read(cls, written: str) -> Self:
-        """A cell's text as a value: blank when empty, reported when it has this kind's form,
-        and unreadable, its text kept, when it doesn't."""
-        text = written.strip()
-        if not text:
+        """A cell's text as a value, exactly as written: blank when it holds nothing but space,
+        reported when it has this kind's form, and unreadable, its text kept, when it doesn't."""
+        if not written.strip():
             return cls(text="", presence=Presence.BLANK)
-        return cls(text=text, presence=Presence.REPORTED if cls.fits(text) else Presence.UNREADABLE)
+        kind = Presence.REPORTED if cls.fits(written) else Presence.UNREADABLE
+        return cls(text=written, presence=kind)
 
     @classmethod
     def not_captured(cls) -> Self:
@@ -76,11 +77,11 @@ class GradeValue(BaseModel):
 
     @model_validator(mode="after")
     def _text_agrees_with_presence(self) -> Self:
-        if (self.text == "") != (self.presence in (Presence.BLANK, Presence.NOT_CAPTURED)):
+        if (self.text.strip() == "") != (self.presence in (Presence.BLANK, Presence.NOT_CAPTURED)):
             msg = "a blank or uncaptured value has no text, and any other value has some"
             raise ValueError(msg)
-        if self.text != self.text.strip():
-            msg = "a value's text has no space around it"
+        if not self.text.strip() and self.text:
+            msg = "a blank or uncaptured value's text is empty, never space"
             raise ValueError(msg)
         if self.presence is Presence.REPORTED and not self.fits(self.text):
             msg = "a reported value has the form of its kind"

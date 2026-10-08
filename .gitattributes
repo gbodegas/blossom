@@ -10,3 +10,8 @@
 
 # Fonts are binary too.
 *.ttf binary
+
+# The grade clipboard fixtures are the gradebook's own copy, byte for byte: CRLF line
+# endings, empty cells and trailing tabs are what the reader reads, so git never converts
+# them or reads their trailing tabs as whitespace errors.
+data/synthetic/grade_clipboard/** -text -whitespace
