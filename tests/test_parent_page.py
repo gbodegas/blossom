@@ -42,7 +42,7 @@ from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
-from blossom.stores.drafts import RunState
+from blossom.stores.drafts import ReviewSnapshot, RunState
 from blossom.stores.help_requests import NOTE_MAX_LENGTH
 from blossom.stores.project_state import Assignment, Saved, Undone
 from tests import support
@@ -1422,7 +1422,7 @@ def run_line(page: str) -> str | None:
 
 
 def problem_line(page: str) -> str:
-    start = page.index('<p class="problem" role="alert" id="problem">')
+    start = page.index('<p class="problem" role="alert" id="problem"')
     return page[start : page.index("</p>", start) + 4]
 
 
@@ -1797,6 +1797,9 @@ def test_a_plan_for_another_evening_no_review_can_resume_says_only_when_it_close
 # ------------------------------------------------------- one press, one run
 
 W_3F = "This form came from an incomplete or outdated page, so no plan was started."
+FOCUSED_LINE = '<p class="problem" role="alert" id="problem" tabindex="-1" autofocus>'
+RESTING_LINE = '<p class="problem" role="alert" id="problem">'
+RUN_CHECK = '<span class="run-check"><a href="/parent?run='
 W_4F = "This form is from a page opened more than a week ago, so no plan was started."
 
 
@@ -1851,6 +1854,7 @@ def test_a_used_family_form_with_another_date_starts_nothing_and_keeps_the_date(
         "for Thursday, August 20. That plan is shown above."
     ) in again.text
     assert date_kept(again.text) == later
+    assert FOCUSED_LINE in again.text
     assert len(runs) == 1
 
 
@@ -1869,6 +1873,7 @@ def test_a_used_family_form_with_an_unreadable_date_names_its_request() -> None:
         again.text
     )
     assert date_kept(again.text) == "next tuesday"
+    assert FOCUSED_LINE in again.text
     assert len(runs) == 1
 
 
@@ -1913,6 +1918,7 @@ def test_a_family_form_that_is_not_whole_starts_nothing_and_keeps_the_date(
 
     assert posted.status_code == 422
     assert W_3F in posted.text
+    assert FOCUSED_LINE in posted.text
     assert date_kept(posted.text) == later
     assert runs == []
 
@@ -1927,6 +1933,7 @@ def test_an_old_family_form_starts_nothing_and_keeps_the_date() -> None:
 
     assert posted.status_code == 409
     assert W_4F in posted.text
+    assert FOCUSED_LINE in posted.text
     assert date_kept(posted.text) == later
     assert runs == []
 
@@ -1945,6 +1952,8 @@ def test_a_family_form_whose_run_is_running_offers_only_a_check() -> None:
     assert blocking is None
     assert pressed.status_code == 202
     assert "Check on it." in pressed.text
+    assert FOCUSED_LINE in pressed.text
+    assert RUN_CHECK in pressed.text
     assert 'action="/parent/actions/plan"' not in pressed.text
     assert [run for run, _, _ in runs] == [form["run_id"]]
 
@@ -1964,6 +1973,8 @@ def test_a_family_answer_left_unconfirmed_offers_only_a_check(
 
     assert pressed.status_code == 202
     assert "Check again." in pressed.text
+    assert FOCUSED_LINE in pressed.text
+    assert RUN_CHECK in pressed.text
     assert 'action="/parent/actions/plan"' not in pressed.text
 
 
@@ -1980,10 +1991,85 @@ def test_a_family_form_behind_a_newer_plan_starts_nothing_and_opens_that_plan() 
     assert pressed.status_code == 409
     said = " ".join(unescape(pressed.text).split())
     assert parent_routes.newer_plan_shown(PLAN_DATE, waiting=True) in said
+    assert FOCUSED_LINE in pressed.text
     assert len(runs) == 1
     fresh = form_fields(pressed.text, "/parent/actions/plan")
     assert fresh["run_id"] not in {stale["run_id"], runs[0][0]}
     assert fresh["newest_plan"] == newer
+
+
+def test_a_plan_published_while_the_family_page_is_read_leaves_its_form_behind_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The family page takes its form's newest plan from the one reading its plans come from,
+    so a plan published after that reading is neither shown nor named by the form: its press
+    starts nothing rather than replace a plan the page didn't show."""
+    with browser() as client:
+        assert client.post("/parent/actions/plan", data=family_plan(client, "")).is_redirect
+        drafts = state_of(client).drafts
+        shown = drafts.newest_published()
+        read = drafts.review_snapshot
+        between: list[str] = []
+
+        def then_published(today: date) -> ReviewSnapshot:
+            snapshot = read(today)
+            if not between:
+                between.append("plan:between")
+                landed = Draft(
+                    draft_id="draft:plan:between",
+                    body="Plan for Wednesday, August 19",
+                    created_at=datetime(2026, 8, 19, 22, 0, tzinfo=UTC),
+                )
+                settled_run(drafts, landed, thread_id="plan:between", plan_date=PLAN_DATE)
+            return snapshot
+
+        monkeypatch.setattr(drafts, "review_snapshot", then_published)
+        page = client.get("/parent").text
+        monkeypatch.undo()
+        form = form_fields(page, "/parent/actions/plan")
+        pressed = client.post("/parent/actions/plan", data=form)
+        runs = runs_recorded(client)
+
+    assert between == ["plan:between"]
+    assert shown != ""
+    assert form["newest_plan"] == shown
+    assert "draft:plan:between" not in page
+    assert pressed.status_code == 409
+    said = " ".join(unescape(pressed.text).split())
+    assert parent_routes.newer_plan_shown(PLAN_DATE, waiting=True) in said
+    assert [run for run, _, _ in runs][1:] == ["plan:between"]
+
+
+def test_a_refused_date_is_said_at_the_top_without_taking_the_focus() -> None:
+    """Only an answer about the plan form itself takes the focus; an evening that has passed
+    is said at the top as any refusal there is."""
+    earlier = (PLAN_DATE - timedelta(days=1)).isoformat()
+    with browser() as client:
+        posted = client.post("/parent/actions/plan", data=family_plan(client, earlier))
+
+    assert posted.status_code == 422
+    assert RESTING_LINE in posted.text
+    assert 'tabindex="-1" autofocus>' not in problem_line(posted.text)
+
+
+def test_the_plan_form_and_its_answers_are_held_by_their_own_rules() -> None:
+    """Every rule naming the plan form or the run check's place is the one checked in a
+    browser: the evening field may shrink inside the form at large text, the check link is
+    padded to 44 pixels in its sentence, and a focused line widens its edge as hers does."""
+    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
+    folded = {
+        name: [" ".join(rule.split()) for rule in rules_for(css, name)]
+        for name in ("plan-form", "run-check")
+    }
+    focus = support.declared_for('#problem[tabindex="-1"]:focus')
+
+    assert folded["plan-form"] == [
+        "display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; align-items: end;",
+        "min-width: 0;",
+    ]
+    assert folded["run-check"] == ["display: inline-block; padding: 0.8rem 0; margin: -0.8rem 0;"]
+    assert focus == support.declared_for(".week-problem:focus")
+    assert len(focus) == 1
 
 
 @pytest.mark.parametrize("who", ["her", "another origin", "signed out"])
@@ -2061,7 +2147,7 @@ def two_waiting_plans(client: TestClient) -> tuple[str, str]:
     client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
         plans=lambda: [tomorrows_plan()]
     )
-    posted = client.post("/parent/actions/plan", data={"plan_date": TOMORROW.isoformat()})
+    posted = client.post("/parent/actions/plan", data=family_plan(client, TOMORROW.isoformat()))
     assert posted.status_code == 303
     queue = client.get("/parent/approvals").json()["waiting"]
     tomorrow = ({str(draft["draft_id"]) for draft in queue} - {today}).pop()

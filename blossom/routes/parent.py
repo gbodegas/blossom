@@ -992,6 +992,7 @@ def review_page(
     status_code: int = status.HTTP_200_OK,
     plan_date_kept: str | None = None,
     offers_plan: bool = True,
+    focus_problem: bool = False,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to add assignments,
     and the folds below.
@@ -1006,7 +1007,8 @@ def review_page(
     link to the row, so it is met on a page that opens at its top.
     ``open_plan`` is a plan a link came back to, whose folds are opened.
     ``problem_check`` links the problem to the run it names, and ``run_notice`` is what
-    the page says about a planning run. A waiting plan no review could resume says so in
+    the page says about a planning run. ``focus_problem`` has the problem take the focus,
+    so a plan press it answers lands on its words. A waiting plan no review could resume says so in
     place of its two buttons, as the decision itself refuses it. ``help_reply`` is the
     words a refused press sent back, shown in its request's box while that request is
     open on the page, and under the problem otherwise. Each open request's form gets a
@@ -1114,6 +1116,7 @@ def review_page(
             "ended": ended,
             "unresumable": unresumable_now,
             "problem_check": problem_check,
+            "focus_problem": focus_problem,
             "run_notice": run_notice,
             # Open when the latest run of an evening still ahead made no plan, so the
             # parent sees why without looking for it.
@@ -1606,9 +1609,11 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         kept: str | None = None,
         offers_plan: bool = True,
         open_plan: str | None = None,
+        focused: bool = False,
     ) -> HTMLResponse:
         # The family page is read on a worker thread, for at most the store's wait; past
-        # it, its stand-in that reads no store says the same.
+        # it, its stand-in that reads no store says the same. ``focused`` has the line take
+        # the focus, so an answer about the form itself is met on a phone too.
         try:
             return await bounded(
                 lambda: refused_on_the_page(
@@ -1620,6 +1625,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                     plan_date_kept=kept,
                     offers_plan=offers_plan,
                     open_plan=open_plan,
+                    focus_problem=focused,
                 ),
                 STORE_WAIT_SECONDS,
             )
@@ -1647,6 +1653,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             status.HTTP_409_CONFLICT,
             kept=evening.isoformat(),
             open_plan=None if latest is None else latest.draft_id,
+            focused=True,
         )
 
     async def repeated(run: RunState, chosen: date | None) -> Response:
@@ -1655,7 +1662,11 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         check = run_check(FAMILY_PAGE, run.run_id, CHECK_ON_IT) if run.status == "running" else None
         if chosen is None:
             return await not_made(
-                asked_with_an_unreadable_date(run), status.HTTP_409_CONFLICT, check, kept=plan_date
+                asked_with_an_unreadable_date(run),
+                status.HTTP_409_CONFLICT,
+                check,
+                kept=plan_date,
+                focused=True,
             )
         if chosen != run.plan_date:
             return await not_made(
@@ -1663,11 +1674,16 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 status.HTTP_409_CONFLICT,
                 check,
                 kept=chosen.isoformat(),
+                focused=True,
             )
         if run.status == "running":
             notice = being_made(run, FAMILY_PAGE)
             return await not_made(
-                notice.said, status.HTTP_202_ACCEPTED, notice.check, offers_plan=False
+                notice.said,
+                status.HTTP_202_ACCEPTED,
+                notice.check,
+                offers_plan=False,
+                focused=True,
             )
         try:
             replaced = await bounded(partial(run_replaced, state, run), STORE_WAIT_SECONDS)
@@ -1688,13 +1704,17 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             FAMILY_PLAN_NOT_WHOLE,
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             kept=readable(state.clock.today()),
+            focused=True,
         )
     run = await run_of_the_form(state, form.run_id)
     if run is not None:
         return await repeated(run, read_date(form.evening))
     if form.expired(now):
         return await not_made(
-            FAMILY_PLAN_EXPIRED, status.HTTP_409_CONFLICT, kept=readable(form.evening)
+            FAMILY_PLAN_EXPIRED,
+            status.HTTP_409_CONFLICT,
+            kept=readable(form.evening),
+            focused=True,
         )
     evening = read_date(form.evening)
     if evening is None:
@@ -1724,7 +1744,10 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return await newer_plan(evening)
     except UnknownBasis:
         return await not_made(
-            FAMILY_PLAN_NOT_WHOLE, status.HTTP_422_UNPROCESSABLE_CONTENT, kept=evening.isoformat()
+            FAMILY_PLAN_NOT_WHOLE,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            kept=evening.isoformat(),
+            focused=True,
         )
     except AlreadyPlanning as error:
         return await not_made(
@@ -1742,6 +1765,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             status.HTTP_202_ACCEPTED,
             run_check(FAMILY_PAGE, unconfirmed.run_id, CHECK_AGAIN),
             offers_plan=False,
+            focused=True,
         )
     except HTTPException as error:
         return await not_made(str(error.detail), error.status_code)
@@ -1929,12 +1953,13 @@ def refused_on_the_page(
     plan_date_kept: str | None = None,
     offers_plan: bool = True,
     open_plan: str | None = None,
+    focus_problem: bool = False,
 ) -> HTMLResponse:
     """A form action the family page refused, said at its top with the status the JSON route
     would answer, ``check`` the link to the run it names, ``help_reply`` a reply to her
     request as typed, and ``reason_kept`` a note about a plan as typed, tried once.
     ``plan_date_kept`` refills the plan form's date, ``offers_plan`` false leaves the plan
-    form out, and ``open_plan`` opens a plan."""
+    form out, ``open_plan`` opens a plan, and ``focus_problem`` has the problem take the focus."""
     return reviewed_once(
         request,
         state,
@@ -1949,6 +1974,7 @@ def refused_on_the_page(
             plan_date_kept=plan_date_kept,
             offers_plan=offers_plan,
             open_plan=open_plan,
+            focus_problem=focus_problem,
         ),
         problem,
         status_code,

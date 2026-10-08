@@ -455,7 +455,8 @@ article h2 {
    how many instructions wait; in Help, a refusal's link and the family review
    link a parent reads; at the top of her week, the link from a problem to the
    card it is about, and Refresh list beside the line that says why a card stays
-   where it was; on a note's small page, Try again. */
+   where it was; on a note's small page, Try again; on the family review, the
+   link from a plan press's answer to the run it names. */
 .notice a,
 .refresh a,
 .stays-here a,
@@ -467,7 +468,8 @@ article h2 {
 .school-instructions .source a,
 .help-panel .problem a,
 .help-panel #ask-for-help a,
-.week-problem a {
+.week-problem a,
+#problem .run-check a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: -0.8rem 0;
@@ -945,6 +947,7 @@ a.assignment-link:focus-visible {
 #note-problem:focus,
 .detail .problem[tabindex="-1"]:focus,
 .week-problem:focus,
+#problem[tabindex="-1"]:focus,
 .update .problem[tabindex="-1"]:focus,
 #to-turn-in-problem:focus,
 .help-panel .problem[tabindex="-1"]:focus {
@@ -1174,6 +1177,12 @@ pre.body {
 
 .decision button {
   overflow-wrap: anywhere;
+}
+
+/* The family plan form's evening field may be narrower than its own width at large text,
+   rather than widen the page past a phone's screen; anywhere wider it keeps that width. */
+.plan-form label {
+  min-width: 0;
 }
 
 label {

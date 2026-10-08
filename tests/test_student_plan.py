@@ -1849,6 +1849,7 @@ def test_a_stale_plan_button_starts_nothing_and_shows_the_newer_plan() -> None:
 
     assert pressed.status_code == 409
     assert W_1 in the_line(pressed.text)
+    assert "To ask for a new plan, press Plan again.</p>" in the_line(pressed.text)
     assert today["draft_id"] == newer
     assert today["decision"] is None
     assert len(runs) == 1

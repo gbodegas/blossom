@@ -542,7 +542,7 @@ PLAN_LABEL_MARK: Final = "{plan label}"
 words there, Plan today, Plan again or Make a smaller plan."""
 NEWER_PLAN_SHOWN: Final = (
     "A newer plan for today was made after this page was opened, so this press didn't start "
-    f"another one. It is shown below. To ask for a new plan, press {PLAN_LABEL_MARK} again."
+    f"another one. It is shown below. To ask for a new plan, press {PLAN_LABEL_MARK}."
 )
 PLAN_FORM_NOT_WHOLE: Final = (
     "This plan button came from an incomplete or outdated page, so no plan was started. "
