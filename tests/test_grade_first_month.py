@@ -191,12 +191,15 @@ def test_a_first_month_for_a_year_not_on_record_or_out_of_range_writes_nothing(
     for month in (0, 13):
         with pytest.raises(ValueError, match="1 to 12"):
             corrected(store, 8, month)
-    with pytest.raises(ValueError, match="only a parent"):
+    with pytest.raises(ValueError, match="changes grade records$") as refused:
         store.correct_first_month(YEAR, shown=8, month=9, role="student")  # type: ignore[arg-type]
     unchanged = store._connection.total_changes == changes
     on_record = store.first_month_of(YEAR)
     store.close()
 
+    assert str(refused.value) == (
+        "only a parent, or the household with the sign-in off, changes grade records"
+    )
     assert elsewhere == YearNotOnRecord("2025-2026")
     assert unchanged
     assert on_record == 8

@@ -2,7 +2,8 @@
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """A due date read under its school year's first month. The gradebook writes MM/DD with no
 year, so the year comes from the year's label and the month it starts in, each time the date is
-read; nothing stored or compared holds a resolved date or the month."""
+read. The confirmed month is kept on the school year alone (`grade_years`); no observation or
+compared value holds it, and no resolved date is stored."""
 
 from datetime import date
 
