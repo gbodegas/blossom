@@ -399,8 +399,10 @@ SCOPE_REPORTS: Final = (
 )
 SCOPE_COMPLETE: Final = (
     "SELECT report_id, MIN(complete) FROM ("
-    "SELECT a.report_id AS report_id, a.complete AS complete FROM grade_acceptances AS a "
-    "JOIN grade_reports AS r ON r.report_id = a.report_id AND r.student_id = a.student_id "
+    "SELECT r.report_id AS report_id, a.complete AS complete FROM grade_reports AS r "
+    "JOIN grade_acceptances AS a ON a.student_id = r.student_id AND (a.report_id = r.report_id "
+    "OR (a.report_id IS NULL AND r.reader = 'text' AND a.kind = 'grade_text' "
+    "AND a.source_key = r.source_key)) "
     "WHERE r.student_id = :student AND r.class_id = :class AND r.term_label = :term "
     "UNION ALL "
     "SELECT c.report_made, c.complete_from_source FROM grade_current_actions AS c "
@@ -408,9 +410,10 @@ SCOPE_COMPLETE: Final = (
     "WHERE r.student_id = :student AND r.class_id = :class AND r.term_label = :term"
     ") GROUP BY report_id"
 )
-"""Each report's completeness, the one function for every report: the least of its
-acceptances' readings and its making action's ``complete_from_source``. A report with neither is
-missing, which reads incomplete."""
+"""Each report's completeness, the one function for every report: the least of every accepted
+reading of its capture, those that wrote into it and those that recorded nothing new, before
+or after it was made, and its making action's ``complete_from_source``. A report with neither
+is missing, which reads incomplete."""
 SCOPE_REPORT: Final = (
     "SELECT source_key FROM grade_reports "
     "WHERE student_id = ? AND class_id = ? AND term_label = ? AND report_id = ?"
@@ -1389,9 +1392,11 @@ class GradebookRecords:
                     now=now,
                 )
         # Only a save that records something in the class and term raises its revision: a no-op
-        # writes its acceptance alone, for its retry, and other open pages stay valid. Setup and
-        # identity answers are held by the recheck of answers instead.
-        if report_id is not None:
+        # writes its acceptance alone, for its retry, and other open pages stay valid. An
+        # incomplete reading of a capture already on record is evidence against its report's
+        # completeness, so it raises the revision too. Setup and identity answers are held by
+        # the recheck of answers instead.
+        if report_id is not None or (joined is not None and not complete):
             self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
         already = sum(
             1 for item in review.items if item.status in ALREADY and item.key not in chosen

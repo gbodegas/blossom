@@ -916,7 +916,7 @@ def test_a_no_op_leaves_the_revision_and_another_open_page_still_saves() -> None
     saved(save(store, B, selection=()))
     other_page = review_of(store, B)
     before = revision(store)
-    nothing = saved(save(store, B, selection=()))
+    nothing = saved(save(store, B, selection=(), complete=True))
 
     assert nothing.report_id is None
     assert revision(store) == before
@@ -2369,7 +2369,9 @@ def test_a_different_answer_for_a_row_whose_due_wasnt_captured_replays_in_its_ca
     before = revision(store)
     nothing = saved(save(store, draft, replay, selection=()))
     assert (nothing.report_id, nothing.shown, nothing.answers_kept) == (None, 0, 0)
-    assert revision(store) == before
+    # A copy missing its due dates always reads incomplete, so even a submission that
+    # records nothing new is evidence against its report's completeness.
+    assert revision(store) == before + 1
     page = review_of(store, draft)
     journal = row(page, "Seed Germination Journal")
     later = saved(save(store, draft, page, matches=[chosen(journal, seed)], selection=()))
@@ -2633,3 +2635,67 @@ def test_after_a_value_saved_from_a_copy_missing_its_dates_the_next_dated_captur
         cell_id,
         False,
     )
+
+
+ALL_RENAMED = (
+    ("| Seed Germination Log |", "| Seed Germination Journal |"),
+    ("| Cell Diagram             |", "| Cell Drawing             |"),
+    ("| Microscope Practice                |", "| Microscope Lab                     |"),
+    OSMOSIS_GONE,
+)
+"""A copy whose every row was renamed and that leaves Osmosis out: each row asks, so a
+submission without answers records nothing."""
+
+
+def test_an_incomplete_reading_of_a_capture_on_record_withdraws_its_absence() -> None:
+    """A complete reading of a copy without Osmosis says it isn't shown; the same capture read
+    incomplete again records nothing new, yet that reading keeps the report from proving
+    absence, and the revision rises. The outcome still says nothing changed."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    without = variant(CELL_SCORE, OSMOSIS_GONE)
+    first = saved(save(store, without, selection=(), complete=True))
+    assert store.current_values(class_of(store), "T1").results[osmosis].not_shown == ReportAt(
+        first.report_id or "", 2
+    )
+    before = revision(store)
+    page = review_of(store, without)
+    again = saved(save(store, without, page, selection=(), complete=False))
+    changes = store._connection.total_changes
+
+    assert (again.report_id, again.added, again.updated, again.shown) == (None, 0, 0, 0)
+    assert revision(store) == before + 1
+    assert store.current_values(class_of(store), "T1").results[osmosis].not_shown is None
+    assert isinstance(save(store, without, page, selection=(), complete=False), AlreadyRecorded)
+    assert store._connection.total_changes == changes
+
+
+@pytest.mark.parametrize("first_complete", [False, True])
+def test_an_incomplete_reading_before_the_capture_s_report_keeps_it_from_proving_absence(
+    first_complete: bool,
+) -> None:
+    """The copy's first submission answers nothing, so it records nothing and makes no report;
+    a later complete submission answers every question and makes the report. An incomplete
+    first reading of that capture still counts against it."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    draft = variant(*ALL_RENAMED)
+    nothing = saved(save(store, draft, selection=(), complete=first_complete))
+    assert nothing.report_id is None
+    page = review_of(store, draft)
+    asked = [item for item in page.rows if item.question is not None]
+    assert len(asked) == 3
+    later = saved(
+        save(
+            store, draft, page, matches=[same(item) for item in asked], selection=(), complete=True
+        )
+    )
+
+    assert later.report_id is not None
+    value = store.current_values(class_of(store), "T1").results[osmosis]
+    if first_complete:
+        assert value.not_shown == ReportAt(later.report_id, 2)
+    else:
+        assert value.not_shown is None
