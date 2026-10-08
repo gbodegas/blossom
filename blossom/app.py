@@ -25,6 +25,7 @@ from blossom.dependencies import create_lifespan
 from blossom.household import HouseholdGate
 from blossom.routes import (
     captures,
+    grades,
     hand_in,
     household,
     inbox,
@@ -131,11 +132,13 @@ def create_app(
     app.include_router(note_details.family_router)
     app.include_router(note_links.student_router)
     app.include_router(note_links.family_router)
+    app.include_router(grades.family_router)
     app.include_router(school_instructions.router)
     app.include_router(parent.router)
     app.include_router(inbox.router)
     app.include_router(verifier.router)
     app.add_exception_handler(FormUnreadable, unreadable_form(resolved.page_marks))
+    app.add_exception_handler(grades.NotOnThisComputer, grades.refused_here(resolved.page_marks))
     # The gate wraps everything above: with two passphrases set, a page or a
     # route answers only someone who has signed in and may open it.
     app.add_middleware(HouseholdGate, settings=resolved)

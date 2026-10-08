@@ -1,0 +1,193 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% set wide = true %}
+{% block title %}Blossom - Review grade report{% endblock %}
+{% block content %}
+  <h1>Review grade report</h1>
+  <ol class="steps-line" aria-label="Steps">
+    <li>1. Paste</li>
+    <li aria-current="step"><strong>2. Review</strong></li>
+    <li>3. Saved</li>
+  </ol>
+  <p class="note review-summary" role="status">
+    {{ items|length }} result{% if items|length != 1 %}s{% endif %}: {% for word, count in counts.items() %}{{ count }} {{ word }}{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
+
+  {#
+    Every value is named by its position in the review, never by what it says, and every
+    choice the save will hold against the record is sent as an opaque ID or a fixed word.
+    The text goes back whole, with the line break after the tag that keeps its own first one.
+    No answer is chosen where the record asks to confirm the student line.
+  #}
+  <form method="post" action="{{ save }}" class="review-form grade-review">
+    <textarea name="report_text" hidden>
+{{ text }}</textarea>
+    <input type="hidden" name="acceptance_id" value="{{ review.acceptance_id }}">
+    <input type="hidden" name="revision" value="{{ 'none' if review.revision is none else review.revision }}">
+    <input type="hidden" name="source_key" value="{{ review.source_key }}">
+    <input type="hidden" name="identity_form" value="{{ review.identity.form or 'none' }}">
+
+    <div class="review-main">
+      <section class="panel" aria-labelledby="about-heading">
+        <h2 id="about-heading">About this report</h2>
+        <fieldset class="choice identity" id="about-this-report">
+          {% if identity == "matches" %}
+            <legend>Shows <span class="authored-text">{{ student_line }}</span></legend>
+            <input type="hidden" name="identity" value="shown">
+          {% elif identity == "missing" %}
+            <legend>{{ no_student_line }}</legend>
+            <label><input type="radio" name="identity" value="confirmed"> <span>These are her grades</span></label>
+            <label><input type="radio" name="identity" value="not_hers"> <span>Not hers</span></label>
+          {% else %}
+            <legend>{% if identity == "not_confirmed" %}This name isn't one confirmed for her{% elif identity == "confirm_again" %}Please confirm that this report is hers again.{% else %}Is this her?{% endif %}</legend>
+            <p class="note">Student line: <span class="authored-text">{{ student_line }}</span></p>
+            <label><input type="radio" name="identity" value="hers"> <span>Yes, this is her name</span></label>
+            <label><input type="radio" name="identity" value="misread"> <span>The name was misread <span class="source">No name is added, and the next report asks again.</span></span></label>
+            <label><input type="radio" name="identity" value="not_hers"> <span>Not hers</span></label>
+          {% endif %}
+        </fieldset>
+
+        {% if review.setup %}
+          <fieldset class="choice" id="setup-question" aria-describedby="setup-hint">
+            <legend>Current school year and term</legend>
+            <p class="helper" id="setup-hint">Grades open on these. Adding a report for another term doesn't change them.</p>
+            <label><input type="radio" name="setup" value="report" checked> <span>This report's: {{ review.setup[1] }} · {{ review.setup[0] }}</span></label>
+            <label><input type="radio" name="setup" value="other"> <span>Another:</span></label>
+            <label for="setup-year">School year</label>
+            <div class="field">
+              <input id="setup-year" type="text" name="setup_year" maxlength="9" size="9" placeholder="2026-2027">
+            </div>
+            <label for="setup-term">Term</label>
+            <div class="field">
+              <input id="setup-term" type="text" name="setup_term" maxlength="{{ term_limit }}" size="8">
+            </div>
+          </fieldset>
+        {% endif %}
+
+        {% if review.first_month %}
+          <div class="field">
+            <label for="first-month">Month the {{ review.first_month }} school year starts</label>
+            <select id="first-month" name="first_month" aria-describedby="month-hint">
+              <option value="">Choose a month</option>
+              {% for month in months %}
+                <option value="{{ loop.index }}">{{ month }}</option>
+              {% endfor %}
+              <option value="unsure">Not sure yet</option>
+            </select>
+            <p class="helper" id="month-hint">Not sure yet: due dates stay as the report writes them.</p>
+          </div>
+        {% endif %}
+
+        {% set question = review.class_question %}
+        {% if question.matched %}
+          <p>Class: <span class="authored-text">{{ question.offered_name }}</span></p>
+        {% else %}
+          <fieldset class="choice" id="class-question">
+            <legend>Class</legend>
+            <label><input type="radio" name="class" value="new"{% if not question.existing %} checked{% endif %}> <span>Name for this class</span></label>
+            <div class="field">
+              <input id="class-name" type="text" name="class_name" maxlength="{{ class_name_limit }}" size="12" value="{{ question.offered_name }}" aria-label="Name for this class">
+            </div>
+            {% for class_id, name, revision in question.existing %}
+              <label><input type="radio" name="class" value="{{ class_id }}:{{ 'none' if revision is none else revision }}"> <span>It's the same class as <span class="authored-text">{{ name }}</span></span></label>
+            {% endfor %}
+          </fieldset>
+        {% endif %}
+        <p>Term: {{ term_label }}</p>
+      </section>
+
+      {% if unrecognized %}
+        <section class="panel needs-review" aria-labelledby="unrecognized-heading">
+          <h2 id="unrecognized-heading">Lines Blossom didn't recognize</h2>
+          <p class="note">These lines aren't saved. Check that nothing you need is here.</p>
+          <ul class="unread">
+            {% for line in unrecognized %}
+              <li><code>{{ line }}</code></li>
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
+
+      <section aria-labelledby="values-heading">
+        <h2 id="values-heading">Results</h2>
+        {% for shown in items %}
+          {% set item = shown.item %}
+          {% set i = shown.position %}
+          <article class="assignment">
+            {% if shown.kind == "term" %}
+              <h3>Term grade on this report: {{ cell(term.percent) }} · {{ cell(term.letter) }}</h3>
+            {% endif %}
+            {% if shown.kind == "category" %}
+              {% set category = shown.category %}
+              <h3><span class="authored-text">{{ category.name.text or "Category" }}</span>: weight {{ cell(category.weight) }}, average {{ cell(category.average) }}</h3>
+            {% elif shown.kind == "row" %}
+              {% set row = shown.row %}
+              <p class="course-name">{{ shown.category.name.text }}</p>
+              <h3><span class="authored-text">{{ cell(row.assignment) }}</span></h3>
+              <p class="effect">School score: {{ cell(row.points) }} / {{ cell(row.max_points) }} · {{ cell(row.status) }} · Due date shown: {{ cell(row.due) }}</p>
+            {% endif %}
+            <p class="status">
+              <span class="pill">{{ status_words[item.status] }}</span>
+              {% if item.due_not_captured and item.status.value != "due_not_captured" %}<span class="pill">Due date not captured</span>{% endif %}
+            </p>
+            {% if item.status.value == "changed" and item.current %}
+              <p class="source">Saved now: {% for field, value in item.current.cells.items() if field in ("points", "max_points", "percent", "letter", "average") %}{{ value[1] }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+            {% endif %}
+            {% if shown.selectable %}
+              <fieldset class="choice" id="item-{{ i }}">
+                <legend>{% if item.question %}{% if item.question.kind.value == "which" %}Which assignment is this?{% elif item.question.kind.value == "renamed" %}Same assignment, renamed?{% else %}Same assignment, due date changed?{% endif %}{% else %}Save this result{% endif %}</legend>
+                {% if item.question or item.choices %}
+                  <p class="helper">Answer the question to save this result.</p>
+                {% endif %}
+                <label><input type="checkbox" name="select.{{ i }}" value="1"{% if shown.ticked %} checked{% endif %}> <span>Save this result</span></label>
+                {% if item.question %}
+                  <input type="hidden" name="candidates.{{ i }}" value="{{ item.question.ids|join(' ') }}">
+                  {% for candidate in item.question.candidates %}
+                    <label><input type="radio" name="match.{{ i }}" value="{{ candidate.result_id }}"> <span>{% if item.question.candidates|length == 1 %}Same assignment{% else %}<span class="authored-text">{{ candidate.last.cells.get("assignment", ("", ""))[1] }}</span>{% endif %}</span></label>
+                  {% endfor %}
+                  <label><input type="radio" name="match.{{ i }}" value="different"{% if item.remembered %} checked{% endif %}> <span>A different assignment</span></label>
+                {% endif %}
+                {% if item.choices %}
+                  <input type="hidden" name="choices.{{ i }}" value="{{ item.choices|join(' ') }}">
+                  {% if item.question %}
+                    <label><input type="radio" name="match.{{ i }}" value="choose"> <span>Choose an existing assignment</span></label>
+                  {% endif %}
+                  <label for="choose-{{ i }}">Choose an existing assignment</label>
+                  <select id="choose-{{ i }}" name="choose.{{ i }}">
+                    <option value=""></option>
+                    {% for result_id in item.choices %}
+                      <option value="{{ result_id }}">{{ result_id }}</option>
+                    {% endfor %}
+                  </select>
+                {% endif %}
+              </fieldset>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </section>
+
+      {% if review.use %}
+        <fieldset class="choice" id="use-question">
+          <legend>How should Blossom use this report?</legend>
+          {% if review.use.repeats %}
+            <p class="helper">This report repeats values a newer report replaced.</p>
+          {% endif %}
+          <label><input type="radio" name="use" value="current"{% if review.use.default == "current" %} checked{% endif %}> <span>{% if complete %}Use this as the current school record{% else %}Use these values where this report provides them{% endif %}</span></label>
+          <label><input type="radio" name="use" value="earlier"{% if review.use.default == "earlier" %} checked{% endif %}> <span>Keep as an earlier report</span></label>
+        </fieldset>
+      {% endif %}
+    </div>
+  </form>
+
+  {# A form of its own, holding one copy of the text and nothing else. #}
+  <form method="post" action="{{ edit }}" class="decision">
+    <textarea name="report_text" hidden>
+{{ text }}</textarea>
+    <div class="actions">
+      <button type="submit" class="secondary">Edit this text</button>
+    </div>
+  </form>
+  <p class="return"><a href="{{ add }}">Paste a different report</a></p>
+{% endblock %}

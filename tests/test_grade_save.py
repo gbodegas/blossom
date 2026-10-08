@@ -17,7 +17,9 @@ import pytest
 from blossom.grades.draft import GradeReportDraft, capture_key
 from blossom.grades.identity import IdentityStatus, key_check, name_form, name_form_key
 from blossom.grades.review import (
+    CLASS_NAME_LIMIT,
     TERM_KEY,
+    TERM_LIMIT,
     AlreadyRecorded,
     GradeAnswers,
     GradeReportSaved,
@@ -30,6 +32,15 @@ from blossom.grades.review import (
     ReviewPage,
     ReviewReturned,
     SaveOutcome,
+    StillAsked,
+    answers_asked,
+    class_asked,
+    first_month_asked,
+    identity_asked,
+    item_keys,
+    labels_too_long,
+    setup_asked,
+    still_asked,
 )
 from blossom.grades.text_reader import read_grade_report
 from blossom.stores.gradebook import GRADEBOOK_TABLES, GradeReportNotSaved
@@ -827,3 +838,188 @@ def test_a_save_whose_acceptance_record_is_refused_saves_nothing() -> None:
         table: 1 if table == "grade_student" else 0 for table in GRADEBOOK_TABLES
     }
     assert saved(save(store, review=review)).added == 9
+
+
+# ------------------------------------------------------------- each question checked alone
+
+
+NO_TERM_DRAFT = draft_of(
+    REPORT.replace("| **Term Grade** | **81.9** | **B-** |   |   |   |   |   |   |   |\n", "")
+)
+"""The report with its Term Grade row left out of the copy."""
+
+
+def test_each_question_is_checked_alone_and_answers_asked_is_all_of_them() -> None:
+    store = in_memory()
+    review = review_of(store)
+    answers = answers_to(review)
+    wrong = {
+        identity_asked: dataclasses.replace(answers, identity_form="another-form"),
+        setup_asked: dataclasses.replace(answers, setup=None),
+        first_month_asked: dataclasses.replace(answers, first_month=("2026-2027", 13)),
+        class_asked: dataclasses.replace(answers, new_class="   "),
+    }
+
+    assert answers_asked(review, answers)
+    for asked, answer in wrong.items():
+        assert not asked(review, answer), asked.__name__
+        others = [other for other in wrong if other is not asked]
+        assert all(other(review, answer) for other in others), asked.__name__
+        assert not answers_asked(review, answer), asked.__name__
+
+
+@pytest.mark.parametrize(
+    ("change", "named"),
+    [
+        ({"new_class": "B" * CLASS_NAME_LIMIT}, ()),
+        ({"new_class": f"  {'B' * CLASS_NAME_LIMIT}  "}, ()),
+        ({"new_class": "B" * (CLASS_NAME_LIMIT + 1)}, ("class_name",)),
+        ({"setup": ("2026-2027", "T" * TERM_LIMIT)}, ()),
+        ({"setup": ("2026-2027", "T" * (TERM_LIMIT + 1))}, ("term",)),
+        (
+            {"new_class": "B" * (CLASS_NAME_LIMIT + 1), "setup": ("2026-2027", "T" * 21)},
+            ("class_name", "term"),
+        ),
+    ],
+)
+def test_a_label_over_its_limit_is_named_and_is_not_an_answer(
+    change: dict[str, object], named: tuple[str, ...]
+) -> None:
+    store = in_memory()
+    review = review_of(store)
+    answers = dataclasses.replace(answers_to(review), **change)  # type: ignore[arg-type]
+
+    assert labels_too_long(answers) == named
+    assert answers_asked(review, answers) is (named == ())
+
+
+def test_a_label_over_its_limit_saves_nothing_however_it_was_offered() -> None:
+    store = in_memory()
+    review = review_of(store)
+    answers = dataclasses.replace(answers_to(review), new_class="B" * (CLASS_NAME_LIMIT + 1))
+    before = gradebook_of(store)
+
+    returned(save(store, review=review, answers=answers), ReturnReason.ANSWERS)
+    assert gradebook_of(store) == before
+
+
+def test_the_report_s_own_labels_are_inside_the_limits() -> None:
+    store = in_memory()
+    assert labels_too_long(answers_to(review_of(store))) == ()
+
+
+@pytest.mark.parametrize("draft", [WREN_DRAFT, NO_TERM_DRAFT, UNREADABLE_DRAFT])
+def test_each_position_names_the_key_the_review_gives_its_item(draft: GradeReportDraft) -> None:
+    store = in_memory()
+    review = review_of(store, draft)
+
+    assert item_keys(draft) == tuple(item.key for item in review.items)
+
+
+def test_two_readings_of_one_text_give_the_same_positions() -> None:
+    crlf = draft_of(REPORT.replace("\n", "\r\n"))
+    assert item_keys(crlf) == item_keys(WREN_DRAFT)
+
+
+def test_a_draft_with_no_term_result_starts_at_its_first_category() -> None:
+    store = in_memory()
+    review = review_of(store, NO_TERM_DRAFT)
+
+    assert review.term is None
+    assert item_keys(NO_TERM_DRAFT)[0] == review.categories[0].key
+    assert TERM_KEY not in item_keys(NO_TERM_DRAFT)
+    assert item_keys(WREN_DRAFT)[0] == TERM_KEY
+
+
+def everything_kept(review: GradeReview, answers: GradeAnswers) -> StillAsked:
+    return StillAsked(
+        identity=answers.identity,
+        setup=answers.setup,
+        first_month=answers.first_month,
+        new_class=answers.new_class,
+        same_class=answers.same_class,
+        matches=answers.matches,
+        use=answers.use,
+        selection=review.ready,
+    )
+
+
+def test_still_asked_keeps_every_part_that_still_answers() -> None:
+    store = in_memory()
+    review = review_of(store)
+    answers = answers_to(review)
+
+    assert still_asked(review, answers, review.ready) == everything_kept(review, answers)
+
+
+def test_still_asked_drops_the_identity_alone_when_the_line_s_form_changed() -> None:
+    store = in_memory()
+    review = review_of(store)
+    answers = answers_to(review)
+    again = review_of(store, key=NEW_KEY)
+
+    kept = still_asked(again, answers, review.ready)
+
+    assert kept == dataclasses.replace(everything_kept(again, answers), identity=None)
+
+
+def test_still_asked_drops_the_setup_and_month_alone_once_another_class_set_them() -> None:
+    store = in_memory()
+    review = review_of(store)
+    answers = answers_to(review)
+    saved(save(store, CHEMISTRY_DRAFT))
+    again = review_of(store)
+    shown = dataclasses.replace(answers, identity=IdentityAnswer.SHOWN)
+
+    kept = still_asked(again, shown, review.ready)
+
+    assert (again.setup, again.first_month) == (None, None)
+    assert kept == dataclasses.replace(everything_kept(again, shown), setup=None, first_month=None)
+
+
+def test_still_asked_drops_the_class_alone_once_an_alias_matches_it() -> None:
+    store = in_memory()
+    review = review_of(store)
+    answers = answers_to(review)
+    saved(save(store, EIGHT_DRAFT))
+    again = review_of(store)
+    shown = dataclasses.replace(
+        answers, identity=IdentityAnswer.SHOWN, setup=None, first_month=None
+    )
+
+    kept = still_asked(again, shown, review.ready)
+
+    assert again.class_question.matched is not None
+    assert kept.new_class is None
+    assert kept.identity is IdentityAnswer.SHOWN
+    assert kept.selection == review.ready & again.ready
+
+
+def test_still_asked_drops_a_use_no_choice_offers_and_a_tick_not_ready() -> None:
+    store = in_memory()
+    first = review_of(store)
+    saved(save(store, review=first, selection=[first.rows[0].key]))
+    review = review_of(store)
+    answers = dataclasses.replace(answers_to(review), use="earlier")
+
+    kept = still_asked(review, answers, {*first.ready, "not-a-key"})
+
+    assert review.use is None
+    assert kept.use is None
+    assert kept.selection == review.ready
+
+
+def test_still_asked_keeps_match_answers_alone_and_drops_a_second_for_the_same_row() -> None:
+    store = in_memory()
+    saved(save(store))
+    renamed = draft_of(REPORT.replace(SEVEN, SEVEN.replace("Cell Diagram", "Cell Drawing")))
+    review = review_of(store, renamed)
+    (row,) = [item for item in review.rows if item.question is not None]
+    assert row.question is not None
+    different = MatchAnswer(row.key, row.question.ids, None)
+    elsewhere = MatchAnswer("not-a-row", (), None)
+    answers = dataclasses.replace(answers_to(review), matches=(elsewhere, different, different))
+
+    kept = still_asked(review, answers, ())
+
+    assert kept.matches == (different,)

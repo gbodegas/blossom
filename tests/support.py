@@ -41,6 +41,7 @@ from langchain_core.tracers.langchain import LangChainTracer
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
+from starlette.routing import BaseRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from blossom.agent.compose import Composition, compose
@@ -750,6 +751,16 @@ def browser(*, key: bool = False, **environ: str) -> TestClient:
 
 PATHS = ("BLOSSOM_DATABASE_PATH", "BLOSSOM_CHECKPOINT_PATH", "BLOSSOM_TRACE_PATH")
 """The settings that place one household's three files."""
+
+
+def every_route(routes: Iterable[BaseRoute]) -> Iterator[BaseRoute]:
+    """Every route the application answers on, each included router opened up."""
+    for route in routes:
+        included = getattr(route, "original_router", None)
+        if included is None:
+            yield route
+        else:
+            yield from every_route(included.routes)
 
 
 def files_in(folder: pathlib.Path) -> dict[str, str]:

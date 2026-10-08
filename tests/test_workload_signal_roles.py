@@ -11,7 +11,7 @@ the routes and the page answer as they do for her.
 
 import pathlib
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import replace
@@ -22,7 +22,6 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
-from starlette.routing import BaseRoute
 
 from blossom.app import create_app
 from blossom.clock import FrozenClock
@@ -38,6 +37,7 @@ from tests.support import (
     THEIRS,
     Answer,
     accepting,
+    every_route,
     fixture_settings,
     fixture_week_plan,
     landing_in,
@@ -853,16 +853,6 @@ def test_a_parents_help_ask_keeps_its_own_refusal(body: bytes, tmp_path: pathlib
     assert answer.status_code == 403
     assert answer.json() == {"detail": NOT_HERS_TO_ASK}
     assert held == []
-
-
-def every_route(routes: Iterable[BaseRoute]) -> Iterator[BaseRoute]:
-    """Every route the application answers on, each included router opened up."""
-    for route in routes:
-        included = getattr(route, "original_router", None)
-        if included is None:
-            yield route
-        else:
-            yield from every_route(included.routes)
 
 
 def test_exactly_three_routes_are_hers_alone(tmp_path: pathlib.Path) -> None:

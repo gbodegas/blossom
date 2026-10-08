@@ -993,38 +993,79 @@ def _use_choice(
     return UseChoice("earlier" if repeats else "current", repeats)
 
 
+CLASS_NAME_LIMIT: Final = 60
+"""The most characters a class name a page sends may hold, its spaces folded."""
+TERM_LIMIT: Final = 20
+"""The most characters a term a page confirms as current may hold, its spaces folded."""
+Label = Literal["class_name", "term"]
+"""A label a page sends that a limit bounds: a new class's name, or the setup's term."""
+
+
 def is_current_context(setup: tuple[str, str]) -> bool:
     """Whether a year and term a parent confirms as current are a school year's label and a
-    term."""
+    term within its limit."""
     year, term = setup
-    return is_school_year(year) and bool(folded(term))
+    return is_school_year(year) and 0 < len(folded(term)) <= TERM_LIMIT
 
 
-def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
-    """Whether ``answers`` answer the questions ``review`` asks and no other: the line's own
-    question with the form of the line read now, a school year and term confirmed as current
-    when the setup is asked (the report's offered, any other allowed), the first month of the
-    year asked about (left unconfirmed when absent), and one answer for a class no alias matched."""
+def labels_too_long(answers: GradeAnswers) -> tuple[Label, ...]:
+    """Which of the labels ``answers`` sends exceed their limits, offered or typed: the new
+    class's name, then the setup's term."""
+    over: list[Label] = []
+    if answers.new_class is not None and len(folded(answers.new_class)) > CLASS_NAME_LIMIT:
+        over.append("class_name")
+    if answers.setup is not None and len(folded(answers.setup[1])) > TERM_LIMIT:
+        over.append("term")
+    return tuple(over)
+
+
+def identity_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether the identity answer answers the line's own question, for the form of the line
+    read now."""
     identity = review.identity
-    if answers.identity_form != identity.form:
-        return False
-    if answers.identity not in ANSWERS_FOR[identity.status]:
-        return False
+    return (
+        answers.identity_form == identity.form and answers.identity in ANSWERS_FOR[identity.status]
+    )
+
+
+def setup_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether the setup is answered exactly when it is asked, with a school year and a term
+    within its limit (the report's offered, any other allowed)."""
     if (answers.setup is None) != (review.setup is None):
         return False
-    if answers.setup is not None and not is_current_context(answers.setup):
-        return False
-    if answers.first_month is not None:
-        year, month = answers.first_month
-        if year != review.first_month or not 1 <= month <= 12:
-            return False
+    return answers.setup is None or is_current_context(answers.setup)
+
+
+def first_month_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether a first month, when sent, is a month of the year asked about; none leaves it
+    unconfirmed."""
+    if answers.first_month is None:
+        return True
+    year, month = answers.first_month
+    return year == review.first_month and 1 <= month <= 12
+
+
+def class_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether the class has one answer when no alias matched it, and none when one did: a new
+    class's name within its limit, or one of the year's classes offered."""
     question = review.class_question
     if question.matched is not None:
         return answers.new_class is None and answers.same_class is None
     if answers.same_class is not None:
         offered = {class_id for class_id, _, _ in question.existing}
         return answers.new_class is None and answers.same_class in offered
-    return answers.new_class is not None and bool(folded(answers.new_class))
+    return answers.new_class is not None and 0 < len(folded(answers.new_class)) <= CLASS_NAME_LIMIT
+
+
+def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether ``answers`` answer the questions ``review`` asks and no other: the line's own
+    question, the setup, the year's first month and the class, each checked alone."""
+    return (
+        identity_asked(review, answers)
+        and setup_asked(review, answers)
+        and first_month_asked(review, answers)
+        and class_asked(review, answers)
+    )
 
 
 def use_asked(review: GradeReview, use: str | None) -> bool:
@@ -1052,3 +1093,55 @@ def matches_asked(review: GradeReview, matches: Collection[MatchAnswer]) -> bool
         elif item.question is None or not _binds(answer, item.question):
             return False
     return True
+
+
+def item_keys(draft: GradeReportDraft) -> tuple[str, ...]:
+    """The key of each value ``draft`` gives, in a review's item order: the term result when the
+    copy has one, the categories, then the rows. A page names its items by position here."""
+    term = draft.term
+    captured = (term.percent.presence, term.letter.presence) != (
+        Presence.NOT_CAPTURED,
+        Presence.NOT_CAPTURED,
+    )
+    rows = tuple(row.key for row in _rows_of(draft))
+    return (*((TERM_KEY,) if captured else ()), *category_keys(draft), *rows)
+
+
+@dataclass(frozen=True)
+class StillAsked:
+    """The parts of a page's answers and ticks that still answer what a review asks now. A part
+    dropped is None or left out, so its control shows unanswered."""
+
+    identity: IdentityAnswer | None
+    setup: tuple[str, str] | None
+    first_month: tuple[str, int] | None
+    new_class: str | None
+    same_class: str | None
+    matches: tuple[MatchAnswer, ...]
+    use: ReportUse | None
+    selection: frozenset[str]
+
+
+def still_asked(
+    review: GradeReview, answers: GradeAnswers, selection: Collection[str]
+) -> StillAsked:
+    """What of ``answers`` and ``selection`` still answers ``review``, each part checked alone:
+    each match answer in the page's order, unless an earlier kept one took its row or result;
+    each tick a save may select now."""
+    matches: list[MatchAnswer] = []
+    for answer in answers.matches:
+        if matches_asked(review, (*matches, answer)):
+            matches.append(answer)
+    use = answers.use if use_asked(review, answers.use) else None
+    allowed = review.ready | (review.back_to if use == "current" else frozenset())
+    kept_class = class_asked(review, answers)
+    return StillAsked(
+        identity=answers.identity if identity_asked(review, answers) else None,
+        setup=answers.setup if setup_asked(review, answers) else None,
+        first_month=answers.first_month if first_month_asked(review, answers) else None,
+        new_class=answers.new_class if kept_class else None,
+        same_class=answers.same_class if kept_class else None,
+        matches=tuple(matches),
+        use=use,
+        selection=frozenset(selection) & allowed,
+    )

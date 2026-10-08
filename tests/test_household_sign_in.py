@@ -36,7 +36,7 @@ from blossom.household import (
 from blossom.principals import Principal
 from blossom.settings import PARENT_PASSPHRASE_VARIABLE, STUDENT_PASSPHRASE_VARIABLE, Settings
 from blossom.stores.paths import SECRET_NAME
-from tests.support import SAME_ORIGIN, browser, fixture_settings
+from tests.support import FIXTURES, SAME_ORIGIN, browser, fixture_settings
 
 HERS = "quiet mornings and loud music"
 THEIRS = "the kitchen table at seven"
@@ -577,12 +577,52 @@ def test_with_no_passphrases_nothing_asks(tmp_path: pathlib.Path) -> None:
         hers = client.get("/student/due-this-week", headers=PAGE)
         theirs = client.get("/parent", headers=PAGE)
         sign_in = client.get("/sign-in", headers=PAGE)
+        elsewhere = client.post(
+            "/parent/grades/add/review", data={"report_text": "a report"}, headers=PAGE
+        )
+    with TestClient(
+        create_app(open_settings),
+        base_url="http://127.0.0.1:8781",
+        follow_redirects=False,
+        headers={"Origin": "http://127.0.0.1:8781"},
+        client=("127.0.0.1", 50000),
+    ) as here:
+        paste_page = here.get("/parent/grades/add", headers=PAGE)
 
     assert hers.status_code == 200
     assert theirs.status_code == 200
     assert ">Sign out<" not in hers.text
     assert sign_in.status_code == 303
+    assert elsewhere.status_code == 403
+    assert paste_page.status_code == 200
     assert not (tmp_path / SECRET_NAME).exists()
+
+
+def test_with_no_passphrases_the_first_grade_review_makes_the_secret(
+    tmp_path: pathlib.Path,
+) -> None:
+    open_settings = fixture_settings(
+        BLOSSOM_TODAY="2026-08-19",
+        BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
+        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
+        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+    )
+    report = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
+    with TestClient(
+        create_app(open_settings),
+        base_url="http://localhost:8781",
+        follow_redirects=False,
+        headers={"Origin": "http://localhost:8781"},
+        client=("127.0.0.1", 50000),
+    ) as here:
+        reviewed = here.post(
+            "/parent/grades/add/review", data={"report_text": report}, headers=PAGE
+        )
+        signing = here.get("/sign-in", headers=PAGE)
+
+    assert reviewed.status_code == 200
+    assert (tmp_path / SECRET_NAME).exists()
+    assert signing.status_code == 303
 
 
 # ------------------------------------------------------------------ the week, for whoever reads

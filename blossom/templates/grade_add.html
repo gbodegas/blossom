@@ -1,0 +1,33 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% block title %}Blossom - Add grade report{% endblock %}
+{% block content %}
+  <h1>Add grade report</h1>
+  <ol class="steps-line" aria-label="Steps">
+    <li aria-current="step"><strong>1. Paste</strong></li>
+    <li>2. Review</li>
+    <li>3. Saved</li>
+  </ol>
+  {#
+    A paste that gave no review comes back here with the text as it was sent and what
+    wasn't processed said first. The text travels only in this form's body.
+  #}
+  {% if said %}
+    <p class="problem" role="alert" id="problem">{{ said }}{% if kept %} {{ kept }}{% endif %}</p>
+  {% endif %}
+  <section class="panel">
+    <p class="note" id="paste-hint">{{ hint }}</p>
+    <form method="post" action="{{ review }}" class="decision">
+      <label for="report-text">Paste report text</label>
+      {# The line break after the tag keeps a paste's own first line break, which the parser drops. #}
+      <textarea name="report_text" id="report-text" rows="12" maxlength="{{ text_max_length }}" aria-describedby="paste-hint{% if said %} problem{% endif %}"{% if said %} aria-invalid="true" autofocus{% endif %}>
+{{ text }}</textarea>
+      <div class="actions">
+        <button type="submit" class="primary">Review report</button>
+      </div>
+    </form>
+    <p class="return"><a href="/parent">Back to Family review</a></p>
+  </section>
+{% endblock %}

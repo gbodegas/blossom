@@ -1767,6 +1767,13 @@ pre.example {
   border-radius: var(--radius-small);
 }
 
+/* A fieldset is as wide as its widest word and field by default. On the grade review, at
+   enlarged text on a phone, that is wider than the page, so there it takes the page's width
+   and its words wrap inside it. */
+.grade-review .choice {
+  min-width: 0;
+}
+
 .choice legend {
   font-family: var(--font-display);
   font-weight: 600;
