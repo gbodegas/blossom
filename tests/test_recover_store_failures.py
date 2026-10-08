@@ -40,6 +40,7 @@ from tests.support import (
     DETAILS,
     ESSAY_ID,
     ESSAY_TITLE,
+    FAMILY_ASK_AGAIN,
     FIXTURE_WEEK,
     HER_PAGE,
     MISSING_EMAIL,
@@ -1036,7 +1037,7 @@ def test_a_family_press_behind_a_newer_plan_it_cannot_place_is_still_refused(
     assert answer.status_code == 409
     line = FAMILY_LINE.search(answer.text)
     assert line is not None
-    assert words(line.group(1)) == NEWER_FAMILY_PLAN
+    assert words(line.group(1)) == f"{NEWER_FAMILY_PLAN} {FAMILY_ASK_AGAIN}"
     assert 'id="problem" tabindex="-1" autofocus>' in answer.text
     assert 'action="/parent/actions/plan"' in answer.text
     assert after == before

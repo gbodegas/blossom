@@ -159,11 +159,14 @@ from blossom.routes.runs import (
     PLAN_ANSWERS,
     PLAN_FORM_FIELDS,
     RUN_STATUS_ANSWERS,
+    STORE_FAILURES,
     UNCONFIRMED,
     AlreadyPlanning,
+    Clause,
     CouldNotStart,
     Graphs,
     NotSaved,
+    PlanAnswer,
     RunCheck,
     RunNotice,
     SameRun,
@@ -172,8 +175,10 @@ from blossom.routes.runs import (
     being_made,
     ended_without_a_plan,
     evening_named,
+    fact,
     fresh_plan_form,
     graph_for_a_run,
+    landed,
     make_plan,
     not_saved,
     plan_form_from,
@@ -538,27 +543,62 @@ UNDO_FIELDS: Final = frozenset({"report_id", "week", IN_PLACE}) | FROM_DETAILS
 of them left out, is refused."""
 PLAN_FIELDS: Final = frozenset({IN_PLACE, *PLAN_FORM_FIELDS})
 PLAN_LABEL_MARK: Final = "{plan label}"
-"""Where a refusal of a plan press names the plan button: the page puts the button's own
-words there, Plan today, Plan again or Make a smaller plan."""
-NEWER_PLAN_SHOWN: Final = (
+"""Where a plan answer names the plan button: the page puts the button's own words there,
+Plan today, Plan again or Make a smaller plan."""
+PRESS_TO_ASK_AGAIN: Final = Clause(f"To ask for a new plan, press {PLAN_LABEL_MARK}.", "button")
+PRESS_TO_PLAN_TODAY: Final = Clause(f"To plan today, press {PLAN_LABEL_MARK} below.", "button")
+NEWER_PLAN_MADE: Final = (
     "A newer plan for today was made after this page was opened, so this press didn't start "
-    f"another one. It is shown below. To ask for a new plan, press {PLAN_LABEL_MARK}."
+    "another one."
 )
-PLAN_FORM_NOT_WHOLE: Final = (
-    "This plan button came from an incomplete or outdated page, so no plan was started. "
-    f"To start one, press {PLAN_LABEL_MARK} below."
+NEWER_PLAN: Final = PlanAnswer(
+    "her-newer-plan",
+    status.HTTP_409_CONFLICT,
+    (Clause(NEWER_PLAN_MADE), Clause("It is shown below.", "plan"), PRESS_TO_ASK_AGAIN),
+    NEWER_PLAN_MADE,
 )
-PLAN_FORM_EXPIRED: Final = (
-    "This plan button is from a page opened more than a week ago, so nothing new was "
-    f"started. To plan today, press {PLAN_LABEL_MARK} below."
+FORM_NOT_WHOLE_SAID: Final = (
+    "This plan button came from an incomplete or outdated page, so no plan was started."
+)
+FORM_NOT_WHOLE: Final = PlanAnswer(
+    "her-not-whole",
+    status.HTTP_422_UNPROCESSABLE_CONTENT,
+    (
+        Clause(FORM_NOT_WHOLE_SAID),
+        Clause(f"To start one, press {PLAN_LABEL_MARK} below.", "button"),
+    ),
+    FORM_NOT_WHOLE_SAID,
+)
+FORM_EXPIRED_SAID: Final = (
+    "This plan button is from a page opened more than a week ago, so nothing new was started."
+)
+FORM_EXPIRED: Final = PlanAnswer(
+    "her-expired",
+    status.HTTP_409_CONFLICT,
+    (Clause(FORM_EXPIRED_SAID), PRESS_TO_PLAN_TODAY),
+    FORM_EXPIRED_SAID,
+)
+PLAN_MADE_ALREADY_SAID: Final = (
+    "This plan button already asked for today's plan, and a plan was made, so nothing new "
+    "was started."
+)
+PLAN_MADE_ALREADY: Final = PlanAnswer(
+    "her-plan-made",
+    status.HTTP_409_CONFLICT,
+    (Clause(PLAN_MADE_ALREADY_SAID), PRESS_TO_ASK_AGAIN),
+    PLAN_MADE_ALREADY_SAID,
 )
 
 
-def plan_form_for_another_evening(evening: date) -> str:
-    """Why a plan press for an evening that isn't today starts nothing, naming that evening."""
-    return (
+def another_evening(evening: date) -> PlanAnswer:
+    """A plan press for an evening that isn't today, which starts nothing, naming that
+    evening."""
+    said = (
         f"This plan button is from the page for {evening_named(evening)}, so nothing new was "
-        f"started. To plan today, press {PLAN_LABEL_MARK} below."
+        "started."
+    )
+    return PlanAnswer(
+        "her-another-evening", status.HTTP_409_CONFLICT, (Clause(said), PRESS_TO_PLAN_TODAY), said
     )
 
 
@@ -2076,38 +2116,41 @@ def student_page(
     today: date | None = None,
     run_notice: RunNotice | None = None,
     signal_removed: bool = False,
+    plan_answer: PlanAnswer | None = None,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
-    ``refreshed`` says when the page was last asked for; ``card`` is what one
-    card shows beyond its record. Both change how the page is presented and
-    nothing else. ``plan_asked`` says the address asked for today's plan, as a
-    way back to it does: when the day has no plan, the place the plan would be
-    is still there to land on, and says so, which an ordinary visit to a day
-    with no plan has no need of. Today's saved plan is unfolded on every visit,
-    so finding her next step takes no remembered action. The household day is
-    read once, here, unless the caller read it as ``today`` to check what the address
-    says, and everything on the page is about that day: the heading,
-    the week, the planning window, which plan is today's, its notice, and the
-    marks beside its rows. The record is read once too, and all of those are
-    about that one reading. A card's problem is said at the top too, with a link
-    to the card, so it is met on a page that opens at its top; the card named is
-    shown even when its dates have taken it out of the week. The card's own line
-    is the alert and takes the focus there, unless its field does. A problem no
-    card on the page holds is the top line's alone. ``pressed`` says a form's press
-    brought her here, and then that top line takes the focus; a visit by address
-    asks for none. ``plan_failure`` is a plan press that ended without a plan: the
-    top line then links to her homework, and to any assignment it names, and the plan
-    button offers to try again when another press may help. ``help_form`` is her Ask for
-    help form as a refusal shows it again, beside the form; ``help_marker`` is what the
-    address says a help form did, checked against the page's one reading of her requests;
-    and ``help_problem`` is what a press in the Help section could not do, said there. Each
-    Ask for help form gets a fresh id, which needs no read. ``earlier_note`` is what a choice
-    in Earlier homework to check did or could not do, said beside the item it named.
-    ``in_place`` is the cards this visit keeps where they were; every update form on the
-    page carries them on, with its own card kept where it is shown. ``signal_removed`` says
-    an Undo or a Remove just took a request of hers away, which Today says to her alone,
-    beside what the signals kept for today say now.
+       ``refreshed`` says when the page was last asked for; ``card`` is what one
+       card shows beyond its record. Both change how the page is presented and
+       nothing else. ``plan_asked`` says the address asked for today's plan, as a
+       way back to it does: when the day has no plan, the place the plan would be
+       is still there to land on, and says so, which an ordinary visit to a day
+       with no plan has no need of. Today's saved plan is unfolded on every visit,
+       so finding her next step takes no remembered action. The household day is
+       read once, here, unless the caller read it as ``today`` to check what the address
+       says, and everything on the page is about that day: the heading,
+       the week, the planning window, which plan is today's, its notice, and the
+       marks beside its rows. The record is read once too, and all of those are
+       about that one reading. A card's problem is said at the top too, with a link
+       to the card, so it is met on a page that opens at its top; the card named is
+       shown even when its dates have taken it out of the week. The card's own line
+       is the alert and takes the focus there, unless its field does. A problem no
+       card on the page holds is the top line's alone. ``pressed`` says a form's press
+       brought her here, and then that top line takes the focus; a visit by address
+       asks for none. ``plan_failure`` is a plan press that ended without a plan: the
+       top line then links to her homework, and to any assignment it names, and the plan
+       button offers to try again when another press may help. ``help_form`` is her Ask for
+       help form as a refusal shows it again, beside the form; ``help_marker`` is what the
+       address says a help form did, checked against the page's one reading of her requests;
+       and ``help_problem`` is what a press in the Help section could not do, said there. Each
+       Ask for help form gets a fresh id, which needs no read. ``earlier_note`` is what a choice
+       in Earlier homework to check did or could not do, said beside the item it named.
+       ``in_place`` is the cards this visit keeps where they were; every update form on the
+       page carries them on, with its own card kept where it is shown. ``signal_removed`` says
+       an Undo or a Remove just took a request of hers away, which Today says to her alone,
+       beside what the signals kept for today say now.
+    ``plan_answer`` is a plan press's answer, its line
+       made from what this page shows: today's plan, and the plan button.
     """
     viewer = viewer_of(request)
     # An address that only brings a card into view, as a way back from its details does.
@@ -2166,6 +2209,14 @@ def student_page(
     )
     planned = in_todays_plan(view.earlier, record, None if todays is None else todays.reading)
     view = view.model_copy(update={"earlier": kept_in_place(planned, earlier_note)})
+    if plan_answer is not None:
+        # A press's line says a plan is shown, or names the button, only when this page does.
+        button = view.can_plan and plan_answer.offers_form and not view.nothing_to_plan
+        problem = plan_answer.said(
+            lambda needs: needs == "nothing"
+            or (needs == "plan" and view.plan is not None)
+            or (needs == "button" and button)
+        )
     if earlier_note is not None and (
         viewer == "parent" or not receipt_holds(earlier_note, planned)
     ):
@@ -3709,16 +3760,23 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     """
     fields, whole = await fields_of(request, PLAN_FIELDS, may_be_absent=PLAN_FIELDS)
     budget = graphs.budget()
-    kept = InPlace.read(fields.get(IN_PLACE)) if whole else InPlace()
+    # The first cards the form carried stay in place, whole form or not, as ``fields_of``
+    # hands them back for.
+    kept = InPlace.read(fields.get(IN_PLACE))
     parent = parent_reads(request)
     today = state.clock.today()
     now = state.real_clock.now()
 
-    async def not_made(problem: str, code: int, failure: PlanFailure | None = None) -> HTMLResponse:
+    async def not_made(answer: PlanAnswer, failure: PlanFailure | None = None) -> HTMLResponse:
         # Her page is read on a worker thread, for at most the store's wait; past it,
-        # the page that reads no store says the same.
-        fallback = week_not_shown(
-            request, PLAN_NOT_MADE, problem.replace(PLAN_LABEL_MARK, "the plan button")
+        # the page that reads no store says the answer's own words for it.
+        fallback = replace(
+            week_not_shown(request, PLAN_NOT_MADE, answer.elsewhere), said=answer.elsewhere
+        )
+        failure = (
+            PlanFailure(try_again=False, uncertain=True)
+            if failure is None and not answer.offers_form
+            else failure
         )
 
         def page() -> HTMLResponse:
@@ -3728,44 +3786,59 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 lambda: student_page(
                     request,
                     state,
-                    problem=problem,
+                    plan_answer=answer,
                     pressed=True,
                     plan_failure=failure,
                     in_place=kept,
-                    status_code=code,
+                    status_code=answer.status,
                 ),
                 fallback,
-                code,
+                answer.status,
             )
 
         try:
             return await bounded(page, STORE_WAIT_SECONDS)
         except Unfinished:
-            return not_shown(request, state, fallback, code)
+            return not_shown(request, state, fallback, answer.status)
+
+    def before(code: int, said: str, elsewhere: str | None = None) -> PlanAnswer:
+        # An answer the button gave before each form planned once, said as it was.
+        return PlanAnswer("her-before", code, fact(said), said if elsewhere is None else elsewhere)
 
     async def repeated(run: RunState) -> Response:
         # A form whose run is recorded is answered by that run as it stands.
         if run.plan_date != today:
-            return await not_made(plan_form_for_another_evening(run.plan_date), 409)
+            return await not_made(another_evening(run.plan_date))
         if run.status == "running":
             notice = being_made(run, PAGE)
             return await not_made(
-                notice.said,
-                status.HTTP_202_ACCEPTED,
+                PlanAnswer(
+                    "her-running",
+                    status.HTTP_202_ACCEPTED,
+                    fact(notice.said),
+                    notice.said,
+                    offers_form=False,
+                ),
                 PlanFailure(run=notice.check, try_again=False, uncertain=True),
             )
         try:
             replaced = await bounded(partial(run_replaced, state, run), STORE_WAIT_SECONDS)
-        except Exception:
-            logger.exception("the plans after run %s could not be read", run.run_id)
-            replaced = False
+        except STORE_FAILURES as error:
+            # A published run made a plan, whatever came after it; nothing says it is the
+            # newest.
+            logger.warning("the plans after run %s could not be read: %s", run.run_id, error)
+            return await not_made(PLAN_MADE_ALREADY)
         if replaced:
-            return await not_made(NEWER_PLAN_SHOWN, status.HTTP_409_CONFLICT)
+            return await not_made(NEWER_PLAN)
         if run.status == "published":
-            return sent_in_place(f"{PAGE}?show_plan=1", kept)
+            return landed("her-plan-latest", sent_in_place(f"{PAGE}?show_plan=1", kept))
         return await not_made(
-            ended_without_a_plan(run.reason, parent=parent),
-            status.HTTP_409_CONFLICT,
+            PlanAnswer(
+                "her-ended",
+                status.HTTP_409_CONFLICT,
+                fact(ended_without_a_plan(run.reason, parent=parent)),
+                ended_without_a_plan(run.reason, parent=parent, where=False),
+            ),
             None
             if run.reason == NOTHING_TO_SCHEDULE_OUTCOME
             else PlanFailure(try_again=run.reason != DATE_PROBLEM),
@@ -3773,14 +3846,14 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
 
     form = plan_form_from(fields, now) if whole else None
     if form is None:
-        return await not_made(PLAN_FORM_NOT_WHOLE, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await not_made(FORM_NOT_WHOLE)
     found = await run_of_the_form(state, form.run_id)
     if found is not None:
         return await repeated(found)
     if form.evening != today:
-        return await not_made(plan_form_for_another_evening(form.evening), 409)
+        return await not_made(another_evening(form.evening))
     if form.expired(now):
-        return await not_made(PLAN_FORM_EXPIRED, status.HTTP_409_CONFLICT)
+        return await not_made(FORM_EXPIRED)
     try:
         await require_work(state, today, budget)
         require_model(graphs)
@@ -3795,27 +3868,29 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     except SameRun as same:
         return await repeated(same.run)
     except StaleBasis:
-        return await not_made(NEWER_PLAN_SHOWN, status.HTTP_409_CONFLICT)
+        return await not_made(NEWER_PLAN)
     except UnknownBasis:
-        return await not_made(PLAN_FORM_NOT_WHOLE, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await not_made(FORM_NOT_WHOLE)
     except AlreadyPlanning as error:
         return await not_made(
-            already_planning(error.run, parent=parent),
-            error.status_code,
+            before(error.status_code, already_planning(error.run, parent=parent)),
             PlanFailure(run=run_check(PAGE, error.run.run_id, CHECK_ON_THAT_REQUEST)),
         )
     except NotSaved as error:
         return await not_made(
-            not_saved(parent=parent, kept=error.kept), error.status_code, PlanFailure()
+            before(error.status_code, not_saved(parent=parent, kept=error.kept)), PlanFailure()
         )
     except CouldNotStart as error:
         return await not_made(
-            f"{COULD_NOT_START} {saved_sentence(parent=parent)}", error.status_code, PlanFailure()
+            before(error.status_code, f"{COULD_NOT_START} {saved_sentence(parent=parent)}"),
+            PlanFailure(),
         )
     except Unconfirmed as unconfirmed:
+        said = f"{UNCONFIRMED} {saved_sentence(parent=parent)}"
         return await not_made(
-            f"{UNCONFIRMED} {saved_sentence(parent=parent)}",
-            status.HTTP_202_ACCEPTED,
+            PlanAnswer(
+                "her-unconfirmed", status.HTTP_202_ACCEPTED, fact(said), said, offers_form=False
+            ),
             PlanFailure(
                 run=run_check(PAGE, unconfirmed.run_id, CHECK_AGAIN),
                 try_again=False,
@@ -3823,23 +3898,33 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             ),
         )
     except HTTPException as error:
-        return await not_made(f"Blossom could not make a plan: {error.detail}", error.status_code)
+        return await not_made(
+            before(error.status_code, f"Blossom could not make a plan: {error.detail}")
+        )
     except Exception:
         logger.exception("today's plan failed on the way")
         return await not_made(
-            ended_without_a_plan(INTERRUPTED, parent=parent),
-            status.HTTP_409_CONFLICT,
+            before(
+                status.HTTP_409_CONFLICT,
+                ended_without_a_plan(INTERRUPTED, parent=parent),
+                ended_without_a_plan(INTERRUPTED, parent=parent, where=False),
+            ),
             PlanFailure(),
         )
     run = made.view
     if run.outcome == OVERTAKEN:
-        # A newer plan for today reached the page while this one was being made; that
-        # plan is the one shown.
-        return sent_in_place(f"{PAGE}?show_plan=1", kept)
+        # A newer plan for today reached the page while this one was being made; the answer
+        # says so and shows that plan, never landing as if this press made it.
+        return await not_made(NEWER_PLAN)
     if run.draft_id is None:
         return await not_made(
-            ended_without_a_plan(run.outcome, parent=parent, past_due=run.past_due),
-            status.HTTP_409_CONFLICT,
+            before(
+                status.HTTP_409_CONFLICT,
+                ended_without_a_plan(run.outcome, parent=parent, past_due=run.past_due),
+                ended_without_a_plan(
+                    run.outcome, parent=parent, past_due=run.past_due, where=False
+                ),
+            ),
             None
             if run.outcome == NOTHING_TO_SCHEDULE_OUTCOME
             else PlanFailure(
@@ -3853,7 +3938,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 try_again=run.outcome != DATE_PROBLEM,
             ),
         )
-    return sent_in_place(f"{PAGE}?show_plan=1", kept)
+    return landed("her-made", sent_in_place(f"{PAGE}?show_plan=1", kept))
 
 
 @router.post("/actions/ask-for-help", response_class=HTMLResponse, include_in_schema=False)

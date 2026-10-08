@@ -21,14 +21,15 @@ import contextlib
 import logging
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException, status
 from starlette.datastructures import URL
+from starlette.responses import Response
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread, finish_held_reviews
@@ -233,12 +234,14 @@ def ended_without_a_plan(
     past_due: Sequence[PastDueView] = (),
     unchanged: bool = False,
     evening: date | None = None,
+    where: bool = True,
 ) -> str:
     """The same, as her page says it: what went wrong in plain words, that her updates are
     kept, and, to a parent reading her page, where the run's record is. The run's own name
     for how it ended is never shown, and work is named only when the record shows its date
     has passed. ``unchanged`` adds that her plan is the one she had; ``evening`` is the run's
-    evening when it is not today's, which a date problem names."""
+    evening when it is not today's, which a date problem names. ``where`` false leaves out
+    where the record is, for a stand-in that can't show it."""
     if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
         return NOTHING_TO_SCHEDULE
     category = failure_category(outcome)
@@ -266,7 +269,7 @@ def ended_without_a_plan(
         what = "Blossom couldn't get a plan from the planning service this time."
     else:
         what = "Blossom couldn't finish a reliable plan this time."
-    then = "Family review shows what happened." if parent else ""
+    then = "Family review shows what happened." if parent and where else ""
     kept = plan_unchanged(parent=parent) if unchanged else ""
     return " ".join(part for part in (what, kept, saved_sentence(parent=parent), then) if part)
 
@@ -465,11 +468,102 @@ def run_check(page: str, run_id: str, label: str) -> RunCheck:
 
 @dataclass(frozen=True)
 class RunNotice:
-    """What a page says about a planning run, and its link to check again, if any."""
+    """What a page says about a planning run, its link to check again, if any, and the run
+    a page's ``?run=`` named when it ended without a plan."""
 
     said: str
     check: RunCheck | None = None
     running: bool = False
+    run: RunState | None = None
+
+
+STORE_FAILURES: Final = (Unfinished, StoreBusy, WriterBusy, sqlite3.Error)
+"""Every way a read of the store fails: busy past its wait, or the file refusing it."""
+
+PlanRow = Literal[
+    "her-not-whole",
+    "her-another-evening",
+    "her-expired",
+    "her-running",
+    "her-newer-plan",
+    "her-plan-made",
+    "her-ended",
+    "her-unconfirmed",
+    "her-before",
+    "family-not-whole",
+    "family-expired",
+    "family-another-evening",
+    "family-unreadable-date",
+    "family-running",
+    "family-newer-plan",
+    "family-newer-plan-unread",
+    "family-plan-made",
+    "family-ended",
+    "family-unconfirmed",
+    "family-before",
+]
+"""Each answer a plan press gives on a page, besides landing on the page it planned for."""
+PlanLanding = Literal[
+    "her-made",
+    "her-plan-latest",
+    "family-made",
+    "family-plan-latest",
+    "family-ended-first",
+]
+"""Each press that lands on the page it planned for, with no answer of its own: a plan made,
+a used form whose plan is still the newest, or, on the family page, a first press whose run
+ended without a plan, which the page's ended fold explains."""
+
+
+def landed[Landing: Response](row: PlanLanding, response: Landing) -> Landing:
+    """``response``, a press landing on the page it planned for, named by its row."""
+    del row
+    return response
+
+
+Needs = Literal["nothing", "plan", "button", "place", "shown", "kept", "not kept"]
+"""What the page sent must show for a clause to be said: nothing, today's plan (her page),
+the plan button or form, the plan the answer is about, that plan in the waiting list or under
+today's heading, the date kept in the open form, or the open form with no date kept."""
+
+
+@dataclass(frozen=True)
+class Clause:
+    """One sentence of an answer's line, said when the page shows what it ``needs``, and
+    ``otherwise`` said in its place when it doesn't."""
+
+    words: str
+    needs: Needs = "nothing"
+    otherwise: str = ""
+
+
+@dataclass(frozen=True)
+class PlanAnswer:
+    """What a plan press answers on a page: its row, status, line, the words its stand-in
+    says, what the page keeps, whether it offers a plan form, and the plan it is about."""
+
+    row: PlanRow
+    status: int
+    line: tuple[Clause, ...]
+    elsewhere: str
+    keeps: date | None = None
+    offers_form: bool = True
+    opens_form: bool = True
+    open_plan: str | None = None
+    check: RunCheck | None = None
+
+    def said(self, shows: Callable[[Needs], bool]) -> str:
+        """The line as the page says it, each clause kept only when ``shows`` its need."""
+        return " ".join(
+            part
+            for clause in self.line
+            if (part := clause.words if shows(clause.needs) else clause.otherwise)
+        )
+
+
+def fact(*words: str) -> tuple[Clause, ...]:
+    """Sentences an answer says whatever the page shows."""
+    return tuple(Clause(said) for said in words)
 
 
 def being_made(run: RunState, page: str) -> RunNotice:
@@ -514,7 +608,8 @@ def asked_run(state: ApplicationState, run_id: str, page: str, *, parent: bool) 
         return None
     if run.status == "running":
         return being_made(run, page)
-    return ended_notice(run, parent=parent, today=state.clock.today())
+    notice = ended_notice(run, parent=parent, today=state.clock.today())
+    return None if notice is None else replace(notice, run=run)
 
 
 def run_notice(

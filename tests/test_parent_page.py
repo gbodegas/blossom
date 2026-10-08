@@ -48,11 +48,17 @@ from blossom.stores.help_requests import NOTE_MAX_LENGTH
 from blossom.stores.project_state import Assignment, Saved, Undone
 from tests import support
 from tests.support import (
+    FAMILY_ASK_AGAIN,
+    FAMILY_DATE_NOT_READ,
+    FAMILY_NEWER_PLAN_AUGUST_19,
+    FAMILY_PLAN_ANOTHER_EVENING,
     FIXTURE_TIMEZONE,
     PAGE_HEADERS,
     SAME_ORIGIN,
+    SHOWN_BELOW_WAITING,
     Scripted,
     ended_run,
+    family_line,
     family_plan,
     fixture_settings,
     forgetful_fixture_plan,
@@ -63,6 +69,7 @@ from tests.support import (
     help_row,
     household_client,
     ok,
+    plan_fold_open,
     record,
     runs_recorded,
     settled_run,
@@ -1852,7 +1859,7 @@ def test_a_used_family_form_with_another_date_starts_nothing_and_keeps_the_date(
     assert again.status_code == 409
     assert (
         "This form already asked for a plan for Wednesday, August 19, so nothing was started "
-        "for Thursday, August 20. That plan is shown above."
+        "for Thursday, August 20. That plan is shown below."
     ) in again.text
     assert date_kept(again.text) == later
     assert FOCUSED_LINE in again.text
@@ -1861,7 +1868,8 @@ def test_a_used_family_form_with_another_date_starts_nothing_and_keeps_the_date(
 
 def test_a_used_family_form_with_an_unreadable_date_names_its_request() -> None:
     """A form whose date can't be read, sent again, names the evening it already asked for
-    and what came of it, says nothing was started, and keeps what was typed."""
+    and what came of it, and says nothing was started, over the open form, which holds today:
+    a date field can't hold what was typed."""
     with browser() as client:
         form = family_plan(client, PLAN_DATE.isoformat())
         client.post("/parent/actions/plan", data=form)
@@ -1870,10 +1878,9 @@ def test_a_used_family_form_with_an_unreadable_date_names_its_request() -> None:
 
     assert again.status_code == 409
     assert "This form already asked for a plan for Wednesday, August 19." in again.text
-    assert "The date entered below couldn&#39;t be read, so nothing was started for it." in (
-        again.text
-    )
-    assert date_kept(again.text) == "next tuesday"
+    assert family_line(again.text).endswith(f"{FAMILY_DATE_NOT_READ} {FAMILY_PLAN_ANOTHER_EVENING}")
+    assert date_kept(again.text) == PLAN_DATE.isoformat()
+    assert plan_fold_open(again.text) is True
     assert FOCUSED_LINE in again.text
     assert len(runs) == 1
 
@@ -2015,7 +2022,7 @@ def test_a_family_form_behind_a_newer_plan_starts_nothing_and_opens_that_plan() 
 
     assert pressed.status_code == 409
     said = " ".join(unescape(pressed.text).split())
-    assert parent_routes.newer_plan_shown(PLAN_DATE, waiting=True) in said
+    assert f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_ASK_AGAIN}" in said
     assert FOCUSED_LINE in pressed.text
     assert len(runs) == 1
     fresh = form_fields(pressed.text, "/parent/actions/plan")
@@ -2061,7 +2068,7 @@ def test_a_plan_published_while_the_family_page_is_read_leaves_its_form_behind_i
     assert "draft:plan:between" not in page
     assert pressed.status_code == 409
     said = " ".join(unescape(pressed.text).split())
-    assert parent_routes.newer_plan_shown(PLAN_DATE, waiting=True) in said
+    assert f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_ASK_AGAIN}" in said
     assert [run for run, _, _ in runs][1:] == ["plan:between"]
 
 

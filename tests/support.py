@@ -1148,6 +1148,200 @@ def runs_recorded(client: TestClient) -> list[tuple[str, str, str]]:
     return [(str(run), str(evening), str(status)) for run, evening, status in rows]
 
 
+# ------------------------------------------------- what the plan presses answer
+
+# Every sentence and clause the two plan presses answer with, written out here and never
+# read from the application, so a change to the words is a change these tests see.
+HER_NEWER_PLAN = (
+    "A newer plan for today was made after this page was opened, so this press didn't start "
+    "another one."
+)
+HER_FORM_NOT_WHOLE = (
+    "This plan button came from an incomplete or outdated page, so no plan was started."
+)
+HER_FORM_EXPIRED = (
+    "This plan button is from a page opened more than a week ago, so nothing new was started."
+)
+HER_FORM_FROM_AUGUST_18 = (
+    "This plan button is from the page for Tuesday, August 18, so nothing new was started."
+)
+HER_PLAN_ALREADY_MADE = (
+    "This plan button already asked for today's plan, and a plan was made, so nothing new "
+    "was started."
+)
+HER_ASK_AGAIN = "To ask for a new plan, press Plan again."
+YOUR_WEEK_NOT_SHOWN_LINE = "Your week can't be shown right now."
+FAMILY_FORM_NOT_WHOLE = (
+    "This form came from an incomplete or outdated page, so no plan was started."
+)
+FAMILY_FORM_EXPIRED = (
+    "This form is from a page opened more than a week ago, so no plan was started."
+)
+FAMILY_KEPT_BELOW = "The evening you chose is kept below; press Plan it to start one."
+FAMILY_CHOOSE_AN_EVENING = "Choose an evening and press Plan it to start one."
+FAMILY_NEWER_PLAN_AUGUST_19 = (
+    "A newer plan for Wednesday, August 19 was made after this page was opened, so Plan it "
+    "didn't start another one."
+)
+FAMILY_PLAN_ALREADY_MADE_AUGUST_19 = (
+    "This form already asked for a plan for Wednesday, August 19, and a plan was made, so "
+    "nothing new was started."
+)
+FAMILY_ASKED_FOR_AUGUST_19 = "This form already asked for a plan for Wednesday, August 19."
+SHOWN_BELOW_WAITING = "That plan is shown below, waiting for review."
+SHOWN_BELOW_UNDER_TODAYS_REVIEWED_PLAN = "That plan is shown below, under Today's reviewed plan."
+THAT_PLAN_SHOWN_BELOW = "That plan is shown below."
+FAMILY_ASK_AGAIN = "To ask for a new one, press Plan it again."
+FAMILY_DATE_NOT_READ = "The date entered couldn't be read, so nothing was started for it."
+FAMILY_PLAN_ANOTHER_EVENING = "To plan another evening, choose a date and press Plan it."
+HER_UPDATES_SAVED = "Her homework updates are saved."
+FAMILY_REVIEW_SHOWS = "Family review shows what happened."
+FAMILY_NOT_SHOWN_LINE = "Family review can't be shown right now."
+ENDED_REASONS = {
+    "timed_out": "Planning took too long, so Blossom stopped.",
+    "service_failed": "Blossom couldn't get a plan from the planning service this time.",
+    "date_problem": (
+        "Blossom can't make today's plan: some work has a due date that already passed, so "
+        "no plan can finish it on time."
+    ),
+    "checks_failed": "Blossom couldn't finish a reliable plan this time.",
+}
+"""How a run that ended without a plan says why, by the reason it ended for."""
+
+
+@dataclasses.dataclass(frozen=True)
+class AnswerRow:
+    """One answer a plan press gives on a page: its row, its status, how its line begins, the
+    words its stand-in says, and whether it offers a plan form; or, for a press that lands on
+    the page it planned for, the address it lands on."""
+
+    row: str
+    status: int
+    fact: str = ""
+    stand_in: str = ""
+    form: bool = True
+    lands: str = ""
+
+
+HER_UNCONFIRMED = (
+    "Blossom couldn't confirm that the new plan was saved. Your homework updates are saved."
+)
+FAMILY_UNCONFIRMED = (
+    "Blossom couldn't confirm that the new plan was saved. Her homework updates are saved."
+)
+HER_INTERRUPTED = (
+    "Blossom couldn't finish a reliable plan this time. Your homework updates are saved."
+)
+HER_PLAN_SHOWN = "/student/due-this-week?show_plan=1"
+FAMILY_NEWER_PLAN_AUGUST_20 = (
+    "A newer plan for Thursday, August 20 was made after this page was opened, so Plan it "
+    "didn't start another one."
+)
+SHOWN_BELOW_UNDER_EARLIER_PLANS = "That plan is shown below, under Earlier plans."
+BEING_MADE_AUGUST_19 = "The plan request for Wednesday, August 19 is still being finished."
+ANOTHER_EVENING_ASKED = (
+    "This form already asked for a plan for Wednesday, August 19, so nothing was started for "
+    "Thursday, August 20."
+)
+HER_ROWS = (
+    AnswerRow("her-not-whole", 422, HER_FORM_NOT_WHOLE, HER_FORM_NOT_WHOLE),
+    AnswerRow("her-another-evening", 409, HER_FORM_FROM_AUGUST_18, HER_FORM_FROM_AUGUST_18),
+    AnswerRow("her-expired", 409, HER_FORM_EXPIRED, HER_FORM_EXPIRED),
+    AnswerRow("her-running", 202, BEING_MADE_AUGUST_19, BEING_MADE_AUGUST_19, form=False),
+    AnswerRow("her-newer-plan", 409, HER_NEWER_PLAN, HER_NEWER_PLAN),
+    AnswerRow("her-plan-made", 409, HER_PLAN_ALREADY_MADE, HER_PLAN_ALREADY_MADE),
+    AnswerRow(
+        "her-ended",
+        409,
+        "Planning took too long, so Blossom stopped. Your homework updates are saved.",
+        "Planning took too long, so Blossom stopped. Your homework updates are saved.",
+    ),
+    AnswerRow("her-unconfirmed", 202, HER_UNCONFIRMED, HER_UNCONFIRMED, form=False),
+    AnswerRow("her-before", 409, HER_INTERRUPTED, HER_INTERRUPTED),
+    AnswerRow("her-made", 303, lands=HER_PLAN_SHOWN),
+    AnswerRow("her-plan-latest", 303, lands=HER_PLAN_SHOWN),
+)
+"""Her plan button's answers and landings."""
+FAMILY_ROWS = (
+    AnswerRow("family-not-whole", 422, FAMILY_FORM_NOT_WHOLE, FAMILY_FORM_NOT_WHOLE),
+    AnswerRow("family-expired", 409, FAMILY_FORM_EXPIRED, FAMILY_FORM_EXPIRED),
+    AnswerRow(
+        "family-another-evening",
+        409,
+        ANOTHER_EVENING_ASKED,
+        f"{ANOTHER_EVENING_ASKED} That plan was made.",
+    ),
+    AnswerRow(
+        "family-unreadable-date",
+        409,
+        FAMILY_ASKED_FOR_AUGUST_19,
+        f"{FAMILY_ASKED_FOR_AUGUST_19} That plan was made. {FAMILY_DATE_NOT_READ}",
+    ),
+    AnswerRow("family-running", 202, BEING_MADE_AUGUST_19, BEING_MADE_AUGUST_19, form=False),
+    AnswerRow("family-newer-plan", 409, FAMILY_NEWER_PLAN_AUGUST_19, FAMILY_NEWER_PLAN_AUGUST_19),
+    AnswerRow(
+        "family-newer-plan-unread",
+        409,
+        FAMILY_NEWER_PLAN_AUGUST_19,
+        FAMILY_NEWER_PLAN_AUGUST_19,
+    ),
+    AnswerRow(
+        "family-plan-made",
+        409,
+        FAMILY_PLAN_ALREADY_MADE_AUGUST_19,
+        FAMILY_PLAN_ALREADY_MADE_AUGUST_19,
+    ),
+    AnswerRow(
+        "family-ended",
+        409,
+        f"{ENDED_REASONS['timed_out']} {HER_UPDATES_SAVED} {FAMILY_REVIEW_SHOWS}",
+        f"{ENDED_REASONS['timed_out']} {HER_UPDATES_SAVED}",
+    ),
+    AnswerRow("family-unconfirmed", 202, FAMILY_UNCONFIRMED, FAMILY_UNCONFIRMED, form=False),
+    AnswerRow(
+        "family-before",
+        422,
+        "The evening of 2026-08-18 has passed. Plans are for today or a later evening.",
+        "The evening of 2026-08-18 has passed. Plans are for today or a later evening.",
+    ),
+    AnswerRow("family-made", 303, lands="/parent"),
+    AnswerRow("family-plan-latest", 303, lands="/parent"),
+    AnswerRow("family-ended-first", 303, lands="/parent"),
+)
+"""The family Plan it's answers and landings."""
+
+
+def her_line(page: str) -> str:
+    """The words of the line her week answers a press with, links and all, or empty."""
+    found = re.search(r'<p class="problem week-problem"[^>]*>(.*?)</p>', page, re.S)
+    return "" if found is None else words(found.group(1))
+
+
+def family_line(page: str) -> str:
+    """The words of the line the family page answers a press with, links and all, or empty."""
+    found = re.search(r'<p class="problem" role="alert" id="problem"[^>]*>(.*?)</p>', page, re.S)
+    return "" if found is None else words(found.group(1))
+
+
+def family_line_focused(page: str) -> bool:
+    """Whether the family page's line takes the focus."""
+    return '<p class="problem" role="alert" id="problem" tabindex="-1" autofocus>' in page
+
+
+def plan_fold_open(page: str) -> bool | None:
+    """Whether the family page's Help with a plan is open, or ``None`` when it isn't there."""
+    found = re.search(
+        r'<details class="steps panel-fold"( open)?>\s*<summary>Help with a plan</summary>', page
+    )
+    return None if found is None else found.group(1) is not None
+
+
+def plan_date_shown(page: str) -> str | None:
+    """The date the family page's plan form holds, or ``None`` when it shows no form."""
+    found = re.search(r'<input type="date" name="plan_date" value="([^"]*)">', page)
+    return None if found is None else found.group(1)
+
+
 def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:
     """Send her update from the card as it stands on the week ``week`` names, the fixture
     week unless it names another, and return the address it goes back to."""
