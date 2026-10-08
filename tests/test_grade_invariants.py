@@ -13,7 +13,8 @@ result is its stable ID, and an ambiguous match never saves without a parent's a
 grade save writes her own account or the school's submission status. G-I2: what a plan is made
 from reads the same across every grade write. G-I5: nothing saves for another student or for an
 identity no one confirmed. G-I12: the grade modules import nothing that reaches a model. G-I18:
-no grade write changes the current context a parent chose.
+no grade write changes the current context a parent chose. G-I11: a delete removes exactly its
+class and term and keeps the revision, raised.
 """
 
 import ast
@@ -52,7 +53,10 @@ from blossom.noticing import canonical_active_input, planning_digest, read_every
 from blossom.settings import PACKAGE_ROOT
 from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
+    AlreadyDeleted,
     AnswerNotAsked,
+    ClassTermDeleted,
+    DeletePreview,
     FirstMonthCorrected,
     FirstMonthStood,
     NameFormAdded,
@@ -62,6 +66,7 @@ from tests.support import (
     FIXTURES,
     OBSERVED_AT,
     as_stored,
+    capture_class,
     closed_world,
     confirm_current,
     current_preview,
@@ -104,6 +109,8 @@ KEPT = draft_of(REPORT.replace(SEED, "| Seed Germination Log | 19.0 "))
 """Another capture with A's Cell Diagram after a newer 8.0, and Seed changed: kept as earlier."""
 BACK = draft_of(REPORT.replace(SEED, "| Seed Germination Log | 17.0 "))
 """A third such capture, its Cell Diagram brought back under the parent's choice of current."""
+SECOND_TERM = draft_of(REPORT.replace("**T1**", "**T2**"))
+"""Her second term, deleted and imported again, so the first stays."""
 
 
 def chosen_current(store: ProjectStateStore, draft: GradeReportDraft) -> object:
@@ -191,6 +198,45 @@ def class_details_actions(store: ProjectStateStore) -> list[tuple[str, Callable[
                     store, ANOTHER_CAPTURE, current_preview(store, ANOTHER_CAPTURE), digest="0"
                 ),
             ),
+        ),
+    ]
+
+
+def second_term_delete(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
+    """Her second term saved and deleted, the delete's retry, a save page from before it, and the
+    term imported again."""
+    pages = []
+    held: list[tuple[str, int | None]] = []
+
+    def save_second() -> object:
+        outcome = expect(GradeReportSaved, save_grade(store, SECOND_TERM, key=KEY))
+        pages.append(store.review_grade_report(SECOND_TERM, capture_key(SECOND_TERM), key=KEY))
+        return outcome
+
+    def delete() -> object:
+        class_id = capture_class(store, SECOND_TERM)
+        preview = store.delete_preview(class_id, "T2")
+        assert isinstance(preview, DeletePreview), preview
+        held.append((class_id, preview.revision))
+        return removed()
+
+    def removed() -> object:
+        class_id, revision = held[0]
+        return store.delete_class_term(class_id, "T2", revision=revision, role="parent")
+
+    return [
+        ("her second term", save_second),
+        ("a delete of her second term", lambda: expect(ClassTermDeleted, delete())),
+        ("its retry", lambda: expect(AlreadyDeleted, removed())),
+        (
+            "a save page from before it",
+            lambda: expect(
+                ReviewReturned, save_grade(store, SECOND_TERM, key=KEY, review=pages[0])
+            ),
+        ),
+        (
+            "her second term imported again",
+            lambda: expect(GradeReportSaved, save_grade(store, SECOND_TERM, key=KEY)),
         ),
     ]
 
@@ -285,6 +331,7 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
             "a submission that records nothing new",
             lambda: records_nothing_new(store),
         ),
+        *second_term_delete(store),
         (
             "the secret replaced, confirmed again",
             lambda: expect(GradeReportSaved, answered(WREN_REPORT, NEW_KEY, IdentityAnswer.HERS)),
@@ -448,7 +495,7 @@ def test_g_i1_no_grade_save_changes_anything_outside_the_gradebook(
 
     assert any(name.endswith("assignments") for name in before)
     assert seen == [(label, True) for label, _ in seen]
-    assert len(accepted) == 12
+    assert len(accepted) == 13
 
 
 def test_g_i8_a_retry_writes_nothing_and_returns_the_recorded_outcome(
@@ -857,3 +904,157 @@ def test_g_i18_no_grade_write_changes_the_current_context(tmp_path: pathlib.Path
     assert seen
     assert seen == [(label, True) for label, _ in seen]
     assert years == [("2025-2026",), (YEAR,)]
+
+
+def test_every_grade_acceptance_carries_its_report_s_class_and_term(
+    tmp_path: pathlib.Path,
+) -> None:
+    """After every kind of grade write, each acceptance into a report has that report's class
+    and term, and each grade acceptance has both, a report-less one included: the delete finds
+    them by that exact pair."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    seen = []
+    for label, write in every_grade_write(store):
+        write()
+        astray = store._connection.execute(
+            "SELECT COUNT(*) FROM grade_acceptances AS a WHERE a.class_id IS NULL "
+            "OR a.term_label IS NULL OR (a.report_id IS NOT NULL AND NOT EXISTS ("
+            "SELECT 1 FROM grade_reports AS r WHERE r.report_id = a.report_id "
+            "AND r.student_id = a.student_id AND r.class_id = a.class_id "
+            "AND r.term_label = a.term_label))"
+        ).fetchone()[0]
+        seen.append((label, astray))
+    report_less = store._connection.execute(
+        "SELECT COUNT(*) FROM grade_acceptances WHERE report_id IS NULL"
+    ).fetchone()[0]
+    store.close()
+
+    assert report_less
+    assert seen == [(label, 0) for label, _ in seen]
+
+
+def test_a_homework_screenshot_acceptance_carries_no_class_or_term() -> None:
+    """The schema keeps a class and term exactly on grade acceptances: a homework screenshot's
+    with either, or a grade acceptance missing either, is refused."""
+    store = ProjectStateStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    student_id = store.student_id()
+
+    def accepted(kind: str, class_id: str | None, term: str | None) -> bool:
+        try:
+            with store._connection:
+                store._connection.execute(
+                    "INSERT INTO grade_acceptances (acceptance_id, student_id, kind, source_key, "
+                    "report_id, class_id, term_label, accepted, identity_status, "
+                    "identity_answer, identity_form, added, updated, already_saved, "
+                    "left_to_check, shown, answers_kept, complete, accepted_at, role) "
+                    "VALUES (?, ?, ?, 'a capture', NULL, ?, ?, '[]', 'matches', 'shown', NULL, "
+                    "0, 0, 0, 0, 0, 0, 1, ?, 'parent')",
+                    (f"{kind}-{class_id}-{term}", student_id, kind, class_id, term, "now"),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    cases = {
+        (kind, class_id, term): accepted(kind, class_id, term)
+        for kind in ("grade_text", "grade_screenshot", "homework_screenshot")
+        for class_id in (None, "a class")
+        for term in (None, "T1")
+    }
+
+    assert cases == {
+        (kind, class_id, term): (class_id, term) == (None, None)
+        if kind == "homework_screenshot"
+        else None not in (class_id, term)
+        for kind, class_id, term in cases
+    }
+
+
+KEPT_BY_A_DELETE = (
+    "grade_student",
+    "grade_name_forms",
+    "grade_context",
+    "grade_years",
+    "grade_terms",
+    "grade_classes",
+    "grade_class_aliases",
+)
+SCOPED_BY_REPORT = (
+    "grade_term_observations",
+    "grade_category_observations",
+    "grade_result_observations",
+    "grade_match_decisions",
+)
+SCOPED_BY_CLASS_AND_TERM = (
+    "grade_reports",
+    "grade_results",
+    "grade_acceptances",
+    "grade_current_actions",
+)
+RAISED_BY_A_DELETE = ("grade_scope_revisions",)
+
+
+def revised(store: ProjectStateStore) -> list[tuple[tuple[str, str], int]]:
+    return [
+        ((str(class_id), str(term)), int(revision))
+        for class_id, term, revision in store._connection.execute(
+            "SELECT class_id, term_label, revision FROM grade_scope_revisions"
+        )
+    ]
+
+
+def test_g_i11_a_delete_removes_exactly_its_class_and_term_and_keeps_the_revision(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Every gradebook table is classified kept, scoped or raised, and an unclassified one fails;
+    after every kind of grade write, a delete of the first term removes exactly that scope's
+    rows, leaves every other row as stored, raises its revision by one, and a page from before
+    saves nothing."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    for _, write in every_grade_write(store):
+        write()
+    class_id = capture_class(store, WREN_REPORT)
+    scope = (store.student_id(), class_id, "T1")
+    page = store.review_grade_report(MOVED, capture_key(MOVED), key=KEY)
+    by_report = (
+        "student_id = ? AND report_id IN (SELECT report_id FROM grade_reports "
+        "WHERE student_id = ? AND class_id = ? AND term_label = ?)",
+        (scope[0], *scope),
+    )
+    by_scope = ("student_id = ? AND class_id = ? AND term_label = ?", scope)
+    where = {
+        **dict.fromkeys(SCOPED_BY_REPORT, by_report),
+        **dict.fromkeys(SCOPED_BY_CLASS_AND_TERM, by_scope),
+    }
+
+    def rows(table: str, sql: str = "1", values: tuple[str, ...] = ()) -> list[str]:
+        query = f"SELECT * FROM {table} WHERE {sql}"  # noqa: S608
+        return sorted(repr(row) for row in store._connection.execute(query, values))
+
+    inside = {table: len(rows(table, *where[table])) for table in where}
+    outside = {table: rows(table, f"NOT ({where[table][0]})", where[table][1]) for table in where}
+    kept = {table: rows(table) for table in KEPT_BY_A_DELETE}
+    revisions = dict(revised(store))
+    preview = store.delete_preview(class_id, "T1")
+    assert isinstance(preview, DeletePreview)
+    outcome = store.delete_class_term(class_id, "T1", revision=preview.revision, role="parent")
+    after = {table: rows(table) for table in where}
+    kept_after = {table: rows(table) for table in KEPT_BY_A_DELETE}
+    raised = dict(revised(store))
+    stale = save_grade(store, MOVED, key=KEY, review=page)
+    store.close()
+
+    classified = (
+        *KEPT_BY_A_DELETE,
+        *SCOPED_BY_REPORT,
+        *SCOPED_BY_CLASS_AND_TERM,
+        *RAISED_BY_A_DELETE,
+    )
+    assert sorted(classified) == sorted(GRADEBOOK_TABLES)
+    assert isinstance(outcome, ClassTermDeleted)
+    assert all(inside.values()), inside
+    assert after == outside
+    assert kept_after == kept
+    assert raised == {**revisions, (class_id, "T1"): revisions[class_id, "T1"] + 1}
+    assert isinstance(stale, ReviewReturned)
+    assert stale.why is ReturnReason.REVISION

@@ -236,11 +236,17 @@ Three files under `.local/` outlive a restart:
   current", and left as it was by a save or confirmation that records
   nothing new, unless that save read its copy incomplete and the copy's
   report is already on record, which keeps the report from saying what
-  it doesn't show; `grade_acceptances`, one record of each save, which a
-  repeated press is answered from; and `grade_current_actions`, one record
-  of each confirmed "Use saved values from this report as current": the
-  report it copied, the report it made current, and what it copied.
-  A file from before any of them gains the tables on the first start.
+  it doesn't show; `grade_acceptances`, one record of each save with the
+  class and term it covers, which a repeated press is answered from; and
+  `grade_current_actions`, one record of each confirmed "Use saved values
+  from this report as current": the report it copied, the report it made
+  current, and what it copied. A delete of one class's grades for one term
+  removes that class and term's reports, values, results, acceptances and
+  actions, and keeps her record, years, terms, classes and aliases.
+  A file from before any of them gains the tables on the first start, and
+  a file whose acceptances have no class and term gains them once: each is
+  tied to its report's, or its capture's, or the start stops with every
+  grade table as it was and says how many records it couldn't tie.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   A draft is its text and, in a nullable `plan_snapshot` column, the plan as
