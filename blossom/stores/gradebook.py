@@ -35,9 +35,16 @@ when they hold nothing, or a fresh preview, deleting nothing, after a newer impo
 A school year's first month is corrected by comparing and setting the month itself, the year's
 whole state. Nothing stored or compared depends on it, so no revision moves; due dates resolve
 under the month on record when they are read.
+
+A parent may assert a saved value, in a closed form only, or withdraw that assertion. Each is an
+added record on the original reading, never a change to it: the observation keeps the school's
+value as read, and the record keeps that cell, who and when. The assertion shows beside the
+original and every copy, never in the review or any comparison, and the class and term's delete
+removes its history with the rest.
 """
 
 import json
+import re
 import secrets
 import sqlite3
 import threading
@@ -50,6 +57,7 @@ from typing import Final, Literal, cast, get_args
 
 from blossom.clock import Clock
 from blossom.grades.draft import (
+    NUMBER,
     GradeReportDraft,
     GradeRow,
     GradeValue,
@@ -63,6 +71,7 @@ from blossom.grades.projection import (
     EXPLICIT,
     ActionOutcome,
     ActionRecorded,
+    Copies,
     CurrentPage,
     CurrentPreview,
     Decided,
@@ -73,6 +82,8 @@ from blossom.grades.projection import (
     ReportNotSaved,
     ScopeHeld,
     SourceOf,
+    apply_corrections,
+    original_of,
     preview_of,
     project,
 )
@@ -126,6 +137,7 @@ GRADEBOOK_TABLES: Final = (
     "grade_scope_revisions",
     "grade_acceptances",
     "grade_current_actions",
+    "grade_corrections",
 )
 """Every table a grade write may change. Every other table of the file, and the checkpoint and
 trace files, are a closed world no grade write touches."""
@@ -378,6 +390,38 @@ CREATE TABLE IF NOT EXISTS grade_current_actions (
     role TEXT NOT NULL CHECK (role {WHO})
 )
 """,
+    f"""
+CREATE TABLE IF NOT EXISTS grade_corrections (
+    correction_id TEXT PRIMARY KEY,
+    student_id TEXT NOT NULL,
+    report_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('term', 'category', 'result')),
+    target TEXT NOT NULL,
+    field TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence >= 1),
+    read_text TEXT NOT NULL,
+    read_presence TEXT NOT NULL CHECK (read_presence IN ('reported', 'blank', 'unreadable')),
+    corrected_text TEXT NOT NULL,
+    corrected_presence TEXT NOT NULL CHECK (corrected_presence IN ('reported', 'withdrawn')),
+    correction_kind TEXT NOT NULL CHECK (correction_kind IN ('transcription', 'parent_assertion')),
+    entered_on TEXT NOT NULL,
+    entered_with TEXT,
+    corrected_by TEXT NOT NULL CHECK (corrected_by {WHO}),
+    corrected_at TEXT NOT NULL,
+    UNIQUE (student_id, report_id, kind, target, field, sequence),
+    CHECK ((corrected_presence = 'withdrawn') = (corrected_text = '')),
+    CHECK (
+        (kind = 'term' AND field IN ('percent', 'letter'))
+        OR (kind = 'category' AND field IN ('weight', 'average'))
+        OR (kind = 'result' AND field IN
+            ('points', 'max_points', 'average', 'status', 'curve', 'bonus', 'penalty', 'weight'))
+    ),
+    CHECK (
+        correction_kind = 'parent_assertion'
+        OR (read_presence = 'unreadable' AND field NOT IN ('letter', 'status'))
+    )
+)
+""",
 )
 """The tables a save of a report, or the class-details action, writes, each row carrying her
 student ID.
@@ -392,7 +436,12 @@ screenshot's acceptance has none of. The class-details action keeps its source r
 the acceptances whose report that is and the action that made it, the report it made, what it
 copied, the source's completeness as ``complete_from_source``, the digest of the preview it
 confirmed, the role and its time. A report is complete when it has at least one acceptance or a
-making action, and each of them was."""
+making action, and each of them was.
+
+A correction is added only, on one value field of the original reading (``report_id``, ``kind``,
+``target``): its order among that field's records, the cell as read, the value recorded or a
+withdrawal, its kind, the report the parent acted on (``entered_on``), the save it came with
+(``entered_with``), who and when."""
 
 ACCEPTANCES_TABLE: Final = next(
     statement for statement in CREATE_REPORT_TABLES if "EXISTS grade_acceptances (" in statement
@@ -717,6 +766,9 @@ SCOPE_HOLDS: Final = (
 """What her class and term hold: reports imported, reports an action made, results,
 submissions that saved nothing, every acceptance, and every class-details action."""
 DELETE_SCOPE: Final = (
+    "DELETE FROM grade_corrections WHERE student_id = :student AND report_id IN ("
+    "SELECT report_id FROM grade_reports "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term)",
     "DELETE FROM grade_match_decisions WHERE student_id = :student AND report_id IN ("
     "SELECT report_id FROM grade_reports "
     "WHERE student_id = :student AND class_id = :class AND term_label = :term)",
@@ -740,6 +792,51 @@ DELETE_SCOPE: Final = (
 )
 """A class and term's delete, one statement per table, the reports' children before them: an
 acceptance and an action are found by their own class and term, report-less ones included."""
+SCOPE_COPIES: Final = (
+    "SELECT report_made, source_report, copied FROM grade_current_actions "
+    "WHERE student_id = ? AND class_id = ? AND term_label = ?"
+)
+SCOPE_CORRECTIONS: Final = (
+    "SELECT c.report_id, c.kind, c.target, c.field, c.corrected_text, c.corrected_presence, "
+    "c.correction_kind FROM grade_corrections AS c JOIN grade_reports AS r "
+    "ON r.report_id = c.report_id AND r.student_id = c.student_id "
+    "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? ORDER BY c.sequence"
+)
+CORRECTION_RECORDED: Final = (
+    "SELECT c.report_id, c.kind, c.target, c.field, c.correction_kind, c.corrected_text, "
+    "c.corrected_presence FROM grade_corrections AS c JOIN grade_reports AS r "
+    "ON r.report_id = c.report_id AND r.student_id = c.student_id "
+    "WHERE c.student_id = ? AND c.correction_id = ? AND r.class_id = ? AND r.term_label = ?"
+)
+NEXT_SEQUENCE: Final = (
+    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM grade_corrections "
+    "WHERE student_id = ? AND report_id = ? AND kind = ? AND target = ? AND field = ?"
+)
+ADD_CORRECTION: Final = (
+    "INSERT INTO grade_corrections (correction_id, student_id, report_id, kind, target, field, "
+    "sequence, read_text, read_presence, corrected_text, corrected_presence, correction_kind, "
+    "entered_on, entered_with, corrected_by, corrected_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)"
+)
+HISTORY: Final = (
+    "SELECT c.report_id, c.kind, c.target, c.field, c.sequence, c.read_text, c.read_presence, "
+    "c.corrected_text, c.corrected_presence, c.correction_kind, c.entered_on, c.corrected_by, "
+    "c.corrected_at FROM grade_corrections AS c JOIN grade_reports AS r "
+    "ON r.report_id = c.report_id AND r.student_id = c.student_id "
+    "WHERE c.student_id = ? AND r.class_id = ? AND r.term_label = ? AND c.kind = ? "
+    "AND c.target = ? ORDER BY r.acceptance_order, c.field, c.sequence"
+)
+VALUE_FIELDS: Final = {
+    "term": frozenset({"percent", "letter"}),
+    "category": frozenset({"weight", "average"}),
+    "result": frozenset(
+        {"points", "max_points", "average", "status", "curve", "bonus", "penalty", "weight"}
+    ),
+}
+"""The cells a correction may name, by kind: value cells only, never a Note or a cell that says
+which target a value is."""
+LETTER: Final = re.compile(r"[A-F][+-]?")
+"""A letter grade, as a parent may assert one."""
 
 
 def new_acceptance_id() -> str:
@@ -750,6 +847,11 @@ def new_acceptance_id() -> str:
 def new_action_id() -> str:
     """A one-time ID for a preview of the class-details action, its confirmation's retry key."""
     return f"action-{uuid.uuid4().hex}"
+
+
+def new_correction_id() -> str:
+    """A one-time ID for a page correcting a saved value, its record's retry key."""
+    return f"correction-{uuid.uuid4().hex}"
 
 
 def matched_as(header: ReportHeader) -> str:
@@ -894,6 +996,10 @@ def _first_month_refused(error: BaseException) -> Exception:
     return GradeReportNotSaved(f"the first month could not be corrected: {type(error).__name__}")
 
 
+def _correction_refused(error: BaseException) -> Exception:
+    return GradeReportNotSaved(f"the value could not be corrected: {type(error).__name__}")
+
+
 @dataclass(frozen=True)
 class NameFormAdded:
     """The form was confirmed now, and the key check set with it when it was the first."""
@@ -1001,6 +1107,101 @@ class ClassTermDeleted:
 
 
 DeleteOutcome = ClassTermDeleted | AlreadyDeleted | DeleteReturned | NothingToDelete
+
+CorrectionKind = Literal["parent_assertion", "transcription"]
+
+
+@dataclass(frozen=True)
+class CorrectionPage:
+    """A page for one saved value: its one-time correction ID, the class and term's revision it
+    was read at, and the observation it shows, by report, kind and target. The report may be a
+    copy."""
+
+    correction_id: str
+    revision: int
+    report_id: str
+    kind: str
+    target: str
+
+
+@dataclass(frozen=True)
+class FieldNow:
+    """One field of a saved value as it reads now, under a fresh page: the school's cell as read
+    and the parent's assertion standing on it, if any."""
+
+    page: CorrectionPage
+    field: str
+    read: Cell
+    asserted: Cell | None
+
+
+@dataclass(frozen=True)
+class ValueCorrected:
+    """A record was added for ``field`` under ``correction_id``: ``value``, or None for a
+    withdrawal; the revision was raised."""
+
+    correction_id: str
+    field: str
+    how: CorrectionKind
+    value: str | None
+
+
+@dataclass(frozen=True)
+class CorrectionRecorded:
+    """The page's correction ID was recorded already, and nothing was written now. ``fresh`` is
+    the field posted as it reads now, when the post differs from the record."""
+
+    recorded: ValueCorrected
+    fresh: FieldNow | None = None
+
+
+@dataclass(frozen=True)
+class CorrectionReturned:
+    """The class and term changed since the page was shown, and nothing was written; ``now`` is
+    the field as it reads now."""
+
+    now: FieldNow
+
+
+@dataclass(frozen=True)
+class NothingToCorrect:
+    """The field already reads what was posted, and nothing was written."""
+
+    field: str
+
+
+@dataclass(frozen=True)
+class ObservationNotSaved:
+    """The page's value isn't saved in her class and term, as after a delete; nothing was
+    written."""
+
+
+CorrectionOutcome = (
+    ValueCorrected
+    | CorrectionRecorded
+    | CorrectionReturned
+    | NothingToCorrect
+    | ObservationNotSaved
+)
+
+
+@dataclass(frozen=True)
+class CorrectionRecord:
+    """One record of a field's history: the original reading's report, kind and target; the
+    field; the record's order among the field's records; the cell as read; the value recorded,
+    None for a withdrawal; its kind; the report the parent acted on; who and when."""
+
+    report_id: str
+    kind: str
+    target: str
+    field: str
+    sequence: int
+    read: Cell
+    value: str | None
+    how: CorrectionKind
+    entered_on: str
+    by: ConfirmedBy
+    at: str
 
 
 class GradebookRecords:
@@ -1337,7 +1538,7 @@ class GradebookRecords:
 
     def _scope_held(self, student_id: str, class_id: str, term: str) -> ScopeHeld:
         """Her class and term's reports, their completeness, observations and row records, as
-        stored."""
+        stored, and the parent's assertions standing on each observation."""
         scope = (student_id, class_id, term)
         reports = {
             str(report_id): (int(order), str(use), int(rows))
@@ -1369,7 +1570,14 @@ class GradebookRecords:
                 DECIDED, scope
             )
         ]
-        return ScopeHeld(reports, complete, tuple(observed), tuple(decided))
+        corrections = tuple(
+            (str(report_id), str(kind), str(target), str(named), str(text), str(presence), str(how))
+            for report_id, kind, target, named, text, presence, how in self._connection.execute(
+                SCOPE_CORRECTIONS, scope
+            )
+        )
+        marks = apply_corrections(tuple(observed), corrections, self._copies(scope=scope))
+        return ScopeHeld(reports, complete, tuple(observed), tuple(decided), marks)
 
     def preview_current(
         self, class_id: str, term: str, source_key: str
@@ -1552,6 +1760,174 @@ class GradebookRecords:
                 return FirstMonthChanged(year, stored)
             self._connection.execute(CORRECT_FIRST_MONTH, (month, by, student_id, year, stored))
             return FirstMonthCorrected(year, month)
+
+    def correct_value(
+        self,
+        class_id: str,
+        term: str,
+        *,
+        page: CorrectionPage,
+        field: str,
+        how: CorrectionKind,
+        value: GradeValue | None,
+        confirmed: bool = False,
+        role: ConfirmedBy,
+    ) -> CorrectionOutcome:
+        """A parent's assertion of ``value`` on one field of the saved value ``page`` shows, or
+        with None its withdrawal, as one grade write recorded on the original reading. A
+        transcription correction isn't taken here. A recorded ID returns its outcome while its
+        reading is saved; a missing reading, a changed revision or nothing to change write
+        nothing; a value outside its closed form is refused."""
+        by = _confirmer(role)
+        if how != "parent_assertion":
+            msg = "a saved value takes a parent's assertion, not a transcription correction"
+            raise ValueError(msg)
+        if field not in VALUE_FIELDS.get(page.kind, ()):
+            msg = "only a value cell takes an assertion"
+            raise ValueError(msg)
+        term = folded(term)
+        posted = None if value is None else value.text
+        with self._grade_write(_correction_refused):
+            student_id = self._her_name_record()[0]
+            scope = (student_id, class_id, term)
+            held = self._scope_held(*scope)
+            cells = {(kind, target, report): one for kind, target, report, one in held.observed}
+            recorded = self._connection.execute(
+                CORRECTION_RECORDED, (student_id, page.correction_id, class_id, term)
+            ).fetchone()
+            if recorded is not None:
+                original, kind, target, named, made_how, text, presence = map(str, recorded)
+                if (kind, target, original) not in cells:
+                    return ObservationNotSaved()
+                made = ValueCorrected(
+                    page.correction_id,
+                    named,
+                    cast(CorrectionKind, made_how),
+                    None if presence == "withdrawn" else text,
+                )
+                if (made.field, made.value, kind, target) == (
+                    field,
+                    posted,
+                    page.kind,
+                    page.target,
+                ):
+                    return CorrectionRecorded(made)
+                return CorrectionRecorded(made, self._field_now(held, page, field, scope))
+            on_page = cells.get((page.kind, page.target, page.report_id))
+            if on_page is None:
+                return ObservationNotSaved()
+            stored = self._connection.execute(REVISION_OF, scope).fetchone()
+            if stored is None or int(stored[0]) != page.revision:
+                now = self._field_now(held, page, field, scope)
+                return CorrectionReturned(now) if now is not None else ObservationNotSaved()
+            standing = held.marks.get((page.kind, page.target, page.report_id), {}).get(field)
+            _assertion_allowed(field, on_page[field], value, standing, held)
+            if value is not None and standing == (Presence.REPORTED, value.text):
+                return NothingToCorrect(field)
+            copies = self._copies(scope=scope)
+            original = original_of(page.kind, page.target, page.report_id, copies)
+            read_presence, read_text = cells[page.kind, page.target, original][field]
+            (sequence,) = self._connection.execute(
+                NEXT_SEQUENCE, (student_id, original, page.kind, page.target, field)
+            ).fetchone()
+            self._connection.execute(
+                ADD_CORRECTION,
+                (
+                    page.correction_id,
+                    student_id,
+                    original,
+                    page.kind,
+                    page.target,
+                    field,
+                    int(sequence),
+                    read_text,
+                    read_presence.value,
+                    posted or "",
+                    "withdrawn" if value is None else "reported",
+                    how,
+                    page.report_id,
+                    by,
+                    self._stamp(),
+                ),
+            )
+            self._connection.execute(RAISE_REVISION, scope)
+            return ValueCorrected(page.correction_id, field, how, posted)
+
+    def _field_now(
+        self, held: ScopeHeld, page: CorrectionPage, field: str, scope: tuple[str, str, str]
+    ) -> FieldNow | None:
+        """``field`` of the page's reading as it reads now, under a fresh page, or None when the
+        reading isn't saved in the class and term."""
+        cells = next(
+            (
+                one
+                for kind, target, report, one in held.observed
+                if (kind, target, report) == (page.kind, page.target, page.report_id)
+            ),
+            None,
+        )
+        stored = self._connection.execute(REVISION_OF, scope).fetchone()
+        if cells is None or field not in cells or stored is None:
+            return None
+        fresh = CorrectionPage(
+            new_correction_id(), int(stored[0]), page.report_id, page.kind, page.target
+        )
+        asserted = held.marks.get((page.kind, page.target, page.report_id), {}).get(field)
+        return FieldNow(fresh, field, cells[field], asserted)
+
+    def _copies(self, *, scope: tuple[str, str, str]) -> Copies:
+        """By each report an action made in the class and term, its source and what it
+        copied."""
+        copies: dict[str, tuple[str, frozenset[tuple[str, str]]]] = {}
+        for made, source, copied in self._connection.execute(SCOPE_COPIES, scope):
+            listed = json.loads(str(copied))["observations"]
+            copies[str(made)] = (
+                str(source),
+                frozenset((str(kind), str(target)) for kind, target in listed),
+            )
+        return copies
+
+    def correction_history(
+        self, class_id: str, term: str, kind: str, target: str
+    ) -> tuple[CorrectionRecord, ...]:
+        """Every record on ``target``'s readings in her class and term, withdrawals included, by
+        report and field in their order; a read alone."""
+        term = folded(term)
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            rows = self._connection.execute(
+                HISTORY, (student_id, class_id, term, kind, target)
+            ).fetchall()
+        return tuple(
+            CorrectionRecord(
+                report_id=str(report_id),
+                kind=str(of_kind),
+                target=str(of_target),
+                field=str(named),
+                sequence=int(sequence),
+                read=(Presence(str(read_presence)), str(read_text)),
+                value=None if corrected_presence == "withdrawn" else str(corrected_text),
+                how=cast(CorrectionKind, str(how)),
+                entered_on=str(entered_on),
+                by=cast(ConfirmedBy, str(by)),
+                at=str(at),
+            )
+            for (
+                report_id,
+                of_kind,
+                of_target,
+                named,
+                sequence,
+                read_text,
+                read_presence,
+                corrected_text,
+                corrected_presence,
+                how,
+                entered_on,
+                by,
+                at,
+            ) in rows
+        )
 
     def delete_preview(self, class_id: str, term: str) -> DeletePreview | NothingToDelete:
         """What a delete of her class and term would remove, with the revision it was read at;
@@ -1993,6 +2369,38 @@ def _rows_by_key(draft: GradeReportDraft) -> dict[str, tuple[GradeValue, GradeRo
         for category in draft.categories
         for row in category.rows
     }
+
+
+def _assertion_allowed(
+    field: str, read: Cell, value: GradeValue | None, standing: Cell | None, held: ScopeHeld
+) -> None:
+    """Nothing when a parent may record ``value`` on ``field`` of a reading that read ``read``,
+    or ``ValueError``: a cell the reading captured; a reported value in its closed form, a
+    number in the field's form, a letter A to F with + or -, or a status her class and term
+    already hold; a withdrawal only of an assertion that stands."""
+    if read[0] is Presence.NOT_CAPTURED:
+        msg = "the reading captured no such cell"
+        raise ValueError(msg)
+    if value is None:
+        if standing is None:
+            msg = "no assertion stands on this field"
+            raise ValueError(msg)
+        return
+    text = value.text
+    if field == "status":
+        statuses = {
+            cells["status"][1]
+            for kind, _, _, cells in held.observed
+            if kind == "result" and cells["status"][0] is Presence.REPORTED
+        }
+        allowed = text in statuses
+    elif field == "letter":
+        allowed = LETTER.fullmatch(text) is not None
+    else:
+        allowed = NUMBER.fullmatch(text) is not None
+    if value.presence is not Presence.REPORTED or not allowed:
+        msg = "an assertion takes only its closed form"
+        raise ValueError(msg)
 
 
 def _confirmer(role: str) -> ConfirmedBy:

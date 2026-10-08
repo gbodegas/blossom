@@ -14,7 +14,8 @@ grade save writes her own account or the school's submission status. G-I2: what 
 from reads the same across every grade write. G-I5: nothing saves for another student or for an
 identity no one confirmed. G-I12: the grade modules import nothing that reaches a model. G-I18:
 no grade write changes the current context a parent chose. G-I11: a delete removes exactly its
-class and term and keeps the revision, raised.
+class and term and keeps the revision, raised. G-I6: saved reports, observations and corrections
+never change, and each correction keeps the value as read.
 """
 
 import ast
@@ -29,7 +30,7 @@ from datetime import date
 
 import pytest
 
-from blossom.grades.draft import GradeReportDraft, capture_key
+from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key
 from blossom.grades.identity import IdentityStatus, name_form, name_form_key
 from blossom.grades.projection import (
     ActionRecorded,
@@ -56,10 +57,14 @@ from blossom.stores.gradebook import (
     AlreadyDeleted,
     AnswerNotAsked,
     ClassTermDeleted,
+    CorrectionPage,
+    CorrectionRecorded,
+    CorrectionReturned,
     DeletePreview,
     FirstMonthCorrected,
     FirstMonthStood,
     NameFormAdded,
+    ValueCorrected,
 )
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
@@ -69,6 +74,7 @@ from tests.support import (
     capture_class,
     closed_world,
     confirm_current,
+    correction_page,
     current_preview,
     database_of,
     fixture_clock,
@@ -241,6 +247,62 @@ def second_term_delete(store: ProjectStateStore) -> list[tuple[str, Callable[[],
     ]
 
 
+def assertions(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
+    """A Status "Missing" asserted on Seed through the class-details action's copy, its retry, a
+    stale page, its withdrawal, and a letter asserted on the term."""
+    pages: list[CorrectionPage] = []
+
+    def page(kind: str) -> CorrectionPage:
+        class_id = capture_class(store, WREN_REPORT)
+        if kind == "term":
+            return correction_page(store, class_id, kind, TERM_KEY)
+        (seed,) = (
+            result
+            for result, value in store.current_values(class_id, "T1").results.items()
+            if value.cells["assignment"][1] == "Seed Germination Log"
+        )
+        pages.append(correction_page(store, class_id, kind, seed))
+        return pages[-1]
+
+    def asserted(on: CorrectionPage, field: str, text: str | None) -> object:
+        value = None if text is None else GradeValue(text=text, presence=Presence.REPORTED)
+        return store.correct_value(
+            capture_class(store, WREN_REPORT),
+            "T1",
+            page=on,
+            field=field,
+            how="parent_assertion",
+            value=value,
+            role="parent",
+        )
+
+    return [
+        (
+            "a Status asserted through a copy",
+            lambda: expect(ValueCorrected, asserted(page("result"), "status", "Missing")),
+        ),
+        (
+            "its retry",
+            lambda: expect(CorrectionRecorded, asserted(pages[0], "status", "Missing")),
+        ),
+        (
+            "a stale assertion page",
+            lambda: expect(
+                CorrectionReturned,
+                asserted(dataclasses.replace(pages[0], correction_id="stale"), "status", "Valid"),
+            ),
+        ),
+        (
+            "its withdrawal",
+            lambda: expect(ValueCorrected, asserted(page("result"), "status", None)),
+        ),
+        (
+            "a letter asserted",
+            lambda: expect(ValueCorrected, asserted(page("term"), "letter", "A-")),
+        ),
+    ]
+
+
 def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
     """Each kind of grade write, and each that writes nothing, in an order that reaches them
     all."""
@@ -341,6 +403,7 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
             lambda: expect(NotHers, answered(LINNET_REPORT, NEW_KEY, IdentityAnswer.NOT_HERS)),
         ),
         *class_details_actions(store),
+        *assertions(store),
     ]
 
 
@@ -680,8 +743,9 @@ def test_g_i21_every_observation_and_row_record_traces_to_one_acceptance_or_one_
     tmp_path: pathlib.Path,
 ) -> None:
     """After every kind of grade write, each observation is named by exactly one acceptance
-    into its report or by the action that made its report, and each row record is listed by
-    that action or was written with an acceptance into its report."""
+    into its report or by the action that made its report, each row record is listed by that
+    action or was written with an acceptance into its report, and each correction names one
+    observation an acceptance wrote, entered on it or on a copy of it."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     for _, write in every_grade_write(store):
         write()
@@ -738,6 +802,31 @@ def test_g_i21_every_observation_and_row_record_traces_to_one_acceptance_or_one_
         )
         for report_id, row_key, result_id, decided_at in records
     }
+    source = {
+        str(made): str(source)
+        for made, source in connection.execute(
+            "SELECT report_made, source_report FROM grade_current_actions"
+        )
+    }
+
+    def copies_of(report_id: str) -> set[str]:
+        return (
+            {report_id}
+            | {made for made, of in source.items() if of == report_id}
+            | {
+                further
+                for made, of in source.items()
+                if of == report_id
+                for further in copies_of(made)
+            }
+        )
+
+    corrections = [
+        ((str(report_id), str(kind), str(target)), str(entered_on))
+        for report_id, kind, target, entered_on in connection.execute(
+            "SELECT report_id, kind, target, entered_on FROM grade_corrections"
+        )
+    ]
     store.close()
 
     assert listed
@@ -750,6 +839,12 @@ def test_g_i21_every_observation_and_row_record_traces_to_one_acceptance_or_one_
         for report_id, row_key, result_id, _ in records
         if (report_id, row_key, result_id) in rows_listed
     )
+    assert corrections
+    assert [(named[original], listed[original]) for original, _ in corrections] == [
+        (1, 0) for _ in corrections
+    ]
+    assert all(entered_on in copies_of(original[0]) for original, entered_on in corrections)
+    assert any(entered_on != original[0] for original, entered_on in corrections)
 
 
 def test_g_i2_the_planner_input_is_byte_identical_across_every_grade_write(
@@ -980,6 +1075,7 @@ KEPT_BY_A_DELETE = (
     "grade_class_aliases",
 )
 SCOPED_BY_REPORT = (
+    "grade_corrections",
     "grade_term_observations",
     "grade_category_observations",
     "grade_result_observations",
@@ -1058,3 +1154,70 @@ def test_g_i11_a_delete_removes_exactly_its_class_and_term_and_keeps_the_revisio
     assert raised == {**revisions, (class_id, "T1"): revisions[class_id, "T1"] + 1}
     assert isinstance(stale, ReviewReturned)
     assert stale.why is ReturnReason.REVISION
+
+
+OBSERVATION_TABLES = (
+    "grade_reports",
+    "grade_term_observations",
+    "grade_category_observations",
+    "grade_result_observations",
+)
+
+
+def test_g_i6_saved_observations_never_change_and_records_keep_the_reading(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Across every kind of grade write, a stored report, observation or correction row is
+    never changed, and only the delete removes any; each correction keeps its original's cell
+    as read."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+
+    def rows() -> set[tuple[str, tuple[object, ...]]]:
+        return {
+            (table, row)
+            for table in (*OBSERVATION_TABLES, "grade_corrections")
+            for row in as_stored(store, table)
+        }
+
+    seen = []
+    before = rows()
+    for label, write in every_grade_write(store):
+        write()
+        after = rows()
+        gone = {table for table, _ in before - after}
+        seen.append((label, gone))
+        before = after
+    columns = {
+        "term": "grade_term_observations WHERE report_id = :report",
+        "category": "grade_category_observations "
+        "WHERE report_id = :report AND category_key = :target",
+        "result": "grade_result_observations WHERE report_id = :report AND result_id = :target",
+    }
+    kept = []
+    for report_id, kind, target, field, text, presence in store._connection.execute(
+        "SELECT report_id, kind, target, field, read_text, read_presence FROM grade_corrections"
+    ).fetchall():
+        query = f"SELECT {field}_text, {field}_presence FROM {columns[kind]}"  # noqa: S608
+        stored = store._connection.execute(query, {"report": report_id, "target": target})
+        kept.append(stored.fetchone() == (text, presence))
+    store.close()
+
+    deleting = "a delete of her second term"
+    assert [label for label, gone in seen if gone] == [deleting]
+    assert dict(seen)[deleting] <= set(OBSERVATION_TABLES)
+    assert kept
+    assert all(kept)
+
+
+def test_only_gradebook_names_the_corrections_table() -> None:
+    """Every module that names the corrections table is the gradebook's store, so nothing else
+    reads an assertion into a check, a plan or her account."""
+    naming = sorted(
+        path.relative_to(PACKAGE_ROOT).as_posix()
+        for path in PACKAGE_ROOT.rglob("*")
+        if path.is_file()
+        and path.suffix in {".py", ".html", ".js", ".sql"}
+        and "grade_corrections" in path.read_text(encoding="utf-8")
+    )
+
+    assert naming == ["stores/gradebook.py"]

@@ -98,6 +98,7 @@ from blossom.settings import (
     Settings,
 )
 from blossom.stores.drafts import DraftRecord, DraftsStore, Outcome, RunState, Settled
+from blossom.stores.gradebook import CorrectionPage, new_correction_id
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -1902,6 +1903,31 @@ def confirm_current(
         page=CurrentPage(preview.action_id, preview.source, digest or preview.digest),
         role="parent",
     )
+
+
+def correction_page(
+    store: ProjectStateStore,
+    class_id: str,
+    kind: str,
+    target: str,
+    *,
+    term: str = "T1",
+    report_id: str | None = None,
+) -> CorrectionPage:
+    """A page for a value of ``target`` in her class and term: a fresh correction ID, the
+    revision, and the report its current value comes from, or ``report_id`` when given."""
+    current = store.current_values(class_id, term)
+    value = {
+        "term": current.term,
+        "category": current.categories.get(target),
+        "result": current.results.get(target),
+    }[kind]
+    (revision,) = store._connection.execute(
+        "SELECT revision FROM grade_scope_revisions WHERE class_id = ? AND term_label = ?",
+        (class_id, term),
+    ).fetchone()
+    source = report_id if report_id is not None or value is None else value.report_id
+    return CorrectionPage(new_correction_id(), int(revision), str(source), kind, target)
 
 
 def without_columns(text: str, category: str, *columns: str) -> str:

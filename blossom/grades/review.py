@@ -170,6 +170,10 @@ class CurrentValue:
     last_shown: ReportAt | None = None
     not_shown: ReportAt | None = None
     due: DueFrom | None = None
+    asserted: Mapping[str, Cell] = field(default_factory=dict)
+    """Each field's standing parent assertion on the reading that supplies the value, kept apart
+    from ``cells``: never compared, matched or shown as the school's, and never in the import
+    review."""
 
 
 @dataclass(frozen=True)
@@ -907,6 +911,24 @@ def _resolved_rows(
     )
 
 
+def _unasserted(held: ClassRecord) -> ClassRecord:
+    """``held`` with every value's parent assertions left out, as the import review reads it."""
+
+    def plain(value: CurrentValue) -> CurrentValue:
+        return replace(value, asserted={}) if value.asserted else value
+
+    current = held.current
+    return replace(
+        held,
+        current=CurrentValues(
+            term=None if current.term is None else plain(current.term),
+            categories={key: plain(value) for key, value in current.categories.items()},
+            results={key: plain(value) for key, value in current.results.items()},
+        ),
+        latest={key: plain(value) for key, value in held.latest.items()},
+    )
+
+
 def review_from(
     draft: GradeReportDraft,
     source_key: str,
@@ -917,7 +939,9 @@ def review_from(
     complete: bool,
 ) -> GradeReview:
     """The review of ``draft`` against what her record says, in the report's order, with
-    ``matches`` applied to the questions they answer; ``complete`` is whether its reading was."""
+    ``matches`` applied to the questions they answer; ``complete`` is whether its reading was.
+    The review reads no parent assertion."""
+    on_record = replace(on_record, held=_unasserted(on_record.held))
     held = on_record.held
 
     def item(key: str, cells: Mapping[str, Cell], current: CurrentValue | None) -> ReviewItem:
