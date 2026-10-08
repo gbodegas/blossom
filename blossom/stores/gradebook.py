@@ -26,6 +26,12 @@ write behind, inside a caller's transaction too, and the caller's other work the
 SQLite itself ends a caller's transaction, everything in it is gone, and the caller hears that
 its transaction was lost, never a refusal it might go on from.
 
+A parent deletes one class's grades for one term in one write checked against the revision the
+confirmation showed: its reports, observations, row records, results, acceptances and
+class-details actions go, one statement per table, and the revision is raised, so a page from
+before saves nothing. A retry is answered from the class and term as they are: already deleted
+when they hold nothing, or a fresh preview, deleting nothing, after a newer import.
+
 A school year's first month is corrected by comparing and setting the month itself, the year's
 whole state. Nothing stored or compared depends on it, so no revision moves; due dates resolve
 under the month on record when they are read.
@@ -336,6 +342,8 @@ CREATE TABLE IF NOT EXISTS grade_acceptances (
         CHECK (kind IN ('grade_text', 'grade_screenshot', 'homework_screenshot')),
     source_key TEXT NOT NULL,
     report_id TEXT,
+    class_id TEXT,
+    term_label TEXT,
     accepted TEXT NOT NULL,
     identity_status TEXT NOT NULL,
     identity_answer TEXT NOT NULL,
@@ -348,7 +356,9 @@ CREATE TABLE IF NOT EXISTS grade_acceptances (
     answers_kept INTEGER NOT NULL CHECK (answers_kept >= 0),
     complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
     accepted_at TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role {WHO})
+    role TEXT NOT NULL CHECK (role {WHO}),
+    CHECK ((kind = 'homework_screenshot') = (class_id IS NULL)),
+    CHECK ((kind = 'homework_screenshot') = (term_label IS NULL))
 )
 """,
     f"""
@@ -377,12 +387,18 @@ how: automatically (``same_capture``, ``exact``, ``reused``), by the parent's an
 or ``chosen`` from her assignments), or ``new``. A remembered "A different assignment" is
 ``different``: it names no result, and ``rejected`` keeps the candidates it turned down, each
 with its matching evidence. An acceptance keeps its counts of rows recorded as shown and answers
-kept, and whether its reading was complete. The class-details action keeps its source report,
+kept, whether its reading was complete, and the class and term it covers, which a homework
+screenshot's acceptance has none of. The class-details action keeps its source report,
 the acceptances whose report that is and the action that made it, the report it made, what it
 copied, the source's completeness as ``complete_from_source``, the digest of the preview it
 confirmed, the role and its time. A report is complete when it has at least one acceptance or a
 making action, and each of them was."""
 
+ACCEPTANCES_TABLE: Final = next(
+    statement for statement in CREATE_REPORT_TABLES if "EXISTS grade_acceptances (" in statement
+)
+"""The acceptance table's one definition, which the rebuild of a file without its class and
+term makes again."""
 CONTEXT_ON_RECORD: Final = "SELECT 1 FROM grade_context WHERE student_id = ?"
 YEAR_ON_RECORD: Final = "SELECT 1 FROM grade_years WHERE student_id = ? AND label = ?"
 FIRST_MONTH_OF: Final = "SELECT first_month FROM grade_years WHERE student_id = ? AND label = ?"
@@ -623,10 +639,107 @@ RAISE_REVISION: Final = (
 )
 ADD_ACCEPTANCE: Final = (
     "INSERT INTO grade_acceptances (acceptance_id, student_id, kind, source_key, report_id, "
-    "accepted, identity_status, identity_answer, identity_form, added, updated, already_saved, "
-    "left_to_check, shown, answers_kept, complete, accepted_at, role) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "class_id, term_label, accepted, identity_status, identity_answer, identity_form, added, "
+    "updated, already_saved, left_to_check, shown, answers_kept, complete, accepted_at, role) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
+ACCEPTANCE_COLUMNS: Final = "PRAGMA table_info(grade_acceptances)"
+UNTIED: Final = (
+    "SELECT "
+    "COALESCE(SUM(a.kind = 'homework_screenshot' AND a.report_id IS NOT NULL), 0), "
+    "COALESCE(SUM(a.kind <> 'homework_screenshot' AND a.report_id IS NOT NULL AND NOT EXISTS ("
+    "SELECT 1 FROM grade_reports AS r "
+    "WHERE r.report_id = a.report_id AND r.student_id = a.student_id)), 0), "
+    "COALESCE(SUM(a.kind = 'grade_screenshot' AND a.report_id IS NULL), 0), "
+    "COALESCE(SUM(a.kind = 'grade_text' AND a.report_id IS NULL AND NOT EXISTS ("
+    "SELECT 1 FROM grade_reports AS r WHERE r.student_id = a.student_id AND r.reader = 'text' "
+    "AND r.source_key = a.source_key)), 0), "
+    "COALESCE(SUM(a.kind = 'grade_text' AND a.report_id IS NULL AND EXISTS ("
+    "SELECT 1 FROM grade_reports AS r JOIN grade_reports AS s "
+    "ON s.student_id = r.student_id AND s.reader = 'text' AND s.source_key = r.source_key "
+    "WHERE r.student_id = a.student_id AND r.reader = 'text' AND r.source_key = a.source_key "
+    "AND (s.class_id <> r.class_id OR s.term_label <> r.term_label))), 0) "
+    "FROM grade_acceptances AS a"
+)
+"""The acceptances of a file without their class and term that nothing ties to one, counted by
+case, in the order of ``UNTIED_CASES``."""
+UNTIED_CASES: Final = (
+    "homework imports linked to a grade report",
+    "imports linked to a missing grade report",
+    "grade screenshots with no report link",
+    "pasted grade reports with no matching saved report",
+    "pasted grade reports matching different classes or terms",
+)
+"""How the refused start names each case of ``UNTIED``, in its order."""
+START_GUIDE: Final = ("docs/development.md", "Blossom couldn't start: saved import records")
+"""The guide's file in the Blossom folder and its heading, readable while Blossom can't
+start."""
+SET_ACCEPTANCES_ASIDE: Final = "ALTER TABLE grade_acceptances RENAME TO grade_acceptances_before"
+TIE_ACCEPTANCES: Final = (
+    "INSERT INTO grade_acceptances (acceptance_id, student_id, kind, source_key, report_id, "
+    "class_id, term_label, accepted, identity_status, identity_answer, identity_form, added, "
+    "updated, already_saved, left_to_check, shown, answers_kept, complete, accepted_at, role) "
+    "SELECT a.acceptance_id, a.student_id, a.kind, a.source_key, a.report_id, "
+    "CASE WHEN a.kind = 'homework_screenshot' THEN NULL ELSE ("
+    "SELECT r.class_id FROM grade_reports AS r WHERE r.student_id = a.student_id "
+    "AND (r.report_id = a.report_id OR (a.report_id IS NULL AND r.reader = 'text' "
+    "AND r.source_key = a.source_key)) ORDER BY r.acceptance_order LIMIT 1) END, "
+    "CASE WHEN a.kind = 'homework_screenshot' THEN NULL ELSE ("
+    "SELECT r.term_label FROM grade_reports AS r WHERE r.student_id = a.student_id "
+    "AND (r.report_id = a.report_id OR (a.report_id IS NULL AND r.reader = 'text' "
+    "AND r.source_key = a.source_key)) ORDER BY r.acceptance_order LIMIT 1) END, "
+    "a.accepted, a.identity_status, a.identity_answer, a.identity_form, a.added, a.updated, "
+    "a.already_saved, a.left_to_check, a.shown, a.answers_kept, a.complete, a.accepted_at, "
+    "a.role FROM grade_acceptances_before AS a"
+)
+"""Each acceptance with its report's class and term, or, naming none, its capture's, read
+with a scalar subquery so a capture of several reports gives each row once."""
+DROP_ACCEPTANCES_SET_ASIDE: Final = "DROP TABLE grade_acceptances_before"
+SCOPE_HOLDS: Final = (
+    "SELECT (SELECT COUNT(*) FROM grade_reports "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term "
+    "AND report_id NOT IN (SELECT report_made FROM grade_current_actions "
+    "WHERE student_id = :student)), "
+    "(SELECT COUNT(*) FROM grade_reports "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term "
+    "AND report_id IN (SELECT report_made FROM grade_current_actions "
+    "WHERE student_id = :student)), "
+    "(SELECT COUNT(*) FROM grade_results "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term), "
+    "(SELECT COUNT(*) FROM grade_acceptances "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term "
+    "AND report_id IS NULL), "
+    "(SELECT COUNT(*) FROM grade_acceptances "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term), "
+    "(SELECT COUNT(*) FROM grade_current_actions "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term)"
+)
+"""What her class and term hold: reports imported, reports an action made, results,
+submissions that saved nothing, every acceptance, and every class-details action."""
+DELETE_SCOPE: Final = (
+    "DELETE FROM grade_match_decisions WHERE student_id = :student AND report_id IN ("
+    "SELECT report_id FROM grade_reports "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term)",
+    "DELETE FROM grade_term_observations WHERE student_id = :student AND report_id IN ("
+    "SELECT report_id FROM grade_reports "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term)",
+    "DELETE FROM grade_category_observations WHERE student_id = :student AND report_id IN ("
+    "SELECT report_id FROM grade_reports "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term)",
+    "DELETE FROM grade_result_observations WHERE student_id = :student AND report_id IN ("
+    "SELECT report_id FROM grade_reports "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term)",
+    "DELETE FROM grade_acceptances "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term",
+    "DELETE FROM grade_current_actions "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term",
+    "DELETE FROM grade_reports "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term",
+    "DELETE FROM grade_results "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term",
+)
+"""A class and term's delete, one statement per table, the reports' children before them: an
+acceptance and an action are found by their own class and term, report-less ones included."""
 
 
 def new_acceptance_id() -> str:
@@ -736,6 +849,25 @@ class GradeTransactionLost(RuntimeError):
     was kept. The original error is its cause."""
 
 
+class AcceptancesNotTied(RuntimeError):
+    """A start stopped because acceptances in the file can't each be tied to one class and
+    term; it counts them by case, names nothing in them, and says where the guide is. Every
+    gradebook table is left as it was."""
+
+    def __init__(self, counts: tuple[int, ...]) -> None:
+        cases = "; ".join(
+            f"{case}: {count}" for count, case in zip(counts, UNTIED_CASES, strict=True) if count
+        )
+        path, heading = START_GUIDE
+        super().__init__(
+            "Blossom couldn't start. Some saved import records have missing or inconsistent "
+            f"report links. Affected records: {sum(counts)} ({cases}). This startup attempt did "
+            "not change or delete any grade records. Keep a copy of this file as it is and see "
+            f"the household guide before trying again. The guide is {path} in the Blossom "
+            f'folder, under "{heading}".'
+        )
+
+
 def _report_refused(error: BaseException) -> Exception:
     return GradeReportNotSaved(f"the grade report could not be saved: {type(error).__name__}")
 
@@ -752,6 +884,10 @@ def _action_refused(error: BaseException) -> Exception:
 
 def _confirmation_refused(error: BaseException) -> Exception:
     return NameFormNotSaved(f"her name could not be confirmed again: {type(error).__name__}")
+
+
+def _delete_refused(error: BaseException) -> Exception:
+    return GradeReportNotSaved(f"the class and term could not be deleted: {type(error).__name__}")
 
 
 def _first_month_refused(error: BaseException) -> Exception:
@@ -813,6 +949,58 @@ class YearNotOnRecord:
 
 
 FirstMonthOutcome = FirstMonthCorrected | FirstMonthStood | FirstMonthChanged | YearNotOnRecord
+
+
+@dataclass(frozen=True)
+class DeletePreview:
+    """What a delete of her class and term would remove, and the revision it was read at, None
+    when the class and term have none: the confirmation posts it back."""
+
+    revision: int | None
+    imported_reports: int
+    made_current_reports: int
+    results: int
+    links: int
+    submissions: int
+    """Submissions that saved nothing: acceptances naming no report."""
+
+
+@dataclass(frozen=True)
+class NothingToDelete:
+    """The class and term hold nothing to delete, and a delete answered so finds them never
+    written; nothing was written now."""
+
+    class_id: str
+    term: str
+
+
+@dataclass(frozen=True)
+class AlreadyDeleted:
+    """The class and term hold nothing, as a delete left them; nothing was written now."""
+
+    class_id: str
+    term: str
+
+
+@dataclass(frozen=True)
+class DeleteReturned:
+    """The class and term changed since the confirmation was shown, and nothing was deleted;
+    ``preview`` is what a new confirmation would delete now."""
+
+    preview: DeletePreview
+
+
+@dataclass(frozen=True)
+class ClassTermDeleted:
+    """The class and term's grades were deleted: ``removed`` is what the confirmation showed,
+    and the revision was raised."""
+
+    class_id: str
+    term: str
+    removed: DeletePreview
+
+
+DeleteOutcome = ClassTermDeleted | AlreadyDeleted | DeleteReturned | NothingToDelete
 
 
 class GradebookRecords:
@@ -879,8 +1067,25 @@ class GradebookRecords:
         self._connection.execute(CREATE_NAME_FORMS)
         for statement in CREATE_REPORT_TABLES:
             self._connection.execute(statement)
+        self._tie_acceptances()
         if self._connection.execute(STUDENT_ON_RECORD).fetchone() is None:
             self._connection.execute(MAKE_STUDENT, (new_student_id(), self._stamp()))
+
+    def _tie_acceptances(self) -> None:
+        """Give a file's acceptances their class and term, once, in the caller's transaction:
+        every row tied exactly, or ``AcceptancesNotTied`` before the rebuild writes anything,
+        and the caller's transaction takes back the step. The table is made again from its one
+        definition, so it reads as a fresh file's."""
+        columns = {str(row[1]) for row in self._connection.execute(ACCEPTANCE_COLUMNS)}
+        if "class_id" in columns:
+            return
+        counts = tuple(int(count) for count in self._connection.execute(UNTIED).fetchone())
+        if any(counts):
+            raise AcceptancesNotTied(counts)
+        self._connection.execute(SET_ACCEPTANCES_ASIDE)
+        self._connection.execute(ACCEPTANCES_TABLE)
+        self._connection.execute(TIE_ACCEPTANCES)
+        self._connection.execute(DROP_ACCEPTANCES_SET_ASIDE)
 
     def _her_name_record(self) -> tuple[str, str | None, list[str]]:
         """Her student ID, her key check and her confirmed forms, in one statement."""
@@ -1348,6 +1553,51 @@ class GradebookRecords:
             self._connection.execute(CORRECT_FIRST_MONTH, (month, by, student_id, year, stored))
             return FirstMonthCorrected(year, month)
 
+    def delete_preview(self, class_id: str, term: str) -> DeletePreview | NothingToDelete:
+        """What a delete of her class and term would remove, with the revision it was read at;
+        a read alone."""
+        term = folded(term)
+        with self._lock:
+            return self._delete_preview(self._her_name_record()[0], class_id, term)
+
+    def delete_class_term(
+        self, class_id: str, term: str, *, revision: int | None, role: ConfirmedBy
+    ) -> DeleteOutcome:
+        """A parent's delete of her class and term, as one grade write checked against the
+        revision the confirmation showed: every answer is read from the class and term as they
+        are, and only a confirmation of the current revision deletes, raising it."""
+        _confirmer(role)
+        term = folded(term)
+        with self._grade_write(_delete_refused):
+            student_id = self._her_name_record()[0]
+            held = self._delete_preview(student_id, class_id, term)
+            stored = self._connection.execute(REVISION_OF, (student_id, class_id, term)).fetchone()
+            current = None if stored is None else int(stored[0])
+            if isinstance(held, NothingToDelete):
+                return held if current is None else AlreadyDeleted(class_id, term)
+            if current != revision:
+                return DeleteReturned(held)
+            named = {"student": student_id, "class": class_id, "term": term}
+            for statement in DELETE_SCOPE:
+                self._connection.execute(statement, named)
+            self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
+            return ClassTermDeleted(class_id, term, held)
+
+    def _delete_preview(
+        self, student_id: str, class_id: str, term: str
+    ) -> DeletePreview | NothingToDelete:
+        """Her class and term's counts at its revision, or ``NothingToDelete`` when they hold
+        no report, result, acceptance or action."""
+        named = {"student": student_id, "class": class_id, "term": term}
+        imported, made, results, submissions, accepted, actions = (
+            int(count) for count in self._connection.execute(SCOPE_HOLDS, named).fetchone()
+        )
+        if not (imported or made or results or accepted or actions):
+            return NothingToDelete(class_id, term)
+        stored = self._connection.execute(REVISION_OF, (student_id, class_id, term)).fetchone()
+        current = None if stored is None else int(stored[0])
+        return DeletePreview(current, imported, made, results, 0, submissions)
+
     def _revision_of(self, student_id: str, class_id: str, draft: GradeReportDraft) -> int | None:
         """The scope revision of ``class_id`` in the report's term, None when it holds nothing."""
         term = folded(draft.header.term_label)
@@ -1502,6 +1752,8 @@ class GradebookRecords:
                 TEXT_KIND,
                 review.source_key,
                 report_id,
+                class_id,
+                term,
                 json.dumps([list(pair) for pair in outcome.accepted], ensure_ascii=False),
                 review.identity.status.value,
                 answers.identity.value,

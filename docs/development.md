@@ -236,11 +236,18 @@ Three files under `.local/` outlive a restart:
   current", and left as it was by a save or confirmation that records
   nothing new, unless that save read its copy incomplete and the copy's
   report is already on record, which keeps the report from saying what
-  it doesn't show; `grade_acceptances`, one record of each save, which a
-  repeated press is answered from; and `grade_current_actions`, one record
-  of each confirmed "Use saved values from this report as current": the
-  report it copied, the report it made current, and what it copied.
-  A file from before any of them gains the tables on the first start.
+  it doesn't show; `grade_acceptances`, one record of each save with the
+  class and term it covers, which a repeated press is answered from; and
+  `grade_current_actions`, one record of each confirmed "Use saved values
+  from this report as current": the report it copied, the report it made
+  current, and what it copied. A delete of one class's grades for one term
+  removes that class and term's reports, values, results, acceptances and
+  actions, and keeps her record, years, terms, classes and aliases.
+  A file from before any of them gains the tables on the first start, and
+  a file whose acceptances have no class and term gains them once: each is
+  tied to its report's, or its capture's, or the start stops with every
+  grade table as it was and says how many records it couldn't tie (see
+  [Blossom couldn't start: saved import records](#blossom-couldnt-start-saved-import-records)).
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   A draft is its text and, in a nullable `plan_snapshot` column, the plan as
@@ -542,6 +549,38 @@ see the moved instructions: assignments show no school instruction, and
 nothing tells the planner about them. A school note it saves is found by the
 next start of the newer version and, beside instructions already kept, waits
 for a parent's review.
+
+### Blossom couldn't start: saved import records
+
+This part of the household guide is for the person who runs Blossom. It is
+the file `docs/development.md` in the Blossom folder, so it can be read while
+Blossom won't start.
+
+A start can stop with a message that begins "Blossom couldn't start. Some
+saved import records have missing or inconsistent report links." Blossom
+checks that saved import records have valid report links and, for grade
+imports, identify one class and term. The message counts the records it couldn't match, by kind, and never
+shows what they hold. That startup attempt did not change or delete any
+grade records. It doesn't say whether anything was missing before it ran.
+
+What to do:
+
+1. Leave Blossom stopped while you preserve the file and choose a recovery
+   path.
+2. With Blossom stopped, check for `blossom.sqlite3-journal` or
+   `blossom.sqlite3-wal` beside the database. If neither exists, copy
+   `blossom.sqlite3` to a dated name in the same folder. If either exists,
+   leave the database and its companion files together and untouched, and
+   get help making a consistent copy. Do not delete companion files or
+   restart Blossom just to clear them.
+3. If this followed an upgrade and you have a backup taken before it, follow
+   [Upgrading and rolling back](#upgrading-and-rolling-back): preserve the
+   refused file, restore that backup, and start the corresponding previous
+   version. Anything saved after the backup is absent from the restored
+   copy. Do not run the previous version against the refused file.
+4. If no suitable backup exists, leave the files untouched and get help
+   investigating the startup message. Keep the preserved files until the
+   issue is resolved. Blossom has no command that repairs these records.
 
 ### Testing on a copy of the household
 
