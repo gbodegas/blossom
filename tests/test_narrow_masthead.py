@@ -16,9 +16,10 @@ Elsewhere on the pages, at the same sizes: every heading, each note inside one o
 page's folds, and the example of school text break a word only when it is wider than its
 line; a form that asks the family for a decision is one column as wide as the form, so a
 field's own width never widens it and a long word in its button breaks; the side padding of
-a decision's buttons, of her Ask a parent for help, and of a problem line in Help is the
-rule that gives way on a phone with text at 200%, as measured in Edge; and the skip link's
-focus outline stays on the screen.
+a decision's buttons, of her Ask a parent for help in Help, and of a problem line in Help is
+the rule that gives way on a phone with text at 200%, as measured in Edge, while the sign-in
+button and the button that asks about a note keep theirs; and the skip link's focus outline
+stays on the screen.
 
 No browser runs in these tests, so the cascade is resolved here, on the page and
 stylesheet reading in `tests/support.py`, for the part of CSS these elements depend on:
@@ -45,6 +46,7 @@ from html import escape
 
 import pytest
 
+from blossom.routes.navigation import note_help_href
 from blossom.settings import REPOSITORY_ROOT
 from tests.support import (
     ESSAY_ID,
@@ -69,6 +71,7 @@ from tests.support import (
     state_of,
     style_rules,
     unshielded,
+    waiting_note,
     winner,
 )
 from tests.support import holds as condition_holds
@@ -4161,16 +4164,17 @@ def test_the_decision_check_fails_when_a_form_can_widen(
 # ------------------------------------------------------------- side padding that gives way
 
 GIVING_WAY = """.decision button,
-.ask button {
+.help-panel .ask button {
   padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);
 }
 
 .help-panel .problem {
   padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);
 }"""
-"""The side padding of a decision's buttons, of her Ask a parent for help, and of a problem
-line in Help, as the stylesheet writes it: measured in Edge at 320 pixels with text at 200%,
-where it leaves each of their words whole, and on wider screens, where it changes nothing."""
+"""The side padding of a decision's buttons, of her Ask a parent for help in Help, and of a
+problem line in Help, as the stylesheet writes it: measured in Edge at 320 pixels with text
+at 200%, where it leaves each of their words whole, and on wider screens, where it changes
+nothing. The sign-in button and the button that asks about one note are outside its reach."""
 GIVES_WAY = {
     "button": "clamp(0px, 13vw - 1rem, 1.35rem)",
     "p": "clamp(0px, 13vw - 1rem, 0.95rem)",
@@ -4206,16 +4210,91 @@ def set_apart_pages(tmp_path: pathlib.Path) -> dict[str, str]:
 
 
 def giving_way(page: str) -> list[Element]:
-    """The buttons of each decision form and of her ask form, and each problem line in Help."""
+    """The buttons of each decision form and of her ask form in Help, and each problem line in
+    Help."""
     found = elements_of(page)
-    asking = {"decision", "ask"}
-    forms = [one for one in found if one.tag == "form" and not asking.isdisjoint(one.classes)]
     panels = [one for one in found if "help-panel" in one.classes]
+    forms = [
+        one
+        for one in found
+        if one.tag == "form"
+        and (
+            "decision" in one.classes
+            or ("ask" in one.classes and any(one.within(panel) for panel in panels))
+        )
+    ]
     return [
         one
         for one in found
         if (one.tag == "button" and any(one.within(form) for form in forms))
         or ("problem" in one.classes and any(one.within(panel) for panel in panels))
+    ]
+
+
+OTHER_ASKS: dict[str, str] = {}
+
+
+@pytest.fixture
+def other_asks(tmp_path: pathlib.Path) -> dict[str, str]:
+    """The sign-in page, and the page that asks for help about one note, for her and with the
+    sign-in off: each holds an ask form outside Help. Rendered by the first test that asks."""
+    if OTHER_ASKS:
+        return OTHER_ASKS
+    for reader in ("her", "open"):
+        folder = tmp_path / "other-asks" / reader
+        folder.mkdir(parents=True)
+        with household_client(reader, folder) as client:
+            if reader == "her":
+                OTHER_ASKS["sign-in page"] = client.get("/sign-in", headers=PAGE_HEADERS).text
+            sign_in_as(client, reader)
+            name = waiting_note(
+                state_of(client).project_state,
+                course="Geometry",
+                title="Synthetic questions",
+                text="Synthetic note about questions 4 to 8",
+            )
+            page = client.get(note_help_href(name), headers=PAGE_HEADERS)
+            assert page.status_code == 200
+            OTHER_ASKS[f"{reader}, note help"] = page.text
+    return OTHER_ASKS
+
+
+def asking_elsewhere(page: str) -> list[Element]:
+    """The buttons of each ask form outside Help."""
+    found = elements_of(page)
+    panels = [one for one in found if "help-panel" in one.classes]
+    forms = [
+        one
+        for one in found
+        if one.tag == "form"
+        and "ask" in one.classes
+        and not any(one.within(panel) for panel in panels)
+    ]
+    return [one for one in found if one.tag == "button" and any(one.within(form) for form in forms)]
+
+
+def other_ask_pages(other_asks: dict[str, str]) -> dict[str, str]:
+    """The pages with an ask form outside Help, each holding the one button named for it."""
+    found = {
+        name: [" ".join(one.text.split()) for one in asking_elsewhere(page)]
+        for name, page in other_asks.items()
+    }
+    assert found == {
+        "sign-in page": ["Come in"],
+        "her, note help": ["Ask for help about this note"],
+        "open, note help": ["Ask for help about this note"],
+    }
+    return other_asks
+
+
+def padding_changed(sheet: Sheet, ordinary: Sheet, held: list[Element], view: View) -> list[str]:
+    """Each side of ``held`` whose padding on ``view`` differs from its padding in ``ordinary``,
+    the stylesheet without the padding that gives way."""
+    return [
+        f"{one.tag}.{'.'.join(sorted(one.classes))} {side} {' '.join(one.text.split())[:40]}"
+        for one in held
+        for side in ("padding-left", "padding-right")
+        if value_of(sheet, one, side, view) != value_of(ordinary, one, side, view)
     ]
 
 
@@ -4260,7 +4339,7 @@ def test_side_padding_gives_way_in_a_decision_her_ask_and_a_help_problem(
     [
         pytest.param("", {"button", "p"}, id="no-rule"),
         pytest.param(GIVING_WAY.replace(".decision button,\n", ""), {"button"}, id="no-decision"),
-        pytest.param(GIVING_WAY.replace(",\n.ask button", ""), {"button"}, id="no-ask"),
+        pytest.param(GIVING_WAY.replace(",\n.help-panel .ask button", ""), {"button"}, id="no-ask"),
         pytest.param(GIVING_WAY.split("\n\n")[0], {"p"}, id="no-problem"),
         pytest.param(
             GIVING_WAY + "\n.actions button { padding: 0.6rem 1.35rem; }",
@@ -4281,6 +4360,72 @@ def test_the_padding_check_fails_where_a_side_keeps_its_ordinary_padding(
             for one in padding_kept(sheet, giving_way(page), view)
         }
         assert found == kept, view
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_an_ask_form_outside_help_keeps_its_ordinary_side_padding(
+    other_asks: dict[str, str], view: View
+) -> None:
+    """The sign-in button and the button that asks about a note keep the side padding the
+    stylesheet gives them without the padding that gives way, on every screen."""
+    ordinary = broken(GIVING_WAY, "")
+    sheet = read_sheet(stylesheet())
+    changed = {
+        name: padding_changed(sheet, ordinary, asking_elsewhere(page), view)
+        for name, page in other_ask_pages(other_asks).items()
+    }
+    assert changed == {name: [] for name in changed}
+
+
+ASK_IN_HELP = ".help-panel .ask button"
+
+
+@pytest.mark.parametrize(
+    ("becomes", "reached"),
+    [
+        pytest.param(
+            GIVING_WAY.replace(ASK_IN_HELP, ".ask button"),
+            {"sign-in page", "her, note help", "open, note help"},
+            id="every-ask",
+        ),
+        pytest.param(
+            GIVING_WAY.replace(ASK_IN_HELP, ".ask > button"), {"sign-in page"}, id="sign-in"
+        ),
+        pytest.param(
+            GIVING_WAY.replace(ASK_IN_HELP, f"{ASK_IN_HELP},\n.ask .actions button"),
+            {"her, note help", "open, note help"},
+            id="note-help",
+        ),
+        pytest.param(
+            GIVING_WAY + "\n.ask button { padding-inline: 0; }",
+            {"sign-in page", "her, note help", "open, note help"},
+            id="later-rule",
+        ),
+    ],
+)
+def test_the_ordinary_padding_check_fails_where_the_rule_reaches_another_ask(
+    text_pages: dict[str, str],
+    set_apart_pages: dict[str, str],
+    other_asks: dict[str, str],
+    becomes: str,
+    reached: set[str],
+) -> None:
+    """Each of these still gives way where it should, so only the check of the other ask
+    forms tells them from the rule as written."""
+    ordinary = broken(GIVING_WAY, "")
+    sheet = broken(GIVING_WAY, becomes)
+    pages = other_ask_pages(other_asks)
+    for view in VIEWS:
+        assert {
+            name
+            for name, page in pages.items()
+            if padding_changed(sheet, ordinary, asking_elsewhere(page), view)
+        } == reached, view
+        assert {
+            name
+            for name, page in giving_way_pages(text_pages, set_apart_pages).items()
+            if padding_kept(sheet, giving_way(page), view)
+        } == set(), view
 
 
 @pytest.mark.parametrize(
