@@ -1176,6 +1176,15 @@ pre.body {
   overflow-wrap: anywhere;
 }
 
+/* The buttons of the grade paste and retry pages hold the page's own words, never a typed one.
+   On a phone with text at 200%, their side padding gives way first, to 13vw - 1rem where that
+   is narrower, and a word stays whole. Every screen 290 pixels or wider with ordinary text,
+   and 580 pixels or wider with text at 200%, keeps the ordinary padding. */
+.grade-panel .decision button {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);
+  overflow-wrap: normal;
+}
+
 label {
   display: flex;
   flex-direction: column;
@@ -1772,6 +1781,22 @@ pre.example {
    and its words wrap inside it. */
 .grade-review .choice {
   min-width: 0;
+}
+
+/* On a phone with text at 200%, the "Is this her?" choices leave too narrow a line beside
+   each radio. The fieldset's side padding gives way, to 13vw - 1rem where that is narrower,
+   and a choice's words go under its radio when less than 8rem is left beside it. Every
+   screen 246 pixels or wider with ordinary text keeps the ordinary padding and layout. */
+.grade-review .choice.identity {
+  padding-inline: clamp(0px, 13vw - 1rem, 1rem);
+}
+
+.grade-review .choice.identity label {
+  flex-wrap: wrap;
+}
+
+.grade-review .choice.identity label > span {
+  flex: 1 1 8rem;
 }
 
 .choice legend {

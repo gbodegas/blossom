@@ -61,7 +61,7 @@
             <legend>{% if identity == "not_confirmed" %}This name isn't one confirmed for her{% elif identity == "confirm_again" %}Please confirm that this report is hers again.{% else %}Is this her?{% endif %}</legend>
             <p class="note">Student line: <span class="authored-text">{{ student_line }}</span></p>
             <label><input type="radio" name="identity" value="hers"{% if p.get("identity") == "hers" %} checked{% endif %}> <span>Yes, this is her name</span></label>
-            <label><input type="radio" name="identity" value="misread"{% if p.get("identity") == "misread" %} checked{% endif %}> <span>The name was misread <span class="source">No name is added, and the next report asks again.</span></span></label>
+            <label><input type="radio" name="identity" value="misread"{% if p.get("identity") == "misread" %} checked{% endif %}> <span>The name was misread <span class="source">Blossom won't remember this spelling.</span></span></label>
             <label><input type="radio" name="identity" value="not_hers"{% if p.get("identity") == "not_hers" %} checked{% endif %}> <span>Not hers</span></label>
           {% endif %}
         </fieldset>
@@ -137,23 +137,23 @@
           {% set matched = p.get("match." ~ i) %}
           <article class="assignment">
             {% if shown.kind == "term" %}
-              <h3>Term grade on this report: {{ cell(term.percent) }} · {{ cell(term.letter) }}</h3>
+              <h3>Term grade on this report: {{ cell(term.percent, "percent") }} · {{ cell(term.letter, "letter grade") }}</h3>
             {% endif %}
             {% if shown.kind == "category" %}
               {% set category = shown.category %}
-              <h3><span class="authored-text">{{ category.name.text or "Category" }}</span>: weight {{ cell(category.weight) }}, average {{ cell(category.average) }}</h3>
+              <h3><span class="authored-text">{{ cell(category.name, "Category name") }}</span>: {{ cell(category.weight, "weight", named=true) }}, {{ cell(category.average, "average", named=true) }}</h3>
             {% elif shown.kind == "row" %}
               {% set row = shown.row %}
-              <p class="course-name">{{ shown.category.name.text }}</p>
-              <h3><span class="authored-text">{{ cell(row.assignment) }}</span></h3>
-              <p class="effect">School score: {{ cell(row.points) }} / {{ cell(row.max_points) }} · {{ cell(row.status) }} · Due date shown: {{ cell(row.due) }}</p>
+              <p class="course-name">{{ cell(shown.category.name, "Category name") }}</p>
+              <h3><span class="authored-text">{{ cell(row.assignment, "Assignment") }}</span></h3>
+              <p class="effect">School score: {{ cell(row.points) }} / {{ cell(row.max_points, "maximum") }} · {{ cell(row.status, "Status") }} · Due date shown: {{ cell(row.due) }}</p>
             {% endif %}
             <p class="status">
-              <span class="pill">{{ status_words[item.status] }}</span>
+              <span class="pill">{{ status_word(shown) }}</span>
               {% if item.due_not_captured and item.status.value != "due_not_captured" %}<span class="pill">Due date not captured</span>{% endif %}
             </p>
             {% if item.status.value == "changed" and item.current %}
-              <p class="source">Saved now: {% for field, value in item.current.cells.items() if field in ("points", "max_points", "percent", "letter", "average") %}{{ value[1] }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+              <p class="source">Saved now: {{ saved_now(item.current.cells)|join(" · ") }}</p>
             {% endif %}
             {% if shown.selectable %}
               <fieldset class="choice" id="item-{{ i }}">

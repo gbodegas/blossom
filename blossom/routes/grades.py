@@ -20,7 +20,7 @@ import asyncio
 import ipaddress
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Annotated, Final
 
@@ -44,6 +44,7 @@ from blossom.grades.review import (
     CLASS_NAME_LIMIT,
     TERM_LIMIT,
     AlreadyRecorded,
+    Cell,
     GradeAnswers,
     GradeReportSaved,
     GradeReview,
@@ -101,7 +102,7 @@ ROW_FIELDS: Final = ("match", "candidates", "choose", "choices")
 PASTE_HINT: Final = "Copy one class's grade report from the school's gradebook, then paste it here."
 NOTHING_PASTED: Final = "Nothing was pasted. Nothing was saved. Paste a grade report."
 TOO_LONG: Final = (
-    "This is longer than one grade report. Nothing was saved. Paste one class's report at a time."
+    "This text exceeds the size limit. Nothing was saved. Paste one class's report at a time."
 )
 NOT_A_REPORT: Final = (
     "Blossom couldn't find a grade report in this text. Nothing was saved. Copy the report "
@@ -114,14 +115,15 @@ NOT_WHOLE: Final = (
     "This form came in incomplete, so it wasn't read. Nothing was saved. Paste the report again."
 )
 NO_NAME_CHECK: Final = (
-    "Blossom can't read the household secret, so this report can't be checked against her "
-    "name. Nothing was saved. The household guide says how to replace the secret file."
+    "Blossom couldn't check that this report is hers. Nothing was saved. See the household guide "
+    "before trying again."
 )
 TEXT_KEPT: Final = "Your text is kept."
+TEXT_KEPT_ANSWER_AGAIN: Final = "Your text is kept. Check the answers again."
 ONLY_HERE: Final = (
     "Grade reports can be added only on the computer running Blossom, or with sign-in on."
 )
-NO_STUDENT_LINE: Final = "This report has no student name."
+NO_STUDENT_LINE: Final = "No student name was found in this copy."
 NOTHING_SAVED: Final = "Nothing was saved."
 BOTH_KEPT: Final = "Your text and answers are kept."
 ANSWER_THE_NAME: Final = "Answer whether this is her report before saving."
@@ -175,6 +177,12 @@ STATUS_WORDS: Final[dict[ItemStatus, str]] = {
     ItemStatus.VALUE_NOT_CAPTURED: "No score in this copy",
 }
 """Each value's status as the review names it."""
+NOT_CAPTURED_BY_KIND: Final = {
+    "term": "No percent or letter grade in this copy",
+    "category": "No weight or average in this copy",
+    "row": "No score in this copy",
+}
+""""Value not captured" by the kind of value, each named by its own fields."""
 NOT_READ: Final[dict[NotRead, str]] = {
     NotRead.NO_HEADER: NOT_A_REPORT,
     NotRead.SEVERAL_REPORTS: SEVERAL_REPORTS,
@@ -380,15 +388,73 @@ def shown_items(review: GradeReview, draft: GradeReportDraft) -> list[Shown]:
     return shown
 
 
-def cell(value: GradeValue) -> str:
-    """A cell as the review reads it out: as written, or what its presence says."""
-    if value.presence is Presence.REPORTED:
-        return value.text
-    if value.presence is Presence.BLANK:
-        return "blank"
-    if value.presence is Presence.UNREADABLE:
-        return f"couldn't be read: {value.text}"
-    return "not in the copy"
+SAVED_LABELS: Final = {
+    "points": "school score",
+    "max_points": "maximum",
+    "percent": "percent",
+    "letter": "letter grade",
+    "average": "average",
+}
+"""The fields a changed value's saved line shows, in its order, each by its own name."""
+
+
+def described(presence: Presence, text: str, label: str | None, *, named: bool = False) -> str:
+    """A cell's text and presence as the review reads them out: as written, or what the presence
+    says, short after a label the page writes and under ``label`` where no label introduces it.
+    ``named`` puts the label before a reported value too."""
+    if presence is Presence.REPORTED:
+        return f"{label} {text}" if named and label else text
+    said = {
+        Presence.BLANK: ("blank", "left blank"),
+        Presence.UNREADABLE: (f"couldn't be read: {text}", f"couldn't be read: {text}"),
+        Presence.NOT_CAPTURED: ("not in the copy", "not in the copy"),
+    }[presence]
+    return said[0] if label is None else f"{label} {said[1]}"
+
+
+def cell(value: GradeValue, label: str | None = None, *, named: bool = False) -> str:
+    """A draft's cell as the review reads it out, short after the page's own label for it, and
+    under ``label`` where it stands alone."""
+    return described(value.presence, value.text, label, named=named)
+
+
+def saved_now(cells: Mapping[str, Cell]) -> list[str]:
+    """A changed value's saved cells as the review reads them out, each under its field's name
+    where the record has no value for it."""
+    return [
+        described(Presence(presence), text, SAVED_LABELS[field])
+        for field, (presence, text) in cells.items()
+        if field in SAVED_LABELS
+    ]
+
+
+def status_word(shown: Shown) -> str:
+    """How the review names a value's status: a value the copy didn't capture by its own
+    fields, any other by its status alone."""
+    if shown.item.status is ItemStatus.VALUE_NOT_CAPTURED:
+        return NOT_CAPTURED_BY_KIND[shown.kind]
+    return STATUS_WORDS[shown.item.status]
+
+
+def all_kept(kept: StillAsked, answers: GradeAnswers) -> bool:
+    """Whether every answer the page sent still answers the review, none dropped."""
+    return (
+        kept.identity,
+        kept.setup,
+        kept.first_month,
+        kept.new_class,
+        kept.same_class,
+        kept.matches,
+        kept.use,
+    ) == (
+        answers.identity,
+        answers.setup,
+        answers.first_month,
+        answers.new_class,
+        answers.same_class,
+        answers.matches,
+        answers.use,
+    )
 
 
 def review_context(
@@ -403,14 +469,15 @@ def review_context(
     items = shown_items(review, draft)
     counts: dict[str, int] = {}
     for shown in items:
-        word = STATUS_WORDS[shown.item.status].lower()
+        word = status_word(shown).lower()
         counts[word] = counts.get(word, 0) + 1
     return {
         "review": review,
         "items": items,
         "counts": counts,
-        "status_words": STATUS_WORDS,
+        "status_word": status_word,
         "cell": cell,
+        "saved_now": saved_now,
         "student_line": header.student_line,
         "identity": review.identity.status.value,
         "statuses": IdentityStatus,
@@ -770,9 +837,9 @@ def titles(review: GradeReview, draft: GradeReportDraft, keys: frozenset[str]) -
         if shown.kind == "term":
             named.append("Term grade")
         elif shown.kind == "category" and shown.category is not None:
-            named.append(shown.category.name.text or "Category")
+            named.append(cell(shown.category.name, "Category name"))
         elif shown.row is not None:
-            named.append(cell(shown.row.assignment))
+            named.append(cell(shown.row.assignment, "Assignment"))
     return named
 
 
@@ -820,6 +887,7 @@ def returned_page(
             ticks=ticks,
             recorded=outcome_address(outcome.saved.acceptance_id),
             left_out=left,
+            kept_sentence=BOTH_KEPT if all_kept(kept, answers) else TEXT_KEPT_ANSWER_AGAIN,
         )
     if isinstance(outcome, GradeReview):
         return review_page(request, state, form, outcome, fields=form.fields, ticks=ticks_of(form))
@@ -840,7 +908,8 @@ def returned_page(
             )
     kept = still_asked(review, answers, posted.selection)
     fields, ticks = kept_fields(kept, review, form.draft, form.positions)
-    kept_sentence = TEXT_KEPT if outcome.why is ReturnReason.SOURCE else BOTH_KEPT
+    every = outcome.why is not ReturnReason.SOURCE and all_kept(kept, answers)
+    kept_sentence = BOTH_KEPT if every else TEXT_KEPT_ANSWER_AGAIN
     return review_page(
         request,
         state,

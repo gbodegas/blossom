@@ -17,7 +17,7 @@
   {% if said %}
     <p class="problem" role="alert" id="problem">{{ said }}{% if kept %} {{ kept }}{% endif %}</p>
   {% endif %}
-  <section class="panel">
+  <section class="panel grade-panel">
     <p class="note" id="paste-hint">{{ hint }}</p>
     <form method="post" action="{{ review }}" class="decision">
       <label for="report-text">Paste report text</label>
