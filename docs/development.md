@@ -230,7 +230,9 @@ Three files under `.local/` outlive a restart:
   something in a class and term, a value, a row it shows or a matching
   answer, and by every confirmed "Use saved values from this report as
   current", and left as it was by a save or confirmation that records
-  nothing new; `grade_acceptances`, one record of each save, which a
+  nothing new, unless that save read its copy incomplete and the copy's
+  report is already on record, which keeps the report from saying what
+  it doesn't show; `grade_acceptances`, one record of each save, which a
   repeated press is answered from; and `grade_current_actions`, one record
   of each confirmed "Use saved values from this report as current": the
   report it copied, the report it made current, and what it copied.
