@@ -228,7 +228,9 @@ Three files under `.local/` outlive a restart:
   as written; `grade_results` and `grade_match_decisions`, which result each
   row is; `grade_scope_revisions`, raised by every save that records
   something in a class and term, a value, a row it shows or a matching
-  answer, and left as it was by a save that records nothing new; and
+  answer, and left as it was by a save that records nothing new, unless
+  that save read its copy incomplete and the copy's report is already on
+  record, which keeps the report from saying what it doesn't show; and
   `grade_acceptances`, one record of each save, which a repeated press is
   answered from.
   A file from before any of them gains the tables on the first start.
