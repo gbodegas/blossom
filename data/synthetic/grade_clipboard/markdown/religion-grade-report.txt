@@ -1,0 +1,41 @@
+Gradebook Student Progress Report
+
+|Wren|2026-2027|Teacher|
+|---|---|---|
+|08 Fixture 3 - A|T1||
+PERCENT
+
+|Community Studies|
+|---|
+| | | |
+|Homework/Classwork/Participation||Weight = 25.0|
+|Assignment|Pts|Max|Avg|Status|Due|Curve|Bonus|Penalty|Weight|Note|
+|Practice 3.1: classroom exercise. Read the instructions and complete the practice before the next lesson. Use the examples to explain each an|7.00|13.00|62.00|Valid|09/11|0.00|0.00||1.0||
+Category Average
+
+78.00
+
+| | | | | | | | |
+| | | |
+|Projects and Application||Weight = 30.0|
+|Assignment|Pts|Max|Avg|Status|Due|Curve|Bonus|Penalty|Weight|Note|
+Category Average
+
+
+| | | | | | | | |
+| | | |
+|Quizzes||Weight = 15.0|
+|Assignment|Pts|Max|Avg|Status|Due|Curve|Bonus|Penalty|Weight|Note|
+Category Average
+
+
+| | | | | | | | |
+| | | |
+|Tests||Weight = 30.0|
+|Assignment|Pts|Max|Avg|Status|Due|Curve|Bonus|Penalty|Weight|Note|
+Category Average
+
+
+| | | | | | | | |
+| | | | | | | | | | |
+|Term Grade|83.00|B|| | |
