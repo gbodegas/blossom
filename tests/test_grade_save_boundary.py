@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""A grade save is one write inside a caller's transaction too.
+"""A grade write is one write inside a caller's transaction too.
 
 A caller that holds the store's writer, writes, saves a report and catches the save's refusal
 keeps its own work and none of the save: every write statement of a save is refused in turn,
-the release of the save's savepoint as well, and the file is compared whole after each. When
-SQLite itself ends the caller's transaction, everything in it is gone, and the save says so
-with an error that is not a refusal, so no caller commits the rest of its block alone.
+the release of the save's savepoint as well, and the file is compared whole after each. The
+same holds for the class-details action and a first month's correction, and G-I20 runs every
+write's statements in one loop. When SQLite itself ends the caller's transaction, everything in
+it is gone, and the save says so with an error that is not a refusal, so no caller commits the
+rest of its block alone.
 """
 
 import dataclasses
@@ -28,7 +30,7 @@ from blossom.grades.review import (
 )
 from blossom.grades.text_reader import read_grade_report
 from blossom.stores import gradebook
-from blossom.stores.gradebook import GradeReportNotSaved
+from blossom.stores.gradebook import FirstMonthCorrected, FirstMonthStood, GradeReportNotSaved
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
     FIXTURES,
@@ -43,6 +45,7 @@ from tests.support import (
 
 REPORT = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
 KEY = name_form_key(b"5" * 64)
+YEAR = "2026-2027"
 EARLIER_KEY = name_form_key(b"6" * 64)
 """The key her name was confirmed under before the household secret was replaced."""
 
@@ -379,29 +382,35 @@ def test_a_caller_that_fails_after_the_save_keeps_none_of_its_block(
 def test_every_grade_write_happens_inside_the_saves_one_savepoint(
     opened: Callable[[str], ProjectStateStore], scenario: str
 ) -> None:
-    """No begin, commit or plain rollback runs between the save's savepoint and its release,
-    and no grade table is written outside them. SQLite's trace sees every statement as it runs;
-    its authorizer sees a statement only when it is first prepared, so it can't tell order."""
+    """No begin, commit or plain rollback runs inside a grade write's savepoint, and no grade
+    table is written outside one, for a save or a first month's correction. SQLite's trace sees
+    every statement as it runs; its authorizer sees a statement only when it is first prepared."""
     store = opened(scenario)
     ran: list[str] = []
     store._connection.set_trace_callback(ran.append)
     with store.comparing_and_writing():
         assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+        corrected = store.correct_first_month(YEAR, shown=8, month=9, role="parent")
     store._connection.set_trace_callback(None)
 
     statements = [" ".join(text.split()).upper() for text in ran]
-    opened_at = statements.index("SAVEPOINT GRADE_SAVE")
-    released_at = max(at for at, text in enumerate(statements) if text == "RELEASE GRADE_SAVE")
-    inside = statements[opened_at:released_at]
+    depth = 0
+    inside: list[str] = []
+    written: list[bool] = []
+    for text in statements:
+        depth += (text == "SAVEPOINT GRADE_SAVE") - (text == "RELEASE GRADE_SAVE")
+        if depth:
+            inside.append(text)
+        if text.startswith(("INSERT", "UPDATE", "DELETE")) and " GRADE_" in text.split("(")[0]:
+            written.append(depth > 0)
     ending = ("BEGIN", "COMMIT", "END")
+    assert corrected == FirstMonthCorrected(YEAR, 9)
+    assert statements.count("SAVEPOINT GRADE_SAVE") >= 2
+    assert depth == 0
     assert not [text for text in inside if text.startswith(ending) or text == "ROLLBACK"]
-    written = [
-        at
-        for at, text in enumerate(statements)
-        if text.startswith(("INSERT", "UPDATE", "DELETE")) and " GRADE_" in text.split("(")[0]
-    ]
+    assert [text for text in inside if text.startswith("UPDATE GRADE_YEARS")]
     assert written
-    assert all(opened_at < at < released_at for at in written)
+    assert all(written)
 
 
 def test_a_grade_savepoint_never_opens_outside_a_transaction() -> None:
@@ -861,3 +870,148 @@ def test_a_later_copied_row_record_refused_leaves_nothing_of_the_action(
 
     assert world(path) == before
     assert isinstance(confirm_current(store, WREN, preview), MadeCurrent)
+
+
+FIRST_MONTH: tuple[Site, ...] = ((sqlite3.SQLITE_UPDATE, "grade_years"),)
+"""The one write statement of a first month's correction: the year's month and who set it."""
+
+
+def test_a_first_month_correction_writes_exactly_the_named_statements(
+    opened: Callable[[str], ProjectStateStore],
+) -> None:
+    store = opened("first use")
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    seen: set[Site] = set()
+
+    def note(action: int, table: str | None, *_: object) -> int:
+        if action in WRITES and table is not None:
+            seen.add((action, table))
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(note)
+    outcome = store.correct_first_month(YEAR, shown=8, month=9, role="parent")
+    store._connection.set_authorizer(None)
+
+    assert outcome == FirstMonthCorrected(YEAR, 9)
+    assert seen == set(FIRST_MONTH)
+
+
+def test_a_refused_first_month_correction_leaves_nothing_of_it(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path
+) -> None:
+    """Refused three times inside a caller's transaction, the correction leaves the file as it
+    was, with the caller's writes kept; lifted, the same page corrects the month once, and sent
+    again it stands."""
+    store = opened("first use")
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    before, rows = world(path), assignments(store)
+
+    def again() -> object:
+        return store.correct_first_month(YEAR, shown=8, month=9, role="parent")
+
+    for attempt in range(3):
+        store._connection.set_authorizer(refusing(*FIRST_MONTH))
+        with store.comparing_and_writing():
+            unrelated(store, f"before-{attempt}")
+            with pytest.raises(GradeReportNotSaved, match="first month could not be corrected"):
+                again()
+            unrelated(store, f"after-{attempt}")
+        store._connection.set_authorizer(None)
+
+        assert not store._connection.in_transaction
+        assert world(path) == before
+        assert assignments(store) == rows + 2 * (attempt + 1)
+    assert again() == FirstMonthCorrected(YEAR, 9)
+    assert again() == FirstMonthStood(YEAR, 9)
+
+
+Write = Callable[[ProjectStateStore], Callable[[], object]]
+"""A grade write's setup on a fresh file: the write, ready to send, and to send again."""
+
+
+def first_save(store: ProjectStateStore) -> Callable[[], object]:
+    review = review_of(store)
+    return lambda: save_grade(store, WREN, key=KEY, review=review)
+
+
+def confirmed_again(store: ProjectStateStore) -> Callable[[], object]:
+    assert isinstance(save_grade(store, OTHER_TERM, key=EARLIER_KEY), GradeReportSaved)
+    return first_save(store)
+
+
+def presence_alone(store: ProjectStateStore) -> Callable[[], object]:
+    review = presence_page(store)
+    return lambda: save_grade(store, EIGHT, key=KEY, review=review, selection=())
+
+
+def answers_alone(*, kept: bool) -> Write:
+    def setup(store: ProjectStateStore) -> Callable[[], object]:
+        review, answers = different_page(store, kept=kept)
+        return lambda: save_grade(
+            store, RENAMED, key=KEY, review=review, answers=answers, selection=()
+        )
+
+    return setup
+
+
+def submission(scenario: str) -> Write:
+    def setup(store: ProjectStateStore) -> Callable[[], object]:
+        page, _, complete = PAGES[scenario]
+        review, answers, draft = page(store)
+        return lambda: save_grade(
+            store, draft, key=KEY, review=review, answers=answers, selection=(), complete=complete
+        )
+
+    return setup
+
+
+def class_details_action(store: ProjectStateStore) -> Callable[[], object]:
+    preview = action_preview(store)
+    return lambda: confirm_current(store, WREN, preview)
+
+
+def first_month_correction(store: ProjectStateStore) -> Callable[[], object]:
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    return lambda: store.correct_first_month(YEAR, shown=8, month=9, role="parent")
+
+
+EVERY_WRITE: dict[str, tuple[Write, tuple[Site, ...], type]] = {
+    "a first save": (first_save, FIRST_USE, GradeReportSaved),
+    "confirmed again": (confirmed_again, (CONFIRM_AGAIN,), GradeReportSaved),
+    "presence alone": (presence_alone, PRESENCE, GradeReportSaved),
+    "a different answer kept": (answers_alone(kept=False), PRESENCE, GradeReportSaved),
+    "a different answer resolved": (answers_alone(kept=True), RESOLVED, GradeReportSaved),
+    **{
+        scenario: (submission(scenario), sites, GradeReportSaved)
+        for scenario, (_, sites, _) in PAGES.items()
+    },
+    "the class-details action": (class_details_action, ACTION, MadeCurrent),
+    "a first-month correction": (first_month_correction, FIRST_MONTH, FirstMonthCorrected),
+}
+"""Every kind of grade write, with each write statement it makes and what it returns lifted."""
+
+
+def test_g_i20_every_grade_write_is_all_or_nothing_at_each_site(tmp_path: pathlib.Path) -> None:
+    """Each write statement of each kind of grade write, refused once inside a caller's
+    transaction, leaves the file as it was with the caller's writes kept, as the write's own
+    refusal; lifted, the same write goes through."""
+    seen = {}
+    for number, (kind, (setup, sites, lifted)) in enumerate(EVERY_WRITE.items()):
+        for at, site in enumerate(sites):
+            file = tmp_path / f"{number}-{at}.sqlite3"
+            store = ProjectStateStore.open(file, fixture_clock())
+            write = setup(store)
+            before, rows = world(file), assignments(store)
+            store._connection.set_authorizer(refusing(site))
+            with store.comparing_and_writing():
+                unrelated(store, "before")
+                with pytest.raises(GradeReportNotSaved):
+                    write()
+                unrelated(store, "after")
+            store._connection.set_authorizer(None)
+            kept = (world(file) == before, assignments(store) == rows + 2)
+            seen[kind, site] = (*kept, isinstance(write(), lifted))
+            store.close()
+
+    assert len(seen) == sum(len(sites) for _, sites, _ in EVERY_WRITE.values())
+    assert seen == dict.fromkeys(seen, (True, True, True))
