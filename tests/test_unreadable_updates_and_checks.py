@@ -57,6 +57,7 @@ from tests.support import (
     main_of,
     mark,
     page_of,
+    plan_form,
     reading,
     report,
     reported,
@@ -384,7 +385,12 @@ def graphs(planners: list[Scripted[DailyPlan]] | None = None) -> Callable[..., P
 def with_a_plan(client: TestClient) -> str:
     """Today's plan, saved before anything is said; the address of its family review."""
     client.app.dependency_overrides[plan_graphs] = graphs()  # type: ignore[attr-defined]
-    assert client.post("/student/actions/plan", headers=PAGE_HEADERS).status_code == 303
+    assert (
+        client.post(
+            "/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS
+        ).status_code
+        == 303
+    )
     draft = re.search(r'/parent/actions/decide/([^"]+)"', family_page(client))
     assert draft is not None
     return f"/parent/approvals/{unescape(draft.group(1))}"
@@ -836,7 +842,11 @@ def test_a_plan_counts_work_whose_updates_cannot_be_read_and_is_told_none_of_the
         seeded(client)
         spoil(store_of(client), "student_reports", "note", WORDS)
         method, path, body = press
-        answer = client.request(method, path, json=body, headers=PAGE_HEADERS)
+        if path.endswith("/actions/plan"):
+            page = "/parent" if path.startswith("/parent") else HER_PAGE
+            answer = client.post(path, data=plan_form(client, page), headers=PAGE_HEADERS)
+        else:
+            answer = client.request(method, path, json=body, headers=PAGE_HEADERS)
 
     assert answer.status_code == made, answer.text[:300]
     brief = human_text(planners[0].briefs[0])
@@ -855,7 +865,12 @@ def test_a_plan_made_while_she_reported_done_fits_again_once_her_updates_are_rep
             lambda: [without_the_essay], lambda: [accepting()]
         )
         report(client, ESSAY_ID, "done", HER_NOTE)
-        assert client.post("/student/actions/plan", headers=PAGE_HEADERS).status_code == 303
+        assert (
+            client.post(
+                "/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS
+            ).status_code
+            == 303
+        )
         fits = words(page_of(client))
         spoil(store_of(client), "student_reports", "note", WORDS)
         unreadable = words(page_of(client))
@@ -1249,7 +1264,8 @@ def test_a_plan_row_says_when_its_updates_cannot_be_read_until_they_are_repaired
         for assignment_id in held:
             spoil(store, *spoiled, assignment_id=assignment_id)
         planned = "/parent/actions/plan" if reader == "a parent" else "/student/actions/plan"
-        assert client.post(planned, headers=PAGE_HEADERS).status_code == 303
+        form = plan_form(client, "/parent" if reader == "a parent" else HER_PAGE)
+        assert client.post(planned, data=form, headers=PAGE_HEADERS).status_code == 303
         unreadable = plan_pages(client, reader)
         for rows in held.values():
             store._connection.executemany(

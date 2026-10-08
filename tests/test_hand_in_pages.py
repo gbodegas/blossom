@@ -69,6 +69,7 @@ from tests.support import (
     form_fields,
     human_text,
     lands_on,
+    plan_form,
     report,
     school_missing,
     scripted_graphs,
@@ -744,7 +745,7 @@ def test_nothing_she_says_about_turning_work_in_reaches_a_planner_or_stales_a_pl
             save(client, opened(client), NEEDS_HAND_IN, action="ZEBRA-FOLDER", note="ZEBRA-NOTE"),
         )
 
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         waiting = state_of(client).drafts.latest_for(PLAN_DATE)
         landed(client, save(client, opened(client), TURNED_IN, note="ZEBRA-LATER"))
         week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
@@ -871,7 +872,7 @@ def test_a_plan_is_still_made_beside_a_record_that_cannot_be_decoded() -> None:
         landed(client, save(client, opened(client), TURNED_IN, note="ZEBRA-NOTE"))
         damage(client, "reported_on", "not-a-day")
 
-        made = client.post("/student/actions/plan")
+        made = client.post("/student/actions/plan", data=plan_form(client))
 
     assert made.status_code == 303
     sent = " ".join(str(message.content) for brief in planners[0].briefs for message in brief)

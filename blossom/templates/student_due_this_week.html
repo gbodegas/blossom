@@ -38,8 +38,16 @@
   #}
   {% set work_left = (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
   {% set see_homework_href = "#" ~ title_anchor(work_left[0].assignment_id) if work_left else "#homework" %}
+  {#
+    What the plan button offers follows the evening as it stands: a plan
+    for the smaller evening while her signal is up and no saved plan is a
+    shorter one that fits the minutes set now, a plan again otherwise. The
+    words beside it say what has and has not changed; nothing here plans on
+    its own. A refusal of a plan press names the button by these words.
+  #}
+  {% set plan_label = "Make a smaller plan" if view.smaller_wanted else ("Plan again" if view.plan else "Plan today") %}
   {% if problem %}
-    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}{% if plan_failure %}{% if plan_failure.run %} <a href="{{ plan_failure.run.href }}">{{ plan_failure.run.label }}</a>{% endif %}{% for title, href in plan_failure.checks %} <a href="{{ href }}">Check the dates for {{ title }}.</a>{% endfor %} <a href="{{ see_homework_href }}">See homework.</a>{% endif %}</p>
+    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem|replace(plan_label_mark, plan_label) }}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}{% if plan_failure %}{% if plan_failure.run %} <a href="{{ plan_failure.run.href }}">{{ plan_failure.run.label }}</a>{% endif %}{% for title, href in plan_failure.checks %} <a href="{{ href }}">Check the dates for {{ title }}.</a>{% endfor %} <a href="{{ see_homework_href }}">See homework.</a>{% endif %}</p>
   {% endif %}
 
   {% if view.week.current %}
@@ -118,14 +126,6 @@
         {% if not view.nothing_to_plan %}You can start anyway.{% endif %}
       </p>
     {% endif %}
-    {#
-      What the plan button offers follows the evening as it stands: a plan
-      for the smaller evening while her signal is up and no saved plan is a
-      shorter one that fits the minutes set now, a plan again otherwise. The
-      words beside it say what has and has not changed; nothing here plans on
-      its own.
-    #}
-    {% set plan_label = "Make a smaller plan" if view.smaller_wanted else ("Plan again" if view.plan else "Plan today") %}
     {% if view.plan and view.plan.stale %}
       {% if view.nothing_to_plan %}
         <p class="confidence disagree" role="status">
@@ -240,12 +240,13 @@
     {% else %}
       {{ signal_said }}
       <div class="actions">
-        {% if view.can_plan %}
+        {% if view.can_plan and plan_form %}
           <form method="post" action="/student/actions/plan" class="action"
                 data-pending="Making your plan"
                 data-pending-later="Still working. The planner reads your week and writes the plan, which can take up to about a minute and a half"
                 data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
             {% if in_place_said %}<input type="hidden" name="in_place" value="{{ in_place_said }}">{% endif %}
+            {% for name, value in plan_form.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
             <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure and plan_failure.try_again %}Try again{% else %}{{ plan_label }}{% endif %}</button>
           </form>
         {% endif %}

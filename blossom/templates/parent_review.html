@@ -609,20 +609,23 @@ Cover both books with paper.</pre>
       </form>
     </section>
   </details>
-  <details class="steps panel-fold">
+  <details class="steps panel-fold"{% if plan_open %} open{% endif %}>
     <summary>Help with a plan</summary>
     <section class="panel">
       <h2>Plan an evening for her</h2>
       {% if model_available %}
+        {% if plan_form %}
         <form method="post" action="/parent/actions/plan" class="plan-form"
               data-pending="Making the plan"
               data-pending-later="Still working. The planner reads her week and writes the plan, which can take up to about a minute and a half"
               data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
+          {% for name, value in plan_form.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
           <label>Evening of
-            <input type="date" name="plan_date" value="{{ today }}">
+            <input type="date" name="plan_date" value="{{ plan_date_value }}">
           </label>
           <button type="submit" class="primary">Plan it</button>
         </form>
+        {% endif %}
         <p class="note">
           She usually plans from her own page. A plan made here for today is on her page
           the moment it is made; one for another evening reaches her page on that day.

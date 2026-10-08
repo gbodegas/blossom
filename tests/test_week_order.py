@@ -71,6 +71,7 @@ from tests.support import (
     fixture_week_plan,
     forgetful_fixture_plan,
     form_fields,
+    fresh_plan_fields,
     lands_on,
     main_of,
     malformed,
@@ -78,6 +79,7 @@ from tests.support import (
     not_this_cards,
     note_too_long,
     page_of,
+    plan_form,
     reading,
     report,
     reported,
@@ -790,7 +792,7 @@ def test_see_homework_is_left_out_with_a_plan_or_nothing_left_and_the_page_says_
     with reading(reader, tmp_path, graphs=graphs) as client:
         make(client)
         if with_a_plan:
-            assert client.post(PLAN).status_code == 303
+            assert client.post(PLAN, data=plan_form(client)).status_code == 303
         page = main_of(page_of(client))
 
     assert "See homework" not in page
@@ -822,7 +824,7 @@ def test_every_place_the_week_links_to_is_there_to_land_on(
     with reading(reader, tmp_path, graphs=planner(fixture_week_plan)) as client:
         quiet(client)
         asked_for_help(client)
-        assert client.post(PLAN).status_code == 303
+        assert client.post(PLAN, data=plan_form(client)).status_code == 303
         page = main_of(page_of(client, show_plan="1"))
         other = main_of(page_of(client, week=LATER_WEEK))
 
@@ -1261,7 +1263,7 @@ def not_on_record(client: TestClient) -> Answer:
 
 
 def plan_without_a_key(client: TestClient) -> Answer:
-    return client.post(PLAN, headers=PAGE_HEADERS)
+    return client.post(PLAN, data=fresh_plan_fields(client), headers=PAGE_HEADERS)
 
 
 PLAN_REFUSED: Final = {
@@ -1321,7 +1323,9 @@ def test_a_plan_the_button_could_not_make_is_said_at_the_top_with_the_focus(
     focus, and See homework is there below, since work is left and no plan was made."""
     graphs, status, said = PLAN_REFUSED[case]
     with reading(reader, tmp_path, graphs=graphs) as client:
-        answer = client.post(PLAN, headers=PAGE_HEADERS)
+        # With no model to ask the page offers no button, so the press carries a fresh form.
+        form = fresh_plan_fields(client) if graphs is None else plan_form(client)
+        answer = client.post(PLAN, data=form, headers=PAGE_HEADERS)
 
     assert answer.status_code == status
     page = main_of(answer.text)
@@ -1463,9 +1467,10 @@ def test_the_top_lines_see_homework_goes_where_the_plans_place_sends_it(
     card still to do, whether or not a plan from earlier keeps the plan's place."""
     with reading("her", tmp_path, graphs=planner(fixture_week_plan)) as client:
         if planned:
-            assert client.post(PLAN, headers=PAGE_HEADERS).status_code == 303
+            pressed = client.post(PLAN, data=plan_form(client), headers=PAGE_HEADERS)
+            assert pressed.status_code == 303
         client.app.dependency_overrides[plan_graphs] = planner(forgetful_fixture_plan)  # type: ignore[attr-defined]
-        answer = client.post(PLAN, headers=PAGE_HEADERS)
+        answer = client.post(PLAN, data=plan_form(client), headers=PAGE_HEADERS)
 
     assert answer.status_code == 409
     page = main_of(answer.text)

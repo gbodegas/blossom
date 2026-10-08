@@ -96,9 +96,11 @@ from blossom.routes.navigation import (
 )
 from blossom.routes.runs import (
     CHECK_AGAIN,
+    CHECK_ON_IT,
     CHECK_ON_THAT_REQUEST,
     COULD_NOT_START,
     PLAN_ANSWERS,
+    PLAN_FORM_FIELDS,
     RUN_STATUS_ANSWERS,
     UNCONFIRMED,
     AlreadyPlanning,
@@ -108,17 +110,24 @@ from blossom.routes.runs import (
     PlanGraphBuilder,
     RunCheck,
     RunNotice,
+    SameRun,
     Unconfirmed,
     already_planning,
+    being_made,
     ended_without_a_plan,
+    evening_named,
+    fresh_plan_form,
     graph_for_a_run,
     make_plan,
     not_saved,
+    plan_form_from,
     refuse_an_empty_run,
     require_model,
     require_work,
     run_check,
     run_notice,
+    run_of_the_form,
+    run_replaced,
     run_status_view,
     saved_sentence,
     thread_for,
@@ -139,6 +148,9 @@ from blossom.stores.drafts import (
     AlreadyDecided,
     DraftRecord,
     NotPublished,
+    RunState,
+    StaleBasis,
+    UnknownBasis,
 )
 from blossom.stores.help_requests import (
     NOTE_MAX_LENGTH,
@@ -957,6 +969,8 @@ def review_page(
     run_notice: RunNotice | None = None,
     help_reply: HelpReplyKept | None = None,
     status_code: int = status.HTTP_200_OK,
+    plan_date_kept: str | None = None,
+    offers_plan: bool = True,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to add assignments,
     and the folds below.
@@ -1043,6 +1057,15 @@ def review_page(
         "parent_review.html",
         {
             "today": today,
+            # The date the plan form is filled with: the one a refused press chose, kept,
+            # or today; with Help with a plan open when a press's date is kept.
+            "plan_date_value": today.isoformat() if plan_date_kept is None else plan_date_kept,
+            "plan_open": plan_date_kept is not None,
+            # A fresh form for every page, its newest plan from the same reading as the
+            # plans shown, except one that answers a run that may still publish.
+            "plan_form": fresh_plan_form(state, today, records.newest).fields()
+            if offers_plan
+            else None,
             "model_available": model_configured(state.settings),
             "waiting": waiting,
             "decided": decided,
@@ -1459,13 +1482,70 @@ def a_count(given: str | None) -> int | None:
     return None if count is not None and count < 0 else count
 
 
-async def plan_from_the_page(
-    request: Request,
-    state: State,
-    graphs: Graphs,
-    plan_date: Annotated[str, Form()] = "",
-) -> Response:
-    """The plan form. A blank date means today; a bad one is said, not guessed at.
+PLAN_DATE: Final = "plan_date"
+FAMILY_PLAN_FIELDS: Final = frozenset({PLAN_DATE, *PLAN_FORM_FIELDS})
+FAMILY_PLAN_NOT_WHOLE: Final = (
+    "This form came from an incomplete or outdated page, so no plan was started. The evening "
+    "you chose is kept below; press Plan it to start one."
+)
+FAMILY_PLAN_EXPIRED: Final = (
+    "This form is from a page opened more than a week ago, so no plan was started. The "
+    "evening you chose is kept below; press Plan it to start one."
+)
+STILL_BEING_FINISHED: Final = "That request is still being finished."
+PLAN_SHOWN_ABOVE: Final = "That plan is shown above."
+
+
+def newer_plan_shown(evening: date, waiting: bool) -> str:
+    """Why a press from a page that didn't know an evening's newest plan started nothing, and
+    where that plan is on the page."""
+    where = "above, waiting for review" if waiting else "below, under Earlier plans"
+    return (
+        f"A newer plan for {evening_named(evening)} was made after this page was opened, so "
+        f"Plan it didn't start another one. That plan is shown {where}. To ask for a new one, "
+        "press Plan it again."
+    )
+
+
+def what_the_run_did(run: RunState) -> str:
+    """A run a used form asked for, as the answer to that form says it: still being made,
+    its plan, or why it ended."""
+    if run.status == "running":
+        return STILL_BEING_FINISHED
+    if run.status == "published":
+        return PLAN_SHOWN_ABOVE
+    return ended_without_a_plan(run.reason, parent=True)
+
+
+def asked_another_evening(run: RunState, chosen: date) -> str:
+    """Why a used form sent with another evening starts nothing: the evening it asked for,
+    what came of it, and that the new evening wasn't planned."""
+    return (
+        f"This form already asked for a plan for {evening_named(run.plan_date)}, so nothing "
+        f"was started for {evening_named(chosen)}. {what_the_run_did(run)} To plan "
+        f"{evening_named(chosen)}, press Plan it again below."
+    )
+
+
+def asked_with_an_unreadable_date(run: RunState) -> str:
+    """Why a used form sent with a date that can't be read starts nothing."""
+    return (
+        f"This form already asked for a plan for {evening_named(run.plan_date)}. "
+        f"{what_the_run_did(run)} The date entered below couldn't be read, so nothing was "
+        "started for it. To plan another evening, enter a date and press Plan it."
+    )
+
+
+async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> Response:
+    """The plan form. A blank date means the evening the page was made for; a bad one is
+    said, not guessed at.
+
+    The form is read whole, and each form plans once: its id names its run, and a form whose
+    run is recorded starts nothing and is answered by that run, before any date is checked,
+    or, sent with another evening or one that can't be read, by the evening it asked for.
+    A form missing a field or holding one of another shape, or one issued seven days ago or
+    more, starts nothing and keeps the date chosen, and so does one whose page didn't know
+    the evening's newest plan, which is then shown.
 
     A run that fails on the way for any reason other than a refusal is said on
     the page too, as a plan Blossom couldn't finish, with the queue below
@@ -1476,14 +1556,34 @@ async def plan_from_the_page(
     week cannot be read: the same two refusals the JSON route makes. When the
     family page can't be read either, its stand-in says so, with the same status.
     """
+    fields, whole = await fields_of(request, FAMILY_PLAN_FIELDS, may_be_absent=FAMILY_PLAN_FIELDS)
     budget = graphs.budget()
+    now = state.real_clock.now()
+    plan_date = (fields.get(PLAN_DATE) or "") if whole else ""
 
-    async def not_made(problem: str, code: int, check: RunCheck | None = None) -> HTMLResponse:
+    async def not_made(
+        problem: str,
+        code: int,
+        check: RunCheck | None = None,
+        *,
+        kept: str | None = None,
+        offers_plan: bool = True,
+        open_plan: str | None = None,
+    ) -> HTMLResponse:
         # The family page is read on a worker thread, for at most the store's wait; past
         # it, its stand-in that reads no store says the same.
         try:
             return await bounded(
-                lambda: refused_on_the_page(request, state, problem, code, check=check),
+                lambda: refused_on_the_page(
+                    request,
+                    state,
+                    problem,
+                    code,
+                    check=check,
+                    plan_date_kept=kept,
+                    offers_plan=offers_plan,
+                    open_plan=open_plan,
+                ),
                 STORE_WAIT_SECONDS,
             )
         except Unfinished:
@@ -1491,9 +1591,76 @@ async def plan_from_the_page(
                 request, state, WITHOUT_THE_PAGE.get(problem, problem), code, line=FAMILY_NOT_SHOWN
             )
 
-    try:
-        evening = date.fromisoformat(plan_date) if plan_date.strip() else state.clock.today()
-    except ValueError:
+    def read_date(blank: date) -> date | None:
+        try:
+            return date.fromisoformat(plan_date) if plan_date.strip() else blank
+        except ValueError:
+            return None
+
+    def readable(blank: date) -> str | None:
+        # The chosen date as the fresh form is refilled with, when it can be read.
+        chosen = read_date(blank)
+        return None if chosen is None else chosen.isoformat()
+
+    async def newer_plan(evening: date) -> HTMLResponse:
+        latest = await bounded(partial(state.drafts.latest_for, evening), STORE_WAIT_SECONDS)
+        waiting = latest is not None and latest.decision is None
+        return await not_made(
+            newer_plan_shown(evening, waiting),
+            status.HTTP_409_CONFLICT,
+            kept=evening.isoformat(),
+            open_plan=None if latest is None else latest.draft_id,
+        )
+
+    async def repeated(run: RunState, chosen: date | None) -> Response:
+        # A form whose run is recorded is answered by that run, or by the evening it asked
+        # for when it was sent with another.
+        check = run_check(FAMILY_PAGE, run.run_id, CHECK_ON_IT) if run.status == "running" else None
+        if chosen is None:
+            return await not_made(
+                asked_with_an_unreadable_date(run), status.HTTP_409_CONFLICT, check, kept=plan_date
+            )
+        if chosen != run.plan_date:
+            return await not_made(
+                asked_another_evening(run, chosen),
+                status.HTTP_409_CONFLICT,
+                check,
+                kept=chosen.isoformat(),
+            )
+        if run.status == "running":
+            notice = being_made(run, FAMILY_PAGE)
+            return await not_made(
+                notice.said, status.HTTP_202_ACCEPTED, notice.check, offers_plan=False
+            )
+        try:
+            replaced = await bounded(partial(run_replaced, state, run), STORE_WAIT_SECONDS)
+        except Exception:
+            logger.exception("the plans after run %s could not be read", run.run_id)
+            replaced = False
+        if replaced:
+            return await newer_plan(run.plan_date)
+        if run.status == "published":
+            return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
+        return await not_made(
+            ended_without_a_plan(run.reason, parent=True), status.HTTP_409_CONFLICT
+        )
+
+    form = plan_form_from(fields, now) if whole else None
+    if form is None:
+        return await not_made(
+            FAMILY_PLAN_NOT_WHOLE,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            kept=readable(state.clock.today()),
+        )
+    run = await run_of_the_form(state, form.run_id)
+    if run is not None:
+        return await repeated(run, read_date(form.evening))
+    if form.expired(now):
+        return await not_made(
+            FAMILY_PLAN_EXPIRED, status.HTTP_409_CONFLICT, kept=readable(form.evening)
+        )
+    evening = read_date(form.evening)
+    if evening is None:
         return await not_made(
             f"{plan_date!r} is not a date. Use the form YYYY-MM-DD.",
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1505,8 +1672,23 @@ async def plan_from_the_page(
     try:
         await require_work(state, evening, budget)
         require_model(graphs)
-        made = await make_plan(graph_for_a_run(graphs), evening, state, budget=budget)
+        made = await make_plan(
+            graph_for_a_run(graphs),
+            evening,
+            state,
+            budget=budget,
+            run_id=form.run_id,
+            basis=form.newest_plan,
+        )
         refuse_an_empty_run(made.view)
+    except SameRun as same:
+        return await repeated(same.run, evening)
+    except StaleBasis:
+        return await newer_plan(evening)
+    except UnknownBasis:
+        return await not_made(
+            FAMILY_PLAN_NOT_WHOLE, status.HTTP_422_UNPROCESSABLE_CONTENT, kept=evening.isoformat()
+        )
     except AlreadyPlanning as error:
         return await not_made(
             already_planning(error.run, parent=True),
@@ -1522,6 +1704,7 @@ async def plan_from_the_page(
             f"{UNCONFIRMED} {saved_sentence(parent=True)}",
             status.HTTP_202_ACCEPTED,
             run_check(FAMILY_PAGE, unconfirmed.run_id, CHECK_AGAIN),
+            offers_plan=False,
         )
     except HTTPException as error:
         return await not_made(str(error.detail), error.status_code)
@@ -1705,10 +1888,14 @@ def refused_on_the_page(
     *,
     check: RunCheck | None = None,
     help_reply: HelpReplyKept | None = None,
+    plan_date_kept: str | None = None,
+    offers_plan: bool = True,
+    open_plan: str | None = None,
 ) -> HTMLResponse:
     """A form action the family page refused, said at its top with the status the JSON route
     would answer, ``check`` the link to the run it names, and ``help_reply`` a reply to her
-    request as typed, tried once."""
+    request as typed, tried once. ``plan_date_kept`` refills the plan form's date,
+    ``offers_plan`` false leaves the plan form out, and ``open_plan`` opens a plan."""
     return reviewed_once(
         request,
         state,
@@ -1719,6 +1906,9 @@ def refused_on_the_page(
             problem_check=check,
             help_reply=help_reply,
             status_code=status_code,
+            plan_date_kept=plan_date_kept,
+            offers_plan=offers_plan,
+            open_plan=open_plan,
         ),
         problem,
         status_code,

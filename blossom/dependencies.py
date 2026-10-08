@@ -93,6 +93,10 @@ class ApplicationState:
     help_requests: HelpRequestsStore
     """Her requests for help and what a parent did with each, in the drafts file,
     kept until resolved and for two weeks after."""
+    real_clock: Clock
+    """The real clock, whatever day the household's is pinned to: the traces, her signals and
+    her requests are stamped and swept by it, and a page's forms carry the instant it issued
+    them, so a form's age is real time."""
     monotonic: Callable[[], float] = time.monotonic
     """The process's one monotonic clock: every run's time limit and the drafts
     store's deadline checks read it, so a test that moves it moves both."""
@@ -131,6 +135,7 @@ def build_application_state(
     settings: Settings,
     checkpointer: BaseCheckpointSaver[str],
     monotonic: Callable[[], float] = time.monotonic,
+    real_clock: Clock | None = None,
 ) -> ApplicationState:
     """Open the stores, and seed the record from a fixture when one is named and it is empty.
 
@@ -143,6 +148,7 @@ def build_application_state(
     every run's time limit is read from, the drafts store's included.
     """
     clock = clock_from(settings.today, settings.timezone_key)
+    real = SystemClock(clock.zone) if real_clock is None else real_clock
     fixture = None if settings.fixture_path is None else FixtureSource(settings.fixture_path)
     # A fixture is read only into a blank file, in one transaction with the
     # file's tables. A file with anything in it is the household's record,
@@ -177,17 +183,17 @@ def build_application_state(
         # Retention runs on the real clock even when the household clock is
         # pinned for the fixtures: a pinned clock would stamp every trace with
         # the same day and never move the cutoff, so nothing would age out.
-        traces = TraceStore.open(settings.trace_path, SystemClock(clock.zone))
+        traces = TraceStore.open(settings.trace_path, real)
         opened.append(traces)
         traces.sweep()
         # Her signals share the drafts file and, like the trace, are stamped and
         # swept by the real clock; which evening a signal is about comes from
         # the household clock when it is recorded.
-        signals = WorkloadSignalsStore.open(settings.database_path, SystemClock(clock.zone))
+        signals = WorkloadSignalsStore.open(settings.database_path, real)
         opened.append(signals)
         signals.sweep()
         # Her requests for help are stamped and swept the same way.
-        help_requests = HelpRequestsStore.open(settings.database_path, SystemClock(clock.zone))
+        help_requests = HelpRequestsStore.open(settings.database_path, real)
         opened.append(help_requests)
         help_requests.sweep()
     except Exception:
@@ -209,6 +215,7 @@ def build_application_state(
         tracer=LocalRunTracer(traces),
         workload_signals=signals,
         help_requests=help_requests,
+        real_clock=real,
         monotonic=monotonic,
     )
 
@@ -244,10 +251,13 @@ async def repeat(interval: float, tick: Callable[[], Awaitable[None]]) -> None:
 
 
 def create_lifespan(
-    settings: Settings, monotonic: Callable[[], float] = time.monotonic
+    settings: Settings,
+    monotonic: Callable[[], float] = time.monotonic,
+    real_clock: Clock | None = None,
 ) -> Lifespan:
     """Build the lifespan handler that owns application state for one process, its runs
-    timed on ``monotonic``."""
+    timed on ``monotonic`` and its real time read from ``real_clock``, the system's unless
+    given."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -274,7 +284,7 @@ def create_lifespan(
         claim = claim_household(settings.database_path, settings.checkpoint_path)
         try:
             async with open_checkpointer(settings.checkpoint_path) as checkpointer:
-                state = build_application_state(settings, checkpointer, monotonic)
+                state = build_application_state(settings, checkpointer, monotonic, real_clock)
                 sweeper: asyncio.Task[None] | None = None
                 try:
                     # A run the record holds as running belongs to a process that

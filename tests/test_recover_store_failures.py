@@ -49,11 +49,14 @@ from tests.support import (
     card_for,
     database_of,
     every_row,
+    family_plan,
     fixture_settings,
     form_fields,
+    fresh_plan_fields,
     hidden,
     household_client,
     main_of,
+    plan_form,
     planned,
     quiet_client,
     refusing,
@@ -745,12 +748,13 @@ def family_press(client: TestClient, case: str, reader: str) -> tuple[str, dict[
             {"basis": GONE_ID, "expected_check_id": "", "note": ""},
             "",
         )
+    # With no model the family page offers no plan button: each press is a fresh form.
     if case == "a plan date that is not a date":
-        return "/parent/actions/plan", {"plan_date": "someday"}, ""
+        return "/parent/actions/plan", fresh_plan_fields(client, plan_date="someday"), ""
     if case == "a plan date that has passed":
-        return "/parent/actions/plan", {"plan_date": "2026-08-18"}, ""
+        return "/parent/actions/plan", fresh_plan_fields(client, plan_date="2026-08-18"), ""
     if case == "a plan with no model":
-        return "/parent/actions/plan", {"plan_date": ""}, ""
+        return "/parent/actions/plan", fresh_plan_fields(client, plan_date=""), ""
     if case == "a decision no button makes":
         return "/parent/actions/decide/draft:none", {"decision": "sideways", "reason": TYPED}, ""
     if case == "a reason too long":
@@ -895,13 +899,16 @@ def test_her_plan_that_failed_on_the_way_is_said_without_her_week_when_it_cannot
     with browser(key=True) as client:
         walkthrough(client)
         monkeypatch.setattr(student_routes, "make_plan", refusing(sqlite3.OperationalError))
-        readable = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        readable = client.post(
+            "/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS
+        )
         before = every_row(database_of(client))
+        form = plan_form(client)
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
                 state_of(client).drafts, "latest_for", refusing(sqlite3.OperationalError, seen)
             )
-            answer = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+            answer = client.post("/student/actions/plan", data=form, headers=PAGE_HEADERS)
         monkeypatch.undo()
         after = every_row(database_of(client))
 
@@ -930,11 +937,13 @@ def test_her_plan_refused_before_a_run_keeps_its_status_without_her_week(
 ) -> None:
     with household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
+        # With no model her week offers no button: the press carries a fresh form.
+        form = fresh_plan_fields(client)
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
                 state_of(client).drafts, "latest_for", refusing(sqlite3.DatabaseError, seen)
             )
-            answer = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+            answer = client.post("/student/actions/plan", data=form, headers=PAGE_HEADERS)
         monkeypatch.undo()
 
     main = store_free_page(
@@ -957,13 +966,14 @@ def test_a_family_plan_that_failed_on_the_way_is_said_without_family_review(
         walkthrough(client)
         monkeypatch.setattr(parent_routes, "make_plan", refusing(sqlite3.OperationalError))
         before = every_row(database_of(client))
+        form = family_plan(client, "")
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
                 state_of(client).drafts,
                 "review_snapshot",
                 refusing(sqlite3.OperationalError, seen),
             )
-            answer = client.post("/parent/actions/plan", data={"plan_date": ""})
+            answer = client.post("/parent/actions/plan", data=form)
         monkeypatch.undo()
         after = every_row(database_of(client))
 

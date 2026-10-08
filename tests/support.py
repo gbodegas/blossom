@@ -87,7 +87,14 @@ from blossom.plan_reading import anchor_for
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.routes.navigation import assignment_anchor, details_href
-from blossom.routes.runs import PlanGraphs, make_plan, plan_graphs
+from blossom.routes.runs import (
+    ISSUED_AT,
+    RUN_ID,
+    PlanGraphs,
+    fresh_plan_form,
+    make_plan,
+    plan_graphs,
+)
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
     DEFAULT_EVENING_MINUTES,
@@ -1092,6 +1099,55 @@ def form_fields(html: str, action: str) -> dict[str, str]:
     return {name: unescape(value) for name, value in found}
 
 
+FAMILY_PLAN_ACTION = "/parent/actions/plan"
+HER_PLAN_ACTION = "/student/actions/plan"
+
+
+def plan_form(client: TestClient, page: str = HER_PAGE, **changed: str) -> dict[str, str]:
+    """The hidden fields of the plan form on ``page`` as it renders now, her week or the
+    family page, read the way a browser sends them back, with ``changed`` over them. Fails
+    when the page shows no plan button."""
+    action = FAMILY_PLAN_ACTION if page.startswith("/parent") else HER_PLAN_ACTION
+    shown = client.get(page, headers=PAGE_HEADERS)
+    assert f'action="{action}"' in shown.text, f"{page} shows no plan button"
+    return {**form_fields(shown.text, action), **changed}
+
+
+def fresh_plan_fields(client: TestClient, **changed: str) -> dict[str, str]:
+    """The fields a fresh page's plan form would carry for today, built from the state
+    without showing a page, for presses a test makes where no page offers the button."""
+    state = state_of(client)
+    fresh = fresh_plan_form(state, state.clock.today(), state.drafts.newest_published())
+    return {**fresh.fields(), **changed}
+
+
+def family_plan(client: TestClient, plan_date: str, **changed: str) -> dict[str, str]:
+    """The family page's plan form as it renders now, with ``plan_date`` chosen."""
+    return plan_form(client, "/parent", plan_date=plan_date, **changed)
+
+
+MINTED_FIELD = re.compile(rf'(<input type="hidden" name="(?:{RUN_ID}|{ISSUED_AT})" value=")[^"]*"')
+
+
+def without_minted_fields(html: str) -> str:
+    """``html`` with the id and issue time each render of a plan form mints left blank, so
+    two renders of the same state compare equal."""
+    return MINTED_FIELD.sub(r'\g<1>"', html)
+
+
+def runs_recorded(client: TestClient) -> list[tuple[str, str, str]]:
+    """Every run the drafts file records, oldest first: its id, evening and status, read
+    through a connection of its own."""
+    connection = sqlite3.connect(state_of(client).settings.database_path)
+    try:
+        rows = connection.execute(
+            "SELECT thread_id, plan_date, status FROM runs ORDER BY rowid"
+        ).fetchall()
+    finally:
+        connection.close()
+    return [(str(run), str(evening), str(status)) for run, evening, status in rows]
+
+
 def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:
     """Send her update from the card as it stands on the week ``week`` names, the fixture
     week unless it names another, and return the address it goes back to."""
@@ -1540,7 +1596,7 @@ def walkthrough(client: TestClient) -> str:
 
 def planned(client: TestClient) -> DraftRecord:
     """Make today's plan from her page and return its record."""
-    made = client.post("/student/actions/plan")
+    made = client.post("/student/actions/plan", data=plan_form(client))
     assert made.status_code == 303, made.text[:300]
     record = state_of(client).drafts.latest_for(PLAN_DATE)
     assert record is not None

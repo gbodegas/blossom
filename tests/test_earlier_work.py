@@ -65,8 +65,10 @@ from tests.support import (
     fixture_clock,
     fixture_settings,
     form_fields,
+    fresh_plan_fields,
     human_text,
     plan_block,
+    plan_form,
     record,
     report,
     save,
@@ -494,7 +496,7 @@ def test_chosen_catch_up_work_makes_a_valid_plan_with_its_date_kept() -> None:
     briefs: list[Scripted[DailyPlan]] = []
     with household(OCT_2, OCT_3, plans=[two_tonight()], briefs=briefs) as client:
         choose(client, OCT_2.assignment_id)
-        made = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        made = client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         shown = page(client)
         saved = state_of(client).drafts.latest_for(TODAY)
         due_now = next(
@@ -517,7 +519,7 @@ def test_chosen_catch_up_work_makes_a_valid_plan_with_its_date_kept() -> None:
 def test_a_plan_that_puts_off_chosen_work_says_so_and_what_she_can_do() -> None:
     with household(OCT_2, OCT_3, plans=[one_put_off()]) as client:
         choose(client, OCT_2.assignment_id)
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         shown = page(client)
         saved = state_of(client).drafts.latest_for(TODAY)
 
@@ -534,7 +536,7 @@ def only_tonight() -> DailyPlan:
 
 def test_choosing_after_a_plan_was_made_says_to_plan_again() -> None:
     with household(OCT_2, OCT_3, plans=[only_tonight()]) as client:
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         choose(client, OCT_2.assignment_id)
         shown = page(client)
 
@@ -807,7 +809,7 @@ def test_the_fingerprint_has_a_namespace_of_its_own_for_catch_up_work() -> None:
 
 def test_a_plan_waiting_from_before_catch_up_work_reads_as_changed_once() -> None:
     with household(OCT_2, OCT_3, plans=[only_tonight(), only_tonight()]) as client:
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         made = state_of(client).drafts.latest_for(TODAY)
         assert made is not None
         store = store_of(client)
@@ -822,7 +824,7 @@ def test_a_plan_waiting_from_before_catch_up_work_reads_as_changed_once() -> Non
             drafts, "UPDATE drafts SET inputs_digest=? WHERE draft_id=?", (before, made.draft_id)
         )
         behind = client.get("/parent", headers=PAGE_HEADERS).text
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         again = client.get("/parent", headers=PAGE_HEADERS).text
 
     assert week.catch_up == frozenset()
@@ -1193,7 +1195,7 @@ def test_removing_work_todays_plan_schedules_says_the_plan_still_has_it_until_sh
 ) -> None:
     with household(OCT_2, OCT_3, plans=[two_tonight(), only_tonight()]) as client:
         choose(client, OCT_2.assignment_id)
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         decided(client, decision)
         published = state_of(client).drafts.latest_for(TODAY)
         shown = page(client)
@@ -1205,7 +1207,9 @@ def test_removing_work_todays_plan_schedules_says_the_plan_still_has_it_until_sh
         removed_twice = client.get(again.headers["location"], headers=PAGE_HEADERS).text
         assert published is not None
         kept = state_of(client).drafts.get(published.draft_id)
-        replanned = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        replanned = client.post(
+            "/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS
+        )
         fresh = page(client)
         latest = state_of(client).drafts.latest_for(TODAY)
         due_now = next(
@@ -1244,7 +1248,7 @@ def test_removing_work_todays_plan_puts_off_keeps_the_reason_and_says_the_next_p
 ):
     with household(OCT_2, OCT_3, plans=[one_put_off()]) as client:
         choose(client, OCT_2.assignment_id)
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         removed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
 
     listed = words(item_of(removed, OCT_2.assignment_id))
@@ -1260,7 +1264,7 @@ def test_a_plan_whose_rows_cannot_be_read_names_no_place_for_earlier_work(
 ) -> None:
     with household(OCT_2, OCT_3, plans=[one_put_off()]) as client:
         choose(client, OCT_2.assignment_id)
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         drafts = state_of(client).drafts
         saved = drafts.latest_for(TODAY)
         assert saved is not None
@@ -1310,7 +1314,10 @@ def test_a_parent_reads_what_todays_plan_still_holds_and_updates_that_cannot_be_
         spoil(store, "student_reports", "status", "finished", BOTH_PAST.assignment_id)
         signed_in(client, HERS)
         choose(client, OCT_2.assignment_id)
-        made = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        # These settings name no key, so her week offers no button; the press is a fresh form.
+        made = client.post(
+            "/student/actions/plan", data=fresh_plan_fields(client), headers=PAGE_HEADERS
+        )
         if not readable:
             drafts = state_of(client).drafts
             changed_by_hand(drafts, "UPDATE drafts SET plan_snapshot = NULL")
@@ -1409,7 +1416,7 @@ def test_old_work_todays_plan_still_holds_shows_above_the_fold_after_she_takes_i
     plan = DailyPlan(plan_date=TODAY, blocks=[plan_block(old.assignment_id, "16:30", "17:00")])
     with household(old, older, plans=[plan]) as client:
         choose(client, old.assignment_id)
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         choose(client, old.assignment_id)
         fresh = page(client)
 
@@ -1423,7 +1430,7 @@ def test_work_chosen_yesterday_that_todays_plan_still_holds_is_not_offered_again
     with household(OCT_2, OCT_3, plans=[two_tonight()]) as client:
         store_of(client).choose_catch_up(OCT_2.assignment_id, days_ago(1), include=True)
         choose(client, OCT_2.assignment_id)
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         removed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
 
     listed = words(item_of(removed, OCT_2.assignment_id))
@@ -1434,7 +1441,7 @@ def test_work_chosen_yesterday_that_todays_plan_still_holds_is_not_offered_again
 
 def test_including_after_a_plan_was_made_says_it_was_added_to_her_choices() -> None:
     with household(OCT_2, OCT_3, plans=[only_tonight()]) as client:
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         landed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
 
     listed = words(item_of(landed, OCT_2.assignment_id))
@@ -1466,7 +1473,7 @@ def test_a_reason_the_plan_gives_ends_its_sentence_before_the_next_one(
     )
     with household(OCT_2, OCT_3, plans=[put_off]) as client:
         choose(client, OCT_2.assignment_id)
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         chosen = page(client)
         removed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
 
@@ -1512,9 +1519,9 @@ def test_earlier_work_and_a_passed_date_still_held_to_a_later_one_are_planned_wi
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
             lambda: next(plans), lambda: [accepting()] * 3, planners=briefs
         )
-        before = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        before = client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         choose(client, OCT_2.assignment_id)
-        after = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        after = client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         ended = state_of(client).drafts.runs_without_a_draft()
         saved = state_of(client).drafts.latest_for(TODAY)
 
@@ -1545,7 +1552,7 @@ def test_the_critic_is_told_chosen_work_is_her_choice_and_nothing_more() -> None
             lambda: [tonight_with_the_lab_put_off(OCT_2)], lambda: [accepting()], critics=critics
         )
         choose(client, OCT_2.assignment_id)
-        made = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        made = client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
 
     assert made.status_code == 303, made.text
     assert [critic.calls for critic in critics] == [1]
@@ -1586,7 +1593,7 @@ def test_undated_work_whose_only_school_date_passed_ends_the_press_before_any_mo
             ONLY_PAST.assignment_id, [record(SourceChannel.LMS, "2026-10-01")]
         )
         shown = page(client)
-        answer = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        answer = client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         ended = state_of(client).drafts.runs_without_a_draft()
 
     assert section(shown) == "" or ONLY_PAST.assignment_id not in section(shown)

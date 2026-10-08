@@ -1134,8 +1134,8 @@ def with_plans(client: TestClient, count: int) -> None:
 @pytest.mark.parametrize("page", [HER_PAGE, "/parent"])
 def test_current_facts_add_no_statement_at_any_size(page: str, tmp_path: pathlib.Path) -> None:
     """The same statements at every size. Each call to the drafts store sets the file's busy
-    timeout before its one read: two calls on her page, today's plan and the household's
-    newest run, and three on the family page."""
+    timeout before its one read: three calls on her page, the newest published plan, today's
+    plan and the household's newest run, and three on the family page."""
     costs = []
     for count in (1, 20, 200):
         folder = tmp_path / str(count)
@@ -1156,8 +1156,7 @@ def test_current_facts_add_no_statement_at_any_size(page: str, tmp_path: pathlib
         assert sum("FROM date_claims" in statement for statement in on_record) == 1
         costs.append((len(on_record), [statement.split()[0] for statement in on_drafts]))
 
-    calls = 2 if page == HER_PAGE else 3
-    assert costs == [(11, ["PRAGMA", "SELECT"] * calls)] * 3
+    assert costs == [(11, ["PRAGMA", "SELECT"] * 3)] * 3
 
 
 @pytest.mark.parametrize("page", [HER_PAGE, "/parent"])

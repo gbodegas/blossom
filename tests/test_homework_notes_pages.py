@@ -61,6 +61,7 @@ from tests.support import (
     form_fields,
     help_reply,
     help_row,
+    plan_form,
     report,
     scripted_graphs,
     signed_in_household,
@@ -888,7 +889,7 @@ def test_no_word_of_a_note_reaches_a_planner_or_a_critic_and_no_plan_goes_stale(
         name = save_note(client, "ZEBRA-WORDS about the canal essay", course="ZEBRA-CLASS")
         ask_about(client, name, "ZEBRA-QUESTION")
 
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         waiting = state_of(client).drafts.latest_for(PLAN_DATE)
         change_note(client, name, "edit", text="ZEBRA-LATER", course="", due_date="")
         change_note(client, name, "archive")

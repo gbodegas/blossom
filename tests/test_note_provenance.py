@@ -36,6 +36,7 @@ from tests.support import (
     browser,
     changed_by_hand,
     fixture_week_plan,
+    plan_form,
     scripted_graphs,
     state_of,
 )
@@ -197,7 +198,7 @@ def test_a_plan_that_was_waiting_under_the_shape_before_reads_as_changed_and_ask
             critics=critics,
         )
         state = state_of(client)
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         waiting = state.drafts.latest_for(PLAN_DATE)
         assert waiting is not None
         fresh = [

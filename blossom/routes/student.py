@@ -157,6 +157,7 @@ from blossom.routes.runs import (
     CHECK_ON_THAT_REQUEST,
     COULD_NOT_START,
     PLAN_ANSWERS,
+    PLAN_FORM_FIELDS,
     RUN_STATUS_ANSWERS,
     UNCONFIRMED,
     AlreadyPlanning,
@@ -165,16 +166,23 @@ from blossom.routes.runs import (
     NotSaved,
     RunCheck,
     RunNotice,
+    SameRun,
     Unconfirmed,
     already_planning,
+    being_made,
     ended_without_a_plan,
+    evening_named,
+    fresh_plan_form,
     graph_for_a_run,
     make_plan,
     not_saved,
+    plan_form_from,
     require_model,
     require_work,
     run_check,
     run_notice,
+    run_of_the_form,
+    run_replaced,
     run_status_view,
     saved_sentence,
 )
@@ -188,6 +196,9 @@ from blossom.stores.drafts import (
     SETTLE_GRACE_SECONDS,
     STORE_WAIT_SECONDS,
     DraftRecord,
+    RunState,
+    StaleBasis,
+    UnknownBasis,
 )
 from blossom.stores.help_requests import (
     HELP_RECENT_DAYS,
@@ -442,6 +453,9 @@ class PlanFailure:
     checks: tuple[tuple[str, str], ...] = ()
     run: RunCheck | None = None
     try_again: bool = True
+    uncertain: bool = False
+    """Whether the run may still publish: the page then offers only the check, and no plan
+    button that could start another run."""
 
 
 UPDATE_NOT_SAVED: Final = "Update not saved"
@@ -522,7 +536,32 @@ REPORT_FIELDS: Final = (
 UNDO_FIELDS: Final = frozenset({"report_id", "week", IN_PLACE}) | FROM_DETAILS
 """The fields each form sends, each once. Anything else, anything twice, or a form with one
 of them left out, is refused."""
-PLAN_FIELDS: Final = frozenset({IN_PLACE})
+PLAN_FIELDS: Final = frozenset({IN_PLACE, *PLAN_FORM_FIELDS})
+PLAN_LABEL_MARK: Final = "{plan label}"
+"""Where a refusal of a plan press names the plan button: the page puts the button's own
+words there, Plan today, Plan again or Make a smaller plan."""
+NEWER_PLAN_SHOWN: Final = (
+    "A newer plan for today was made after this page was opened, so this press didn't start "
+    f"another one. It is shown below. To ask for a new plan, press {PLAN_LABEL_MARK} again."
+)
+PLAN_FORM_NOT_WHOLE: Final = (
+    "This plan button came from an incomplete or outdated page, so no plan was started. "
+    f"To start one, press {PLAN_LABEL_MARK} below."
+)
+PLAN_FORM_EXPIRED: Final = (
+    "This plan button is from a page opened more than a week ago, so nothing new was "
+    f"started. To plan today, press {PLAN_LABEL_MARK} below."
+)
+
+
+def plan_form_for_another_evening(evening: date) -> str:
+    """Why a plan press for an evening that isn't today starts nothing, naming that evening."""
+    return (
+        f"This plan button is from the page for {evening_named(evening)}, so nothing new was "
+        f"started. To plan today, press {PLAN_LABEL_MARK} below."
+    )
+
+
 """What the plan button's form sends: only the cards the visit keeps in place, when it keeps
 any. Planning reads none of it; it decides only where the page it returns to shows cards."""
 FROM_A_CARD: Final = FROM_DETAILS | {IN_PLACE}
@@ -2075,6 +2114,9 @@ def student_page(
     only_shown = card is not None and card == CardState(card.assignment_id)
     card = as_read_by(card, viewer)
     today = state.clock.today() if today is None else today
+    # The newest plan the plan button knows is read before the plan the page shows, so a
+    # plan published between the two reads makes the press stale, never the reverse.
+    newest = state.drafts.newest_published()
     # The record is read once for the page, with today's plan's assignments
     # named to it: the week, the planning window, the plan's notice and
     # marks, and whether the plan still fits all come out of that reading.
@@ -2197,6 +2239,12 @@ def student_page(
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "pressed": pressed,
             "plan_failure": plan_failure,
+            # A fresh form for every page, except one that answers a run that may still
+            # publish, which offers only the check.
+            "plan_form": None
+            if plan_failure is not None and plan_failure.uncertain
+            else fresh_plan_form(state, today, newest).fields(),
+            "plan_label_mark": PLAN_LABEL_MARK,
             "run_notice": run_notice,
             "signal_removed": signal_removed and viewer != "parent",
             "in_place_said": kept.said(),
@@ -3650,18 +3698,28 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     the page that reads no store says so, with the same status.
 
     A press stays in the visit: the cards the visit keeps in place, which the form carries,
-    stay where they were on the page that answers it, a plan made or not. A form that is
-    not whole keeps none, and plans all the same.
+    stay where they were on the page that answers it, a plan made or not. A form with a
+    field sent twice or one no page writes keeps none.
+
+    Each form plans once. Its id names its run, and a form whose run is recorded starts
+    nothing and is answered by that run: being made, its plan, a newer plan, or why it
+    ended. A form that is missing a field, or holds one of another shape, is from another
+    evening, or was issued seven days ago or more, starts nothing, and neither does one
+    whose page didn't know the evening's newest plan, which is then shown.
     """
     fields, whole = await fields_of(request, PLAN_FIELDS, may_be_absent=PLAN_FIELDS)
     budget = graphs.budget()
     kept = InPlace.read(fields.get(IN_PLACE)) if whole else InPlace()
     parent = parent_reads(request)
+    today = state.clock.today()
+    now = state.real_clock.now()
 
     async def not_made(problem: str, code: int, failure: PlanFailure | None = None) -> HTMLResponse:
         # Her page is read on a worker thread, for at most the store's wait; past it,
         # the page that reads no store says the same.
-        fallback = week_not_shown(request, PLAN_NOT_MADE, problem)
+        fallback = week_not_shown(
+            request, PLAN_NOT_MADE, problem.replace(PLAN_LABEL_MARK, "the plan button")
+        )
 
         def page() -> HTMLResponse:
             return shown_once(
@@ -3685,10 +3743,61 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         except Unfinished:
             return not_shown(request, state, fallback, code)
 
+    async def repeated(run: RunState) -> Response:
+        # A form whose run is recorded is answered by that run as it stands.
+        if run.plan_date != today:
+            return await not_made(plan_form_for_another_evening(run.plan_date), 409)
+        if run.status == "running":
+            notice = being_made(run, PAGE)
+            return await not_made(
+                notice.said,
+                status.HTTP_202_ACCEPTED,
+                PlanFailure(run=notice.check, try_again=False, uncertain=True),
+            )
+        try:
+            replaced = await bounded(partial(run_replaced, state, run), STORE_WAIT_SECONDS)
+        except Exception:
+            logger.exception("the plans after run %s could not be read", run.run_id)
+            replaced = False
+        if replaced:
+            return await not_made(NEWER_PLAN_SHOWN, status.HTTP_409_CONFLICT)
+        if run.status == "published":
+            return sent_in_place(f"{PAGE}?show_plan=1", kept)
+        return await not_made(
+            ended_without_a_plan(run.reason, parent=parent),
+            status.HTTP_409_CONFLICT,
+            None
+            if run.reason == NOTHING_TO_SCHEDULE_OUTCOME
+            else PlanFailure(try_again=run.reason != DATE_PROBLEM),
+        )
+
+    form = plan_form_from(fields, now) if whole else None
+    if form is None:
+        return await not_made(PLAN_FORM_NOT_WHOLE, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    found = await run_of_the_form(state, form.run_id)
+    if found is not None:
+        return await repeated(found)
+    if form.evening != today:
+        return await not_made(plan_form_for_another_evening(form.evening), 409)
+    if form.expired(now):
+        return await not_made(PLAN_FORM_EXPIRED, status.HTTP_409_CONFLICT)
     try:
-        await require_work(state, state.clock.today(), budget)
+        await require_work(state, today, budget)
         require_model(graphs)
-        made = await make_plan(graph_for_a_run(graphs), state.clock.today(), state, budget=budget)
+        made = await make_plan(
+            graph_for_a_run(graphs),
+            today,
+            state,
+            budget=budget,
+            run_id=form.run_id,
+            basis=form.newest_plan,
+        )
+    except SameRun as same:
+        return await repeated(same.run)
+    except StaleBasis:
+        return await not_made(NEWER_PLAN_SHOWN, status.HTTP_409_CONFLICT)
+    except UnknownBasis:
+        return await not_made(PLAN_FORM_NOT_WHOLE, status.HTTP_422_UNPROCESSABLE_CONTENT)
     except AlreadyPlanning as error:
         return await not_made(
             already_planning(error.run, parent=parent),
@@ -3707,7 +3816,11 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return await not_made(
             f"{UNCONFIRMED} {saved_sentence(parent=parent)}",
             status.HTTP_202_ACCEPTED,
-            PlanFailure(run=run_check(PAGE, unconfirmed.run_id, CHECK_AGAIN), try_again=False),
+            PlanFailure(
+                run=run_check(PAGE, unconfirmed.run_id, CHECK_AGAIN),
+                try_again=False,
+                uncertain=True,
+            ),
         )
     except HTTPException as error:
         return await not_made(f"Blossom could not make a plan: {error.detail}", error.status_code)

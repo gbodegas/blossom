@@ -52,6 +52,7 @@ from tests.support import (
     fixture_clock,
     form_fields,
     hidden,
+    plan_form,
     practice_store,
     refusing,
     report,
@@ -762,7 +763,9 @@ def planned(read: Read) -> Callable[..., Coroutine[object, object, NoReturn]]:
 def her_plan(client: TestClient, patch: pytest.MonkeyPatch, read: Read) -> Callable[[], object]:
     updated(client)
     patch.setattr(student_routes, "make_plan", planned(read))
-    return lambda: client.post("/student/actions/plan", headers=PAGE_HEADERS)
+    return lambda: client.post(
+        "/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS
+    )
 
 
 def the_familys_plan(

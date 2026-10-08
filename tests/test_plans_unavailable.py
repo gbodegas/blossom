@@ -48,6 +48,7 @@ from tests.support import (
     drafts_in_memory,
     files_in,
     fixture_settings,
+    fresh_plan_fields,
     main_of,
     plan_on,
     planned,
@@ -654,9 +655,11 @@ def test_a_refused_post_that_shows_a_page_again_keeps_its_status_when_the_record
     with TestClient(
         app, headers=SAME_ORIGIN, raise_server_exceptions=False, follow_redirects=False
     ) as client:
+        # These settings name no key, so her week offers no button: a fresh form is sent.
+        form = fresh_plan_fields(client)
         monkeypatch.setattr(student_routes, "read_everything", failing)
         monkeypatch.setattr(parent_routes, "read_everything", failing)
-        hers = client.post("/student/actions/plan")
+        hers = client.post("/student/actions/plan", data=form)
         theirs = client.post("/parent/actions/decide/draft:any", data={"decision": "sideways"})
 
     assert (hers.status_code, theirs.status_code) == (503, 422)

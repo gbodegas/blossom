@@ -55,6 +55,7 @@ from fastapi import FastAPI
 
 from blossom import dependencies
 from blossom import settings as settings_module
+from blossom.clock import Clock
 from blossom.dependencies import Lifespan
 from blossom.settings import (
     CHECKPOINT_PATH_VARIABLE,
@@ -225,9 +226,11 @@ class StateGuard:
             return safe
 
         def create_lifespan(
-            settings: Settings, monotonic: Callable[[], float] = time.monotonic
+            settings: Settings,
+            monotonic: Callable[[], float] = time.monotonic,
+            real_clock: Clock | None = None,
         ) -> Lifespan:
-            starts = lifespan_for(settings, monotonic)
+            starts = lifespan_for(settings, monotonic, real_clock)
 
             @asynccontextmanager
             async def lifespan(app: FastAPI) -> AsyncIterator[None]:

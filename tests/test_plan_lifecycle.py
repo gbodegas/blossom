@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from html import unescape
 from typing import Any, Final
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -94,6 +95,7 @@ from tests.support import (
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
+    fresh_plan_fields,
     human_text,
     light_fixture_plan,
     model_graphs,
@@ -1155,8 +1157,11 @@ def test_a_planning_press_that_fails_renders_its_page_off_the_event_loop(
     )
     settings = fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **files_in(tmp_path))
     with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
-        refused = client.post("/parent/actions/plan", data={"plan_date": "someday"})
-        not_made = client.post("/student/actions/plan", data={})
+        # With no model neither page offers a button, and showing one would count a render.
+        refused = client.post(
+            "/parent/actions/plan", data=fresh_plan_fields(client, plan_date="someday")
+        )
+        not_made = client.post("/student/actions/plan", data=fresh_plan_fields(client))
 
     assert refused.status_code == 422
     assert "is not a date" in refused.text
@@ -2044,9 +2049,10 @@ async def pressed_then_gone(
     app: Any,  # noqa: ANN401
     path: str,
     headers: list[tuple[bytes, bytes]],
+    body: bytes,
 ) -> list[dict[str, Any]]:
-    """Send a plan press to ``app`` through its middleware as a server would, and report the
-    connection closed as soon as the form has been read; what the app sent back."""
+    """Send a plan press with ``body`` to ``app`` through its middleware as a server would,
+    and report the connection closed as soon as the form has been read; what it sent back."""
     sent: list[dict[str, Any]] = []
     delivered = False
 
@@ -2054,7 +2060,7 @@ async def pressed_then_gone(
         nonlocal delivered
         if not delivered:
             delivered = True
-            return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.request", "body": body, "more_body": False}
         return {"type": "http.disconnect"}
 
     async def send(message: dict[str, Any]) -> None:
@@ -2098,17 +2104,19 @@ def test_a_press_whose_connection_closes_after_the_form_still_publishes(
     with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         if signed:
             signed_in(client, HERS)
+        # These settings name no key, so her week offers no button: a fresh form is sent.
+        body = urlencode(fresh_plan_fields(client)).encode()
         headers = [
             (b"host", b"testserver"),
             (b"origin", ORIGIN.encode()),
             (b"content-type", b"application/x-www-form-urlencoded"),
-            (b"content-length", b"0"),
+            (b"content-length", str(len(body)).encode()),
         ]
         cookies = "; ".join(f"{name}={value}" for name, value in client.cookies.items())
         if cookies:
             headers.append((b"cookie", cookies.encode()))
         assert client.portal is not None
-        sent = client.portal.call(pressed_then_gone, app, "/student/actions/plan", headers)
+        sent = client.portal.call(pressed_then_gone, app, "/student/actions/plan", headers, body)
         state = state_of(client)
         latest = state.drafts.latest_run()
         plan = state.drafts.latest_for(PLAN_DATE)
@@ -2905,7 +2913,8 @@ def test_an_evening_with_a_date_problem_ends_at_its_first_step_and_asks_no_model
             PAST_SCHOOL_DATE.assignment_id, [record(SourceChannel.LMS, "2026-08-18")]
         )
         if route == "/student/actions/plan":
-            answer = client.post(route, headers=PAGE_HEADERS)
+            # These settings name no key, so her week offers no button: a fresh form is sent.
+            answer = client.post(route, data=fresh_plan_fields(client), headers=PAGE_HEADERS)
         else:
             answer = client.post(route, json={})
         run = state.drafts.latest_run()

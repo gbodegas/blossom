@@ -86,6 +86,7 @@ from tests.support import (
     browser,
     fixture_week_plan,
     form_fields,
+    plan_form,
     scripted_graphs,
     signed_in_household,
     state_of,
@@ -2001,7 +2002,7 @@ def test_the_planner_is_told_the_note_about_the_work_as_hers_and_never_her_notes
         unfinished = save_note(client, "ZEBRA-WAITING still only a note")
         form = {**opened(client, name), **typed(due_date="2026-08-21", note="Show the working.")}
         assert add(client, name, form).status_code == 303
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         assert unfinished
 
     sent = " ".join(
