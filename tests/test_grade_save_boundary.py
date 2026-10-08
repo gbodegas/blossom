@@ -5,7 +5,8 @@
 A caller that holds the store's writer, writes, saves a report and catches the save's refusal
 keeps its own work and none of the save: every write statement of a save is refused in turn,
 the release of the save's savepoint as well, and the file is compared whole after each. The
-same holds for the class-details action and a first month's correction, and G-I20 runs every
+same holds for the class-details action, a first month's correction and a class and term's
+delete, and G-I20 runs every
 write's statements in one loop. When SQLite itself ends the caller's transaction, everything in
 it is gone, and the save says so with an error that is not a refusal, so no caller commits the
 rest of its block alone.
@@ -30,11 +31,19 @@ from blossom.grades.review import (
 )
 from blossom.grades.text_reader import read_grade_report
 from blossom.stores import gradebook
-from blossom.stores.gradebook import FirstMonthCorrected, FirstMonthStood, GradeReportNotSaved
+from blossom.stores.gradebook import (
+    AlreadyDeleted,
+    ClassTermDeleted,
+    DeletePreview,
+    FirstMonthCorrected,
+    FirstMonthStood,
+    GradeReportNotSaved,
+)
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
     FIXTURES,
     a_row,
+    capture_class,
     closed_world,
     confirm_current,
     current_preview,
@@ -391,6 +400,10 @@ def test_every_grade_write_happens_inside_the_saves_one_savepoint(
     with store.comparing_and_writing():
         assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
         corrected = store.correct_first_month(YEAR, shown=8, month=9, role="parent")
+        class_id = capture_class(store, WREN)
+        held = store.delete_preview(class_id, "T1")
+        assert isinstance(held, DeletePreview)
+        removed = store.delete_class_term(class_id, "T1", revision=held.revision, role="parent")
     store._connection.set_trace_callback(None)
 
     statements = [" ".join(text.split()).upper() for text in ran]
@@ -405,10 +418,12 @@ def test_every_grade_write_happens_inside_the_saves_one_savepoint(
             written.append(depth > 0)
     ending = ("BEGIN", "COMMIT", "END")
     assert corrected == FirstMonthCorrected(YEAR, 9)
-    assert statements.count("SAVEPOINT GRADE_SAVE") >= 2
+    assert isinstance(removed, ClassTermDeleted)
+    assert statements.count("SAVEPOINT GRADE_SAVE") >= 3
     assert depth == 0
     assert not [text for text in inside if text.startswith(ending) or text == "ROLLBACK"]
     assert [text for text in inside if text.startswith("UPDATE GRADE_YEARS")]
+    assert [text for text in inside if text.startswith("DELETE FROM GRADE_REPORTS")]
     assert written
     assert all(written)
 
@@ -925,6 +940,78 @@ def test_a_refused_first_month_correction_leaves_nothing_of_it(
     assert again() == FirstMonthStood(YEAR, 9)
 
 
+DELETE: tuple[Site, ...] = (
+    (sqlite3.SQLITE_DELETE, "grade_match_decisions"),
+    (sqlite3.SQLITE_DELETE, "grade_term_observations"),
+    (sqlite3.SQLITE_DELETE, "grade_category_observations"),
+    (sqlite3.SQLITE_DELETE, "grade_result_observations"),
+    (sqlite3.SQLITE_DELETE, "grade_acceptances"),
+    (sqlite3.SQLITE_DELETE, "grade_current_actions"),
+    (sqlite3.SQLITE_DELETE, "grade_reports"),
+    (sqlite3.SQLITE_DELETE, "grade_results"),
+    (sqlite3.SQLITE_INSERT, "grade_scope_revisions"),
+    UPSERT_ARM,
+)
+"""Every write statement of a class and term's delete: one per scoped table, children first,
+and the revision's upsert, both arms."""
+
+
+def class_and_term_delete(store: ProjectStateStore) -> Callable[[], object]:
+    """Wren's first term holding a report, a newer capture and a class-details action: the
+    confirmation of deleting it, ready to send."""
+    assert isinstance(confirm_current(store, WREN, action_preview(store)), MadeCurrent)
+    class_id = capture_class(store, WREN)
+    held = store.delete_preview(class_id, "T1")
+    assert isinstance(held, DeletePreview)
+    return lambda: store.delete_class_term(class_id, "T1", revision=held.revision, role="parent")
+
+
+def test_a_delete_writes_exactly_the_named_statements(
+    opened: Callable[[str], ProjectStateStore],
+) -> None:
+    store = opened("first use")
+    delete = class_and_term_delete(store)
+    seen: set[Site] = set()
+
+    def note(action: int, table: str | None, *_: object) -> int:
+        if action in WRITES and table is not None:
+            seen.add((action, table))
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(note)
+    outcome = delete()
+    store._connection.set_authorizer(None)
+
+    assert isinstance(outcome, ClassTermDeleted)
+    assert seen == set(DELETE)
+
+
+def test_a_refused_delete_leaves_nothing_of_it(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path
+) -> None:
+    """Refused at its last delete three times inside a caller's transaction, the delete leaves
+    the file as it was, with the caller's writes kept; lifted, the same confirmation deletes
+    once, and sent again it answers already deleted."""
+    store = opened("first use")
+    delete = class_and_term_delete(store)
+    before, rows = world(path), assignments(store)
+
+    for attempt in range(3):
+        store._connection.set_authorizer(refusing((sqlite3.SQLITE_DELETE, "grade_results")))
+        with store.comparing_and_writing():
+            unrelated(store, f"before-{attempt}")
+            with pytest.raises(GradeReportNotSaved, match="class and term could not be deleted"):
+                delete()
+            unrelated(store, f"after-{attempt}")
+        store._connection.set_authorizer(None)
+
+        assert not store._connection.in_transaction
+        assert world(path) == before
+        assert assignments(store) == rows + 2 * (attempt + 1)
+    assert isinstance(delete(), ClassTermDeleted)
+    assert isinstance(delete(), AlreadyDeleted)
+
+
 Write = Callable[[ProjectStateStore], Callable[[], object]]
 """A grade write's setup on a fresh file: the write, ready to send, and to send again."""
 
@@ -987,6 +1074,7 @@ EVERY_WRITE: dict[str, tuple[Write, tuple[Site, ...], type]] = {
     },
     "the class-details action": (class_details_action, ACTION, MadeCurrent),
     "a first-month correction": (first_month_correction, FIRST_MONTH, FirstMonthCorrected),
+    "a class and term's delete": (class_and_term_delete, DELETE, ClassTermDeleted),
 }
 """Every kind of grade write, with each write statement it makes and what it returns lifted."""
 
