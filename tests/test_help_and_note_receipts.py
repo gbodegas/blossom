@@ -125,14 +125,17 @@ CASES: Final = (
     "the file refused",
     "a row unreadable",
 )
-FAILED: Final = ("the file refused", "a row unreadable")
+FAILED: Final = ("the file refused",)
+SET_APART: Final = ("a row unreadable",)
+"""Every request's row damaged: no failed read, both requests set apart and counted."""
+TWO_SET_APART: Final = "2 requests for help can't be read right now."
 
 
 def her_line(marker: str, case: str) -> str:
     """What Help says to her about the address."""
     if case in FAILED:
         return CANNOT_CHECK
-    if case in ("a well-formed id not on the page", "a malformed id"):
+    if case in ("a well-formed id not on the page", "a malformed id", *SET_APART):
         return NOT_ON_THIS_PAGE
     return SENT if marker == "asked" and case == "waiting" else ALREADY_SENT
 
@@ -197,7 +200,8 @@ def test_helps_line_for_an_address_is_said_to_her_and_never_to_a_parent(
     assert answer.status_code == 200
     assert no_autofocus(answer.text)
     page = main_of(answer.text)
-    if case in FAILED:
+    assert (TWO_SET_APART in words(help_part(page))) is (case in SET_APART)
+    if case in FAILED or case in SET_APART:
         assert 'class="help-request"' not in page
     else:
         assert WAITING in words(help_row(page, other))

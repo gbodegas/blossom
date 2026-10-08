@@ -197,6 +197,7 @@ from blossom.stores.help_requests import (
     HelpFormChanged,
     HelpFormUsed,
     HelpHeld,
+    HelpListed,
     HelpRequest,
     NotARequestId,
     RequestClosed,
@@ -395,6 +396,15 @@ ALREADY_CLOSED: Final = (
     "This request is already closed, so it cannot be taken back. Nothing was changed."
 )
 NOT_HERE_ANY_MORE: Final = "That request is not here any more; nothing was changed."
+REQUEST_UNREADABLE: Final = "This request for help can't be read right now, so nothing was changed."
+"""What a move on a request the store can't read says, on either page and in JSON: the move
+read the row, refused it, and wrote nothing."""
+ASK_ANEW: Final = "If you still need help, you can send a new request."
+"""What her week adds, beside her ask form, to the line counting requests that can't be read:
+her form keeps a new request under a fresh id and leaves those rows as they are."""
+UNREADABLE_COUNT: Final = "Help-Requests-Unreadable"
+"""The header each JSON list of her requests sends: how many kept requests it set apart
+because they can't be read, 0 when none."""
 FORM_SENT_OTHER_WORDS: Final = (
     "This form already sent a request with other words, so these weren't sent. Ask again "
     "to send them as a new request."
@@ -782,12 +792,22 @@ def help_view(
     )
 
 
-def help_requests_shown(state: ApplicationState) -> list[HelpRequestView]:
-    """Her requests as the JSON route lists them: open ones oldest first, then those resolved
+def help_requests_shown(state: ApplicationState, listed: HelpListed) -> list[HelpRequestView]:
+    """Her requests as the JSON routes list them: open ones oldest first, then those resolved
     within two weeks, with the notes they name read once for all of them."""
-    requests = [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
+    requests = listed.every()
     about = notes_named_by(state, requests)
     return [help_view(state, request, about) for request in requests]
+
+
+def set_apart(count: int, *, hers: bool = False) -> str | None:
+    """What a help list says of the requests it set apart because they can't be read, or
+    ``None`` when it set none apart: how many, and nothing they hold. Beside her own ask
+    form, ``hers``, it adds that she can send a new request."""
+    if not count:
+        return None
+    said = f"{count} request{'' if count == 1 else 's'} for help can't be read right now."
+    return f"{said} {ASK_ANEW}" if hers else said
 
 
 @dataclass(frozen=True)
@@ -799,6 +819,8 @@ class HelpGroups:
     open: list[HelpRequest]
     recent: list[HelpRequest]
     earlier: list[HelpRequest]
+    unreadable: int = 0
+    """How many kept requests were set apart because they can't be read."""
 
     def every(self) -> list[HelpRequest]:
         """Every request in the three lists, in the order the section shows them."""
@@ -829,7 +851,7 @@ def help_groups(held: HelpHeld) -> HelpGroups:
     earlier: list[HelpRequest] = []
     for when, request in resolved:
         (recent if held.now - when < recent_for else earlier).append(request)
-    return HelpGroups(waiting, recent, earlier)
+    return HelpGroups(waiting, recent, earlier, held.unreadable)
 
 
 def help_read(state: ApplicationState) -> HelpGroups | None:
@@ -916,14 +938,21 @@ def ask_for_help(
 ) -> HelpRequestResponse:
     """Ask for help today. ``payload`` is optional so an empty POST works. With a
     ``request_id`` the same id sent again is the request it made, 200, and never a second;
-    without one every POST asks again, so a retry is not safe. ``HersToAsk`` answers a
-    parent 403 before the body is read."""
+    without one every POST asks again, so a retry is not safe. An id whose request can't be
+    read asks nothing, 500. ``HersToAsk`` answers a parent 403 before the body is read."""
     note = None if payload is None else payload.note
     form = None if payload is None else payload.request_id
     if form is None:
         asked = state.help_requests.ask(state.clock.today(), note)
     else:
-        match state.help_requests.ask_once(form, state.clock.today(), note):
+        try:
+            outcome = state.help_requests.ask_once(form, state.clock.today(), note)
+        except UnreadableHelpRequest as error:
+            logger.warning("her request for help could not be sent: %s", type(error).__name__)
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR, detail=REQUEST_UNREADABLE
+            ) from error
+        match outcome:
             case HelpAsked(request=asked):
                 pass
             case HelpAlreadyAsked(request=asked):
@@ -948,21 +977,30 @@ router.add_api_route(
 
 
 @router.get("/help-requests")
-def her_help_requests(state: State) -> list[HelpRequestView]:
-    """Her requests as she sees them: open ones, then those resolved within two weeks."""
-    return help_requests_shown(state)
+def her_help_requests(state: State, response: Response) -> list[HelpRequestView]:
+    """Her requests as she sees them: open ones, then those resolved within two weeks. One
+    that can't be read is left out and counted in the ``Help-Requests-Unreadable`` header."""
+    listed = state.help_requests.listed()
+    response.headers[UNREADABLE_COUNT] = str(listed.unreadable)
+    return help_requests_shown(state, listed)
 
 
 @router.delete("/help-requests/{request_id}", status_code=status.HTTP_204_NO_CONTENT)
 def take_back_help(request: Request, request_id: str, state: State) -> Response:
-    """Take a request back while nobody has taken it up; 409 once a parent has. A parent is
-    answered 403: the request is hers to take back."""
+    """Take a request back while nobody has taken it up; 409 once a parent has, and 500 for
+    one that can't be read, which stays. A parent is answered 403: the request is hers to
+    take back."""
     if viewer_of(request) == "parent":
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail=NOT_HERS_TO_ASK)
     try:
         removed = state.help_requests.take_back(request_id)
     except RequestClosed as error:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except UnreadableHelpRequest as error:
+        logger.warning("her request could not be taken back: %s", type(error).__name__)
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, detail=REQUEST_UNREADABLE
+        ) from error
     if not removed:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no help request {request_id!r}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1536,6 +1574,9 @@ def build_student_due_this_week_view(
         help_recent=[] if groups is None else help_views(groups.recent),
         help_earlier=[] if groups is None else help_views(groups.earlier),
         help_unavailable=groups is None,
+        help_set_apart=(
+            None if groups is None else set_apart(groups.unreadable, hers=viewer != "parent")
+        ),
         viewer=viewer,
         can_update=viewer != "parent",
         nothing_to_plan=not window.active(),
@@ -3801,7 +3842,8 @@ def take_back_help_from_the_page(request: Request, request_id: str, state: State
     """Remove a request from her page while nobody has taken it up, and return to Help.
     Otherwise Help says why, in words chosen by where the request stands and never by the
     store's message, with a way to the request when its row is on the page. A take-back the
-    file refuses is rolled back and said the same way, 500. A parent is answered 403 before
+    file refuses is rolled back and said the same way, 500, and so is one on a request that
+    can't be read, which stays as it is. A parent is answered 403 before
     anything is read: the request is hers to take back. When her week can't be read, the
     page that reads no store says the same, with the same status."""
     if viewer_of(request) == "parent":
@@ -3821,6 +3863,9 @@ def take_back_help_from_the_page(request: Request, request_id: str, state: State
     except RequestClosed as error:
         said = ALREADY_RESPONDING if error.request.state == "accepted" else ALREADY_CLOSED
         return refused(HelpProblem(said, error.request.request_id), status.HTTP_409_CONFLICT)
+    except UnreadableHelpRequest as error:
+        logger.warning("her request could not be taken back: %s", type(error).__name__)
+        return refused(HelpProblem(REQUEST_UNREADABLE), status.HTTP_500_INTERNAL_SERVER_ERROR)
     except sqlite3.Error as error:
         logger.warning("her request could not be taken back: %s", type(error).__name__)
         return refused(

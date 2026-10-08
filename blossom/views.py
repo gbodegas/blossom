@@ -723,6 +723,10 @@ class StudentDueThisWeekView(BaseModel):
     help_unavailable: bool = False
     """Whether her requests could not be read for this page. The three lists are then empty
     because nothing could be read, not because there is nothing to show."""
+    help_set_apart: str | None = None
+    """What Help says of the kept requests set apart because they can't be read, or ``None``
+    when every request read: how many, nothing they hold, and beside her form that she can
+    send a new request."""
     viewer: str = "anyone"
     can_update: bool = True
     nothing_to_plan: bool = False

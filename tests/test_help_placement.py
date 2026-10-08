@@ -1173,19 +1173,16 @@ def test_a_marker_typed_by_hand_writes_nothing_and_opens_no_control() -> None:
 
 
 def good_and_failed(
-    client: TestClient, fault: str, monkeypatch: pytest.MonkeyPatch, **query: str
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, **query: str
 ) -> tuple[str, str, int, int]:
-    """Her week read well, then with the help read failing: both pages, how many reads of
-    the requests the failing one tried, and how many reads of their notes it made."""
+    """Her week read well, then with the file refusing the help read: both pages, how many
+    reads of the requests the failing one tried, and how many reads of their notes it made.
+    A row that can't be read is no failed read: it is set apart, beside the rest."""
     state = state_of(client)
     good = client.get(PAGE).text
     connection = state.help_requests._connection
     refusing = Refusing(connection, sqlite3.OperationalError)
-    if fault == "the file":
-        monkeypatch.setattr(state.help_requests, "_connection", refusing)
-    else:
-        connection.execute("UPDATE help_requests SET evening = 'not a date'")
-        connection.commit()
+    monkeypatch.setattr(state.help_requests, "_connection", refusing)
     looked: list[object] = []
     named = state.project_state.captures_named
 
@@ -1194,19 +1191,14 @@ def good_and_failed(
         return named(*args)  # type: ignore[arg-type]
 
     monkeypatch.setattr(state.project_state, "captures_named", counted)
-    seen: list[str] = []
-    connection.set_trace_callback(seen.append)
     failed = client.get(PAGE, params=query)
-    connection.set_trace_callback(None)
     monkeypatch.undo()
     assert failed.status_code == 200
-    tries = refusing.tries if fault == "the file" else len(seen)
-    return good, failed.text, tries, len(looked)
+    return good, failed.text, refusing.tries, len(looked)
 
 
-@pytest.mark.parametrize("fault", ["the file", "a row"])
 def test_a_help_read_that_fails_leaves_the_rest_of_her_week_as_it_was(
-    fault: str, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with browser(key=True) as client:
         client.post("/student/actions/plan")
@@ -1214,7 +1206,7 @@ def test_a_help_read_that_fails_leaves_the_rest_of_her_week_as_it_was(
         store = state_of(client).help_requests
         note = waiting_note(store_of(client), course="Art", title="Sketch", text="Synthetic about")
         asked(store, "Synthetic question", note)
-        good, failed, tries, notes_read = good_and_failed(client, fault, monkeypatch)
+        good, failed, tries, notes_read = good_and_failed(client, monkeypatch)
 
     count = (
         '<p class="support-links help-updates-link">'
@@ -1243,14 +1235,13 @@ def test_a_help_read_that_fails_leaves_the_rest_of_her_week_as_it_was(
     assert "autofocus" not in failed
 
 
-@pytest.mark.parametrize("fault", ["the file", "a row"])
 @pytest.mark.parametrize("kind", ["asked", "asked_again"])
 def test_a_marker_on_a_failed_read_can_not_be_checked_and_never_says_sent(
-    fault: str, kind: str, monkeypatch: pytest.MonkeyPatch
+    kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with browser() as client:
         request_id = asked(state_of(client).help_requests, "Synthetic question")
-        _, failed, tries, _ = good_and_failed(client, fault, monkeypatch, **{kind: request_id})
+        _, failed, tries, _ = good_and_failed(client, monkeypatch, **{kind: request_id})
 
     part = section(failed)
     assert failed.count('id="help-result"') == 1
@@ -1261,13 +1252,12 @@ def test_a_marker_on_a_failed_read_can_not_be_checked_and_never_says_sent(
     assert tries == 1
 
 
-@pytest.mark.parametrize("fault", ["the file", "a row"])
 def test_a_parent_on_a_failed_read_keeps_the_link_and_reads_about_her(
-    fault: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with household(tmp_path, "parent") as client:
         asked(state_of(client).help_requests, "Synthetic question")
-        _, failed, _, _ = good_and_failed(client, fault, monkeypatch)
+        _, failed, _, _ = good_and_failed(client, monkeypatch)
 
     part = section(failed)
     said = element(failed, "p", "ask-for-help")
@@ -1301,12 +1291,13 @@ def test_a_row_that_can_not_be_read_is_logged_once_without_its_words(
         with caplog.at_level(logging.WARNING):
             page = client.get(PAGE)
 
-    said = [record for record in caplog.records if record.name == "blossom.routes.student"]
+    said = [record for record in caplog.records if record.name.startswith("blossom.")]
     assert page.status_code == 200
-    assert len(said) == 1
+    assert [record.name for record in said] == ["blossom.stores.help_requests"]
     assert said[0].exc_info is None
     assert "Synthetic private" not in said[0].getMessage()
     assert "Synthetic private" not in page.text
+    assert "1 request for help can&#39;t be read right now." in page.text
 
 
 def test_any_other_failure_of_the_read_is_not_taken_for_an_unreadable_one(

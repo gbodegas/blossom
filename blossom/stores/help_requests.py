@@ -69,7 +69,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from blossom.captures import capture_id_from
 from blossom.clock import Clock
 from blossom.stores.paths import refuse_unsafe_path
-from blossom.stores.project_state import normalize_note
+from blossom.stores.project_state import HeldText, normalize_note
 from blossom.unreadable import refusal_in_names, text_or_refusal
 
 logger = logging.getLogger(__name__)
@@ -257,6 +257,26 @@ RETAINED_ALL: Final = """
     SELECT * FROM help_requests
     WHERE state<>'resolved' OR resolved_at >= ?
 """
+OPEN_ROWS: Final = """
+    SELECT * FROM help_requests
+    WHERE state<>'resolved'
+    ORDER BY asked_at, request_id
+"""
+RESOLVED_ROWS: Final = """
+    SELECT * FROM help_requests
+    WHERE state='resolved' AND resolved_at >= ?
+    ORDER BY resolved_at DESC, request_id
+"""
+LISTED_ROWS: Final = """
+    SELECT * FROM help_requests
+    WHERE state<>'resolved' OR resolved_at >= ?
+    ORDER BY state='resolved',
+        CASE WHEN state<>'resolved' THEN asked_at END,
+        CASE WHEN state='resolved' THEN resolved_at END DESC,
+        request_id
+"""
+"""Both lists in one statement, so they read one state of the file: the open requests oldest
+first, then those resolved within retention, most recently resolved first."""
 REQUEST_ID: Final = re.compile(r"[0-9a-f]{32}")
 """The shape of an id a form carries: 32 lowercase hex digits, as ``new_request_id`` makes."""
 
@@ -279,6 +299,12 @@ class UnreadableHelpRequest(ValueError):
         super().__init__(f"{named} cannot be read: {why}" if why else f"{named} cannot be read")
 
 
+class WrittenUnreadable(RuntimeError):
+    """Raised when a move reads its request back after writing and can't read it. The move
+    is rolled back whole, as for any failed save, and this is no refusal made before a
+    write, so it is never ``UnreadableHelpRequest``."""
+
+
 @dataclass(frozen=True)
 class HelpHeld:
     """Every request kept, from one statement, and the instant its cutoff was taken from, so
@@ -286,6 +312,23 @@ class HelpHeld:
 
     requests: tuple[HelpRequest, ...]
     now: datetime
+    unreadable: int = 0
+    """How many kept rows were set apart because they can't be read as requests."""
+
+
+@dataclass(frozen=True)
+class HelpListed:
+    """Her requests as the lists show them: those still open, oldest first, then those resolved
+    within retention, most recently resolved first, and how many kept rows were set apart
+    because they can't be read as requests."""
+
+    open: tuple[HelpRequest, ...]
+    resolved: tuple[HelpRequest, ...]
+    unreadable: int
+
+    def every(self) -> list[HelpRequest]:
+        """Every request that can be read, in the order the lists show them."""
+        return [*self.open, *self.resolved]
 
 
 def new_request_id() -> str:
@@ -537,12 +580,13 @@ class HelpRequestsStore:
 
     def _asked_before(self, form: str, note: str | None, name: str | None) -> AskOutcome:
         """What an id already used stands for, read through this store's own connection."""
-        row = self._connection.execute(RETAINED_ONE, (form, self._cutoff())).fetchone()
+        row = self._held_row(RETAINED_ONE, (form, self._cutoff()))
         if row is None:
             return HelpFormUsed()
         standing = request_from(row)
-        same_words = spaced(row["note"]) == spaced(note)
-        if same_words and row["capture_id"] == name:
+        same_words = spaced(standing.note) == spaced(note)
+        same_note = standing.capture_id == name and not standing.capture_reference_unreadable
+        if same_words and same_note:
             return HelpAlreadyAsked(standing)
         return HelpFormChanged(standing)
 
@@ -559,14 +603,17 @@ class HelpRequestsStore:
         Once a parent has taken it up, the request is theirs to resolve; taking
         it back then is refused, since the parent may already be on it. The
         request is read with the retention cutoff, as ``get`` reads it, so one
-        resolved past retention that the sweep has not reached yet is none.
+        resolved past retention that the sweep has not reached yet is none. A
+        row that can't be read as a request is ``UnreadableHelpRequest``, and
+        stays as it is.
         """
         with self._lock, self._connection:
-            row = self._connection.execute(RETAINED_ONE, (request_id, self._cutoff())).fetchone()
+            row = self._held_row(RETAINED_ONE, (request_id, self._cutoff()))
             if row is None:
                 return False
-            if row["state"] != "requested":
-                raise RequestClosed(request_from(row), "taken back")
+            current = request_from(row)
+            if current.state != "requested":
+                raise RequestClosed(current, "taken back")
             self._connection.execute("DELETE FROM help_requests WHERE request_id=?", (request_id,))
         return True
 
@@ -590,7 +637,7 @@ class HelpRequestsStore:
                 if words is not None:
                     update = ParentUpdate(update_id=form, body=words, written_at=now)
                     self._append(request_id, "accepted", update)
-                return self._read(request_id, now)
+                return self._written(request_id, now)
             if retried(current, form, words):
                 return current
             if current.state == "resolved":
@@ -620,7 +667,7 @@ class HelpRequestsStore:
                 raise UpdateWithoutWords(msg)
             update = ParentUpdate(update_id=form, body=words, written_at=now)
             if self._append(request_id, "accepted", update):
-                return self._read(request_id, now)
+                return self._written(request_id, now)
             if retried(current, form, words):
                 return current
             if current.state == "resolved":
@@ -653,7 +700,7 @@ class HelpRequestsStore:
                 update = ParentUpdate(update_id=form, body=words, written_at=now)
                 self._append(request_id, current.state, update)
             self._connection.execute(CLOSE, (now.isoformat(), now.isoformat(), request_id))
-            return self._read(request_id, now)
+            return self._written(request_id, now)
 
     @contextmanager
     def _writing(self) -> Iterator[datetime]:
@@ -695,48 +742,44 @@ class HelpRequestsStore:
         gone the moment it ages out, whether or not a sweep has run since.
         """
         with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT * FROM help_requests
-                WHERE request_id=? AND (state<>'resolved' OR resolved_at >= ?)
-                """,
-                (request_id, self._cutoff()),
-            ).fetchone()
+            row = self._held_row(RETAINED_ONE, (request_id, self._cutoff()))
         return None if row is None else request_from(row)
 
     def open_requests(self) -> list[HelpRequest]:
-        """Every request not yet resolved, oldest first: what a parent has to act on."""
+        """Every request not yet resolved that can be read, oldest first: what a parent has to
+        act on. A row that can't be read is set apart, as ``listed`` counts it."""
         with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT * FROM help_requests
-                WHERE state<>'resolved'
-                ORDER BY asked_at, request_id
-                """
-            ).fetchall()
-        return [request_from(row) for row in rows]
+            rows = self._held_rows(OPEN_ROWS, ())
+        return list(readable(rows)[0])
 
     def recently_resolved(self) -> list[HelpRequest]:
-        """Every request resolved within retention, most recent first: words back she can read."""
+        """Every request resolved within retention that can be read, most recent first: words
+        back she can read. A row that can't be read is set apart, as ``listed`` counts it."""
         with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT * FROM help_requests
-                WHERE state='resolved' AND resolved_at >= ?
-                ORDER BY resolved_at DESC, request_id
-                """,
-                (self._cutoff(),),
-            ).fetchall()
-        return [request_from(row) for row in rows]
+            rows = self._held_rows(RESOLVED_ROWS, (self._cutoff(),))
+        return list(readable(rows)[0])
+
+    def listed(self) -> HelpListed:
+        """The open requests and those resolved within retention, read in one statement, so
+        no request is in both lists or neither when another connection moves it, with how many
+        kept rows were set apart because they can't be read. A statement the file refuses is
+        raised, never an empty list."""
+        with self._lock:
+            rows = self._held_rows(LISTED_ROWS, (self._cutoff(),))
+        requests, unreadable = readable(rows)
+        waiting = tuple(request for request in requests if request.state != "resolved")
+        resolved = tuple(request for request in requests if request.state == "resolved")
+        return HelpListed(waiting, resolved, unreadable)
 
     def retained(self) -> HelpHeld:
         """Every request kept, open or resolved within retention, in one statement, with the
         instant the cutoff was taken from. It reads and never writes, so reading them resets
-        nothing. A row that cannot be read as a request is ``UnreadableHelpRequest``."""
+        nothing. A row that can't be read as a request is set apart and counted."""
         with self._lock:
             now = self._clock.now()
-            rows = self._connection.execute(RETAINED_ALL, (self._cutoff(now),)).fetchall()
-        return HelpHeld(tuple(request_from(row) for row in rows), now)
+            rows = self._held_rows(RETAINED_ALL, (self._cutoff(now),))
+        requests, unreadable = readable(rows)
+        return HelpHeld(requests, now, unreadable)
 
     def sweep(self) -> int:
         """Delete every resolved request past retention; return how many went."""
@@ -753,17 +796,36 @@ class HelpRequestsStore:
         A resolved request past retention does not exist here either, so no
         move can be made on it. ``now`` is the move's instant, when it has one.
         """
-        row = self._connection.execute(
-            """
-            SELECT * FROM help_requests
-            WHERE request_id=? AND (state<>'resolved' OR resolved_at >= ?)
-            """,
-            (request_id, self._cutoff(now)),
-        ).fetchone()
+        row = self._held_row(RETAINED_ONE, (request_id, self._cutoff(now)))
         if row is None:
             msg = f"no help request {request_id!r}"
             raise KeyError(msg)
         return request_from(row)
+
+    def _written(self, request_id: str, now: datetime) -> HelpRequest:
+        """The request as a move just wrote it, read inside the move's transaction. A row
+        that can't be read back is ``WrittenUnreadable``, which rolls the move back whole."""
+        try:
+            return self._read(request_id, now)
+        except UnreadableHelpRequest as refused:
+            raise WrittenUnreadable(str(refused)) from None
+
+    def _held_rows(self, statement: str, parameters: tuple[object, ...]) -> list[sqlite3.Row]:
+        """The rows a read returns with each text column as its stored bytes, ``HeldText``, so
+        text that is not UTF-8 is found as each row is built, one request's to answer for, and
+        not as the rows are fetched. The caller holds the lock; the connection's own way of
+        reading text is put back however the read ends."""
+        kept = self._connection.text_factory
+        self._connection.text_factory = HeldText
+        try:
+            return list(self._connection.execute(statement, parameters).fetchall())
+        finally:
+            self._connection.text_factory = kept
+
+    def _held_row(self, statement: str, parameters: tuple[object, ...]) -> sqlite3.Row | None:
+        """The one row a read by id returns, as ``_held_rows`` reads it, or ``None``."""
+        rows = self._held_rows(statement, parameters)
+        return rows[0] if rows else None
 
     def _cutoff(self, now: datetime | None = None) -> str:
         """The oldest resolution still within retention, by the store's clock, or from ``now``
@@ -834,32 +896,67 @@ def updates_from(held: object) -> tuple[ParentUpdate, ...]:
 
 
 def request_from(row: sqlite3.Row) -> HelpRequest:
-    """Build a request from a row read by column name, or ``UnreadableHelpRequest``, raised
-    after the except block so the refusal, which can repeat her words, goes nowhere."""
+    """Build a request from a row read by column name, its text held as bytes or not, or
+    ``UnreadableHelpRequest``, raised after the except block so the refusal, which can repeat
+    her words, goes nowhere. Text that is not UTF-8 is refused like any other field, except
+    in the note's place, where the request stands with its note marked unavailable."""
 
     def when(value: object) -> datetime | None:
-        return None if value is None else datetime.fromisoformat(str(value))
+        return None if value is None else datetime.fromisoformat(str(decoded(value)))
 
     try:
-        note = row["note"]
-        response = row["response"]
-        capture_id, unreadable = reference_from(row["capture_id"], str(row["request_id"]))
+        request_id = str(decoded(row["request_id"]))
+        note = decoded(row["note"])
+        response = decoded(row["response"])
+        capture_id, unreadable = reference_from(held_reference(row["capture_id"]), request_id)
         return HelpRequest(
-            request_id=str(row["request_id"]),
-            evening=date.fromisoformat(str(row["evening"])),
-            asked_at=datetime.fromisoformat(str(row["asked_at"])),
+            request_id=request_id,
+            evening=date.fromisoformat(str(decoded(row["evening"]))),
+            asked_at=datetime.fromisoformat(str(decoded(row["asked_at"]))),
             note=None if note is None else str(note),
-            state=cast(HelpState, str(row["state"])),
+            state=cast(HelpState, str(decoded(row["state"]))),
             accepted_at=when(row["accepted_at"]),
             resolved_at=when(row["resolved_at"]),
             response=None if response is None else str(response),
-            parent_updates=updates_from(row["parent_updates"]),
+            parent_updates=updates_from(decoded(row["parent_updates"])),
             capture_id=capture_id,
             capture_reference_unreadable=unreadable,
         )
     except (ValueError, TypeError, RecursionError) as fault:
         why = refusal_in_names(fault, HelpRequest.model_fields)
-    raise UnreadableHelpRequest(why, row["request_id"])
+    held_id = row["request_id"]
+    named = held_id.decode("utf-8", "replace") if isinstance(held_id, HeldText) else held_id
+    raise UnreadableHelpRequest(why, named)
+
+
+def decoded(value: object) -> object:
+    """A column as a row holds it, with text held as bytes decoded as UTF-8, strictly: bytes
+    that are not UTF-8 raise ``UnicodeDecodeError``, a ``ValueError``, for that row."""
+    return value.decode("utf-8") if isinstance(value, HeldText) else value
+
+
+def held_reference(value: object) -> object:
+    """What the note's place holds, as ``reference_from`` reads it: text decoded, and text
+    that is not UTF-8 left as plain bytes, which is no id."""
+    try:
+        return decoded(value)
+    except UnicodeDecodeError:
+        return bytes(cast(bytes, value))
+
+
+def readable(rows: list[sqlite3.Row]) -> tuple[tuple[HelpRequest, ...], int]:
+    """Each row built as a request, in order, and how many were set apart because they can't be
+    read. Each is logged by its refusal in names, which holds none of her words; nothing about
+    it is kept or repaired."""
+    requests: list[HelpRequest] = []
+    unreadable = 0
+    for row in rows:
+        try:
+            requests.append(request_from(row))
+        except UnreadableHelpRequest as refused:
+            logger.warning("a kept help request was set apart: %s", refused)
+            unreadable += 1
+    return tuple(requests), unreadable
 
 
 def reference_from(held: object, request_id: str) -> tuple[str | None, bool]:

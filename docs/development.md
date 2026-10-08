@@ -104,7 +104,11 @@ With the app running as the README describes:
   or an id whose request was taken back or has gone answer 409, so nothing is
   asked twice. Without one, every POST asks again, so retrying it isn't safe.
   Her page's forms always send an id. Asking and taking back are hers: a
-  parent signed in gets 403.
+  parent signed in gets 403. Every successful list, hers and the parent's,
+  carries a `Help-Requests-Unreadable` header: how many kept requests it
+  left out because they can't be read, `0` when none. A refused or failed
+  list carries no such header, and a move or take-back on such a request
+  answers 500 and changes nothing.
   The parent's side is `/parent/help-requests`, with `/accept`, `/update`
   and `/resolve` under each request: take it up, add an update while it stays
   open, and close it. Each takes a `response`, the words, which an update

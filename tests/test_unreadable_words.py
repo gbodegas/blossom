@@ -17,7 +17,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import UTC, date, datetime
-from typing import NamedTuple, NoReturn
+from typing import Final, NamedTuple, NoReturn
 
 import pytest
 from fastapi.testclient import TestClient
@@ -125,8 +125,9 @@ DAMAGES = {
     },
 }
 """Two ways the words in each table can't be read: past their limit, or not UTF-8."""
-REFUSED_AS = {"past the limit": "UnreadableHelpRequest", "not UTF-8": "OperationalError"}
-"""The error a help request damaged each way is read as."""
+REFUSED_AS = {"past the limit": "UnreadableHelpRequest", "not UTF-8": "UnreadableHelpRequest"}
+"""The error a help request damaged each way is read as: a row text that is not UTF-8 is that
+one request's to answer for."""
 
 
 # ------------------------------------------------------------------ the stores
@@ -162,16 +163,26 @@ UNREAD_REQUESTS: dict[str, tuple[str, type[Exception], str]] = {
     "her words not UTF-8": (
         "UPDATE help_requests SET note = CAST(CAST(note AS BLOB) || x'ff' AS TEXT) "
         "WHERE request_id = ?",
-        sqlite3.OperationalError,
-        NOT_UTF_8,
+        UnreadableHelpRequest,
+        "the help request {id} cannot be read: UnicodeDecodeError",
     ),
 }
 """Damage to a kept request, and what its error says: the request by an id in the shape a
 form carries, never one the row made up, and the field and kind of refusal."""
 
 
+ID_REPLACED: Final = frozenset({"her words in place of its id and its state"})
+"""Damage that writes over the request's id: no read by that id finds the row at all, so the
+lists set it apart and a read by its id finds nothing."""
+
+
 @pytest.mark.parametrize("damaged", list(UNREAD_REQUESTS))
-def test_a_help_request_that_cannot_be_read_is_named_without_her_words(damaged: str) -> None:
+def test_a_help_request_that_cannot_be_read_is_named_without_her_words(
+    damaged: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every list sets the request apart, logged once a read by the refusal in names alone, and
+    reading it by its id is the same error, with no cause or context; its neighbor reads."""
+    caplog.set_level(logging.DEBUG)
     store = HelpRequestsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
     asked = store.ask(PLAN_DATE, QUESTION)
     neighbor = store.ask(PLAN_DATE, AT_THE_LIMIT)
@@ -179,17 +190,33 @@ def test_a_help_request_that_cannot_be_read_is_named_without_her_words(damaged: 
     store._connection.execute(statement, (asked.request_id,))
     store._connection.commit()
 
-    with pytest.raises(refused_as) as listed:
-        store.open_requests()
-    with pytest.raises(refused_as) as held:
-        store.retained()
+    caplog.clear()
+    listed = store.listed()
+    held = store.retained()
+    records = list(caplog.records)
+    if damaged in ID_REPLACED:
+        assert store.get(asked.request_id) is None
+    else:
+        with pytest.raises(refused_as) as refused:
+            store.get(asked.request_id)
+        assert str(refused.value) == said.format(id=asked.request_id)
+        assert (refused.value.__cause__, refused.value.__context__) == (None, None)
+        assert words_in(told(refused.value)) == []
     kept = store.get(neighbor.request_id)
     taken_back = store.take_back(neighbor.request_id)
 
-    assert str(listed.value) == said.format(id=asked.request_id)
-    for error in (listed.value, held.value):
-        assert (error.__cause__, error.__context__) == (None, None)
-        assert words_in(told(error)) == []
+    assert ([item.request_id for item in listed.every()], listed.unreadable) == (
+        [neighbor.request_id],
+        1,
+    )
+    assert ([item.request_id for item in held.requests], held.unreadable) == (
+        [neighbor.request_id],
+        1,
+    )
+    set_apart = f"a kept help request was set apart: {said.format(id=asked.request_id)}"
+    assert [record.getMessage() for record in records] == [set_apart, set_apart]
+    assert [record.exc_info for record in records] == [None, None]
+    assert words_in(logged(records)) == []
     assert kept == neighbor
     assert taken_back is True
 
