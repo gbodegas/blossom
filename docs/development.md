@@ -246,7 +246,8 @@ Three files under `.local/` outlive a restart:
   A file from before any of them gains the tables on the first start, and
   a file whose acceptances have no class and term gains them once: each is
   tied to its report's, or its capture's, or the start stops with every
-  grade table as it was and says how many records it couldn't tie.
+  grade table as it was and says how many records it couldn't tie (see
+  [Blossom couldn't start: saved import records](#blossom-couldnt-start-saved-import-records)).
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   A draft is its text and, in a nullable `plan_snapshot` column, the plan as
@@ -524,6 +525,35 @@ see the moved instructions: assignments show no school instruction, and
 nothing tells the planner about them. A school note it saves is found by the
 next start of the newer version and, beside instructions already kept, waits
 for a parent's review.
+
+### Blossom couldn't start: saved import records
+
+This part of the household guide is for the person who runs Blossom. It is
+the file `docs/development.md` in the Blossom folder, so it can be read while
+Blossom won't start.
+
+A start can stop with a message that begins "Blossom couldn't start. Some
+saved import records have missing or inconsistent report links." Each grade
+report a parent saves leaves an import record, and a start checks that each
+record names a saved report, or a pasted report saved under one class and
+term. The message counts the records it couldn't match, by kind, and never
+shows what they hold. That startup attempt did not change or delete any
+grade records. It doesn't say whether anything was missing before it ran.
+
+What to do:
+
+1. Stop trying to start Blossom on this file. Each start reads the same
+   records and stops the same way.
+2. Keep a copy of the file as it is: with Blossom stopped, copy
+   `blossom.sqlite3` to a dated name in the same folder, as
+   [Upgrading and rolling back](#upgrading-and-rolling-back) describes.
+   Don't edit or delete the original.
+3. If the stop came with an upgrade, roll back as that section says: set
+   this file aside under another name, copy the backup taken before the
+   upgrade back to `blossom.sqlite3`, and start the version that ran before
+   the upgrade. Anything saved after that backup isn't in it.
+4. Keep the copy from step 2 until the records are resolved. Blossom has no
+   command that repairs them.
 
 ### Testing on a copy of the household
 

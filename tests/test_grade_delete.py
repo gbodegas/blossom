@@ -180,7 +180,7 @@ def test_the_acceptance_rebuild_ties_every_row_or_refuses_the_start(
     tmp_path: pathlib.Path,
 ) -> None:
     """Every kind of row it ties gets exactly its scope, every other column kept, and a second
-    start changes nothing."""
+    start finds nothing to rebuild."""
     path = tmp_path / "blossom.sqlite3"
     tied = untied_file(path)
     before = closed_world([path], leaving_out=("grade_acceptances",))
@@ -231,27 +231,81 @@ REFUSED: dict[str, tuple[tuple[str, tuple[object, ...]], ...]] = {
 }
 
 
+LABELS = {
+    "a homework row naming a report": "homework imports linked to a grade report",
+    "a report that isn't there": "imports linked to a missing grade report",
+    "a screenshot naming no report": "grade screenshots with no report link",
+    "a report-less row whose capture has no report": (
+        "pasted grade reports with no matching saved report"
+    ),
+    "a capture whose reports disagree": (
+        "pasted grade reports matching different classes or terms"
+    ),
+}
+"""The label the refusal gives each case, as the household reads it."""
+
+
 @pytest.mark.parametrize("case", REFUSED)
-def test_a_row_the_rebuild_cannot_tie_refuses_the_start_and_changes_nothing(
+def test_a_row_the_rebuild_cannot_tie_refuses_the_start_and_changes_no_grade_record(
     tmp_path: pathlib.Path, case: str
 ) -> None:
-    """The refusal counts the rows of each case, never their content, says nothing was lost,
-    and every gradebook table stays as it was, the file's other tables too."""
+    """The refusal counts the rows of each case under its label, never their content, and
+    every gradebook table stays as it was."""
     path = tmp_path / "blossom.sqlite3"
     untied_file(path)
     changed_by_hand(path, *REFUSED[case])
-    before = closed_world([path], leaving_out=())
+    before = gradebook_world(path)
 
     with pytest.raises(AcceptancesNotTied) as refusal:
         ProjectStateStore.open(path, fixture_clock())
 
     message = str(refusal.value)
-    assert closed_world([path], leaving_out=()) == before
-    assert "1 " in message
-    assert "Nothing in the file was changed" in message
+    assert gradebook_world(path) == before
+    assert f"Affected records: 1 ({LABELS[case]}: 1)." in message
     assert not [
         held for held in ("gone", "copy-of-first", "nothing saved", "T9") if held in message
     ]
+
+
+GUIDE = (
+    "Blossom couldn't start. Some saved import records have missing or inconsistent report "
+    "links. Affected records: {n} ({cases}). This startup attempt did not change or delete any "
+    "grade records. Keep a copy of this file as it is and see the household guide before trying "
+    "again. The guide is docs/development.md in the Blossom folder, under "
+    '"Blossom couldn\'t start: saved import records".'
+)
+"""The refused start's message, with the guide a person can open while Blossom can't start."""
+
+
+@pytest.mark.parametrize(
+    ("counts", "cases"),
+    [
+        (
+            (0, 2, 1, 0, 0),
+            "imports linked to a missing grade report: 2; grade screenshots with no report link: 1",
+        ),
+        (
+            (1, 2, 3, 4, 5),
+            "homework imports linked to a grade report: 1; "
+            "imports linked to a missing grade report: 2; "
+            "grade screenshots with no report link: 3; "
+            "pasted grade reports with no matching saved report: 4; "
+            "pasted grade reports matching different classes or terms: 5",
+        ),
+    ],
+)
+def test_the_refused_start_says_what_it_found_and_where_the_guide_is(
+    counts: tuple[int, ...], cases: str
+) -> None:
+    """Only the cases found, each with its count, in a fixed order, then the guide's file and
+    heading, which the repository holds."""
+    message = str(AcceptancesNotTied(counts))
+    guide = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "development.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert message == GUIDE.format(n=sum(counts), cases=cases)
+    assert "\n### Blossom couldn't start: saved import records\n" in guide
 
 
 SITES: dict[str, tuple[int, str, str | None]] = {

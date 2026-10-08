@@ -664,12 +664,16 @@ UNTIED: Final = (
 """The acceptances of a file without their class and term that nothing ties to one, counted by
 case, in the order of ``UNTIED_CASES``."""
 UNTIED_CASES: Final = (
-    "homework records naming a report",
-    "records naming a report that isn't there",
-    "screenshot records naming no report",
-    "pasted-report records whose report isn't there",
-    "pasted-report records whose reports name different classes or terms",
+    "homework imports linked to a grade report",
+    "imports linked to a missing grade report",
+    "grade screenshots with no report link",
+    "pasted grade reports with no matching saved report",
+    "pasted grade reports matching different classes or terms",
 )
+"""How the refused start names each case of ``UNTIED``, in its order."""
+START_GUIDE: Final = ("docs/development.md", "Blossom couldn't start: saved import records")
+"""The guide's file in the Blossom folder and its heading, readable while Blossom can't
+start."""
 SET_ACCEPTANCES_ASIDE: Final = "ALTER TABLE grade_acceptances RENAME TO grade_acceptances_before"
 TIE_ACCEPTANCES: Final = (
     "INSERT INTO grade_acceptances (acceptance_id, student_id, kind, source_key, report_id, "
@@ -847,18 +851,20 @@ class GradeTransactionLost(RuntimeError):
 
 class AcceptancesNotTied(RuntimeError):
     """A start stopped because acceptances in the file can't each be tied to one class and
-    term; it counts them by case, names nothing in them, and left every gradebook table as it
-    was."""
+    term; it counts them by case, names nothing in them, and says where the guide is. Every
+    gradebook table is left as it was."""
 
     def __init__(self, counts: tuple[int, ...]) -> None:
-        cases = ", ".join(
-            f"{count} {case}" for count, case in zip(counts, UNTIED_CASES, strict=True) if count
+        cases = "; ".join(
+            f"{case}: {count}" for count, case in zip(counts, UNTIED_CASES, strict=True) if count
         )
+        path, heading = START_GUIDE
         super().__init__(
-            f"Blossom didn't start: {sum(counts)} grade records in this file can't be matched "
-            f"to a class and term ({cases}). Nothing in the file was changed and nothing was "
-            "lost. Keep a copy of the file as it is; the version of Blossom that made it still "
-            "opens it."
+            "Blossom couldn't start. Some saved import records have missing or inconsistent "
+            f"report links. Affected records: {sum(counts)} ({cases}). This startup attempt did "
+            "not change or delete any grade records. Keep a copy of this file as it is and see "
+            f"the household guide before trying again. The guide is {path} in the Blossom "
+            f'folder, under "{heading}".'
         )
 
 
@@ -1067,8 +1073,9 @@ class GradebookRecords:
 
     def _tie_acceptances(self) -> None:
         """Give a file's acceptances their class and term, once, in the caller's transaction:
-        every row tied exactly, or ``AcceptancesNotTied`` before anything is written. The table
-        is made again from its one definition, so it reads as a fresh file's."""
+        every row tied exactly, or ``AcceptancesNotTied`` before the rebuild writes anything,
+        and the caller's transaction takes back the step. The table is made again from its one
+        definition, so it reads as a fresh file's."""
         columns = {str(row[1]) for row in self._connection.execute(ACCEPTANCE_COLUMNS)}
         if "class_id" in columns:
             return
