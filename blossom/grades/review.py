@@ -433,6 +433,22 @@ class AlreadyRecorded:
     uncovered: frozenset[str]
 
 
+@dataclass(frozen=True)
+class RecordedSave:
+    """A committed save of a pasted report as recorded: its outcome, the question about the line
+    and its answer, the class it went into (ID, display name, school year) and the term, and the
+    current year and term as they stand now, None before the first setup."""
+
+    saved: GradeReportSaved
+    identity_status: IdentityStatus
+    identity_answer: IdentityAnswer
+    class_id: str
+    class_name: str
+    year: str
+    term: str
+    context: tuple[str, str] | None
+
+
 class ReturnReason(StrEnum):
     """Why a save returned the review and wrote nothing."""
 

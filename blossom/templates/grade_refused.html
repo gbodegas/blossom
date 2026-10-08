@@ -7,6 +7,7 @@
   <h1>Add grade report</h1>
   <section class="panel">
     <p>{{ said }}</p>
+    {% if add %}<p class="return"><a href="{{ add }}">Paste a different report</a></p>{% endif %}
     <p class="return"><a href="/parent">Back to Family review</a></p>
   </section>
 {% endblock %}

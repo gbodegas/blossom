@@ -1,0 +1,37 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% block title %}Blossom - Add grade report{% endblock %}
+{% block content %}
+  <h1>Add grade report</h1>
+  {#
+    What a save recorded, read again by its acceptance ID on every visit: the counts it
+    stored, her name only when the stored answer confirmed it, and the class and term the
+    acceptance names, even when it changed no value.
+  #}
+  {% if recorded %}
+    <ol class="steps-line" aria-label="Steps">
+      <li>1. Paste</li>
+      <li>2. Review</li>
+      <li aria-current="step"><strong>3. Saved</strong></li>
+    </ol>
+    <section class="panel" aria-labelledby="outcome-heading">
+      <h2 id="outcome-heading"><span class="authored-text">{{ recorded.class_name }}</span> · {{ recorded.term }} · {{ recorded.year }}</h2>
+      {% for line in lines %}
+        <p>{{ line }}</p>
+      {% endfor %}
+      {% if name_said %}
+        <p>{{ name_said }}</p>
+      {% endif %}
+      {% if recorded.context %}
+        <p class="note">Grades open on {{ recorded.context[1] }} · {{ recorded.context[0] }}.</p>
+      {% endif %}
+    </section>
+    <p class="return"><a href="{{ add }}">Add another report</a></p>
+  {% else %}
+    <p class="problem" role="alert" id="problem">{{ said }}</p>
+    <p class="return"><a href="{{ add }}">Add grade report</a></p>
+  {% endif %}
+  <p class="return"><a href="/parent">Back to Family review</a></p>
+{% endblock %}

@@ -161,7 +161,7 @@ def test_a_setup_that_is_not_a_school_year_and_a_term_returns_the_review(
     assert store._connection.total_changes == changes
 
 
-def returned(outcome: SaveOutcome, why: ReturnReason) -> GradeReview:
+def returned(outcome: SaveOutcome | GradeReview, why: ReturnReason) -> GradeReview:
     assert isinstance(outcome, ReviewReturned), outcome
     assert outcome.why is why
     return outcome.review
@@ -1104,3 +1104,125 @@ def test_still_asked_keeps_match_answers_alone_and_drops_a_second_for_the_same_r
     kept = still_asked(review, answers, ())
 
     assert kept.matches == (different,)
+
+
+# ------------------------------------------------------------- the check and the recorded save
+
+
+def check(
+    store: ProjectStateStore,
+    review: GradeReview,
+    draft: GradeReportDraft = WREN_DRAFT,
+    *,
+    answers: GradeAnswers | None = None,
+    selection: Collection[str] | None = None,
+) -> SaveOutcome | GradeReview:
+    """A check of the page ``review`` made, with ``answers`` or an answer to every question."""
+    return store.check_grade_answers(
+        draft,
+        capture_key(draft),
+        key=KEY,
+        complete=False,
+        page=ReviewPage(review.acceptance_id, review.revision, review.source_key),
+        answers=answers or answers_to(review),
+        selection=frozenset(review.ready if selection is None else selection),
+    )
+
+
+def test_a_check_of_a_current_page_keeps_its_id_and_revision_and_writes_nothing() -> None:
+    store = in_memory()
+    saved(save(store))
+    renamed = draft_of(REPORT.replace(SEVEN, SEVEN.replace("Cell Diagram", "Cell Drawing")))
+    review = review_of(store, renamed)
+    (row,) = [item for item in review.rows if item.question is not None]
+    assert row.question is not None
+    answers = dataclasses.replace(
+        answers_to(review), matches=(MatchAnswer(row.key, row.question.ids, None),)
+    )
+    changes = store._connection.total_changes
+
+    checked = check(store, review, renamed, answers=answers)
+
+    assert isinstance(checked, GradeReview)
+    assert (checked.acceptance_id, checked.revision) == (review.acceptance_id, review.revision)
+    assert row.key in checked.ready
+    assert row.key not in review.ready
+    assert store._connection.total_changes == changes
+
+
+def test_a_check_after_another_tab_s_save_returns_the_revision_and_the_next_save_too() -> None:
+    store = in_memory()
+    saved(save(store, selection={TERM_KEY}))
+    one_tab, another_tab = review_of(store), review_of(store)
+    saved(save(store, review=one_tab))
+    before = gradebook_of(store)
+    changes = store._connection.total_changes
+
+    checked = check(store, another_tab)
+
+    assert returned(checked, ReturnReason.REVISION).revision == 2
+    assert store._connection.total_changes == changes
+    assert gradebook_of(store) == before
+    returned(save(store, review=another_tab), ReturnReason.REVISION)
+    assert gradebook_of(store) == before
+
+
+def test_a_check_answers_in_the_save_s_order_without_writing() -> None:
+    store = in_memory()
+    review = review_of(store)
+    first = saved(save(store, review=review, selection={TERM_KEY}))
+    fresh = review_of(store)
+    changes = store._connection.total_changes
+
+    recorded = check(store, review, selection={TERM_KEY, review.rows[0].key})
+    other_text = check(store, fresh, EIGHT_DRAFT)
+    not_hers = check(store, fresh, answers=answers_to(fresh, IdentityAnswer.NOT_HERS))
+    stale = check(store, fresh, answers=answers_to(review))
+
+    assert recorded == AlreadyRecorded(first, frozenset({review.rows[0].key}))
+    returned(other_text, ReturnReason.SOURCE)
+    assert not_hers == NotHers()
+    returned(stale, ReturnReason.ANSWERS)
+    assert store._connection.total_changes == changes
+
+
+def test_the_recorded_save_names_its_class_term_and_answer_even_for_a_no_op() -> None:
+    store = in_memory()
+    review = review_of(store)
+    nothing = saved(save(store, review=review, selection=()))
+
+    recorded = store.recorded_save(review.acceptance_id)
+
+    assert recorded is not None
+    assert recorded.saved == nothing
+    assert (recorded.class_name, recorded.year, recorded.term) == ("Biology", "2026-2027", "T1")
+    assert (recorded.identity_status, recorded.identity_answer) == (
+        IdentityStatus.FIRST_USE,
+        IdentityAnswer.HERS,
+    )
+    assert recorded.context == ("2026-2027", "T1")
+
+
+def test_the_recorded_save_is_none_for_an_unknown_another_student_s_or_a_deleted_id() -> None:
+    store = in_memory()
+    other = in_memory()
+    other_review = review_of(other)
+    saved(save(other, review=other_review))
+    for row in one(other, "SELECT * FROM grade_acceptances"):
+        marks = ", ".join("?" * len(row))
+        store._connection.execute(f"INSERT INTO grade_acceptances VALUES ({marks})", row)  # noqa: S608
+    store._connection.commit()
+    review = review_of(store)
+    saved(save(store, review=review))
+    recorded = store.recorded_save(review.acceptance_id)
+    assert recorded is not None
+    changes = store._connection.total_changes
+
+    assert store.recorded_save("acceptance-" + "0" * 32) is None
+    assert store.recorded_save(other_review.acceptance_id) is None
+    assert store._connection.total_changes == changes
+    deleted = store.delete_class_term(
+        recorded.class_id, "T1", revision=review_of(store).revision, role="parent"
+    )
+    assert deleted.__class__.__name__ == "ClassTermDeleted"
+    assert store.recorded_save(review.acceptance_id) is None

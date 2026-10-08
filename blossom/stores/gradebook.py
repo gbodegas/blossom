@@ -44,7 +44,7 @@ import threading
 import uuid
 from collections.abc import Callable, Collection, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC
 from typing import Final, Literal, cast, get_args
 
@@ -94,6 +94,7 @@ from blossom.grades.review import (
     MatchAnswer,
     NotHers,
     OnRecord,
+    RecordedSave,
     ReportUse,
     ReturnReason,
     ReviewPage,
@@ -564,6 +565,13 @@ RECORDED: Final = (
     "SELECT source_key, report_id, accepted, added, updated, already_saved, left_to_check, "
     "shown, answers_kept FROM grade_acceptances WHERE student_id = ? AND acceptance_id = ?"
 )
+RECORDED_SAVE: Final = (
+    "SELECT a.identity_status, a.identity_answer, a.class_id, c.display_name, c.year_label, "
+    "a.term_label FROM grade_acceptances AS a JOIN grade_classes AS c "
+    "ON c.class_id = a.class_id AND c.student_id = a.student_id "
+    "WHERE a.student_id = ? AND a.acceptance_id = ? AND a.kind = ?"
+)
+CURRENT_CONTEXT: Final = "SELECT year_label, term_label FROM grade_context WHERE student_id = ?"
 SET_CONTEXT: Final = (
     "INSERT INTO grade_context (student_id, year_label, term_label, set_by, set_at) "
     "VALUES (?, ?, ?, ?, ?)"
@@ -1195,45 +1203,12 @@ class GradebookRecords:
         chosen = frozenset(selection)
         with self._grade_write(_report_refused):
             student_id = self._her_name_record()[0]
-            recorded = self._recorded(student_id, page.acceptance_id)
-            if recorded is not None:
-                outcome, recorded_source = recorded
-                covered = {item_key for item_key, _ in outcome.accepted}
-                if recorded_source != source_key:
-                    covered = set()
-                return AlreadyRecorded(outcome, chosen - covered)
-            if answers.identity is IdentityAnswer.NOT_HERS:
-                return NotHers()
-            review = self._review_locked(draft, source_key, key, same_class=None, complete=complete)
-            into = review
-            if answers.same_class is not None:
-                into = self._review_locked(
-                    draft, source_key, key, same_class=answers.same_class, complete=complete
-                )
-            if page.source_key != source_key:
-                return ReviewReturned(into, ReturnReason.SOURCE)
-            if review.revision != page.revision or (
-                answers.same_class is not None
-                and self._revision_of(student_id, answers.same_class, draft)
-                != answers.same_class_revision
-            ):
-                return ReviewReturned(into, ReturnReason.REVISION)
-            if (
-                not answers_asked(review, answers)
-                or not matches_asked(into, answers.matches)
-                or not use_asked(into, answers.use)
-            ):
-                return ReviewReturned(into, ReturnReason.ANSWERS)
-            settled = into
-            if answers.matches:
-                settled = self._review_locked(
-                    draft,
-                    source_key,
-                    key,
-                    same_class=answers.same_class,
-                    matches=answers.matches,
-                    complete=complete,
-                )
+            checked = self._checked(
+                student_id, draft, source_key, key, page, answers, chosen, complete=complete
+            )
+            if not isinstance(checked, tuple):
+                return checked
+            into, settled = checked
             # A value goes back to one a newer report replaced only under the parent's choice
             # of current, and only when the page showed it as matching an earlier saved value.
             allowed = settled.ready
@@ -1256,6 +1231,124 @@ class GradebookRecords:
                 complete=complete,
                 use=use,
             )
+
+    def check_grade_answers(
+        self,
+        draft: GradeReportDraft,
+        source_key: str,
+        *,
+        key: bytes,
+        complete: bool,
+        page: ReviewPage,
+        answers: GradeAnswers,
+        selection: Collection[str],
+    ) -> SaveOutcome | GradeReview:
+        """The save's own checks of a page, in its order, writing nothing: a recorded acceptance
+        ID's outcome, "Not hers", or the review returned and why; otherwise the review with the
+        answers applied, each row keeping the choices it offered, under the page's own acceptance
+        ID and revision. A read alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            checked = self._checked(
+                student_id,
+                draft,
+                source_key,
+                key,
+                page,
+                answers,
+                frozenset(selection),
+                complete=complete,
+            )
+        if not isinstance(checked, tuple):
+            return checked
+        into, settled = checked
+        offered = {item.key: item.choices for item in into.rows}
+        rows = tuple(
+            item if item.choices else replace(item, choices=offered.get(item.key, ()))
+            for item in settled.rows
+        )
+        return replace(settled, rows=rows, acceptance_id=page.acceptance_id, revision=page.revision)
+
+    def recorded_save(self, acceptance_id: str) -> RecordedSave | None:
+        """Her save of a pasted report recorded under ``acceptance_id``, with its class and term
+        and the current year and term; None when no such save of hers is on record. A read
+        alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            recorded = self._recorded(student_id, acceptance_id)
+            row = self._connection.execute(
+                RECORDED_SAVE, (student_id, acceptance_id, TEXT_KIND)
+            ).fetchone()
+            context = self._connection.execute(CURRENT_CONTEXT, (student_id,)).fetchone()
+        if recorded is None or row is None:
+            return None
+        status, answer, class_id, class_name, year, term = row
+        return RecordedSave(
+            saved=recorded[0],
+            identity_status=IdentityStatus(status),
+            identity_answer=IdentityAnswer(answer),
+            class_id=str(class_id),
+            class_name=str(class_name),
+            year=str(year),
+            term=str(term),
+            context=None if context is None else (str(context[0]), str(context[1])),
+        )
+
+    def _checked(
+        self,
+        student_id: str,
+        draft: GradeReportDraft,
+        source_key: str,
+        key: bytes,
+        page: ReviewPage,
+        answers: GradeAnswers,
+        chosen: frozenset[str],
+        *,
+        complete: bool,
+    ) -> SaveOutcome | tuple[GradeReview, GradeReview]:
+        """A page against the record, in the save's order, under the caller's lock: a recorded
+        acceptance ID, "Not hers", a changed source, a changed revision, answers to no question
+        asked now; otherwise the review in the class the page chose, and with its answers."""
+        recorded = self._recorded(student_id, page.acceptance_id)
+        if recorded is not None:
+            outcome, recorded_source = recorded
+            covered = {item_key for item_key, _ in outcome.accepted}
+            if recorded_source != source_key:
+                covered = set()
+            return AlreadyRecorded(outcome, chosen - covered)
+        if answers.identity is IdentityAnswer.NOT_HERS:
+            return NotHers()
+        review = self._review_locked(draft, source_key, key, same_class=None, complete=complete)
+        into = review
+        if answers.same_class is not None:
+            into = self._review_locked(
+                draft, source_key, key, same_class=answers.same_class, complete=complete
+            )
+        if page.source_key != source_key:
+            return ReviewReturned(into, ReturnReason.SOURCE)
+        if review.revision != page.revision or (
+            answers.same_class is not None
+            and self._revision_of(student_id, answers.same_class, draft)
+            != answers.same_class_revision
+        ):
+            return ReviewReturned(into, ReturnReason.REVISION)
+        if (
+            not answers_asked(review, answers)
+            or not matches_asked(into, answers.matches)
+            or not use_asked(into, answers.use)
+        ):
+            return ReviewReturned(into, ReturnReason.ANSWERS)
+        settled = into
+        if answers.matches:
+            settled = self._review_locked(
+                draft,
+                source_key,
+                key,
+                same_class=answers.same_class,
+                matches=answers.matches,
+                complete=complete,
+            )
+        return into, settled
 
     def _review_locked(
         self,
