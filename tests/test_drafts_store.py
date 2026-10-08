@@ -519,6 +519,8 @@ def test_the_retention_policy_covers_the_runs_and_their_steps() -> None:
     assert "decision" in policy
     assert "record of the run" in policy
     assert "produced no draft" in policy
+    assert "seven days after its page was opened" in policy
+    assert "never swept" not in policy
 
 
 def test_a_run_with_no_steps_is_listed_with_an_empty_record() -> None:

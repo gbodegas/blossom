@@ -1160,7 +1160,7 @@ HER_FORM_NOT_WHOLE = (
     "This plan button came from an incomplete or outdated page, so no plan was started."
 )
 HER_FORM_EXPIRED = (
-    "This plan button is from a page opened more than a week ago, so nothing new was started."
+    "This plan button is from a page opened a week or more ago, so nothing new was started."
 )
 HER_FORM_FROM_AUGUST_18 = (
     "This plan button is from the page for Tuesday, August 18, so nothing new was started."
@@ -1174,9 +1174,7 @@ YOUR_WEEK_NOT_SHOWN_LINE = "Your week can't be shown right now."
 FAMILY_FORM_NOT_WHOLE = (
     "This form came from an incomplete or outdated page, so no plan was started."
 )
-FAMILY_FORM_EXPIRED = (
-    "This form is from a page opened more than a week ago, so no plan was started."
-)
+FAMILY_FORM_EXPIRED = "This form is from a page opened a week or more ago, so no plan was started."
 FAMILY_KEPT_BELOW = "The evening you chose is kept below; press Plan it to start one."
 FAMILY_CHOOSE_AN_EVENING = "Choose an evening and press Plan it to start one."
 FAMILY_NEWER_PLAN_AUGUST_19 = (

@@ -1808,7 +1808,7 @@ W_3F = "This form came from an incomplete or outdated page, so no plan was start
 FOCUSED_LINE = '<p class="problem" role="alert" id="problem" tabindex="-1" autofocus>'
 RESTING_LINE = '<p class="problem" role="alert" id="problem">'
 RUN_CHECK = '<span class="run-check"><a href="/parent?run='
-W_4F = "This form is from a page opened more than a week ago, so no plan was started."
+W_4F = "This form is from a page opened a week or more ago, so no plan was started."
 
 
 def date_kept(page: str) -> str:

@@ -1809,7 +1809,7 @@ def test_a_parent_making_her_plan_reads_it_in_her_words(
 
 W_1 = "A newer plan for today was made after this page was opened"
 W_3 = "This plan button came from an incomplete or outdated page, so no plan was started."
-W_4B = "This plan button is from a page opened more than a week ago, so nothing new was started."
+W_4B = "This plan button is from a page opened a week or more ago, so nothing new was started."
 FORM_AGE = timedelta(days=7)
 
 

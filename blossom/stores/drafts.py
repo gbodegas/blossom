@@ -267,8 +267,9 @@ class DraftsStore:
         "decided within two weeks of its evening is closed as expired and kept the "
         "same way, and so is a draft a later plan for the same evening took the place "
         "of. A draft whose run failed before it could wait for review is the one row "
-        "removed, since it was never anyone's plan; its run stays. Run rows are never "
-        "swept, since a run's row is what makes the plan form that started it used."
+        "removed, since it was never anyone's plan; its run stays. A run's row is also "
+        "what makes the plan form that started it used, and a form expires seven days "
+        "after its page was opened, well inside that span."
     )
 
     def __init__(

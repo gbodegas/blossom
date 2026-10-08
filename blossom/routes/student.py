@@ -570,7 +570,7 @@ FORM_NOT_WHOLE: Final = PlanAnswer(
     FORM_NOT_WHOLE_SAID,
 )
 FORM_EXPIRED_SAID: Final = (
-    "This plan button is from a page opened more than a week ago, so nothing new was started."
+    "This plan button is from a page opened a week or more ago, so nothing new was started."
 )
 FORM_EXPIRED: Final = PlanAnswer(
     "her-expired",

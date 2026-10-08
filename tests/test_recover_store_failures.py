@@ -1070,7 +1070,7 @@ def test_a_family_press_behind_a_newer_plan_is_said_without_family_review(
 
 ON_THE_STAND_IN = {
     "W-3s": (422, "This form came from an incomplete or outdated page, so no plan was started."),
-    "W-4s": (409, "This form is from a page opened more than a week ago, so no plan was started."),
+    "W-4s": (409, "This form is from a page opened a week or more ago, so no plan was started."),
     "W-5s": (
         409,
         "This form already asked for a plan for Wednesday, August 19, so nothing was started "

@@ -1608,7 +1608,7 @@ NOT_WHOLE_ELSEWHERE: Final = (
     "This form came from an incomplete or outdated page, so no plan was started."
 )
 EXPIRED_ELSEWHERE: Final = (
-    "This form is from a page opened more than a week ago, so no plan was started."
+    "This form is from a page opened a week or more ago, so no plan was started."
 )
 """The two refusals of the plan form as facts, which name no date kept and no Plan it."""
 KEPT_BELOW: Final = "The evening you chose is kept below; press Plan it to start one."
