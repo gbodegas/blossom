@@ -156,6 +156,8 @@ from blossom.routes.runs import (
     CHECK_AGAIN,
     CHECK_ON_THAT_REQUEST,
     COULD_NOT_START,
+    NOT_USED,
+    OPENED_A_WEEK_AGO,
     PLAN_ANSWERS,
     PLAN_FORM_FIELDS,
     RUN_STATUS_ANSWERS,
@@ -545,47 +547,31 @@ PLAN_FIELDS: Final = frozenset({IN_PLACE, *PLAN_FORM_FIELDS})
 PLAN_LABEL_MARK: Final = "{plan label}"
 """Where a plan answer names the plan button: the page puts the button's own words there,
 Plan today, Plan again or Make a smaller plan."""
-PRESS_TO_ASK_AGAIN: Final = Clause(f"To ask for a new plan, press {PLAN_LABEL_MARK}.", "button")
-PRESS_TO_PLAN_TODAY: Final = Clause(f"To plan today, press {PLAN_LABEL_MARK} below.", "button")
-NEWER_PLAN_MADE: Final = (
-    "A newer plan for today was made after this page was opened, so this press didn't start "
-    "another one."
-)
+FOR_A_NEW_PLAN: Final = Clause(f"For a new plan, press {PLAN_LABEL_MARK}.", "button")
+NEWER_PLAN_MADE: Final = "A newer plan for today was made. This press did not replace it."
 NEWER_PLAN: Final = PlanAnswer(
     "her-newer-plan",
     status.HTTP_409_CONFLICT,
-    (Clause(NEWER_PLAN_MADE), Clause("It is shown below.", "plan"), PRESS_TO_ASK_AGAIN),
+    (Clause(NEWER_PLAN_MADE), Clause("It is shown below.", "plan"), FOR_A_NEW_PLAN),
     NEWER_PLAN_MADE,
-)
-FORM_NOT_WHOLE_SAID: Final = (
-    "This plan button came from an incomplete or outdated page, so no plan was started."
 )
 FORM_NOT_WHOLE: Final = PlanAnswer(
     "her-not-whole",
     status.HTTP_422_UNPROCESSABLE_CONTENT,
-    (
-        Clause(FORM_NOT_WHOLE_SAID),
-        Clause(f"To start one, press {PLAN_LABEL_MARK} below.", "button"),
-    ),
-    FORM_NOT_WHOLE_SAID,
-)
-FORM_EXPIRED_SAID: Final = (
-    "This plan button is from a page opened a week or more ago, so nothing new was started."
+    (Clause(NOT_USED), FOR_A_NEW_PLAN),
+    NOT_USED,
 )
 FORM_EXPIRED: Final = PlanAnswer(
     "her-expired",
     status.HTTP_409_CONFLICT,
-    (Clause(FORM_EXPIRED_SAID), PRESS_TO_PLAN_TODAY),
-    FORM_EXPIRED_SAID,
+    (Clause(OPENED_A_WEEK_AGO), FOR_A_NEW_PLAN),
+    OPENED_A_WEEK_AGO,
 )
-PLAN_MADE_ALREADY_SAID: Final = (
-    "This plan button already asked for today's plan, and a plan was made, so nothing new "
-    "was started."
-)
+PLAN_MADE_ALREADY_SAID: Final = "That request made a plan for today. No new plan was started."
 PLAN_MADE_ALREADY: Final = PlanAnswer(
     "her-plan-made",
     status.HTTP_409_CONFLICT,
-    (Clause(PLAN_MADE_ALREADY_SAID), PRESS_TO_ASK_AGAIN),
+    (Clause(PLAN_MADE_ALREADY_SAID), FOR_A_NEW_PLAN),
     PLAN_MADE_ALREADY_SAID,
 )
 
@@ -593,12 +579,9 @@ PLAN_MADE_ALREADY: Final = PlanAnswer(
 def another_evening(evening: date) -> PlanAnswer:
     """A plan press for an evening that isn't today, which starts nothing, naming that
     evening."""
-    said = (
-        f"This plan button is from the page for {evening_named(evening)}, so nothing new was "
-        "started."
-    )
+    said = f"That plan button was for {evening_named(evening)}. No new plan was started."
     return PlanAnswer(
-        "her-another-evening", status.HTTP_409_CONFLICT, (Clause(said), PRESS_TO_PLAN_TODAY), said
+        "her-another-evening", status.HTTP_409_CONFLICT, (Clause(said), FOR_A_NEW_PLAN), said
     )
 
 

@@ -38,12 +38,20 @@ from blossom.routes.navigation import details_href, week_href
 from blossom.routes.runs import Unconfirmed
 from tests.support import (
     DETAILS,
+    ENDED_REASONS,
     ESSAY_ID,
     ESSAY_TITLE,
-    FAMILY_ASK_AGAIN,
+    FAMILY_ASKED_FOR_AUGUST_19,
+    FAMILY_DATE_NOT_READ,
+    FAMILY_FOR_A_NEW_PLAN,
+    FAMILY_FORM_EXPIRED,
+    FAMILY_FORM_NOT_WHOLE,
+    FAMILY_NEWER_PLAN_AUGUST_19,
     FIXTURE_WEEK,
     HER_PAGE,
+    HER_UPDATES_SAVED,
     MISSING_EMAIL,
+    NOTHING_FOR_AUGUST_20,
     PAGE_HEADERS,
     PLAN_DATE,
     REPORT,
@@ -1000,10 +1008,6 @@ def test_a_family_plan_that_failed_on_the_way_is_said_without_family_review(
     assert after == before
 
 
-NEWER_FAMILY_PLAN = (
-    "A newer plan for Wednesday, August 19 was made after this page was opened, so Plan it "
-    "didn't start another one."
-)
 FAMILY_LINE = re.compile(r'<p class="problem" role="alert" id="problem"[^>]*>(.*?)</p>', re.S)
 
 
@@ -1037,7 +1041,7 @@ def test_a_family_press_behind_a_newer_plan_it_cannot_place_is_still_refused(
     assert answer.status_code == 409
     line = FAMILY_LINE.search(answer.text)
     assert line is not None
-    assert words(line.group(1)) == f"{NEWER_FAMILY_PLAN} {FAMILY_ASK_AGAIN}"
+    assert words(line.group(1)) == f"{FAMILY_NEWER_PLAN_AUGUST_19} {FAMILY_FOR_A_NEW_PLAN}"
     assert 'id="problem" tabindex="-1" autofocus>' in answer.text
     assert 'action="/parent/actions/plan"' in answer.text
     assert after == before
@@ -1062,30 +1066,22 @@ def test_a_family_press_behind_a_newer_plan_is_said_without_family_review(
         after = runs_recorded(client)
 
     store_free_page(
-        answer, status=409, heading="Family review", alert=f"{NEWER_FAMILY_PLAN} {FAMILY}"
+        answer, status=409, heading="Family review", alert=f"{FAMILY_NEWER_PLAN_AUGUST_19} {FAMILY}"
     )
     assert after_the_failure(seen) == []
     assert after == before
 
 
 ON_THE_STAND_IN = {
-    "W-3s": (422, "This form came from an incomplete or outdated page, so no plan was started."),
-    "W-4s": (409, "This form is from a page opened a week or more ago, so no plan was started."),
-    "W-5s": (
-        409,
-        "This form already asked for a plan for Wednesday, August 19, so nothing was started "
-        "for Thursday, August 20. That plan was made.",
-    ),
+    "W-3s": (422, FAMILY_FORM_NOT_WHOLE),
+    "W-4s": (409, FAMILY_FORM_EXPIRED),
+    "W-5s": (409, f"{FAMILY_ASKED_FOR_AUGUST_19} That plan was made. {NOTHING_FOR_AUGUST_20}"),
     "W-5s, ended": (
         409,
-        "This form already asked for a plan for Wednesday, August 19, so nothing was started "
-        "for Thursday, August 20. That request ended without a plan.",
+        f"{FAMILY_ASKED_FOR_AUGUST_19} {ENDED_REASONS['checks_failed']} {HER_UPDATES_SAVED} "
+        f"{NOTHING_FOR_AUGUST_20}",
     ),
-    "W-5us": (
-        409,
-        "This form already asked for a plan for Wednesday, August 19. That plan was made. The "
-        "date entered couldn't be read, so nothing was started for it.",
-    ),
+    "W-5us": (409, f"{FAMILY_ASKED_FOR_AUGUST_19} That plan was made. {FAMILY_DATE_NOT_READ}"),
     "W-6s": (
         202,
         "Blossom couldn't confirm that the new plan was saved. Her homework updates are saved.",

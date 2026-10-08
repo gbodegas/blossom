@@ -521,10 +521,14 @@ def landed[Landing: Response](row: PlanLanding, response: Landing) -> Landing:
     return response
 
 
-Needs = Literal["nothing", "plan", "button", "place", "shown", "kept", "not kept"]
+Needs = Literal["nothing", "plan", "button", "place", "shown"]
 """What the page sent must show for a clause to be said: nothing, today's plan (her page),
-the plan button or form, the plan the answer is about, that plan in the waiting list or under
-today's heading, the date kept in the open form, or the open form with no date kept."""
+the plan button or form, the plan the answer is about, or that plan in the waiting list or
+under today's heading."""
+NOT_USED: Final = "Blossom couldn't use that plan request. No plan was started."
+OPENED_A_WEEK_AGO: Final = "That page was opened a week or more ago. No new plan was started."
+"""The two refusals of a plan form on either page: one that isn't whole or names no plan, and
+one issued ``FORM_LIFETIME`` or more before it was sent."""
 
 
 @dataclass(frozen=True)

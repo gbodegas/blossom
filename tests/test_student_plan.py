@@ -57,6 +57,12 @@ from blossom.views import PastDueView
 from tests.support import (
     ESSAY_ID,
     FIXTURE_TIMEZONE,
+    HER_FOR_A_NEW_PLAN,
+    HER_FORM_EXPIRED,
+    HER_FORM_FROM_AUGUST_18,
+    HER_FORM_FROM_AUGUST_20,
+    HER_FORM_NOT_WHOLE,
+    HER_NEWER_PLAN,
     PLAN_DATE,
     SAME_ORIGIN,
     THEIRS,
@@ -1807,14 +1813,7 @@ def test_a_parent_making_her_plan_reads_it_in_her_words(
 
 # ------------------------------------------------------- one press, one run
 
-W_1 = "A newer plan for today was made after this page was opened"
-W_3 = "This plan button came from an incomplete or outdated page, so no plan was started."
-W_4B = "This plan button is from a page opened a week or more ago, so nothing new was started."
 FORM_AGE = timedelta(days=7)
-
-
-def w_4(evening: str) -> str:
-    return f"This plan button is from the page for {evening}, so nothing new was started."
 
 
 def test_her_plan_form_sent_twice_makes_one_run() -> None:
@@ -1848,8 +1847,8 @@ def test_a_stale_plan_button_starts_nothing_and_shows_the_newer_plan() -> None:
         runs = runs_recorded(client)
 
     assert pressed.status_code == 409
-    assert W_1 in the_line(pressed.text)
-    assert "To ask for a new plan, press Plan again.</p>" in the_line(pressed.text)
+    assert HER_NEWER_PLAN in the_line(pressed.text)
+    assert f"{HER_FOR_A_NEW_PLAN}</p>" in the_line(pressed.text)
     assert today["draft_id"] == newer
     assert today["decision"] is None
     assert len(runs) == 1
@@ -1894,7 +1893,7 @@ def test_a_plan_form_that_is_not_whole_starts_nothing(change: str) -> None:
         runs = runs_recorded(client)
 
     assert pressed.status_code == 422
-    assert W_3 in the_line(pressed.text)
+    assert str(escape(HER_FORM_NOT_WHOLE)) in the_line(pressed.text)
     assert runs == []
     assert form_fields(pressed.text, "/student/actions/plan")["run_id"]
 
@@ -1908,7 +1907,7 @@ def test_her_plan_form_from_another_evening_starts_nothing() -> None:
         runs = runs_recorded(client)
 
     assert pressed.status_code == 409
-    assert w_4("Tuesday, August 18") in the_line(pressed.text)
+    assert HER_FORM_FROM_AUGUST_18 in the_line(pressed.text)
     assert runs == []
 
 
@@ -1927,7 +1926,7 @@ def test_her_used_form_names_its_runs_evening_when_that_is_not_today() -> None:
         runs = runs_recorded(client)
 
     assert pressed.status_code == 409
-    assert w_4("Thursday, August 20") in the_line(pressed.text)
+    assert HER_FORM_FROM_AUGUST_20 in the_line(pressed.text)
     assert "already asked" not in pressed.text
     assert len(runs) == 1
 
@@ -1942,7 +1941,7 @@ def test_an_old_plan_form_starts_nothing() -> None:
         runs = runs_recorded(client)
 
     assert pressed.status_code == 409
-    assert W_4B in the_line(pressed.text)
+    assert HER_FORM_EXPIRED in the_line(pressed.text)
     assert runs == []
 
 
@@ -2035,5 +2034,5 @@ def test_a_plan_published_while_her_page_is_read_leaves_its_button_behind_it(
     assert between == ["plan:between"]
     assert form["newest_plan"] == before
     assert pressed.status_code == 409
-    assert W_1 in the_line(pressed.text)
+    assert HER_NEWER_PLAN in the_line(pressed.text)
     assert [run for run, _, _ in runs] == ["plan:between"]

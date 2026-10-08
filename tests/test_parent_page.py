@@ -48,14 +48,18 @@ from blossom.stores.help_requests import NOTE_MAX_LENGTH
 from blossom.stores.project_state import Assignment, Saved, Undone
 from tests import support
 from tests.support import (
-    FAMILY_ASK_AGAIN,
+    FAMILY_ASKED_FOR_AUGUST_19,
     FAMILY_DATE_NOT_READ,
+    FAMILY_FOR_A_NEW_PLAN,
+    FAMILY_FORM_EXPIRED,
+    FAMILY_FORM_NOT_WHOLE,
     FAMILY_NEWER_PLAN_AUGUST_19,
-    FAMILY_PLAN_ANOTHER_EVENING,
     FIXTURE_TIMEZONE,
+    NOTHING_FOR_AUGUST_20,
     PAGE_HEADERS,
     SAME_ORIGIN,
     SHOWN_BELOW_WAITING,
+    THAT_PLAN_SHOWN_BELOW,
     Scripted,
     ended_run,
     family_line,
@@ -1804,11 +1808,9 @@ def test_a_plan_for_another_evening_no_review_can_resume_says_only_when_it_close
 
 # ------------------------------------------------------- one press, one run
 
-W_3F = "This form came from an incomplete or outdated page, so no plan was started."
 FOCUSED_LINE = '<p class="problem" role="alert" id="problem" tabindex="-1" autofocus>'
 RESTING_LINE = '<p class="problem" role="alert" id="problem">'
 RUN_CHECK = '<span class="run-check"><a href="/parent?run='
-W_4F = "This form is from a page opened a week or more ago, so no plan was started."
 
 
 def date_kept(page: str) -> str:
@@ -1857,10 +1859,10 @@ def test_a_used_family_form_with_another_date_starts_nothing_and_keeps_the_date(
         runs = runs_recorded(client)
 
     assert again.status_code == 409
-    assert (
-        "This form already asked for a plan for Wednesday, August 19, so nothing was started "
-        "for Thursday, August 20. That plan is shown below."
-    ) in again.text
+    assert family_line(again.text) == (
+        f"{FAMILY_ASKED_FOR_AUGUST_19} {THAT_PLAN_SHOWN_BELOW} {NOTHING_FOR_AUGUST_20} "
+        f"{FAMILY_FOR_A_NEW_PLAN}"
+    )
     assert date_kept(again.text) == later
     assert FOCUSED_LINE in again.text
     assert len(runs) == 1
@@ -1877,8 +1879,10 @@ def test_a_used_family_form_with_an_unreadable_date_names_its_request() -> None:
         runs = runs_recorded(client)
 
     assert again.status_code == 409
-    assert "This form already asked for a plan for Wednesday, August 19." in again.text
-    assert family_line(again.text).endswith(f"{FAMILY_DATE_NOT_READ} {FAMILY_PLAN_ANOTHER_EVENING}")
+    assert family_line(again.text) == (
+        f"{FAMILY_ASKED_FOR_AUGUST_19} {THAT_PLAN_SHOWN_BELOW} {FAMILY_DATE_NOT_READ} "
+        f"{FAMILY_FOR_A_NEW_PLAN}"
+    )
     assert date_kept(again.text) == PLAN_DATE.isoformat()
     assert plan_fold_open(again.text) is True
     assert FOCUSED_LINE in again.text
@@ -1925,7 +1929,7 @@ def test_a_family_form_that_is_not_whole_starts_nothing_and_keeps_the_date(
         runs = runs_recorded(client)
 
     assert posted.status_code == 422
-    assert W_3F in posted.text
+    assert FAMILY_FORM_NOT_WHOLE in family_line(posted.text)
     assert FOCUSED_LINE in posted.text
     assert date_kept(posted.text) == later
     assert runs == []
@@ -1950,7 +1954,7 @@ def test_a_family_form_with_a_stray_or_repeated_field_keeps_the_date(extra: str)
         runs = runs_recorded(client)
 
     assert posted.status_code == 422
-    assert W_3F in posted.text
+    assert FAMILY_FORM_NOT_WHOLE in family_line(posted.text)
     assert date_kept(posted.text) == later
     assert runs == []
 
@@ -1964,7 +1968,7 @@ def test_an_old_family_form_starts_nothing_and_keeps_the_date() -> None:
         runs = runs_recorded(client)
 
     assert posted.status_code == 409
-    assert W_4F in posted.text
+    assert FAMILY_FORM_EXPIRED in family_line(posted.text)
     assert FOCUSED_LINE in posted.text
     assert date_kept(posted.text) == later
     assert runs == []
@@ -2022,7 +2026,7 @@ def test_a_family_form_behind_a_newer_plan_starts_nothing_and_opens_that_plan() 
 
     assert pressed.status_code == 409
     said = " ".join(unescape(pressed.text).split())
-    assert f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_ASK_AGAIN}" in said
+    assert f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_FOR_A_NEW_PLAN}" in said
     assert FOCUSED_LINE in pressed.text
     assert len(runs) == 1
     fresh = form_fields(pressed.text, "/parent/actions/plan")
@@ -2068,7 +2072,7 @@ def test_a_plan_published_while_the_family_page_is_read_leaves_its_form_behind_i
     assert "draft:plan:between" not in page
     assert pressed.status_code == 409
     said = " ".join(unescape(pressed.text).split())
-    assert f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_ASK_AGAIN}" in said
+    assert f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_FOR_A_NEW_PLAN}" in said
     assert [run for run, _, _ in runs][1:] == ["plan:between"]
 
 

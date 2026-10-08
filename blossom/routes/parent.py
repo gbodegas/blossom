@@ -100,6 +100,8 @@ from blossom.routes.runs import (
     CHECK_ON_THAT_REQUEST,
     COULD_NOT_START,
     EVENING,
+    NOT_USED,
+    OPENED_A_WEEK_AGO,
     PLAN_ANSWERS,
     PLAN_FORM_FIELDS,
     RUN_STATUS_ANSWERS,
@@ -1167,8 +1169,6 @@ def review_page(
                 "button": form_shown,
                 "place": place is not None,
                 "shown": place is not None and place != BELOW_EARLIER_PLANS,
-                "kept": plan_open and kept is not None,
-                "not kept": plan_open and kept is None,
             }
             return held.get(needs, False)
 
@@ -1604,73 +1604,55 @@ def a_count(given: str | None) -> int | None:
 
 PLAN_DATE: Final = "plan_date"
 FAMILY_PLAN_FIELDS: Final = frozenset({PLAN_DATE, *PLAN_FORM_FIELDS})
-NOT_WHOLE_ELSEWHERE: Final = (
-    "This form came from an incomplete or outdated page, so no plan was started."
-)
-EXPIRED_ELSEWHERE: Final = (
-    "This form is from a page opened a week or more ago, so no plan was started."
-)
-"""The two refusals of the plan form as facts, which name no date kept and no Plan it."""
-KEPT_BELOW: Final = "The evening you chose is kept below; press Plan it to start one."
-CHOOSE_AN_EVENING: Final = "Choose an evening and press Plan it to start one."
-ASK_AGAIN: Final = "To ask for a new one, press Plan it again."
+FOR_A_NEW_PLAN: Final = Clause("For a new plan, press Plan it.", "button")
+"""The way to a new plan, said only when the page shows the plan form."""
 PLACE_MARK: Final = "{place}"
 PLAN_SHOWN: Final = f"That plan is shown {PLACE_MARK}."
 """Where the plan an answer is about is on the page, said only when the page shows it."""
 STILL_BEING_FINISHED: Final = "That request is still being finished."
 PLAN_SHOWN_BELOW: Final = "That plan is shown below."
 PLAN_MADE: Final = "That plan was made."
-ENDED_WITHOUT_ONE: Final = "That request ended without a plan."
-"""What came of a used form's run where no page shows it: its plan was made, or none was."""
-DATE_NOT_READ: Final = "The date entered couldn't be read, so nothing was started for it."
-PLAN_ANOTHER_EVENING: Final = "To plan another evening, choose a date and press Plan it."
+"""What came of a used form's run when no page shows its plan."""
+DATE_NOT_READ: Final = "The new date couldn't be read. No new plan was started."
 
 
 def newer_plan_made(evening: date) -> str:
-    """Why a press from a page that didn't know an evening's newest plan started nothing, with
-    no place on a page."""
-    return (
-        f"A newer plan for {evening_named(evening)} was made after this page was opened, so "
-        "Plan it didn't start another one."
-    )
+    """Why a press from a page that didn't know an evening's newest plan replaced nothing,
+    with no place on a page. Its own run may have started, so nothing says none did."""
+    return f"A newer plan for {evening_named(evening)} was made. This press did not replace it."
 
 
-def plan_made_already(evening: date) -> str:
+def plan_made_already(evening: date, today: date) -> str:
     """Why a used form whose run made a plan starts nothing, when what came after that plan
-    can't be read."""
-    return (
-        f"This form already asked for a plan for {evening_named(evening)}, and a plan was "
-        "made, so nothing new was started."
-    )
+    can't be read: its evening named, or today."""
+    named = "today" if evening == today else evening_named(evening)
+    return f"That request made a plan for {named}. No new plan was started."
 
 
 def what_the_run_did(run: RunState) -> tuple[Clause, str]:
     """A run a used form asked for, as its answer says it on the page, and without the page:
-    still being made, its plan, or why it ended."""
+    still being made, its plan, or why it ended, in the words its reason gives."""
     if run.status == "running":
         return Clause(STILL_BEING_FINISHED), STILL_BEING_FINISHED
     if run.status == "published":
         return Clause(PLAN_SHOWN_BELOW, "shown", otherwise=PLAN_MADE), PLAN_MADE
-    return Clause(ended_without_a_plan(run.reason, parent=True)), ENDED_WITHOUT_ONE
+    return (
+        Clause(ended_without_a_plan(run.reason, parent=True)),
+        ended_without_a_plan(run.reason, parent=True, where=False),
+    )
 
 
 def asked_another_evening(run: RunState, chosen: date) -> PlanAnswer:
-    """A used form sent with another evening: the evening it asked for, what came of it, and
-    that the new evening wasn't planned, with the way to plan it when the form holds it."""
-    asked = (
-        f"This form already asked for a plan for {evening_named(run.plan_date)}, so nothing "
-        f"was started for {evening_named(chosen)}."
-    )
+    """A used form sent with another evening: the evening it was used for, what came of it,
+    and that the new evening wasn't planned, with the way to a new plan when the form shows."""
+    asked = f"This form was used for {evening_named(run.plan_date)}."
+    nothing = f"No plan was started for {evening_named(chosen)}."
     outcome, elsewhere = what_the_run_did(run)
     return PlanAnswer(
         "family-another-evening",
         status.HTTP_409_CONFLICT,
-        (
-            Clause(asked),
-            outcome,
-            Clause(f"To plan {evening_named(chosen)}, press Plan it again below.", "kept"),
-        ),
-        f"{asked} {elsewhere}",
+        (Clause(asked), outcome, Clause(nothing), FOR_A_NEW_PLAN),
+        f"{asked} {elsewhere} {nothing}",
         keeps=chosen,
         open_plan=run.draft.draft_id if run.status == "published" and run.draft else None,
         check=run_check(FAMILY_PAGE, run.run_id, CHECK_ON_IT) if run.status == "running" else None,
@@ -1678,14 +1660,14 @@ def asked_another_evening(run: RunState, chosen: date) -> PlanAnswer:
 
 
 def asked_with_an_unreadable_date(run: RunState) -> PlanAnswer:
-    """A used form sent with a date that can't be read: the evening it asked for, what came
-    of it, and the way to plan another evening when the form is shown."""
-    asked = f"This form already asked for a plan for {evening_named(run.plan_date)}."
+    """A used form sent with a date that can't be read: the evening it was used for, what
+    came of it, and the way to a new plan when the form is shown."""
+    asked = f"This form was used for {evening_named(run.plan_date)}."
     outcome, elsewhere = what_the_run_did(run)
     return PlanAnswer(
         "family-unreadable-date",
         status.HTTP_409_CONFLICT,
-        (Clause(asked), outcome, Clause(DATE_NOT_READ), Clause(PLAN_ANOTHER_EVENING, "button")),
+        (Clause(asked), outcome, Clause(DATE_NOT_READ), FOR_A_NEW_PLAN),
         f"{asked} {elsewhere} {DATE_NOT_READ}",
         open_plan=run.draft.draft_id if run.status == "published" and run.draft else None,
         check=run_check(FAMILY_PAGE, run.run_id, CHECK_ON_IT) if run.status == "running" else None,
@@ -1693,12 +1675,12 @@ def asked_with_an_unreadable_date(run: RunState) -> PlanAnswer:
 
 
 def refused_form(row: PlanRow, code: int, said: str, kept: date | None) -> PlanAnswer:
-    """A form that starts nothing as it came: the date it keeps, said only when the form
-    shows it, or else the way to choose one."""
+    """A form that starts nothing as it came, keeping the date ``kept`` in the form, with the
+    way to a new plan when the form is shown."""
     return PlanAnswer(
         row,
         code,
-        (Clause(said), Clause(KEPT_BELOW, "kept"), Clause(CHOOSE_AN_EVENING, "not kept")),
+        (Clause(said), FOR_A_NEW_PLAN),
         said,
         keeps=kept,
     )
@@ -1787,7 +1769,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 PlanAnswer(
                     "family-newer-plan-unread",
                     status.HTTP_409_CONFLICT,
-                    (Clause(made), Clause(ASK_AGAIN, "button")),
+                    (Clause(made), FOR_A_NEW_PLAN),
                     made,
                     keeps=evening,
                 )
@@ -1796,7 +1778,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             PlanAnswer(
                 "family-newer-plan",
                 status.HTTP_409_CONFLICT,
-                (Clause(made), Clause(PLAN_SHOWN, "place"), Clause(ASK_AGAIN, "button")),
+                (Clause(made), Clause(PLAN_SHOWN, "place"), FOR_A_NEW_PLAN),
                 made,
                 keeps=evening,
                 open_plan=None if latest is None else latest.draft_id,
@@ -1828,12 +1810,12 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             # A published run made a plan, whatever came after it; nothing says it is the
             # newest.
             logger.warning("the plans after run %s could not be read: %s", run.run_id, error)
-            said = plan_made_already(run.plan_date)
+            said = plan_made_already(run.plan_date, state.clock.today())
             return await not_made(
                 PlanAnswer(
                     "family-plan-made",
                     status.HTTP_409_CONFLICT,
-                    (Clause(said), Clause(ASK_AGAIN, "button")),
+                    (Clause(said), FOR_A_NEW_PLAN),
                     said,
                     keeps=run.plan_date,
                 )
@@ -1861,7 +1843,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             refused_form(
                 "family-not-whole",
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
-                NOT_WHOLE_ELSEWHERE,
+                NOT_USED,
                 kept_date(a_date(fields.get(EVENING))),
             )
         )
@@ -1873,7 +1855,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             refused_form(
                 "family-expired",
                 status.HTTP_409_CONFLICT,
-                EXPIRED_ELSEWHERE,
+                OPENED_A_WEEK_AGO,
                 kept_date(form.evening),
             )
         )
@@ -1910,7 +1892,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             refused_form(
                 "family-not-whole",
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
-                NOT_WHOLE_ELSEWHERE,
+                NOT_USED,
                 evening,
             )
         )

@@ -1152,46 +1152,31 @@ def runs_recorded(client: TestClient) -> list[tuple[str, str, str]]:
 
 # Every sentence and clause the two plan presses answer with, written out here and never
 # read from the application, so a change to the words is a change these tests see.
-HER_NEWER_PLAN = (
-    "A newer plan for today was made after this page was opened, so this press didn't start "
-    "another one."
-)
-HER_FORM_NOT_WHOLE = (
-    "This plan button came from an incomplete or outdated page, so no plan was started."
-)
-HER_FORM_EXPIRED = (
-    "This plan button is from a page opened a week or more ago, so nothing new was started."
-)
-HER_FORM_FROM_AUGUST_18 = (
-    "This plan button is from the page for Tuesday, August 18, so nothing new was started."
-)
-HER_PLAN_ALREADY_MADE = (
-    "This plan button already asked for today's plan, and a plan was made, so nothing new "
-    "was started."
-)
-HER_ASK_AGAIN = "To ask for a new plan, press Plan again."
+HER_NEWER_PLAN = "A newer plan for today was made. This press did not replace it."
+HER_FORM_NOT_WHOLE = "Blossom couldn't use that plan request. No plan was started."
+HER_FORM_EXPIRED = "That page was opened a week or more ago. No new plan was started."
+HER_FORM_FROM_AUGUST_18 = "That plan button was for Tuesday, August 18. No new plan was started."
+HER_FORM_FROM_AUGUST_20 = "That plan button was for Thursday, August 20. No new plan was started."
+HER_PLAN_ALREADY_MADE = "That request made a plan for today. No new plan was started."
+HER_FOR_A_NEW_PLAN = "For a new plan, press Plan again."
+HER_FOR_A_NEW_PLAN_TODAY = "For a new plan, press Plan today."
 YOUR_WEEK_NOT_SHOWN_LINE = "Your week can't be shown right now."
-FAMILY_FORM_NOT_WHOLE = (
-    "This form came from an incomplete or outdated page, so no plan was started."
-)
-FAMILY_FORM_EXPIRED = "This form is from a page opened a week or more ago, so no plan was started."
-FAMILY_KEPT_BELOW = "The evening you chose is kept below; press Plan it to start one."
-FAMILY_CHOOSE_AN_EVENING = "Choose an evening and press Plan it to start one."
+FAMILY_FORM_NOT_WHOLE = "Blossom couldn't use that plan request. No plan was started."
+FAMILY_FORM_EXPIRED = "That page was opened a week or more ago. No new plan was started."
 FAMILY_NEWER_PLAN_AUGUST_19 = (
-    "A newer plan for Wednesday, August 19 was made after this page was opened, so Plan it "
-    "didn't start another one."
+    "A newer plan for Wednesday, August 19 was made. This press did not replace it."
 )
-FAMILY_PLAN_ALREADY_MADE_AUGUST_19 = (
-    "This form already asked for a plan for Wednesday, August 19, and a plan was made, so "
-    "nothing new was started."
+FAMILY_PLAN_ALREADY_MADE_TODAY = "That request made a plan for today. No new plan was started."
+FAMILY_PLAN_ALREADY_MADE_AUGUST_20 = (
+    "That request made a plan for Thursday, August 20. No new plan was started."
 )
-FAMILY_ASKED_FOR_AUGUST_19 = "This form already asked for a plan for Wednesday, August 19."
+FAMILY_ASKED_FOR_AUGUST_19 = "This form was used for Wednesday, August 19."
 SHOWN_BELOW_WAITING = "That plan is shown below, waiting for review."
 SHOWN_BELOW_UNDER_TODAYS_REVIEWED_PLAN = "That plan is shown below, under Today's reviewed plan."
 THAT_PLAN_SHOWN_BELOW = "That plan is shown below."
-FAMILY_ASK_AGAIN = "To ask for a new one, press Plan it again."
-FAMILY_DATE_NOT_READ = "The date entered couldn't be read, so nothing was started for it."
-FAMILY_PLAN_ANOTHER_EVENING = "To plan another evening, choose a date and press Plan it."
+FAMILY_FOR_A_NEW_PLAN = "For a new plan, press Plan it."
+FAMILY_DATE_NOT_READ = "The new date couldn't be read. No new plan was started."
+NOTHING_FOR_AUGUST_20 = "No plan was started for Thursday, August 20."
 HER_UPDATES_SAVED = "Her homework updates are saved."
 FAMILY_REVIEW_SHOWS = "Family review shows what happened."
 FAMILY_NOT_SHOWN_LINE = "Family review can't be shown right now."
@@ -1232,15 +1217,10 @@ HER_INTERRUPTED = (
 )
 HER_PLAN_SHOWN = "/student/due-this-week?show_plan=1"
 FAMILY_NEWER_PLAN_AUGUST_20 = (
-    "A newer plan for Thursday, August 20 was made after this page was opened, so Plan it "
-    "didn't start another one."
+    "A newer plan for Thursday, August 20 was made. This press did not replace it."
 )
 SHOWN_BELOW_UNDER_EARLIER_PLANS = "That plan is shown below, under Earlier plans."
 BEING_MADE_AUGUST_19 = "The plan request for Wednesday, August 19 is still being finished."
-ANOTHER_EVENING_ASKED = (
-    "This form already asked for a plan for Wednesday, August 19, so nothing was started for "
-    "Thursday, August 20."
-)
 HER_ROWS = (
     AnswerRow("her-not-whole", 422, HER_FORM_NOT_WHOLE, HER_FORM_NOT_WHOLE),
     AnswerRow("her-another-evening", 409, HER_FORM_FROM_AUGUST_18, HER_FORM_FROM_AUGUST_18),
@@ -1266,8 +1246,8 @@ FAMILY_ROWS = (
     AnswerRow(
         "family-another-evening",
         409,
-        ANOTHER_EVENING_ASKED,
-        f"{ANOTHER_EVENING_ASKED} That plan was made.",
+        FAMILY_ASKED_FOR_AUGUST_19,
+        f"{FAMILY_ASKED_FOR_AUGUST_19} That plan was made. {NOTHING_FOR_AUGUST_20}",
     ),
     AnswerRow(
         "family-unreadable-date",
@@ -1286,8 +1266,8 @@ FAMILY_ROWS = (
     AnswerRow(
         "family-plan-made",
         409,
-        FAMILY_PLAN_ALREADY_MADE_AUGUST_19,
-        FAMILY_PLAN_ALREADY_MADE_AUGUST_19,
+        FAMILY_PLAN_ALREADY_MADE_TODAY,
+        FAMILY_PLAN_ALREADY_MADE_TODAY,
     ),
     AnswerRow(
         "family-ended",

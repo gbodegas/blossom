@@ -34,22 +34,21 @@ from blossom.stores.drafts import StoreBusy, WriterBusy
 from tests.support import (
     ENDED_REASONS,
     ESSAY_ID,
-    FAMILY_ASK_AGAIN,
     FAMILY_ASKED_FOR_AUGUST_19,
-    FAMILY_CHOOSE_AN_EVENING,
     FAMILY_DATE_NOT_READ,
+    FAMILY_FOR_A_NEW_PLAN,
     FAMILY_FORM_EXPIRED,
     FAMILY_FORM_NOT_WHOLE,
-    FAMILY_KEPT_BELOW,
     FAMILY_NEWER_PLAN_AUGUST_19,
     FAMILY_NEWER_PLAN_AUGUST_20,
     FAMILY_NOT_SHOWN_LINE,
     FAMILY_PLAN_ACTION,
-    FAMILY_PLAN_ALREADY_MADE_AUGUST_19,
-    FAMILY_PLAN_ANOTHER_EVENING,
+    FAMILY_PLAN_ALREADY_MADE_AUGUST_20,
+    FAMILY_PLAN_ALREADY_MADE_TODAY,
     FAMILY_REVIEW_SHOWS,
     FAMILY_ROWS,
-    HER_ASK_AGAIN,
+    HER_FOR_A_NEW_PLAN,
+    HER_FOR_A_NEW_PLAN_TODAY,
     HER_FORM_EXPIRED,
     HER_FORM_FROM_AUGUST_18,
     HER_FORM_NOT_WHOLE,
@@ -190,7 +189,7 @@ def test_her_kept_cards_stay_on_a_form_that_is_refused(whole: bool) -> None:
             form["stray"] = "1"
         answer = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
     assert answer.status_code == 422
-    assert her_line(answer.text) == f"{HER_FORM_NOT_WHOLE} To start one, press Plan today below."
+    assert her_line(answer.text) == f"{HER_FORM_NOT_WHOLE} {HER_FOR_A_NEW_PLAN_TODAY}"
     assert form_fields(answer.text, HER_PLAN_ACTION).get("in_place") == kept
 
 
@@ -213,7 +212,7 @@ def test_her_repeat_whose_replacement_check_fails_says_a_plan_was_made(
         monkeypatch.undo()
         assert runs_recorded(client) == before
     assert answer.status_code == 409, answer.headers.get("location")
-    assert her_line(answer.text) == f"{HER_PLAN_ALREADY_MADE} {HER_ASK_AGAIN}"
+    assert her_line(answer.text) == f"{HER_PLAN_ALREADY_MADE} {HER_FOR_A_NEW_PLAN}"
 
 
 def test_her_first_press_overtaken_says_a_newer_plan_was_made() -> None:
@@ -229,7 +228,7 @@ def test_her_first_press_overtaken_says_a_newer_plan_was_made() -> None:
         ran = runs_recorded(client)
     assert (ran[-1][0], ran[-1][2]) == (form["run_id"], "ended")
     assert answer.status_code == 409, answer.headers.get("location")
-    assert her_line(answer.text) == f"{HER_NEWER_PLAN} It is shown below. {HER_ASK_AGAIN}"
+    assert her_line(answer.text) == f"{HER_NEWER_PLAN} It is shown below. {HER_FOR_A_NEW_PLAN}"
 
 
 def test_family_first_press_overtaken_says_a_newer_plan_was_made() -> None:
@@ -244,7 +243,7 @@ def test_family_first_press_overtaken_says_a_newer_plan_was_made() -> None:
     assert (ran[-1][0], ran[-1][2]) == (form["run_id"], "ended")
     assert answer.status_code == 409, answer.headers.get("location")
     assert family_line(answer.text) == (
-        f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_ASK_AGAIN}"
+        f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_FOR_A_NEW_PLAN}"
     )
     assert plan_fold_open(answer.text) is True
     assert plan_date_shown(answer.text) == PLAN_DATE.isoformat()
@@ -286,8 +285,8 @@ def test_her_used_form_is_refused_at_the_door_before_its_run_is_read(
 
 @pytest.mark.parametrize("case", ["not whole", "expired"])
 def test_family_refusal_with_an_unreadable_date_claims_nothing_kept(case: str) -> None:
-    """A refused form whose date can't be read keeps no date, so the line asks for one over
-    the open fold, never saying the evening chosen is kept below."""
+    """A refused form whose date can't be read keeps no date: the open fold holds today, and
+    the line names Plan it without saying any evening is kept."""
     with browser(key=True) as client:
         form = family_plan(client, "someday")
         form = (
@@ -298,7 +297,7 @@ def test_family_refusal_with_an_unreadable_date_claims_nothing_kept(case: str) -
         answer = client.post(FAMILY_PLAN_ACTION, data=form)
     fact = FAMILY_FORM_NOT_WHOLE if case == "not whole" else FAMILY_FORM_EXPIRED
     assert answer.status_code == (422 if case == "not whole" else 409)
-    assert family_line(answer.text) == f"{fact} {FAMILY_CHOOSE_AN_EVENING}"
+    assert family_line(answer.text) == f"{fact} {FAMILY_FOR_A_NEW_PLAN}"
     assert plan_fold_open(answer.text) is True
     assert plan_date_shown(answer.text) == PLAN_DATE.isoformat()
     assert family_line_focused(answer.text)
@@ -311,7 +310,7 @@ def test_family_form_not_whole_with_a_blank_date_keeps_its_evening() -> None:
         form = {**family_plan(client, ""), "evening": "2026-08-18", "stray": "1"}
         answer = client.post(FAMILY_PLAN_ACTION, data=form)
     assert answer.status_code == 422
-    assert family_line(answer.text) == f"{FAMILY_FORM_NOT_WHOLE} {FAMILY_KEPT_BELOW}"
+    assert family_line(answer.text) == f"{FAMILY_FORM_NOT_WHOLE} {FAMILY_FOR_A_NEW_PLAN}"
     assert plan_fold_open(answer.text) is True
     assert plan_date_shown(answer.text) == "2026-08-18"
 
@@ -327,7 +326,7 @@ def test_family_newer_plan_waiting_is_shown_below_the_line() -> None:
     assert answer.status_code == 409
     text = answer.text
     assert family_line(text) == (
-        f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_ASK_AGAIN}"
+        f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_FOR_A_NEW_PLAN}"
     )
     assert text.index('id="problem"') < text.index("<h2>Waiting for your review</h2>")
 
@@ -348,7 +347,8 @@ def test_family_newer_plan_decided_today_is_named_by_its_own_heading() -> None:
         answer = client.post(FAMILY_PLAN_ACTION, data=stale)
     assert answer.status_code == 409
     assert family_line(answer.text) == (
-        f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_UNDER_TODAYS_REVIEWED_PLAN} {FAMILY_ASK_AGAIN}"
+        f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_UNDER_TODAYS_REVIEWED_PLAN} "
+        f"{FAMILY_FOR_A_NEW_PLAN}"
     )
 
 
@@ -367,7 +367,7 @@ def test_family_newer_plan_unread_is_refused_with_no_place(
         monkeypatch.undo()
         assert runs_recorded(client) == before
     assert answer.status_code == 409
-    assert family_line(answer.text) == f"{FAMILY_NEWER_PLAN_AUGUST_19} {FAMILY_ASK_AGAIN}"
+    assert family_line(answer.text) == f"{FAMILY_NEWER_PLAN_AUGUST_19} {FAMILY_FOR_A_NEW_PLAN}"
 
 
 @pytest.mark.parametrize("kind", STORE_FAILURE_KINDS, ids=lambda kind: kind.__name__)
@@ -387,9 +387,34 @@ def test_family_repeat_whose_replacement_check_fails_says_a_plan_was_made(
         monkeypatch.undo()
         assert runs_recorded(client) == before
     assert answer.status_code == 409, answer.headers.get("location")
-    assert family_line(answer.text) == f"{FAMILY_PLAN_ALREADY_MADE_AUGUST_19} {FAMILY_ASK_AGAIN}"
+    assert family_line(answer.text) == f"{FAMILY_PLAN_ALREADY_MADE_TODAY} {FAMILY_FOR_A_NEW_PLAN}"
     assert plan_date_shown(answer.text) == PLAN_DATE.isoformat()
     assert plan_fold_open(answer.text) is True
+
+
+def test_family_repeat_for_a_later_evening_whose_replacement_check_fails_names_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same answer for a used form whose plan was for an evening after today names that
+    evening, where a form for today says today."""
+    later_plan = fixture_week_plan().model_copy(update={"plan_date": LATER_EVENING})
+    with browser(key=True) as client:
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [later_plan], lambda: [accepting()]
+        )
+        first = family_plan(client, LATER_EVENING.isoformat())
+        published(client, FAMILY_PLAN_ACTION, first)
+        before = runs_recorded(client)
+        drafts = state_of(client).drafts
+        monkeypatch.setattr(drafts, "latest_for", failing_once(StoreBusy, drafts.latest_for))
+        answer = client.post(FAMILY_PLAN_ACTION, data=first)
+        monkeypatch.undo()
+        assert runs_recorded(client) == before
+    assert answer.status_code == 409, answer.headers.get("location")
+    assert family_line(answer.text) == (
+        f"{FAMILY_PLAN_ALREADY_MADE_AUGUST_20} {FAMILY_FOR_A_NEW_PLAN}"
+    )
+    assert plan_date_shown(answer.text) == LATER_EVENING.isoformat()
 
 
 def test_family_used_form_with_an_unreadable_date_claims_nothing_about_the_field() -> None:
@@ -402,7 +427,7 @@ def test_family_used_form_with_an_unreadable_date_claims_nothing_about_the_field
     assert answer.status_code == 409
     assert family_line(answer.text) == (
         f"{FAMILY_ASKED_FOR_AUGUST_19} {THAT_PLAN_SHOWN_BELOW} {FAMILY_DATE_NOT_READ} "
-        f"{FAMILY_PLAN_ANOTHER_EVENING}"
+        f"{FAMILY_FOR_A_NEW_PLAN}"
     )
     assert plan_fold_open(answer.text) is True
     assert plan_date_shown(answer.text) == PLAN_DATE.isoformat()
@@ -461,6 +486,75 @@ def test_family_check_page_for_an_ended_run_keeps_its_evening() -> None:
     assert "kept below" not in page.text
 
 
+def test_family_check_page_for_an_ended_run_starts_nothing_and_mints_a_new_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opening the check page for an ended run prepares a new request and starts none: no run
+    is admitted, the refilled form carries an id of its own, and only a press of that form
+    plans the evening, under that new id."""
+    run_id = uuid4().hex
+    later_plan = fixture_week_plan().model_copy(update={"plan_date": LATER_EVENING})
+    with browser(key=True) as client:
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [later_plan], lambda: [accepting()]
+        )
+        drafts = state_of(client).drafts
+        ended_run(drafts, thread_id=run_id, plan_date=LATER_EVENING, outcome="timed_out")
+        before = runs_recorded(client)
+        admitted: list[str] = []
+        admit = drafts.admit_run
+
+        def admitting(run: str, *args: object, **kwargs: Any) -> object:  # noqa: ANN401
+            admitted.append(run)
+            return admit(run, *args, **kwargs)
+
+        monkeypatch.setattr(drafts, "admit_run", admitting)
+        page = client.get("/parent", params={"run": run_id}, headers=PAGE_HEADERS)
+        loaded = (runs_recorded(client), list(admitted))
+        refilled = form_fields(page.text, FAMILY_PLAN_ACTION)
+        pressed = client.post(FAMILY_PLAN_ACTION, data={**refilled, "plan_date": LATER})
+        ran = runs_recorded(client)
+    assert page.status_code == 200
+    assert loaded == (before, [])
+    assert refilled["run_id"] not in {run_id, ""}
+    assert pressed.is_redirect, family_line(pressed.text)
+    assert admitted == [refilled["run_id"]]
+    assert ran == [*before, (refilled["run_id"], LATER, "published")]
+
+
+@pytest.mark.parametrize("case", ["overtaken", "not the newest", "passed", "published", "running"])
+def test_family_check_page_refills_only_an_ended_run_still_ahead(case: str) -> None:
+    """The check page refills its plan form only for a run that ended without a plan, wasn't
+    overtaken, is the newest of its evening, and is for today or later. Otherwise the form
+    holds today and Help with a plan stays closed."""
+    run_id = uuid4().hex
+    with browser(key=True) as client:
+        drafts = state_of(client).drafts
+        if case == "published":
+            form = family_plan(client, "")
+            published(client, FAMILY_PLAN_ACTION, form)
+            run_id = form["run_id"]
+        elif case == "running":
+            drafts.admit_run(
+                run_id, plan_date=LATER_EVENING, deadline_mono=monotonic() + RUN_DEADLINE_SECONDS
+            )
+        else:
+            evening = date(2026, 8, 18) if case == "passed" else LATER_EVENING
+            reason = "overtaken" if case == "overtaken" else "timed_out"
+            ended_run(drafts, thread_id=run_id, plan_date=evening, outcome=reason)
+            if case == "not the newest":
+                ended_run(
+                    drafts, thread_id=uuid4().hex, plan_date=LATER_EVENING, outcome="timed_out"
+                )
+        before = runs_recorded(client)
+        page = client.get("/parent", params={"run": run_id}, headers=PAGE_HEADERS)
+        after = runs_recorded(client)
+    assert page.status_code == 200
+    assert after == before
+    assert plan_date_shown(page.text) == PLAN_DATE.isoformat()
+    assert plan_fold_open(page.text) is False
+
+
 # ------------------------------------------------- every row of both tables
 
 LATER = LATER_EVENING.isoformat()
@@ -480,8 +574,6 @@ FAMILY_KEPT: dict[str, str | None] = {
 }
 """The date each family row's form holds, ``None`` for the page's own day; the running and
 unconfirmed rows offer no form."""
-FAMILY_KEPT_CLAIMED = frozenset({"family-not-whole", "family-expired"})
-"""The family rows whose line says the evening chosen is kept below."""
 NO_MODEL_ROWS = frozenset({"family-not-whole", "family-expired", "family-ended"})
 """The family rows a press reaches without a model to plan with."""
 NOTHING_TO_PLAN_ROWS = frozenset({"her-not-whole", "her-another-evening", "her-expired"})
@@ -658,7 +750,8 @@ def test_each_answer_keeps_what_the_press_carried(
     row: AnswerRow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every answer that offers a plan form keeps what the press carried that the page can
-    show: her cards in place, or the family's date, in the open form when the row opens it."""
+    show: her cards in place, or the family's date, in the open form when the row opens it,
+    with no line claiming a date kept."""
     kept = f"a:{place_key(ESSAY_ID)}"
     with browser(key=True) as client:
         action, form = prepared(client, row.row, monkeypatch, kept)
@@ -669,8 +762,7 @@ def test_each_answer_keeps_what_the_press_carried(
     held = FAMILY_KEPT[row.row]
     assert plan_date_shown(answer.text) == (PLAN_DATE.isoformat() if held is None else held)
     assert plan_fold_open(answer.text) is (row.row != "family-before")
-    claimed = FAMILY_KEPT_BELOW in family_line(answer.text)
-    assert claimed is (row.row in FAMILY_KEPT_CLAIMED)
+    assert "kept" not in family_line(answer.text)
 
 
 @pytest.mark.parametrize(
@@ -732,7 +824,7 @@ def test_family_newer_plan_decided_for_a_later_evening_is_under_earlier_plans() 
     text = answer.text
     assert answer.status_code == 409
     assert family_line(text) == (
-        f"{FAMILY_NEWER_PLAN_AUGUST_20} {SHOWN_BELOW_UNDER_EARLIER_PLANS} {FAMILY_ASK_AGAIN}"
+        f"{FAMILY_NEWER_PLAN_AUGUST_20} {SHOWN_BELOW_UNDER_EARLIER_PLANS} {FAMILY_FOR_A_NEW_PLAN}"
     )
     assert re.search(r'<details class="steps panel-fold" open>\s*<summary>Earlier plans', text)
     earlier = text.split("<summary>Earlier plans</summary>", 1)[1]
