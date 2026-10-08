@@ -1221,6 +1221,30 @@ FAMILY_NEWER_PLAN_AUGUST_20 = (
 )
 SHOWN_BELOW_UNDER_EARLIER_PLANS = "That plan is shown below, under Earlier plans."
 BEING_MADE_AUGUST_19 = "The plan request for Wednesday, August 19 is still being finished."
+FAMILY_NOT_A_DATE = "'someday' is not a date. Use the form YYYY-MM-DD."
+FAMILY_EVENING_PASSED = (
+    "The evening of 2026-08-18 has passed. Plans are for today or a later evening."
+)
+FAMILY_PAST_THE_CALENDAR = (
+    "The evening of 9999-12-25 is past the edge of the calendar. "
+    "Plans reach no later than 9999-12-24."
+)
+FAMILY_ALREADY_PLANNING = (
+    "The last plan request, for Thursday, August 20, is still being finished. Try again in "
+    "about 41 seconds. Her homework updates are saved."
+)
+FAMILY_NOT_SAVED = (
+    "Blossom made a plan but couldn't save it. Try again in a moment. Her homework updates "
+    "are saved."
+)
+FAMILY_COULD_NOT_START = (
+    "Blossom couldn't start a plan this time. Try again in a moment. Her homework updates are "
+    "saved."
+)
+FAMILY_NOTHING_TO_SCHEDULE = "Nothing to schedule from the work in this planning window."
+FAMILY_INTERRUPTED = (
+    "Blossom couldn't finish a reliable plan this time. Her homework updates are saved."
+)
 HER_ROWS = (
     AnswerRow("her-not-whole", 422, HER_FORM_NOT_WHOLE, HER_FORM_NOT_WHOLE),
     AnswerRow("her-another-evening", 409, HER_FORM_FROM_AUGUST_18, HER_FORM_FROM_AUGUST_18),
@@ -1276,11 +1300,18 @@ FAMILY_ROWS = (
         f"{ENDED_REASONS['timed_out']} {HER_UPDATES_SAVED}",
     ),
     AnswerRow("family-unconfirmed", 202, FAMILY_UNCONFIRMED, FAMILY_UNCONFIRMED, form=False),
+    AnswerRow("family-not-a-date", 422, FAMILY_NOT_A_DATE, FAMILY_NOT_A_DATE),
+    AnswerRow("family-passed", 422, FAMILY_EVENING_PASSED, FAMILY_EVENING_PASSED),
+    AnswerRow("family-beyond", 422, FAMILY_PAST_THE_CALENDAR, FAMILY_PAST_THE_CALENDAR),
+    AnswerRow("family-already-planning", 409, FAMILY_ALREADY_PLANNING, FAMILY_ALREADY_PLANNING),
+    AnswerRow("family-not-saved", 503, FAMILY_NOT_SAVED, FAMILY_NOT_SAVED),
+    AnswerRow("family-could-not-start", 503, FAMILY_COULD_NOT_START, FAMILY_COULD_NOT_START),
+    AnswerRow("family-refused", 409, FAMILY_NOTHING_TO_SCHEDULE, FAMILY_NOTHING_TO_SCHEDULE),
     AnswerRow(
-        "family-before",
-        422,
-        "The evening of 2026-08-18 has passed. Plans are for today or a later evening.",
-        "The evening of 2026-08-18 has passed. Plans are for today or a later evening.",
+        "family-interrupted",
+        409,
+        f"{FAMILY_INTERRUPTED} {FAMILY_REVIEW_SHOWS}",
+        FAMILY_INTERRUPTED,
     ),
     AnswerRow("family-made", 303, lands="/parent"),
     AnswerRow("family-plan-latest", 303, lands="/parent"),

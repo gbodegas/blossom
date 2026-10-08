@@ -500,7 +500,14 @@ PlanRow = Literal[
     "family-plan-made",
     "family-ended",
     "family-unconfirmed",
-    "family-before",
+    "family-not-a-date",
+    "family-passed",
+    "family-beyond",
+    "family-already-planning",
+    "family-not-saved",
+    "family-could-not-start",
+    "family-refused",
+    "family-interrupted",
 ]
 """Each answer a plan press gives on a page, besides landing on the page it planned for."""
 PlanLanding = Literal[
@@ -552,7 +559,6 @@ class PlanAnswer:
     elsewhere: str
     keeps: date | None = None
     offers_form: bool = True
-    opens_form: bool = True
     open_plan: str | None = None
     check: RunCheck | None = None
 

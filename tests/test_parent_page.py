@@ -50,6 +50,7 @@ from tests import support
 from tests.support import (
     FAMILY_ASKED_FOR_AUGUST_19,
     FAMILY_DATE_NOT_READ,
+    FAMILY_EVENING_PASSED,
     FAMILY_FOR_A_NEW_PLAN,
     FAMILY_FORM_EXPIRED,
     FAMILY_FORM_NOT_WHOLE,
@@ -2076,16 +2077,24 @@ def test_a_plan_published_while_the_family_page_is_read_leaves_its_form_behind_i
     assert [run for run, _, _ in runs][1:] == ["plan:between"]
 
 
-def test_a_refused_date_is_said_at_the_top_without_taking_the_focus() -> None:
-    """Only an answer about the plan form itself takes the focus; an evening that has passed
-    is said at the top as any refusal there is."""
+def test_a_refused_date_is_said_at_the_top_with_the_focus_and_kept_in_the_form() -> None:
+    """An evening that has passed is said at the top in its own words, the line takes the
+    focus as every answer to the plan form does, and the open form keeps the evening chosen
+    under a fresh id, so nothing is started."""
     earlier = (PLAN_DATE - timedelta(days=1)).isoformat()
     with browser() as client:
-        posted = client.post("/parent/actions/plan", data=family_plan(client, earlier))
+        form = family_plan(client, earlier)
+        posted = client.post("/parent/actions/plan", data=form)
+        runs = runs_recorded(client)
 
     assert posted.status_code == 422
-    assert RESTING_LINE in posted.text
-    assert 'tabindex="-1" autofocus>' not in problem_line(posted.text)
+    assert family_line(posted.text) == FAMILY_EVENING_PASSED
+    assert FOCUSED_LINE in posted.text
+    assert RESTING_LINE not in posted.text
+    assert plan_fold_open(posted.text) is True
+    assert date_kept(posted.text) == earlier
+    assert form_fields(posted.text, "/parent/actions/plan")["run_id"] != form["run_id"]
+    assert runs == []
 
 
 def test_the_plan_form_and_its_answers_are_held_by_their_own_rules() -> None:

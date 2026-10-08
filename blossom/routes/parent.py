@@ -1072,7 +1072,7 @@ def review_page(
         offers_plan = plan_answer.offers_form
         open_plan = plan_answer.open_plan
         problem_check = plan_answer.check
-        focus_problem = plan_answer.row != "family-before"
+        focus_problem = True
     about_a_row = check is not None and check.problem is not None and problem is None
     # The household day is read once for the page. The drafts are read once
     # too, in one reading of the table: what waits, what was decided, and
@@ -1165,7 +1165,7 @@ def review_page(
         form_shown = offers_plan and model_configured(state.settings)
         kept = plan_answer.keeps
         plan_date_kept = None if kept is None else kept.isoformat()
-        plan_open = form_shown and plan_answer.opens_form
+        plan_open = form_shown
         place = where_shown(open_plan, waiting, todays, decided)
 
         def shows(needs: Needs) -> bool:
@@ -1184,7 +1184,8 @@ def review_page(
         {
             "today": today,
             # The date the plan form is filled with: the one a refused press chose, kept,
-            # or today; with Help with a plan open when a press's date is kept.
+            # or today; with Help with a plan open on a plan press's answer, or when a
+            # check link's run keeps its evening.
             "plan_date_value": today.isoformat() if plan_date_kept is None else plan_date_kept,
             "plan_open": plan_open,
             # A fresh form for every page, its newest plan from the same reading as the
@@ -1692,17 +1693,23 @@ def refused_form(row: PlanRow, code: int, said: str, kept: date | None) -> PlanA
     )
 
 
-def as_before(
-    code: int, said: str, check: RunCheck | None = None, *, elsewhere: str | None = None
+def said_as_it_is(
+    row: PlanRow,
+    code: int,
+    said: str,
+    kept: date | None,
+    check: RunCheck | None = None,
+    *,
+    elsewhere: str | None = None,
 ) -> PlanAnswer:
-    """An answer the form gave before each form planned once: said as it was, keeping nothing
-    and leaving the plan form closed; its stand-in says the same, or its own words."""
+    """An answer whose words name nothing on the page, so its stand-in says them too unless it
+    has words of its own; the open plan form holds the date ``kept``, or today without one."""
     return PlanAnswer(
-        "family-before",
+        row,
         code,
         fact(said),
         said if elsewhere is None else elsewhere,
-        opens_form=False,
+        keeps=kept,
         check=check,
     )
 
@@ -1728,6 +1735,8 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
 
     Every answer is a ``PlanAnswer``: a line whose clauses about the page are said only when
     the page sent shows what they name, words of its own for the stand-in, and what it keeps.
+    Each line takes the focus, and each answer that shows the plan form opens it holding the
+    date chosen when it can be read, refusals of the date itself included.
     A run that fails on the way for any reason other than a refusal is said on the page as a
     plan Blossom couldn't finish, and the failure goes to the process log. An evening that
     has passed is refused before anything runs, and so is one past the edge of the calendar,
@@ -1868,15 +1877,25 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     evening = read_date(form.evening)
     if evening is None:
         return await not_made(
-            as_before(
+            said_as_it_is(
+                "family-not-a-date",
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 f"{plan_date!r} is not a date. Use the form YYYY-MM-DD.",
+                None,
             )
         )
     if evening < state.clock.today():
-        return await not_made(as_before(status.HTTP_422_UNPROCESSABLE_CONTENT, passed(evening)))
+        return await not_made(
+            said_as_it_is(
+                "family-passed", status.HTTP_422_UNPROCESSABLE_CONTENT, passed(evening), evening
+            )
+        )
     if evening > date.max - CALENDAR_MARGIN:
-        return await not_made(as_before(status.HTTP_422_UNPROCESSABLE_CONTENT, beyond(evening)))
+        return await not_made(
+            said_as_it_is(
+                "family-beyond", status.HTTP_422_UNPROCESSABLE_CONTENT, beyond(evening), evening
+            )
+        )
     try:
         await require_work(state, evening, budget)
         require_model(graphs)
@@ -1904,17 +1923,31 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         )
     except AlreadyPlanning as error:
         return await not_made(
-            as_before(
+            said_as_it_is(
+                "family-already-planning",
                 error.status_code,
                 already_planning(error.run, parent=True),
+                evening,
                 run_check(FAMILY_PAGE, error.run.run_id, CHECK_ON_THAT_REQUEST),
             )
         )
     except NotSaved as error:
-        return await not_made(as_before(error.status_code, not_saved(parent=True, kept=error.kept)))
+        return await not_made(
+            said_as_it_is(
+                "family-not-saved",
+                error.status_code,
+                not_saved(parent=True, kept=error.kept),
+                evening,
+            )
+        )
     except CouldNotStart as error:
         return await not_made(
-            as_before(error.status_code, f"{COULD_NOT_START} {saved_sentence(parent=True)}")
+            said_as_it_is(
+                "family-could-not-start",
+                error.status_code,
+                f"{COULD_NOT_START} {saved_sentence(parent=True)}",
+                evening,
+            )
         )
     except Unconfirmed as unconfirmed:
         said = f"{UNCONFIRMED} {saved_sentence(parent=True)}"
@@ -1929,13 +1962,17 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             )
         )
     except HTTPException as error:
-        return await not_made(as_before(error.status_code, str(error.detail)))
+        return await not_made(
+            said_as_it_is("family-refused", error.status_code, str(error.detail), evening)
+        )
     except Exception:
         logger.exception("the plan for %s failed on the way", evening)
         return await not_made(
-            as_before(
+            said_as_it_is(
+                "family-interrupted",
                 status.HTTP_409_CONFLICT,
                 PLAN_INTERRUPTED,
+                evening,
                 elsewhere=WITHOUT_THE_PAGE[PLAN_INTERRUPTED],
             )
         )

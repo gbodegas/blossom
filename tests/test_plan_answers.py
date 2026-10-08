@@ -15,7 +15,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from concurrent.futures import Future
-from datetime import date
+from datetime import UTC, date, datetime
 from time import monotonic
 from types import SimpleNamespace
 from typing import Any, cast, get_args
@@ -28,9 +28,15 @@ from blossom.agent.runs import RUN_DEADLINE_SECONDS, Unfinished
 from blossom.drafts import DraftStatus
 from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
-from blossom.routes.runs import Unconfirmed, plan_graphs
+from blossom.routes.runs import (
+    AlreadyPlanning,
+    CouldNotStart,
+    NotSaved,
+    Unconfirmed,
+    plan_graphs,
+)
 from blossom.routes.student import place_key
-from blossom.stores.drafts import StoreBusy, WriterBusy
+from blossom.stores.drafts import RunState, StoreBusy, WriterBusy
 from tests.support import (
     ENDED_REASONS,
     ESSAY_ID,
@@ -92,6 +98,7 @@ from tests.support import (
 
 ISSUED_LONG_AGO = "20260101T000000Z"
 LATER_EVENING = date(2026, 8, 20)
+REPORTED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
 STORE_FAILURE_KINDS = (StoreBusy, WriterBusy, sqlite3.OperationalError)
 
 
@@ -570,11 +577,49 @@ FAMILY_KEPT: dict[str, str | None] = {
     "family-newer-plan-unread": PLAN_DATE.isoformat(),
     "family-plan-made": PLAN_DATE.isoformat(),
     "family-ended": PLAN_DATE.isoformat(),
-    "family-before": None,
+    "family-not-a-date": None,
+    "family-passed": "2026-08-18",
+    "family-beyond": "9999-12-25",
+    "family-already-planning": LATER,
+    "family-not-saved": LATER,
+    "family-could-not-start": LATER,
+    "family-refused": LATER,
+    "family-interrupted": LATER,
 }
 """The date each family row's form holds, ``None`` for the page's own day; the running and
 unconfirmed rows offer no form."""
-NO_MODEL_ROWS = frozenset({"family-not-whole", "family-expired", "family-ended"})
+CHOSEN = {
+    "family-not-a-date": "someday",
+    "family-passed": "2026-08-18",
+    "family-beyond": "9999-12-25",
+}
+"""The date each family row refused for the date itself was chosen with."""
+PLANNING_ANSWERS: dict[str, Callable[[], Exception]] = {
+    "family-already-planning": lambda: AlreadyPlanning(
+        RunState(
+            run_id=f"plan:{LATER}:another",
+            plan_date=LATER_EVENING,
+            status="running",
+            reason="running",
+            seconds_left=40.0,
+            plan_unchanged=True,
+        )
+    ),
+    "family-not-saved": NotSaved,
+    "family-could-not-start": CouldNotStart,
+    "family-interrupted": lambda: RuntimeError("a step failed on the way"),
+}
+"""How planning answers each family row that comes back from it, as its own modules script it."""
+NO_MODEL_ROWS = frozenset(
+    {
+        "family-not-whole",
+        "family-expired",
+        "family-ended",
+        "family-not-a-date",
+        "family-passed",
+        "family-beyond",
+    }
+)
 """The family rows a press reaches without a model to plan with."""
 NOTHING_TO_PLAN_ROWS = frozenset({"her-not-whole", "her-another-evening", "her-expired"})
 """Her rows a press reaches when nothing is left to plan."""
@@ -584,6 +629,15 @@ SIGNED_IN = {"BLOSSOM_STUDENT_PASSPHRASE": HERS, "BLOSSOM_PARENT_PASSPHRASE": TH
 def too_slow(*_: object, **__: object) -> None:
     """A store read whose wait ended before it returned."""
     raise Unfinished(cast("asyncio.Future[Any]", Future()))
+
+
+def nothing_left_to_do(client: TestClient) -> None:
+    """Have every assignment reported done, so no evening has work left to plan."""
+    project_state = state_of(client).project_state
+    for item in project_state.all_assignments():
+        project_state.report_status(
+            item.assignment_id, "done", None, expected_head=None, now=REPORTED, today=PLAN_DATE
+        )
 
 
 def planning_answers(monkeypatch: pytest.MonkeyPatch, route: Any, answer: object) -> None:  # noqa: ANN401
@@ -610,8 +664,14 @@ def prepared(
     if row in {"family-not-whole", "family-expired"}:
         changed = {"stray": "1"} if row == "family-not-whole" else {"issued_at": ISSUED_LONG_AGO}
         return FAMILY_PLAN_ACTION, {**fields, "plan_date": LATER, **changed}
-    if row == "family-before":
-        return FAMILY_PLAN_ACTION, {**fields, "plan_date": "2026-08-18"}
+    if row in CHOSEN:
+        return FAMILY_PLAN_ACTION, {**fields, "plan_date": CHOSEN[row]}
+    if row == "family-refused":
+        nothing_left_to_do(client)
+        return FAMILY_PLAN_ACTION, {**fields, "plan_date": LATER}
+    if row in PLANNING_ANSWERS:
+        planning_answers(monkeypatch, parent_routes, PLANNING_ANSWERS[row]())
+        return FAMILY_PLAN_ACTION, {**fields, "plan_date": LATER}
     form = {**fields, "plan_date": ""}
     if row in {"family-another-evening", "family-unreadable-date"}:
         published(client, FAMILY_PLAN_ACTION, form)
@@ -750,18 +810,20 @@ def test_each_answer_keeps_what_the_press_carried(
     row: AnswerRow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every answer that offers a plan form keeps what the press carried that the page can
-    show: her cards in place, or the family's date, in the open form when the row opens it,
-    with no line claiming a date kept."""
+    show: her cards in place, or the family's date, in the open form under the line, which
+    takes the focus, with no line claiming a date kept."""
     kept = f"a:{place_key(ESSAY_ID)}"
     with browser(key=True) as client:
         action, form = prepared(client, row.row, monkeypatch, kept)
         answer = client.post(action, data=form, headers=PAGE_HEADERS)
+    assert answer.status_code == row.status
     if row.row.startswith("her-"):
         assert form_fields(answer.text, HER_PLAN_ACTION).get("in_place") == kept
         return
     held = FAMILY_KEPT[row.row]
     assert plan_date_shown(answer.text) == (PLAN_DATE.isoformat() if held is None else held)
-    assert plan_fold_open(answer.text) is (row.row != "family-before")
+    assert plan_fold_open(answer.text) is True
+    assert family_line_focused(answer.text)
     assert "kept" not in family_line(answer.text)
 
 
