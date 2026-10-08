@@ -65,6 +65,7 @@ from tests.support import (
     graph_with,
     human_text,
     ok,
+    plan_form,
     scripted_graphs,
     state_of,
     work_listed,
@@ -255,7 +256,7 @@ def test_the_wrong_evening_every_time_leaves_the_plan_already_there_alone() -> N
     still today's, still waiting, not displaced; the run is on record without a draft; and
     nothing is left in flight."""
     with browser(key=True) as client:
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         state = state_of(client)
         first = state.drafts.latest_for(PLAN_DATE)
         assert first is not None
@@ -268,7 +269,7 @@ def test_the_wrong_evening_every_time_leaves_the_plan_already_there_alone() -> N
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
             planner, list, planners=planners
         )
-        again = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        again = client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
         latest = state.drafts.latest_for(PLAN_DATE)
         ended = state.drafts.runs_without_a_draft()
         in_flight = set(state.drafts.running_threads())
@@ -386,7 +387,7 @@ def test_a_done_that_lands_before_the_correction_changes_nothing_the_run_works_f
         client.app.dependency_overrides[plan_graphs] = override  # type: ignore[attr-defined]
         state = state_of(client)
         as_read = planning_digest(read_week(state.project_state, state.project_state, PLAN_DATE))
-        planned = client.post("/student/actions/plan")
+        planned = client.post("/student/actions/plan", data=plan_form(client))
         record = state.drafts.latest_for(PLAN_DATE)
         as_it_stands = planning_digest(
             read_week(state.project_state, state.project_state, PLAN_DATE)
@@ -510,7 +511,7 @@ def test_a_decided_plan_from_before_the_check_reads_on_the_family_page_as_it_was
         with monkeypatch.context() as earlier:
             earlier.setattr(plan_checks, "ORDERED_PLAN_CHECKS", SEVEN)
             earlier.setattr(agent_steps, "ORDERED_PLAN_CHECKS", SEVEN)
-            assert client.post("/student/actions/plan").status_code == 303
+            assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
             record = state_of(client).drafts.latest_for(PLAN_DATE)
             assert record is not None
             decided = client.post(

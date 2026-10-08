@@ -90,6 +90,7 @@ from tests.support import (
     hidden,
     lands_on,
     mark,
+    plan_form,
     practice_store,
     report,
     row_for,
@@ -989,7 +990,7 @@ def test_checks_leave_her_account_the_schools_the_plan_and_the_digest_as_they_we
         a_discrepancy(client)
         state = state_of(client)
         store = state.project_state
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         record = state.drafts.latest_for(PLAN_DATE)
         assert record is not None
 

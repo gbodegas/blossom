@@ -20,15 +20,16 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
-from datetime import date
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException, status
 from starlette.datastructures import URL
+from starlette.responses import Response
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread, finish_held_reviews
@@ -59,9 +60,12 @@ from blossom.stores.drafts import (
     DraftRecord,
     RunEnded,
     RunState,
+    StaleBasis,
     StoreBusy,
+    UnknownBasis,
     WriterBusy,
 )
+from blossom.stores.help_requests import NotARequestId, request_id_from
 from blossom.views import (
     AlreadyPlanningView,
     PastDueView,
@@ -230,12 +234,14 @@ def ended_without_a_plan(
     past_due: Sequence[PastDueView] = (),
     unchanged: bool = False,
     evening: date | None = None,
+    where: bool = True,
 ) -> str:
     """The same, as her page says it: what went wrong in plain words, that her updates are
     kept, and, to a parent reading her page, where the run's record is. The run's own name
     for how it ended is never shown, and work is named only when the record shows its date
     has passed. ``unchanged`` adds that her plan is the one she had; ``evening`` is the run's
-    evening when it is not today's, which a date problem names."""
+    evening when it is not today's, which a date problem names. ``where`` false leaves out
+    where the record is, for a stand-in that can't show it."""
     if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
         return NOTHING_TO_SCHEDULE
     category = failure_category(outcome)
@@ -263,7 +269,7 @@ def ended_without_a_plan(
         what = "Blossom couldn't get a plan from the planning service this time."
     else:
         what = "Blossom couldn't finish a reliable plan this time."
-    then = "Family review shows what happened." if parent else ""
+    then = "Family review shows what happened." if parent and where else ""
     kept = plan_unchanged(parent=parent) if unchanged else ""
     return " ".join(part for part in (what, kept, saved_sentence(parent=parent), then) if part)
 
@@ -280,6 +286,100 @@ def thread_for(plan_date: date) -> str:
     """A new thread for one evening, which is also its run's id. The date is for a person
     reading the table."""
     return f"{evening_prefix(plan_date)}{uuid4().hex[:8]}"
+
+
+RUN_ID: Final = "run_id"
+EVENING: Final = "evening"
+ISSUED_AT: Final = "issued_at"
+NEWEST_PLAN: Final = "newest_plan"
+PLAN_FORM_FIELDS: Final = frozenset({RUN_ID, EVENING, ISSUED_AT, NEWEST_PLAN})
+"""What every plan form carries besides its choices: the id its run is recorded under, the
+evening it was made for, the real instant it was issued, and the newest published plan its
+page knew, empty for none."""
+FORM_LIFETIME: Final = timedelta(days=7)
+"""How long a plan form may be pressed, in real time from when it was issued."""
+ISSUED_AT_FORM: Final = "%Y%m%dT%H%M%SZ"
+"""How a page writes a form's issue time: ISO 8601's basic form in UTC, to the second, with
+no colon to be read as a time of day."""
+ISSUED_AHEAD: Final = timedelta(minutes=5)
+"""How far ahead of the real clock a form's issue time may be, for clocks a little apart."""
+
+
+@dataclass(frozen=True)
+class PlanForm:
+    """A plan form's own fields, as a page writes them."""
+
+    run_id: str
+    evening: date
+    issued_at: datetime
+    newest_plan: str
+
+    def fields(self) -> dict[str, str]:
+        """The hidden fields a page writes for this form."""
+        return {
+            RUN_ID: self.run_id,
+            EVENING: self.evening.isoformat(),
+            ISSUED_AT: self.issued_at.astimezone(UTC).strftime(ISSUED_AT_FORM),
+            NEWEST_PLAN: self.newest_plan,
+        }
+
+    def expired(self, now: datetime) -> bool:
+        """Whether the form was issued ``FORM_LIFETIME`` or more before ``now``."""
+        return now - self.issued_at >= FORM_LIFETIME
+
+
+def fresh_plan_form(state: ApplicationState, evening: date, newest_plan: str) -> PlanForm:
+    """A new plan form for ``evening``, issued now by the real clock. Writes nothing."""
+    return PlanForm(uuid4().hex, evening, state.real_clock.now(), newest_plan)
+
+
+def plan_form_from(fields: Mapping[str, str | None], now: datetime) -> PlanForm | None:
+    """The plan form a press sent, held to the shapes a page writes: ``None`` when a field is
+    missing or another shape, or its issue time is further ahead of ``now`` than allowed."""
+    try:
+        run_id = request_id_from(fields.get(RUN_ID) or "")
+        evening = date.fromisoformat(fields.get(EVENING) or "")
+        issued_at = datetime.fromisoformat(fields.get(ISSUED_AT) or "")
+    except (NotARequestId, ValueError):
+        return None
+    newest_plan = fields.get(NEWEST_PLAN)
+    if newest_plan is None or issued_at.tzinfo is None or issued_at - now > ISSUED_AHEAD:
+        return None
+    return PlanForm(run_id, evening, issued_at, newest_plan)
+
+
+class SameRun(Exception):
+    """The press's id already names a run: nothing is started, and the run is answered as
+    it stands."""
+
+    def __init__(self, run: RunState) -> None:
+        super().__init__(f"run {run.run_id!r} is {run.status}")
+        self.run = run
+
+
+def run_replaced(state: ApplicationState, run: RunState) -> bool:
+    """Whether a run's evening has a plan newer than any it made: it was overtaken, or the
+    plan it published was since replaced."""
+    if run.status == "ended":
+        return run.reason == OVERTAKEN
+    if run.status != "published" or run.draft is None:
+        return False
+    latest = state.drafts.latest_for(run.plan_date)
+    return latest is not None and latest.draft_id != run.draft.draft_id
+
+
+async def run_of_the_form(state: ApplicationState, run_id: str) -> RunState | None:
+    """The run a pressed form's id names, read without ending anything, on a worker thread
+    for at most the store's wait. ``None`` when none is, or the read fails or runs late:
+    admission then decides again in its own transaction."""
+    try:
+        return await bounded(
+            partial(state.drafts.run_status, run_id, STORE_WAIT_SECONDS, reconcile=False),
+            STORE_WAIT_SECONDS,
+        )
+    except Exception as error:
+        logger.warning("run %s could not be read for a press: %s", run_id, type(error).__name__)
+        return None
 
 
 def evening_named(day: date) -> str:
@@ -368,11 +468,106 @@ def run_check(page: str, run_id: str, label: str) -> RunCheck:
 
 @dataclass(frozen=True)
 class RunNotice:
-    """What a page says about a planning run, and its link to check again, if any."""
+    """What a page says about a planning run, its link to check again, if any, and the run
+    a page's ``?run=`` named when it ended without a plan."""
 
     said: str
     check: RunCheck | None = None
     running: bool = False
+    run: RunState | None = None
+
+
+STORE_FAILURES: Final = (Unfinished, StoreBusy, WriterBusy, sqlite3.Error)
+"""Every way a read of the store fails: busy past its wait, or the file refusing it."""
+
+PlanRow = Literal[
+    "her-not-whole",
+    "her-another-evening",
+    "her-expired",
+    "her-running",
+    "her-newer-plan",
+    "her-plan-made",
+    "her-ended",
+    "her-unconfirmed",
+    "her-before",
+    "family-not-whole",
+    "family-expired",
+    "family-another-evening",
+    "family-unreadable-date",
+    "family-running",
+    "family-newer-plan",
+    "family-newer-plan-unread",
+    "family-plan-made",
+    "family-ended",
+    "family-unconfirmed",
+    "family-before",
+]
+"""Each answer a plan press gives on a page, besides landing on the page it planned for."""
+PlanLanding = Literal[
+    "her-made",
+    "her-plan-latest",
+    "family-made",
+    "family-plan-latest",
+    "family-ended-first",
+]
+"""Each press that lands on the page it planned for, with no answer of its own: a plan made,
+a used form whose plan is still the newest, or, on the family page, a first press whose run
+ended without a plan, which the page's ended fold explains."""
+
+
+def landed[Landing: Response](row: PlanLanding, response: Landing) -> Landing:
+    """``response``, a press landing on the page it planned for, named by its row."""
+    del row
+    return response
+
+
+Needs = Literal["nothing", "plan", "button", "place", "shown"]
+"""What the page sent must show for a clause to be said: nothing, today's plan (her page),
+the plan button or form, the plan the answer is about, or that plan in the waiting list or
+under today's heading."""
+NOT_USED: Final = "Blossom couldn't use that plan request. No plan was started."
+OPENED_A_WEEK_AGO: Final = "That page was opened a week or more ago. No new plan was started."
+"""The two refusals of a plan form on either page: one that isn't whole or names no plan, and
+one issued ``FORM_LIFETIME`` or more before it was sent."""
+
+
+@dataclass(frozen=True)
+class Clause:
+    """One sentence of an answer's line, said when the page shows what it ``needs``, and
+    ``otherwise`` said in its place when it doesn't."""
+
+    words: str
+    needs: Needs = "nothing"
+    otherwise: str = ""
+
+
+@dataclass(frozen=True)
+class PlanAnswer:
+    """What a plan press answers on a page: its row, status, line, the words its stand-in
+    says, what the page keeps, whether it offers a plan form, and the plan it is about."""
+
+    row: PlanRow
+    status: int
+    line: tuple[Clause, ...]
+    elsewhere: str
+    keeps: date | None = None
+    offers_form: bool = True
+    opens_form: bool = True
+    open_plan: str | None = None
+    check: RunCheck | None = None
+
+    def said(self, shows: Callable[[Needs], bool]) -> str:
+        """The line as the page says it, each clause kept only when ``shows`` its need."""
+        return " ".join(
+            part
+            for clause in self.line
+            if (part := clause.words if shows(clause.needs) else clause.otherwise)
+        )
+
+
+def fact(*words: str) -> tuple[Clause, ...]:
+    """Sentences an answer says whatever the page shows."""
+    return tuple(Clause(said) for said in words)
 
 
 def being_made(run: RunState, page: str) -> RunNotice:
@@ -417,7 +612,8 @@ def asked_run(state: ApplicationState, run_id: str, page: str, *, parent: bool) 
         return None
     if run.status == "running":
         return being_made(run, page)
-    return ended_notice(run, parent=parent, today=state.clock.today())
+    notice = ended_notice(run, parent=parent, today=state.clock.today())
+    return None if notice is None else replace(notice, run=run)
 
 
 def run_notice(
@@ -597,14 +793,22 @@ ADMISSION_ALLOWANCE_SECONDS: Final = 0.25
 file's busy handler is in when the wait ends."""
 
 
-async def admit(state: ApplicationState, run_id: str, plan_date: date, budget: RunBudget) -> None:
+async def admit(
+    state: ApplicationState,
+    run_id: str,
+    plan_date: date,
+    budget: RunBudget,
+    basis: str | None = None,
+) -> None:
     """Record the run as the household's one running run, or refuse the press.
 
     The deadline is the end of the request's budget, on the store's clock. A run
     still running is ``AlreadyPlanning``; an admission that doesn't finish in time,
     or fails, is ``CouldNotStart``. One the route stopped waiting for can still insert
     its row, since the file's busy wait can overrun its cap on Windows, and that row
-    refuses presses until its own deadline.
+    refuses presses until its own deadline. A run already recorded under ``run_id`` is
+    ``SameRun``; with ``basis``, a page that didn't know the evening's newest plan is
+    ``StaleBasis``, and one naming a plan never published is ``UnknownBasis``.
     """
     wait = min(budget.remaining(), STORE_WAIT_SECONDS)
     admission = partial(
@@ -613,9 +817,12 @@ async def admit(state: ApplicationState, run_id: str, plan_date: date, budget: R
         plan_date=plan_date,
         deadline_mono=state.monotonic() + budget.remaining(),
         wait=wait,
+        basis=basis,
     )
     try:
         blocking = await bounded(admission, wait + ADMISSION_ALLOWANCE_SECONDS)
+    except (StaleBasis, UnknownBasis):
+        raise
     except Exception as error:
         if not isinstance(error, Unfinished | StoreBusy | WriterBusy):
             logger.exception("run %s could not be admitted", run_id)
@@ -630,6 +837,8 @@ async def admit(state: ApplicationState, run_id: str, plan_date: date, budget: R
         )
         raise
     if blocking is not None:
+        if blocking.run_id == run_id:
+            raise SameRun(blocking)
         raise AlreadyPlanning(blocking)
 
 
@@ -957,11 +1166,13 @@ async def make_plan(
     *,
     budget: RunBudget | None = None,
     run_id: str | None = None,
+    basis: str | None = None,
 ) -> PlanMade:
     """Admit a run for one evening, run the graph, and settle it, inside ``budget``.
 
     ``budget`` starts at handler entry, after the form body is read; without one, the run's
-    time starts now. ``run_id`` names the run, a new thread for the evening unless given.
+    time starts now. ``run_id`` names the run, a new thread for the evening unless given,
+    and ``basis`` is the newest plan the pressing page knew, checked at admission.
     The household has one running
     run at a time: a press while one runs is ``AlreadyPlanning``, naming it, and
     an admission that can't be made in time is ``CouldNotStart``. The graph runs
@@ -980,7 +1191,7 @@ async def make_plan(
     """
     budget = RunBudget(clock=state.monotonic) if budget is None else budget
     run_id = thread_for(plan_date) if run_id is None else run_id
-    await admit(state, run_id, plan_date, budget)
+    await admit(state, run_id, plan_date, budget, basis)
     planning = Planning(state, run_id, plan_date, budget)
     try:
         return await planning.run(graph)

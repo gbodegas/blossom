@@ -53,6 +53,7 @@ from tests.support import (
     dissent,
     fixture_week_plan,
     human_text,
+    plan_form,
     scripted_graphs,
     state_of,
     whole_form,
@@ -228,7 +229,7 @@ def test_a_change_in_what_applies_makes_a_waiting_plan_behind_and_asks_no_model(
             now=NOW,
             today=TODAY,
         )
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         waiting = state.drafts.latest_for(PLAN_DATE)
         assert waiting is not None
         brief = planners[0].briefs[0]
@@ -303,7 +304,7 @@ def test_a_run_tells_both_models_only_what_applies() -> None:
                 now=None,
                 today=None,
             )
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
 
     told = [human_text(planners[0].briefs[0]), human_text(critics[0].briefs[0])]
     for text in told:
@@ -384,7 +385,7 @@ def test_a_run_never_tells_either_model_a_school_note_no_one_chose_until_one_doe
             planners=planners,
             critics=critics,
         )
-        planned = client.post("/student/actions/plan")
+        planned = client.post("/student/actions/plan", data=plan_form(client))
         left = state_of(client).project_state.one_assignment(ESSAY_ID)
     told = [human_text(brief) for asked in (*planners, *critics) for brief in asked.briefs]
 
@@ -420,7 +421,7 @@ def test_a_run_never_tells_either_model_a_school_note_no_one_chose_until_one_doe
             planners=again,
             critics=critics_again,
         )
-        planned_again = client.post("/student/actions/plan")
+        planned_again = client.post("/student/actions/plan", data=plan_form(client))
     told_again = [human_text(brief) for asked in (*again, *critics_again) for brief in asked.briefs]
 
     assert [item.text for item in waiting] == [unreviewed]

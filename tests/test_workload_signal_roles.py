@@ -42,6 +42,7 @@ from tests.support import (
     fixture_week_plan,
     landing_in,
     light_fixture_plan,
+    plan_form,
     scripted_graphs,
     signed_in,
     signed_in_household,
@@ -254,9 +255,10 @@ def press(client: TestClient, which: str, signal_id: str = ABSENT) -> Response:
 
 
 def without_form_ids(page: str) -> str:
-    """A page with the fresh id each render gives its forms taken out, so two readings of
-    the same record compare equal."""
-    return re.sub(r'value="[0-9a-f]{32}"', 'value=""', page)
+    """A page with the fresh id and issue time each render gives its forms taken out, so two
+    readings of the same record compare equal."""
+    fresh = re.sub(r'value="[0-9a-f]{32}"', 'value=""', page)
+    return re.sub(r'name="issued_at" value="[^"]*"', 'name="issued_at" value=""', fresh)
 
 
 # ------------------------------------------------------------ a parent is refused
@@ -596,7 +598,7 @@ def test_a_parents_refused_press_leaves_her_evening_as_it_was(
     plan = light_fixture_plan if signal_up else fixture_week_plan
     with household(tmp_path, "her", plan=plan) as client:
         hers = one_of_hers(client) if signal_up else ABSENT
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         today_before = client.get("/student/plans/today").json()
         as_a_parent(client)
         page_before = without_form_ids(client.get(PAGE).text)
@@ -758,7 +760,7 @@ def test_a_signal_after_the_plan_is_said_to_whoever_reads_her_page(
 ) -> None:
     signs_in: Reader = "open" if reader == "open" else "her"
     with household(tmp_path, signs_in, plan=fixture_week_plan) as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         one_of_hers(client)
         page = her_week_as(client, reader)
 
@@ -777,7 +779,7 @@ def test_a_signal_gone_after_a_smaller_plan_reads_the_same_to_everyone(
     signs_in: Reader = "open" if reader == "open" else "her"
     with household(tmp_path, signs_in, plan=light_fixture_plan) as client:
         hers = one_of_hers(client)
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         signals = state_of(client).workload_signals
         if gone == "taken back":
             signals.withdraw(hers)
@@ -808,7 +810,7 @@ def test_a_smaller_plan_says_whose_signal_shortened_it(
     signs_in: Reader = "open" if reader == "open" else "her"
     with household(tmp_path, signs_in, plan=light_fixture_plan) as client:
         one_of_hers(client)
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         page = her_week_as(client, reader)
 
     assert sentence in page

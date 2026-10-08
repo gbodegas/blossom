@@ -130,6 +130,16 @@ class RunState(NamedTuple):
     """Whether the evening has a published plan as the run is read."""
 
 
+class StaleBasis(RuntimeError):
+    """A press made from a page that didn't show the evening's newest plan: a plan for the
+    evening was published after the one the page named. Nothing is written."""
+
+
+class UnknownBasis(RuntimeError):
+    """A press naming, as the newest plan its page knew, a draft never published. Nothing is
+    written."""
+
+
 class Settled(NamedTuple):
     """What ``settle_run`` committed: the run as it stands, and what its plan displaced."""
 
@@ -165,6 +175,8 @@ class ReviewSnapshot(NamedTuple):
     operative: frozenset[str]
     """The same for the day and every later evening: each evening's plan in force, waiting,
     approved, or refused, which a page shows beside what stands now."""
+    newest: str = ""
+    """The draft last in the published order, of any evening; empty when none is."""
 
 
 class AlreadyDecided(RuntimeError):
@@ -255,7 +267,9 @@ class DraftsStore:
         "decided within two weeks of its evening is closed as expired and kept the "
         "same way, and so is a draft a later plan for the same evening took the place "
         "of. A draft whose run failed before it could wait for review is the one row "
-        "removed, since it was never anyone's plan; its run stays."
+        "removed, since it was never anyone's plan; its run stays. A run's row is also "
+        "what makes the plan form that started it used, and a form expires seven days "
+        "after its page was opened, well inside that span."
     )
 
     def __init__(
@@ -732,38 +746,75 @@ class DraftsStore:
         plan_date: date,
         deadline_mono: float,
         wait: float = STORE_WAIT_SECONDS,
+        basis: str | None = None,
     ) -> RunState | None:
-        """Admit a run for the household, or return the run still running that blocks it.
+        """Admit a run for the household, or return the run that stands in its way.
 
-        One transaction: runs past their deadline are ended first, then a running run,
-        if one remains, is returned and nothing is written. Otherwise this run is
-        recorded ``running`` with its deadline, an instant on the store's monotonic
-        clock, and the evening's last place in the published order, the plan it
+        One transaction: runs past their deadline are ended first. A run already recorded
+        under ``run_id`` is returned as it stands, read with its draft; then a running run,
+        if one remains, is returned. With ``basis``, the newest plan the pressing page knew
+        (empty for none), a later publication for the evening is ``StaleBasis`` and a draft
+        never published is ``UnknownBasis``. In each case nothing is written. Otherwise
+        this run is recorded ``running`` with its deadline, an instant on the store's
+        monotonic clock, and the evening's last place in the published order, the plan it
         expects to replace.
         """
+        refusal: RuntimeError | None = None
         with self._session(wait, write=True):
             self._reconciled()
+            same = self._run_state(run_id, with_draft=True)
+            if same is not None:
+                return same
             row = self._connection.execute(
                 RUN_STATE + "WHERE runs.status='running' ORDER BY runs.recorded_at, runs.rowid"
             ).fetchone()
             if row is not None:
                 return self._state_from(row)
-            self._connection.execute(
-                """
+            known = 0 if not basis else self._published_place(basis)
+            if known is None:
+                refusal = UnknownBasis(basis)
+            elif basis is not None and self._last_published(plan_date.isoformat()) > known:
+                refusal = StaleBasis(plan_date.isoformat())
+            else:
+                self._insert_run(run_id, plan_date, deadline_mono)
+        if refusal is not None:
+            raise refusal
+        return None
+
+    def _published_place(self, draft_id: str) -> int | None:
+        """A published draft's place in the published order, ``None`` for any other id,
+        inside the caller's hold."""
+        row = self._connection.execute(
+            "SELECT published_order FROM drafts WHERE draft_id=? AND published=1", (draft_id,)
+        ).fetchone()
+        return None if row is None or row[0] is None else int(row[0])
+
+    def newest_published(self) -> str:
+        """The draft id last in the published order, of any evening; empty when none is."""
+        with self._session():
+            row = self._connection.execute(
+                "SELECT draft_id FROM drafts WHERE published=1 "
+                "ORDER BY published_order DESC LIMIT 1"
+            ).fetchone()
+        return "" if row is None else str(row[0])
+
+    def _insert_run(self, run_id: str, plan_date: date, deadline_mono: float) -> None:
+        """Record an admitted run ``running``, inside the caller's write."""
+        self._connection.execute(
+            """
                 INSERT INTO runs (
                     thread_id, plan_date, outcome, recorded_at, status, deadline_mono, base_order
                 ) VALUES (?, ?, ?, ?, 'running', ?, ?)
                 """,
-                (
-                    run_id,
-                    plan_date.isoformat(),
-                    RUNNING,
-                    self._clock.now().isoformat(),
-                    deadline_mono,
-                    self._last_published(plan_date.isoformat()),
-                ),
-            )
-        return None
+            (
+                run_id,
+                plan_date.isoformat(),
+                RUNNING,
+                self._clock.now().isoformat(),
+                deadline_mono,
+                self._last_published(plan_date.isoformat()),
+            ),
+        )
 
     def settle_run(
         self,
@@ -1257,11 +1308,13 @@ class DraftsStore:
             evening: max(found, key=lambda item: placed[item.draft_id] or 0)
             for evening, found in ahead.items()
         }
+        published = [name for name, place in placed.items() if records[name].published and place]
         return ReviewSnapshot(
             waiting=tuple(waiting),
             decided=tuple(decided),
             current_id=latest[today].draft_id if today in latest else None,
             operative=frozenset(item.draft_id for item in latest.values()),
+            newest=max(published, key=lambda name: placed[name]) if published else "",
         )
 
     def latest_for(self, plan_date: date) -> DraftRecord | None:

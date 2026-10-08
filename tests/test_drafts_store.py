@@ -35,7 +35,10 @@ from blossom.stores.drafts import (
     NotPublished,
     Outcome,
     RunEnded,
+    RunState,
+    StaleBasis,
     StoreBusy,
+    UnknownBasis,
     WriterBusy,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
@@ -516,6 +519,8 @@ def test_the_retention_policy_covers_the_runs_and_their_steps() -> None:
     assert "decision" in policy
     assert "record of the run" in policy
     assert "produced no draft" in policy
+    assert "seven days after its page was opened" in policy
+    assert "never swept" not in policy
 
 
 def test_a_run_with_no_steps_is_listed_with_an_empty_record() -> None:
@@ -2162,3 +2167,120 @@ def test_a_runs_state_says_whether_its_evening_has_a_published_plan() -> None:
     assert (later.run_id, later.status, later.has_plan) == ("plan:y", "ended", True)
     assert other_evening is not None
     assert (other_evening.status, other_evening.has_plan) == ("ended", False)
+
+
+def published_twice(store: DraftsStore) -> tuple[str, str]:
+    """Two plans published for the evening, the first then the second: their draft ids."""
+    first = Draft(draft_id="draft:plan:2026-08-19:first000", body="First", created_at=CREATED)
+    second = Draft(draft_id="draft:plan:2026-08-19:second00", body="Second", created_at=CREATED)
+    save_and_publish(store, first, thread_id="t1", plan_date=PLAN_DATE, outcome="accepted")
+    save_and_publish(store, second, thread_id="t2", plan_date=PLAN_DATE, outcome="accepted")
+    return first.draft_id, second.draft_id
+
+
+def every_run(store: DraftsStore) -> list[tuple[str, str]]:
+    return [
+        (str(run), str(status))
+        for run, status in store._connection.execute(
+            "SELECT thread_id, status FROM runs ORDER BY rowid"
+        )
+    ]
+
+
+def test_an_id_already_admitted_is_answered_by_its_run_and_admits_nothing() -> None:
+    """A press sent again under its run's id finds that run as it stands, read with its
+    plan, and writes no second row, whatever the basis it names."""
+    store = store_in_memory()
+    try:
+        _, newest = published_twice(store)
+        before = every_run(store)
+        again = store.admit_run("t2", plan_date=PLAN_DATE, deadline_mono=monotonic() + 90)
+        stale = store.admit_run("t2", plan_date=PLAN_DATE, deadline_mono=1.0, basis="")
+        after = every_run(store)
+    finally:
+        store.close()
+
+    assert again is not None
+    assert (again.run_id, again.status) == ("t2", "published")
+    assert again.draft is not None
+    assert again.draft.draft_id == newest
+    assert stale == again
+    assert after == before
+
+
+@pytest.mark.parametrize("basis", ["", "first"], ids=["no plan known", "the earlier plan"])
+def test_a_press_from_a_page_behind_the_newest_plan_is_stale_and_writes_nothing(
+    basis: str,
+) -> None:
+    """A page that knew no plan, or an earlier one than the evening's newest, starts no run."""
+    store = store_in_memory()
+    try:
+        first, _ = published_twice(store)
+        before = every_run(store)
+        with pytest.raises(StaleBasis):
+            store.admit_run(
+                "t3",
+                plan_date=PLAN_DATE,
+                deadline_mono=monotonic() + 90,
+                basis=first if basis else "",
+            )
+        after = every_run(store)
+    finally:
+        store.close()
+
+    assert after == before
+
+
+def test_a_basis_naming_no_published_plan_is_refused_and_writes_nothing() -> None:
+    store = store_in_memory()
+    try:
+        _, newest = published_twice(store)
+        before = every_run(store)
+        with pytest.raises(UnknownBasis):
+            store.admit_run(
+                "t3",
+                plan_date=PLAN_DATE,
+                deadline_mono=monotonic() + 90,
+                basis="draft:plan:2026-08-19:nowhere0",
+            )
+        current = store.admit_run(
+            "t4", plan_date=PLAN_DATE, deadline_mono=monotonic() + 90, basis=newest
+        )
+        after = every_run(store)
+    finally:
+        store.close()
+
+    assert current is None, "the newest plan as basis admits the run"
+    assert after == [*before, ("t4", "running")]
+
+
+def test_two_connections_admitting_one_id_at_once_leave_one_run(tmp_path: pathlib.Path) -> None:
+    """Two presses of one form reach the file through their own connections together: one
+    is admitted, the other finds that run, and one row stands."""
+    path = tmp_path / "state" / "blossom.sqlite3"
+    stores = [DraftsStore.open(path, fixture_clock()) for _ in range(2)]
+    start = threading.Barrier(2)
+    answers: list[RunState | None] = [None, None]
+
+    def press(index: int) -> None:
+        start.wait()
+        answers[index] = stores[index].admit_run(
+            "one-form", plan_date=PLAN_DATE, deadline_mono=monotonic() + 90, basis=""
+        )
+
+    try:
+        threads = [threading.Thread(target=press, args=(index,)) for index in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        rows = every_run(stores[0])
+    finally:
+        for store in stores:
+            store.close()
+
+    assert sorted(answer is None for answer in answers) == [False, True]
+    found = next(answer for answer in answers if answer is not None)
+    assert found is not None
+    assert (found.run_id, found.status) == ("one-form", "running")
+    assert rows == [("one-form", "running")]

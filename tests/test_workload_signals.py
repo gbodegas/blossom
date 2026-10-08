@@ -80,11 +80,13 @@ from tests.support import (
     landing_in,
     light_fixture_plan,
     ok,
+    plan_form,
     refusing,
     scripted_graphs,
     signals_in_memory,
     signed_in,
     signed_in_household,
+    without_minted_fields,
 )
 
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
@@ -483,12 +485,12 @@ def test_a_signal_says_what_it_asks_for_beside_its_undo(plan: str) -> None:
     planners: list[Scripted[DailyPlan]] = []
     with browser(key=True, planners=planners) as client:
         if plan == "a full plan":
-            client.post("/student/actions/plan")
+            client.post("/student/actions/plan", data=plan_form(client))
         before = asked(planners)
         client.post("/student/actions/too-much")
         after = asked(planners)
         if plan == "a smaller plan":
-            client.post("/student/actions/plan")
+            client.post("/student/actions/plan", data=plan_form(client))
         page = client.get(PAGE).text
         held = tonight(client)
 
@@ -516,7 +518,7 @@ def test_undo_removes_her_request_says_so_and_leaves_the_plan_as_saved(plan: boo
     with browser(key=True, planners=planners) as client:
         client.post("/student/actions/too-much")
         if plan:
-            client.post("/student/actions/plan")
+            client.post("/student/actions/plan", data=plan_form(client))
         saved = todays_draft(client)
         before = asked(planners)
         page = undo(client, tonight(client)[0])
@@ -598,7 +600,7 @@ def test_an_undo_sent_again_changes_nothing_and_never_says_the_evening_is_back()
         left = tonight(client)
 
     assert left == [first]
-    assert twice == once
+    assert without_minted_fields(twice) == without_minted_fields(once)
     state = STATE.search(twice)
     assert state is not None
     assert said(state.group(2)) == f"{REMOVED} {STILL} {NEXT_PLAN}"
@@ -944,7 +946,7 @@ def a_shorter_plan_saved(folder: pathlib.Path, *, presses: int = 1) -> object:
     with started(folder, DEFAULT_TOO_MUCH_MINUTES) as client:
         for _ in range(presses):
             client.post("/student/actions/too-much")
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         return todays_draft(client)
 
 
@@ -1156,7 +1158,7 @@ def test_a_full_evening_plan_over_the_evening_set_now_is_stale_and_never_approve
     start that sets the evening to 50 minutes: stale on every page, led by the plan button's
     own words, and approval is refused with the row untouched."""
     with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         saved = todays_draft(client)
     planners: list[Scripted[DailyPlan]] = []
     with started(tmp_path, 40, planners, evening=50) as client:
@@ -1214,7 +1216,7 @@ def test_a_changed_signal_is_said_before_the_limit(tmp_path: pathlib.Path) -> No
     """A plan over the limit that would apply now, whose signal has also changed since it was
     made, is told about the signal: that sentence comes first, on both pages."""
     with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
     with started(tmp_path, 40) as client:
         client.post("/student/actions/too-much")
         since = client.get("/student/plans/today").json()
@@ -1265,7 +1267,7 @@ def test_a_decided_plan_and_a_past_evening_are_not_measured_against_the_limit_se
     is stale after a start that lowers the limit under its blocks."""
     with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
         client.post("/student/actions/too-much")
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         draft_id = client.get("/student/plans/today").json()["draft_id"]
         as_a_parent(client)
         assert client.post(f"/parent/approvals/{draft_id}", json={"approved": True}).is_success

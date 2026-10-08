@@ -44,6 +44,7 @@ from tests.support import (
     help_reply,
     help_updates,
     lands_on,
+    plan_form,
     rules_named,
     signed_in,
     signed_in_household,
@@ -51,6 +52,7 @@ from tests.support import (
     store_of,
     waiting_note,
     whole_form,
+    without_minted_fields,
 )
 
 PAGE = "/student/due-this-week"
@@ -1203,7 +1205,7 @@ def test_a_help_read_that_fails_leaves_the_rest_of_her_week_as_it_was(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with browser(key=True) as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         waiting_note(store_of(client), course="Geometry", title="Questions 4-8", text="Synthetic")
         store = state_of(client).help_requests
         note = waiting_note(store_of(client), course="Art", title="Sketch", text="Synthetic about")
@@ -1215,7 +1217,9 @@ def test_a_help_read_that_fails_leaves_the_rest_of_her_week_as_it_was(
         '<a href="#help-updates">Help updates (1)</a></p>'
     )
     rest = {
-        name: " ".join(page.replace(section(page), "").replace(count, "").split())
+        name: " ".join(
+            without_minted_fields(page).replace(section(page), "").replace(count, "").split()
+        )
         for name, page in (("good", good), ("failed", failed))
     }
     assert count in good

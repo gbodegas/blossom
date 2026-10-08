@@ -69,8 +69,10 @@ from tests.support import (
     View,
     accepting,
     block,
+    client_for,
     compound,
     elements_of,
+    family_plan,
     finding,
     form_fields,
     household_client,
@@ -80,6 +82,7 @@ from tests.support import (
     scripted_graphs,
     selector,
     sign_in_as,
+    signed_in_household,
     state_of,
     style_rules,
     unshielded,
@@ -4548,11 +4551,12 @@ def plan_card_pages(tmp_path: pathlib.Path) -> dict[str, str]:
 def family_with_a_waiting_plan(verdict: CriticVerdict, folder: pathlib.Path) -> str:
     """The family page for a parent once a run, its critic saying ``verdict``, brings a plan
     to review."""
-    with household_client("parent", folder) as client:
+    keyed = replace(signed_in_household(folder), anthropic_api_key="not-a-key-and-never-sent")
+    with client_for(keyed) as client:
         graphs = scripted_graphs(lambda: [waiting_plan()] * 3, lambda: [verdict] * 3)
         client.app.dependency_overrides[plan_graphs] = graphs  # type: ignore[attr-defined]
         sign_in_as(client, "parent")
-        asked = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        asked = client.post("/parent/actions/plan", data=family_plan(client, PLAN_DATE.isoformat()))
         assert asked.status_code == 303, asked.text[:400]
         return client.get("/parent", headers=PAGE_HEADERS).text
 
