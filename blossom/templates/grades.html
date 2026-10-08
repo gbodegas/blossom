@@ -16,7 +16,7 @@
     <p class="problem" role="alert" id="problem">{{ said }}</p>
   {% endif %}
   {% if showing %}
-    <p class="note">Showing {{ open_term }}. The current term is {{ current_term }}.</p>
+    <p class="note">Showing {{ open_term }}. Your household's current term in Blossom is {{ current_term }}.</p>
     <form method="post" action="{{ view_action }}">
       <input type="hidden" name="view" value="{{ follow }}">
       <div class="actions">
@@ -29,7 +29,7 @@
       <input type="hidden" name="shown" value="{{ make_current.shown }}">
       <input type="hidden" name="term" value="{{ make_current.term }}">
       <div class="actions">
-        <button type="submit" class="secondary">Use {{ make_current.named }} as the current term</button>
+        <button type="submit" class="secondary">Use {{ make_current.named }} as the household's current term</button>
       </div>
     </form>
   {% endif %}

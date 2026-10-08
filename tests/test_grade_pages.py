@@ -30,7 +30,7 @@ from blossom.agent import graph as agent_graph
 from blossom.app import create_app
 from blossom.grades.draft import GradeNumber, GradeReportDraft, GradeValue, Presence, capture_key
 from blossom.grades.identity import name_form_key
-from blossom.grades.review import GradeReportSaved, ItemStatus, ReviewItem
+from blossom.grades.review import Cell, CurrentValue, GradeReportSaved, ItemStatus, ReviewItem
 from blossom.grades.text_reader import read_grade_report
 from blossom.household import secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
@@ -1407,7 +1407,8 @@ def test_grades_name_each_class_s_term_grade_and_the_report_that_supplied_it(
 def test_grades_parent_controls_follow_the_reader_never_the_address(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A parent signed in reads a parent's controls on her address too; she never does."""
+    """A parent signed in reads a parent's controls on her address too; she never does. The
+    sentence naming the household's current term reads the same for both."""
     with at(signed_in_household(tmp_path), host="testserver") as browser:
         seeded(browser, FIRST_TERM, SECOND_TERM)
         signed_in(browser, THEIRS)
@@ -1418,12 +1419,16 @@ def test_grades_parent_controls_follow_the_reader_never_the_address(
         browser.post(HER_VIEW, data={"view": "2026-2027 T2"}, headers=PAGE)
         hers = browser.get(HER_GRADES, headers=PAGE)
 
+    showing = "Showing T2 · 2026-2027. Your household's current term in Blossom is T1 · 2026-2027."
+    assert showing in words(theirs.text)
+    assert showing in words(hers.text)
     assert f'href="{ADD}"' in theirs.text
     assert f'action="{CURRENT_TERM}"' in theirs.text
     assert f'action="{VIEW}"' in theirs.text
-    assert "Use T2 · 2026-2027 as the current term" in words(theirs.text)
+    assert "Use T2 · 2026-2027 as the household's current term" in words(theirs.text)
     assert f'href="{ADD}"' not in hers.text
     assert CURRENT_TERM not in hers.text
+    assert "Use T2" not in words(hers.text)
     assert f'action="{HER_VIEW}"' in hers.text
     assert "/parent/grades" not in hers.text
 
@@ -1451,11 +1456,14 @@ def test_a_viewer_s_term_writes_their_choice_alone_and_grades_say_which_is_curre
     ]
     assert (chose.status_code, chose.headers["location"]) == (303, HER_GRADES)
     assert grades_after == grades
-    assert "Showing T2 · 2026-2027. The current term is T1 · 2026-2027." in words(showing.text)
+    assert (
+        "Showing T2 · 2026-2027. Your household's current term in Blossom is T1 · 2026-2027."
+        in words(showing.text)
+    )
     assert '<input type="hidden" name="view" value="current">' in showing.text
     assert "Show the current term" in words(showing.text)
     assert (followed.status_code, followed.headers["location"]) == (303, HER_GRADES)
-    assert "The current term is" not in words(current.text)
+    assert "current term in Blossom is" not in words(current.text)
 
 
 @pytest.mark.parametrize("view", ["2026-2027 T9", "2030-2031 T1", "T1", "", "2026-2027"])
@@ -1574,8 +1582,67 @@ def test_class_details_list_results_by_due_date_with_scores_as_reported(
     assert "Penalty: left blank" in said
     assert "Category details" in said
     assert "Labs: weight 25.0, average 83.8" in said
-    assert "Quizzes: weight 20.0, no grade reported" in said
+    assert "Quizzes: weight 20.0, average left blank" in said
+    assert "no grade reported" not in said
     assert not [name for name in ("bramble", "wren") if name in page.text.casefold()]
+
+
+def test_class_details_name_each_category_cell_by_its_stored_presence(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A category's weight and average read as written, or by the presence the save stored:
+    left blank or not in the copy, each apart and never "no grade reported"."""
+    labs = "**Labs** |   | **Weight = 25.0**"
+    homework_average = "**Category Average**\n\n|   |\n| - |\n\n**80.0**\n\n"
+    draft = draft_of(REPORT.replace(labs, labs.replace("25.0", "")).replace(homework_average, ""))
+    tests_ = draft.categories[3].model_copy(update={"weight": GradeNumber.not_captured()})
+    draft = draft.model_copy(update={"categories": (*draft.categories[:3], tests_)})
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, draft)
+        pages = [
+            browser.get(address.format(class_id=class_id, n=1), headers=PAGE)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    for page in pages:
+        said = words(page.text)
+        assert page.status_code == 200
+        assert "Homework / Practice: weight 15.0, average not in the copy" in said
+        assert "Labs: weight left blank, average 83.8" in said
+        assert "Quizzes: weight 20.0, average left blank" in said
+        assert "Tests /Projects: weight not in the copy, average left blank" in said
+        assert "no grade reported" not in said
+
+
+@pytest.mark.parametrize(
+    ("weight", "average", "line"),
+    [
+        ((Presence.REPORTED, "25.0"), (Presence.REPORTED, "83.8"), "weight 25.0, average 83.8"),
+        ((Presence.REPORTED, "0.0"), (Presence.REPORTED, "0.0"), "weight 0.0, average 0.0"),
+        ((Presence.BLANK, ""), (Presence.BLANK, ""), "weight left blank, average left blank"),
+        (
+            (Presence.UNREADABLE, "TBD"),
+            (Presence.UNREADABLE, "EX"),
+            "weight couldn't be read: TBD, average couldn't be read: EX",
+        ),
+        (
+            (Presence.NOT_CAPTURED, ""),
+            (Presence.NOT_CAPTURED, ""),
+            "weight not in the copy, average not in the copy",
+        ),
+        ((Presence.BLANK, ""), (Presence.REPORTED, "0.0"), "weight left blank, average 0.0"),
+    ],
+)
+def test_a_category_line_keeps_zero_blank_unreadable_and_uncaptured_apart(
+    weight: Cell, average: Cell, line: str
+) -> None:
+    value = CurrentValue(
+        cells={"name": (Presence.REPORTED, "Labs"), "weight": weight, "average": average},
+        report_id="report",
+        order=1,
+    )
+
+    assert grade_routes.category_line(value) == f"Labs: {line}"
 
 
 def test_a_newer_report_that_repeats_the_term_grade_leaves_it_named_by_its_supplier(
@@ -1634,6 +1701,8 @@ def test_class_details_take_their_term_from_the_address_never_the_selection(
         "/student/grades/classes/{class_id}/terms/0",
         "/student/grades/classes/{class_id}/terms/one",
         "/student/grades/classes/{class_id}/terms/01",
+        "/parent/grades/classes/class-unknown/terms/1",
+        "/parent/grades/classes/{class_id}/terms/2",
     ],
 )
 def test_a_class_or_term_position_not_on_record_is_not_found(
@@ -1644,7 +1713,7 @@ def test_a_class_or_term_position_not_on_record_is_not_found(
         page = browser.get(address.format(class_id=class_id), headers=PAGE)
 
     assert page.status_code == 404
-    assert escape(grade_routes.CLASS_NOT_ON_RECORD) in page.text
+    assert "Blossom has no record for this class and term." in words(page.text)
 
 
 def test_grades_is_in_the_masthead_for_whoever_reads(tmp_path: pathlib.Path) -> None:

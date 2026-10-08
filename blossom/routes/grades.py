@@ -1161,7 +1161,7 @@ CONTEXT_CHANGED: Final = (
 CONTEXT_UNKNOWN: Final = (
     "Blossom couldn't tell whether the current term changed. Check the current term again."
 )
-CLASS_NOT_ON_RECORD: Final = "This class and term aren't on record."
+CLASS_NOT_ON_RECORD: Final = "Blossom has no record for this class and term."
 NO_REPORT_ADDED: Final = "No grade report added"
 ORDINALS: Final = (
     "",
@@ -1562,17 +1562,13 @@ def result_shown(
 
 
 def category_line(value: CurrentValue) -> str:
-    """A category as the school reported it: its name, weight and average."""
+    """A category as the school reported it: its name, weight and average, each as written or
+    in the words for the presence its cell holds."""
     name, weight, average = (value.cells[field] for field in ("name", "weight", "average"))
-    said = []
-    if weight[0] is Presence.REPORTED:
-        said.append(f"weight {weight[1]}")
-    if average[0] is Presence.REPORTED:
-        said.append(f"average {average[1]}")
-    elif average[0] is Presence.BLANK:
-        said.append("no grade reported")
-    else:
-        said.append(presence_words("average", average))
+    said = [
+        f"{what} {cell[1]}" if cell[0] is Presence.REPORTED else presence_words(what, cell)
+        for what, cell in (("weight", weight), ("average", average))
+    ]
     return f"{cell_text(name, 'Name')}: {', '.join(said)}"
 
 
