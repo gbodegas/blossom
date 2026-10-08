@@ -1849,10 +1849,11 @@ def save_grade(
     review: GradeReview | None = None,
     answers: GradeAnswers | None = None,
     selection: Collection[str] | None = None,
+    complete: bool = False,
 ) -> SaveOutcome:
     """A parent's save of ``draft`` from the page ``review`` made, a fresh review when none is
     given, with ``answers`` or an answer to every question, and every ready value selected
-    unless ``selection`` says otherwise."""
+    unless ``selection`` says otherwise; its reading incomplete unless ``complete``."""
     review = review or store.review_grade_report(draft, capture_key(draft), key=key)
     return store.save_grade_report(
         draft,
@@ -1862,7 +1863,36 @@ def save_grade(
         answers=answers or grade_answers(review),
         selection=frozenset(review.ready if selection is None else selection),
         role="parent",
+        complete=complete,
     )
+
+
+def without_columns(text: str, category: str, *columns: str) -> str:
+    """The report ``text`` with ``columns``, by their headers, left out of ``category``'s result
+    table, so each of its rows has those cells not captured."""
+    lines: list[str] = []
+    inside, at = False, list[int]()
+    for line in text.split("\n"):
+        if f"**{category}**" in line:
+            inside = True
+        elif "Weight =" in line:
+            inside = False
+        cells = line.split("|")
+        if inside and len(cells) == 13:
+            if not at:
+                names = [cell.strip() for cell in cells]
+                at = sorted((names.index(f"**{column}**") for column in columns), reverse=True)
+            for one in at:
+                del cells[one]
+            line = "|".join(cells)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def without_the_due_column(text: str, category: str) -> str:
+    """The report ``text`` with the Due column of ``category``'s result table left out, so each
+    of its rows has a due date that wasn't captured."""
+    return without_columns(text, category, "Due")
 
 
 class HeldByAnother:

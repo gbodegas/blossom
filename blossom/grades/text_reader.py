@@ -10,8 +10,9 @@ column header, its result rows and its average, and last the term grade. A value
 under the structure directly above it, in its own category, and a structure that interrupts a
 category closes it. Blank lines and tables with nothing in them are layout anywhere. Any other
 line, and any line out of its place, is kept, verbatim and in order, as a line the reader didn't
-recognize, and it never changes the draft or the capture key. A second title, a title after the
-header, or anything but one header means the paste isn't read.
+recognize, and it never changes the draft or the capture key. The reading says where each such
+line fell: before the header, before the Term Grade row, or after it. A second title, a title
+after the header, or anything but one header means the paste isn't read.
 
 Print, the selectors and a wrapped title are read narrowly, as the one known report shape has
 them, and a result row a copy wraps isn't joined: a line the reader can't be sure of stays
@@ -33,6 +34,7 @@ from blossom.grades.draft import (
     GradeReportDraft,
     GradeRow,
     GradeValue,
+    Presence,
     ReportHeader,
     TermResult,
     capture_key,
@@ -126,21 +128,34 @@ class NotRead(StrEnum):
     SEVERAL_REPORTS = "several_reports"
 
 
+class LinePlace(StrEnum):
+    """Where an unrecognized line fell in a paste that gave a draft."""
+
+    BEFORE_HEADER = "before_header"
+    BEFORE_TERM = "before_term"
+    """Between the header and the Term Grade row, or after the header when there is none."""
+    AFTER_TERM = "after_term"
+
+
 class GradeReportReading(BaseModel):
     """What one paste gave: its draft, or the reason it has none, and every line the reader
     didn't recognize, verbatim and in order, left out of every repr since a paste can carry
-    names."""
+    names. With a draft, ``places`` says where each of those lines fell."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     draft: GradeReportDraft | None
     not_read: NotRead | None
     unrecognized: tuple[str, ...] = Field(repr=False)
+    places: tuple[LinePlace, ...] = ()
 
     @model_validator(mode="after")
     def _a_draft_or_the_reason_for_none(self) -> Self:
         if (self.draft is None) == (self.not_read is None):
             msg = "a reading has a draft or the reason it has none"
+            raise ValueError(msg)
+        if len(self.places) != (0 if self.draft is None else len(self.unrecognized)):
+            msg = "a reading with a draft places each line it didn't recognize, and only then"
             raise ValueError(msg)
         return self
 
@@ -329,6 +344,7 @@ def read_grade_report(text: str) -> GradeReportReading:
     unrecognized: list[tuple[int, str]] = []
     categories: list[_Category] = []
     term: TermResult | None = None
+    term_at: int | None = None
     class_name: str | None = None
     state = State.BEFORE
     index = 0
@@ -362,6 +378,7 @@ def read_grade_report(text: str) -> GradeReportReading:
                 term = TermResult(
                     percent=GradeNumber.read(cells[1]), letter=GradeValue.read(cells[2])
                 )
+                term_at = index
                 state = State.AFTER_TERM
             case State.NEEDS_COLUMNS, LineClass.COLUMNS:
                 categories[-1].columns = cells
@@ -402,14 +419,50 @@ def read_grade_report(text: str) -> GradeReportReading:
         else TermResult(percent=GradeNumber.not_captured(), letter=GradeValue.not_captured()),
         categories=tuple(category.built(seen) for category in categories),
     )
+    kept = [
+        (index, line)
+        for index, line in unrecognized
+        if index >= start or cells_of(line) is not None or folded(bare(line)) not in selectors
+    ]
+
+    def place(index: int) -> LinePlace:
+        if index < start:
+            return LinePlace.BEFORE_HEADER
+        if term_at is None or index < term_at:
+            return LinePlace.BEFORE_TERM
+        return LinePlace.AFTER_TERM
+
     return GradeReportReading(
         draft=draft,
         not_read=None,
-        unrecognized=tuple(
-            line
-            for index, line in unrecognized
-            if index >= start or cells_of(line) is not None or folded(bare(line)) not in selectors
-        ),
+        unrecognized=tuple(line for _, line in kept),
+        places=tuple(place(index) for index, _ in kept),
+    )
+
+
+def reading_complete(reading: GradeReportReading) -> bool:
+    """Whether a reading is complete enough to say what its report doesn't show: its term result
+    came from a Term Grade row, every category's average was read by its own structure, every
+    result row's due cell was captured, no line it didn't recognize fell between the header and
+    the Term Grade row, and no table line it didn't place fell after it."""
+    draft = reading.draft
+    if draft is None:
+        return False
+    term = (draft.term.percent.presence, draft.term.letter.presence)
+    if Presence.NOT_CAPTURED in term:
+        return False
+    if any(category.average.presence is Presence.NOT_CAPTURED for category in draft.categories):
+        return False
+    if any(
+        row.due.presence is Presence.NOT_CAPTURED
+        for category in draft.categories
+        for row in category.rows
+    ):
+        return False
+    return not any(
+        place is LinePlace.BEFORE_TERM
+        or (place is LinePlace.AFTER_TERM and cells_of(line) is not None)
+        for line, place in zip(reading.unrecognized, reading.places, strict=True)
     )
 
 

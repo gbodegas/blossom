@@ -24,6 +24,7 @@ from blossom.grades.review import (
     GradeReview,
     IdentityAnswer,
     ItemStatus,
+    MatchAnswer,
     NotHers,
     ReturnReason,
     ReviewPage,
@@ -85,9 +86,19 @@ def save(
     key: bytes = KEY,
     answers: GradeAnswers | None = None,
     selection: Collection[str] | None = None,
+    complete: bool = False,
 ) -> SaveOutcome:
-    """A parent's save of Wren's report unless another is named, under the first key."""
-    return save_grade(store, draft, key=key, review=review, answers=answers, selection=selection)
+    """A parent's save of Wren's report unless another is named, under the first key, its
+    reading incomplete unless ``complete``."""
+    return save_grade(
+        store,
+        draft,
+        key=key,
+        review=review,
+        answers=answers,
+        selection=selection,
+        complete=complete,
+    )
 
 
 def gradebook_of(store: ProjectStateStore) -> dict[str, list[tuple[object, ...]]]:
@@ -299,6 +310,32 @@ def test_identical_reports_for_two_siblings_not_hers_saves_nothing() -> None:
     assert gradebook_of(store) == before
 
 
+def test_a_sibling_s_newer_report_answered_not_hers_records_no_presence_and_no_answer() -> None:
+    """A sibling's report whose rows match Wren's results, with a changed score and a matching
+    answer given: "Not hers" records no row as shown, keeps no answer and accepts nothing."""
+    store = in_memory()
+    saved(save(store))
+    sibling = draft_of(
+        REPORT.replace("**Bramble, Wren**", "**Bramble, Linnet**")
+        .replace(SEVEN, SEVEN.replace("7.0", "8.0"))
+        .replace("| Seed Germination Log |", "| Seed Germination Journal |")
+    )
+    review = review_of(store, sibling)
+    asked = [item for item in review.rows if item.question is not None]
+    before = gradebook_of(store)
+    assert len(asked) == 1
+    assert asked[0].question is not None
+    answers = dataclasses.replace(
+        answers_to(review, IdentityAnswer.NOT_HERS),
+        matches=(MatchAnswer(asked[0].key, asked[0].question.ids, asked[0].question.ids[0]),),
+    )
+
+    outcome = save(store, sibling, review, answers=answers, selection=())
+
+    assert isinstance(outcome, NotHers)
+    assert gradebook_of(store) == before
+
+
 def test_identical_reports_for_two_siblings_misread_saves_only_an_acceptance_record() -> None:
     store = in_memory()
     saved(save(store))
@@ -306,14 +343,19 @@ def test_identical_reports_for_two_siblings_misread_saves_only_an_acceptance_rec
     review = review_of(store, LINNET_DRAFT)
 
     outcome = saved(
-        save(store, LINNET_DRAFT, review, answers=answers_to(review, IdentityAnswer.MISREAD))
+        save(
+            store,
+            LINNET_DRAFT,
+            review,
+            answers=answers_to(review, IdentityAnswer.MISREAD),
+            complete=True,
+        )
     )
 
     after = gradebook_of(store)
     assert (outcome.added, outcome.already_saved, outcome.report_id) == (0, 9, None)
     assert {table for table in GRADEBOOK_TABLES if after[table] != before[table]} == {
         "grade_acceptances",
-        "grade_scope_revisions",
     }
     assert len(after["grade_acceptances"]) == 2
     assert after["grade_name_forms"] == before["grade_name_forms"]
@@ -458,6 +500,40 @@ def test_a_stale_revision_returns_the_review_and_writes_nothing() -> None:
     assert gradebook_of(store) == before
 
 
+def test_a_no_op_that_completes_the_setup_returns_another_page_for_that_class() -> None:
+    """A submission that only confirms her name, the year and term, the first month and a new
+    class records nothing in the class and term, so no revision is raised. A second page open
+    for that class meets the recheck of its answers instead: it returns the review, writing
+    nothing, and its save then adds the values once, with one setup and one class."""
+    store = in_memory()
+    one_tab, another_tab = review_of(store), review_of(store)
+    nothing = saved(save(store, review=one_tab, selection=()))
+
+    assert (nothing.report_id, nothing.added, nothing.shown) == (None, 0, 0)
+    setup = ("grade_student", "grade_name_forms", "grade_context", "grade_years", "grade_terms")
+    made = (*setup, "grade_classes", "grade_class_aliases", "grade_acceptances")
+    assert counted(store) == {table: int(table in made) for table in GRADEBOOK_TABLES}
+    before = gradebook_of(store)
+    outcome = save(store, review=another_tab)
+
+    again = returned(outcome, ReturnReason.ANSWERS)
+    assert gradebook_of(store) == before
+    assert (again.setup, again.first_month, again.revision) == (None, None, None)
+    assert again.identity.status is IdentityStatus.MATCHES
+    (class_id,) = one(store, "SELECT class_id FROM grade_classes")
+    assert again.class_question.matched == class_id[0]
+    assert again.ready == frozenset(item.key for item in another_tab.items)
+    rest = saved(save(store, review=again))
+
+    assert rest.added == 9
+    after = counted(store)
+    assert {table: after[table] for table in made} == {
+        table: 2 if table == "grade_acceptances" else 1 for table in made
+    }
+    assert (after["grade_results"], after["grade_reports"]) == (4, 1)
+    assert one(store, "SELECT revision FROM grade_scope_revisions") == [(1,)]
+
+
 def stale_identity(store: ProjectStateStore, review: GradeReview) -> GradeAnswers:
     """The page answered "Yes, this is her name"; another tab confirmed it meanwhile."""
     store.add_name_form(KEY, WREN, "parent")
@@ -570,7 +646,7 @@ def test_the_same_class_answer_saves_into_that_class_with_an_alias() -> None:
     ]
     after = review_of(store)
     assert after.class_question.matched == chemistry[0]
-    assert set(statuses(after)) == {ItemStatus.NEEDS_MATCHING}
+    assert set(statuses(after)) == {ItemStatus.SAVED}
 
 
 def test_a_page_for_another_reading_of_the_report_saves_nothing() -> None:
@@ -616,27 +692,44 @@ def test_a_term_spaced_another_way_is_the_same_term() -> None:
     again = draft_of(REPORT.replace("**T1**", "**Term  1**"))
     review = review_of(store, again)
 
-    saved(save_grade(store, again, key=KEY, review=review, answers=answers_to(review)))
+    saved(
+        save_grade(store, again, key=KEY, review=review, answers=answers_to(review), complete=True)
+    )
 
     assert set(statuses(review)) == {ItemStatus.SAVED}
     assert one(store, "SELECT label FROM grade_terms") == [("Term 1",)]
-    assert one(store, "SELECT term_label, revision FROM grade_scope_revisions") == [("Term 1", 2)]
+    assert one(store, "SELECT term_label, revision FROM grade_scope_revisions") == [("Term 1", 1)]
+    assert one(store, "SELECT COUNT(*) FROM grade_acceptances") == [(2,)]
 
 
-def test_needs_matching_values_cannot_be_selected() -> None:
+def test_another_capture_s_saved_values_cannot_be_selected() -> None:
+    """Another capture of the class and term: its values equal to the saved ones read Saved and
+    can't be selected; only the changed score is offered. A save with nothing selected accepts
+    no value, and records the four rows the report shows."""
     store = in_memory()
     saved(save(store))
     review = review_of(store, EIGHT_DRAFT)
     before = gradebook_of(store)
 
-    assert set(statuses(review)) == {ItemStatus.NEEDS_MATCHING}
-    assert review.ready == frozenset()
-    for chosen in (TERM_KEY, review.categories[0].key, review.rows[1].key):
+    assert statuses(review).count(ItemStatus.CHANGED) == 1
+    assert set(statuses(review)) == {ItemStatus.SAVED, ItemStatus.CHANGED}
+    assert review.ready == {review.rows[1].key}
+    for chosen in (TERM_KEY, review.categories[0].key, review.rows[0].key):
         returned(save(store, EIGHT_DRAFT, review, selection={chosen}), ReturnReason.SELECTION)
         assert gradebook_of(store) == before
     nothing = saved(save(store, EIGHT_DRAFT, review, selection=()))
-    assert (nothing.added, nothing.left, nothing.report_id) == (0, 9, None)
+    assert (nothing.added, nothing.updated, nothing.left) == (0, 0, 1)
+    assert (nothing.shown, nothing.answers_kept, nothing.accepted) == (4, 0, ())
+    assert nothing.report_id is not None
     assert one(store, "SELECT COUNT(*) FROM grade_results") == [(4,)]
+    after = gradebook_of(store)
+    for table in ("grade_result_observations", "grade_term_observations", "grade_results"):
+        assert after[table] == before[table]
+    assert one(
+        store,
+        "SELECT how, COUNT(*) FROM grade_match_decisions WHERE report_id = ? GROUP BY how",
+        nothing.report_id,
+    ) == [("exact", 4)]
 
 
 def test_unreadable_rows_cannot_be_selected() -> None:
@@ -676,6 +769,7 @@ def test_her_own_role_saves_nothing() -> None:
             answers=answers_to(review),
             selection=review.ready,
             role="student",  # type: ignore[arg-type]
+            complete=True,
         )
     assert counted(store) == {
         table: 1 if table == "grade_student" else 0 for table in GRADEBOOK_TABLES

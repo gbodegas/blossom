@@ -4,10 +4,12 @@
 
 G-I1: no gradebook write changes anything outside the gradebook's own tables, read as a closed
 world from ``sqlite_master`` with the checkpoint and trace files beside it, so a table added later
-is covered unless it is named a gradebook table. G-I8: a retry writes nothing and returns what
-was recorded. G-I13: no gradebook table, and no log line, holds a student's name. G-I15: every
-gradebook row carries her one student ID, and nothing is looked up under another. G-I17: no
-grade save writes her own account or the school's submission status.
+is covered unless it is named a gradebook table. G-I7: current values are per target, and a
+report kept as earlier changes none. G-I8: a retry writes nothing and returns what was recorded.
+G-I13: no gradebook table, and no log line, holds a student's name. G-I15: every gradebook row
+carries her one student ID, and nothing is looked up under another. G-I16: a result is its
+stable ID, and an ambiguous match never saves without a parent's answer. G-I17: no grade save
+writes her own account or the school's submission status.
 """
 
 import dataclasses
@@ -25,7 +27,9 @@ from blossom.grades.review import (
     AlreadyRecorded,
     GradeReportSaved,
     IdentityAnswer,
+    MatchAnswer,
     NotHers,
+    ReturnReason,
     ReviewReturned,
 )
 from blossom.grades.text_reader import read_grade_report
@@ -63,6 +67,57 @@ LINNET_REPORT = draft_of(REPORT.replace("**Bramble, Wren**", "**Bramble, Linnet*
 ANOTHER_CAPTURE = draft_of(
     REPORT.replace("| Cell Diagram             | 7.0 ", "| Cell Diagram             | 8.0 ")
 )
+MOVED = draft_of(REPORT.replace("| Missing    | 09/26   |", "| Missing    | 09/29   |"))
+"""Another capture: Cell Diagram's due date moved, a question a parent answers."""
+MOVED_AGAIN = draft_of(REPORT.replace("| Missing    | 09/26   |", "| Missing    | 09/30   |"))
+EXCUSED_MOVED = draft_of(
+    REPORT.replace("| 7.0     | 10.0    |", "| EX      | 10.0    |").replace(
+        "| Missing    | 09/26   |", "| Missing    | 10/01   |"
+    )
+)
+"""Another capture: Cell Diagram's score written "EX" and its due date moved, a question a parent
+answers though the score can't be read."""
+
+
+def saved_report(outcome: object) -> GradeReportSaved:
+    assert isinstance(outcome, GradeReportSaved), outcome
+    return outcome
+
+
+def answered_matches(store: ProjectStateStore, draft: GradeReportDraft, *, same: bool) -> object:
+    """A parent's save of ``draft`` answering every matching question with its first candidate,
+    or with "A different assignment", and selecting what is ready and what was answered."""
+    review = store.review_grade_report(draft, capture_key(draft), key=KEY)
+    matches = []
+    for item in review.rows:
+        if item.question is not None:
+            chosen = item.question.ids[0] if same else None
+            matches.append(MatchAnswer(item.key, item.question.ids, chosen))
+    answers = dataclasses.replace(grade_answers(review), matches=tuple(matches))
+    selection = review.ready | {answer.row_key for answer in matches}
+    return save_grade(store, draft, key=KEY, review=review, answers=answers, selection=selection)
+
+
+def answered_unreadable(store: ProjectStateStore) -> object:
+    """A parent's save of ``EXCUSED_MOVED`` answering its question with the first candidate and
+    selecting nothing: presence alone."""
+    review = store.review_grade_report(EXCUSED_MOVED, capture_key(EXCUSED_MOVED), key=KEY)
+    matches = []
+    for item in review.rows:
+        if item.question is not None:
+            matches.append(MatchAnswer(item.key, item.question.ids, item.question.ids[0]))
+    assert len(matches) == 1
+    answers = dataclasses.replace(grade_answers(review), matches=tuple(matches))
+    return save_grade(store, EXCUSED_MOVED, key=KEY, review=review, answers=answers, selection=())
+
+
+def records_nothing_new(store: ProjectStateStore) -> object:
+    """``EXCUSED_MOVED`` again under a fresh page, nothing selected: every row is on record, so
+    only the acceptance is written."""
+    outcome = save_grade(store, EXCUSED_MOVED, key=KEY, selection=())
+    assert isinstance(outcome, GradeReportSaved), outcome
+    assert (outcome.report_id, outcome.shown, outcome.answers_kept) == (None, 0, 0)
+    return outcome
 
 
 def expect(kind: type, outcome: object) -> object:
@@ -114,10 +169,30 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
             lambda: expect(GradeReportSaved, answered(LINNET_REPORT, KEY, IdentityAnswer.MISREAD)),
         ),
         (
-            "another capture, nothing selectable",
+            "another capture, nothing selected",
             lambda: expect(
                 GradeReportSaved, save_grade(store, ANOTHER_CAPTURE, key=KEY, selection=())
             ),
+        ),
+        (
+            "another capture's changed value",
+            lambda: expect(GradeReportSaved, save_grade(store, ANOTHER_CAPTURE, key=KEY)),
+        ),
+        (
+            "a moved due date answered the same",
+            lambda: expect(GradeReportSaved, answered_matches(store, MOVED, same=True)),
+        ),
+        (
+            "a moved due date answered a different assignment",
+            lambda: expect(GradeReportSaved, answered_matches(store, MOVED_AGAIN, same=False)),
+        ),
+        (
+            "a score that can't be read, its question answered",
+            lambda: expect(GradeReportSaved, answered_unreadable(store)),
+        ),
+        (
+            "a submission that records nothing new",
+            lambda: records_nothing_new(store),
         ),
         (
             "the secret replaced, confirmed again",
@@ -281,7 +356,7 @@ def test_g_i1_no_grade_save_changes_anything_outside_the_gradebook(
 
     assert any(name.endswith("assignments") for name in before)
     assert seen == [(label, True) for label, _ in seen]
-    assert len(accepted) == 5
+    assert len(accepted) == 10
 
 
 def test_g_i8_a_retry_writes_nothing_and_returns_the_recorded_outcome(
@@ -328,3 +403,95 @@ def test_g_i17_no_grade_save_writes_her_account_or_the_school_status(
 
     assert before[0]
     assert after == before
+
+
+def test_g_i7_current_values_are_per_target_and_an_earlier_report_supplies_none(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Each target's current value comes from the newest current report that supplied it. A
+    report kept as earlier, as the current choice keeps one, supplies none."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    first = saved_report(save_grade(store, WREN_REPORT, key=KEY))
+    newer = saved_report(save_grade(store, ANOTHER_CAPTURE, key=KEY))
+    (class_id,) = store._connection.execute("SELECT class_id FROM grade_classes").fetchone()
+    current = store.current_values(class_id, "T1")
+    supplied = sorted(value.report_id for value in current.results.values())
+
+    assert supplied == sorted([str(first.report_id)] * 3 + [str(newer.report_id)])
+    assert current.term is not None
+    assert current.term.report_id == first.report_id
+    store._connection.execute(
+        "UPDATE grade_reports SET use = 'earlier' WHERE report_id = ?", (newer.report_id,)
+    )
+    store._connection.commit()
+    kept = store.current_values(class_id, "T1")
+    store.close()
+
+    assert {value.report_id for value in kept.results.values()} == {first.report_id}
+
+
+def test_g_i16_an_ambiguous_match_saves_only_with_the_parent_s_answer_and_keeps_the_id(
+    tmp_path: pathlib.Path,
+) -> None:
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    saved_report(save_grade(store, WREN_REPORT, key=KEY))
+    results = store._connection.execute("SELECT result_id FROM grade_results").fetchall()
+    review = store.review_grade_report(MOVED, capture_key(MOVED), key=KEY)
+    (asked,) = [item for item in review.rows if item.question is not None]
+    changes = store._connection.total_changes
+
+    refused = save_grade(store, MOVED, key=KEY, review=review, selection={asked.key})
+    unchanged = store._connection.total_changes == changes
+    outcome = saved_report(answered_matches(store, MOVED, same=True))
+    kept = store._connection.execute("SELECT result_id FROM grade_results").fetchall()
+    store.close()
+
+    assert isinstance(refused, ReviewReturned)
+    assert refused.why is ReturnReason.SELECTION
+    assert unchanged
+    assert asked.question is not None
+    assert dict(outcome.accepted)[asked.key] == asked.question.ids[0]
+    assert kept == results
+
+
+def test_g_i19_presence_comes_only_from_a_deliberate_submission_and_accepts_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A review records nothing, and "Not hers" nothing. A submission of presence alone records
+    each reliably matched row with how it matched, accepts no value, leaves every current value
+    and report use as it was, says no grade value changed, and its retry writes nothing."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    saved_report(save_grade(store, WREN_REPORT, key=KEY))
+    (class_id,) = store._connection.execute("SELECT class_id FROM grade_classes").fetchone()
+    before = store.current_values(class_id, "T1")
+    uses = store._connection.execute("SELECT report_id, use FROM grade_reports").fetchall()
+    changes = store._connection.total_changes
+    review = store.review_grade_report(ANOTHER_CAPTURE, capture_key(ANOTHER_CAPTURE), key=KEY)
+    not_hers = grade_answers(review, IdentityAnswer.NOT_HERS)
+    refused = save_grade(store, ANOTHER_CAPTURE, key=KEY, review=review, answers=not_hers)
+    untouched = store._connection.total_changes == changes
+
+    shown = saved_report(save_grade(store, ANOTHER_CAPTURE, key=KEY, review=review, selection=()))
+    after = store.current_values(class_id, "T1")
+    retried = store._connection.total_changes
+    retry = save_grade(store, ANOTHER_CAPTURE, key=KEY, review=review, selection=())
+    hows = store._connection.execute(
+        "SELECT how FROM grade_match_decisions WHERE report_id = ?", (shown.report_id,)
+    ).fetchall()
+    kept_uses = store._connection.execute(
+        "SELECT report_id, use FROM grade_reports WHERE report_id != ?", (shown.report_id,)
+    ).fetchall()
+    unchanged_after_retry = store._connection.total_changes == retried
+    store.close()
+
+    assert isinstance(refused, NotHers)
+    assert untouched
+    assert (shown.added, shown.updated, shown.accepted, shown.shown) == (0, 0, (), 4)
+    assert sorted(hows) == [("exact",)] * 4
+    assert {key: value.cells for key, value in after.results.items()} == {
+        key: value.cells for key, value in before.results.items()
+    }
+    assert after.term == before.term
+    assert kept_uses == uses
+    assert isinstance(retry, AlreadyRecorded)
+    assert unchanged_after_retry
