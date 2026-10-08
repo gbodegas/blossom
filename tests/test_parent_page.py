@@ -7,6 +7,8 @@ redirect back to the page, and the page read again. The models are scripted
 through the route's builder dependency, over the real stores.
 """
 
+import html
+import logging
 import pathlib
 import re
 import sqlite3
@@ -2016,3 +2018,180 @@ def test_a_family_press_refused_at_the_door_reads_and_starts_no_run(
         assert pressed.status_code == 403
     assert looked == []
     assert runs == []
+
+
+# ------------------------------------------------------- a refused decision keeps its words
+
+TYPED_REASON = 'Start with the essay & "then" a <short> break.'
+DECISION_FORM = (
+    r'<form method="post" action="/parent/actions/decide/([^"]+)" class="decision">(.*?)</form>'
+)
+KEPT_REASON = (
+    r'<label for="kept-reason">Note about this plan \(optional\)</label>\s*'
+    r'<textarea id="kept-reason" rows="3" readonly>(.*?)</textarea>'
+)
+
+
+def note_boxes(page: str) -> dict[str, tuple[str, str]]:
+    """Each waiting plan's note box by its draft id: the box's id and its attributes."""
+    boxes = {}
+    for draft_id, form in re.findall(DECISION_FORM, page, re.S):
+        box = re.search(r'<input id="(review-note-\d+)" ([^>]*)>', form)
+        assert box is not None
+        boxes[draft_id] = (box.group(1), box.group(2))
+    return boxes
+
+
+def value_of(attributes: str) -> str | None:
+    """The value a box holds when the page arrives, read as a browser reads it, or none."""
+    found = re.search(r' value="([^"]*)"', f" {attributes}")
+    return None if found is None else html.unescape(found.group(1))
+
+
+def kept_under_the_problem(page: str) -> str | None:
+    """The reason shown to copy under the problem, read as a browser reads it, or none."""
+    found = re.findall(KEPT_REASON, page, re.S)
+    assert len(found) <= 1
+    return html.unescape(found[0]) if found else None
+
+
+def two_waiting_plans(client: TestClient) -> tuple[str, str]:
+    """Today's plan and tomorrow's, both waiting: their draft ids, today's first."""
+    today = waiting_draft_id(client)
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        plans=lambda: [tomorrows_plan()]
+    )
+    posted = client.post("/parent/actions/plan", data={"plan_date": TOMORROW.isoformat()})
+    assert posted.status_code == 303
+    queue = client.get("/parent/approvals").json()["waiting"]
+    tomorrow = ({str(draft["draft_id"]) for draft in queue} - {today}).pop()
+    return today, tomorrow
+
+
+KEPT_IN_THE_BOX = {
+    "a decision no button makes": (422, "is not one of the two buttons"),
+    "a reason over the cap": (
+        422,
+        f"A reason is at most {REASON_MAX_LENGTH} characters; this one is {REASON_MAX_LENGTH + 1}.",
+    ),
+    "Looks good on a plan gone stale": (409, ASSIGNMENTS_CHANGED),
+}
+
+
+@pytest.mark.parametrize("case", list(KEPT_IN_THE_BOX))
+def test_a_refused_decision_keeps_the_typed_reason_in_its_plans_box(
+    case: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The family page a refusal answers with holds the words as typed in the box of the
+    plan they were for, ready to send again, and in no other box. Words that are what was
+    refused are marked and focused, with a way to the box; a Looks good on a stale plan
+    links to the box too. The refusal saves nothing, and the words go into no address
+    and no log line."""
+    caplog.set_level(logging.DEBUG)
+    words = "r" * (REASON_MAX_LENGTH + 1) if case == "a reason over the cap" else TYPED_REASON
+    status, said = KEPT_IN_THE_BOX[case]
+    with browser() as client:
+        today, tomorrow = two_waiting_plans(client)
+        pressed, other = (today, tomorrow) if case.endswith("stale") else (tomorrow, today)
+        if case.endswith("stale"):
+            assert client.post("/parent/inbox/keep", data=IN_THE_WINDOW).status_code == 303
+        decision = "sideways" if case == "a decision no button makes" else "approve"
+        refused = client.post(
+            f"/parent/actions/decide/{pressed}", data={"decision": decision, "reason": words}
+        )
+        records = [client.get(f"/parent/approvals/{one}").json() for one in (today, tomorrow)]
+        fresh = client.get("/parent").text
+
+    assert refused.status_code == status
+    assert "location" not in refused.headers
+    assert said in refused.text
+    boxes = note_boxes(refused.text)
+    box_id, attributes = boxes[pressed]
+    assert value_of(attributes) == words
+    assert value_of(boxes[other][1]) is None
+    assert kept_under_the_problem(refused.text) is None
+    at_the_words = case == "a reason over the cap"
+    assert ('aria-invalid="true"' in attributes) is at_the_words
+    assert ("autofocus" in attributes) is at_the_words
+    assert ('aria-describedby="problem ' in attributes) is at_the_words
+    linked = at_the_words or case.endswith("stale")
+    assert (f'<a href="#{box_id}">Go to the field.</a>' in refused.text) is linked
+    assert refused.text.count("Go to the field.") == int(linked)
+    assert [(record["decision"], record["reason"]) for record in records] == [(None, None)] * 2
+    assert all(value_of(attributes) is None for _, attributes in note_boxes(fresh).values())
+    assert words not in caplog.text
+
+
+def test_a_refused_decision_on_a_plan_with_no_box_keeps_the_reason_under_the_problem(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A plan already decided and one not on record have no box for the words, so they are
+    shown to copy under the problem, read-only, and put in no other plan's box. The first
+    decision stands with its own words. A plan no review can resume keeps its box on its
+    own refusal's page, where the refusal is the authority, so the words are in that box."""
+    caplog.set_level(logging.DEBUG)
+    lost = "plan:2026-08-19:lost"
+    with browser() as client:
+        decided, waiting = two_waiting_plans(client)
+        first = {"decision": "approve", "reason": "First words."}
+        assert client.post(f"/parent/actions/decide/{decided}", data=first).status_code == 303
+        settled_run(
+            state_of(client).drafts,
+            Draft(draft_id=f"draft:{lost}", body="Plan for Wednesday", created_at=CREATED),
+            thread_id=lost,
+            plan_date=PLAN_DATE,
+        )
+        presses = {
+            f"/parent/actions/decide/{decided}": 409,
+            "/parent/actions/decide/draft:nobody": 404,
+            f"/parent/actions/decide/draft:{lost}": 409,
+        }
+        answers = [
+            (client.post(path, data={"decision": "refuse", "reason": TYPED_REASON}), status)
+            for path, status in presses.items()
+        ]
+        record = client.get(f"/parent/approvals/{decided}").json()
+        untouched = client.get(f"/parent/approvals/{waiting}").json()
+        unresumed = client.get(f"/parent/approvals/draft:{lost}").json()
+
+    *no_box, (on_the_lost_plan, _) = answers
+    for answer, status in no_box:
+        assert answer.status_code == status
+        assert "location" not in answer.headers
+        assert kept_under_the_problem(answer.text) == TYPED_REASON
+        boxes = note_boxes(answer.text)
+        assert decided not in boxes
+        assert all(value_of(attributes) is None for _, attributes in boxes.values())
+        assert "Go to the field." not in answer.text
+    assert on_the_lost_plan.status_code == 409
+    assert UNRESUMABLE_TODAY in on_the_lost_plan.text
+    assert "Go to the field." not in on_the_lost_plan.text
+    boxes = note_boxes(on_the_lost_plan.text)
+    assert value_of(boxes[f"draft:{lost}"][1]) == TYPED_REASON
+    assert value_of(boxes[waiting][1]) is None
+    assert kept_under_the_problem(on_the_lost_plan.text) is None
+    assert (record["decision"], record["reason"]) == ("approved", "First words.")
+    for still in (untouched, unresumed):
+        assert (still["decision"], still["reason"]) == (None, None)
+    assert TYPED_REASON not in caplog.text
+
+
+@pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "spaces"])
+def test_a_refusal_keeps_no_reason_when_none_was_typed(blank: str) -> None:
+    """A box left empty, or holding only spaces, is no reason: a refusal keeps nothing of it,
+    in the box or under the problem."""
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        refused = client.post(
+            f"/parent/actions/decide/{draft_id}", data={"decision": "sideways", "reason": blank}
+        )
+        gone = client.post(
+            "/parent/actions/decide/draft:nobody", data={"decision": "refuse", "reason": blank}
+        )
+
+    assert refused.status_code == 422
+    assert value_of(note_boxes(refused.text)[draft_id][1]) is None
+    assert gone.status_code == 404
+    for answer in (refused, gone):
+        assert kept_under_the_problem(answer.text) is None
+        assert 'id="kept-reason"' not in answer.text

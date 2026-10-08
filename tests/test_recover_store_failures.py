@@ -688,15 +688,15 @@ FAMILY_PRESSES = {
     "a decision no button makes": FamilyPress(
         422,
         "'sideways' is not one of the two buttons, approve or refuse.",
-        ("Reason, as typed", TYPED),
+        ("Note about this plan (optional)", TYPED),
     ),
     "a reason too long": FamilyPress(
         422,
         "A reason is at most 500 characters; this one is 501.",
-        ("Reason, as typed", LONG),
+        ("Note about this plan (optional)", LONG),
     ),
     "a decision on no draft": FamilyPress(
-        404, "no draft 'draft:none'.", ("Reason, as typed", TYPED)
+        404, "no draft 'draft:none'.", ("Note about this plan (optional)", TYPED)
     ),
     "a reply too long": FamilyPress(
         422,

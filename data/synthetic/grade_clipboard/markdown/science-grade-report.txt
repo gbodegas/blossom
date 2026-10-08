@@ -1,0 +1,45 @@
+Gradebook Student Progress Report
+
+|Wren|2026-2027|Teacher|
+|---|---|---|
+|08 Fixture 4 - A|T1||
+PERCENT
+
+|Nature Studies|
+|---|
+| | | |
+|Classwork / Homework||Weight = 10.0|
+|Assignment|Pts|Max|Avg|Status|Due|Curve|Bonus|Penalty|Weight|Note|
+|Practice 4.1: classroom exercise|7.0|13.0|62.0|Valid|09/27|0.0|0.0||1.0||
+|Practice 4.2: classroom exercise|8.0|14.0|63.0|Valid|09/03|0.0|0.0||1.0||
+Category Average
+
+79.0
+
+| | | | | | | | |
+| | | |
+|Labs||Weight = 20.0|
+|Assignment|Pts|Max|Avg|Status|Due|Curve|Bonus|Penalty|Weight|Note|
+|Practice 4.3: classroom exercise|9.0|15.0|64.0|Valid|09/25|0.0|0.0||1.0||
+|Practice 4.4: classroom exercise|6.0|12.0|65.0|Valid|10/03|0.0|0.0||1.0||
+Category Average
+
+79.0
+
+| | | | | | | | |
+| | | |
+|Quizzes||Weight = 20.0|
+|Assignment|Pts|Max|Avg|Status|Due|Curve|Bonus|Penalty|Weight|Note|
+Category Average
+
+
+| | | | | | | | |
+| | | |
+|Tests /Projects||Weight = 40.0|
+|Assignment|Pts|Max|Avg|Status|Due|Curve|Bonus|Penalty|Weight|Note|
+Category Average
+
+
+| | | | | | | | |
+| | | | | | | | | | |
+|Term Grade|84.0|B|| |

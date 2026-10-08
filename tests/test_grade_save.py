@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection
 
 import pytest
 
-from blossom.grades.draft import GradeReportDraft, capture_key
+from blossom.grades.draft import GradeReportDraft, Presence, capture_key
 from blossom.grades.identity import IdentityStatus, key_check, name_form, name_form_key
 from blossom.grades.review import (
     TERM_KEY,
@@ -31,8 +31,13 @@ from blossom.grades.review import (
     ReviewReturned,
     SaveOutcome,
 )
-from blossom.grades.text_reader import read_grade_report
-from blossom.stores.gradebook import GRADEBOOK_TABLES, GradeReportNotSaved
+from blossom.grades.text_reader import (
+    HeldBack,
+    LinePlace,
+    read_grade_report,
+    reading_complete,
+)
+from blossom.stores.gradebook import GRADEBOOK_TABLES, SCOPE_COMPLETE, GradeReportNotSaved
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import FIXTURES, as_stored, fixture_clock, grade_answers, save_grade
 
@@ -268,6 +273,82 @@ def test_a_partial_save_then_the_rest_joins_the_same_report() -> None:
     assert one(store, "SELECT COUNT(*) FROM grade_acceptances") == [(2,)]
     assert one(store, "SELECT revision FROM grade_scope_revisions") == [(2,)]
     assert set(statuses(review_of(store))) == {ItemStatus.SAVED}
+
+
+def test_a_tab_separated_copy_saves_and_its_markdown_serialization_reads_saved() -> None:
+    """The gradebook's own tab-separated copy feeds the review and the save unchanged: every
+    value saves, a title keeps the space its cell held, and the same report as Markdown, with
+    that space trimmed, is the same capture and reads Saved."""
+    geometry = FIXTURES / "grade_clipboard" / "geometry-grade-report.txt"
+    tabs = draft_of(geometry.read_bytes().decode("utf-8"))
+    markdown = draft_of((geometry.parent / "markdown" / geometry.name).read_bytes().decode("utf-8"))
+    store = in_memory()
+    outcome = saved(save(store, tabs, review=review_of(store, tabs)))
+
+    assert (outcome.added, outcome.updated, outcome.left) == (22, 0, 0)
+    titles = [
+        str(row[0]) for row in one(store, "SELECT assignment_text FROM grade_result_observations")
+    ]
+    assert len(titles) == 18
+    assert sum(title.endswith("Use the examples ") for title in titles) == 1
+    assert capture_key(markdown) == capture_key(tabs)
+    assert set(statuses(review_of(store, markdown))) == {ItemStatus.SAVED}
+
+
+STRAY = "Updated 10/06/2026"
+"""A plain line no structure explains, of the kind a copy may carry."""
+ABOVE = "Practice 2.2: classroom exercise\t8\t14\t63\tValid\t09/10\t0\t0\t\t1.0\t"
+BELOW = "Practice 2.3: classroom exercise\t9\t15\t64\tValid\t09/17\t0\t0\t\t1.0\t"
+SPACED = "Practice 2.5: classroom exercise"
+"""The row whose Pts cell gets a space inside its number."""
+
+
+def test_a_stray_line_holds_back_its_two_rows_and_the_other_rows_still_save() -> None:
+    """Uncertainty stays local: a plain line between two tab rows holds both back, all three
+    lines visible; a number with a space inside its cell is unreadable, its text kept, and never
+    offered; every other row is offered and saves, and the acceptance records the reading as
+    incomplete."""
+    humanities = FIXTURES / "grade_clipboard" / "humanities-grade-report.txt"
+    text = humanities.read_bytes().decode("utf-8")
+    assert text.count(f"{ABOVE}\r\n{BELOW}") == 1
+    text = text.replace(f"{ABOVE}\r\n{BELOW}", f"{ABOVE}\r\n{STRAY}\r\n{BELOW}")
+    assert text.count(f"{SPACED}\t7\t") == 1
+    text = text.replace(f"{SPACED}\t7\t", f"{SPACED}\t9 .0\t")
+    reading = read_grade_report(text)
+    draft = reading.draft
+    assert draft is not None
+    assert reading.unrecognized == (ABOVE, STRAY, BELOW)
+    assert reading.places == (LinePlace.BEFORE_TERM,) * 3
+    assert reading.held_back == (HeldBack(rows=(0, 2), stray=(1,)),)
+    assert reading_complete(reading) is False
+    rows = [row for category in draft.categories for row in category.rows]
+    titles = [row.assignment.text for row in rows]
+    assert len(rows) == 10
+    assert not {ABOVE.split("\t")[0], BELOW.split("\t")[0]} & set(titles)
+    points = rows[titles.index(SPACED)].points
+    assert (points.presence, points.text) == (Presence.UNREADABLE, "9 .0")
+
+    store = in_memory()
+    review = review_of(store, draft)
+    by_title = dict(zip(titles, review.rows, strict=True))
+    spaced = by_title.pop(SPACED)
+    assert spaced.status is ItemStatus.UNREADABLE
+    assert spaced.key not in review.ready
+    assert {item.status for item in by_title.values()} == {ItemStatus.NEW}
+    assert {item.key for item in by_title.values()} <= review.ready
+    outcome = saved(save(store, draft, review=review, complete=reading_complete(reading)))
+
+    assert (outcome.added, outcome.updated) == (1 + 3 + 9, 0)
+    stored = one(store, "SELECT assignment_text, points_text FROM grade_result_observations")
+    assert sorted(stored) == sorted(
+        (title, row.points.text) for title, row in zip(titles, rows, strict=True) if title != SPACED
+    )
+    assert one(store, "SELECT complete FROM grade_acceptances") == [(0,)]
+    ((student, class_id, term),) = one(
+        store, "SELECT student_id, class_id, term_label FROM grade_reports"
+    )
+    scope = {"student": student, "class": class_id, "term": term}
+    assert [complete for _, complete in store._connection.execute(SCOPE_COMPLETE, scope)] == [0]
 
 
 def test_a_restart_keeps_a_committed_save(tmp_path: pathlib.Path) -> None:
