@@ -1524,16 +1524,31 @@ def a_count(given: str | None) -> int | None:
 
 PLAN_DATE: Final = "plan_date"
 FAMILY_PLAN_FIELDS: Final = frozenset({PLAN_DATE, *PLAN_FORM_FIELDS})
-FAMILY_PLAN_NOT_WHOLE: Final = (
-    "This form came from an incomplete or outdated page, so no plan was started. The evening "
-    "you chose is kept below; press Plan it to start one."
+NOT_WHOLE_ELSEWHERE: Final = (
+    "This form came from an incomplete or outdated page, so no plan was started."
 )
-FAMILY_PLAN_EXPIRED: Final = (
-    "This form is from a page opened more than a week ago, so no plan was started. The "
-    "evening you chose is kept below; press Plan it to start one."
+EXPIRED_ELSEWHERE: Final = (
+    "This form is from a page opened more than a week ago, so no plan was started."
 )
+"""The two refusals of the plan form as its stand-in says them, with no date kept below and
+no Plan it to press."""
+KEPT_BELOW: Final = "The evening you chose is kept below; press Plan it to start one."
+FAMILY_PLAN_NOT_WHOLE: Final = f"{NOT_WHOLE_ELSEWHERE} {KEPT_BELOW}"
+FAMILY_PLAN_EXPIRED: Final = f"{EXPIRED_ELSEWHERE} {KEPT_BELOW}"
 STILL_BEING_FINISHED: Final = "That request is still being finished."
 PLAN_SHOWN_ABOVE: Final = "That plan is shown above."
+PLAN_MADE: Final = "That plan was made."
+ENDED_WITHOUT_ONE: Final = "That request ended without a plan."
+"""What came of a used form's run where no page shows it: its plan was made, or none was."""
+
+
+def newer_plan_made(evening: date) -> str:
+    """Why a press from a page that didn't know an evening's newest plan started nothing, with
+    no place on a page: said where the page isn't shown, or the plan couldn't be read."""
+    return (
+        f"A newer plan for {evening_named(evening)} was made after this page was opened, so "
+        "Plan it didn't start another one."
+    )
 
 
 def newer_plan_shown(evening: date, waiting: bool) -> str:
@@ -1541,38 +1556,46 @@ def newer_plan_shown(evening: date, waiting: bool) -> str:
     where that plan is on the page."""
     where = "above, waiting for review" if waiting else "below, under Earlier plans"
     return (
-        f"A newer plan for {evening_named(evening)} was made after this page was opened, so "
-        f"Plan it didn't start another one. That plan is shown {where}. To ask for a new one, "
+        f"{newer_plan_made(evening)} That plan is shown {where}. To ask for a new one, "
         "press Plan it again."
     )
 
 
-def what_the_run_did(run: RunState) -> str:
+def what_the_run_did(run: RunState, *, on_the_page: bool = True) -> str:
     """A run a used form asked for, as the answer to that form says it: still being made,
-    its plan, or why it ended."""
+    its plan, or why it ended; without the page, with no place named."""
     if run.status == "running":
         return STILL_BEING_FINISHED
     if run.status == "published":
-        return PLAN_SHOWN_ABOVE
-    return ended_without_a_plan(run.reason, parent=True)
+        return PLAN_SHOWN_ABOVE if on_the_page else PLAN_MADE
+    return ended_without_a_plan(run.reason, parent=True) if on_the_page else ENDED_WITHOUT_ONE
 
 
-def asked_another_evening(run: RunState, chosen: date) -> str:
+def asked_another_evening(run: RunState, chosen: date, *, on_the_page: bool = True) -> str:
     """Why a used form sent with another evening starts nothing: the evening it asked for,
-    what came of it, and that the new evening wasn't planned."""
-    return (
+    what came of it, and that the new evening wasn't planned, with the way to plan it only
+    on the page."""
+    said = (
         f"This form already asked for a plan for {evening_named(run.plan_date)}, so nothing "
-        f"was started for {evening_named(chosen)}. {what_the_run_did(run)} To plan "
-        f"{evening_named(chosen)}, press Plan it again below."
+        f"was started for {evening_named(chosen)}. {what_the_run_did(run, on_the_page=on_the_page)}"
     )
+    if not on_the_page:
+        return said
+    return f"{said} To plan {evening_named(chosen)}, press Plan it again below."
 
 
-def asked_with_an_unreadable_date(run: RunState) -> str:
-    """Why a used form sent with a date that can't be read starts nothing."""
-    return (
+def asked_with_an_unreadable_date(run: RunState, *, on_the_page: bool = True) -> str:
+    """Why a used form sent with a date that can't be read starts nothing, with the way to
+    plan another evening only on the page."""
+    asked = (
         f"This form already asked for a plan for {evening_named(run.plan_date)}. "
-        f"{what_the_run_did(run)} The date entered below couldn't be read, so nothing was "
-        "started for it. To plan another evening, enter a date and press Plan it."
+        f"{what_the_run_did(run, on_the_page=on_the_page)}"
+    )
+    if not on_the_page:
+        return f"{asked} The date entered couldn't be read, so nothing was started for it."
+    return (
+        f"{asked} The date entered below couldn't be read, so nothing was started for it. To "
+        "plan another evening, enter a date and press Plan it."
     )
 
 
@@ -1612,10 +1635,12 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         offers_plan: bool = True,
         open_plan: str | None = None,
         focused: bool = False,
+        elsewhere: str | None = None,
     ) -> HTMLResponse:
         # The family page is read on a worker thread, for at most the store's wait; past
         # it, its stand-in that reads no store says the same. ``focused`` has the line take
-        # the focus, so an answer about the form itself is met on a phone too.
+        # the focus, so an answer about the form itself is met on a phone too. ``elsewhere``
+        # is how the stand-in says a line made for this press.
         try:
             return await bounded(
                 lambda: refused_on_the_page(
@@ -1628,12 +1653,17 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                     offers_plan=offers_plan,
                     open_plan=open_plan,
                     focus_problem=focused,
+                    elsewhere=elsewhere,
                 ),
                 STORE_WAIT_SECONDS,
             )
         except Unfinished:
             return family_not_shown(
-                request, state, WITHOUT_THE_PAGE.get(problem, problem), code, line=FAMILY_NOT_SHOWN
+                request,
+                state,
+                elsewhere or WITHOUT_THE_PAGE.get(problem, problem),
+                code,
+                line=FAMILY_NOT_SHOWN,
             )
 
     def read_date(blank: date) -> date | None:
@@ -1648,7 +1678,16 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return None if chosen is None else chosen.isoformat()
 
     async def newer_plan(evening: date) -> HTMLResponse:
-        latest = await bounded(partial(state.drafts.latest_for, evening), STORE_WAIT_SECONDS)
+        # Where the page shows the newer plan takes one more read. When that read fails or
+        # outlasts its wait, the press is refused all the same, with no place named.
+        made = newer_plan_made(evening)
+        try:
+            latest = await bounded(partial(state.drafts.latest_for, evening), STORE_WAIT_SECONDS)
+        except (Unfinished, sqlite3.Error) as error:
+            logger.warning("the newer plan could not be read: %s", type(error).__name__)
+            return await not_made(
+                made, status.HTTP_409_CONFLICT, kept=evening.isoformat(), focused=True
+            )
         waiting = latest is not None and latest.decision is None
         return await not_made(
             newer_plan_shown(evening, waiting),
@@ -1656,6 +1695,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             kept=evening.isoformat(),
             open_plan=None if latest is None else latest.draft_id,
             focused=True,
+            elsewhere=made,
         )
 
     async def repeated(run: RunState, chosen: date | None) -> Response:
@@ -1669,6 +1709,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 check,
                 kept=plan_date,
                 focused=True,
+                elsewhere=asked_with_an_unreadable_date(run, on_the_page=False),
             )
         if chosen != run.plan_date:
             return await not_made(
@@ -1677,6 +1718,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 check,
                 kept=chosen.isoformat(),
                 focused=True,
+                elsewhere=asked_another_evening(run, chosen, on_the_page=False),
             )
         if run.status == "running":
             notice = being_made(run, FAMILY_PAGE)
@@ -1707,6 +1749,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             kept=readable(state.clock.today()),
             focused=True,
+            elsewhere=NOT_WHOLE_ELSEWHERE,
         )
     run = await run_of_the_form(state, form.run_id)
     if run is not None:
@@ -1717,6 +1760,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             status.HTTP_409_CONFLICT,
             kept=readable(form.evening),
             focused=True,
+            elsewhere=EXPIRED_ELSEWHERE,
         )
     evening = read_date(form.evening)
     if evening is None:
@@ -1750,6 +1794,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             kept=evening.isoformat(),
             focused=True,
+            elsewhere=NOT_WHOLE_ELSEWHERE,
         )
     except AlreadyPlanning as error:
         return await not_made(
@@ -1923,11 +1968,12 @@ def reviewed_once(
     problem: str,
     status_code: int,
     kept: FamilyKept | None = None,
+    elsewhere: str | None = None,
 ) -> HTMLResponse:
     """A refusal shown on the family page, tried once. When a read for that page fails, its
-    stand-in, with the refusal's status, its words as they read without the page, and what
-    was typed: made from what the request already held, so no store is called after the
-    failure. Any other failure is not caught here."""
+    stand-in, with the refusal's status, its words as they read without the page (``elsewhere``
+    when given), and what was typed: made from what the request already held, so no store is
+    called after the failure. Any other failure is not caught here."""
     try:
         return page()
     except sqlite3.Error as error:
@@ -1935,7 +1981,7 @@ def reviewed_once(
         return family_not_shown(
             request,
             state,
-            WITHOUT_THE_PAGE.get(problem, problem),
+            elsewhere or WITHOUT_THE_PAGE.get(problem, problem),
             status_code,
             line=FAMILY_NOT_SHOWN,
             kept=kept,
@@ -1956,12 +2002,14 @@ def refused_on_the_page(
     offers_plan: bool = True,
     open_plan: str | None = None,
     focus_problem: bool = False,
+    elsewhere: str | None = None,
 ) -> HTMLResponse:
     """A form action the family page refused, said at its top with the status the JSON route
     would answer, ``check`` the link to the run it names, ``help_reply`` a reply to her
     request as typed, and ``reason_kept`` a note about a plan as typed, tried once.
     ``plan_date_kept`` refills the plan form's date, ``offers_plan`` false leaves the plan
-    form out, ``open_plan`` opens a plan, and ``focus_problem`` has the problem take the focus."""
+    form out, ``open_plan`` opens a plan, ``focus_problem`` has the problem take the focus, and
+    ``elsewhere`` is the problem as its stand-in says it."""
     return reviewed_once(
         request,
         state,
@@ -1981,6 +2029,7 @@ def refused_on_the_page(
         problem,
         status_code,
         kept,
+        elsewhere,
     )
 
 

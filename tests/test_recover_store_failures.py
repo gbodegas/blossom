@@ -11,26 +11,31 @@ what cannot be shown, and offers the same address again. The fixture week throug
 pinned clock, and a failure made at the store call, or a second connection holding the file.
 """
 
+import asyncio
 import pathlib
 import re
 import sqlite3
 import time
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
+from blossom.agent.runs import Unfinished
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.routes import hand_in as hand_in_routes
 from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
 from blossom.routes.navigation import details_href, week_href
+from blossom.routes.runs import Unconfirmed
 from tests.support import (
     DETAILS,
     ESSAY_ID,
@@ -48,6 +53,7 @@ from tests.support import (
     browser,
     card_for,
     database_of,
+    ended_run,
     every_row,
     family_plan,
     fixture_settings,
@@ -62,11 +68,13 @@ from tests.support import (
     refusing,
     report,
     rules_named,
+    runs_recorded,
     sign_in_as,
     state_of,
     store_free_page,
     walkthrough,
     ways_back_of,
+    words,
 )
 
 HAND_IN = f"/student/actions/assignments/{ESSAY_ID}/hand-in"
@@ -987,6 +995,147 @@ def test_a_family_plan_that_failed_on_the_way_is_said_without_family_review(
         ),
     )
     assert "Family review shows what happened" not in main
+    assert after_the_failure(seen) == []
+    assert after == before
+
+
+NEWER_FAMILY_PLAN = (
+    "A newer plan for Wednesday, August 19 was made after this page was opened, so Plan it "
+    "didn't start another one."
+)
+FAMILY_LINE = re.compile(r'<p class="problem" role="alert" id="problem"[^>]*>(.*?)</p>', re.S)
+
+
+def behind_a_newer_plan(client: TestClient) -> dict[str, str]:
+    """A family form from a page opened before a second form made a newer plan for its evening."""
+    stale = family_plan(client, "")
+    assert client.post("/parent/actions/plan", data=family_plan(client, "")).is_redirect
+    return stale
+
+
+def too_slow(*_: object, **__: object) -> None:
+    """A store read whose wait ended before it returned."""
+    raise Unfinished(cast("asyncio.Future[Any]", Future()))
+
+
+@pytest.mark.parametrize("failure", ["store error", "too slow"])
+def test_a_family_press_behind_a_newer_plan_it_cannot_place_is_still_refused(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the newer plan can't be read to say where the page shows it, the press is still
+    refused as one behind a newer plan: no run started, and no place on the page named."""
+    with browser(key=True) as client:
+        stale = behind_a_newer_plan(client)
+        before = runs_recorded(client)
+        failing = refusing(sqlite3.OperationalError) if failure == "store error" else too_slow
+        monkeypatch.setattr(state_of(client).drafts, "latest_for", failing)
+        answer = client.post("/parent/actions/plan", data=stale)
+        monkeypatch.undo()
+        after = runs_recorded(client)
+
+    assert answer.status_code == 409
+    line = FAMILY_LINE.search(answer.text)
+    assert line is not None
+    assert words(line.group(1)) == NEWER_FAMILY_PLAN
+    assert 'id="problem" tabindex="-1" autofocus>' in answer.text
+    assert 'action="/parent/actions/plan"' in answer.text
+    assert after == before
+
+
+def test_a_family_press_behind_a_newer_plan_is_said_without_family_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stand-in says a newer plan was made without naming a place on a page it doesn't
+    show or a button it doesn't have."""
+    with browser(key=True) as client:
+        stale = behind_a_newer_plan(client)
+        before = runs_recorded(client)
+        with Statements(state_of(client)) as seen:
+            monkeypatch.setattr(
+                state_of(client).drafts,
+                "review_snapshot",
+                refusing(sqlite3.OperationalError, seen),
+            )
+            answer = client.post("/parent/actions/plan", data=stale)
+        monkeypatch.undo()
+        after = runs_recorded(client)
+
+    store_free_page(
+        answer, status=409, heading="Family review", alert=f"{NEWER_FAMILY_PLAN} {FAMILY}"
+    )
+    assert after_the_failure(seen) == []
+    assert after == before
+
+
+ON_THE_STAND_IN = {
+    "W-3s": (422, "This form came from an incomplete or outdated page, so no plan was started."),
+    "W-4s": (409, "This form is from a page opened more than a week ago, so no plan was started."),
+    "W-5s": (
+        409,
+        "This form already asked for a plan for Wednesday, August 19, so nothing was started "
+        "for Thursday, August 20. That plan was made.",
+    ),
+    "W-5s, ended": (
+        409,
+        "This form already asked for a plan for Wednesday, August 19, so nothing was started "
+        "for Thursday, August 20. That request ended without a plan.",
+    ),
+    "W-5us": (
+        409,
+        "This form already asked for a plan for Wednesday, August 19. That plan was made. The "
+        "date entered couldn't be read, so nothing was started for it.",
+    ),
+    "W-6s": (
+        202,
+        "Blossom couldn't confirm that the new plan was saved. Her homework updates are saved.",
+    ),
+}
+
+
+async def unconfirmed(*_: object, **__: object) -> object:
+    """A run whose plan may have been published, as the route hears of one."""
+    raise Unconfirmed("a" * 32, PLAN_DATE)
+
+
+@pytest.mark.parametrize("line", list(ON_THE_STAND_IN))
+def test_a_family_plan_answer_on_the_stand_in_names_nothing_it_does_not_show(
+    line: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each answer about the plan form, said where the family page can't be shown: what
+    happened and that nothing was started, with no date kept below, no plan shown above, and
+    no Plan it to press."""
+    status, said = ON_THE_STAND_IN[line]
+    with browser(key=True) as client:
+        form = family_plan(client, PLAN_DATE.isoformat())
+        if line == "W-3s":
+            form = {**form, "evening": "tonight"}
+        elif line == "W-4s":
+            form = {**form, "issued_at": "20260101T000000Z"}
+        elif line == "W-5s, ended":
+            ended_run(
+                state_of(client).drafts,
+                thread_id=form["run_id"],
+                plan_date=PLAN_DATE,
+                outcome="interrupted",
+            )
+            form = {**form, "plan_date": "2026-08-20"}
+        elif line in {"W-5s", "W-5us"}:
+            assert client.post("/parent/actions/plan", data=form).is_redirect
+            form = {**form, "plan_date": "2026-08-20" if line == "W-5s" else "next tuesday"}
+        else:
+            monkeypatch.setattr(parent_routes, "make_plan", unconfirmed)
+        before = runs_recorded(client)
+        with Statements(state_of(client)) as seen:
+            monkeypatch.setattr(
+                state_of(client).drafts,
+                "review_snapshot",
+                refusing(sqlite3.OperationalError, seen),
+            )
+            answer = client.post("/parent/actions/plan", data=form)
+        monkeypatch.undo()
+        after = runs_recorded(client)
+
+    store_free_page(answer, status=status, heading="Family review", alert=f"{said} {FAMILY}")
     assert after_the_failure(seen) == []
     assert after == before
 
