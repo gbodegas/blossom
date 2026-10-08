@@ -14,21 +14,26 @@ evidence and the same candidates until changed (for a row whose due date wasn't 
 same capture and row only); an open row may also be one of her results the parent chooses.
 
 Each value's status compares it with its target's current value, as accepted school values:
-"Saved", equal to it; "Matches an earlier saved value", equal to a value a newer one replaced;
+"Saved", equal to it; "Matches an earlier saved value", equal to a value a current report
+holds that a newer one replaced, so it was current once (a value only reports kept as earlier
+hold was never current, and reads Changed or New);
 "Changed", it differs; "New", no target; "Needs your answer", a matching question is open;
 "Couldn't read", a cell is unreadable; "Due date not captured", the copy left out the due cell
-of a row that resolves to none of her results; a value of which the copy captured only the cells
-that say which target it is compares nothing, so it is neither Saved nor offered.
-The comparison leaves out every cell the incoming copy didn't capture, on both sides, as neither
-the same nor a change; a cell it captured is compared even when the saved value lacks it, so it
-can be new information. A row with a value that can't be read but whose identity reads, or whose
-category and title read but whose due date wasn't captured, still asks its question, or offers
-her results to choose from; an answer records which result it is, never its value. A due date
-that wasn't captured is never evidence, so such a row resolves only through its own capture's
-records or the parent's answer or choice; then its value takes its status as any other does,
-while a value that can't be read stays "Couldn't read". Only a New or Changed value can be
-selected, and only when no current report newer than the one its capture's rest joins supplied
-or showed its target.
+of a row that resolves to none of her results; "Shown in a newer report", a current report newer
+than the one its capture's rest joins supplied or showed its target; a value of which the copy
+captured only the cells that say which target it is compares nothing, so it is neither Saved
+nor offered. The comparison leaves out every cell the incoming copy didn't capture, on both
+sides, as neither the same nor a change; a cell it captured is compared even when the saved
+value lacks it, so it can be new information. A row with a value that can't be read but whose
+identity reads, or whose category and title read but whose due date wasn't captured, still
+asks its question, or offers her results to choose from; an answer records which result it
+is, never its value. A due date that wasn't captured is never evidence, so such a row resolves
+only through its own capture's records or the parent's answer or choice; then its value takes
+its status as any other does, while a value that can't be read stays "Couldn't read". Only a
+New or Changed value can be selected, and a value that matches an earlier saved one only under
+the parent's choice of current for the new report a save makes. That choice starts on "Keep as
+an earlier report" when any value repeats one a newer report replaced, and on current
+otherwise.
 
 The questions a review asks are the identity of the student line, the first setup, the first
 month of a year not on record, and the class when no alias matches. The answers a page sends are
@@ -41,7 +46,7 @@ from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Final, Literal, get_args
 
 from blossom.grades.draft import (
     Evidence,
@@ -143,17 +148,28 @@ class ReportAt:
 
 
 @dataclass(frozen=True)
+class DueFrom:
+    """A result's due cell as an observation captured it, blank or unreadable included, and the
+    report that observation belongs to."""
+
+    cell: Cell
+    report: ReportAt
+
+
+@dataclass(frozen=True)
 class CurrentValue:
     """A target's value as one accepted report gave it: its cells by field, that report (its
     source) and its acceptance order. For a result's current value, also the newest current
-    report that showed it, and the newest report that supports "Not shown in this report", if
-    any."""
+    report that showed it, the newest report that supports "Not shown in this report", if any,
+    and its due date: the newest current observation that captured its Due cell, whatever
+    report supplied the value, or None when none did."""
 
     cells: Mapping[str, Cell]
     report_id: str
     order: int
     last_shown: ReportAt | None = None
     not_shown: ReportAt | None = None
+    due: DueFrom | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +198,10 @@ class ItemStatus(StrEnum):
     DUE_NOT_CAPTURED = "due_not_captured"
     """"Due date not captured": the row's category and title read, its due cell wasn't in the
     copy, and it resolves to none of her results. Never offered."""
+    COVERED = "covered"
+    """"Shown in a newer report": a New, Changed or matching-earlier value this capture's rest
+    can't change, since a current report newer than the one it joins supplied or showed its
+    target. Not offered."""
     VALUE_NOT_CAPTURED = "value_not_captured"
     """The copy captured none of the value's cells, only those that say which target it is, so
     nothing is compared: neither Saved nor offered."""
@@ -201,8 +221,8 @@ class QuestionKind(StrEnum):
 
 @dataclass(frozen=True)
 class Candidate:
-    """A result a row may be: its ID and its latest observation, with its last score, status and
-    due text."""
+    """A result a row may be: its ID and its latest observation, with its last score and status,
+    and its due text as matching reads it."""
 
     result_id: str
     last: CurrentValue
@@ -251,8 +271,8 @@ class ReviewItem:
     question: MatchQuestion | None = None
     how: MatchedHow | None = None
     covered: bool = False
-    """A New or Changed value this capture's rest can't change: a current report newer than the
-    one it joins supplied or showed its target. Not offered."""
+    """A value read "Shown in a newer report": a current report newer than the one this capture's
+    rest joins supplied or showed its target. Not offered."""
     choices: tuple[str, ...] = ()
     """For a row no record, equal evidence or reuse resolved, the results "Choose an existing
     assignment" offers: her results in the class and term no such row resolved to."""
@@ -274,11 +294,28 @@ class ClassQuestion:
     existing: tuple[tuple[str, str, int | None], ...]
 
 
+ReportUse = Literal["current", "earlier"]
+"""A report's use: current, or kept as an earlier report, which supplies no current value."""
+
+
+@dataclass(frozen=True)
+class UseChoice:
+    """The report-level choice for the new report a save makes: "Use this as the current school
+    record" ("Use these values where this report provides them" for a partial reading) or "Keep
+    as an earlier report", starting on ``default``. ``repeats`` holds the keys of the values that
+    repeat one a newer report replaced: "This report repeats values a newer report replaced."
+    """
+
+    default: ReportUse
+    repeats: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class GradeReview:
     """What a report would do: a fresh acceptance ID for the page, the questions, the scope
-    revision of the class and term (None when they hold nothing yet), and each value's status in
-    the report's order."""
+    revision of the class and term (None when they hold nothing yet), each value's status in
+    the report's order, and the report-level choice, None when a save joins the capture's
+    latest report or making the new report current would change nothing."""
 
     acceptance_id: str
     source_key: str
@@ -290,6 +327,7 @@ class GradeReview:
     term: ReviewItem | None
     categories: tuple[ReviewItem, ...]
     rows: tuple[ReviewItem, ...]
+    use: UseChoice | None = None
 
     @property
     def items(self) -> tuple[ReviewItem, ...]:
@@ -302,6 +340,16 @@ class GradeReview:
         covers."""
         return frozenset(
             item.key for item in self.items if item.status in OFFERED and not item.covered
+        )
+
+    @property
+    def back_to(self) -> frozenset[str]:
+        """The keys of the values that match an earlier saved one, which a save may also select
+        under the parent's choice of current: each goes back to its value from its "from"."""
+        return frozenset(
+            item.key
+            for item in self.items
+            if self.use is not None and item.status is ItemStatus.MATCHES_EARLIER
         )
 
 
@@ -345,6 +393,8 @@ class GradeAnswers:
     same_class: str | None = None
     same_class_revision: int | None = None
     matches: tuple[MatchAnswer, ...] = ()
+    use: ReportUse | None = None
+    """The report-level choice, or None for its default."""
 
 
 @dataclass(frozen=True)
@@ -421,8 +471,13 @@ class ClassRecord:
     supplied or showed each target."""
 
     current: CurrentValues
-    accepted: Mapping[str, frozenset[Compared]]
+    once_current: Mapping[str, frozenset[Compared]]
+    """Each value a current report holds for each target, as compared: each was current once,
+    until a newer current report replaced it. Reports kept as earlier hold none of these."""
     latest: Mapping[str, CurrentValue]
+    """Each result's observation in the highest acceptance order, in any report, with its due
+    date from the newest observation in any report that captured its Due cell: what matching
+    reads."""
     decided: Mapping[str, frozenset[str]]
     newest: Mapping[str, int]
     explicit: Mapping[str, frozenset[str]] = field(default_factory=dict)
@@ -467,6 +522,14 @@ class OnRecord:
 
 OFFERED: Final = frozenset({ItemStatus.NEW, ItemStatus.CHANGED})
 """The statuses a save may select."""
+COVERABLE: Final = OFFERED | {ItemStatus.MATCHES_EARLIER}
+"""The statuses a newer current report's coverage takes precedence over, for a value its capture
+hasn't saved: a capture's rest shows "Shown in a newer report", never the status its value would
+have."""
+CURRENT_COULD_CHANGE: Final = frozenset(
+    {ItemStatus.NEW, ItemStatus.CHANGED, ItemStatus.MATCHES_EARLIER, ItemStatus.NEEDS_ANSWER}
+)
+"""The statuses of values a current report could make current, an answer given first."""
 
 
 def _unreadable(*values: GradeValue) -> bool:
@@ -492,7 +555,10 @@ def status_against(
 ) -> ItemStatus:
     """A value's status against its target, a cell the copy didn't capture compared on neither
     side: Value not captured when no value cell is left, Saved when equal to the current value,
-    Matches an earlier saved value when equal to another accepted one, else Changed or New."""
+    Matches an earlier saved value when equal to another value a current report holds, which a
+    newer one replaced, else Changed, or New with no current value. A value only reports kept
+    as earlier hold was never current, so nothing replaced it: it reads Changed or New, and is
+    offered."""
     if not captures_a_value(cells):
         return ItemStatus.VALUE_NOT_CAPTURED
     left_out = {
@@ -503,16 +569,35 @@ def status_against(
         return tuple(one for one in value if one[0] not in left_out)
 
     value = kept(compared(cells))
-    if current is not None and kept(compared(current.cells)) == value:
+    if current is not None and kept(compared(_as_shown(current, cells))) == value:
         return ItemStatus.SAVED
-    if value in {kept(one) for one in held.accepted.get(target, frozenset())}:
+    if value in {kept(one) for one in held.once_current.get(target, frozenset())}:
         return ItemStatus.MATCHES_EARLIER
     return ItemStatus.NEW if current is None else ItemStatus.CHANGED
 
 
+def _as_shown(current: CurrentValue, cells: Mapping[str, Cell]) -> Mapping[str, Cell]:
+    """The current value's cells as the comparison with an incoming copy reads them. When the
+    value's own observation didn't capture its Due cell and the copy did, its Due cell is the
+    result's shown due date, by value and presence, blank or unreadable as captured; with no
+    shown due date it stays not captured. Nothing is written, the date keeps its own report,
+    and values once current are compared as they are."""
+    own, incoming = current.cells.get("due"), cells.get("due")
+    if (
+        own is None
+        or incoming is None
+        or current.due is None
+        or own[0] is not Presence.NOT_CAPTURED
+        or incoming[0] is Presence.NOT_CAPTURED
+    ):
+        return current.cells
+    return {**current.cells, "due": current.due.cell}
+
+
 def evidence_of(value: CurrentValue) -> Evidence:
-    """A result's evidence, derived from an observation of it: its category, title and due date."""
-    cells = value.cells
+    """A result's evidence, derived from an observation of it: its category and title, and its
+    due date from ``value.due`` when set, else from the observation."""
+    cells = {**value.cells, **({} if value.due is None else {"due": value.due.cell})}
 
     def one(field: str) -> tuple[Presence, str]:
         return cells[field][0], folded(cells[field][1])
@@ -749,7 +834,11 @@ def _resolved_rows(
         status = status_against(held, result, row.cells, current)
         if row.key in on_record.saved and status in OFFERED:
             status = ItemStatus.SAVED
-        covered = status in OFFERED and on_record.covers(result)
+        covered = (
+            row.key not in on_record.saved and status in COVERABLE and on_record.covers(result)
+        )
+        if covered:
+            status = ItemStatus.COVERED
         return ReviewItem(row.key, status, result, current, asked, how, covered)
 
     exact = {}
@@ -824,9 +913,11 @@ def review_from(
     acceptance_id: str,
     on_record: OnRecord,
     matches: Collection[MatchAnswer] = (),
+    *,
+    complete: bool,
 ) -> GradeReview:
     """The review of ``draft`` against what her record says, in the report's order, with
-    ``matches`` applied to the questions they answer."""
+    ``matches`` applied to the questions they answer; ``complete`` is whether its reading was."""
     held = on_record.held
 
     def item(key: str, cells: Mapping[str, Cell], current: CurrentValue | None) -> ReviewItem:
@@ -837,7 +928,9 @@ def review_from(
         status = status_against(held, key, cells, current)
         if key in on_record.saved and status in OFFERED:
             status = ItemStatus.SAVED
-        covered = status in OFFERED and on_record.covers(key)
+        covered = key not in on_record.saved and status in COVERABLE and on_record.covers(key)
+        if covered:
+            status = ItemStatus.COVERED
         return ReviewItem(key, status, current=current, covered=covered)
 
     header = draft.header
@@ -855,6 +948,9 @@ def review_from(
         for key, category in zip(category_keys(draft), draft.categories, strict=True)
     )
     term_cells = cells_of(TERM_FIELDS, (term.percent, term.letter))
+    term_item = item(TERM_KEY, term_cells, held.current.term) if captured else None
+    rows = _resolved_rows(on_record, _rows_of(draft), matches)
+    values = (*(() if term_item is None else (term_item,)), *categories, *rows)
     return GradeReview(
         acceptance_id=acceptance_id,
         source_key=source_key,
@@ -867,10 +963,34 @@ def review_from(
             existing=on_record.existing,
         ),
         revision=on_record.revision,
-        term=item(TERM_KEY, term_cells, held.current.term) if captured else None,
+        term=term_item,
         categories=categories,
-        rows=_resolved_rows(on_record, _rows_of(draft), matches),
+        rows=rows,
+        use=None if on_record.joins is not None else _use_choice(held, values, rows, complete),
     )
+
+
+def _use_choice(
+    held: ClassRecord,
+    values: tuple[ReviewItem, ...],
+    rows: tuple[ReviewItem, ...],
+    complete: bool,
+) -> UseChoice | None:
+    """The choice for the new report a save makes, or None when making it current would change
+    nothing: no value it could make current, no current result whose last showing it would
+    move, and no current result it could show as absent. Absence takes a complete reading with
+    at least one row, every row naming a result: a copy with no rows makes no report."""
+    current = held.current.results
+    named = {item.result_id for item in rows if item.result_id is not None}
+    resolved = bool(rows) and all(item.result_id is not None for item in rows)
+    if not (
+        any(item.status in CURRENT_COULD_CHANGE for item in values)
+        or not named.isdisjoint(current)
+        or (complete and resolved and not current.keys() <= named)
+    ):
+        return None
+    repeats = tuple(item.key for item in values if item.status is ItemStatus.MATCHES_EARLIER)
+    return UseChoice("earlier" if repeats else "current", repeats)
 
 
 def is_current_context(setup: tuple[str, str]) -> bool:
@@ -905,6 +1025,12 @@ def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
         offered = {class_id for class_id, _, _ in question.existing}
         return answers.new_class is None and answers.same_class in offered
     return answers.new_class is not None and bool(folded(answers.new_class))
+
+
+def use_asked(review: GradeReview, use: str | None) -> bool:
+    """Whether ``use`` answers the report-level choice ``review`` offers now: one of its two
+    answers, or None for its default; and only None when it offers none."""
+    return use is None or (review.use is not None and use in get_args(ReportUse))
 
 
 def matches_asked(review: GradeReview, matches: Collection[MatchAnswer]) -> bool:

@@ -10,14 +10,29 @@ matches an earlier saved value, and only a New or Changed value can be selected.
 """
 
 import dataclasses
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Collection
+from typing import cast
 
 import pytest
 
 from blossom.grades.draft import GradeReportDraft, Presence, capture_key
 from blossom.grades.identity import Identity, IdentityStatus, name_form_key
+from blossom.grades.projection import (
+    NEW,
+    ActionRecorded,
+    CurrentPreview,
+    MadeCurrent,
+    NothingToChange,
+    PreviewRevised,
+    ReportNotSaved,
+    ScopeHeld,
+    SourceOf,
+    preview_of,
+    project,
+)
 from blossom.grades.review import (
     RESULT_FIELDS,
     TERM_KEY,
@@ -32,11 +47,14 @@ from blossom.grades.review import (
     OnRecord,
     QuestionKind,
     ReportAt,
+    ReportUse,
     ReturnReason,
     ReviewItem,
     ReviewReturned,
     SaveOutcome,
+    UseChoice,
     cells_of,
+    evidence_of,
     review_from,
     status_against,
 )
@@ -44,6 +62,9 @@ from blossom.grades.text_reader import read_grade_report, reading_complete
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
     FIXTURES,
+    OBSERVED_AT,
+    confirm_current,
+    current_preview,
     fixture_clock,
     grade_answers,
     save_grade,
@@ -115,12 +136,16 @@ def save(
     matches: Collection[MatchAnswer] = (),
     selection: Collection[str] | None = None,
     complete: bool = False,
+    use: str | None = None,
 ) -> SaveOutcome:
     """A parent's save with every setup question answered, ``matches`` as the matching answers,
-    and the ready values plus the answered rows selected unless ``selection`` says otherwise; its
-    reading incomplete unless ``complete``."""
+    ``use`` as the report-level choice (its default when None), and the ready values plus the
+    answered rows selected unless ``selection`` says otherwise; its reading incomplete unless
+    ``complete``."""
     review = review or review_of(store, draft)
-    answers = dataclasses.replace(grade_answers(review), matches=tuple(matches))
+    answers = dataclasses.replace(
+        grade_answers(review), matches=tuple(matches), use=cast("ReportUse | None", use)
+    )
     if selection is None:
         selection = review.ready | {answer.row_key for answer in matches}
     return save_grade(
@@ -391,19 +416,20 @@ def test_a_history_only_repeat_changes_nothing_current() -> None:
     and importing it again offers nothing and leaves every current value as it was."""
     store = in_memory()
     first = saved(save(store, A))
-    newer = saved(save(store, B))
-    store._connection.execute(
-        "UPDATE grade_reports SET use = 'earlier' WHERE report_id = ?", (newer.report_id,)
-    )
-    store._connection.commit()
+    offered = review_of(store, B)
+    assert offered.use == UseChoice("current", ())
+    newer = saved(save(store, B, offered, use="earlier"))
+    assert use_of(store, newer.report_id) == "earlier"
     class_id = class_of(store)
     before = store.current_values(class_id, "T1")
     review = review_of(store, B)
     saved(save(store, B, review))
 
     assert {value.report_id for value in before.results.values()} == {first.report_id}
-    assert row(review, "Cell Diagram").status is ItemStatus.MATCHES_EARLIER
+    # B's 8.0 was never current, and B's own capture accepted it: Saved, never offered again.
+    assert row(review, "Cell Diagram").status is ItemStatus.SAVED
     assert review.ready == frozenset()
+    assert review.use is None
     assert store.current_values(class_id, "T1") == before
 
 
@@ -685,7 +711,9 @@ def answered_review(
     """The review a save computes again with ``answers`` applied, as the save holds it."""
     with store._lock:
         source = capture_key(draft)
-        return store._review_locked(draft, source, KEY, same_class=None, matches=answers)
+        return store._review_locked(
+            draft, source, KEY, same_class=None, matches=answers, complete=False
+        )
 
 
 def test_a_row_whose_score_cant_be_read_asks_and_its_answer_records_it_shown() -> None:
@@ -839,8 +867,9 @@ def test_an_older_capture_s_rest_after_a_newer_report_showed_the_result_is_not_o
     rest = review_of(store, k)
     cell = row(rest, "Cell Diagram")
 
-    assert (cell.status, cell.covered) == (ItemStatus.CHANGED, True)
+    assert (cell.status, cell.covered) == (ItemStatus.COVERED, True)
     assert cell.key not in rest.ready
+    assert rest.use is None
     value = store.current_values(class_of(store), "T1").results[cell.result_id or ""]
     assert (text_of(value, "points"), value.order) == ("7.0", 1)
     assert value.last_shown is not None
@@ -1288,6 +1317,724 @@ def test_reordered_identical_rows_ask_and_conflicting_answers_never_save() -> No
     assert {row(third, "IXL", n).status for n in (1, 2)} == {ItemStatus.NEEDS_ANSWER}
 
 
+# ------------------------------------------------------------- the report-level choice (rule 5)
+
+
+def use_of(store: ProjectStateStore, report_id: str | None) -> str:
+    (use,) = store._connection.execute(
+        "SELECT use FROM grade_reports WHERE report_id = ?", (report_id,)
+    ).fetchone()
+    return str(use)
+
+
+def reports_of(store: ProjectStateStore) -> int:
+    (count,) = store._connection.execute("SELECT COUNT(*) FROM grade_reports").fetchone()
+    return int(count)
+
+
+AGAIN = variant(text=IXL_REPORT)
+"""Another capture of A with two IXL rows added: its Cell Diagram reads 7.0, as A's did."""
+UNREAD_DUES = tuple(
+    (f"| {due}   |", f"| {due[:-1]}x   |") for due in ("09/22", "09/26", "09/24", "10/02")
+)
+"""Every row's due date made unreadable: no row's identity can be read."""
+
+
+def test_a_new_report_starts_on_current_and_is_saved_as_current() -> None:
+    store = in_memory()
+    first = review_of(store, A)
+    assert first.use == UseChoice("current", ())
+    one = saved(save(store, A, first))
+    newer = review_of(store, B)
+    assert newer.use == UseChoice("current", ())
+    two = saved(save(store, B, newer))
+
+    assert (use_of(store, one.report_id), use_of(store, two.report_id)) == ("current", "current")
+    cell = row(newer, "Cell Diagram").result_id or ""
+    value = store.current_values(class_of(store), "T1").results[cell]
+    assert (text_of(value, "points"), value.report_id) == ("8.0", two.report_id)
+
+
+def test_a_s_rest_in_another_capture_after_newer_b_starts_on_earlier_and_b_stays_current() -> None:
+    """A saved without its IXL rows; B, newer, changes Cell Diagram; a clipped copy of A brings
+    the IXL rows back with A's 7.0. It repeats a value B replaced, so it starts on "Keep as an
+    earlier report", and saved so it supplies nothing current: B stays current."""
+    store = in_memory()
+    full = review_of(store, AGAIN)
+    ixl = {row(full, "IXL", n).key for n in (1, 2)}
+    saved(save(store, AGAIN, full, selection=full.ready - ixl))
+    newer = saved(save(store, B))
+    before = store.current_values(class_of(store), "T1")
+    rest = variant(text=IXL_REPORT[: IXL_REPORT.index("|          |   |                   |")])
+    review = review_of(store, rest)
+    cell = row(review, "Cell Diagram")
+
+    assert review.use == UseChoice("earlier", (cell.key,))
+    assert cell.status is ItemStatus.MATCHES_EARLIER
+    assert review.ready == ixl
+    kept = saved(save(store, rest, review))
+    assert kept.added == 2
+    assert use_of(store, kept.report_id) == "earlier"
+    after = store.current_values(class_of(store), "T1")
+    assert after == before
+    assert after.results[cell.result_id or ""].report_id == newer.report_id
+    assert len(results(store)) == 6
+
+
+def test_the_parent_may_still_choose_current_and_bring_a_value_back() -> None:
+    """A teacher's 7.0, then 8.0, then 7.0 again in another capture: the review starts on
+    earlier, the value reads Matches an earlier saved value with 8.0 as its "from", and only the
+    parent's choice of current brings it back. A retry of that choice writes nothing."""
+    store = in_memory()
+    saved(save(store, A))
+    replaced = saved(save(store, B))
+    review = review_of(store, AGAIN)
+    cell = row(review, "Cell Diagram")
+
+    assert review.use == UseChoice("earlier", (cell.key,))
+    assert cell.current is not None
+    assert (cell.status, text_of(cell.current, "points")) == (ItemStatus.MATCHES_EARLIER, "8.0")
+    assert cell.key in review.back_to
+    assert cell.key not in review.ready
+    for use in (None, "earlier"):
+        refused = save(store, AGAIN, review, selection={cell.key}, use=use)
+        assert isinstance(refused, ReviewReturned)
+        assert refused.why is ReturnReason.SELECTION
+    back = saved(save(store, AGAIN, review, selection={cell.key}, use="current"))
+    current = store.current_values(class_of(store), "T1")
+    value = current.results[cell.result_id or ""]
+
+    assert (back.added, back.updated) == (0, 1)
+    assert use_of(store, back.report_id) == "current"
+    assert (text_of(value, "points"), value.report_id, value.order) == ("7.0", back.report_id, 3)
+    held = store._connection.execute(
+        "SELECT report_id FROM grade_result_observations WHERE result_id = ?", (cell.result_id,)
+    ).fetchall()
+    assert len(held) == 3
+    assert (replaced.report_id,) in held
+    count = reports_of(store)
+    retry = save(store, AGAIN, review, selection={cell.key}, use="current")
+    assert isinstance(retry, AlreadyRecorded)
+    assert retry.saved == back
+    assert reports_of(store) == count
+    assert store.current_values(class_of(store), "T1") == current
+
+
+def test_a_value_the_page_never_showed_as_matching_an_earlier_one_never_goes_back() -> None:
+    """G-I8: B moved Cell Diagram and changed its score; another capture with A's very cells asks
+    first and, answered, matches the value B replaced. It can't be brought back in that save,
+    since the page started on current without saying why not."""
+    store = in_memory()
+    saved(save(store, A))
+    moved = variant(CELL_SCORE, CELL_DUE)
+    first = review_of(store, moved)
+    saved(save(store, moved, first, matches=[same(row(first, "Cell Diagram"))]))
+    review = review_of(store, AGAIN)
+    cell = row(review, "Cell Diagram")
+    assert (cell.status, review.use) == (ItemStatus.NEEDS_ANSWER, UseChoice("current", ()))
+    assert cell.question is not None
+    answer = [same(cell)]
+    returned = save(store, AGAIN, review, matches=answer, selection={cell.key}, use="current")
+
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.SELECTION
+    assert reports_of(store) == 2
+    shown = saved(save(store, AGAIN, review, matches=answer, selection=(), use="current"))
+    value = store.current_values(class_of(store), "T1").results[cell.question.ids[0]]
+    assert (text_of(value, "points"), value.order, value.last_shown) == (
+        "8.0",
+        2,
+        ReportAt(shown.report_id or "", 3),
+    )
+
+
+def test_the_choice_is_not_offered_when_it_would_change_nothing() -> None:
+    """A copy whose term and categories are saved and whose rows can't be identified would change
+    no current value, last showing or absence: no choice, and an answer to one returns the
+    review."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    before = store.current_values(class_of(store), "T1")
+    draft = variant(*UNREAD_DUES)
+    review = review_of(store, draft)
+
+    assert {item.status for item in review.rows} == {ItemStatus.UNREADABLE}
+    assert review.use is None
+    for use in ("current", "earlier", "now"):
+        returned = save(store, draft, review, use=use)
+        assert isinstance(returned, ReviewReturned)
+        assert returned.why is ReturnReason.ANSWERS
+    outcome = saved(save(store, draft, review, complete=True))
+    assert outcome.report_id is None
+    assert store.current_values(class_of(store), "T1") == before
+
+
+ROW_LINES = tuple(
+    line
+    for line in REPORT.splitlines()
+    if line.startswith(("| Seed", "| Cell", "| Microscope", "| Osmosis"))
+)
+NO_ROWS = tuple((f"{line}\n", "") for line in ROW_LINES)
+"""Every result row left out of a copy: its term and categories stay."""
+LAB_LOG = "| Lab Safety Log | 9.0 | 10.0 | 90.0 | Valid | 09/30 | 0.0 | 0.0 | | 1.0 | |"
+LAB_LOG_REPORT = REPORT.replace(CELL, f"{CELL}\n{LAB_LOG}")
+"""Another capture with one more homework row, Lab Safety Log."""
+
+
+def test_a_capture_with_no_rows_offers_no_choice_complete_or_not() -> None:
+    """A copy whose term and categories are saved and that has no result rows makes no report, so
+    it can't show an assignment as absent: no choice, complete or not, and an answer to one
+    returns the review."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    draft = variant(*NO_ROWS)
+
+    assert whole(*NO_ROWS)
+    assert review_of(store, draft).use is None
+    review = store.review_grade_report(draft, capture_key(draft), key=KEY, complete=True)
+    assert (review.rows, {item.status for item in review.items}) == ((), {ItemStatus.SAVED})
+    assert review.use is None
+    returned = save(store, draft, review, use="current", complete=True)
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.ANSWERS
+    assert saved(save(store, draft, review, complete=True)).report_id is None
+
+
+def test_absence_alone_offers_the_choice_only_for_a_complete_reading() -> None:
+    """Its one row names Lab Safety Log, which only a report kept as earlier holds, so no current
+    value or last showing could change: only a complete reading could show A's results as
+    absent, and only then is the choice offered."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, variant(text=LAB_LOG_REPORT), use="earlier", complete=True))
+    excused = (*NO_ROWS, (LAB_LOG, LAB_LOG.replace(" 9.0 ", " EX ")))
+    draft = variant(*excused, text=LAB_LOG_REPORT)
+    log = row(review_of(store, draft), "Lab Safety Log")
+
+    assert whole(*excused, text=LAB_LOG_REPORT)
+    assert (log.status, log.how) == (ItemStatus.UNREADABLE, "exact")
+    assert log.result_id not in store.current_values(class_of(store), "T1").results
+    assert review_of(store, draft).use is None
+    review = store.review_grade_report(draft, capture_key(draft), key=KEY, complete=True)
+    assert review.use == UseChoice("current", ())
+
+
+def test_an_answer_not_among_the_choices_returns_the_review() -> None:
+    store = in_memory()
+    saved(save(store, A))
+    review = review_of(store, B)
+    returned = save(store, B, review, use="now")
+
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.ANSWERS
+    assert reports_of(store) == 1
+
+
+def test_a_presence_only_report_takes_the_default_and_kept_as_earlier_shows_nothing() -> None:
+    """4.3a: a submission of presence alone makes a report with rule 5's default use. Kept as
+    earlier, it moves no last showing and proves no absence."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, B, complete=True))
+    before = store.current_values(class_of(store), "T1")
+    review = review_of(store, AGAIN)
+    kept = saved(save(store, AGAIN, review, selection=(), complete=True))
+
+    assert (kept.shown, kept.report_id is not None) == (4, True)
+    assert use_of(store, kept.report_id) == "earlier"
+    assert store.current_values(class_of(store), "T1") == before
+
+
+def test_a_partial_report_kept_as_earlier_changes_nothing_current() -> None:
+    """His case list: a clipped copy with a changed score starts on current; kept as earlier, it
+    supplies nothing, and its own rest joins it with no choice offered."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    before = store.current_values(class_of(store), "T1")
+    partial = variant(CELL_SCORE, text=CLIPPED)
+    review = review_of(store, partial)
+
+    assert review.use == UseChoice("current", ())
+    kept = saved(save(store, partial, review, use="earlier"))
+    assert kept.updated == 1
+    assert use_of(store, kept.report_id) == "earlier"
+    assert store.current_values(class_of(store), "T1") == before
+    assert review_of(store, partial).use is None
+
+
+def test_a_capture_s_rest_joins_its_latest_report_kept_as_earlier() -> None:
+    """Rule 4: the rest of a capture kept as earlier joins that report, still earlier, with no
+    choice offered, and changes nothing current."""
+    store = in_memory()
+    saved(save(store, A))
+    saved(save(store, B))
+    review = review_of(store, AGAIN)
+    kept = saved(save(store, AGAIN, review, selection={row(review, "IXL", 1).key}))
+    assert use_of(store, kept.report_id) == "earlier"
+    before = store.current_values(class_of(store), "T1")
+    count = reports_of(store)
+    rest = review_of(store, AGAIN)
+    second = row(rest, "IXL", 2)
+
+    assert rest.use is None
+    assert second.key in rest.ready
+    later = saved(save(store, AGAIN, rest, selection={second.key}))
+    assert later.report_id == kept.report_id
+    assert reports_of(store) == count
+    assert use_of(store, kept.report_id) == "earlier"
+    assert store.current_values(class_of(store), "T1") == before
+
+
+def test_a_title_date_and_max_change_chosen_keeps_the_id_and_its_history() -> None:
+    """His case list: Osmosis renamed, moved and given another max, chosen as the same
+    assignment, keeps its result ID with both observations; A again resolves its row to that ID
+    through its own records and reads Matches an earlier saved value."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    osmosis = row(review_of(store, A), "Osmosis with Potato Slices").result_id or ""
+    draft = variant(TAKEN_OVER)
+    review = review_of(store, draft)
+    saved(save(store, draft, review, matches=[chosen(row(review, "Potato Lab"), osmosis)]))
+    held = store._connection.execute(
+        "SELECT COUNT(*) FROM grade_result_observations WHERE result_id = ?", (osmosis,)
+    ).fetchone()
+    back = review_of(store, A)
+    item = row(back, "Osmosis with Potato Slices")
+
+    assert held == (2,)
+    assert (item.result_id, item.how) == (osmosis, "same_capture")
+    assert item.status is ItemStatus.MATCHES_EARLIER
+    assert back.use is None
+
+
+def test_an_explicit_answer_kept_in_an_earlier_report_still_counts_for_matching() -> None:
+    """Matching isn't use: a "Same assignment" answer saved in a report kept as earlier is
+    reused for the same evidence in another capture."""
+    store = in_memory()
+    saved(save(store, A))
+    draft = variant(MOVED)
+    review = review_of(store, draft)
+    moved = row(review, "Microscope Practice")
+    assert moved.question is not None
+    kept = saved(save(store, draft, review, matches=[same(moved)], selection=(), use="earlier"))
+    assert use_of(store, kept.report_id) == "earlier"
+    other = row(review_of(store, variant(MOVED, CELL_SCORE)), "Microscope Practice")
+
+    assert (other.result_id, other.how) == (moved.question.ids[0], "reused")
+
+
+SEED_19 = ("| Seed Germination Log | 18.0 ", "| Seed Germination Log | 19.0 ")
+SEED_20 = ("| Seed Germination Log | 18.0 ", "| Seed Germination Log | 20.0 ")
+CELL_9 = ("| Cell Diagram             | 7.0 ", "| Cell Diagram             | 9.0 ")
+MICROSCOPE_28 = (
+    "| Microscope Practice                | 27.0 ",
+    "| Microscope Practice                | 28.0 ",
+)
+
+
+def test_a_value_only_an_earlier_report_holds_is_changed_and_offered_in_another_capture() -> None:
+    """His thirteenth round, 5: B's 8.0 was saved only as history, so nothing replaced it. In
+    another capture it reads Changed from A's 7.0, is offered, the report starts on current, and
+    saving it makes 8.0 current."""
+    store = in_memory()
+    saved(save(store, A))
+    saved(save(store, B, use="earlier"))
+    other = variant(CELL_SCORE, SEED_19)
+    review = review_of(store, other)
+    cell = row(review, "Cell Diagram")
+
+    assert cell.status is ItemStatus.CHANGED
+    assert cell.key in review.ready
+    assert review.use == UseChoice("current", ())
+    saved(save(store, other, review))
+    value = store.current_values(class_of(store), "T1").results[cell.result_id or ""]
+    assert text_of(value, "points") == "8.0"
+
+
+def test_a_result_only_an_earlier_report_holds_offers_its_first_current_value() -> None:
+    """Lab Safety Log was saved only in a report kept as earlier, so it has no current value. In
+    another capture its row matches that result and offers its first current value."""
+    store = in_memory()
+    saved(save(store, A))
+    saved(save(store, variant(text=LAB_LOG_REPORT), use="earlier"))
+    other = variant(SEED_19, text=LAB_LOG_REPORT)
+    review = review_of(store, other)
+    log = row(review, "Lab Safety Log")
+
+    assert (log.status, log.how, log.current) == (ItemStatus.NEW, "exact", None)
+    assert log.result_id is not None
+    assert log.key in review.ready
+    saved(save(store, other, review))
+    value = store.current_values(class_of(store), "T1").results[log.result_id]
+    assert text_of(value, "points") == "9.0"
+    assert len(results(store)) == 5
+
+
+def test_a_replaced_value_still_starts_the_report_on_earlier_beside_an_earlier_only_one() -> None:
+    """Seed's 18.0 was current until 19.0 replaced it, and Cell's 8.0 was only ever history. A
+    capture repeating both offers Cell as Changed, and Seed's repeat still starts it on earlier."""
+    store = in_memory()
+    saved(save(store, A))
+    saved(save(store, variant(SEED_19)))
+    saved(save(store, B, use="earlier"))
+    other = variant(CELL_SCORE, MICROSCOPE_28)
+    review = review_of(store, other)
+    seed = row(review, "Seed Germination Log")
+
+    assert seed.status is ItemStatus.MATCHES_EARLIER
+    assert row(review, "Cell Diagram").status is ItemStatus.CHANGED
+    assert row(review, "Cell Diagram").key in review.ready
+    assert review.use == UseChoice("earlier", (seed.key,))
+
+
+def test_a_capture_s_rest_matching_an_earlier_value_reads_shown_in_a_newer_report() -> None:
+    """His scheduled review on #148 (4210429315): K saves only Seed, then M makes Cell 8.0
+    current and N replaces it with 9.0. K's rest, Cell 8.0, matches a value M held, but N is newer
+    than K's report and covers it: Shown in a newer report, and never offered."""
+    store = in_memory()
+    saved(save(store, A))
+    k = variant(CELL_SCORE, SEED_19)
+    first = review_of(store, k)
+    saved(save(store, k, first, selection={row(first, "Seed Germination Log").key}))
+    saved(save(store, variant(CELL_SCORE, SEED_20)))
+    saved(save(store, variant(CELL_9, SEED_20)))
+    again = review_of(store, k)
+    cell = row(again, "Cell Diagram")
+
+    assert (cell.status, cell.covered) == (ItemStatus.COVERED, True)
+    assert cell.key not in again.ready | again.back_to
+
+
+LEAF_CHANGES = (CELL_SCORE, (SEED, f"{SEED}\n{LEAF}"))
+B_LEAF = variant(*LEAF_CHANGES)
+"""A newer capture: Cell Diagram's score changed from 7.0 to 8.0, and Leaf Sketch added."""
+NINE_LEAF = variant(CELL_NINE, (SEED, f"{SEED}\n{LEAF}"))
+"""A capture newer still: Cell Diagram at 9.0, with Leaf Sketch."""
+OBSERVED_LATER = OBSERVED_AT.replace(day=28)
+LATER = fixture_clock(OBSERVED_LATER)
+"""A clock nine days on, for the moment a parent makes saved values current."""
+
+
+def made(outcome: object) -> MadeCurrent:
+    assert isinstance(outcome, MadeCurrent), outcome
+    return outcome
+
+
+def revision_of(store: ProjectStateStore) -> int:
+    (revision,) = store._connection.execute("SELECT revision FROM grade_scope_revisions").fetchone()
+    return int(revision)
+
+
+def result_of(store: ProjectStateStore, draft: GradeReportDraft, title: str) -> str:
+    result_id = row(review_of(store, draft), title).result_id
+    assert result_id is not None
+    return result_id
+
+
+def test_class_details_brings_a_replaced_value_back_from_the_capture_s_latest_report() -> None:
+    """A's 7.0, then B's 8.0 with Leaf Sketch: the preview of A's capture lists 7.0 back from
+    8.0, each of A's results last shown in the new report, and Leaf Sketch not shown there; the
+    confirmation makes exactly that current ("back to" from class details)."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    newer = saved(save(store, B_LEAF, complete=whole(*LEAF_CHANGES)))
+    cell, leaf = result_of(store, A, "Cell Diagram"), result_of(store, B_LEAF, "Leaf Sketch")
+    preview = current_preview(store, A)
+
+    assert (preview.source, preview.acceptances, preview.made_by) == (
+        first.report_id,
+        (first.acceptance_id,),
+        None,
+    )
+    assert preview.complete is True
+    ((effect),) = preview.values
+    assert (effect.kind, effect.target, effect.after.report_id) == ("result", cell, NEW)
+    assert effect.before is not None
+    assert (effect.before.report_id, text_of(effect.before, "points")) == (newer.report_id, "8.0")
+    assert text_of(effect.after, "points") == "7.0"
+    a_results = {result_id for _, result_id in first.accepted if result_id is not None}
+    assert {(one.result, one.before, one.after) for one in preview.last_shown} == {
+        (result_id, newer.report_id, NEW) for result_id in a_results
+    }
+    assert [(one.result, one.before, one.after) for one in preview.not_shown] == [(leaf, None, NEW)]
+    body = json.loads(preview.canonical)
+    assert set(body) == {
+        "scope",
+        "revision",
+        "source",
+        "complete",
+        "values",
+        "last_shown",
+        "not_shown",
+        "due",
+    }
+    assert body["values"][0][3][0] == NEW
+    assert hashlib.sha256(preview.canonical.encode()).hexdigest() == preview.digest
+    assert preview.action_id not in preview.canonical
+    assert "2026-" not in preview.canonical
+    revision = revision_of(store)
+
+    outcome = made(confirm_current(store, A, preview))
+    current = store.current_values(class_of(store), "T1")
+    value = current.results[cell]
+
+    assert (outcome.source, outcome.digest) == (first.report_id, preview.digest)
+    assert (text_of(value, "points"), value.report_id, value.order) == ("7.0", outcome.report_id, 3)
+    assert value.last_shown == ReportAt(outcome.report_id, 3)
+    assert current.results[leaf].report_id == newer.report_id
+    assert current.results[leaf].not_shown == ReportAt(outcome.report_id, 3)
+    assert use_of(store, outcome.report_id) == "current"
+    assert revision_of(store) == revision + 1
+
+
+def test_the_new_report_keeps_its_source_s_import_and_the_action_records_its_copies() -> None:
+    """The new report carries A's source key, reader, import time, as-of time and number of
+    result rows; its row records are ``same_capture`` at the action's role and time; the action
+    record names its source, the acceptances into it and every copy; no acceptance or name form
+    is written."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    saved(save(store, B_LEAF, complete=True))
+    preview = current_preview(store, A)
+    forms = store._connection.execute("SELECT * FROM grade_name_forms").fetchall()
+    store._clock = LATER
+
+    outcome = made(confirm_current(store, A, preview))
+
+    def report(report_id: str) -> tuple[object, ...]:
+        return tuple(
+            store._connection.execute(
+                "SELECT source_key, reader, imported_at, as_of, result_rows FROM grade_reports "
+                "WHERE report_id = ?",
+                (report_id,),
+            ).fetchone()
+        )
+
+    assert report(outcome.report_id) == report(str(first.report_id))
+    copied_rows = store._connection.execute(
+        "SELECT row_key, result_id, how, rejected, decided_by, decided_at "
+        "FROM grade_match_decisions WHERE report_id = ? ORDER BY row_key",
+        (outcome.report_id,),
+    ).fetchall()
+    source_rows = store._connection.execute(
+        "SELECT row_key, result_id FROM grade_match_decisions WHERE report_id = ? ORDER BY row_key",
+        (first.report_id,),
+    ).fetchall()
+    later = OBSERVED_LATER.isoformat()
+    assert copied_rows == [
+        (row_key, result_id, "same_capture", None, "parent", later)
+        for row_key, result_id in source_rows
+    ]
+    (action,) = store._connection.execute(
+        "SELECT action_id, source_report, source_acceptances, source_action, report_made, "
+        "copied, complete_from_source, digest, acted_at, role FROM grade_current_actions"
+    ).fetchall()
+    assert action[:5] == (
+        preview.action_id,
+        first.report_id,
+        json.dumps([first.acceptance_id]),
+        None,
+        outcome.report_id,
+    )
+    copied = json.loads(action[5])
+    assert copied["rows"] == [[row_key, result_id] for row_key, result_id in source_rows]
+    assert sorted(map(tuple, copied["observations"])) == sorted(
+        [("term", TERM_KEY)]
+        + [
+            ("category", key)
+            for key, result_id in first.accepted
+            if result_id is None and key != TERM_KEY
+        ]
+        + [("result", result_id) for _, result_id in first.accepted if result_id is not None]
+    )
+    assert action[6:] == (1, preview.digest, later, "parent")
+    assert report(outcome.report_id)[2] != later
+    assert store._connection.execute("SELECT COUNT(*) FROM grade_acceptances").fetchone() == (2,)
+    assert store._connection.execute("SELECT * FROM grade_name_forms").fetchall() == forms
+
+
+def test_a_retry_returns_its_outcome_and_a_second_confirmation_has_nothing_to_change() -> None:
+    """After the action, its retry returns the recorded outcome and writes nothing; the preview
+    of the capture is empty, from its new latest report, and confirming it writes nothing and
+    leaves the revision. A retry posting another digest also gets a fresh preview."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, B_LEAF, complete=True))
+    preview = current_preview(store, A)
+    outcome = made(confirm_current(store, A, preview))
+    changes, revision = store._connection.total_changes, revision_of(store)
+
+    assert confirm_current(store, A, preview) == ActionRecorded(outcome)
+    again = current_preview(store, A)
+    assert again.empty
+    assert (again.source, again.acceptances, again.made_by) == (
+        outcome.report_id,
+        (),
+        outcome.action_id,
+    )
+    assert isinstance(confirm_current(store, A, again), NothingToChange)
+    other = confirm_current(store, A, preview, digest="0" * 64)
+    assert isinstance(other, ActionRecorded)
+    assert other.made == outcome
+    assert other.fresh is not None
+    assert not isinstance(other.fresh, ReportNotSaved)
+    assert other.fresh.empty
+    assert (store._connection.total_changes, revision_of(store)) == (changes, revision)
+
+
+def test_a_changed_revision_source_or_preview_returns_the_revised_preview() -> None:
+    """A saved without Osmosis, then B, clipped, with Cell Diagram at 8.0. A's rest saved after
+    the preview joins A's report: the stale confirmation returns the revised preview, with both
+    acceptances, under a fresh action ID; a digest not of that preview returns it again; only
+    the revised preview's own confirmation writes."""
+    store = in_memory()
+    full = review_of(store, A)
+    osmosis = row(full, "Osmosis with Potato Slices").key
+    first = saved(save(store, A, full, selection=full.ready - {osmosis}, complete=True))
+    saved(save(store, variant(CELL_SCORE, text=CLIPPED)))
+    preview = current_preview(store, A)
+    rest = saved(save(store, A, complete=True))
+    assert rest.report_id == first.report_id
+    count = reports_of(store)
+
+    revised = confirm_current(store, A, preview)
+    assert isinstance(revised, PreviewRevised)
+    fresh = revised.preview
+    assert fresh.action_id != preview.action_id
+    assert fresh.revision == preview.revision + 1
+    assert fresh.acceptances == tuple(sorted((first.acceptance_id, rest.acceptance_id)))
+    tampered = confirm_current(store, A, fresh, digest=preview.digest)
+    assert isinstance(tampered, PreviewRevised)
+    assert reports_of(store) == count
+    outcome = made(confirm_current(store, A, fresh))
+    assert reports_of(store) == count + 1
+    assert outcome.digest == fresh.digest
+
+
+def test_a_row_the_source_only_showed_gives_no_score() -> None:
+    """B saved with nothing selected shows Cell Diagram at 8.0 without accepting it; made
+    current after a newer report, B moves last showings only, and 7.0 stays current."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True))
+    shown = saved(save(store, B, selection=()))
+    saved(save(store, WITH_LEAF))
+    cell = result_of(store, A, "Cell Diagram")
+    preview = current_preview(store, B)
+
+    assert preview.source == shown.report_id
+    assert preview.values == ()
+    assert {one.after for one in preview.last_shown} == {NEW}
+    outcome = made(confirm_current(store, B, preview))
+    value = store.current_values(class_of(store), "T1").results[cell]
+    assert (text_of(value, "points"), value.report_id) == ("7.0", first.report_id)
+    assert value.last_shown == ReportAt(outcome.report_id, 4)
+    (copied,) = store._connection.execute("SELECT copied FROM grade_current_actions").fetchone()
+    assert json.loads(copied)["observations"] == []
+
+
+def test_a_copy_of_an_incomplete_report_stays_incomplete_through_a_copy_of_a_copy() -> None:
+    """A read incomplete: its copy claims no absence, and a copy of that copy, which has no
+    acceptance of its own, takes its making action's flag, never completeness from no
+    readings."""
+    store = in_memory()
+    saved(save(store, A, complete=False))
+    saved(save(store, B_LEAF, complete=True))
+    leaf = result_of(store, B_LEAF, "Leaf Sketch")
+    preview = current_preview(store, A)
+    assert (preview.complete, preview.not_shown) == (False, ())
+    copy = made(confirm_current(store, A, preview))
+    saved(save(store, NINE_LEAF, complete=True))
+
+    again = current_preview(store, A)
+    assert (again.source, again.acceptances, again.made_by) == (
+        copy.report_id,
+        (),
+        copy.action_id,
+    )
+    assert again.complete is False
+    made(confirm_current(store, A, again))
+    assert store.current_values(class_of(store), "T1").results[leaf].not_shown is None
+    (flags,) = zip(
+        *store._connection.execute("SELECT complete_from_source FROM grade_current_actions"),
+        strict=True,
+    )
+    assert flags == (0, 0)
+
+
+@pytest.mark.parametrize("rest_complete", [True, False])
+def test_the_capture_s_rest_joins_the_new_report_over_a_newer_one(rest_complete: bool) -> None:
+    """A saved without Cell Diagram, then B with 8.0: A's Cell Diagram is shown in a newer
+    report. Once A's capture is made current, it is Changed and selectable, its save joins the
+    new report, and that report claims Leaf Sketch's absence only if the rest read complete."""
+    store = in_memory()
+    full = review_of(store, A)
+    cell_key = row(full, "Cell Diagram").key
+    saved(save(store, A, full, selection=full.ready - {cell_key}, complete=True))
+    saved(save(store, B_LEAF, complete=True))
+    leaf = result_of(store, B_LEAF, "Leaf Sketch")
+    assert row(review_of(store, A), "Cell Diagram").status is ItemStatus.COVERED
+
+    outcome = made(confirm_current(store, A))
+    assert store.current_values(class_of(store), "T1").results[leaf].not_shown is None
+    review = review_of(store, A)
+    cell = row(review, "Cell Diagram")
+    assert cell.status is ItemStatus.CHANGED
+    assert review.ready == {cell.key}
+    rest = saved(save(store, A, review, complete=rest_complete))
+    current = store.current_values(class_of(store), "T1")
+
+    assert rest.report_id == outcome.report_id
+    assert text_of(current.results[cell.result_id or ""], "points") == "7.0"
+    expected = ReportAt(outcome.report_id, 3) if rest_complete else None
+    assert current.results[leaf].not_shown == expected
+
+
+def test_a_same_text_source_change_alone_is_an_effect() -> None:
+    """The projection over two reports with the same term grade: making the first one the source
+    lists the term's source change alone; the newer one, already the source, has nothing to
+    change."""
+    cells = {"percent": (Presence.REPORTED, "81.9"), "letter": (Presence.REPORTED, "B-")}
+    held = ScopeHeld(
+        reports={"report-a": (1, "current", 0), "report-b": (2, "current", 0)},
+        complete={"report-a": True},
+        observed=(("term", TERM_KEY, "report-a", cells), ("term", TERM_KEY, "report-b", cells)),
+        decided=(),
+    )
+
+    def preview(source: str) -> CurrentPreview:
+        return preview_of(held, SourceOf("s", "c", "T1", 2, source, (), None), "action-x")
+
+    first, top = preview("report-a"), preview("report-b")
+    (effect,) = first.values
+    assert effect.before is not None
+    assert (effect.target, effect.before.report_id, effect.after.report_id) == (
+        TERM_KEY,
+        "report-b",
+        NEW,
+    )
+    assert effect.before.cells == effect.after.cells
+    assert (first.last_shown, first.not_shown, first.complete) == ((), (), True)
+    assert top.empty
+    assert top.complete is False
+
+
+def test_a_report_not_saved_offers_no_preview_and_a_confirmation_naming_it_writes_nothing() -> None:
+    """A capture with no report in the class and term has no preview, and a confirmation naming
+    a report that isn't saved there writes nothing."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, B, complete=True))
+    preview = current_preview(store, A)
+    changes = store._connection.total_changes
+
+    missing = store.preview_current(class_of(store), "T1", capture_key(WITH_LEAF))
+    gone = confirm_current(store, A, dataclasses.replace(preview, source="report-gone"))
+
+    assert isinstance(missing, ReportNotSaved)
+    assert isinstance(gone, ReportNotSaved)
+    assert store._connection.total_changes == changes
+
+
 def test_a_different_answer_for_an_unreadable_score_is_remembered_with_its_warning() -> None:
     """His fourteenth round, 6: kept only by a review submission, bound to the row's
     evidence and the candidate it turned down; it creates no assignment and no presence, the row
@@ -1554,7 +2301,7 @@ def test_a_missing_due_date_is_never_matching_evidence_and_never_equals_another(
         held=ClassRecord(CurrentValues(None, {}, {}), {}, seen, {}, {}),
         saved={},
     )
-    review = review_from(draft, capture_key(draft), "acceptance-1", on_record)
+    review = review_from(draft, capture_key(draft), "acceptance-1", on_record, complete=False)
     sketch, seed = row(review, "Leaf Sketch"), row(review, "Seed Germination Log")
 
     assert (sketch.status, sketch.result_id, sketch.how) == (
@@ -1850,7 +2597,7 @@ def test_a_matched_row_missing_its_due_date_reads_matches_earlier_or_shown_in_a_
 
     for draft, status, covered in (
         (undated(), ItemStatus.MATCHES_EARLIER, False),
-        (before_b, ItemStatus.CHANGED, True),
+        (before_b, ItemStatus.COVERED, True),
     ):
         asked = row(review_of(store, draft), "Cell Diagram")
         settled = answered_review(store, draft, same(asked))
@@ -1865,34 +2612,203 @@ def test_a_matched_row_missing_its_due_date_reads_matches_earlier_or_shown_in_a_
         assert item.key not in settled.ready
 
 
-def test_after_a_value_saved_from_a_copy_missing_its_dates_the_next_dated_capture_asks() -> None:
-    """Rev 3k, 9.3 point 2, as built: a result's evidence and shown due date come from its
-    observation in the highest acceptance order, so after a value saved from a copy missing its
-    dates the result shows its due date as not captured, and the next dated capture of it asks
-    "Same assignment?" rather than matching by itself. Answered, its value reads Changed by the
-    due date it now supplies."""
-    store = in_memory()
-    saved(save(store, A, complete=True))
-    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+# ------------------------------------------------------------- a result's due date and its source
+
+
+CELL_NO_DATE = ("| Missing    | 09/26   |", "| Missing    |         |")
+"""Cell Diagram's due cell captured blank."""
+
+
+def due_from(value: CurrentValue) -> tuple[tuple[Presence, str], str, int] | None:
+    """A result value's due cell, with the report it came from and that report's order."""
+    due = value.due
+    return None if due is None else (due.cell, due.report.report_id, due.report.order)
+
+
+def dated_then_undated(store: ProjectStateStore) -> tuple[str, str, str]:
+    """A saved complete, then Cell Diagram's 8.0 from a copy missing the Homework / Practice Due
+    column, matched and ticked: A's report, the copy's report and Cell Diagram's result."""
+    first = saved(save(store, A, complete=True)).report_id or ""
+    cell_id = result_of(store, A, "Cell Diagram")
     draft = undated(CELL_SCORE)
     cell = row(review_of(store, draft), "Cell Diagram")
-    saved(save(store, draft, matches=[same(cell)], selection={cell.key}))
-    current = store.current_values(class_of(store), "T1").results[cell_id]
-    assert current.cells["due"] == (Presence.NOT_CAPTURED, "")
-    review = review_of(store, B)
-    asked, seed = row(review, "Cell Diagram"), row(review, "Seed Germination Log")
+    copy = saved(save(store, draft, matches=[same(cell)], selection={cell.key})).report_id or ""
+    return first, copy, cell_id
 
-    assert (asked.status, asked.result_id, asked.how) == (ItemStatus.NEEDS_ANSWER, None, None)
-    assert asked.question is not None
-    assert (asked.question.kind, asked.question.ids) == (QuestionKind.WHICH, (cell_id,))
-    assert asked.key not in review.ready
-    assert (seed.status, seed.how) == (ItemStatus.SAVED, "exact")
-    answered = row(answered_review(store, B, same(asked)), "Cell Diagram")
-    assert (answered.status, answered.result_id, answered.due_not_captured) == (
-        ItemStatus.CHANGED,
-        cell_id,
-        False,
+
+def test_a_due_date_keeps_its_own_report_when_the_newer_score_s_copy_lacks_it() -> None:
+    """His seventeenth round, 2: the score comes from the newer copy missing its dates, and the
+    due date from A, the newest current observation that captured it, each with its own report.
+    The copy's observation keeps its due date not captured."""
+    store = in_memory()
+    first, copy, cell_id = dated_then_undated(store)
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert (value.report_id, text_of(value, "points")) == (copy, "8.0")
+    assert value.cells["due"] == (Presence.NOT_CAPTURED, "")
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), first, 1)
+    assert due_saved(store, copy) == [(cell_id, "8.0", "", "not_captured")]
+
+
+def test_a_newest_captured_blank_due_is_kept_and_an_earlier_date_never_returns() -> None:
+    """A newer current copy that captured Cell Diagram's due cell blank is the due date's
+    source; a copy after it missing its dates changes the score only, and A's 09/26 never comes
+    back."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = result_of(store, A, "Cell Diagram")
+    blank = variant(CELL_NO_DATE)
+    cell = row(review_of(store, blank), "Cell Diagram")
+    blanked = saved(save(store, blank, matches=[same(cell)], selection={cell.key})).report_id or ""
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+    assert (value.report_id, due_from(value)) == (blanked, ((Presence.BLANK, ""), blanked, 2))
+    draft = undated(CELL_NINE)
+    later = row(review_of(store, draft), "Cell Diagram")
+    newer = saved(save(store, draft, matches=[same(later)], selection={later.key})).report_id
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert (value.report_id, text_of(value, "points")) == (newer, "9.0")
+    assert due_from(value) == ((Presence.BLANK, ""), blanked, 2)
+
+
+def test_a_newest_captured_unreadable_due_is_kept_and_an_earlier_report_feeds_matching_only() -> (
+    None
+):
+    """The projection: over 09/26, an unreadable due cell, then a copy that didn't capture it,
+    the shown due date is the unreadable cell from its own report, never 09/26. A newer report
+    kept as earlier never supplies the shown date; matching reads every report, so its due text
+    is that report's, and without it, the unreadable cell."""
+
+    def seen(due: tuple[Presence, str]) -> dict[str, tuple[Presence, str]]:
+        return {
+            "category": (Presence.REPORTED, "Homework / Practice"),
+            "assignment": (Presence.REPORTED, "Cell Diagram"),
+            "points": (Presence.REPORTED, "7.0"),
+            "due": due,
+        }
+
+    reports = {
+        "report-1": (1, "current", 1),
+        "report-2": (2, "current", 1),
+        "report-3": (3, "current", 1),
+        "report-4": (4, "earlier", 1),
+    }
+    observed_cells = (
+        ("result", "result-1", "report-1", seen((Presence.REPORTED, "09/26"))),
+        ("result", "result-1", "report-2", seen((Presence.UNREADABLE, "9/3x"))),
+        ("result", "result-1", "report-3", seen((Presence.NOT_CAPTURED, ""))),
+        ("result", "result-1", "report-4", seen((Presence.REPORTED, "10/01"))),
     )
+    held = ScopeHeld(reports, {}, observed_cells, ())
+    record = project(held)
+    value = record.current.results["result-1"]
+
+    assert value.report_id == "report-3"
+    assert due_from(value) == ((Presence.UNREADABLE, "9/3x"), "report-2", 2)
+    assert evidence_of(record.latest["result-1"])[2] == (Presence.REPORTED, "10/01")
+    without = project(dataclasses.replace(held, observed=observed_cells[:3]))
+    assert evidence_of(without.latest["result-1"])[2] == (Presence.UNREADABLE, "9/3x")
+
+
+@pytest.mark.parametrize("kept", ["earlier", "shown"])
+def test_a_report_kept_as_earlier_or_a_row_only_shown_never_supplies_the_due_date(
+    kept: str,
+) -> None:
+    """Cell Diagram moved to 09/29 in a newer capture, answered "Same assignment": saved with its
+    value in a report kept as earlier, or recorded only as shown in a current one. Either way
+    A's 09/26 stays the shown due date, from A."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True)).report_id or ""
+    cell_id = result_of(store, A, "Cell Diagram")
+    draft = variant(CELL_SCORE, CELL_DUE)
+    cell = row(review_of(store, draft), "Cell Diagram")
+    if kept == "earlier":
+        use, selection = "earlier", {cell.key}
+    else:
+        use, selection = "current", set()
+    later = saved(save(store, draft, matches=[same(cell)], selection=selection, use=use))
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert (use_of(store, later.report_id), observed(store, later.report_id)) == (
+        use,
+        len(selection),
+    )
+    assert records(store, later.report_id)[cell.key] == (cell_id, "answer")
+    assert value.report_id == first
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), first, 1)
+
+
+def test_after_a_value_saved_from_a_copy_missing_its_dates_the_next_dated_capture_matches() -> None:
+    """His seventeenth round, 2: matching's due text comes from the newest observation that
+    captured it, A's 09/26, so the next dated capture with that date matches by itself, and one
+    with another date asks "Same assignment, due date changed?". A copy missing its dates still
+    gets no matching evidence and asks."""
+    store = in_memory()
+    _, _, cell_id = dated_then_undated(store)
+    review = review_of(store, B)
+    cell, seed = row(review, "Cell Diagram"), row(review, "Seed Germination Log")
+
+    assert (cell.result_id, cell.how, cell.question) == (cell_id, "exact", None)
+    # B's 09/26 is the shown due date and its 8.0 the current score: nothing new (his
+    # eighteenth round), though the saved value's own observation never captured a date.
+    assert (cell.status, cell.due_not_captured) == (ItemStatus.SAVED, False)
+    assert cell.key not in review.ready
+    assert (seed.status, seed.how) == (ItemStatus.SAVED, "exact")
+    moved = row(review_of(store, variant(CELL_SCORE, CELL_DUE)), "Cell Diagram")
+    assert moved.question is not None
+    assert (moved.status, moved.question.kind, moved.question.ids) == (
+        ItemStatus.NEEDS_ANSWER,
+        QuestionKind.DUE_CHANGED,
+        (cell_id,),
+    )
+    again = row(review_of(store, undated(CELL_NINE)), "Cell Diagram")
+    assert (again.status, again.result_id, again.how) == (ItemStatus.DUE_NOT_CAPTURED, None, None)
+    assert again.question is not None
+    assert again.question.ids == (cell_id,)
+
+
+def test_class_details_lists_a_due_date_s_source_change_apart_from_the_score_s() -> None:
+    """A, then Cell Diagram's 8.0 from a copy missing its dates, then 9.0 dated 09/26. Made
+    current from the copy, the score's source moves and the due date stays the 9.0 report's, so
+    the preview has no due entry. Made current from A, the due date's source moves from that
+    report to the new one, listed as a ``due`` entry; such an entry alone keeps the preview from
+    being empty."""
+    store = in_memory()
+    _, _, cell_id = dated_then_undated(store)
+    newer = saved(save(store, variant(CELL_NINE), complete=True)).report_id or ""
+    from_copy = current_preview(store, undated(CELL_SCORE))
+
+    assert [(one.kind, one.target) for one in from_copy.values] == [("result", cell_id)]
+    assert from_copy.due == ()
+    assert json.loads(from_copy.canonical)["due"] == []
+    made_copy = made(confirm_current(store, undated(CELL_SCORE), from_copy)).report_id
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+    assert (value.report_id, text_of(value, "points")) == (made_copy, "8.0")
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), newer, 3)
+    assert due_saved(store, made_copy) == [(cell_id, "8.0", "", "not_captured")]
+    from_a = current_preview(store, A)
+
+    ((effect),) = from_a.due
+    assert effect.result == cell_id
+    assert effect.before is not None
+    assert effect.after is not None
+    assert (effect.before.cell, effect.before.report) == (
+        (Presence.REPORTED, "09/26"),
+        ReportAt(newer, 3),
+    )
+    assert (effect.after.cell, effect.after.report) == (
+        (Presence.REPORTED, "09/26"),
+        ReportAt(NEW, 5),
+    )
+    due_cell = ["due", "reported", "09/26"]
+    assert json.loads(from_a.canonical)["due"] == [[cell_id, [newer, due_cell], [NEW, due_cell]]]
+    alone = dataclasses.replace(from_a, values=(), last_shown=(), not_shown=())
+    assert not alone.empty
+    assert dataclasses.replace(alone, due=()).empty
+    made_a = made(confirm_current(store, A, from_a)).report_id
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+    assert (value.report_id, text_of(value, "points")) == (made_a, "7.0")
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), made_a, 5)
 
 
 ALL_RENAMED = (
@@ -2138,3 +3054,78 @@ def test_an_answer_given_with_a_selected_value_counts_with_it_and_is_reused(how:
     (again,) = [one for one in review.rows if one.result_id == target]
 
     assert (again.how, again.question) == ("reused", None)
+
+
+# ------------------------------------------- comparing with the shown due date (eighteenth round)
+
+
+def test_a_copy_repeating_the_shown_score_and_date_reads_saved() -> None:
+    """His eighteenth round: the 8.0 from a copy missing its dates is current and A's 09/26 is
+    shown, so B's 8.0 due 09/26 repeats the current information and reads Saved. The date keeps
+    A as its source, and nothing was written into the copy's observation."""
+    store = in_memory()
+    first, copy, cell_id = dated_then_undated(store)
+    cell = row(review_of(store, B), "Cell Diagram")
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert (cell.result_id, cell.status) == (cell_id, ItemStatus.SAVED)
+    assert cell.key not in review_of(store, B).ready
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), first, 1)
+    assert value.report_id == copy
+    assert value.cells["due"][0] is Presence.NOT_CAPTURED
+
+
+def test_a_copy_with_another_date_than_the_shown_one_reads_changed() -> None:
+    """A different date from the one shown is still new information."""
+    store = in_memory()
+    _, _, cell_id = dated_then_undated(store)
+    draft = variant(CELL_SCORE, CELL_DUE)
+    asked = row(review_of(store, draft), "Cell Diagram")
+    cell = row(answered_review(store, draft, same(asked)), "Cell Diagram")
+
+    assert (cell.result_id, cell.status) == (cell_id, ItemStatus.CHANGED)
+
+
+def test_with_no_eligible_captured_date_a_dated_copy_reads_changed() -> None:
+    """A was kept as an earlier report, so no current report captured Cell Diagram's date: the
+    copy missing its dates supplies its first current value, nothing is shown as its due date,
+    and B's 09/26 is new information."""
+    store = in_memory()
+    saved(save(store, A, use="earlier", complete=True))
+    cell_id = result_of(store, A, "Cell Diagram")
+    draft = undated(CELL_SCORE)
+    asked = row(review_of(store, draft), "Cell Diagram")
+    saved(save(store, draft, matches=[same(asked)], selection={asked.key}))
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+    cell = row(review_of(store, B), "Cell Diagram")
+
+    assert value.due is None
+    assert (cell.result_id, cell.status) == (cell_id, ItemStatus.CHANGED)
+
+
+def test_a_captured_blank_shown_date_is_compared_as_blank() -> None:
+    """A newer current report captured Cell Diagram's due cell blank, then a copy missing its
+    dates saved 8.0: the shown date is that blank, never A's 09/26 behind it. B's 09/26 reads
+    Changed, and a copy repeating 8.0 with a blank date reads Saved."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = result_of(store, A, "Cell Diagram")
+    blank = variant(CELL_NO_DATE)
+    asked = row(review_of(store, blank), "Cell Diagram")
+    blank_report = saved(
+        save(store, blank, matches=[same(asked)], selection={asked.key}, complete=True)
+    ).report_id
+    draft = undated(CELL_SCORE)
+    again = row(review_of(store, draft), "Cell Diagram")
+    saved(save(store, draft, matches=[same(again)], selection={again.key}))
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert due_from(value) == ((Presence.BLANK, ""), blank_report, 2)
+    # B's 09/26 isn't the shown blank, so B asks before it resolves.
+    asked_b = row(review_of(store, B), "Cell Diagram")
+    assert asked_b.question is not None
+    dated = row(answered_review(store, B, same(asked_b)), "Cell Diagram")
+    blank_again = variant(CELL_SCORE, CELL_NO_DATE)
+    undated_again = row(review_of(store, blank_again), "Cell Diagram")
+    assert (dated.result_id, dated.status) == (cell_id, ItemStatus.CHANGED)
+    assert (undated_again.result_id, undated_again.status) == (cell_id, ItemStatus.SAVED)

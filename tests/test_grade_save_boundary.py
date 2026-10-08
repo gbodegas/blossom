@@ -18,6 +18,7 @@ import pytest
 
 from blossom.grades.draft import GradeReportDraft, capture_key
 from blossom.grades.identity import name_form_key
+from blossom.grades.projection import ActionRecorded, CurrentPreview, MadeCurrent
 from blossom.grades.review import (
     AlreadyRecorded,
     GradeAnswers,
@@ -33,6 +34,8 @@ from tests.support import (
     FIXTURES,
     a_row,
     closed_world,
+    confirm_current,
+    current_preview,
     fixture_clock,
     grade_answers,
     save_grade,
@@ -763,3 +766,98 @@ def test_a_refused_no_op_or_answered_unreadable_score_leaves_nothing_of_it(
         assert assignments(store) == rows + 2 * (attempt + 1)
     assert isinstance(again(), GradeReportSaved)
     assert isinstance(again(), AlreadyRecorded)
+
+
+ACTION: tuple[Site, ...] = (
+    (sqlite3.SQLITE_INSERT, "grade_reports"),
+    (sqlite3.SQLITE_INSERT, "grade_term_observations"),
+    (sqlite3.SQLITE_INSERT, "grade_category_observations"),
+    (sqlite3.SQLITE_INSERT, "grade_result_observations"),
+    (sqlite3.SQLITE_INSERT, "grade_match_decisions"),
+    (sqlite3.SQLITE_INSERT, "grade_current_actions"),
+    (sqlite3.SQLITE_INSERT, "grade_scope_revisions"),
+)
+"""Every write statement of the class-details action: the copied report, its observations and
+row records, one statement per table, the action record and the revision."""
+
+
+def action_preview(store: ProjectStateStore) -> CurrentPreview:
+    """Wren's report saved, then a newer capture changing Cell Diagram: the preview of making
+    the first capture's saved values current."""
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    assert isinstance(save_grade(store, EIGHT, key=KEY), GradeReportSaved)
+    return current_preview(store, WREN)
+
+
+def test_the_class_details_action_writes_exactly_the_named_statements(
+    opened: Callable[[str], ProjectStateStore],
+) -> None:
+    store = opened("first use")
+    preview = action_preview(store)
+    seen: set[Site] = set()
+
+    def note(action: int, table: str | None, *_: object) -> int:
+        if action in WRITES and table is not None:
+            seen.add((action, table))
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(note)
+    outcome = confirm_current(store, WREN, preview)
+    store._connection.set_authorizer(None)
+
+    assert isinstance(outcome, MadeCurrent)
+    assert seen == {*ACTION, UPSERT_ARM}
+
+
+@pytest.mark.parametrize("site", ACTION, ids=[table for _, table in ACTION])
+def test_a_refused_write_of_the_class_details_action_leaves_nothing_of_it(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path, site: Site
+) -> None:
+    """The action, refused at each of its statements three times inside a caller's
+    transaction, leaves the file as it was, with the caller's writes kept; lifted, the same
+    preview is confirmed once, and its retry writes nothing."""
+    store = opened("first use")
+    preview = action_preview(store)
+    before, rows = world(path), assignments(store)
+
+    for attempt in range(3):
+        store._connection.set_authorizer(refusing(site))
+        with store.comparing_and_writing():
+            unrelated(store, f"before-{attempt}")
+            with pytest.raises(GradeReportNotSaved):
+                confirm_current(store, WREN, preview)
+            unrelated(store, f"after-{attempt}")
+        store._connection.set_authorizer(None)
+
+        assert not store._connection.in_transaction
+        assert world(path) == before
+        assert assignments(store) == rows + 2 * (attempt + 1)
+    outcome = confirm_current(store, WREN, preview)
+    assert isinstance(outcome, MadeCurrent)
+    assert confirm_current(store, WREN, preview) == ActionRecorded(outcome)
+
+
+def test_a_later_copied_row_record_refused_leaves_nothing_of_the_action(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path
+) -> None:
+    """A TEMP trigger refuses only the copy of the last row record, after the report and its
+    observations were copied in the same write: nothing of the action remains."""
+    store = opened("first use")
+    preview = action_preview(store)
+    (last,) = store._connection.execute(
+        "SELECT MAX(row_key) FROM grade_match_decisions WHERE report_id = ?", (preview.source,)
+    ).fetchone()
+    store._connection.execute(
+        "CREATE TEMP TRIGGER refuse_last BEFORE INSERT ON grade_match_decisions "
+        "WHEN NEW.row_key = " + "'" + str(last).replace("'", "''") + "' "
+        "AND NEW.report_id <> " + "'" + preview.source + "' "
+        "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+    )
+    before = world(path)
+
+    with pytest.raises(GradeReportNotSaved):
+        confirm_current(store, WREN, preview)
+    store._connection.execute("DROP TRIGGER refuse_last")
+
+    assert world(path) == before
+    assert isinstance(confirm_current(store, WREN, preview), MadeCurrent)

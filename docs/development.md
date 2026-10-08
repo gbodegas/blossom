@@ -224,7 +224,7 @@ Three files under `.local/` outlive a restart:
   `grade_student`, one row with a random ID made at the first start and the
   key check for her name forms, and `grade_name_forms`, the keyed forms of
   the student lines a parent confirmed as hers, never the names themselves.
-  Thirteen more keep the grade reports a parent accepted, each row under her
+  Fourteen more keep the grade reports a parent accepted, each row under her
   student ID: `grade_context`, the current school year and term;
   `grade_years`, `grade_terms`, `grade_classes` and `grade_class_aliases`;
   `grade_reports`, with `grade_term_observations`,
@@ -232,11 +232,14 @@ Three files under `.local/` outlive a restart:
   as written; `grade_results` and `grade_match_decisions`, which result each
   row is; `grade_scope_revisions`, raised by every save that records
   something in a class and term, a value, a row it shows or a matching
-  answer, and left as it was by a save that records nothing new, unless
-  that save read its copy incomplete and the copy's report is already on
-  record, which keeps the report from saying what it doesn't show; and
-  `grade_acceptances`, one record of each save, which a repeated press is
-  answered from.
+  answer, and by every confirmed "Use saved values from this report as
+  current", and left as it was by a save or confirmation that records
+  nothing new, unless that save read its copy incomplete and the copy's
+  report is already on record, which keeps the report from saying what
+  it doesn't show; `grade_acceptances`, one record of each save, which a
+  repeated press is answered from; and `grade_current_actions`, one record
+  of each confirmed "Use saved values from this report as current": the
+  report it copied, the report it made current, and what it copied.
   A file from before any of them gains the tables on the first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
