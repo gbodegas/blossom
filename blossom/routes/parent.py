@@ -1599,7 +1599,9 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     fields, whole = await fields_of(request, FAMILY_PLAN_FIELDS, may_be_absent=FAMILY_PLAN_FIELDS)
     budget = graphs.budget()
     now = state.real_clock.now()
-    plan_date = (fields.get(PLAN_DATE) or "") if whole else ""
+    # The first date the form sent is kept even when the form isn't whole, so the page that
+    # refuses it keeps the evening chosen, as ``fields_of`` hands it back for.
+    plan_date = fields.get(PLAN_DATE) or ""
 
     async def not_made(
         problem: str,

@@ -17,6 +17,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from html import unescape
 from time import monotonic
 from typing import Annotated
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -1919,6 +1920,30 @@ def test_a_family_form_that_is_not_whole_starts_nothing_and_keeps_the_date(
     assert posted.status_code == 422
     assert W_3F in posted.text
     assert FOCUSED_LINE in posted.text
+    assert date_kept(posted.text) == later
+    assert runs == []
+
+
+@pytest.mark.parametrize("extra", ["a field of another form", "a field sent twice"])
+def test_a_family_form_with_a_stray_or_repeated_field_keeps_the_date(extra: str) -> None:
+    """A form that isn't whole because of what it carries, not what it lacks, still keeps the
+    evening chosen: the first date it sent is handed back to the page that refuses it."""
+    later = (PLAN_DATE + timedelta(days=2)).isoformat()
+    with browser() as client:
+        form = family_plan(client, later)
+        if extra == "a field of another form":
+            pairs = [*form.items(), ("stray", "x")]
+        else:
+            pairs = [*form.items(), ("run_id", form["run_id"])]
+        posted = client.post(
+            "/parent/actions/plan",
+            content=urlencode(pairs),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        runs = runs_recorded(client)
+
+    assert posted.status_code == 422
+    assert W_3F in posted.text
     assert date_kept(posted.text) == later
     assert runs == []
 
