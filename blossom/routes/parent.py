@@ -382,11 +382,13 @@ class HelpReplyKept:
 @dataclass(frozen=True)
 class ReasonKept:
     """A note about a plan that a refused decision sends back to the family page as typed:
-    the plan it was for, the words, and whether the words are what was refused."""
+    the plan it was for, the words, whether the words are what was refused, and whether
+    Looks good was refused because the plan went stale, so the problem leads to its box."""
 
     draft_id: str
     reason: str
     at_reason: bool = False
+    stale: bool = False
 
 
 @dataclass(frozen=True)
@@ -708,6 +710,14 @@ async def read_for_the_decision[T](call: Callable[[], T]) -> T:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=RECORD_TOO_SLOW) from error
 
 
+class PlanGoneStale(HTTPException):
+    """Looks good refused for a waiting plan that has stopped fitting the evening: 409, with
+    the words that say why."""
+
+    def __init__(self, stale: str) -> None:
+        super().__init__(status.HTTP_409_CONFLICT, detail=stale)
+
+
 async def decide_draft(
     state: ApplicationState, build: PlanGraphBuilder, draft_id: str, request: DecisionRequest
 ) -> DecisionView:
@@ -753,7 +763,7 @@ async def decide_draft(
         if snapshot.next == ("require_human_approval",):
             stale = await read_for_the_decision(partial(stale_reason, state, record))
             if request.approved and stale is not None:
-                raise HTTPException(status.HTTP_409_CONFLICT, detail=stale)
+                raise PlanGoneStale(stale)
             resume = Command(resume={"approved": request.approved, "reason": request.reason})
         elif snapshot.next == ("record_decision",):
             resume = None
@@ -1976,8 +1986,9 @@ async def decide_from_the_page(
     JSON error, and a form failure is promised as this page with the problem.
     Every refusal answers with the family page and the reason as typed: in its plan's
     box while the plan waits there with its form, marked and focused when the words are
-    what was refused, and under the problem otherwise. A refusal whose page can't be read
-    keeps its status, with the reason as typed, on the family page's stand-in.
+    what was refused, and under the problem otherwise. The problem leads to the box when
+    the words are what was refused or the plan went stale. A refusal whose page can't be
+    read keeps its status, with the reason as typed, on the family page's stand-in.
     """
     typed = FamilyKept(reason=reason)
     words = reason.strip()
@@ -2004,6 +2015,8 @@ async def decide_from_the_page(
     try:
         await decide_draft(state, graphs.build, draft_id, decided)
     except HTTPException as error:
+        if kept is not None and isinstance(error, PlanGoneStale):
+            kept = ReasonKept(draft_id, reason, stale=True)
         return refused_on_the_page(
             request, state, str(error.detail), error.status_code, typed, reason_kept=kept
         )

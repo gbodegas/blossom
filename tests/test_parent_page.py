@@ -1765,7 +1765,7 @@ DECISION_FORM = (
     r'<form method="post" action="/parent/actions/decide/([^"]+)" class="decision">(.*?)</form>'
 )
 KEPT_REASON = (
-    r'<label for="kept-reason">Reason, as typed</label>\s*'
+    r'<label for="kept-reason">Note about this plan \(optional\)</label>\s*'
     r'<textarea id="kept-reason" rows="3" readonly>(.*?)</textarea>'
 )
 
@@ -1822,8 +1822,9 @@ def test_a_refused_decision_keeps_the_typed_reason_in_its_plans_box(
 ) -> None:
     """The family page a refusal answers with holds the words as typed in the box of the
     plan they were for, ready to send again, and in no other box. Words that are what was
-    refused are marked and focused, with a way to the box. The refusal saves nothing, and
-    the words go into no address and no log line."""
+    refused are marked and focused, with a way to the box; a Looks good on a stale plan
+    links to the box too. The refusal saves nothing, and the words go into no address
+    and no log line."""
     caplog.set_level(logging.DEBUG)
     words = "r" * (REASON_MAX_LENGTH + 1) if case == "a reason over the cap" else TYPED_REASON
     status, said = KEPT_IN_THE_BOX[case]
@@ -1850,7 +1851,10 @@ def test_a_refused_decision_keeps_the_typed_reason_in_its_plans_box(
     at_the_words = case == "a reason over the cap"
     assert ('aria-invalid="true"' in attributes) is at_the_words
     assert ("autofocus" in attributes) is at_the_words
-    assert (f'<a href="#{box_id}">Go to the field.</a>' in refused.text) is at_the_words
+    assert ('aria-describedby="problem ' in attributes) is at_the_words
+    linked = at_the_words or case.endswith("stale")
+    assert (f'<a href="#{box_id}">Go to the field.</a>' in refused.text) is linked
+    assert refused.text.count("Go to the field.") == int(linked)
     assert [(record["decision"], record["reason"]) for record in records] == [(None, None)] * 2
     assert all(value_of(attributes) is None for _, attributes in note_boxes(fresh).values())
     assert words not in caplog.text
@@ -1899,6 +1903,7 @@ def test_a_refused_decision_on_a_plan_with_no_box_keeps_the_reason_under_the_pro
         assert "Go to the field." not in answer.text
     assert on_the_lost_plan.status_code == 409
     assert UNRESUMABLE_TODAY in on_the_lost_plan.text
+    assert "Go to the field." not in on_the_lost_plan.text
     boxes = note_boxes(on_the_lost_plan.text)
     assert value_of(boxes[f"draft:{lost}"][1]) == TYPED_REASON
     assert value_of(boxes[waiting][1]) is None

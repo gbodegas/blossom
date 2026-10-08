@@ -37,13 +37,13 @@
   <p class="lead-action"><a href="#add-assignments">Add assignments</a></p>
 
   {% if problem %}
-    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_check %} <a href="{{ problem_check.href }}">{{ problem_check.label }}</a>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% elif help_reply and (help_reply.at_reply or help_reply.below) and help_reply_listed %} <a href="#reply-{{ help_reply.request_id }}">Go to the field.</a>{% elif reason_kept and reason_kept.at_reason and reason_at %} <a href="#review-note-{{ reason_at }}">Go to the field.</a>{% endif %}</p>
+    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_check %} <a href="{{ problem_check.href }}">{{ problem_check.label }}</a>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% elif help_reply and (help_reply.at_reply or help_reply.below) and help_reply_listed %} <a href="#reply-{{ help_reply.request_id }}">Go to the field.</a>{% elif reason_kept and (reason_kept.at_reason or reason_kept.stale) and reason_at %} <a href="#review-note-{{ reason_at }}">Go to the field.</a>{% endif %}</p>
     {% if help_reply and help_reply.reply and not help_reply_listed %}
       <label for="kept-reply">Reply, as typed</label>
       <textarea id="kept-reply" rows="3" readonly>{{ help_reply.reply }}</textarea>
     {% endif %}
     {% if reason_kept and not reason_at %}
-      <label for="kept-reason">Reason, as typed</label>
+      <label for="kept-reason">Note about this plan (optional)</label>
       <textarea id="kept-reason" rows="3" readonly>{{ reason_kept.reason }}</textarea>
     {% endif %}
   {% endif %}
@@ -476,7 +476,9 @@
           the field names it as its description. Each waiting plan's field and
           helper have ids of their own. A note a refused decision sent back for this
           plan is in its box as typed, ready to send again; when the note is what was
-          refused, the box is marked, takes the focus and names the problem too.
+          refused, the box is marked, takes the focus and names the problem too. The
+          problem leads to the box then, and when Looks good was refused because the
+          plan went stale.
         #}
         {% set kept_here = reason_kept if reason_kept and reason_at == loop.index else none %}
         {% set refused_note = kept_here and kept_here.at_reason %}
