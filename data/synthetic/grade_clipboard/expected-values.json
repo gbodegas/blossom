@@ -1,0 +1,2064 @@
+{
+  "geometry-grade-report.txt": {
+    "identity_line_excluded": true,
+    "year": "2026-2027",
+    "categories": [
+      {
+        "name": "Homework/Classwork",
+        "weight": "20.0",
+        "average": {
+          "presence": "reported",
+          "text": "76.00"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.1: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "62.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/10"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.2: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "63.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/10"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.3: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "9.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "15.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "64.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/10"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.4: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "6.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "12.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "65.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/11"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.5: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "66.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/12"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.6: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "67.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/17"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.7: classroom exercise. Read the instructions and complete the practice before the next lesson. Use the examples to explain each answer. Use the examples to explain each answer. Use the examples to explain each answer. Use the examples "
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "9.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "15.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "68.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/19"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.8: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "6.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "12.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "69.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/20"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.9: classroom exercise. Read the instructions and complete the practice before th"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "70.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/23"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.10: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "71.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/25"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.11: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "9.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "15.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "72.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/26"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.12: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "6.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "12.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "73.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/02"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.13: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "74.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/03"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.14: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "75.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/04"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.15: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "9.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "15.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "76.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/07"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Quizzes/Formative Assessments",
+        "weight": "30.0",
+        "average": {
+          "presence": "reported",
+          "text": "76.00"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.16: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "6.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "12.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "77.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/13"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 1.17: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "78.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/20"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Quiz 3: Pattern rulesDate change- moved from 09/12 to 09/19. Read the instructions and complete the practice before the next les"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "79.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/07"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Tests/Summative Assessments",
+        "weight": "50.0",
+        "average": {
+          "presence": "blank",
+          "text": ""
+        },
+        "rows": []
+      }
+    ],
+    "term": {
+      "percent": "81.00",
+      "letter": "B"
+    }
+  },
+  "humanities-grade-report.txt": {
+    "identity_line_excluded": true,
+    "year": "2026-2027",
+    "categories": [
+      {
+        "name": "Homework/Classwork",
+        "weight": "40.0",
+        "average": {
+          "presence": "reported",
+          "text": "77"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.1: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "62"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/06"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.2: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "63"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/10"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.3: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "9"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "15"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "64"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/17"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.4: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "6"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "12"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "65"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/24"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.5: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "66"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/26"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.6: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "67"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/02"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.7: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "9"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "15"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "68"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/03"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.8: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "6"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "12"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "69"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/03"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.9: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "70"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/04"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.10: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "71"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/07"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.11: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "9"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "15"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "72"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/08"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Quizzes",
+        "weight": "20.0",
+        "average": {
+          "presence": "reported",
+          "text": "77"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 2.12: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "6"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "12"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "73"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/03"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Tests and Projects",
+        "weight": "40.0",
+        "average": {
+          "presence": "blank",
+          "text": ""
+        },
+        "rows": []
+      }
+    ],
+    "term": {
+      "percent": "82",
+      "letter": "B"
+    }
+  },
+  "religion-grade-report.txt": {
+    "identity_line_excluded": true,
+    "year": "2026-2027",
+    "categories": [
+      {
+        "name": "Homework/Classwork/Participation",
+        "weight": "25.0",
+        "average": {
+          "presence": "reported",
+          "text": "78.00"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 3.1: classroom exercise. Read the instructions and complete the practice before the next lesson. Use the examples to explain each an"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7.00"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13.00"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "62.00"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/11"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.00"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Projects and Application",
+        "weight": "30.0",
+        "average": {
+          "presence": "blank",
+          "text": ""
+        },
+        "rows": []
+      },
+      {
+        "name": "Quizzes",
+        "weight": "15.0",
+        "average": {
+          "presence": "blank",
+          "text": ""
+        },
+        "rows": []
+      },
+      {
+        "name": "Tests",
+        "weight": "30.0",
+        "average": {
+          "presence": "blank",
+          "text": ""
+        },
+        "rows": []
+      }
+    ],
+    "term": {
+      "percent": "83.00",
+      "letter": "B"
+    }
+  },
+  "science-grade-report.txt": {
+    "identity_line_excluded": true,
+    "year": "2026-2027",
+    "categories": [
+      {
+        "name": "Classwork / Homework",
+        "weight": "10.0",
+        "average": {
+          "presence": "reported",
+          "text": "79.0"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 4.1: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7.0"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13.0"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "62.0"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/27"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 4.2: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8.0"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14.0"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "63.0"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/03"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Labs",
+        "weight": "20.0",
+        "average": {
+          "presence": "reported",
+          "text": "79.0"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 4.3: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "9.0"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "15.0"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "64.0"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/25"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 4.4: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "6.0"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "12.0"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "65.0"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/03"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0.0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0.0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "1.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Quizzes",
+        "weight": "20.0",
+        "average": {
+          "presence": "blank",
+          "text": ""
+        },
+        "rows": []
+      },
+      {
+        "name": "Tests /Projects",
+        "weight": "40.0",
+        "average": {
+          "presence": "blank",
+          "text": ""
+        },
+        "rows": []
+      }
+    ],
+    "term": {
+      "percent": "84.0",
+      "letter": "B"
+    }
+  },
+  "spanish-grade-report.txt": {
+    "identity_line_excluded": true,
+    "year": "2026-2027",
+    "categories": [
+      {
+        "name": "Classwork",
+        "weight": "20.0",
+        "average": {
+          "presence": "reported",
+          "text": "80"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 5.1: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "62"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/19"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "20.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 5.2: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "8"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "14"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "63"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/24"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "20.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          },
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 5.3: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "9"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "15"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "64"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "10/04"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "20.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Homework",
+        "weight": "20.0",
+        "average": {
+          "presence": "reported",
+          "text": "80"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 5.4: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "6"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "12"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "65"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/13"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "20.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Participation",
+        "weight": "20.0",
+        "average": {
+          "presence": "reported",
+          "text": "80"
+        },
+        "rows": [
+          {
+            "Assignment": {
+              "presence": "reported",
+              "text": "Practice 5.5: classroom exercise"
+            },
+            "Pts": {
+              "presence": "reported",
+              "text": "7"
+            },
+            "Max": {
+              "presence": "reported",
+              "text": "13"
+            },
+            "Avg": {
+              "presence": "reported",
+              "text": "66"
+            },
+            "Status": {
+              "presence": "reported",
+              "text": "Valid"
+            },
+            "Due": {
+              "presence": "reported",
+              "text": "09/03"
+            },
+            "Curve": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Bonus": {
+              "presence": "reported",
+              "text": "0"
+            },
+            "Penalty": {
+              "presence": "blank",
+              "text": ""
+            },
+            "Weight": {
+              "presence": "reported",
+              "text": "20.0"
+            },
+            "Note": {
+              "presence": "blank",
+              "text": ""
+            }
+          }
+        ]
+      },
+      {
+        "name": "Test",
+        "weight": "40.0",
+        "average": {
+          "presence": "blank",
+          "text": ""
+        },
+        "rows": []
+      }
+    ],
+    "term": {
+      "percent": "85",
+      "letter": "B"
+    }
+  }
+}

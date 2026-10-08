@@ -14,14 +14,17 @@ recognize, and it never changes the draft or the capture key. The reading says w
 line fell: before the header, before the Term Grade row, or after it. A second title, a title
 after the header, or anything but one header means the paste isn't read.
 
-Print, the selectors and a wrapped title are read narrowly, as the one known report shape has
-them, and a result row a copy wraps isn't joined: a line the reader can't be sure of stays
+A paste lays its tables out one way, chosen by its header: Markdown tables, or the
+tab-separated lines the gradebook's own copy gives, where each tab ends a cell, an empty cell
+is kept wherever it falls, a cell's text is kept as written, and the class name is a plain
+line. Print, the selectors and a wrapped title are read narrowly, as the known report shapes
+have them, and a result row a copy wraps isn't joined: a line the reader can't be sure of stays
 visible. Nothing here logs, and nothing calls a model.
 """
 
 import re
 from enum import StrEnum
-from typing import Self
+from typing import NamedTuple, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -121,6 +124,16 @@ TAKES_A_CATEGORY = frozenset({State.HEADED, State.PERCENT_READ, State.NAMED}) | 
 """The states a category line or the term grade is read in."""
 
 
+class Layout(StrEnum):
+    """How a paste lays out its tables, as its header shows."""
+
+    PIPES = "pipes"
+    """Markdown tables: cells between pipes, and a separator line under the header's first
+    row."""
+    TABS = "tabs"
+    """Tab-separated lines, as the gradebook's own copy gives them: each tab ends a cell."""
+
+
 class NotRead(StrEnum):
     """Why a paste gave no draft, for the review to say in its own words."""
 
@@ -140,7 +153,8 @@ class LinePlace(StrEnum):
 class GradeReportReading(BaseModel):
     """What one paste gave: its draft, or the reason it has none, and every line the reader
     didn't recognize, verbatim and in order, left out of every repr since a paste can carry
-    names. With a draft, ``places`` says where each of those lines fell."""
+    names. With a draft, ``places`` says where each of those lines fell, and ``layout`` how
+    the paste laid out its tables."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -148,6 +162,7 @@ class GradeReportReading(BaseModel):
     not_read: NotRead | None
     unrecognized: tuple[str, ...] = Field(repr=False)
     places: tuple[LinePlace, ...] = ()
+    layout: Layout = Layout.PIPES
 
     @model_validator(mode="after")
     def _a_draft_or_the_reason_for_none(self) -> Self:
@@ -179,6 +194,36 @@ def cells_of(line: str) -> list[str] | None:
     if len(text) < 2 or not (text.startswith("|") and text.endswith("|")):
         return None
     return [bare(cell) for cell in text[1:-1].split("|")]
+
+
+def tab_cells(line: str) -> list[str] | None:
+    """A tab-separated line's cells, each as written, every empty one kept, the last after a
+    trailing tab included; None for a line without a tab, or a Markdown table line."""
+    if "\t" not in line or cells_of(line) is not None:
+        return None
+    return line.split("\t")
+
+
+def table_cells(line: str, layout: Layout) -> list[str] | None:
+    """A table line's cells in ``layout``, each without the space around it, for telling what
+    the line is; None for a line that isn't a table line there."""
+    if layout is Layout.PIPES:
+        return cells_of(line)
+    cells = tab_cells(line)
+    return None if cells is None else [cell.strip() for cell in cells]
+
+
+def written_cells(line: str, layout: Layout) -> list[str]:
+    """A table line's cells in ``layout`` as its values read them: a Markdown cell without its
+    padding and bold marks, a tab-separated cell exactly as written."""
+    cells = cells_of(line) if layout is Layout.PIPES else tab_cells(line)
+    return cells or []
+
+
+def is_table_line(line: str, layout: Layout) -> bool:
+    """Whether ``line`` is laid out as a table: a Markdown table line, or in a tab-separated
+    paste, any line with a tab too."""
+    return cells_of(line) is not None or (layout is Layout.TABS and "\t" in line)
 
 
 def is_separator(cells: list[str]) -> bool:
@@ -217,18 +262,41 @@ def title_lines(lines: list[str], start: int) -> int:
     return 0
 
 
-def header_rows(lines: list[str]) -> list[tuple[int, list[str], list[str]]]:
-    """Each header table: where it starts, the student, year and teacher cells, and the class
-    and term cells under them."""
+class Header(NamedTuple):
+    """One header table: where it starts, how many lines it takes, its layout, the student,
+    year and teacher cells, and the class and term cells under them."""
+
+    start: int
+    taken: int
+    layout: Layout
+    top: list[str]
+    bottom: list[str]
+
+
+def is_header_top(cells: list[str] | None) -> bool:
+    """A header's first row: three cells, the school year in the middle."""
+    return cells is not None and len(cells) == 3 and is_school_year(cells[1])
+
+
+def is_header_bottom(cells: list[str] | None) -> bool:
+    """A header's last row: the class and the term, then an empty cell."""
+    return cells is not None and len(cells) == 3 and bool(cells[0] and cells[1]) and not cells[2]
+
+
+def header_rows(lines: list[str]) -> list[Header]:
+    """Each header table: a Markdown one, its first row, a separator and its last row, or a
+    tab-separated one, its first row directly above its last."""
     found = []
-    for start in range(len(lines) - 2):
-        top, rule, bottom = (cells_of(line) for line in lines[start : start + 3])
-        if top is None or len(top) != 3 or not is_school_year(top[1]):
+    for start in range(len(lines) - 1):
+        top, below = (table_cells(line, Layout.PIPES) for line in lines[start : start + 2])
+        bottom = table_cells(lines[start + 2], Layout.PIPES) if start + 2 < len(lines) else None
+        if is_header_top(top) and below is not None and is_separator(below):
+            if is_header_bottom(bottom):
+                found.append(Header(start, 3, Layout.PIPES, top or [], bottom or []))
             continue
-        if rule is None or not is_separator(rule) or bottom is None or len(bottom) != 3:
-            continue
-        if bottom[0] and bottom[1] and not bottom[2]:
-            found.append((start, top, bottom))
+        top, bottom = (table_cells(line, Layout.TABS) for line in lines[start : start + 2])
+        if is_header_top(top) and is_header_bottom(bottom):
+            found.append(Header(start, 2, Layout.TABS, top or [], bottom or []))
     return found
 
 
@@ -278,13 +346,14 @@ def title_starts(lines: list[str]) -> list[int]:
     return starts
 
 
-def line_class(lines: list[str], index: int, header: int) -> tuple[LineClass, int]:
-    """What the line at ``index`` is, and how many lines it takes: the header by its place at
-    ``header``, then the first class that fits, in the order the enum lists them."""
+def line_class(lines: list[str], index: int, header: Header) -> tuple[LineClass, int]:
+    """What the line at ``index`` is, and how many lines it takes: the header by its place,
+    then the first class that fits in the header's layout, in the order the enum lists them."""
     line = lines[index]
-    if index == header:
-        return LineClass.HEADER, 3
-    cells = cells_of(line)
+    if index == header.start:
+        return LineClass.HEADER, header.taken
+    layout = header.layout
+    cells = table_cells(line, layout)
     if cells is None:
         if not line.strip():
             return LineClass.BLANK, 1
@@ -302,7 +371,7 @@ def line_class(lines: list[str], index: int, header: int) -> tuple[LineClass, in
         return LineClass.OTHER, 1
     if is_layout(cells):
         return LineClass.LAYOUT, 1
-    rule = cells_of(lines[index + 1]) if index + 1 < len(lines) else None
+    rule = table_cells(lines[index + 1], layout) if index + 1 < len(lines) else None
     for table, shaped in (
         (LineClass.CLASS_TABLE, len(cells) == 1 and rule is not None and is_separator(rule)),
         (LineClass.CATEGORY, len(cells) == 3 and not cells[1] and bool(WEIGHT.fullmatch(cells[2]))),
@@ -320,6 +389,18 @@ def weight_of(cell: str) -> str:
     return "" if written is None else written[1]
 
 
+def beside_a_stray_line(lines: list[str], index: int) -> bool:
+    """Whether a plain line no structure explains sits directly above or below the
+    tab-separated line at ``index``, as a copy that wraps a result row leaves one: that line's
+    row is then not read, since part of it may be on the other line."""
+    for near in (index - 1, index + 1):
+        if 0 <= near < len(lines):
+            line = lines[near]
+            if line.strip() and "\t" not in line and folded(bare(line)) != CATEGORY_AVERAGE:
+                return True
+    return False
+
+
 def closed(category: _Category, state: State) -> None:
     """Close ``category`` as a category line or the term grade arrives in ``state``: a label still
     awaiting its value is a blank average; any other close keeps the average as it stands, read
@@ -334,13 +415,14 @@ def read_grade_report(text: str) -> GradeReportReading:
     lines = text.splitlines()
     headers = header_rows(lines)
     titles = title_starts(lines)
-    if len(headers) != 1 or len(titles) > 1 or any(title > headers[0][0] for title in titles):
+    if len(headers) != 1 or len(titles) > 1 or any(title > headers[0].start for title in titles):
         return GradeReportReading(
             draft=None,
             not_read=NotRead.SEVERAL_REPORTS if headers else NotRead.NO_HEADER,
             unrecognized=tuple(line for line in lines if line.strip()),
         )
-    ((start, top, bottom),) = headers
+    (header,) = headers
+    start, layout, top, bottom = header.start, header.layout, header.top, header.bottom
     unrecognized: list[tuple[int, str]] = []
     categories: list[_Category] = []
     term: TermResult | None = None
@@ -350,8 +432,9 @@ def read_grade_report(text: str) -> GradeReportReading:
     index = 0
     while index < len(lines):
         line = lines[index]
-        kind, step = line_class(lines, index, start)
-        cells = cells_of(line) or []
+        kind, step = line_class(lines, index, header)
+        cells = table_cells(line, layout) or []
+        written = written_cells(line, layout)
         match state, kind:
             case _, LineClass.BLANK | LineClass.LAYOUT:
                 pass
@@ -366,17 +449,20 @@ def read_grade_report(text: str) -> GradeReportReading:
             case State.HEADED | State.PERCENT_READ, LineClass.CLASS_TABLE:
                 class_name = cells[0]
                 state = State.NAMED
+            case State.HEADED | State.PERCENT_READ, LineClass.OTHER if layout is Layout.TABS:
+                class_name = line.strip()
+                state = State.NAMED
             case _, LineClass.CATEGORY if state in TAKES_A_CATEGORY:
                 if state in IN_A_CATEGORY:
                     closed(categories[-1], state)
-                name, weight = GradeValue.read(cells[0]), GradeNumber.read(weight_of(cells[2]))
+                name, weight = GradeValue.read(written[0]), GradeNumber.read(weight_of(cells[2]))
                 categories.append(_Category(name, weight))
                 state = State.NEEDS_COLUMNS
             case _, LineClass.TERM if state in TAKES_A_CATEGORY:
                 if state in IN_A_CATEGORY:
                     closed(categories[-1], state)
                 term = TermResult(
-                    percent=GradeNumber.read(cells[1]), letter=GradeValue.read(cells[2])
+                    percent=GradeNumber.read(written[1]), letter=GradeValue.read(written[2])
                 )
                 term_at = index
                 state = State.AFTER_TERM
@@ -385,8 +471,10 @@ def read_grade_report(text: str) -> GradeReportReading:
                 state = State.ROWS
             case State.NEEDS_COLUMNS | State.ROWS, LineClass.LABEL:
                 state = State.LABELED
-            case State.ROWS, LineClass.ROW if len(cells) == len(categories[-1].columns or ()):
-                categories[-1].rows.append(cells)
+            case State.ROWS, LineClass.ROW if len(cells) == len(categories[-1].columns or ()) and (
+                layout is Layout.PIPES or not beside_a_stray_line(lines, index)
+            ):
+                categories[-1].rows.append(written)
             case State.ROWS, LineClass.COLUMNS:
                 unrecognized.append((index, line))
                 state = State.CLOSED
@@ -422,7 +510,7 @@ def read_grade_report(text: str) -> GradeReportReading:
     kept = [
         (index, line)
         for index, line in unrecognized
-        if index >= start or cells_of(line) is not None or folded(bare(line)) not in selectors
+        if index >= start or is_table_line(line, layout) or folded(bare(line)) not in selectors
     ]
 
     def place(index: int) -> LinePlace:
@@ -437,6 +525,7 @@ def read_grade_report(text: str) -> GradeReportReading:
         not_read=None,
         unrecognized=tuple(line for _, line in kept),
         places=tuple(place(index) for index, _ in kept),
+        layout=layout,
     )
 
 
@@ -444,7 +533,8 @@ def reading_complete(reading: GradeReportReading) -> bool:
     """Whether a reading is complete enough to say what its report doesn't show: its term result
     came from a Term Grade row, every category's average was read by its own structure, every
     result row's due cell was captured, no line it didn't recognize fell between the header and
-    the Term Grade row, and no table line it didn't place fell after it."""
+    the Term Grade row, and no table line it didn't place, in the paste's layout, fell after
+    it."""
     draft = reading.draft
     if draft is None:
         return False
@@ -461,7 +551,7 @@ def reading_complete(reading: GradeReportReading) -> bool:
         return False
     return not any(
         place is LinePlace.BEFORE_TERM
-        or (place is LinePlace.AFTER_TERM and cells_of(line) is not None)
+        or (place is LinePlace.AFTER_TERM and is_table_line(line, reading.layout))
         for line, place in zip(reading.unrecognized, reading.places, strict=True)
     )
 

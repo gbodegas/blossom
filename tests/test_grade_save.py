@@ -270,6 +270,26 @@ def test_a_partial_save_then_the_rest_joins_the_same_report() -> None:
     assert set(statuses(review_of(store))) == {ItemStatus.SAVED}
 
 
+def test_a_tab_separated_copy_saves_and_its_markdown_serialization_reads_saved() -> None:
+    """The gradebook's own tab-separated copy feeds the review and the save unchanged: every
+    value saves, a title keeps the space its cell held, and the same report as Markdown, with
+    that space trimmed, is the same capture and reads Saved."""
+    geometry = FIXTURES / "grade_clipboard" / "geometry-grade-report.txt"
+    tabs = draft_of(geometry.read_bytes().decode("utf-8"))
+    markdown = draft_of((geometry.parent / "markdown" / geometry.name).read_bytes().decode("utf-8"))
+    store = in_memory()
+    outcome = saved(save(store, tabs, review=review_of(store, tabs)))
+
+    assert (outcome.added, outcome.updated, outcome.left) == (22, 0, 0)
+    titles = [
+        str(row[0]) for row in one(store, "SELECT assignment_text FROM grade_result_observations")
+    ]
+    assert len(titles) == 18
+    assert sum(title.endswith("Use the examples ") for title in titles) == 1
+    assert capture_key(markdown) == capture_key(tabs)
+    assert set(statuses(review_of(store, markdown))) == {ItemStatus.SAVED}
+
+
 def test_a_restart_keeps_a_committed_save(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "blossom.sqlite3"
     store = ProjectStateStore.open(path, fixture_clock())
