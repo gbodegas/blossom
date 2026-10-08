@@ -126,6 +126,8 @@ from blossom.routes.runs import (
     tidy_thread,
 )
 from blossom.routes.student import (
+    FAMILY_HELP,
+    HELP_SHE_ASKED_FOR,
     REQUEST_UNREADABLE,
     UNREADABLE_COUNT,
     help_view,
@@ -206,6 +208,9 @@ class PlanRequest(BaseModel):
 
     plan_date: date | None = None
 
+
+REFRESH_REQUESTS: Final = address(FAMILY_PAGE, fragment=HELP_SHE_ASKED_FOR, refreshed="1")
+"""Refresh requests: the family page read again, landing on its Help section."""
 
 REASON_MAX_LENGTH: Final = 500
 """The most that is kept of a reason: a sentence or two she would recognize.
@@ -1118,6 +1123,7 @@ def review_page(
             "marks": state.settings.page_marks,
             "zone": state.clock.zone,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
+            "refresh_requests": REFRESH_REQUESTS,
             "added": added,
             "updated": updated,
             "unchanged": unchanged,
@@ -1592,7 +1598,8 @@ def help_from_the_page(
     The words are read with one kind of line ending, as the box counts them, so a line
     break is one character of the cap. The form's id goes with the move, so the same form
     sent again changes nothing; a form with no id moves as one of its own, and one whose id
-    no form carries is refused. A step the family page refuses is said at its top with the
+    no form carries is refused. A move made, or sent again, lands on the page's Help section,
+    which takes the focus. A step the family page refuses is said at its top with the
     words as typed: in the request's own box while the request is open there, marked and
     focused when the words are what was refused, with a way to the box when the refusal
     says they are below, and under the problem otherwise. A request whose row can't be read
@@ -1645,7 +1652,7 @@ def help_from_the_page(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             kept=typed if words else None,
         )
-    return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(FAMILY_HELP, status_code=status.HTTP_303_SEE_OTHER)
 
 
 router.add_api_route(
