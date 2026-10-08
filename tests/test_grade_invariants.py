@@ -10,9 +10,13 @@ returns what was recorded, and a value a newer report replaced comes back only u
 choice of current. G-I13: no gradebook table, and no log line, holds a student's name. G-I15:
 every gradebook row carries her one student ID, and nothing is looked up under another. G-I16: a
 result is its stable ID, and an ambiguous match never saves without a parent's answer. G-I17: no
-grade save writes her own account or the school's submission status.
+grade save writes her own account or the school's submission status. G-I2: what a plan is made
+from reads the same across every grade write. G-I5: nothing saves for another student or for an
+identity no one confirmed. G-I12: the grade modules import nothing that reaches a model. G-I18:
+no grade write changes the current context a parent chose.
 """
 
+import ast
 import dataclasses
 import json
 import logging
@@ -20,6 +24,7 @@ import pathlib
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
+from datetime import date
 
 import pytest
 
@@ -43,7 +48,15 @@ from blossom.grades.review import (
     ReviewReturned,
 )
 from blossom.grades.text_reader import read_grade_report
-from blossom.stores.gradebook import GRADEBOOK_TABLES, AnswerNotAsked, NameFormAdded
+from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
+from blossom.settings import PACKAGE_ROOT
+from blossom.stores.gradebook import (
+    GRADEBOOK_TABLES,
+    AnswerNotAsked,
+    FirstMonthCorrected,
+    FirstMonthStood,
+    NameFormAdded,
+)
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
     FIXTURES,
@@ -56,6 +69,7 @@ from tests.support import (
     fixture_clock,
     grade_answers,
     household_client,
+    practice_store,
     save_grade,
     state_of,
 )
@@ -66,6 +80,9 @@ NAMES = ("bramble", "wren", "linnet")
 KEY = name_form_key(b"5" * 64)
 NEW_KEY = name_form_key(b"6" * 64)
 REPORT = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
+YEAR = "2026-2027"
+MONDAY = date(2026, 9, 14)
+"""The week the practice store's two assignments are due in."""
 
 
 def draft_of(text: str) -> GradeReportDraft:
@@ -179,8 +196,8 @@ def class_details_actions(store: ProjectStateStore) -> list[tuple[str, Callable[
 
 
 def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
-    """Each kind of grade save, and each save that writes nothing, in an order that reaches
-    them all."""
+    """Each kind of grade write, and each that writes nothing, in an order that reaches them
+    all."""
     first = store.review_grade_report(WREN_REPORT, capture_key(WREN_REPORT), key=KEY)
 
     def answered(draft: GradeReportDraft, key: bytes, answer: IdentityAnswer) -> object:
@@ -215,6 +232,19 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
                     key=KEY,
                     review=dataclasses.replace(first, acceptance_id="a page from before"),
                 ),
+            ),
+        ),
+        (
+            "a first-month correction",
+            lambda: expect(
+                FirstMonthCorrected,
+                store.correct_first_month(YEAR, shown=8, month=9, role="parent"),
+            ),
+        ),
+        (
+            "its retry",
+            lambda: expect(
+                FirstMonthStood, store.correct_first_month(YEAR, shown=8, month=9, role="parent")
             ),
         ),
         (
@@ -673,3 +703,157 @@ def test_g_i21_every_observation_and_row_record_traces_to_one_acceptance_or_one_
         for report_id, row_key, result_id, _ in records
         if (report_id, row_key, result_id) in rows_listed
     )
+
+
+def test_g_i2_the_planner_input_is_byte_identical_across_every_grade_write(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Over a week with homework to plan, what a plan is made from and its fingerprint read the
+    same after each grade write as before the first."""
+    store = practice_store(tmp_path / "blossom.sqlite3")
+
+    def planner_input() -> tuple[str, list[dict[str, object]]]:
+        week = week_from(read_everything(store, store), MONDAY)
+        return planning_digest(week), canonical_active_input(week)
+
+    before = planner_input()
+    seen = []
+    for label, write in every_grade_write(store):
+        write()
+        seen.append((label, planner_input() == before))
+    store.close()
+
+    assert len(before[1]) == 2
+    assert seen == [(label, True) for label, _ in seen]
+
+
+LINE_MISSING = draft_of(REPORT.replace("**Bramble, Wren**", ""))
+IdentityCase = tuple[str, bool, GradeReportDraft, GradeReportDraft, bytes, IdentityAnswer]
+IDENTITY_CASES: list[IdentityCase] = [
+    ("first use, shown as hers", False, WREN_REPORT, WREN_REPORT, KEY, IdentityAnswer.SHOWN),
+    ("first use, misread", False, WREN_REPORT, WREN_REPORT, KEY, IdentityAnswer.MISREAD),
+    ("a missing line, as hers", False, LINE_MISSING, LINE_MISSING, KEY, IdentityAnswer.HERS),
+    ("a missing line, confirmed", False, LINE_MISSING, LINE_MISSING, KEY, IdentityAnswer.CONFIRMED),
+    ("a missing line, not hers", False, LINE_MISSING, LINE_MISSING, KEY, IdentityAnswer.NOT_HERS),
+    ("not hers", True, LINNET_REPORT, LINNET_REPORT, KEY, IdentityAnswer.NOT_HERS),
+    ("a sibling's identical report", True, LINNET_REPORT, LINNET_REPORT, KEY, IdentityAnswer.SHOWN),
+    ("a sibling's report misread", True, LINNET_REPORT, LINNET_REPORT, KEY, IdentityAnswer.MISREAD),
+    ("a changed student line", True, WREN_REPORT, LINNET_REPORT, KEY, IdentityAnswer.SHOWN),
+    ("a replaced secret", True, WREN_REPORT, WREN_REPORT, NEW_KEY, IdentityAnswer.SHOWN),
+]
+"""Each case: whether her line was confirmed and her report saved first, the report the page
+reviewed, the report posted, the key, and the answer the page sends."""
+IDENTITY_OUTCOMES = {
+    "first use, shown as hers": ReviewReturned,
+    "first use, misread": GradeReportSaved,
+    "a missing line, as hers": ReviewReturned,
+    "a missing line, confirmed": GradeReportSaved,
+    "a missing line, not hers": NotHers,
+    "not hers": NotHers,
+    "a sibling's identical report": ReviewReturned,
+    "a sibling's report misread": GradeReportSaved,
+    "a changed student line": ReviewReturned,
+    "a replaced secret": ReviewReturned,
+}
+
+
+def test_g_i5_nothing_saves_for_another_student_or_an_unconfirmed_identity() -> None:
+    """Every import, an already-saved capture included, gets its own identity check, and an
+    answer counts only for the line it answered: no answer here adds a name form, and each one
+    the check refuses, or "Not hers", writes nothing."""
+    seen = {}
+    for label, confirmed, reviewed, posted, key, answer in IDENTITY_CASES:
+        store = ProjectStateStore(
+            sqlite3.connect(":memory:", check_same_thread=False), fixture_clock()
+        )
+        if confirmed:
+            saved_report(save_grade(store, WREN_REPORT, key=KEY))
+        forms = as_stored(store, "grade_name_forms")
+        review = store.review_grade_report(reviewed, capture_key(reviewed), key=key)
+        changes = store._connection.total_changes
+        outcome = save_grade(
+            store, posted, key=key, review=review, answers=grade_answers(review, answer)
+        )
+        wrote = store._connection.total_changes != changes
+        seen[label] = (type(outcome), wrote, as_stored(store, "grade_name_forms") == forms)
+        store.close()
+
+    assert seen == {
+        label: (kind, kind is GradeReportSaved, True) for label, kind in IDENTITY_OUTCOMES.items()
+    }
+
+
+GRADE_IMPORTS = {
+    "blossom.clock",
+    "blossom.grades.draft",
+    "blossom.grades.identity",
+    "blossom.grades.projection",
+    "blossom.grades.review",
+    "collections",
+    "collections.abc",
+    "contextlib",
+    "dataclasses",
+    "datetime",
+    "decimal",
+    "enum",
+    "hashlib",
+    "hmac",
+    "json",
+    "pydantic",
+    "re",
+    "secrets",
+    "sqlite3",
+    "threading",
+    "typing",
+    "unicodedata",
+    "uuid",
+}
+"""Everything the grade modules and the gradebook import: the standard library, pydantic, the
+clock and one another. No model client, no graph, no network, no logging."""
+
+
+def test_g_i12_the_grade_modules_import_nothing_that_reaches_a_model() -> None:
+    files = [*sorted((PACKAGE_ROOT / "grades").glob("*.py")), PACKAGE_ROOT / "stores/gradebook.py"]
+    imported: set[str] = set()
+    for file in files:
+        for node in ast.walk(ast.parse(file.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add(node.module or "")
+
+    assert (PACKAGE_ROOT / "grades" / "dates.py") in files
+    assert imported == GRADE_IMPORTS
+
+
+SECOND_TERM = draft_of(REPORT.replace("**T1**", "**T2**"))
+EARLIER_YEAR = draft_of(
+    REPORT.replace("**2026-2027**", "**2025-2026**").replace("**T1**", "**T3**")
+)
+
+
+def test_g_i18_no_grade_write_changes_the_current_context(tmp_path: pathlib.Path) -> None:
+    """After the first setup confirms the year and term, every grade write, imports for another
+    term and another year included, leaves the current context as the parent chose it."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    steps = [
+        *every_grade_write(store),
+        ("another term", lambda: saved_report(save_grade(store, SECOND_TERM, key=NEW_KEY))),
+        ("another year", lambda: saved_report(save_grade(store, EARLIER_YEAR, key=NEW_KEY))),
+    ]
+    chosen: list[tuple[object, ...]] = []
+    seen = []
+    for label, write in steps:
+        write()
+        now = as_stored(store, "grade_context")
+        if not chosen:
+            chosen = now
+        else:
+            seen.append((label, now == chosen))
+    years = store._connection.execute("SELECT label FROM grade_years ORDER BY label").fetchall()
+    store.close()
+
+    assert [row[1:4] for row in chosen] == [(YEAR.encode(), b"T1", b"parent")]
+    assert seen
+    assert seen == [(label, True) for label, _ in seen]
+    assert years == [("2025-2026",), (YEAR,)]

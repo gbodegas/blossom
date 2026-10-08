@@ -5,10 +5,13 @@ the lines the reader didn't recognize, kept in order; and a capture key that nam
 report the same however the paste was spaced, wrapped or ended."""
 
 import ast
+import json
 import logging
+import pathlib
 import re
 from collections.abc import Callable
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -24,8 +27,11 @@ from blossom.grades.draft import (
     canonical,
     capture_key,
 )
+from blossom.grades.identity import name_form, name_form_key
 from blossom.grades.text_reader import (
+    COLUMNS,
     GradeReportReading,
+    HeldBack,
     LinePlace,
     NotRead,
     read_grade_report,
@@ -536,7 +542,9 @@ def test_a_value_disagreeing_with_its_presence_is_refused() -> None:
         (GradeValue, "", Presence.UNREADABLE),
         (GradeValue, "Valid", Presence.BLANK),
         (GradeValue, "Valid", Presence.NOT_CAPTURED),
-        (GradeValue, " Valid", Presence.REPORTED),
+        (GradeValue, "  ", Presence.REPORTED),
+        (GradeValue, " ", Presence.BLANK),
+        (GradeNumber, " 7", Presence.REPORTED),
         (GradeNumber, "seven", Presence.REPORTED),
         (DueText, "9/26", Presence.REPORTED),
     ]:
@@ -736,3 +744,449 @@ def test_a_reading_with_no_draft_places_nothing_and_is_incomplete() -> None:
     reading = read_grade_report("nothing here")
     assert reading.places == ()
     assert reading_complete(reading) is False
+
+
+# ------------------------------------------------- the gradebook's own tab-separated copy
+
+
+CLIPBOARD = FIXTURES / "grade_clipboard"
+"""Five synthetic reports exactly as the gradebook's copy puts them on the clipboard: tab
+separated, with CRLF line endings, empty cells and trailing tabs, kept byte for byte. Beside
+them, ``markdown`` holds the same five reports as Markdown tables, as controls."""
+INVENTORY: dict[str, Any] = json.loads(
+    (CLIPBOARD / "expected-values.json").read_bytes().decode("utf-8")
+)
+"""Each clipboard report's values, cell by cell, as the report wrote them."""
+PASTES = sorted(INVENTORY)
+CLASSES = {
+    "geometry-grade-report.txt": ("08 Fixture 1 - A", "Patterns"),
+    "humanities-grade-report.txt": ("08 Fixture 2 - A", "World Studies"),
+    "religion-grade-report.txt": ("08 Fixture 3 - A", "Community Studies"),
+    "science-grade-report.txt": ("08 Fixture 4 - A", "Nature Studies"),
+    "spanish-grade-report.txt": ("08 Fixture 5 - A", "Language Studies"),
+}
+"""Each clipboard report's class code and class name, which the inventory doesn't list."""
+LONG_TITLE = (
+    "Practice 1.7: classroom exercise. Read the instructions and complete the practice before"
+    " the next lesson. Use the examples to explain each answer. Use the examples to explain each"
+    " answer. Use the examples to explain each answer. Use the examples "
+)
+"""Geometry's longest title, its last space part of the cell as the copy wrote it."""
+DATE_CHANGE_TITLE = (
+    "Quiz 3: Pattern rulesDate change- moved from 09/12 to 09/19. Read the instructions and"
+    " complete the practice before the next les"
+)
+"""Geometry's quiz title, its description and a date-change note run together as written."""
+
+
+def pasted(name: str, folder: pathlib.Path = CLIPBOARD) -> str:
+    """A fixture's text as a paste gives it: its bytes decoded, every line ending kept."""
+    return (folder / name).read_bytes().decode("utf-8")
+
+
+def as_listed(entry: object) -> tuple[str, str]:
+    """An inventory value as a presence and a text: a plain string is a reported value."""
+    if isinstance(entry, str):
+        return (Presence.REPORTED.value, entry)
+    assert isinstance(entry, dict)
+    return (entry["presence"], entry["text"])
+
+
+def as_read(value: GradeValue) -> tuple[str, str]:
+    return (value.presence.value, value.text)
+
+
+def differences(name: str, listed: dict[str, Any], draft: GradeReportDraft) -> list[str]:
+    """Each value of ``draft`` that differs from the inventory, said where it is."""
+    found: list[str] = []
+
+    def compare(where: str, expected: tuple[str, str], got: tuple[str, str]) -> None:
+        if expected != got:
+            found.append(f"{name}, {where}: listed {expected!r}, read {got!r}")
+
+    compare("year", as_listed(listed["year"]), as_listed(draft.header.year_label))
+    compare("term percent", as_listed(listed["term"]["percent"]), as_read(draft.term.percent))
+    compare("term letter", as_listed(listed["term"]["letter"]), as_read(draft.term.letter))
+    categories = listed["categories"]
+    if len(categories) != len(draft.categories):
+        found.append(f"{name}: {len(categories)} categories listed, {len(draft.categories)} read")
+    for at, (expected, category) in enumerate(zip(categories, draft.categories, strict=False), 1):
+        where = f"category {at}"
+        compare(f"{where} name", as_listed(expected["name"]), as_read(category.name))
+        compare(f"{where} weight", as_listed(expected["weight"]), as_read(category.weight))
+        compare(f"{where} average", as_listed(expected["average"]), as_read(category.average))
+        if len(expected["rows"]) != len(category.rows):
+            found.append(
+                f"{name}, {where}: {len(expected['rows'])} rows listed, {len(category.rows)} read"
+            )
+        for number, (cells, row) in enumerate(
+            zip(expected["rows"], category.rows, strict=False), 1
+        ):
+            assert list(cells) == list(COLUMNS)
+            for column, value in zip(COLUMNS, row.cells(), strict=True):
+                compare(f"{where} row {number} {column}", as_listed(cells[column]), as_read(value))
+    return found
+
+
+def test_the_inventory_lists_forty_rows_of_eleven_cells() -> None:
+    rows = [
+        row
+        for listed in INVENTORY.values()
+        for category in listed["categories"]
+        for row in category["rows"]
+    ]
+    assert sorted(CLASSES) == PASTES
+    assert len(rows) == 40
+    assert {tuple(row) for row in rows} == {tuple(COLUMNS)}
+
+
+@pytest.mark.parametrize("name", PASTES)
+def test_a_tab_separated_clipboard_report_is_read_whole(name: str) -> None:
+    text = pasted(name)
+    assert "\r\n" in text
+    assert "\t\r\n" in text
+    reading = read_grade_report(text)
+    assert reading.not_read is None
+    assert reading.draft is not None
+    assert (reading.unrecognized, reading.places) == ((), ())
+
+
+def test_every_cell_of_every_clipboard_report_is_read_as_its_inventory_lists_it() -> None:
+    """Category membership and order, row counts, decimal places as written, blank Penalty and
+    Note cells, empty categories with blank averages, term values and long titles."""
+    found: list[str] = []
+    for name in PASTES:
+        reading = read_grade_report(pasted(name))
+        if reading.draft is None:
+            found.append(f"{name}: not read ({reading.not_read})")
+            continue
+        found += differences(name, INVENTORY[name], reading.draft)
+    assert found == []
+
+
+@pytest.mark.parametrize("name", PASTES)
+def test_a_clipboard_report_s_header_is_read_and_the_teacher_never_kept(name: str) -> None:
+    _, draft = read(pasted(name))
+    code, class_name = CLASSES[name]
+    assert draft.header.student_line == "Wren"
+    assert (draft.header.class_code, draft.header.term_label) == (code, "T1")
+    assert draft.header.class_name == class_name
+    assert "Teacher" not in draft.model_dump_json()
+    assert "Wren" not in canonical(draft)
+
+
+def test_long_titles_are_kept_whole_and_an_embedded_date_is_never_the_due_date() -> None:
+    _, draft = read(pasted("geometry-grade-report.txt"))
+    homework, quizzes, tests = draft.categories
+    longest = homework.rows[6]
+    assert as_read(longest.assignment) == ("reported", LONG_TITLE)
+    assert as_read(longest.due) == ("reported", "09/19")
+    quiz = quizzes.rows[2]
+    assert as_read(quiz.assignment) == ("reported", DATE_CHANGE_TITLE)
+    assert as_read(quiz.due) == ("reported", "10/07")
+    assert (len(homework.rows), len(quizzes.rows), tests.rows) == (15, 3, ())
+
+
+@pytest.mark.parametrize("name", PASTES)
+def test_lf_line_endings_read_as_crlf_do(name: str) -> None:
+    seed, draft = read(pasted(name))
+    reading, again = read(pasted(name).replace("\r\n", "\n"))
+    assert again == draft
+    assert (reading.unrecognized, reading.capture_key) == ((), seed.capture_key)
+
+
+def every_value(draft: GradeReportDraft) -> list[tuple[str, tuple[str, str]]]:
+    """Each value of ``draft`` but the student line, said where it is."""
+    header = draft.header
+    values = [
+        ("header", ("", f"{header.year_label}|{header.class_code}|{header.term_label}")),
+        ("class name", ("", header.class_name or "")),
+        ("term percent", as_read(draft.term.percent)),
+        ("term letter", as_read(draft.term.letter)),
+    ]
+    for at, category in enumerate(draft.categories, 1):
+        values += [
+            (f"category {at} name", as_read(category.name)),
+            (f"category {at} weight", as_read(category.weight)),
+            (f"category {at} average", as_read(category.average)),
+        ]
+        for number, row in enumerate(category.rows, 1):
+            values += [
+                (f"category {at} row {number} {column}", as_read(value))
+                for column, value in zip(COLUMNS, row.cells(), strict=True)
+            ]
+    return values
+
+
+@pytest.mark.parametrize("name", PASTES)
+def test_a_report_read_from_tabs_and_from_markdown_has_one_capture_key(name: str) -> None:
+    """The canonical form folds a cell's spaces, so the one cell the two layouts write apart,
+    Geometry's longest title with the space its tab cell keeps, gives the same key."""
+    tabs, from_tabs = read(pasted(name))
+    markdown, from_markdown = read(pasted(name, CLIPBOARD / "markdown"))
+    apart = [
+        (where, ours, theirs)
+        for (where, ours), (_, theirs) in zip(
+            every_value(from_tabs), every_value(from_markdown), strict=True
+        )
+        if ours != theirs
+    ]
+    expected = (
+        [("category 1 row 7 Assignment", ("reported", LONG_TITLE), ("reported", LONG_TITLE[:-1]))]
+        if name == "geometry-grade-report.txt"
+        else []
+    )
+    assert apart == expected
+    assert canonical(from_tabs) == canonical(from_markdown)
+    assert tabs.capture_key == markdown.capture_key
+    assert from_tabs.header.student_line == from_markdown.header.student_line == "Wren"
+
+
+def test_the_student_line_stays_out_of_a_clipboard_report_s_key_and_its_check() -> None:
+    """Two siblings' identical reports share a key and keep their own lines; a line left out
+    reads as none; the name form of the clipboard's line is the Markdown line's."""
+    text = pasted("science-grade-report.txt")
+    seed, wren = read(text)
+    sibling, linnet = read(replaced_once(text, "Wren\t2026", "Linnet\t2026"))
+    missing, unnamed = read(replaced_once(text, "Wren\t2026", "\t2026"))
+    assert (wren.header.student_line, linnet.header.student_line) == ("Wren", "Linnet")
+    assert unnamed.header.student_line is None
+    assert seed.capture_key == sibling.capture_key == missing.capture_key
+    _, control = read(pasted("science-grade-report.txt", CLIPBOARD / "markdown"))
+    key = name_form_key(b"synthetic household secret")
+    assert control.header.student_line is not None
+    assert name_form(key, "Wren") == name_form(key, control.header.student_line)
+    assert name_form(key, "Wren") != name_form(key, "Linnet")
+
+
+@pytest.mark.parametrize("name", PASTES)
+def test_a_clipboard_reading_is_complete_by_its_rows_and_its_lines(name: str) -> None:
+    """Complete because every physical result line became a row and no line went unplaced,
+    not because the reader says so."""
+    text = pasted(name)
+    reading, draft = read(text)
+    result_lines = [
+        line
+        for line in text.splitlines()
+        if line.count("\t") == len(COLUMNS) - 1 and not line.startswith("Assignment\t")
+    ]
+    listed = sum(len(category["rows"]) for category in INVENTORY[name]["categories"])
+    read_rows = [row for category in draft.categories for row in category.rows]
+    assert len(result_lines) == listed == len(read_rows)
+    assert [line.split("\t", 1)[0] for line in result_lines] == [
+        row.assignment.text for row in read_rows
+    ]
+    assert (reading.unrecognized, reading.places, reading.held_back) == ((), (), ())
+    assert reading_complete(reading) is True
+
+
+SCIENCE = pasted("science-grade-report.txt")
+LABS_TAB_LINE = "Labs\t\tWeight = 20.0\r\n"
+SCIENCE_TERM = "Term Grade\t84.0\tB\t\t "
+"""Science's last line, its trailing cells as the copy ends them, with no line ending."""
+SCIENCE_ROW = (
+    "Practice 4.3: classroom exercise\t9.0\t15.0\t64.0\tValid\t09/25\t0.0\t0.0\t\t1.0\t\r\n"
+)
+NEXT_SCIENCE_ROW = (
+    "Practice 4.4: classroom exercise\t6.0\t12.0\t65.0\tValid\t10/03\t0.0\t0.0\t\t1.0\t"
+)
+"""The row after ``SCIENCE_ROW``: a stray line between the two may belong to either, so neither
+is read."""
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "shown", "places", "rows", "complete"),
+    [
+        (
+            LABS_TAB_LINE,
+            f"{BODY_LINE}\r\n{LABS_TAB_LINE}",
+            (BODY_LINE,),
+            ("before_term",),
+            4,
+            False,
+        ),
+        (SCIENCE_TERM, f"{SCIENCE_TERM}\r\n{PRINT_TIME}", (PRINT_TIME,), ("after_term",), 4, True),
+        (
+            SCIENCE_TERM,
+            f"{SCIENCE_TERM}\r\nUpdated\t10/06",
+            ("Updated\t10/06",),
+            ("after_term",),
+            4,
+            False,
+        ),
+        (
+            "Gradebook Student Progress Report",
+            f"{PRINT_TIME}\r\nGradebook Student Progress Report",
+            (PRINT_TIME,),
+            ("before_header",),
+            4,
+            True,
+        ),
+        (
+            SCIENCE_ROW,
+            SCIENCE_ROW.replace("\t\t1.0", "\t1.0"),
+            (SCIENCE_ROW.replace("\t\t1.0", "\t1.0").removesuffix("\r\n"),),
+            ("before_term",),
+            3,
+            False,
+        ),
+        (
+            SCIENCE_ROW,
+            SCIENCE_ROW.replace("classroom exercise\t", "classroom\r\nexercise\t"),
+            (
+                "Practice 4.3: classroom",
+                SCIENCE_ROW.removeprefix("Practice 4.3: classroom ").removesuffix("\r\n"),
+            ),
+            ("before_term", "before_term"),
+            3,
+            False,
+        ),
+        (
+            SCIENCE_ROW,
+            SCIENCE_ROW.replace("1.0\t\r\n", "1.0\tSee\r\nthe note\r\n"),
+            (SCIENCE_ROW.replace("1.0\t\r\n", "1.0\tSee"), "the note", NEXT_SCIENCE_ROW),
+            ("before_term", "before_term", "before_term"),
+            2,
+            False,
+        ),
+    ],
+    ids=[
+        "body-line",
+        "text-after-term",
+        "table-line-after-term",
+        "line-before-header",
+        "row-short-a-cell",
+        "row-split-in-its-title",
+        "row-split-in-its-note",
+    ],
+)
+def test_a_clipboard_reading_s_completeness_follows_its_rows_and_unread_lines(
+    before: str,
+    after: str,
+    shown: tuple[str, ...],
+    places: tuple[str, ...],
+    rows: int,
+    complete: bool,
+) -> None:
+    """A line the reader didn't place keeps its place and its text, the rows it could read stay
+    as they were, and a row split across lines is never joined or read in part."""
+    seed, draft = read(SCIENCE)
+    reading, again = read(replaced_once(SCIENCE, before, after))
+    assert reading.unrecognized == shown
+    assert reading.places == tuple(LinePlace(place) for place in places)
+    assert sum(len(category.rows) for category in again.categories) == rows
+    if rows == 4:
+        assert again == draft
+        assert reading.capture_key == seed.capture_key
+    assert reading_complete(reading) is complete
+
+
+def test_a_clipboard_report_cut_before_its_term_grade_is_incomplete() -> None:
+    reading, draft = read(SCIENCE.removesuffix(SCIENCE_TERM))
+    assert draft.term.percent.presence is Presence.NOT_CAPTURED
+    assert draft.categories[-1].average.presence is Presence.NOT_CAPTURED
+    assert reading_complete(reading) is False
+
+
+@pytest.mark.parametrize(
+    ("cell", "presence"),
+    [
+        ("0", Presence.REPORTED),
+        ("0.00", Presence.REPORTED),
+        ("", Presence.BLANK),
+        (" ", Presence.BLANK),
+        ("seven", Presence.UNREADABLE),
+        ("EX", Presence.UNREADABLE),
+        (" 9.0", Presence.UNREADABLE),
+    ],
+)
+def test_a_tab_cell_keeps_its_text_and_its_presence(cell: str, presence: Presence) -> None:
+    """A zero, a blank, unreadable text such as ``EX``, and a number with space inside its cell
+    stay apart, each with its text as written."""
+    row = replaced_once(SCIENCE_ROW, "\t9.0\t", f"\t{cell}\t")
+    _, draft = read(replaced_once(SCIENCE, SCIENCE_ROW, row))
+    points = draft.categories[1].rows[0].points
+    assert (points.presence, points.text) == (presence, "" if presence is Presence.BLANK else cell)
+
+
+def test_a_clipboard_table_without_its_note_column_leaves_each_note_not_captured() -> None:
+    text = SCIENCE.replace("\tWeight\tNote\r\n", "\tWeight\r\n").replace("\t1.0\t\r\n", "\t1.0\r\n")
+    reading, draft = read(text)
+    rows = [row for category in draft.categories for row in category.rows]
+    assert len(rows) == 4
+    assert {row.note.presence for row in rows} == {Presence.NOT_CAPTURED}
+    assert {row.penalty.presence for row in rows} == {Presence.BLANK}
+    assert reading.unrecognized == ()
+
+
+def test_a_markdown_paste_reads_a_tab_separated_line_as_it_reads_any_other_line() -> None:
+    """The Markdown layout is chosen by its header, and its lines are read as before: a line of
+    tabs in it is a line, never a table."""
+    reading, draft = read(f"{REPORT}\nUpdated\t10/06\n")
+    seed, _ = read(REPORT)
+    assert draft == seed.draft
+    assert (reading.unrecognized, reading.places) == (("Updated\t10/06",), (LinePlace.AFTER_TERM,))
+    assert reading_complete(reading) is True
+
+
+def test_a_tab_row_framed_by_pipes_is_read_as_a_tab_row() -> None:
+    """Once the header chose the tab layout, a line splits only on its tabs: a title that starts
+    with a pipe and a note that ends with one are the row's text, never a Markdown table."""
+    framed = SCIENCE_ROW.replace("Practice 4.3", "|Practice 4.3").replace(
+        "\t1.0\t\r\n", "\t1.0\tSee page 4|\r\n"
+    )
+    seed, _ = read(SCIENCE)
+    reading, draft = read(replaced_once(SCIENCE, SCIENCE_ROW, framed))
+    labs = draft.categories[1].rows
+    assert len(labs) == 2
+    assert (labs[0].assignment.text, labs[0].note.text) == (
+        "|Practice 4.3: classroom exercise",
+        "See page 4|",
+    )
+    assert (reading.unrecognized, reading.places) == ((), ())
+    assert reading_complete(reading) is True
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "held_back"),
+    [
+        (
+            SCIENCE_ROW,
+            SCIENCE_ROW.replace("classroom exercise\t", "classroom\r\nexercise\t"),
+            (HeldBack(rows=(1,), stray=(0,)),),
+        ),
+        (
+            SCIENCE_ROW,
+            SCIENCE_ROW.replace("1.0\t\r\n", "1.0\tSee\r\nthe note\r\n"),
+            (HeldBack(rows=(0, 2), stray=(1,)),),
+        ),
+        (LABS_TAB_LINE, f"{BODY_LINE}\r\n{LABS_TAB_LINE}", ()),
+        (SCIENCE_ROW, SCIENCE_ROW.replace("\t\t1.0", "\t1.0"), ()),
+    ],
+    ids=["row-split-in-its-title", "row-split-in-its-note", "body-line", "row-short-a-cell"],
+)
+def test_a_reading_names_the_rows_it_held_back_and_the_stray_lines_beside_them(
+    before: str, after: str, held_back: tuple[HeldBack, ...]
+) -> None:
+    """Each group is the rows a stray line made ambiguous and that line, as positions among the
+    lines the reader didn't recognize, in report order; a line unread for another reason, or a
+    stray line beside no row, holds nothing back."""
+    reading, _ = read(replaced_once(SCIENCE, before, after))
+    assert reading.held_back == held_back
+
+
+def test_a_markdown_reading_holds_nothing_back_and_held_lines_are_kept_lines() -> None:
+    reading, _ = read(REPORT)
+    assert reading.held_back == ()
+    for held_back in [
+        (HeldBack(rows=(0,), stray=(1,)),),
+        (HeldBack(rows=(1,), stray=(0,)), HeldBack(rows=(1,), stray=(2,))),
+    ]:
+        with pytest.raises(ValidationError):
+            GradeReportReading(
+                draft=reading.draft,
+                not_read=None,
+                unrecognized=("one line",),
+                places=(LinePlace.BEFORE_TERM,),
+                held_back=held_back,
+            )

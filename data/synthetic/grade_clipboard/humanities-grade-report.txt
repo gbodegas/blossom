@@ -1,0 +1,44 @@
+Gradebook Student Progress Report
+
+Wren	2026-2027	Teacher
+08 Fixture 2 - A	T1	
+PERCENT
+
+World Studies
+ 	 	 
+Homework/Classwork		Weight = 40.0
+Assignment	Pts	Max	Avg	Status	Due	Curve	Bonus	Penalty	Weight	Note
+Practice 2.1: classroom exercise	7	13	62	Valid	09/06	0	0		1.0	
+Practice 2.2: classroom exercise	8	14	63	Valid	09/10	0	0		1.0	
+Practice 2.3: classroom exercise	9	15	64	Valid	09/17	0	0		1.0	
+Practice 2.4: classroom exercise	6	12	65	Valid	09/24	0	0		1.0	
+Practice 2.5: classroom exercise	7	13	66	Valid	09/26	0	0		1.0	
+Practice 2.6: classroom exercise	8	14	67	Valid	09/02	0	0		1.0	
+Practice 2.7: classroom exercise	9	15	68	Valid	10/03	0	0		1.0	
+Practice 2.8: classroom exercise	6	12	69	Valid	10/03	0	0		1.0	
+Practice 2.9: classroom exercise	7	13	70	Valid	10/04	0	0		1.0	
+Practice 2.10: classroom exercise	8	14	71	Valid	10/07	0	0		1.0	
+Practice 2.11: classroom exercise	9	15	72	Valid	10/08	0	0		1.0	
+Category Average
+
+77
+
+ 	 	 	 	 	 	 	 
+ 	 	 
+Quizzes		Weight = 20.0
+Assignment	Pts	Max	Avg	Status	Due	Curve	Bonus	Penalty	Weight	Note
+Practice 2.12: classroom exercise	6	12	73	Valid	10/03	0	0		1.0	
+Category Average
+
+77
+
+ 	 	 	 	 	 	 	 
+ 	 	 
+Tests and Projects		Weight = 40.0
+Assignment	Pts	Max	Avg	Status	Due	Curve	Bonus	Penalty	Weight	Note
+Category Average
+
+
+ 	 	 	 	 	 	 	 
+ 	 	 	 	 	 	 	 	 	 
+Term Grade	82	B		 
