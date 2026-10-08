@@ -5,12 +5,12 @@ preview of "Use saved values from this report as current".
 
 The projection takes the reports (each with its acceptance order, use, number of result rows and
 completeness), their observations and their row records, and gives each target's current value,
-a result's last showing and the newest report that supports its absence. The preview runs the
-same function twice: over the stored reports, and over them with a copy of the source added as
-the next current report, named ``"new"``. Every difference between the two is an effect, from
-what to what, unless reading ``"new"`` as the source makes it none. The canonical form of the
-preview is JSON with sorted keys and fixed separators, and its SHA-256 digest is what a
-confirmation carries.
+a result's last showing, its due date and the newest report that supports its absence. The
+preview runs the same function twice: over the stored reports, and over them with a copy of the
+source added as the next current report, named ``"new"``. Every difference between the two is
+an effect, from what to what, unless reading ``"new"`` as the source makes it none. The canonical
+form of the preview is JSON with sorted keys and fixed separators, and its SHA-256 digest is what
+a confirmation carries.
 """
 
 import hashlib
@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Final
 
+from blossom.grades.draft import Presence
 from blossom.grades.review import (
     TERM_KEY,
     Cell,
@@ -27,6 +28,7 @@ from blossom.grades.review import (
     Compared,
     CurrentValue,
     CurrentValues,
+    DueFrom,
     ReportAt,
     compared,
 )
@@ -60,13 +62,17 @@ class ScopeHeld:
 
 def project(held: ScopeHeld) -> ClassRecord:
     """Each target's current value from the current report with the highest acceptance order
-    that supplied it, a result's last showing and absence, and what matching reads."""
+    that supplied it, a result's last showing, absence and due date, and what matching reads."""
     reports = held.reports
     observed = sorted(held.observed, key=lambda one: reports[one[2]][0])
     current: dict[str, dict[str, CurrentValue]] = {"term": {}, "category": {}, "result": {}}
     once_current: dict[str, set[Compared]] = {}
     latest: dict[str, CurrentValue] = {}
     newest: dict[str, ReportAt] = {}
+    # A result's due date comes from the newest observation that captured its Due cell, blank or
+    # unreadable included: a current one for the date shown, one in any report for matching.
+    shown_due: dict[str, DueFrom] = {}
+    matched_due: dict[str, DueFrom] = {}
 
     def showing(target: str, report_id: str) -> None:
         order, use, _ = reports[report_id]
@@ -78,6 +84,10 @@ def project(held: ScopeHeld) -> ClassRecord:
         value = CurrentValue(cells, report_id, order)
         if kind == "result":
             latest[target] = value
+            if cells["due"][0] is not Presence.NOT_CAPTURED:
+                matched_due[target] = DueFrom(cells["due"], ReportAt(report_id, order))
+                if use == "current":
+                    shown_due[target] = matched_due[target]
         if use == "current":
             current[kind][target] = value
             once_current.setdefault(target, set()).add(compared(cells))
@@ -111,7 +121,10 @@ def project(held: ScopeHeld) -> ClassRecord:
         shown = newest[result]
         absent = [report for report in proving if report.order > shown.order]
         current["result"][result] = replace(
-            value, last_shown=shown, not_shown=absent[-1] if absent else None
+            value,
+            last_shown=shown,
+            not_shown=absent[-1] if absent else None,
+            due=shown_due.get(result),
         )
     return ClassRecord(
         current=CurrentValues(
@@ -120,7 +133,9 @@ def project(held: ScopeHeld) -> ClassRecord:
             results=current["result"],
         ),
         once_current={target: frozenset(values) for target, values in once_current.items()},
-        latest=latest,
+        latest={
+            result: replace(value, due=matched_due.get(result)) for result, value in latest.items()
+        },
         decided={evidence: frozenset(results) for evidence, results in decided.items()},
         newest={target: report.order for target, report in newest.items()},
         explicit={evidence: frozenset(results) for evidence, results in explicit.items()},
@@ -178,6 +193,16 @@ class ShowingEffect:
 
 
 @dataclass(frozen=True)
+class DueEffect:
+    """A result's shown due date with the report it came from, from what to what; None when no
+    current observation captured it."""
+
+    result: str
+    before: DueFrom | None
+    after: DueFrom | None
+
+
+@dataclass(frozen=True)
 class CurrentPreview:
     """What "Use saved values from this report as current" would do now, under a fresh action
     ID: the source report, its acceptances and making action, the revision, the new report's
@@ -193,13 +218,14 @@ class CurrentPreview:
     values: tuple[ValueEffect, ...]
     last_shown: tuple[ShowingEffect, ...]
     not_shown: tuple[ShowingEffect, ...]
+    due: tuple[DueEffect, ...]
     canonical: str
     digest: str
 
     @property
     def empty(self) -> bool:
         """Whether nothing would change once ``"new"`` is read as the source."""
-        return not (self.values or self.last_shown or self.not_shown)
+        return not (self.values or self.last_shown or self.not_shown or self.due)
 
 
 @dataclass(frozen=True)
@@ -233,6 +259,11 @@ def _placed(value: CurrentValue | None) -> Placed:
     return None if value is None else (value.report_id, _cells(value.cells))
 
 
+def _due_placed(due: DueFrom | None) -> tuple[str, list[str]] | None:
+    """A due date in the canonical form: its report and its cell, or None."""
+    return None if due is None else (due.report.report_id, ["due", due.cell[0].value, due.cell[1]])
+
+
 def preview_of(held: ScopeHeld, source: SourceOf, action_id: str) -> CurrentPreview:
     """The effects of copying ``source`` as the next current report, by ``project`` over
     ``held`` with and without the copy. An effect stays only when it differs once ``"new"`` is
@@ -262,6 +293,17 @@ def preview_of(held: ScopeHeld, source: SourceOf, action_id: str) -> CurrentPrev
         return tuple(effects)
 
     last_shown, not_shown = moved("last_shown"), moved("not_shown")
+
+    def due_of(record: ClassRecord, result: str) -> DueFrom | None:
+        value = record.current.results.get(result)
+        return None if value is None else value.due
+
+    due = []
+    for result in results:
+        was, now = due_of(before, result), due_of(after, result)
+        placed = _due_placed(now)
+        if (None if placed is None else (as_source(placed[0]), placed[1])) != _due_placed(was):
+            due.append(DueEffect(result, was, now))
     complete = held.complete.get(source.report_id, False)
     body = {
         "scope": [source.student_id, source.class_id, source.term],
@@ -278,6 +320,9 @@ def preview_of(held: ScopeHeld, source: SourceOf, action_id: str) -> CurrentPrev
         ],
         "last_shown": [[effect.result, effect.before, effect.after] for effect in last_shown],
         "not_shown": [[effect.result, effect.before, effect.after] for effect in not_shown],
+        "due": [
+            [effect.result, _due_placed(effect.before), _due_placed(effect.after)] for effect in due
+        ],
     }
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return CurrentPreview(
@@ -290,6 +335,7 @@ def preview_of(held: ScopeHeld, source: SourceOf, action_id: str) -> CurrentPrev
         values=values,
         last_shown=last_shown,
         not_shown=not_shown,
+        due=tuple(due),
         canonical=canonical,
         digest=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     )

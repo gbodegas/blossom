@@ -31,6 +31,7 @@ from blossom.grades.projection import (
     ScopeHeld,
     SourceOf,
     preview_of,
+    project,
 )
 from blossom.grades.review import (
     RESULT_FIELDS,
@@ -53,6 +54,7 @@ from blossom.grades.review import (
     SaveOutcome,
     UseChoice,
     cells_of,
+    evidence_of,
     review_from,
 )
 from blossom.grades.text_reader import read_grade_report, reading_complete
@@ -1762,6 +1764,7 @@ def test_class_details_brings_a_replaced_value_back_from_the_capture_s_latest_re
         "values",
         "last_shown",
         "not_shown",
+        "due",
     }
     assert body["values"][0][3][0] == NEW
     assert hashlib.sha256(preview.canonical.encode()).hexdigest() == preview.digest
@@ -2607,34 +2610,202 @@ def test_a_matched_row_missing_its_due_date_reads_matches_earlier_or_shown_in_a_
         assert item.key not in settled.ready
 
 
-def test_after_a_value_saved_from_a_copy_missing_its_dates_the_next_dated_capture_asks() -> None:
-    """Rev 3k, 9.3 point 2, as built: a result's evidence and shown due date come from its
-    observation in the highest acceptance order, so after a value saved from a copy missing its
-    dates the result shows its due date as not captured, and the next dated capture of it asks
-    "Same assignment?" rather than matching by itself. Answered, its value reads Changed by the
-    due date it now supplies."""
-    store = in_memory()
-    saved(save(store, A, complete=True))
-    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+# ------------------------------------------------------------- a result's due date and its source
+
+
+CELL_NO_DATE = ("| Missing    | 09/26   |", "| Missing    |         |")
+"""Cell Diagram's due cell captured blank."""
+
+
+def due_from(value: CurrentValue) -> tuple[tuple[Presence, str], str, int] | None:
+    """A result value's due cell, with the report it came from and that report's order."""
+    due = value.due
+    return None if due is None else (due.cell, due.report.report_id, due.report.order)
+
+
+def dated_then_undated(store: ProjectStateStore) -> tuple[str, str, str]:
+    """A saved complete, then Cell Diagram's 8.0 from a copy missing the Homework / Practice Due
+    column, matched and ticked: A's report, the copy's report and Cell Diagram's result."""
+    first = saved(save(store, A, complete=True)).report_id or ""
+    cell_id = result_of(store, A, "Cell Diagram")
     draft = undated(CELL_SCORE)
     cell = row(review_of(store, draft), "Cell Diagram")
-    saved(save(store, draft, matches=[same(cell)], selection={cell.key}))
-    current = store.current_values(class_of(store), "T1").results[cell_id]
-    assert current.cells["due"] == (Presence.NOT_CAPTURED, "")
-    review = review_of(store, B)
-    asked, seed = row(review, "Cell Diagram"), row(review, "Seed Germination Log")
+    copy = saved(save(store, draft, matches=[same(cell)], selection={cell.key})).report_id or ""
+    return first, copy, cell_id
 
-    assert (asked.status, asked.result_id, asked.how) == (ItemStatus.NEEDS_ANSWER, None, None)
-    assert asked.question is not None
-    assert (asked.question.kind, asked.question.ids) == (QuestionKind.WHICH, (cell_id,))
-    assert asked.key not in review.ready
-    assert (seed.status, seed.how) == (ItemStatus.SAVED, "exact")
-    answered = row(answered_review(store, B, same(asked)), "Cell Diagram")
-    assert (answered.status, answered.result_id, answered.due_not_captured) == (
-        ItemStatus.CHANGED,
-        cell_id,
-        False,
+
+def test_a_due_date_keeps_its_own_report_when_the_newer_score_s_copy_lacks_it() -> None:
+    """His seventeenth round, 2: the score comes from the newer copy missing its dates, and the
+    due date from A, the newest current observation that captured it, each with its own report.
+    The copy's observation keeps its due date not captured."""
+    store = in_memory()
+    first, copy, cell_id = dated_then_undated(store)
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert (value.report_id, text_of(value, "points")) == (copy, "8.0")
+    assert value.cells["due"] == (Presence.NOT_CAPTURED, "")
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), first, 1)
+    assert due_saved(store, copy) == [(cell_id, "8.0", "", "not_captured")]
+
+
+def test_a_newest_captured_blank_due_is_kept_and_an_earlier_date_never_returns() -> None:
+    """A newer current copy that captured Cell Diagram's due cell blank is the due date's
+    source; a copy after it missing its dates changes the score only, and A's 09/26 never comes
+    back."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = result_of(store, A, "Cell Diagram")
+    blank = variant(CELL_NO_DATE)
+    cell = row(review_of(store, blank), "Cell Diagram")
+    blanked = saved(save(store, blank, matches=[same(cell)], selection={cell.key})).report_id or ""
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+    assert (value.report_id, due_from(value)) == (blanked, ((Presence.BLANK, ""), blanked, 2))
+    draft = undated(CELL_NINE)
+    later = row(review_of(store, draft), "Cell Diagram")
+    newer = saved(save(store, draft, matches=[same(later)], selection={later.key})).report_id
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert (value.report_id, text_of(value, "points")) == (newer, "9.0")
+    assert due_from(value) == ((Presence.BLANK, ""), blanked, 2)
+
+
+def test_a_newest_captured_unreadable_due_is_kept_and_an_earlier_report_feeds_matching_only() -> (
+    None
+):
+    """The projection: over 09/26, an unreadable due cell, then a copy that didn't capture it,
+    the shown due date is the unreadable cell from its own report, never 09/26. A newer report
+    kept as earlier never supplies the shown date; matching reads every report, so its due text
+    is that report's, and without it, the unreadable cell."""
+
+    def seen(due: tuple[Presence, str]) -> dict[str, tuple[Presence, str]]:
+        return {
+            "category": (Presence.REPORTED, "Homework / Practice"),
+            "assignment": (Presence.REPORTED, "Cell Diagram"),
+            "points": (Presence.REPORTED, "7.0"),
+            "due": due,
+        }
+
+    reports = {
+        "report-1": (1, "current", 1),
+        "report-2": (2, "current", 1),
+        "report-3": (3, "current", 1),
+        "report-4": (4, "earlier", 1),
+    }
+    observed_cells = (
+        ("result", "result-1", "report-1", seen((Presence.REPORTED, "09/26"))),
+        ("result", "result-1", "report-2", seen((Presence.UNREADABLE, "9/3x"))),
+        ("result", "result-1", "report-3", seen((Presence.NOT_CAPTURED, ""))),
+        ("result", "result-1", "report-4", seen((Presence.REPORTED, "10/01"))),
     )
+    held = ScopeHeld(reports, {}, observed_cells, ())
+    record = project(held)
+    value = record.current.results["result-1"]
+
+    assert value.report_id == "report-3"
+    assert due_from(value) == ((Presence.UNREADABLE, "9/3x"), "report-2", 2)
+    assert evidence_of(record.latest["result-1"])[2] == (Presence.REPORTED, "10/01")
+    without = project(dataclasses.replace(held, observed=observed_cells[:3]))
+    assert evidence_of(without.latest["result-1"])[2] == (Presence.UNREADABLE, "9/3x")
+
+
+@pytest.mark.parametrize("kept", ["earlier", "shown"])
+def test_a_report_kept_as_earlier_or_a_row_only_shown_never_supplies_the_due_date(
+    kept: str,
+) -> None:
+    """Cell Diagram moved to 09/29 in a newer capture, answered "Same assignment": saved with its
+    value in a report kept as earlier, or recorded only as shown in a current one. Either way
+    A's 09/26 stays the shown due date, from A."""
+    store = in_memory()
+    first = saved(save(store, A, complete=True)).report_id or ""
+    cell_id = result_of(store, A, "Cell Diagram")
+    draft = variant(CELL_SCORE, CELL_DUE)
+    cell = row(review_of(store, draft), "Cell Diagram")
+    if kept == "earlier":
+        use, selection = "earlier", {cell.key}
+    else:
+        use, selection = "current", set()
+    later = saved(save(store, draft, matches=[same(cell)], selection=selection, use=use))
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert (use_of(store, later.report_id), observed(store, later.report_id)) == (
+        use,
+        len(selection),
+    )
+    assert records(store, later.report_id)[cell.key] == (cell_id, "answer")
+    assert value.report_id == first
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), first, 1)
+
+
+def test_after_a_value_saved_from_a_copy_missing_its_dates_the_next_dated_capture_matches() -> None:
+    """His seventeenth round, 2: matching's due text comes from the newest observation that
+    captured it, A's 09/26, so the next dated capture with that date matches by itself, and one
+    with another date asks "Same assignment, due date changed?". A copy missing its dates still
+    gets no matching evidence and asks."""
+    store = in_memory()
+    _, _, cell_id = dated_then_undated(store)
+    review = review_of(store, B)
+    cell, seed = row(review, "Cell Diagram"), row(review, "Seed Germination Log")
+
+    assert (cell.result_id, cell.how, cell.question) == (cell_id, "exact", None)
+    # B supplies a due date the saved value never captured, which is compared (4.3, rule 7).
+    assert (cell.status, cell.due_not_captured) == (ItemStatus.CHANGED, False)
+    assert cell.key in review.ready
+    assert (seed.status, seed.how) == (ItemStatus.SAVED, "exact")
+    moved = row(review_of(store, variant(CELL_SCORE, CELL_DUE)), "Cell Diagram")
+    assert moved.question is not None
+    assert (moved.status, moved.question.kind, moved.question.ids) == (
+        ItemStatus.NEEDS_ANSWER,
+        QuestionKind.DUE_CHANGED,
+        (cell_id,),
+    )
+    again = row(review_of(store, undated(CELL_NINE)), "Cell Diagram")
+    assert (again.status, again.result_id, again.how) == (ItemStatus.DUE_NOT_CAPTURED, None, None)
+    assert again.question is not None
+    assert again.question.ids == (cell_id,)
+
+
+def test_class_details_lists_a_due_date_s_source_change_apart_from_the_score_s() -> None:
+    """A, then Cell Diagram's 8.0 from a copy missing its dates, then 9.0 dated 09/26. Made
+    current from the copy, the score's source moves and the due date stays the 9.0 report's, so
+    the preview has no due entry. Made current from A, the due date's source moves from that
+    report to the new one, listed as a ``due`` entry; such an entry alone keeps the preview from
+    being empty."""
+    store = in_memory()
+    _, _, cell_id = dated_then_undated(store)
+    newer = saved(save(store, variant(CELL_NINE), complete=True)).report_id or ""
+    from_copy = current_preview(store, undated(CELL_SCORE))
+
+    assert [(one.kind, one.target) for one in from_copy.values] == [("result", cell_id)]
+    assert from_copy.due == ()
+    assert json.loads(from_copy.canonical)["due"] == []
+    made_copy = made(confirm_current(store, undated(CELL_SCORE), from_copy)).report_id
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+    assert (value.report_id, text_of(value, "points")) == (made_copy, "8.0")
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), newer, 3)
+    assert due_saved(store, made_copy) == [(cell_id, "8.0", "", "not_captured")]
+    from_a = current_preview(store, A)
+
+    ((effect),) = from_a.due
+    assert effect.result == cell_id
+    assert effect.before is not None
+    assert effect.after is not None
+    assert (effect.before.cell, effect.before.report) == (
+        (Presence.REPORTED, "09/26"),
+        ReportAt(newer, 3),
+    )
+    assert (effect.after.cell, effect.after.report) == (
+        (Presence.REPORTED, "09/26"),
+        ReportAt(NEW, 5),
+    )
+    due_cell = ["due", "reported", "09/26"]
+    assert json.loads(from_a.canonical)["due"] == [[cell_id, [newer, due_cell], [NEW, due_cell]]]
+    alone = dataclasses.replace(from_a, values=(), last_shown=(), not_shown=())
+    assert not alone.empty
+    assert dataclasses.replace(alone, due=()).empty
+    made_a = made(confirm_current(store, A, from_a)).report_id
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+    assert (value.report_id, text_of(value, "points")) == (made_a, "7.0")
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), made_a, 5)
 
 
 ALL_RENAMED = (

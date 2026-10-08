@@ -5,12 +5,12 @@
 G-I1: no gradebook write changes anything outside the gradebook's own tables, read as a closed
 world from ``sqlite_master`` with the checkpoint and trace files beside it, so a table added later
 is covered unless it is named a gradebook table. G-I7: current values are per target, and a
-report kept as earlier changes none. G-I8: a retry writes nothing and returns what was recorded,
-and a value a newer report replaced comes back only under the parent's choice of current.
-G-I13: no gradebook table, and no log line, holds a student's name. G-I15: every gradebook row
-carries her one student ID, and nothing is looked up under another. G-I16: a result is its
-stable ID, and an ambiguous match never saves without a parent's answer. G-I17: no grade save
-writes her own account or the school's submission status.
+report kept as earlier changes none, its due dates included. G-I8: a retry writes nothing and
+returns what was recorded, and a value a newer report replaced comes back only under the parent's
+choice of current. G-I13: no gradebook table, and no log line, holds a student's name. G-I15:
+every gradebook row carries her one student ID, and nothing is looked up under another. G-I16: a
+result is its stable ID, and an ambiguous match never saves without a parent's answer. G-I17: no
+grade save writes her own account or the school's submission status.
 """
 
 import dataclasses
@@ -471,7 +471,7 @@ def test_g_i7_current_values_are_per_target_and_an_earlier_report_supplies_none(
     tmp_path: pathlib.Path,
 ) -> None:
     """Each target's current value comes from the newest current report that supplied it. A
-    report kept as earlier, as the current choice keeps one, supplies none."""
+    report kept as earlier, as the current choice keeps one, supplies none, and no due date."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     first = saved_report(save_grade(store, WREN_REPORT, key=KEY))
     newer = saved_report(save_grade(store, ANOTHER_CAPTURE, key=KEY))
@@ -493,6 +493,9 @@ def test_g_i7_current_values_are_per_target_and_an_earlier_report_supplies_none(
     other.close()
 
     assert {value.report_id for value in kept.results.values()} == {first.report_id}
+    assert {
+        None if value.due is None else value.due.report.report_id for value in kept.results.values()
+    } == {first.report_id}
 
 
 def test_g_i8_values_become_current_only_through_the_deliberate_current_choice(

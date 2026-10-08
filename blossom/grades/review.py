@@ -142,17 +142,28 @@ class ReportAt:
 
 
 @dataclass(frozen=True)
+class DueFrom:
+    """A result's due cell as an observation captured it, blank or unreadable included, and the
+    report that observation belongs to."""
+
+    cell: Cell
+    report: ReportAt
+
+
+@dataclass(frozen=True)
 class CurrentValue:
     """A target's value as one accepted report gave it: its cells by field, that report (its
     source) and its acceptance order. For a result's current value, also the newest current
-    report that showed it, and the newest report that supports "Not shown in this report", if
-    any."""
+    report that showed it, the newest report that supports "Not shown in this report", if any,
+    and its due date: the newest current observation that captured its Due cell, whatever
+    report supplied the value, or None when none did."""
 
     cells: Mapping[str, Cell]
     report_id: str
     order: int
     last_shown: ReportAt | None = None
     not_shown: ReportAt | None = None
+    due: DueFrom | None = None
 
 
 @dataclass(frozen=True)
@@ -201,8 +212,8 @@ class QuestionKind(StrEnum):
 
 @dataclass(frozen=True)
 class Candidate:
-    """A result a row may be: its ID and its latest observation, with its last score, status and
-    due text."""
+    """A result a row may be: its ID and its latest observation, with its last score and status,
+    and its due text as matching reads it."""
 
     result_id: str
     last: CurrentValue
@@ -455,6 +466,9 @@ class ClassRecord:
     """Each value a current report holds for each target, as compared: each was current once,
     until a newer current report replaced it. Reports kept as earlier hold none of these."""
     latest: Mapping[str, CurrentValue]
+    """Each result's observation in the highest acceptance order, in any report, with its due
+    date from the newest observation in any report that captured its Due cell: what matching
+    reads."""
     decided: Mapping[str, frozenset[str]]
     newest: Mapping[str, int]
     explicit: Mapping[str, frozenset[str]] = field(default_factory=dict)
@@ -543,8 +557,9 @@ def status_against(
 
 
 def evidence_of(value: CurrentValue) -> Evidence:
-    """A result's evidence, derived from an observation of it: its category, title and due date."""
-    cells = value.cells
+    """A result's evidence, derived from an observation of it: its category and title, and its
+    due date from ``value.due`` when set, else from the observation."""
+    cells = {**value.cells, **({} if value.due is None else {"due": value.due.cell})}
 
     def one(field: str) -> tuple[Presence, str]:
         return cells[field][0], folded(cells[field][1])
