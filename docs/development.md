@@ -533,27 +533,30 @@ the file `docs/development.md` in the Blossom folder, so it can be read while
 Blossom won't start.
 
 A start can stop with a message that begins "Blossom couldn't start. Some
-saved import records have missing or inconsistent report links." Each grade
-report a parent saves leaves an import record, and a start checks that each
-record names a saved report, or a pasted report saved under one class and
-term. The message counts the records it couldn't match, by kind, and never
+saved import records have missing or inconsistent report links." Blossom
+checks that saved import records have valid report links and, for grade
+imports, identify one class and term. The message counts the records it couldn't match, by kind, and never
 shows what they hold. That startup attempt did not change or delete any
 grade records. It doesn't say whether anything was missing before it ran.
 
 What to do:
 
-1. Stop trying to start Blossom on this file. Each start reads the same
-   records and stops the same way.
-2. Keep a copy of the file as it is: with Blossom stopped, copy
-   `blossom.sqlite3` to a dated name in the same folder, as
-   [Upgrading and rolling back](#upgrading-and-rolling-back) describes.
-   Don't edit or delete the original.
-3. If the stop came with an upgrade, roll back as that section says: set
-   this file aside under another name, copy the backup taken before the
-   upgrade back to `blossom.sqlite3`, and start the version that ran before
-   the upgrade. Anything saved after that backup isn't in it.
-4. Keep the copy from step 2 until the records are resolved. Blossom has no
-   command that repairs them.
+1. Leave Blossom stopped while you preserve the file and choose a recovery
+   path.
+2. With Blossom stopped, check for `blossom.sqlite3-journal` or
+   `blossom.sqlite3-wal` beside the database. If neither exists, copy
+   `blossom.sqlite3` to a dated name in the same folder. If either exists,
+   leave the database and its companion files together and untouched, and
+   get help making a consistent copy. Do not delete companion files or
+   restart Blossom just to clear them.
+3. If this followed an upgrade and you have a backup taken before it, follow
+   [Upgrading and rolling back](#upgrading-and-rolling-back): preserve the
+   refused file, restore that backup, and start the corresponding previous
+   version. Anything saved after the backup is absent from the restored
+   copy. Do not run the previous version against the refused file.
+4. If no suitable backup exists, leave the files untouched and get help
+   investigating the startup message. Keep the preserved files until the
+   issue is resolved. Blossom has no command that repairs these records.
 
 ### Testing on a copy of the household
 
