@@ -1176,6 +1176,22 @@ pre.body {
   overflow-wrap: anywhere;
 }
 
+/* On a phone with text at 200%, a card or Help leaves a line too short for the longest word
+   of a decision's button, of her Ask a parent for help, or of a problem line in Help, once
+   the ordinary side padding is taken out. That padding gives way first, so a word breaks
+   only where the whole line can't hold it: it is 13vw - 1rem where that is narrower, never
+   less than nothing. A button keeps its ordinary padding on every screen 290 pixels or
+   wider with ordinary text, and 580 pixels or wider with text at 200%; a problem line on
+   every screen 240 or 480 pixels or wider. */
+.decision button,
+.ask button {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);
+}
+
+.help-panel .problem {
+  padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);
+}
+
 label {
   display: flex;
   flex-direction: column;
