@@ -15,7 +15,12 @@ everything fits, each of these leaves the layout as it is.
 Elsewhere on the pages, at the same sizes: every heading, each note inside one of the family
 page's folds, and the example of school text break a word only when it is wider than its
 line; a form that asks the family for a decision is one column as wide as the form, so a
-field's own width never widens it and a long word in its button breaks; and the skip link's
+field's own width never widens it and a long word in its button breaks; the side padding of
+a decision's buttons, of her Ask a parent for help in Help or about one note, of the buttons
+under her update on a card, and of a problem line in Help is the rule that gives way on a
+phone with text at 200%, as measured in Edge, and so is the side padding of a plan's card
+waiting for review, while the sign-in button keeps its own; where a request
+for help stands and when it was asked or updated keep each word whole; and the skip link's
 focus outline stays on the screen.
 
 No browser runs in these tests, so the cascade is resolved here, on the page and
@@ -43,12 +48,18 @@ from html import escape
 
 import pytest
 
+from blossom.heuristic_relevance import CriticVerdict, Judgment
+from blossom.plans import DailyPlan, Deferral
+from blossom.routes.navigation import note_help_href
+from blossom.routes.runs import plan_graphs
 from blossom.settings import REPOSITORY_ROOT
 from tests.support import (
     ESSAY_ID,
+    FIXTURE_WEEK,
     HER_PAGE,
     KEYWORDS,
     PAGE_HEADERS,
+    PLAN_DATE,
     STAND_INS,
     SUBSTITUTION,
     Element,
@@ -56,16 +67,26 @@ from tests.support import (
     Selector,
     UnreadCss,
     View,
+    accepting,
+    block,
+    client_for,
     compound,
     elements_of,
+    family_plan,
+    finding,
     form_fields,
     household_client,
     media_length,
     one_query_holds,
+    report,
+    scripted_graphs,
     selector,
     sign_in_as,
+    signed_in_household,
+    state_of,
     style_rules,
     unshielded,
+    waiting_note,
     winner,
 )
 from tests.support import holds as condition_holds
@@ -4153,6 +4174,552 @@ def test_the_decision_check_fails_when_a_form_can_widen(
             assert any(
                 "/parent/actions/help/" in one for one in decisions_widened(sheet, page, view)
             ), (name, view)
+
+
+# ------------------------------------------------------------- side padding that gives way
+
+GIVING_WAY = """.decision button,
+.help-panel .ask button,
+.homework-note .ask button,
+.update .actions button {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);
+}
+
+.help-panel .problem {
+  padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);
+}"""
+"""The side padding of a decision's buttons, of her Ask a parent for help in Help or about one
+note, of the buttons under her update on a card, and of a problem line in Help, as the
+stylesheet writes it: measured in Edge at 320 pixels with text at 200%, where it leaves each
+of their words whole, and on wider screens, where it changes nothing. The sign-in button is
+outside its reach."""
+CARD_BUTTONS = {"Done", "Not yet", "Change", "Undo last update", "Save update"}
+"""The words of the buttons under her update on a card, its Change form open or not."""
+GIVES_WAY = {
+    "button": "clamp(0px, 13vw - 1rem, 1.35rem)",
+    "p": "clamp(0px, 13vw - 1rem, 0.95rem)",
+}
+
+SET_APART: dict[str, str] = {}
+
+
+@pytest.fixture
+def set_apart_pages(tmp_path: pathlib.Path) -> dict[str, str]:
+    """Her week, for her and for a signed-in parent, with a request for help that can't be
+    read set apart beside a readable one, and her update on one card; for her, that card with
+    Change open as well. Rendered by the first test that asks."""
+    if SET_APART:
+        return SET_APART
+    for reader in ("her", "parent"):
+        folder = tmp_path / "set-apart" / reader
+        folder.mkdir(parents=True)
+        with household_client(reader, folder) as client:
+            store, today = state_of(client).help_requests, state_of(client).clock.today()
+            store.ask(today, "Synthetic open question")
+            damaged = store.ask(today, "Synthetic question").request_id
+            store._connection.execute(
+                "UPDATE help_requests SET note = note || printf('%.*c', 600, 'x') "
+                "WHERE request_id = ?",
+                (damaged,),
+            )
+            store._connection.commit()
+            sign_in_as(client, "her")
+            report(client, ESSAY_ID, "done", "Synthetic note")
+            sign_in_as(client, reader)
+            page = client.get(HER_PAGE, headers=PAGE_HEADERS).text
+            assert "1 request for help can&#39;t be read right now." in page
+            SET_APART[f"{reader}, her week"] = page
+            if reader == "her":
+                changing = {"week": FIXTURE_WEEK, "change": ESSAY_ID}
+                page = client.get(HER_PAGE, params=changing, headers=PAGE_HEADERS).text
+                SET_APART["her, her week, Change open"] = page
+    return SET_APART
+
+
+def giving_way(page: str) -> list[Element]:
+    """The buttons of each decision form, of her ask form in Help or about one note, and under
+    her update on a card, and each problem line in Help."""
+    found = elements_of(page)
+    panels = [one for one in found if "help-panel" in one.classes]
+    holders = panels + [one for one in found if "homework-note" in one.classes]
+    forms = [
+        one
+        for one in found
+        if one.tag == "form"
+        and (
+            "decision" in one.classes
+            or ("ask" in one.classes and any(one.within(holder) for holder in holders))
+        )
+    ]
+    updates = [one for one in found if "update" in one.classes]
+    forms += [one for one in found if "actions" in one.classes and any(map(one.within, updates))]
+    return [
+        one
+        for one in found
+        if (one.tag == "button" and any(one.within(form) for form in forms))
+        or ("problem" in one.classes and any(one.within(panel) for panel in panels))
+    ]
+
+
+OTHER_ASKS: dict[str, str] = {}
+
+
+@pytest.fixture
+def other_asks(tmp_path: pathlib.Path) -> dict[str, str]:
+    """The sign-in page, and the page that asks for help about one note, for her and with the
+    sign-in off: each holds an ask form outside Help. Rendered by the first test that asks."""
+    if OTHER_ASKS:
+        return OTHER_ASKS
+    for reader in ("her", "open"):
+        folder = tmp_path / "other-asks" / reader
+        folder.mkdir(parents=True)
+        with household_client(reader, folder) as client:
+            if reader == "her":
+                OTHER_ASKS["sign-in page"] = client.get("/sign-in", headers=PAGE_HEADERS).text
+            sign_in_as(client, reader)
+            name = waiting_note(
+                state_of(client).project_state,
+                course="Geometry",
+                title="Synthetic questions",
+                text="Synthetic note about questions 4 to 8",
+            )
+            page = client.get(note_help_href(name), headers=PAGE_HEADERS)
+            assert page.status_code == 200
+            OTHER_ASKS[f"{reader}, note help"] = page.text
+    return OTHER_ASKS
+
+
+def asking_elsewhere(page: str) -> list[Element]:
+    """The buttons of each ask form outside Help."""
+    found = elements_of(page)
+    panels = [one for one in found if "help-panel" in one.classes]
+    forms = [
+        one
+        for one in found
+        if one.tag == "form"
+        and "ask" in one.classes
+        and not any(one.within(panel) for panel in panels)
+    ]
+    return [one for one in found if one.tag == "button" and any(one.within(form) for form in forms)]
+
+
+def other_ask_pages(other_asks: dict[str, str]) -> dict[str, str]:
+    """The pages with an ask form outside Help, each holding the one button named for it."""
+    found = {
+        name: [" ".join(one.text.split()) for one in asking_elsewhere(page)]
+        for name, page in other_asks.items()
+    }
+    assert found == {
+        "sign-in page": ["Come in"],
+        "her, note help": ["Ask for help about this note"],
+        "open, note help": ["Ask for help about this note"],
+    }
+    return other_asks
+
+
+def padding_changed(sheet: Sheet, ordinary: Sheet, held: list[Element], view: View) -> list[str]:
+    """Each side of ``held`` whose padding on ``view`` differs from its padding in ``ordinary``,
+    the stylesheet without the padding that gives way."""
+    return [
+        f"{one.tag}.{'.'.join(sorted(one.classes))} {side} {' '.join(one.text.split())[:40]}"
+        for one in held
+        for side in ("padding-left", "padding-right")
+        if value_of(sheet, one, side, view) != value_of(ordinary, one, side, view)
+    ]
+
+
+def padding_kept(sheet: Sheet, held: list[Element], view: View) -> list[str]:
+    """Each side of ``held`` whose padding on ``view`` is not the padding that gives way."""
+    return [
+        f"{one.tag}.{'.'.join(sorted(one.classes))} {side} {' '.join(one.text.split())[:40]}"
+        for one in held
+        for side in ("padding-left", "padding-right")
+        if value_of(sheet, one, side, view) != GIVES_WAY[one.tag]
+    ]
+
+
+def giving_way_pages(text_pages: dict[str, str], set_apart: dict[str, str]) -> dict[str, str]:
+    """The family page with her request's reply form, and her week with a request set apart,
+    for her and a parent: the family page holds decision buttons, her week a problem in Help,
+    and her own week her Ask and every button under her update on a card as well."""
+    pages = family(text_pages) | set_apart
+    found = {name: [one.tag for one in giving_way(page)] for name, page in pages.items()}
+    for name, tags in found.items():
+        mine = name.startswith("her,") or name.endswith("family")
+        assert ("button" in tags) == mine, found
+        assert ("p" in tags) == ("her week" in name), found
+    words = {
+        re.split(" (?:your|on|for) ", " ".join(one.text.split()))[0]
+        for name, page in pages.items()
+        if name.startswith("her,")
+        for one in giving_way(page)
+        if one.tag == "button"
+    }
+    assert words >= CARD_BUTTONS, words
+    return pages
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_side_padding_gives_way_in_a_decision_her_ask_and_a_help_problem(
+    text_pages: dict[str, str], set_apart_pages: dict[str, str], view: View
+) -> None:
+    """On a phone with text at 200%, the side padding of these narrows before a word breaks;
+    the rule that says so is the one measured in Edge, and nothing later undoes it."""
+    css = stylesheet()
+    assert css.count(GIVING_WAY) == 1
+    sheet = read_sheet(css)
+    for name, page in giving_way_pages(text_pages, set_apart_pages).items():
+        assert padding_kept(sheet, giving_way(page), view) == [], name
+
+
+@pytest.mark.parametrize(
+    ("becomes", "kept"),
+    [
+        pytest.param("", {"button", "p"}, id="no-rule"),
+        pytest.param(GIVING_WAY.replace(".decision button,\n", ""), {"button"}, id="no-decision"),
+        pytest.param(GIVING_WAY.replace(",\n.help-panel .ask button", ""), {"button"}, id="no-ask"),
+        pytest.param(
+            GIVING_WAY.replace(",\n.update .actions button", ""), {"button"}, id="no-card"
+        ),
+        pytest.param(GIVING_WAY.split("\n\n")[0], {"p"}, id="no-problem"),
+        pytest.param(
+            GIVING_WAY + "\n.actions button { padding: 0.6rem 1.35rem; }",
+            {"button"},
+            id="undone-later",
+        ),
+    ],
+)
+def test_the_padding_check_fails_where_a_side_keeps_its_ordinary_padding(
+    text_pages: dict[str, str], set_apart_pages: dict[str, str], becomes: str, kept: set[str]
+) -> None:
+    sheet = broken(GIVING_WAY, becomes)
+    pages = giving_way_pages(text_pages, set_apart_pages)
+    for view in VIEWS:
+        found = {
+            one.split(".")[0]
+            for page in pages.values()
+            for one in padding_kept(sheet, giving_way(page), view)
+        }
+        assert found == kept, view
+
+
+# ------------------------------------------------------------- whole words in a request's lines
+
+KEEP_WHOLE = """.help-state,
+.help-when {
+  overflow-wrap: normal;
+}"""
+"""Where a request for help stands and when it was asked or updated, as the stylesheet writes
+it: measured in Edge at 320 pixels with text at 200%, where each word stays whole and the
+widest reaches into the panel's padding, and on wider screens, where nothing moves."""
+HELP_LINES = ("help-state", "help-when")
+
+
+def help_lines(page: str) -> list[tuple[str, Element]]:
+    """Each state and time line of a request for help, and each element inside one, with the
+    line's own class."""
+    found = elements_of(page)
+    lines = [(name, one) for one in found for name in HELP_LINES if name in one.classes]
+    return [(name, one) for name, line in lines for one in found if one.within(line)]
+
+
+def breaking(sheet: Sheet, page: str, view: View) -> set[str]:
+    """The lines, and the elements in them, that may break a word inside it on ``view``."""
+    return {
+        f"{name} {one.tag}"
+        for name, one in help_lines(page)
+        if value_of(sheet, one, "overflow-wrap", view) not in (None, "normal")
+    }
+
+
+def help_line_pages(text_pages: dict[str, str], set_apart: dict[str, str]) -> dict[str, str]:
+    """The family page with her request, and her week with requests in Help, for her and a
+    parent: each holds a state line, its words in bold, and a time line."""
+    pages = family(text_pages) | set_apart
+    for name, page in pages.items():
+        held = {f"{line} {one.tag}" for line, one in help_lines(page)}
+        assert held == {"help-state p", "help-state strong", "help-when p"}, name
+    return pages
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_a_help_state_and_time_line_keep_each_word_whole(
+    text_pages: dict[str, str], set_apart_pages: dict[str, str], view: View
+) -> None:
+    """These lines wrap between words and never inside one; the rule that says so is the one
+    measured in Edge, and nothing later undoes it."""
+    css = stylesheet()
+    assert css.count(KEEP_WHOLE) == 1
+    sheet = read_sheet(css)
+    for name, page in help_line_pages(text_pages, set_apart_pages).items():
+        assert breaking(sheet, page, view) == set(), name
+
+
+@pytest.mark.parametrize(
+    ("becomes", "found"),
+    [
+        pytest.param("", {"help-state p", "help-state strong", "help-when p"}, id="no-rule"),
+        pytest.param(KEEP_WHOLE.replace(",\n.help-when", ""), {"help-when p"}, id="no-time"),
+        pytest.param(
+            KEEP_WHOLE.replace(".help-state,\n", ""),
+            {"help-state p", "help-state strong"},
+            id="no-state",
+        ),
+        pytest.param(
+            KEEP_WHOLE + "\n.help-request p { overflow-wrap: anywhere; }",
+            {"help-state p", "help-state strong", "help-when p"},
+            id="undone-later",
+        ),
+        pytest.param(
+            KEEP_WHOLE + "\n.help-state strong { overflow-wrap: break-word; }",
+            {"help-state strong"},
+            id="undone-inside",
+        ),
+    ],
+)
+def test_the_whole_word_check_fails_where_a_help_line_can_break_a_word(
+    text_pages: dict[str, str], set_apart_pages: dict[str, str], becomes: str, found: set[str]
+) -> None:
+    sheet = broken(KEEP_WHOLE, becomes)
+    pages = help_line_pages(text_pages, set_apart_pages)
+    for view in VIEWS:
+        assert set().union(*(breaking(sheet, page, view) for page in pages.values())) == found
+
+
+# ------------------------------------------------------------- a plan's card that gives way
+
+CARD_GIVING_WAY = """.draft.outcome-accepted,
+.draft.outcome-unsettled {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+@media (max-width: 30rem) {
+  .draft.outcome-accepted,
+  .draft.outcome-unsettled {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
+}"""
+"""The side padding of a plan's card waiting for review, as the stylesheet writes it: from the
+card's ordinary 1.6rem, and from 1.2rem where the narrow layout's query holds. Measured in
+Edge at 300 to 414 pixels with text at 200%, where the form's helper keeps each word whole,
+and on wider screens, where nothing moves."""
+CARD_GIVES_WAY = {
+    False: "clamp(0px, 13vw - 1rem, 1.6rem)",
+    True: "clamp(0px, 13vw - 1rem, 1.2rem)",
+}
+"""The padding each side of the card takes, by whether the narrow layout's query holds."""
+
+PLAN_CARDS: dict[str, str] = {}
+
+
+def waiting_plan() -> DailyPlan:
+    """A plan for the fixture evening that keeps every rule, so a run brings it to review."""
+    later = [
+        ("assignment-algebra-set", "not due until Monday"),
+        ("assignment-textbook-cover", "five minutes on the weekend"),
+        ("assignment-reading-log", "a page a night is on track"),
+        ("assignment-signed-syllabus", "ask what the date is"),
+        ("assignment-vocabulary-quiz", "the portal says Friday"),
+    ]
+    return DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            block(ESSAY_ID, "16:30", "17:30"),
+            block("assignment-science-fair-proposal", "18:00", "18:30"),
+        ],
+        deferred=[Deferral(assignment_id=one, reason=why) for one, why in later],
+    )
+
+
+@pytest.fixture
+def plan_card_pages(tmp_path: pathlib.Path) -> dict[str, str]:
+    """The family page for a parent with a plan waiting for review: once with its review
+    accepted, and once unsettled, the critic unable to tell. Rendered by the first test that
+    asks."""
+    if PLAN_CARDS:
+        return PLAN_CARDS
+    unsure = CriticVerdict(findings=[finding(Judgment.CANNOT_TELL)])
+    for outcome, verdict in (("accepted", accepting()), ("unsettled", unsure)):
+        folder = tmp_path / "plan-card" / outcome
+        folder.mkdir(parents=True)
+        page = family_with_a_waiting_plan(verdict, folder)
+        assert f"draft outcome-{outcome}" in page, outcome
+        PLAN_CARDS[f"parent, family, plan {outcome}"] = page
+    return PLAN_CARDS
+
+
+def family_with_a_waiting_plan(verdict: CriticVerdict, folder: pathlib.Path) -> str:
+    """The family page for a parent once a run, its critic saying ``verdict``, brings a plan
+    to review."""
+    keyed = replace(signed_in_household(folder), anthropic_api_key="not-a-key-and-never-sent")
+    with client_for(keyed) as client:
+        graphs = scripted_graphs(lambda: [waiting_plan()] * 3, lambda: [verdict] * 3)
+        client.app.dependency_overrides[plan_graphs] = graphs  # type: ignore[attr-defined]
+        sign_in_as(client, "parent")
+        asked = client.post("/parent/actions/plan", data=family_plan(client, PLAN_DATE.isoformat()))
+        assert asked.status_code == 303, asked.text[:400]
+        return client.get("/parent", headers=PAGE_HEADERS).text
+
+
+def plan_cards(page: str) -> list[Element]:
+    """Each card on the page that matches the rule, after checking that they are exactly the
+    cards holding a plan's decision form."""
+    found = elements_of(page)
+    marked = [
+        one
+        for one in found
+        if "draft" in one.classes and {"outcome-accepted", "outcome-unsettled"} & one.classes
+    ]
+    forms = [
+        one
+        for one in found
+        if one.tag == "form"
+        and one.attributes.get("action", "").startswith("/parent/actions/decide/")
+    ]
+    holding = [card for card in found if any(form.within(card) for form in forms)]
+    assert marked, page[:200]
+    assert marked == [card for card in holding if card.tag == "article"], marked
+    return marked
+
+
+def card_padding_kept(sheet: Sheet, page: str, view: View) -> list[str]:
+    """Each side of each plan card whose padding on ``view`` is not the one that gives way."""
+    narrow = view.width <= 30 * view.browser_text
+    return [
+        f"{'.'.join(sorted(card.classes))} {side}"
+        for card in plan_cards(page)
+        for side in ("padding-left", "padding-right")
+        if value_of(sheet, card, side, view) != CARD_GIVES_WAY[narrow]
+    ]
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_a_waiting_plans_card_gives_way_on_a_phone_with_large_text(
+    plan_card_pages: dict[str, str], view: View
+) -> None:
+    """The side padding of a plan's card waiting for review narrows before the form's helper
+    breaks a word; the rule that says so is the one measured in Edge, for each layout, and
+    nothing later undoes it."""
+    css = stylesheet()
+    assert css.count(CARD_GIVING_WAY) == 1
+    sheet = read_sheet(css)
+    for name, page in plan_card_pages.items():
+        assert card_padding_kept(sheet, page, view) == [], name
+
+
+@pytest.mark.parametrize(
+    ("becomes", "kept_on"),
+    [
+        pytest.param("", {"narrow", "wide"}, id="no-rule"),
+        pytest.param(CARD_GIVING_WAY.split("\n\n")[0], {"narrow"}, id="no-narrow"),
+        pytest.param(CARD_GIVING_WAY.split("\n\n")[1], {"wide"}, id="no-wide"),
+        pytest.param(
+            CARD_GIVING_WAY.replace(",\n.draft.outcome-unsettled", "").replace(
+                ",\n  .draft.outcome-unsettled", ""
+            ),
+            {"narrow", "wide"},
+            id="no-unsettled",
+        ),
+        pytest.param(
+            CARD_GIVING_WAY + "\n.draft.outcome-accepted { padding: 1.1rem 1.2rem; }",
+            {"narrow", "wide"},
+            id="undone-later",
+        ),
+    ],
+)
+def test_the_card_check_fails_where_a_side_keeps_its_ordinary_padding(
+    plan_card_pages: dict[str, str], becomes: str, kept_on: set[str]
+) -> None:
+    sheet = broken(CARD_GIVING_WAY, becomes)
+    found = {
+        "narrow" if view.width <= 30 * view.browser_text else "wide"
+        for view in VIEWS
+        for page in plan_card_pages.values()
+        if card_padding_kept(sheet, page, view)
+    }
+    assert found == kept_on
+
+
+NOTE_HELP = ("her, note help", "open, note help")
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_the_sign_in_keeps_its_side_padding_and_a_note_help_ask_gives_way(
+    other_asks: dict[str, str], view: View
+) -> None:
+    """The sign-in button keeps the side padding the stylesheet gives it without the padding
+    that gives way, on every screen; the button that asks about a note takes the padding
+    that gives way."""
+    ordinary = broken(GIVING_WAY, "")
+    sheet = read_sheet(stylesheet())
+    pages = other_ask_pages(other_asks)
+    assert padding_changed(sheet, ordinary, asking_elsewhere(pages["sign-in page"]), view) == []
+    for name in NOTE_HELP:
+        held = giving_way(pages[name])
+        assert [" ".join(one.text.split()) for one in held] == ["Ask for help about this note"]
+        assert padding_kept(sheet, held, view) == [], name
+
+
+@pytest.mark.parametrize(
+    "becomes",
+    [
+        pytest.param(GIVING_WAY.replace(",\n.homework-note .ask button", ""), id="no-note-help"),
+        pytest.param(
+            GIVING_WAY + "\n.homework-note .actions button { padding: 0.6rem 1.35rem; }",
+            id="undone-later",
+        ),
+    ],
+)
+def test_the_note_help_check_fails_where_its_button_keeps_its_ordinary_padding(
+    other_asks: dict[str, str], becomes: str
+) -> None:
+    sheet = broken(GIVING_WAY, becomes)
+    pages = other_ask_pages(other_asks)
+    for view in VIEWS:
+        assert all(padding_kept(sheet, giving_way(pages[name]), view) for name in NOTE_HELP), view
+
+
+ASK_IN_HELP = ".help-panel .ask button"
+
+
+@pytest.mark.parametrize(
+    ("becomes", "reached"),
+    [
+        pytest.param(
+            GIVING_WAY.replace(ASK_IN_HELP, ".ask button"), {"sign-in page"}, id="every-ask"
+        ),
+        pytest.param(
+            GIVING_WAY.replace(ASK_IN_HELP, ".ask > button"), {"sign-in page"}, id="sign-in"
+        ),
+        pytest.param(
+            GIVING_WAY + "\n.ask button { padding-inline: 0; }", {"sign-in page"}, id="later-rule"
+        ),
+    ],
+)
+def test_the_ordinary_padding_check_fails_where_the_rule_reaches_another_ask(
+    text_pages: dict[str, str],
+    set_apart_pages: dict[str, str],
+    other_asks: dict[str, str],
+    becomes: str,
+    reached: set[str],
+) -> None:
+    """Each of these still gives way where it should, so only the check of the sign-in button
+    tells them from the rule as written."""
+    ordinary = broken(GIVING_WAY, "")
+    sheet = broken(GIVING_WAY, becomes)
+    pages = other_ask_pages(other_asks)
+    for view in VIEWS:
+        assert {
+            name
+            for name, page in pages.items()
+            if name not in NOTE_HELP
+            and padding_changed(sheet, ordinary, asking_elsewhere(page), view)
+        } == reached, view
+        assert {
+            name
+            for name, page in giving_way_pages(text_pages, set_apart_pages).items()
+            if padding_kept(sheet, giving_way(page), view)
+        } == set(), view
 
 
 @pytest.mark.parametrize(
