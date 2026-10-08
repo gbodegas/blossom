@@ -1744,8 +1744,9 @@ def _rows_by_key(draft: GradeReportDraft) -> dict[str, tuple[GradeValue, GradeRo
 
 
 def _confirmer(role: str) -> ConfirmedBy:
-    """``role`` when it may confirm her name, or ``ValueError``."""
+    """``role`` when it may change her grade records, her name's confirmation included, or
+    ``ValueError``."""
     if role not in get_args(ConfirmedBy):
-        msg = "only a parent, or the household with the sign-in off, confirms her name"
+        msg = "only a parent, or the household with the sign-in off, changes grade records"
         raise ValueError(msg)
     return cast(ConfirmedBy, role)
