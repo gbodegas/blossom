@@ -25,6 +25,10 @@ or a caller's it joins), and one savepoint around the whole write. A failure lea
 write behind, inside a caller's transaction too, and the caller's other work there stays. When
 SQLite itself ends a caller's transaction, everything in it is gone, and the caller hears that
 its transaction was lost, never a refusal it might go on from.
+
+A school year's first month is corrected by comparing and setting the month itself, the year's
+whole state. Nothing stored or compared depends on it, so no revision moves; due dates resolve
+under the month on record when they are read.
 """
 
 import json
@@ -381,6 +385,7 @@ making action, and each of them was."""
 
 CONTEXT_ON_RECORD: Final = "SELECT 1 FROM grade_context WHERE student_id = ?"
 YEAR_ON_RECORD: Final = "SELECT 1 FROM grade_years WHERE student_id = ? AND label = ?"
+FIRST_MONTH_OF: Final = "SELECT first_month FROM grade_years WHERE student_id = ? AND label = ?"
 ALIAS_MATCHED: Final = (
     "SELECT class_id FROM grade_class_aliases "
     "WHERE student_id = ? AND year_label = ? AND matched_as = ?"
@@ -551,6 +556,10 @@ ADD_YEAR: Final = (
     "INSERT INTO grade_years (student_id, label, first_month, first_month_by, made_at) "
     "VALUES (?, ?, ?, ?, ?)"
 )
+CORRECT_FIRST_MONTH: Final = (
+    "UPDATE grade_years SET first_month = ?, first_month_by = ? "
+    "WHERE student_id = ? AND label = ? AND first_month IS ?"
+)
 ADD_TERM: Final = (
     "INSERT OR IGNORE INTO grade_terms (student_id, year_label, label, made_at) VALUES (?, ?, ?, ?)"
 )
@@ -715,8 +724,9 @@ class NameFormNotSaved(RuntimeError):
 
 
 class GradeReportNotSaved(RuntimeError):
-    """The file refused a save of a report. Nothing of the save remains, and a caller's
-    transaction it joined is still open, with the caller's other work in it."""
+    """The file refused a grade write: a report's save, the class-details action or a first
+    month's correction. Nothing of the write remains, and a caller's transaction it joined is
+    still open, with the caller's other work in it."""
 
 
 class GradeTransactionLost(RuntimeError):
@@ -744,6 +754,10 @@ def _confirmation_refused(error: BaseException) -> Exception:
     return NameFormNotSaved(f"her name could not be confirmed again: {type(error).__name__}")
 
 
+def _first_month_refused(error: BaseException) -> Exception:
+    return GradeReportNotSaved(f"the first month could not be corrected: {type(error).__name__}")
+
+
 @dataclass(frozen=True)
 class NameFormAdded:
     """The form was confirmed now, and the key check set with it when it was the first."""
@@ -763,6 +777,42 @@ class NameFormStood:
     """The form was already confirmed under the key in hand; nothing was written."""
 
     form: str
+
+
+@dataclass(frozen=True)
+class FirstMonthCorrected:
+    """The year's first month is ``month`` now, set by this correction."""
+
+    year: str
+    month: int
+
+
+@dataclass(frozen=True)
+class FirstMonthStood:
+    """The year's first month was ``month`` already, as a page sent again finds it; nothing was
+    written."""
+
+    year: str
+    month: int
+
+
+@dataclass(frozen=True)
+class FirstMonthChanged:
+    """The month on record isn't the one the page showed: ``month``, None when unconfirmed.
+    Nothing was written."""
+
+    year: str
+    month: int | None
+
+
+@dataclass(frozen=True)
+class YearNotOnRecord:
+    """Her record holds no school year with this label; nothing was written."""
+
+    year: str
+
+
+FirstMonthOutcome = FirstMonthCorrected | FirstMonthStood | FirstMonthChanged | YearNotOnRecord
 
 
 class GradebookRecords:
@@ -1266,6 +1316,37 @@ class GradebookRecords:
         )
         self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
         return MadeCurrent(action_id, source, report_id, preview.digest)
+
+    def first_month_of(self, year: str) -> int | None:
+        """The first month on record for her school year ``year``, None when the year isn't on
+        record or its month is unconfirmed: what ``due_date_of`` resolves under. A read alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            row = self._connection.execute(FIRST_MONTH_OF, (student_id, year)).fetchone()
+        return None if row is None or row[0] is None else int(row[0])
+
+    def correct_first_month(
+        self, year: str, *, shown: int | None, month: int, role: ConfirmedBy
+    ) -> FirstMonthOutcome:
+        """A parent's ``month`` for her school year ``year``, one grade write that compares and
+        sets the month: it applies only while the month on record is ``shown``, the page's (None
+        when unconfirmed); one already ``month`` stands, and any other is ``FirstMonthChanged``."""
+        by = _confirmer(role)
+        if month not in range(1, 13):
+            msg = "a first month is 1 to 12"
+            raise ValueError(msg)
+        with self._grade_write(_first_month_refused):
+            student_id = self._her_name_record()[0]
+            row = self._connection.execute(FIRST_MONTH_OF, (student_id, year)).fetchone()
+            if row is None:
+                return YearNotOnRecord(year)
+            stored = None if row[0] is None else int(row[0])
+            if stored == month:
+                return FirstMonthStood(year, month)
+            if stored != shown:
+                return FirstMonthChanged(year, stored)
+            self._connection.execute(CORRECT_FIRST_MONTH, (month, by, student_id, year, stored))
+            return FirstMonthCorrected(year, month)
 
     def _revision_of(self, student_id: str, class_id: str, draft: GradeReportDraft) -> int | None:
         """The scope revision of ``class_id`` in the report's term, None when it holds nothing."""
