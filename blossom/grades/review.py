@@ -17,15 +17,18 @@ Each value's status compares it with its target's current value, as accepted sch
 "Saved", equal to it; "Matches an earlier saved value", equal to a value a newer one replaced;
 "Changed", it differs; "New", no target; "Needs your answer", a matching question is open;
 "Couldn't read", a cell is unreadable; "Due date not captured", the copy left out the due cell
-of a row that resolves to none of her results. A row with a value that can't be read but whose
-identity reads, or whose category and title read but whose due date wasn't captured, still asks
-its question, or offers her results to choose from; an answer records which result it is, never
-its value. A due date that wasn't captured is never evidence, so such a row resolves only
-through its own capture's records or the parent's answer or choice; then its value takes its
-status as any other does, compared without the due date, which is neither the same nor a
-change, while a value that can't be read stays "Couldn't read". Only a New or Changed value can
-be selected, and only when no current report newer than the one its capture's rest joins
-supplied or showed its target.
+of a row that resolves to none of her results; a value of which the copy captured only the cells
+that say which target it is compares nothing, so it is neither Saved nor offered.
+The comparison leaves out every cell the incoming copy didn't capture, on both sides, as neither
+the same nor a change; a cell it captured is compared even when the saved value lacks it, so it
+can be new information. A row with a value that can't be read but whose identity reads, or whose
+category and title read but whose due date wasn't captured, still asks its question, or offers
+her results to choose from; an answer records which result it is, never its value. A due date
+that wasn't captured is never evidence, so such a row resolves only through its own capture's
+records or the parent's answer or choice; then its value takes its status as any other does,
+while a value that can't be read stays "Couldn't read". Only a New or Changed value can be
+selected, and only when no current report newer than the one its capture's rest joins supplied
+or showed its target.
 
 The questions a review asks are the identity of the student line, the first setup, the first
 month of a year not on record, and the class when no alias matches. The answers a page sends are
@@ -111,6 +114,9 @@ RESULT_FIELDS: Final = (
     "note",
 )
 """The cells of a result row, its category's name first, then Assignment to Note."""
+WHICH_FIELDS: Final = frozenset({"name", "category", "assignment", "due"})
+"""The cells that say which target a value is, a category's name and a row's evidence; every
+other cell is a value cell."""
 Compared = tuple[tuple[str, str, str], ...]
 """A value as statuses compare it."""
 
@@ -176,6 +182,9 @@ class ItemStatus(StrEnum):
     DUE_NOT_CAPTURED = "due_not_captured"
     """"Due date not captured": the row's category and title read, its due cell wasn't in the
     copy, and it resolves to none of her results. Never offered."""
+    VALUE_NOT_CAPTURED = "value_not_captured"
+    """The copy captured none of the value's cells, only those that say which target it is, so
+    nothing is compared: neither Saved nor offered."""
 
 
 class QuestionKind(StrEnum):
@@ -468,17 +477,27 @@ UNREAD: Final = frozenset({Presence.UNREADABLE, Presence.NOT_CAPTURED})
 """The presences of evidence a row's identity can't be read from."""
 
 
+def captures_a_value(cells: Mapping[str, Cell]) -> bool:
+    """Whether the copy captured any of a value's cells besides those that say which target it
+    is."""
+    return any(
+        presence is not Presence.NOT_CAPTURED
+        for field, (presence, _) in cells.items()
+        if field not in WHICH_FIELDS
+    )
+
+
 def status_against(
-    held: ClassRecord,
-    target: str,
-    cells: Mapping[str, Cell],
-    current: CurrentValue | None,
-    *,
-    left_out: Collection[str] = (),
+    held: ClassRecord, target: str, cells: Mapping[str, Cell], current: CurrentValue | None
 ) -> ItemStatus:
-    """A value's status against its target, the fields in ``left_out`` compared on neither side:
-    Saved when equal to the current value, Matches an earlier saved value when equal to another
-    accepted one, else Changed, or New with no current value."""
+    """A value's status against its target, a cell the copy didn't capture compared on neither
+    side: Value not captured when no value cell is left, Saved when equal to the current value,
+    Matches an earlier saved value when equal to another accepted one, else Changed or New."""
+    if not captures_a_value(cells):
+        return ItemStatus.VALUE_NOT_CAPTURED
+    left_out = {
+        field for field, (presence, _) in cells.items() if presence is Presence.NOT_CAPTURED
+    }
 
     def kept(value: Compared) -> Compared:
         return tuple(one for one in value if one[0] not in left_out)
@@ -727,9 +746,7 @@ def _resolved_rows(
         current = held.current.results.get(result)
         if row.unreadable:
             return ReviewItem(row.key, ItemStatus.UNREADABLE, result, current, asked, how)
-        # A due date the copy left out is neither the same as the result's nor a change to it.
-        left_out = ("due",) if row.undated else ()
-        status = status_against(held, result, row.cells, current, left_out=left_out)
+        status = status_against(held, result, row.cells, current)
         if row.key in on_record.saved and status in OFFERED:
             status = ItemStatus.SAVED
         covered = status in OFFERED and on_record.covers(result)
@@ -757,22 +774,22 @@ def _resolved_rows(
         asked = matching.question(row)
         choices = free if row.identified or row.undated else ()
         answer = answered.get(row.key)
+        # A new result's value is compared with nothing, so it needs a value cell to be offered.
+        new = ItemStatus.NEW if captures_a_value(row.cells) else ItemStatus.VALUE_NOT_CAPTURED
         if answer is not None and answer.chosen:
             if answer.result_id is not None and _chooses(answer, choices):
                 return resolved(row, answer.result_id, "chosen", asked)
             answer = None
         if asked is None:
-            return ReviewItem(row.key, ItemStatus.NEW, choices=choices)
+            return ReviewItem(row.key, new, choices=choices)
         if answer is not None and _binds(answer, asked):
             if answer.result_id is not None:
                 return resolved(row, answer.result_id, "answer", asked)
-            return ReviewItem(
-                row.key, ItemStatus.NEW, question=asked, how="answer", choices=choices
-            )
+            return ReviewItem(row.key, new, question=asked, how="answer", choices=choices)
         if matching.remembered(row, asked):
             return ReviewItem(
                 row.key,
-                ItemStatus.NEW,
+                new,
                 question=asked,
                 how="answer",
                 choices=choices,

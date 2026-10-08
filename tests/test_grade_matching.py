@@ -38,6 +38,7 @@ from blossom.grades.review import (
     SaveOutcome,
     cells_of,
     review_from,
+    status_against,
 )
 from blossom.grades.text_reader import read_grade_report, reading_complete
 from blossom.stores.project_state import ProjectStateStore
@@ -46,6 +47,7 @@ from tests.support import (
     fixture_clock,
     grade_answers,
     save_grade,
+    without_columns,
     without_the_due_column,
 )
 
@@ -1955,3 +1957,184 @@ def test_an_incomplete_reading_before_the_capture_s_report_keeps_it_from_proving
         assert value.not_shown == ReportAt(later.report_id, 2)
     else:
         assert value.not_shown is None
+
+
+# ------------------------------------------------------------- cells a copy didn't capture
+
+
+HOMEWORK = "Homework / Practice"
+VALUE_COLUMNS = ("Pts", "Max", "Avg", "Status", "Curve", "Bonus", "Penalty", "Weight", "Note")
+"""Every column of a result table but Assignment and Due, which say which result a row is."""
+PENALTY_ZERO = (CELL, CELL.replace("|             | 1.0", "| 0.0         | 1.0"))
+"""Cell Diagram's blank Penalty reported as zero."""
+CURVE_BLANK = (CELL, CELL.replace("| 09/26   | 0.0       |", "| 09/26   |           |"))
+"""Cell Diagram's zero Curve left blank."""
+
+
+def leaving_out(*columns: str, text: str = REPORT) -> GradeReportDraft:
+    """A capture of ``text`` with ``columns`` left out of the Homework table."""
+    return variant(text=without_columns(text, HOMEWORK, *columns))
+
+
+@pytest.mark.parametrize("column", ["Note", "Status"])
+def test_a_column_the_copy_left_out_is_neither_the_same_nor_a_change(column: str) -> None:
+    """His seventeenth round, 1: a copy leaving out one column reads Saved where every cell it
+    captured is equal, and Changed where one isn't. The rows missing their due date cover Due."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    review = review_of(store, leaving_out(column))
+
+    for title in ("Seed Germination Log", "Cell Diagram"):
+        item = row(review, title)
+        assert (item.status, item.how) == (ItemStatus.SAVED, "exact")
+    assert review.ready == frozenset()
+    changed = leaving_out(column, text=REPORT.replace(*CELL_SCORE))
+    assert row(review_of(store, changed), "Cell Diagram").status is ItemStatus.CHANGED
+
+
+def test_a_copy_leaving_out_a_column_still_matches_an_earlier_saved_value() -> None:
+    """The earlier-report protection holds: a value a newer report replaced, repeated by a copy
+    that leaves out its Note, matches that earlier value and isn't offered."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    saved(save(store, B, complete=True))
+    review = review_of(store, leaving_out("Note"))
+
+    assert row(review, "Cell Diagram").status is ItemStatus.MATCHES_EARLIER
+    assert row(review, "Seed Germination Log").status is ItemStatus.SAVED
+    assert review.ready == frozenset()
+
+
+def test_a_cell_the_copy_captured_and_the_saved_values_never_did_reads_changed() -> None:
+    """The rule is directional: after two copies without the Note column, a copy with it
+    supplies what neither captured, so it reads Changed against the current value and against
+    the value that one replaced alike, and is offered."""
+    store = in_memory()
+    saved(save(store, leaving_out("Note"), complete=True))
+    saved(save(store, leaving_out("Note", text=REPORT.replace(*CELL_SCORE)), complete=True))
+    review = review_of(store, A)
+    seed, cell = row(review, "Seed Germination Log"), row(review, "Cell Diagram")
+
+    assert (seed.status, cell.status) == (ItemStatus.CHANGED, ItemStatus.CHANGED)
+    assert {seed.key, cell.key} <= review.ready
+    assert row(review, "Microscope Practice").status is ItemStatus.SAVED
+
+
+def test_blank_zero_and_not_captured_stay_distinct() -> None:
+    """A blank Penalty reported as zero, or a zero Curve left blank, is a change; the same
+    column left out is neither the same nor a change."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+
+    for draft, status in [
+        (variant(PENALTY_ZERO), ItemStatus.CHANGED),
+        (variant(CURVE_BLANK), ItemStatus.CHANGED),
+        (leaving_out("Penalty"), ItemStatus.SAVED),
+        (leaving_out("Curve"), ItemStatus.SAVED),
+    ]:
+        assert row(review_of(store, draft), "Cell Diagram").status is status
+
+
+def test_a_copy_that_captured_no_value_cell_is_neither_saved_nor_offered() -> None:
+    """An empty comparison never establishes Saved: a Homework table kept to Assignment and Due
+    matches its rows and records them as shown, but offers and accepts no value of theirs, and
+    with nothing saved before, it offers none either."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = row(review_of(store, A), "Cell Diagram").result_id or ""
+    bare = leaving_out(*VALUE_COLUMNS)
+    review = review_of(store, bare)
+    seed, cell = row(review, "Seed Germination Log"), row(review, "Cell Diagram")
+
+    for item in (seed, cell):
+        assert item.how == "exact"
+        assert item.key not in review.ready
+        assert item.status is ItemStatus.VALUE_NOT_CAPTURED
+    returned = save(store, bare, review, selection={cell.key})
+    assert isinstance(returned, ReviewReturned)
+    assert returned.why is ReturnReason.SELECTION
+    outcome = saved(save(store, bare, review, selection=()))
+    assert (outcome.added, outcome.updated, outcome.left, outcome.shown) == (0, 0, 2, 4)
+    assert observed(store, outcome.report_id) == 0
+    assert text_of(store.current_values(class_of(store), "T1").results[cell_id], "points") == "7.0"
+
+    first = review_of(in_memory(), bare)
+    for title in ("Seed Germination Log", "Cell Diagram"):
+        item = row(first, title)
+        assert (item.status, item.result_id) == (ItemStatus.VALUE_NOT_CAPTURED, None)
+        assert item.key not in first.ready
+
+
+def test_a_category_or_the_term_compares_only_the_cells_the_copy_captured() -> None:
+    """The same rule for every value: a category's average or the term's letter left out is
+    neither the same nor a change, and a value with no value cell captured compares nothing."""
+    held = ClassRecord(CurrentValues(None, {}, {}), {}, {}, {}, {})
+    missing = (Presence.NOT_CAPTURED, "")
+    labs = {
+        "name": (Presence.REPORTED, "Labs"),
+        "weight": (Presence.REPORTED, "25.0"),
+        "average": (Presence.REPORTED, "83.8"),
+    }
+    term = {"percent": (Presence.REPORTED, "81.9"), "letter": (Presence.REPORTED, "B-")}
+    on_labs, on_term = CurrentValue(labs, "report-1", 1), CurrentValue(term, "report-1", 1)
+
+    assert status_against(held, "labs", {**labs, "average": missing}, on_labs) is ItemStatus.SAVED
+    assert status_against(held, TERM_KEY, {**term, "letter": missing}, on_term) is (
+        ItemStatus.SAVED
+    )
+    nothing = {**labs, "weight": missing, "average": missing}
+    for cells, current in [
+        (nothing, on_labs),
+        (nothing, None),
+        ({"percent": missing, "letter": missing}, on_term),
+    ]:
+        assert status_against(held, "any", cells, current) is ItemStatus.VALUE_NOT_CAPTURED
+
+
+ANSWERED_WITH_A_VALUE = {
+    "answer": (
+        "Seed Germination Log",
+        RENAMED,
+        (SEED, SEED.replace("Seed Germination Log", "Seed Germination Diary", 1)),
+    ),
+    "chosen": (
+        "Osmosis with Potato Slices",
+        TAKEN_OVER,
+        (
+            OSMOSIS,
+            TAKEN_OVER[1]
+            .replace("Potato Lab", "Potato Test")
+            .replace("| 50.0    |", "| 60.0    |")
+            .replace("10/03", "10/04"),
+        ),
+    ),
+}
+"""For each kind of explicit answer: the result's first title, then two copies in turn that
+rename it, each answered that way."""
+
+
+@pytest.mark.parametrize("how", ["answer", "chosen"])
+def test_an_answer_given_with_a_selected_value_counts_with_it_and_is_reused(how: str) -> None:
+    """His seventeenth round, 3: a row answered and ticked counts once, with its value, never
+    under answers kept; its answer is still its row record, and another capture with the same
+    evidence reuses it."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    title, first, second = ANSWERED_WITH_A_VALUE[how]
+    target = row(review_of(store, A), title).result_id or ""
+
+    for change in (first, second):
+        draft = variant(change)
+        review = review_of(store, draft)
+        (item,) = [one for one in review.rows if one.how is None]
+        answer = same(item) if how == "answer" else chosen(item, target)
+        outcome = saved(save(store, draft, review, matches=[answer], selection={item.key}))
+
+        assert (outcome.added, outcome.updated, outcome.answers_kept) == (0, 1, 0)
+        assert dict(outcome.accepted)[item.key] == target
+        assert records(store, outcome.report_id)[item.key] == (target, how)
+    later = variant(first, CELL_NINE)
+    review = review_of(store, later)
+    (again,) = [one for one in review.rows if one.result_id == target]
+
+    assert (again.how, again.question) == ("reused", None)

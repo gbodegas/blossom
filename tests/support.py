@@ -1867,10 +1867,11 @@ def save_grade(
     )
 
 
-def without_the_due_column(text: str, category: str) -> str:
-    """The report ``text`` with the Due column of ``category``'s result table left out, so each
-    of its rows has a due date that wasn't captured."""
-    lines, inside = [], False
+def without_columns(text: str, category: str, *columns: str) -> str:
+    """The report ``text`` with ``columns``, by their headers, left out of ``category``'s result
+    table, so each of its rows has those cells not captured."""
+    lines: list[str] = []
+    inside, at = False, list[int]()
     for line in text.split("\n"):
         if f"**{category}**" in line:
             inside = True
@@ -1878,10 +1879,20 @@ def without_the_due_column(text: str, category: str) -> str:
             inside = False
         cells = line.split("|")
         if inside and len(cells) == 13:
-            del cells[6]
+            if not at:
+                names = [cell.strip() for cell in cells]
+                at = sorted((names.index(f"**{column}**") for column in columns), reverse=True)
+            for one in at:
+                del cells[one]
             line = "|".join(cells)
         lines.append(line)
     return "\n".join(lines)
+
+
+def without_the_due_column(text: str, category: str) -> str:
+    """The report ``text`` with the Due column of ``category``'s result table left out, so each
+    of its rows has a due date that wasn't captured."""
+    return without_columns(text, category, "Due")
 
 
 class HeldByAnother:
