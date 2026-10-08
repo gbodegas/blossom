@@ -1126,18 +1126,26 @@ def test_looks_good_from_a_page_left_open_is_refused_for_a_plan_over_the_limit_s
 ) -> None:
     """A family page opened before the start still shows Looks good. Pressed after a start
     that lowers the limit under the plan's blocks, it is refused with the family page's
-    notice, and the row is untouched."""
+    notice and a way to the plan's box, which holds the note as typed, and the row is
+    untouched."""
     a_shorter_plan_saved(tmp_path)
     with started(tmp_path, 40) as client:
         draft_id = client.get("/student/plans/today").json()["draft_id"]
         as_a_parent(client)
         state_now: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
         before = as_stored(state_now.drafts, "drafts")
-        pressed = client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        pressed = client.post(
+            f"/parent/actions/decide/{draft_id}",
+            data={"decision": "approve", "reason": "Start with the essay."},
+        )
         after = as_stored(state_now.drafts, "drafts")
 
     assert pressed.status_code == 409
     assert escape(longer_than(40, BEFORE_APPROVING)) in pressed.text
+    assert '<a href="#review-note-1">Go to the field.</a></p>' in pressed.text
+    assert 'id="review-note-1" type="text" name="reason" value="Start with the essay."' in (
+        pressed.text
+    )
     assert after == before
 
 
