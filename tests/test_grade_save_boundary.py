@@ -642,6 +642,13 @@ NO_OP: tuple[Site, ...] = (
 )
 """Every write statement of a submission that records nothing new: the term, kept when on
 record, and the acceptance, for its retry. The revision stays."""
+INCOMPLETE_NO_OP: tuple[Site, ...] = (
+    (sqlite3.SQLITE_INSERT, "grade_terms"),
+    (sqlite3.SQLITE_INSERT, "grade_scope_revisions"),
+    (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+)
+"""The same submission read incomplete, its capture's report on record: evidence against
+that report's completeness, so the revision rises too."""
 EXCUSED_MOVED = draft_of(
     REPORT.replace("| 7.0     | 10.0    |", "| EX      | 10.0    |").replace(
         "| Missing    | 09/26   |", "| Missing    | 09/29   |"
@@ -671,11 +678,12 @@ def unreadable_page(
 
 
 PAGES = {
-    "no-op": (no_op_page, NO_OP),
-    "unreadable": (unreadable_page, PRESENCE),
+    "no-op": (no_op_page, NO_OP, True),
+    "incomplete no-op": (no_op_page, INCOMPLETE_NO_OP, False),
+    "unreadable": (unreadable_page, PRESENCE, True),
 }
 """Each submission with no value selected that this module checks site by site, with its
-statements."""
+statements and whether its reading was complete."""
 
 
 @pytest.mark.parametrize("scenario", list(PAGES))
@@ -685,7 +693,7 @@ def test_a_no_op_or_an_answered_unreadable_score_writes_exactly_the_named_statem
     """A no-op writes its term and its acceptance alone, with no revision; an answer for a row
     whose score can't be read writes a save of presence alone."""
     store = opened("first use")
-    page, sites = PAGES[scenario]
+    page, sites, complete = PAGES[scenario]
     review, answers, draft = page(store)
     seen: set[Site] = set()
 
@@ -695,7 +703,9 @@ def test_a_no_op_or_an_answered_unreadable_score_writes_exactly_the_named_statem
         return sqlite3.SQLITE_OK
 
     store._connection.set_authorizer(note)
-    outcome = save_grade(store, draft, key=KEY, review=review, answers=answers, selection=())
+    outcome = save_grade(
+        store, draft, key=KEY, review=review, answers=answers, selection=(), complete=complete
+    )
     store._connection.set_authorizer(None)
 
     assert isinstance(outcome, GradeReportSaved)
@@ -703,12 +713,15 @@ def test_a_no_op_or_an_answered_unreadable_score_writes_exactly_the_named_statem
     if scenario == "no-op":
         assert (outcome.report_id, outcome.shown) == (None, 0)
         assert seen == set(NO_OP)
+    elif scenario == "incomplete no-op":
+        assert (outcome.report_id, outcome.shown) == (None, 0)
+        assert seen == {*INCOMPLETE_NO_OP, UPSERT_ARM}
     else:
         assert (outcome.shown, outcome.answers_kept) == (4, 1)
         assert seen == {*PRESENCE, UPSERT_ARM}
 
 
-NEW_SITES = [(scenario, site) for scenario, (_, sites) in PAGES.items() for site in sites]
+NEW_SITES = [(scenario, site) for scenario, (_, sites, _) in PAGES.items() for site in sites]
 
 
 @pytest.mark.parametrize(
@@ -722,11 +735,20 @@ def test_a_refused_no_op_or_answered_unreadable_score_leaves_nothing_of_it(
     """Each refused at each of its statements three times inside a caller's transaction leaves
     the file as it was, with the caller's writes kept; lifted, the same page saves once."""
     store = opened("first use")
-    review, answers, draft = PAGES[scenario][0](store)
+    page, _, complete = PAGES[scenario]
+    review, answers, draft = page(store)
     before, rows = world(path), assignments(store)
 
     def again() -> object:
-        return save_grade(store, draft, key=KEY, review=review, answers=answers, selection=())
+        return save_grade(
+            store,
+            draft,
+            key=KEY,
+            review=review,
+            answers=answers,
+            selection=(),
+            complete=complete,
+        )
 
     for attempt in range(3):
         store._connection.set_authorizer(refusing(site))

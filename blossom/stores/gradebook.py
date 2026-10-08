@@ -360,10 +360,14 @@ SCOPE_REPORTS: Final = (
     "WHERE student_id = ? AND class_id = ? AND term_label = ?"
 )
 SCOPE_COMPLETE: Final = (
-    "SELECT a.report_id, MIN(a.complete) FROM grade_acceptances AS a JOIN grade_reports AS r "
-    "ON r.report_id = a.report_id AND r.student_id = a.student_id "
-    "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? GROUP BY a.report_id"
+    "SELECT r.report_id, MIN(a.complete) FROM grade_reports AS r JOIN grade_acceptances AS a "
+    "ON a.student_id = r.student_id AND (a.report_id = r.report_id OR (a.report_id IS NULL "
+    "AND r.reader = 'text' AND a.kind = 'grade_text' AND a.source_key = r.source_key)) "
+    "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? GROUP BY r.report_id"
 )
+"""Each report's completeness: the least of every accepted reading of its capture, those that
+wrote into it and those that recorded nothing new, so one incomplete reading of the capture
+keeps the report from proving absence, whichever came first."""
 CAPTURE_SHOWN: Final = (
     "SELECT d.row_key, d.result_id FROM grade_match_decisions AS d JOIN grade_reports AS r "
     "ON r.report_id = d.report_id AND r.student_id = d.student_id "
@@ -1132,9 +1136,11 @@ class GradebookRecords:
                     now=now,
                 )
         # Only a save that records something in the class and term raises its revision: a no-op
-        # writes its acceptance alone, for its retry, and other open pages stay valid. Setup and
-        # identity answers are held by the recheck of answers instead.
-        if report_id is not None:
+        # writes its acceptance alone, for its retry, and other open pages stay valid. An
+        # incomplete reading of a capture already on record is evidence against its report's
+        # completeness, so it raises the revision too. Setup and identity answers are held by
+        # the recheck of answers instead.
+        if report_id is not None or (joined is not None and not complete):
             self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
         already = sum(1 for item in review.items if item.status in ALREADY)
         changed = sum(

@@ -86,9 +86,19 @@ def save(
     key: bytes = KEY,
     answers: GradeAnswers | None = None,
     selection: Collection[str] | None = None,
+    complete: bool = False,
 ) -> SaveOutcome:
-    """A parent's save of Wren's report unless another is named, under the first key."""
-    return save_grade(store, draft, key=key, review=review, answers=answers, selection=selection)
+    """A parent's save of Wren's report unless another is named, under the first key, its
+    reading incomplete unless ``complete``."""
+    return save_grade(
+        store,
+        draft,
+        key=key,
+        review=review,
+        answers=answers,
+        selection=selection,
+        complete=complete,
+    )
 
 
 def gradebook_of(store: ProjectStateStore) -> dict[str, list[tuple[object, ...]]]:
@@ -333,7 +343,13 @@ def test_identical_reports_for_two_siblings_misread_saves_only_an_acceptance_rec
     review = review_of(store, LINNET_DRAFT)
 
     outcome = saved(
-        save(store, LINNET_DRAFT, review, answers=answers_to(review, IdentityAnswer.MISREAD))
+        save(
+            store,
+            LINNET_DRAFT,
+            review,
+            answers=answers_to(review, IdentityAnswer.MISREAD),
+            complete=True,
+        )
     )
 
     after = gradebook_of(store)
@@ -676,7 +692,9 @@ def test_a_term_spaced_another_way_is_the_same_term() -> None:
     again = draft_of(REPORT.replace("**T1**", "**Term  1**"))
     review = review_of(store, again)
 
-    saved(save_grade(store, again, key=KEY, review=review, answers=answers_to(review)))
+    saved(
+        save_grade(store, again, key=KEY, review=review, answers=answers_to(review), complete=True)
+    )
 
     assert set(statuses(review)) == {ItemStatus.SAVED}
     assert one(store, "SELECT label FROM grade_terms") == [("Term 1",)]
