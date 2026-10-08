@@ -31,6 +31,7 @@ from blossom.grades.identity import name_form, name_form_key
 from blossom.grades.text_reader import (
     COLUMNS,
     GradeReportReading,
+    HeldBack,
     LinePlace,
     NotRead,
     read_grade_report,
@@ -975,7 +976,7 @@ def test_a_clipboard_reading_is_complete_by_its_rows_and_its_lines(name: str) ->
     assert [line.split("\t", 1)[0] for line in result_lines] == [
         row.assignment.text for row in read_rows
     ]
-    assert (reading.unrecognized, reading.places) == ((), ())
+    assert (reading.unrecognized, reading.places, reading.held_back) == ((), (), ())
     assert reading_complete(reading) is True
 
 
@@ -1126,3 +1127,66 @@ def test_a_markdown_paste_reads_a_tab_separated_line_as_it_reads_any_other_line(
     assert draft == seed.draft
     assert (reading.unrecognized, reading.places) == (("Updated\t10/06",), (LinePlace.AFTER_TERM,))
     assert reading_complete(reading) is True
+
+
+def test_a_tab_row_framed_by_pipes_is_read_as_a_tab_row() -> None:
+    """Once the header chose the tab layout, a line splits only on its tabs: a title that starts
+    with a pipe and a note that ends with one are the row's text, never a Markdown table."""
+    framed = SCIENCE_ROW.replace("Practice 4.3", "|Practice 4.3").replace(
+        "\t1.0\t\r\n", "\t1.0\tSee page 4|\r\n"
+    )
+    seed, _ = read(SCIENCE)
+    reading, draft = read(replaced_once(SCIENCE, SCIENCE_ROW, framed))
+    labs = draft.categories[1].rows
+    assert len(labs) == 2
+    assert (labs[0].assignment.text, labs[0].note.text) == (
+        "|Practice 4.3: classroom exercise",
+        "See page 4|",
+    )
+    assert (reading.unrecognized, reading.places) == ((), ())
+    assert reading_complete(reading) is True
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "held_back"),
+    [
+        (
+            SCIENCE_ROW,
+            SCIENCE_ROW.replace("classroom exercise\t", "classroom\r\nexercise\t"),
+            (HeldBack(rows=(1,), stray=(0,)),),
+        ),
+        (
+            SCIENCE_ROW,
+            SCIENCE_ROW.replace("1.0\t\r\n", "1.0\tSee\r\nthe note\r\n"),
+            (HeldBack(rows=(0, 2), stray=(1,)),),
+        ),
+        (LABS_TAB_LINE, f"{BODY_LINE}\r\n{LABS_TAB_LINE}", ()),
+        (SCIENCE_ROW, SCIENCE_ROW.replace("\t\t1.0", "\t1.0"), ()),
+    ],
+    ids=["row-split-in-its-title", "row-split-in-its-note", "body-line", "row-short-a-cell"],
+)
+def test_a_reading_names_the_rows_it_held_back_and_the_stray_lines_beside_them(
+    before: str, after: str, held_back: tuple[HeldBack, ...]
+) -> None:
+    """Each group is the rows a stray line made ambiguous and that line, as positions among the
+    lines the reader didn't recognize, in report order; a line unread for another reason, or a
+    stray line beside no row, holds nothing back."""
+    reading, _ = read(replaced_once(SCIENCE, before, after))
+    assert reading.held_back == held_back
+
+
+def test_a_markdown_reading_holds_nothing_back_and_held_lines_are_kept_lines() -> None:
+    reading, _ = read(REPORT)
+    assert reading.held_back == ()
+    for held_back in [
+        (HeldBack(rows=(0,), stray=(1,)),),
+        (HeldBack(rows=(1,), stray=(0,)), HeldBack(rows=(1,), stray=(2,))),
+    ]:
+        with pytest.raises(ValidationError):
+            GradeReportReading(
+                draft=reading.draft,
+                not_read=None,
+                unrecognized=("one line",),
+                places=(LinePlace.BEFORE_TERM,),
+                held_back=held_back,
+            )

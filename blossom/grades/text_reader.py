@@ -150,11 +150,22 @@ class LinePlace(StrEnum):
     AFTER_TERM = "after_term"
 
 
+class HeldBack(BaseModel):
+    """Lines held back together, each a position among the reading's unrecognized lines: the
+    result rows a stray line beside them made ambiguous, and those stray lines."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    rows: tuple[int, ...]
+    stray: tuple[int, ...]
+
+
 class GradeReportReading(BaseModel):
     """What one paste gave: its draft, or the reason it has none, and every line the reader
     didn't recognize, verbatim and in order, left out of every repr since a paste can carry
-    names. With a draft, ``places`` says where each of those lines fell, and ``layout`` how
-    the paste laid out its tables."""
+    names. With a draft, ``places`` says where each of those lines fell, ``layout`` how the
+    paste laid out its tables, and ``held_back`` which of them are result rows held back with
+    the stray lines beside them, group by group in report order."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -163,6 +174,7 @@ class GradeReportReading(BaseModel):
     unrecognized: tuple[str, ...] = Field(repr=False)
     places: tuple[LinePlace, ...] = ()
     layout: Layout = Layout.PIPES
+    held_back: tuple[HeldBack, ...] = ()
 
     @model_validator(mode="after")
     def _a_draft_or_the_reason_for_none(self) -> Self:
@@ -171,6 +183,13 @@ class GradeReportReading(BaseModel):
             raise ValueError(msg)
         if len(self.places) != (0 if self.draft is None else len(self.unrecognized)):
             msg = "a reading with a draft places each line it didn't recognize, and only then"
+            raise ValueError(msg)
+        held = [sorted((*group.rows, *group.stray)) for group in self.held_back]
+        positions = [position for group in held for position in group]
+        if positions != sorted(set(positions)) or not set(positions) <= set(
+            range(len(self.places))
+        ):
+            msg = "held-back lines are lines the reading placed, each once, in report order"
             raise ValueError(msg)
         return self
 
@@ -198,8 +217,8 @@ def cells_of(line: str) -> list[str] | None:
 
 def tab_cells(line: str) -> list[str] | None:
     """A tab-separated line's cells, each as written, every empty one kept, the last after a
-    trailing tab included; None for a line without a tab, or a Markdown table line."""
-    if "\t" not in line or cells_of(line) is not None:
+    trailing tab included; None for a line without a tab. A pipe in a cell is the cell's text."""
+    if "\t" not in line:
         return None
     return line.split("\t")
 
@@ -285,7 +304,7 @@ def is_header_bottom(cells: list[str] | None) -> bool:
 
 def header_rows(lines: list[str]) -> list[Header]:
     """Each header table: a Markdown one, its first row, a separator and its last row, or a
-    tab-separated one, its first row directly above its last."""
+    tab-separated one, its first row directly above its last, neither a Markdown table line."""
     found = []
     for start in range(len(lines) - 1):
         top, below = (table_cells(line, Layout.PIPES) for line in lines[start : start + 2])
@@ -294,7 +313,10 @@ def header_rows(lines: list[str]) -> list[Header]:
             if is_header_bottom(bottom):
                 found.append(Header(start, 3, Layout.PIPES, top or [], bottom or []))
             continue
-        top, bottom = (table_cells(line, Layout.TABS) for line in lines[start : start + 2])
+        pair = lines[start : start + 2]
+        if any(cells_of(line) is not None for line in pair):
+            continue
+        top, bottom = (table_cells(line, Layout.TABS) for line in pair)
         if is_header_top(top) and is_header_bottom(bottom):
             found.append(Header(start, 2, Layout.TABS, top or [], bottom or []))
     return found
@@ -389,16 +411,37 @@ def weight_of(cell: str) -> str:
     return "" if written is None else written[1]
 
 
+def is_stray(line: str) -> bool:
+    """A plain line beside a result row that no structure there explains: not blank, without a
+    tab, and not the category's average label."""
+    return bool(line.strip()) and "\t" not in line and folded(bare(line)) != CATEGORY_AVERAGE
+
+
+def stray_beside(lines: list[str], index: int) -> list[int]:
+    """Where a stray line sits directly above or below the line at ``index``."""
+    return [
+        near for near in (index - 1, index + 1) if 0 <= near < len(lines) and is_stray(lines[near])
+    ]
+
+
 def beside_a_stray_line(lines: list[str], index: int) -> bool:
-    """Whether a plain line no structure explains sits directly above or below the
-    tab-separated line at ``index``, as a copy that wraps a result row leaves one: that line's
-    row is then not read, since part of it may be on the other line."""
-    for near in (index - 1, index + 1):
-        if 0 <= near < len(lines):
-            line = lines[near]
-            if line.strip() and "\t" not in line and folded(bare(line)) != CATEGORY_AVERAGE:
-                return True
-    return False
+    """Whether a stray line sits directly above or below the tab-separated line at ``index``, as
+    a copy that wraps a result row leaves one: that line's row is then not read, since part of
+    it may be on the other line."""
+    return bool(stray_beside(lines, index))
+
+
+def held_groups(lines: list[str], held: list[int]) -> list[tuple[list[int], list[int]]]:
+    """The rows held back and the stray lines beside them, as runs of adjacent lines in report
+    order: each run's rows, then its stray lines."""
+    stray = {near for index in held for near in stray_beside(lines, index)}
+    runs: list[list[int]] = []
+    for index in sorted({*held, *stray}):
+        if runs and runs[-1][-1] == index - 1:
+            runs[-1].append(index)
+        else:
+            runs.append([index])
+    return [([i for i in run if i not in stray], [i for i in run if i in stray]) for run in runs]
 
 
 def closed(category: _Category, state: State) -> None:
@@ -424,6 +467,7 @@ def read_grade_report(text: str) -> GradeReportReading:
     (header,) = headers
     start, layout, top, bottom = header.start, header.layout, header.top, header.bottom
     unrecognized: list[tuple[int, str]] = []
+    held: list[int] = []
     categories: list[_Category] = []
     term: TermResult | None = None
     term_at: int | None = None
@@ -471,10 +515,12 @@ def read_grade_report(text: str) -> GradeReportReading:
                 state = State.ROWS
             case State.NEEDS_COLUMNS | State.ROWS, LineClass.LABEL:
                 state = State.LABELED
-            case State.ROWS, LineClass.ROW if len(cells) == len(categories[-1].columns or ()) and (
-                layout is Layout.PIPES or not beside_a_stray_line(lines, index)
-            ):
-                categories[-1].rows.append(written)
+            case State.ROWS, LineClass.ROW if len(cells) == len(categories[-1].columns or ()):
+                if layout is Layout.TABS and beside_a_stray_line(lines, index):
+                    held.append(index)
+                    unrecognized.append((index, line))
+                else:
+                    categories[-1].rows.append(written)
             case State.ROWS, LineClass.COLUMNS:
                 unrecognized.append((index, line))
                 state = State.CLOSED
@@ -520,12 +566,20 @@ def read_grade_report(text: str) -> GradeReportReading:
             return LinePlace.BEFORE_TERM
         return LinePlace.AFTER_TERM
 
+    position = {index: at for at, (index, _) in enumerate(kept)}
     return GradeReportReading(
         draft=draft,
         not_read=None,
         unrecognized=tuple(line for _, line in kept),
         places=tuple(place(index) for index, _ in kept),
         layout=layout,
+        held_back=tuple(
+            HeldBack(
+                rows=tuple(position[index] for index in rows if index in position),
+                stray=tuple(position[index] for index in stray if index in position),
+            )
+            for rows, stray in held_groups(lines, held)
+        ),
     )
 
 
