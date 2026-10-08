@@ -575,9 +575,9 @@ What to do:
    restart Blossom just to clear them.
 3. If this followed an upgrade and you have a backup taken before it, follow
    [Upgrading and rolling back](#upgrading-and-rolling-back): preserve the
-   refused file, restore that backup, and start the corresponding previous
-   version. Anything saved after the backup is absent from the restored
-   copy. Do not run the previous version against the refused file.
+   refused file, restore that backup, and start the version that ran before
+   the upgrade. Anything saved after the backup is absent from the restored
+   copy. Do not run that version against the refused file.
 4. If no suitable backup exists, leave the files untouched and get help
    investigating the startup message. Keep the preserved files until the
    issue is resolved. Blossom has no command that repairs these records.
