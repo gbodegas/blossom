@@ -43,9 +43,6 @@
       <textarea id="kept-reply" rows="3" readonly>{{ help_reply.reply }}</textarea>
     {% endif %}
   {% endif %}
-  {% if refreshed_at %}
-    <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
-  {% endif %}
   {#
     Where a planning run stands: the one the address names, or the household's
     run while it is still being made or finished. Runs that ended without a plan
@@ -69,6 +66,9 @@
   #}
   <section id="help-she-asked-for" tabindex="-1">
     <h2>Help she asked for</h2>
+    {% if refreshed_at %}
+      <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
+    {% endif %}
     {#
       Each request is the group her page shows (``help_request.html``), said to
       a parent, then the form that moves it: one short box with the same cap as
@@ -118,7 +118,7 @@
       </article>
     {% endfor %}
     <p class="note refresh">
-      <a href="/parent?refreshed=1">Refresh requests</a>. Refresh to see updates. Save or send your note first.
+      <a href="{{ refresh_requests }}">Refresh requests</a>. Refresh to see updates. Save or send your note first.
     </p>
     {% if help_resolved %}
       <details class="steps">

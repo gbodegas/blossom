@@ -39,10 +39,12 @@ from tests.support import (
     browser,
     client_for,
     control_names,
+    declared_for,
     help_group,
     help_reply,
     help_updates,
     lands_on,
+    rules_named,
     signed_in,
     signed_in_household,
     state_of,
@@ -1520,6 +1522,94 @@ def test_every_help_link_and_redirect_lands_on_a_target_that_takes_the_focus(
     )
 
 
+@pytest.mark.parametrize("reader", ["parent", "open"])
+@pytest.mark.parametrize("step", ["accept", "update", "resolve"])
+def test_each_move_a_parent_makes_on_a_request_lands_on_help_she_asked_for(
+    step: str, reader: Reader, tmp_path: pathlib.Path
+) -> None:
+    """I can help, Add an update and Close request each answer with the family page's Help
+    section, which takes the focus and the arrival cue; the same form sent again lands there
+    too."""
+    with household(tmp_path, reader) as client:
+        store = state_of(client).help_requests
+        request_id = asked(store, "Synthetic question")
+        if step == "update":
+            store.accept(request_id)
+        action = f"/parent/actions/help/{request_id}"
+        form = {
+            **whole_form(client.get("/parent").text, action),
+            "step": step,
+            "response": "Synthetic reply",
+        }
+        moved = client.post(action, data=form)
+        again = client.post(action, data=form)
+        landed = client.get(moved.headers["location"]).text
+
+    assert (moved.status_code, again.status_code) == (303, 303)
+    assert moved.headers["location"] == again.headers["location"] == "/parent#help-she-asked-for"
+    assert lands_on_a_focus_target(landed, moved.headers["location"]) == (
+        '<section id="help-she-asked-for" tabindex="-1">'
+    )
+
+
+@pytest.mark.parametrize("then", ["signed out", "her"])
+def test_a_help_form_sent_again_under_another_sign_in_is_refused_before_it_lands(
+    then: str, tmp_path: pathlib.Path
+) -> None:
+    """The same form sent again after the parent signs out, or after she signs in on the same
+    browser, meets the sign-in check first: nothing is written and nothing lands on Help."""
+    with household(tmp_path, "parent") as client:
+        store = state_of(client).help_requests
+        request_id = asked(store, "Synthetic question")
+        action = f"/parent/actions/help/{request_id}"
+        form = {
+            **whole_form(client.get("/parent").text, action),
+            "step": "accept",
+            "response": "Synthetic reply",
+        }
+        moved = client.post(action, data=form)
+        client.post("/sign-out")
+        if then == "her":
+            signed_in(client, HERS)
+        before = help_tables(client)
+        again = client.post(action, data=form, headers=PAGE_HEADERS)
+        after = help_tables(client)
+
+    assert moved.headers["location"] == "/parent#help-she-asked-for"
+    if then == "her":
+        assert again.status_code == 403
+    else:
+        assert (again.status_code, again.headers["location"]) == (303, "/sign-in")
+    assert after == before
+
+
+@pytest.mark.parametrize("reader", ["parent", "open"])
+def test_refresh_requests_lands_on_help_she_asked_for(
+    reader: Reader, tmp_path: pathlib.Path
+) -> None:
+    """Refresh requests reads the family page again and lands on its Help section, as
+    Refresh replies lands on hers, with the line that says when right under the section's
+    heading, where it lands; the page with no refresh says no time."""
+    with household(tmp_path, reader) as client:
+        asked(state_of(client).help_requests, "Synthetic question")
+        page = client.get("/parent").text
+        refresh = re.search(r'<a href="([^"]+)">Refresh requests</a>', page)
+        assert refresh is not None
+        landed = client.get(html.unescape(refresh.group(1))).text
+
+    assert refresh.group(1) == "/parent?refreshed=1#help-she-asked-for"
+    assert lands_on_a_focus_target(landed, refresh.group(1)) == (
+        '<section id="help-she-asked-for" tabindex="-1">'
+    )
+    assert re.search(
+        r'<section id="help-she-asked-for" tabindex="-1">\s*<h2>Help she asked for</h2>\s*'
+        r'<p class="note" role="status">Refreshed at [^<]+\.</p>',
+        landed,
+    )
+    assert landed.count("Refreshed at") == 1
+    assert "Refreshed at" not in page
+
+
 @pytest.mark.parametrize("reader", ["her", "parent", "open"])
 def test_every_address_naming_help_lands_on_its_heading_and_never_on_the_panel(
     reader: Reader, tmp_path: pathlib.Path
@@ -1566,6 +1656,13 @@ def test_help_takes_the_arrival_cue_on_focus_its_links_are_tall_and_its_words_wr
     assert ".help-panel .problem a" in tall
     assert ".help-panel #ask-for-help a" in tall
     assert ".help-panel" in wrapping(CSS)
+
+
+def test_help_she_asked_for_stops_below_the_top_of_the_screen_as_her_help_does() -> None:
+    """The family page's Help section shares the rule that stops her Help heading a little
+    below the top of the screen, so the whole arrival cue shows when a press lands on it."""
+    assert declared_for("#help-she-asked-for") == ["scroll-margin-top: 0.75rem;"]
+    assert rules_named("#help-she-asked-for") == rules_named("#help")
 
 
 def margins_of(css: str, selector: str) -> tuple[float, float]:

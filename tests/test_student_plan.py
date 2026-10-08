@@ -782,7 +782,7 @@ def test_refresh_is_a_link_on_both_pages_and_a_visit_marks_nothing() -> None:
 
     assert '<a href="/student/due-this-week?refreshed=1#help">Refresh replies</a>' in hers
     assert "Refresh to see updates. Save or send your note first." in hers
-    assert '<a href="/parent?refreshed=1">Refresh requests</a>' in theirs
+    assert '<a href="/parent?refreshed=1#help-she-asked-for">Refresh requests</a>' in theirs
     assert state == "requested"
     assert "Waiting for a parent." in hers_after
 

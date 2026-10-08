@@ -548,8 +548,11 @@ ASK_FOR_HELP: Final = "ask-for-help"
 about her requests."""
 HOMEWORK: Final = "homework"
 """The id of her week's homework heading, where Refresh list lands."""
-FAMILY_HELP: Final = f"{FAMILY_PAGE}#help-she-asked-for"
-"""The help she asked for, on the family page, where a parent answers it."""
+HELP_SHE_ASKED_FOR: Final = "help-she-asked-for"
+"""The id of the family page's Help section, which holds her requests and takes the focus."""
+FAMILY_HELP: Final = address(FAMILY_PAGE, fragment=HELP_SHE_ASKED_FOR)
+"""The help she asked for, on the family page, where a parent answers it and where each
+of a parent's moves on a request lands."""
 HAND_IN_SAVED: Final = "Your hand-in update is saved."
 HAND_IN_ALREADY_SAVED: Final = "Already saved."
 HAND_IN_UNDONE: Final = "Your hand-in update is undone."

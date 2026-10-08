@@ -909,14 +909,16 @@ a.assignment-link:focus-visible {
   scroll-margin-top: 33vh;
 }
 
-/* The headings of the week's homework, of Turning it in and of Help, and the line that says
-   where her request for a shorter plan stands, stop a little below the top of the screen
-   when a link or a redirect lands on them, so their cue shows whole. */
+/* The headings of the week's homework, of Turning it in and of Help, the line that says
+   where her request for a shorter plan stands, and the family page's Help she asked for,
+   stop a little below the top of the screen when a link or a redirect lands on them, so
+   their cue shows whole. */
 .list-heading,
 #too-much-state,
 #turning-it-in,
 #help,
-#ask-for-help {
+#ask-for-help,
+#help-she-asked-for {
   scroll-margin-top: 0.75rem;
 }
 
