@@ -28,6 +28,10 @@
         <p class="note">Grades open on {{ recorded.context[1] }} · {{ recorded.context[0] }}.</p>
       {% endif %}
     </section>
+    {% if class_link %}
+      <p class="return"><a href="{{ class_link }}"><span class="authored-text">See {{ recorded.class_name }}</span></a></p>
+    {% endif %}
+    <p class="return"><a href="{{ grades }}">Grades</a></p>
     <p class="return"><a href="{{ add }}">Add another report</a></p>
   {% else %}
     <p class="problem" role="alert" id="problem">{{ said }}</p>

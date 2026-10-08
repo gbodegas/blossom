@@ -1,0 +1,73 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% set page = "parent-grades" if family_tree else "grades" %}
+{% block title %}Blossom - {% if missing %}Grades{% else %}{{ name }}{% endif %}{% endblock %}
+{#
+  Class details of one class in the term its address names by place in the class's year, never
+  by anyone's remembered term: the term grade and the report that supplied it, each result with
+  its score as the school wrote it, by due date, newest first, and the dates not confirmed
+  apart; then the categories and the term's reports. A class or place not on record says so.
+#}
+{% macro result(item) %}
+  <section class="panel">
+    <h3><span class="authored-text">{{ item.title }}</span></h3>
+    <p class="note"><span class="authored-text">{{ item.category }}</span></p>
+    <p>{{ item.score }}</p>
+    <p>{{ item.due }}</p>
+    {% if item.status %}<p>{{ item.status }}</p>{% endif %}
+    {% for line in item.showing %}
+      <p class="note">{{ line }}</p>
+    {% endfor %}
+    <details class="steps">
+      <summary>School record details{% if item.cues %}: {{ item.cues|join(", ") }}{% endif %}</summary>
+      <ul>
+        {% for line in item.record %}
+          <li><span class="authored-text">{{ line }}</span></li>
+        {% endfor %}
+      </ul>
+    </details>
+  </section>
+{% endmacro %}
+{% block content %}
+  <p class="return"><a href="{{ grades }}">Back to Grades</a></p>
+  {% if missing %}
+    <h1>Grades</h1>
+    <p class="problem" role="alert" id="problem">{{ missing }}</p>
+  {% else %}
+    <h1><span class="authored-text">{{ name }}</span></h1>
+    <p>{{ term }}</p>
+    {% if summary %}
+      <p>{{ summary.grade }}</p>
+      <p class="note">{{ summary.supplied_by }}</p>
+    {% elif not reported %}
+      <p class="note">{{ no_report_added }}</p>
+    {% endif %}
+    {% if dated %}
+      <h2>Assignments</h2>
+      {% for item in dated %}{{ result(item) }}{% endfor %}
+    {% endif %}
+    {% if undated %}
+      <h2>Date not confirmed</h2>
+      {% for item in undated %}{{ result(item) }}{% endfor %}
+    {% endif %}
+    {% if categories %}
+      <details class="steps">
+        <summary>Category details</summary>
+        <ul>
+          {% for line in categories %}
+            <li><span class="authored-text">{{ line }}</span></li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+    {% if reports %}
+      <h2>Reports in this term</h2>
+      <ul>
+        {% for line, use in reports %}
+          <li>{{ line }}: {{ use }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endif %}
+{% endblock %}
