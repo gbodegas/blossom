@@ -224,7 +224,7 @@ Three files under `.local/` outlive a restart:
   `grade_student`, one row with a random ID made at the first start and the
   key check for her name forms, and `grade_name_forms`, the keyed forms of
   the student lines a parent confirmed as hers, never the names themselves.
-  Fourteen more keep the grade reports a parent accepted, each row under her
+  Fifteen more keep the grade reports a parent accepted, each row under her
   student ID: `grade_context`, the current school year and term;
   `grade_years`, `grade_terms`, `grade_classes` and `grade_class_aliases`;
   `grade_reports`, with `grade_term_observations`,
@@ -240,9 +240,15 @@ Three files under `.local/` outlive a restart:
   class and term it covers, which a repeated press is answered from; and
   `grade_current_actions`, one record of each confirmed "Use saved values
   from this report as current": the report it copied, the report it made
-  current, and what it copied. A delete of one class's grades for one term
-  removes that class and term's reports, values, results, acceptances and
-  actions, and keeps her record, years, terms, classes and aliases.
+  current, and what it copied; and `grade_corrections`, added only, a
+  parent's assertion on a saved value or its withdrawal, each on the
+  original reading with the cell as read, the report the parent acted on,
+  who and when, never changing the value as written. An assertion takes a
+  closed form only: a number, a letter grade A to F with + or -, or a status
+  the class and term already hold. A delete of one class's grades for one
+  term removes that class and term's reports, values, results, assertions
+  and their history, acceptances and actions, and keeps her record, years,
+  terms, classes and aliases.
   A file from before any of them gains the tables on the first start, and
   a file whose acceptances have no class and term gains them once: each is
   tied to its report's, or its capture's, or the start stops with every
