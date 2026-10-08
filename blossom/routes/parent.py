@@ -380,6 +380,16 @@ class HelpReplyKept:
 
 
 @dataclass(frozen=True)
+class ReasonKept:
+    """A note about a plan that a refused decision sends back to the family page as typed:
+    the plan it was for, the words, and whether the words are what was refused."""
+
+    draft_id: str
+    reason: str
+    at_reason: bool = False
+
+
+@dataclass(frozen=True)
 class CheckState:
     """What one row of the assignment updates shows beyond the record: what a check form did,
     a problem with it, which field the problem is about, and the note typed, kept."""
@@ -956,6 +966,7 @@ def review_page(
     problem_check: RunCheck | None = None,
     run_notice: RunNotice | None = None,
     help_reply: HelpReplyKept | None = None,
+    reason_kept: ReasonKept | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to add assignments,
@@ -975,7 +986,9 @@ def review_page(
     place of its two buttons, as the decision itself refuses it. ``help_reply`` is the
     words a refused press sent back, shown in its request's box while that request is
     open on the page, and under the problem otherwise. Each open request's form gets a
-    fresh id of its own, so the same form sent again is known as one.
+    fresh id of its own, so the same form sent again is known as one. ``reason_kept`` is
+    the note a refused decision sent back, in its plan's box while that plan waits here
+    with its form, and under the problem otherwise.
 
     The household day is read once, and today's working plan with it: the
     last draft published for today that no later one displaced. That one
@@ -1038,6 +1051,22 @@ def review_page(
     todays = next((view for view in every_decided if view.draft_id == records.current_id), None)
     decided = [view for view in every_decided if view is not todays]
     ended = [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()]
+    unresumable_now = {
+        record.draft_id: unresumable(record.plan_date, today)
+        for record in records.waiting
+        if record.thread_id in stuck
+    }
+    # The kept note's box, by the position the template numbers each waiting plan's box with.
+    reason_at = next(
+        (
+            position
+            for position, view in enumerate(waiting, 1)
+            if reason_kept is not None
+            and view.draft_id == reason_kept.draft_id
+            and view.draft_id not in unresumable_now
+        ),
+        None,
+    )
     return templates.TemplateResponse(
         request,
         "parent_review.html",
@@ -1050,11 +1079,7 @@ def review_page(
             "open_plan": open_plan if open_plan in plans else None,
             "readings": {name: found.reading for name, found in plans.items()},
             "ended": ended,
-            "unresumable": {
-                record.draft_id: unresumable(record.plan_date, today)
-                for record in records.waiting
-                if record.thread_id in stuck
-            },
+            "unresumable": unresumable_now,
             "problem_check": problem_check,
             "run_notice": run_notice,
             # Open when the latest run of an evening still ahead made no plan, so the
@@ -1070,6 +1095,8 @@ def review_page(
             "help_reply": help_reply,
             "help_reply_listed": help_reply is not None
             and any(r.open and r.request_id == help_reply.request_id for r in asked),
+            "reason_kept": reason_kept,
+            "reason_at": reason_at,
             "homework_notes": notes.notes,
             "homework_notes_unreadable": notes.unreadable,
             "remains": what_remains(
@@ -1705,10 +1732,11 @@ def refused_on_the_page(
     *,
     check: RunCheck | None = None,
     help_reply: HelpReplyKept | None = None,
+    reason_kept: ReasonKept | None = None,
 ) -> HTMLResponse:
     """A form action the family page refused, said at its top with the status the JSON route
-    would answer, ``check`` the link to the run it names, and ``help_reply`` a reply to her
-    request as typed, tried once."""
+    would answer, ``check`` the link to the run it names, ``help_reply`` a reply to her
+    request as typed, and ``reason_kept`` a note about a plan as typed, tried once."""
     return reviewed_once(
         request,
         state,
@@ -1718,6 +1746,7 @@ def refused_on_the_page(
             problem=problem,
             problem_check=check,
             help_reply=help_reply,
+            reason_kept=reason_kept,
             status_code=status_code,
         ),
         problem,
@@ -1945,10 +1974,14 @@ async def decide_from_the_page(
     The field is read as text and checked here rather than typed as a literal,
     because the framework's own validation would answer a bad value with a
     JSON error, and a form failure is promised as this page with the problem.
-    A refusal whose page can't be read keeps its status, with the reason as
-    typed, on the family page's stand-in.
+    Every refusal answers with the family page and the reason as typed: in its plan's
+    box while the plan waits there with its form, marked and focused when the words are
+    what was refused, and under the problem otherwise. A refusal whose page can't be read
+    keeps its status, with the reason as typed, on the family page's stand-in.
     """
     typed = FamilyKept(reason=reason)
+    words = reason.strip()
+    kept = ReasonKept(draft_id, reason) if words else None
     if decision not in DECISIONS:
         return refused_on_the_page(
             request,
@@ -1956,8 +1989,8 @@ async def decide_from_the_page(
             f"{decision!r} is not one of the two buttons, approve or refuse.",
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             typed,
+            reason_kept=kept,
         )
-    words = reason.strip()
     if len(words) > REASON_MAX_LENGTH:
         return refused_on_the_page(
             request,
@@ -1965,12 +1998,15 @@ async def decide_from_the_page(
             f"A reason is at most {REASON_MAX_LENGTH} characters; this one is {len(words)}.",
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             typed,
+            reason_kept=ReasonKept(draft_id, reason, at_reason=True),
         )
     decided = DecisionRequest(approved=decision == "approve", reason=words or None)
     try:
         await decide_draft(state, graphs.build, draft_id, decided)
     except HTTPException as error:
-        return refused_on_the_page(request, state, str(error.detail), error.status_code, typed)
+        return refused_on_the_page(
+            request, state, str(error.detail), error.status_code, typed, reason_kept=kept
+        )
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
 

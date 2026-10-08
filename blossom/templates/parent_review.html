@@ -37,10 +37,14 @@
   <p class="lead-action"><a href="#add-assignments">Add assignments</a></p>
 
   {% if problem %}
-    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_check %} <a href="{{ problem_check.href }}">{{ problem_check.label }}</a>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% elif help_reply and (help_reply.at_reply or help_reply.below) and help_reply_listed %} <a href="#reply-{{ help_reply.request_id }}">Go to the field.</a>{% endif %}</p>
+    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_check %} <a href="{{ problem_check.href }}">{{ problem_check.label }}</a>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% elif help_reply and (help_reply.at_reply or help_reply.below) and help_reply_listed %} <a href="#reply-{{ help_reply.request_id }}">Go to the field.</a>{% elif reason_kept and reason_kept.at_reason and reason_at %} <a href="#review-note-{{ reason_at }}">Go to the field.</a>{% endif %}</p>
     {% if help_reply and help_reply.reply and not help_reply_listed %}
       <label for="kept-reply">Reply, as typed</label>
       <textarea id="kept-reply" rows="3" readonly>{{ help_reply.reply }}</textarea>
+    {% endif %}
+    {% if reason_kept and not reason_at %}
+      <label for="kept-reason">Reason, as typed</label>
+      <textarea id="kept-reason" rows="3" readonly>{{ reason_kept.reason }}</textarea>
     {% endif %}
   {% endif %}
   {% if refreshed_at %}
@@ -470,11 +474,15 @@
           body text's weight, as the pasted text's field does. Its example is only a
           placeholder, gone once anything is typed; the helper under it stays, and
           the field names it as its description. Each waiting plan's field and
-          helper have ids of their own.
+          helper have ids of their own. A note a refused decision sent back for this
+          plan is in its box as typed, ready to send again; when the note is what was
+          refused, the box is marked, takes the focus and names the problem too.
         #}
+        {% set kept_here = reason_kept if reason_kept and reason_at == loop.index else none %}
+        {% set refused_note = kept_here and kept_here.at_reason %}
         <form method="post" action="/parent/actions/decide/{{ draft.draft_id }}" class="decision">
           <label for="review-note-{{ loop.index }}">Note about this plan (optional)</label>
-          <input id="review-note-{{ loop.index }}" type="text" name="reason" maxlength="{{ reason_max_length }}" placeholder="For example: Start with Geometry, then take a short break." aria-describedby="review-note-help-{{ loop.index }}">
+          <input id="review-note-{{ loop.index }}" type="text" name="reason"{% if kept_here %} value="{{ kept_here.reason }}"{% endif %} maxlength="{{ reason_max_length }}" placeholder="For example: Start with Geometry, then take a short break." aria-describedby="{% if refused_note %}problem {% endif %}review-note-help-{{ loop.index }}"{% if refused_note %} aria-invalid="true" autofocus{% endif %}>
           <p class="helper" id="review-note-help-{{ loop.index }}">Add encouragement or explain what should change.</p>
           <div class="actions">
             {% if not draft.stale %}

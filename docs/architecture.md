@@ -544,7 +544,10 @@ page says it with 409, and the API answers 201 with the run's record, as for
 any run that ended without a plan. The decision field admits exactly the two
 button values, and the reason is capped at `REASON_MAX_LENGTH`, five hundred
 characters, on the form and on the JSON request alike, so a longer one is
-refused at the boundary rather than stored. The two buttons read "Looks good"
+refused at the boundary rather than stored. A decision the page refuses saves
+nothing and keeps the reason as typed, ready to send again: in its plan's box
+while that plan waits on the page with its form, marked and focused when the
+reason is what was refused, and under the problem otherwise. The two buttons read "Looks good"
 and "Ask for a change", and each carries an accessible name with the draft's
 evening, and its position when several wait, so the controls can be told apart
 without reading around them. Without a key the page still reads and says why
