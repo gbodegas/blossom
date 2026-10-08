@@ -1,0 +1,32 @@
+*Gradebook Student Progress Report*
+
+*Bramble, Wren* *2026-2027* *Teacher, Example*
+*07 BIO - C* *T1*
+
+*PERCENT*
+
+*Biology*
+
+*Homework / Practice* *Weight = 15.0*
+*Assignment* *Pts* *Max* *Avg* *Status* *Due* *Curve* *Bonus* *Penalty*
+*Weight* *Note*
+Seed Germination Log: count the sprouts each morning and chart them 17.0
+20.0 85.0 Valid 09/21 0.0 0.0 1.0
+Cell Diagram 8.0 10.0 80.0 Valid 09/25 0.0 0.0 1.0
+
+*Category Average*
+
+*82.5*
+
+*Labs* *Weight = 25.0*
+*Assignment* *Pts* *Max* *Avg* *Status* *Due* *Curve* *Bonus* *Penalty*
+*Weight* *Note*
+Microscope Practice 26.0 30.0 86.7 Valid 09/23 0.0 0.0 1.0
+Osmosis with Potato Slices: compare the slices after one hour in each
+solution 33.0 40.0 82.5 Valid 10/01 0.0 0.0 1.0
+
+*Category Average*
+
+*84.6*
+
+*Term Grade* *83.9* *B*

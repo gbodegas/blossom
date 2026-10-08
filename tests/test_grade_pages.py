@@ -16,6 +16,7 @@ import re
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
+from html import unescape
 
 import pytest
 from fastapi.params import Form as FormParameter
@@ -27,9 +28,9 @@ from starlette.requests import Request
 from blossom import anthropic_client
 from blossom.agent import graph as agent_graph
 from blossom.app import create_app
-from blossom.grades.draft import GradeReportDraft, capture_key
+from blossom.grades.draft import GradeNumber, GradeReportDraft, GradeValue, Presence, capture_key
 from blossom.grades.identity import name_form_key
-from blossom.grades.review import GradeReportSaved
+from blossom.grades.review import GradeReportSaved, ItemStatus, ReviewItem
 from blossom.grades.text_reader import read_grade_report
 from blossom.household import secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
@@ -462,6 +463,27 @@ def test_a_paste_that_gives_no_review_keeps_the_text_and_writes_nothing(
     assert not (tmp_path / SECRET_NAME).exists()
 
 
+def test_a_report_that_came_through_email_isn_t_read_and_its_text_is_kept_exactly(
+    tmp_path: pathlib.Path,
+) -> None:
+    text = (FIXTURES / "grade_email" / "plain-text-body.txt").read_bytes().decode("utf-8")
+    sent = as_a_browser_sends({"report_text": text})["report_text"]
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(REVIEW, data={"report_text": sent}, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    textarea = answer.text.split('id="report-text"', 1)[1].split(">", 1)[1]
+    assert answer.status_code == 422
+    assert problem_said(answer.text) == (
+        "Blossom couldn't find a grade report in this text. Nothing was saved. Copy the report "
+        "again from the school's gradebook. Your text is kept."
+    )
+    assert unescape(textarea.split("</textarea>", 1)[0]) == "\n" + sent
+    assert after == before
+
+
 def test_edit_this_text_returns_the_paste_page_holding_the_text(tmp_path: pathlib.Path) -> None:
     with at(open_household(tmp_path)) as browser:
         answer = browser.post(EDIT, data={"report_text": "\n" + REPORT}, headers=PAGE)
@@ -566,6 +588,169 @@ def test_the_review_asks_the_setup_month_and_class_with_the_report_s_labels(
     assert 'name="class" value="new"' in page
 
 
+def problem_said(page: str) -> str:
+    """The words of the page's problem line."""
+    found = re.search(r'<p class="problem"[^>]*>(.*?)</p>', page, re.DOTALL)
+    assert found is not None
+    return words(found[1])
+
+
+def test_a_paste_over_the_size_limit_names_the_limit_and_keeps_the_text(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        answer = browser.post(
+            REVIEW, data={"report_text": "x" * (TEXT_MAX_LENGTH + 1)}, headers=PAGE
+        )
+
+    assert answer.status_code == 422
+    assert problem_said(answer.text) == (
+        "This text exceeds the size limit. Nothing was saved. Paste one class's report at a "
+        "time. Your text is kept."
+    )
+
+
+def test_a_secret_that_cant_be_read_says_hers_couldn_t_be_checked_at_the_review_and_the_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unchecked = (
+        "Blossom couldn't check that this report is hers. Nothing was saved. See the household "
+        "guide before trying again."
+    )
+    with at(open_household(tmp_path)) as browser:
+        form = answered(review_page(browser))
+        del browser.app.state.grade_name_key  # type: ignore[attr-defined]
+        unreadable(tmp_path, monkeypatch)
+        reviewed = browser.post(REVIEW, data={"report_text": REPORT}, headers=PAGE)
+        saved = browser.post(SAVE, data=form, headers=PAGE)
+
+    assert (reviewed.status_code, saved.status_code) == (500, 500)
+    assert problem_said(reviewed.text) == f"{unchecked} Your text is kept."
+    assert problem_said(saved.text) == f"{unchecked} Your text and answers are kept."
+
+
+def test_a_report_with_no_student_line_says_none_was_found_in_this_copy(
+    tmp_path: pathlib.Path,
+) -> None:
+    about = reviewed(tmp_path, NO_LINE).split('id="about-this-report"', 1)[1]
+
+    assert "<legend>No student name was found in this copy.</legend>" in about
+
+
+def test_the_name_was_misread_says_this_spelling_isn_t_remembered_and_promises_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    about = words(reviewed(tmp_path).split('id="about-this-report"', 1)[1].split("</fieldset>")[0])
+
+    assert "The name was misread Blossom won't remember this spelling." in about
+    assert "next report" not in about
+
+
+def test_a_changed_text_keeps_the_text_and_asks_for_the_answers_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        form = answered(review_page(browser))
+        changed = form["report_text"].replace("| 7.0 ", "| 8.0 ")
+        answer = browser.post(SAVE, data={**form, "report_text": changed}, headers=PAGE)
+
+    assert answer.status_code == 409
+    assert problem_said(answer.text) == (
+        "The report text changed. Nothing was saved. Review the text again. Your text is kept. "
+        "Check the answers again."
+    )
+
+
+def test_each_cell_says_what_the_copy_held_under_its_own_field_s_name(
+    tmp_path: pathlib.Path,
+) -> None:
+    text = (
+        REPORT.replace(
+            "| Seed Germination Log | 18.0    | 20.0    | 90.0    | Valid      | 09/22   |",
+            "| Seed Germination Log |         | EX      | 90.0    |            | EX      |",
+        )
+        .replace("| Cell Diagram             | 7.0     |", "| Cell Diagram             | EX      |")
+        .replace("**80.0**", "**EX**", 1)
+        .replace("| **81.9** | **B-** |", "| **EX** |        |")
+    )
+    said = words(re.sub(r"</?span[^>]*>", "", reviewed(tmp_path, text)))
+
+    assert (
+        "Term grade on this report: percent couldn't be read: EX · letter grade left blank"
+    ) in said
+    assert "Homework / Practice: weight 15.0, average couldn't be read: EX" in said
+    assert "Quizzes: weight 20.0, average left blank" in said
+    assert (
+        "Seed Germination Log School score: blank / maximum couldn't be read: EX · Status left "
+        "blank · Due date shown: couldn't be read: EX"
+    ) in said
+    assert (
+        "Cell Diagram School score: couldn't be read: EX / 10.0 · Missing · Due date shown: 09/26"
+    ) in said
+
+
+@pytest.mark.parametrize(
+    ("value", "label", "said"),
+    [
+        (GradeNumber.read("0.0"), None, "0.0"),
+        (GradeNumber.read(""), None, "blank"),
+        (GradeNumber.read("EX"), None, "couldn't be read: EX"),
+        (GradeNumber.not_captured(), None, "not in the copy"),
+        (GradeNumber.read("20.0"), "maximum", "20.0"),
+        (GradeNumber.read(""), "maximum", "maximum left blank"),
+        (GradeNumber.read("EX"), "maximum", "maximum couldn't be read: EX"),
+        (GradeNumber.not_captured(), "maximum", "maximum not in the copy"),
+        (GradeValue.not_captured(), "Assignment", "Assignment not in the copy"),
+    ],
+)
+def test_a_cell_is_described_short_after_its_label_and_whole_where_it_stands_alone(
+    value: GradeValue, label: str | None, said: str
+) -> None:
+    assert grade_routes.cell(value, label) == said
+
+
+def test_a_category_s_weight_and_average_name_themselves_reported_or_not() -> None:
+    assert grade_routes.cell(GradeNumber.read("25.0"), "weight", named=True) == "weight 25.0"
+    assert grade_routes.cell(GradeNumber.read(""), "average", named=True) == "average left blank"
+    assert (
+        grade_routes.cell(GradeNumber.not_captured(), "average", named=True)
+        == "average not in the copy"
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "said"),
+    [
+        ("term", "No percent or letter grade in this copy"),
+        ("category", "No weight or average in this copy"),
+        ("row", "No score in this copy"),
+    ],
+)
+def test_a_value_the_copy_didn_t_capture_is_named_by_its_own_fields(kind: str, said: str) -> None:
+    item = ReviewItem(key="k", status=ItemStatus.VALUE_NOT_CAPTURED)
+
+    assert grade_routes.status_word(grade_routes.Shown(0, item, kind)) == said
+
+
+def test_a_saved_value_is_described_under_its_field_s_name() -> None:
+    saved = {
+        "points": (Presence.BLANK, ""),
+        "max_points": (Presence.REPORTED, "20.0"),
+        "average": (Presence.UNREADABLE, "EX"),
+        "percent": (Presence.NOT_CAPTURED, ""),
+        "letter": (Presence.REPORTED, "B"),
+        "assignment": (Presence.REPORTED, "Cell Diagram"),
+    }
+
+    assert grade_routes.saved_now(saved) == [
+        "school score left blank",
+        "20.0",
+        "average couldn't be read: EX",
+        "percent not in the copy",
+        "B",
+    ]
+
+
 def test_no_family_grade_route_calls_a_model(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -629,7 +814,15 @@ def test_a_line_that_matches_a_confirmed_form_is_shown_with_no_question(
 STYLESHEET = pathlib.Path(grade_routes.__file__).parents[1] / "static" / "blossom.css"
 TEMPLATES = STYLESHEET.parents[1] / "templates"
 GRADE_REVIEW_RULE = ".grade-review .choice {\n  min-width: 0;\n}\n"
-"""The one rule of the grade review's own, pinned whole."""
+"""The grade review's rule for its fieldsets, pinned whole."""
+IDENTITY_RULES = (
+    ".grade-review .choice.identity {\n  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"
+    ".grade-review .choice.identity label {\n  flex-wrap: wrap;\n}\n\n"
+    ".grade-review .choice.identity label > span {\n  flex: 1 1 8rem;\n}\n"
+)
+"""The grade review's rules for its "Is this her?" choices, pinned whole: the fieldset's side
+padding gives way on a narrow screen with large text, and a choice's words go under its radio
+when less than 8rem is left beside it."""
 SHARED_CHOICE_RULE = (
     ".choice {\n  margin: 0.75rem 0;\n  padding: 0.75rem 1rem;\n"
     "  border: 1px solid var(--field-edge);\n  border-radius: var(--radius-small);\n}\n"
@@ -646,10 +839,37 @@ def test_the_grade_review_s_own_rule_is_pinned_and_only_its_form_carries_its_cla
         if "grade-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("grade-review") == 1
+    assert css.count("grade-review") == 4
     assert css.count(GRADE_REVIEW_RULE) == 1
+    assert css.count(IDENTITY_RULES) == 1
     assert css.count(SHARED_CHOICE_RULE) == 1
     assert carriers == ["grade_review.html"]
+
+
+GRADE_PANEL_RULE = (
+    ".grade-panel .decision button {\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);\n"
+    "  overflow-wrap: normal;\n"
+    "}\n"
+)
+"""The paste and retry pages' one rule, pinned whole: their buttons' side padding gives way on
+a narrow screen with large text, and their words, the page's own, stay whole."""
+
+
+def test_the_grade_panel_rule_is_pinned_and_only_the_paste_and_retry_panels_carry_it() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "grade-panel" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("grade-panel") == 1
+    assert css.count(GRADE_PANEL_RULE) == 1
+    assert carriers == ["grade_add.html", "grade_retry.html"]
+    for carrier in carriers:
+        page = (TEMPLATES / carrier).read_text(encoding="utf-8")
+        assert page.count('<section class="panel grade-panel">') == 1
 
 
 # ------------------------------------------------------------- the save, the check, the outcome
@@ -753,6 +973,10 @@ def test_a_resent_save_with_rows_that_save_left_out_says_so(tmp_path: pathlib.Pa
 
     assert again.status_code == 200
     assert escape(grade_routes.SAVED_ELSEWHERE) in again.text
+    assert problem_said(again.text) == (
+        "This report was saved from another page or tab. Your text is kept. Check the answers "
+        "again. See what was saved"
+    )
     assert escape(grade_routes.LEFT_OUT) in again.text
     assert 'name="select.1" value="1" checked' in again.text
     assert whole_form(again.text, SAVE)["acceptance_id"] != form["acceptance_id"]
@@ -850,6 +1074,10 @@ def test_a_check_after_another_tab_s_save_says_so_and_leaves_the_next_save_prote
 
     assert checked.status_code == 409
     assert escape(grade_routes.CHANGED_WHILE_REVIEWING) in checked.text
+    assert problem_said(checked.text) == (
+        "These grades changed while you were reviewing. Nothing was saved. Check the review "
+        "again. Your text and answers are kept."
+    )
     assert between == before
     assert saved.status_code == 409
     assert escape(grade_routes.CHANGED_WHILE_REVIEWING) in saved.text
@@ -1025,6 +1253,11 @@ def test_answers_another_tab_settled_return_the_review_and_keep_what_still_appli
 
     assert answer.status_code == 409
     assert escape(grade_routes.ANSWER_DOESNT_FIT) in answer.text
+    assert problem_said(answer.text) == (
+        "An answer doesn't fit this report now: another page saved it, or the name check "
+        "changed. Nothing was saved. Answer again where asked. Your text is kept. Check the "
+        "answers again."
+    )
     kept = whole_form(answer.text, SAVE)
     assert kept["identity"] == "shown"
     assert "setup" not in kept
@@ -1046,6 +1279,10 @@ def test_a_tick_on_a_result_not_offered_returns_the_review_and_writes_nothing(
 
     assert answer.status_code == 409
     assert escape(grade_routes.NOT_NEW) in answer.text
+    assert problem_said(answer.text) == (
+        "A ticked result isn't new any more. Nothing was saved. Check the ticks again. Your text "
+        "and answers are kept."
+    )
     assert "select.1" not in whole_form(answer.text, SAVE)
     assert after == before
 

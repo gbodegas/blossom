@@ -270,8 +270,9 @@ def test_a_row_the_rebuild_cannot_tie_refuses_the_start_and_changes_no_grade_rec
 GUIDE = (
     "Blossom couldn't start. Some saved import records have missing or inconsistent report "
     "links. Affected records: {n} ({cases}). This startup attempt did not change or delete any "
-    "grade records. Keep a copy of this file as it is and see the household guide before trying "
-    "again. The guide is docs/development.md in the Blossom folder, under "
+    "grade records. Leave this file and any files beside it that start with the same name "
+    "untouched, and see the household guide before trying again. The guide is "
+    "docs/development.md in the Blossom folder, under "
     '"Blossom couldn\'t start: saved import records".'
 )
 """The refused start's message, with the guide a person can open while Blossom can't start."""
