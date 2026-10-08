@@ -569,11 +569,29 @@ def status_against(
         return tuple(one for one in value if one[0] not in left_out)
 
     value = kept(compared(cells))
-    if current is not None and kept(compared(current.cells)) == value:
+    if current is not None and kept(compared(_as_shown(current, cells))) == value:
         return ItemStatus.SAVED
     if value in {kept(one) for one in held.once_current.get(target, frozenset())}:
         return ItemStatus.MATCHES_EARLIER
     return ItemStatus.NEW if current is None else ItemStatus.CHANGED
+
+
+def _as_shown(current: CurrentValue, cells: Mapping[str, Cell]) -> Mapping[str, Cell]:
+    """The current value's cells as the comparison with an incoming copy reads them. When the
+    value's own observation didn't capture its Due cell and the copy did, its Due cell is the
+    result's shown due date, by value and presence, blank or unreadable as captured; with no
+    shown due date it stays not captured. Nothing is written, the date keeps its own report,
+    and values once current are compared as they are."""
+    own, incoming = current.cells.get("due"), cells.get("due")
+    if (
+        own is None
+        or incoming is None
+        or current.due is None
+        or own[0] is not Presence.NOT_CAPTURED
+        or incoming[0] is Presence.NOT_CAPTURED
+    ):
+        return current.cells
+    return {**current.cells, "due": current.due.cell}
 
 
 def evidence_of(value: CurrentValue) -> Evidence:

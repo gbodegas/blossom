@@ -2749,9 +2749,10 @@ def test_after_a_value_saved_from_a_copy_missing_its_dates_the_next_dated_captur
     cell, seed = row(review, "Cell Diagram"), row(review, "Seed Germination Log")
 
     assert (cell.result_id, cell.how, cell.question) == (cell_id, "exact", None)
-    # B supplies a due date the saved value never captured, which is compared (4.3, rule 7).
-    assert (cell.status, cell.due_not_captured) == (ItemStatus.CHANGED, False)
-    assert cell.key in review.ready
+    # B's 09/26 is the shown due date and its 8.0 the current score: nothing new (his
+    # eighteenth round), though the saved value's own observation never captured a date.
+    assert (cell.status, cell.due_not_captured) == (ItemStatus.SAVED, False)
+    assert cell.key not in review.ready
     assert (seed.status, seed.how) == (ItemStatus.SAVED, "exact")
     moved = row(review_of(store, variant(CELL_SCORE, CELL_DUE)), "Cell Diagram")
     assert moved.question is not None
@@ -3053,3 +3054,78 @@ def test_an_answer_given_with_a_selected_value_counts_with_it_and_is_reused(how:
     (again,) = [one for one in review.rows if one.result_id == target]
 
     assert (again.how, again.question) == ("reused", None)
+
+
+# ------------------------------------------- comparing with the shown due date (eighteenth round)
+
+
+def test_a_copy_repeating_the_shown_score_and_date_reads_saved() -> None:
+    """His eighteenth round: the 8.0 from a copy missing its dates is current and A's 09/26 is
+    shown, so B's 8.0 due 09/26 repeats the current information and reads Saved. The date keeps
+    A as its source, and nothing was written into the copy's observation."""
+    store = in_memory()
+    first, copy, cell_id = dated_then_undated(store)
+    cell = row(review_of(store, B), "Cell Diagram")
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert (cell.result_id, cell.status) == (cell_id, ItemStatus.SAVED)
+    assert cell.key not in review_of(store, B).ready
+    assert due_from(value) == ((Presence.REPORTED, "09/26"), first, 1)
+    assert value.report_id == copy
+    assert value.cells["due"][0] is Presence.NOT_CAPTURED
+
+
+def test_a_copy_with_another_date_than_the_shown_one_reads_changed() -> None:
+    """A different date from the one shown is still new information."""
+    store = in_memory()
+    _, _, cell_id = dated_then_undated(store)
+    draft = variant(CELL_SCORE, CELL_DUE)
+    asked = row(review_of(store, draft), "Cell Diagram")
+    cell = row(answered_review(store, draft, same(asked)), "Cell Diagram")
+
+    assert (cell.result_id, cell.status) == (cell_id, ItemStatus.CHANGED)
+
+
+def test_with_no_eligible_captured_date_a_dated_copy_reads_changed() -> None:
+    """A was kept as an earlier report, so no current report captured Cell Diagram's date: the
+    copy missing its dates supplies its first current value, nothing is shown as its due date,
+    and B's 09/26 is new information."""
+    store = in_memory()
+    saved(save(store, A, use="earlier", complete=True))
+    cell_id = result_of(store, A, "Cell Diagram")
+    draft = undated(CELL_SCORE)
+    asked = row(review_of(store, draft), "Cell Diagram")
+    saved(save(store, draft, matches=[same(asked)], selection={asked.key}))
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+    cell = row(review_of(store, B), "Cell Diagram")
+
+    assert value.due is None
+    assert (cell.result_id, cell.status) == (cell_id, ItemStatus.CHANGED)
+
+
+def test_a_captured_blank_shown_date_is_compared_as_blank() -> None:
+    """A newer current report captured Cell Diagram's due cell blank, then a copy missing its
+    dates saved 8.0: the shown date is that blank, never A's 09/26 behind it. B's 09/26 reads
+    Changed, and a copy repeating 8.0 with a blank date reads Saved."""
+    store = in_memory()
+    saved(save(store, A, complete=True))
+    cell_id = result_of(store, A, "Cell Diagram")
+    blank = variant(CELL_NO_DATE)
+    asked = row(review_of(store, blank), "Cell Diagram")
+    blank_report = saved(
+        save(store, blank, matches=[same(asked)], selection={asked.key}, complete=True)
+    ).report_id
+    draft = undated(CELL_SCORE)
+    again = row(review_of(store, draft), "Cell Diagram")
+    saved(save(store, draft, matches=[same(again)], selection={again.key}))
+    value = store.current_values(class_of(store), "T1").results[cell_id]
+
+    assert due_from(value) == ((Presence.BLANK, ""), blank_report, 2)
+    # B's 09/26 isn't the shown blank, so B asks before it resolves.
+    asked_b = row(review_of(store, B), "Cell Diagram")
+    assert asked_b.question is not None
+    dated = row(answered_review(store, B, same(asked_b)), "Cell Diagram")
+    blank_again = variant(CELL_SCORE, CELL_NO_DATE)
+    undated_again = row(review_of(store, blank_again), "Cell Diagram")
+    assert (dated.result_id, dated.status) == (cell_id, ItemStatus.CHANGED)
+    assert (undated_again.result_id, undated_again.status) == (cell_id, ItemStatus.SAVED)
