@@ -45,7 +45,6 @@ import json
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import date
 from enum import StrEnum
 from typing import Final, Literal, get_args
 
@@ -304,18 +303,31 @@ ReportUse = Literal["current", "earlier"]
 
 
 @dataclass(frozen=True)
+class ClassReport:
+    """A report of a class and term: its acceptance order and use, when it was imported, when
+    an action made it (None for an import), and the newest report of its capture."""
+
+    report_id: str
+    order: int
+    use: ReportUse
+    imported_at: str
+    acted_at: str | None
+    latest_of_capture: str
+
+
+@dataclass(frozen=True)
 class ChoiceFacts:
     """What tells a result offered for matching apart from the others: its title, category and
     due cell from its newest observation (``due`` None when no observation captured one), its
-    score from its current value, else that observation, and that observation's report, by the
-    day it was added in the household's zone and its acceptance order, and the row's position."""
+    score from its current value, else that observation, and that observation's report, by its
+    ID and its acceptance order, and the row's position."""
 
     title: Cell
     category: Cell
     due: Cell | None
     points: Cell
     max_points: Cell
-    report_added: date
+    report_id: str
     report_order: int
     position: int
 
@@ -353,6 +365,9 @@ class GradeReview:
     offered: Mapping[str, ChoiceFacts] = field(default_factory=dict)
     """By result ID, what tells apart each result a row may choose or a question asks about: the
     results no row resolved to before any answer applies, and every question's candidates."""
+    reports: tuple[ClassReport, ...] = ()
+    """The reports of the class and term reviewed, by acceptance order, read with the rest: what
+    names the report each offered result was last shown in."""
 
     @property
     def items(self) -> tuple[ReviewItem, ...]:
@@ -557,9 +572,11 @@ class OnRecord:
     turned_down: Mapping[str, frozenset[str]] = field(default_factory=dict)
     """By row key, the candidates each "A different assignment" this capture's row records keep
     turned down in the class and term reviewed, as ``rejected_text`` writes them."""
-    places: Mapping[tuple[str, str], tuple[int, date]] = field(default_factory=dict)
+    places: Mapping[tuple[str, str], int] = field(default_factory=dict)
     """By report and result, the row position of each observation in the class and term
-    reviewed, and the day its report was added in the household's zone."""
+    reviewed."""
+    reports: tuple[ClassReport, ...] = ()
+    """The reports of the class and term reviewed, by acceptance order."""
 
     def covers(self, target: str) -> bool:
         """Whether a current report newer than the one this capture's rest joins supplied or
@@ -964,16 +981,15 @@ def choice_facts(on_record: OnRecord, results: Iterable[str]) -> dict[str, Choic
         seen = held.latest[result]
         current = held.current.results.get(result)
         score = (current or seen).cells
-        position, added = on_record.places[(seen.report_id, result)]
         offered[result] = ChoiceFacts(
             title=seen.cells["assignment"],
             category=seen.cells["category"],
             due=None if seen.due is None else seen.due.cell,
             points=score["points"],
             max_points=score["max_points"],
-            report_added=added,
+            report_id=seen.report_id,
             report_order=seen.order,
-            position=position,
+            position=on_record.places[(seen.report_id, result)],
         )
     return offered
 
@@ -1061,6 +1077,7 @@ def review_from(
         rows=rows,
         use=None if on_record.joins is not None else _use_choice(held, values, rows, complete),
         offered=offered,
+        reports=on_record.reports,
     )
 
 

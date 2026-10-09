@@ -52,7 +52,7 @@ import uuid
 from collections.abc import Callable, Collection, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC
 from typing import Final, Literal, cast, get_args
 
 from blossom.clock import Clock
@@ -96,6 +96,7 @@ from blossom.grades.review import (
     AlreadyRecorded,
     Cell,
     ClassRecord,
+    ClassReport,
     CurrentValues,
     GradeAnswers,
     GradeReportSaved,
@@ -614,7 +615,7 @@ RESULTS_OBSERVED: Final = (
     "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? ORDER BY o.position"
 )
 LATEST_PLACES: Final = (
-    "SELECT o.report_id, o.result_id, o.position, r.imported_at "
+    "SELECT o.report_id, o.result_id, o.position "
     "FROM grade_result_observations AS o JOIN grade_reports AS r "
     "ON r.report_id = o.report_id AND r.student_id = o.student_id "
     "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ?"
@@ -1232,19 +1233,6 @@ class ClassOfYear:
 
 
 @dataclass(frozen=True)
-class ClassReport:
-    """A report of a class and term: its acceptance order and use, when it was imported, when
-    an action made it (None for an import), and the newest report of its capture."""
-
-    report_id: str
-    order: int
-    use: ReportUse
-    imported_at: str
-    acted_at: str | None
-    latest_of_capture: str
-
-
-@dataclass(frozen=True)
 class ClassTermRead:
     """Her class and term's reports by acceptance order and each target's current value, read
     together, so every report a value names is among the reports."""
@@ -1770,15 +1758,15 @@ class GradebookRecords:
         held = NOTHING_HELD
         joins = None
         turned_down: dict[str, set[str]] = {}
-        places: dict[tuple[str, str], tuple[int, date]] = {}
+        places: dict[tuple[str, str], int] = {}
+        reports: tuple[ClassReport, ...] = ()
         if reviewed is not None:
             held = self._class_record(student_id, reviewed, term)
-            zone = self._clock.zone
-            for report_id, result_id, position, imported_at in self._connection.execute(
+            for report_id, result_id, position in self._connection.execute(
                 LATEST_PLACES, (student_id, reviewed, term)
             ):
-                added = datetime.fromisoformat(str(imported_at)).astimezone(zone).date()
-                places[(str(report_id), str(result_id))] = (int(position), added)
+                places[(str(report_id), str(result_id))] = int(position)
+            reports = self._class_reports(student_id, reviewed, term)
             (joins,) = self._connection.execute(
                 CAPTURE_JOINS, (student_id, reviewed, term, source_key)
             ).fetchone()
@@ -1814,6 +1802,7 @@ class GradebookRecords:
             joins=None if joins is None else int(joins),
             turned_down={key: frozenset(texts) for key, texts in turned_down.items()},
             places=places,
+            reports=reports,
         )
         return review_from(
             draft, source_key, new_acceptance_id(), on_record, matches, complete=complete
@@ -2098,11 +2087,14 @@ class GradebookRecords:
         alone."""
         with self._lock:
             student_id = self._her_name_record()[0]
-            rows = self._connection.execute(
-                CLASS_REPORTS, (student_id, class_id, folded(term))
-            ).fetchall()
+            reports = self._class_reports(student_id, class_id, folded(term))
             current = self._class_record(student_id, class_id, folded(term)).current
-        reports = tuple(
+        return ClassTermRead(reports=reports, current=current)
+
+    def _class_reports(self, student_id: str, class_id: str, term: str) -> tuple[ClassReport, ...]:
+        """Her class and term's reports by acceptance order, under the caller's lock."""
+        rows = self._connection.execute(CLASS_REPORTS, (student_id, class_id, term)).fetchall()
+        return tuple(
             ClassReport(
                 report_id=str(report_id),
                 order=int(order),
@@ -2113,7 +2105,6 @@ class GradebookRecords:
             )
             for report_id, order, use, imported_at, acted_at, latest in rows
         )
-        return ClassTermRead(reports=reports, current=current)
 
     def report_scope(self, report_id: str) -> ReportScope | None:
         """Her report's class, term and source key; None when no such report of hers is on
