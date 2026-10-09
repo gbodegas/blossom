@@ -31,6 +31,7 @@ import re
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, tzinfo
+from functools import partial
 from typing import Annotated, Final, Literal, cast, get_args
 
 from fastapi import APIRouter, Depends, Request
@@ -59,6 +60,7 @@ from blossom.grades.review import (
     AlreadyRecorded,
     Cell,
     ChoiceFacts,
+    ClassReport,
     CurrentValue,
     CurrentValues,
     GradeAnswers,
@@ -97,7 +99,6 @@ from blossom.stores.gradebook import (
     CLASS_ID,
     RESULT_ID,
     REVISION_MAX,
-    ClassReport,
     ConfirmedBy,
     ContextChanged,
     ContextNotOnRecord,
@@ -593,15 +594,16 @@ def school_record(category: GradeCategory, row: GradeRow) -> SchoolRecord:
     return SchoolRecord(lines, cues)
 
 
-TOLD_APART_BY: Final[tuple[Callable[[ChoiceFacts], str], ...]] = (
-    lambda one: (
+TOLD_APART_BY: Final[tuple[Callable[[ChoiceFacts, Mapping[str, str]], str], ...]] = (
+    lambda one, _: (
         f"saved score {described(*one.points, None)} / {described(*one.max_points, 'maximum')}"
     ),
-    lambda one: described(*one.category, "Category name"),
-    lambda one: f"report added {one.report_added:%B} {one.report_added.day}",
-    lambda one: f"row {one.position} of that report",
+    lambda one, _: described(*one.category, "Category name"),
+    lambda one, names: names[one.report_id],
+    lambda one, _: f"row {one.position} of that report",
 )
-"""What a choice's name adds, in order, while it is still the same as another's."""
+"""What a choice's name adds, in order, while it is still the same as another's; its report
+by the name ``report_names`` gives that report ID."""
 
 
 def numbered(
@@ -623,10 +625,12 @@ def tied(labels: Mapping[str, str]) -> list[list[str]]:
     return [group for group in groups.values() if len(group) > 1]
 
 
-def choice_labels(ids: Iterable[str], offered: Mapping[str, ChoiceFacts]) -> dict[str, str]:
+def choice_labels(
+    ids: Iterable[str], offered: Mapping[str, ChoiceFacts], *, names: Mapping[str, str]
+) -> dict[str, str]:
     """How a control names each result it offers, never by its ID: its title and due date, then,
-    only while labels are the same, the saved score, the category, the day its report was added,
-    its row there, and its saved entry among those still the same."""
+    only while labels are the same, the saved score, the category, its report by its name in
+    ``names``, its row there, and its saved entry among those still the same."""
     facts = {result: offered[result] for result in ids}
     labels = {
         result: " · ".join(
@@ -642,7 +646,7 @@ def choice_labels(ids: Iterable[str], offered: Mapping[str, ChoiceFacts]) -> dic
     for told_apart_by in TOLD_APART_BY:
         for group in tied(labels):
             for result in group:
-                labels[result] = f"{labels[result]} · {told_apart_by(facts[result])}"
+                labels[result] = f"{labels[result]} · {told_apart_by(facts[result], names)}"
     before = dict(labels)
     numbered(labels, facts, tied(labels))
     if tied(labels):
@@ -669,7 +673,8 @@ def review_context(
     unrecognized: list[str],
     state: ApplicationState,
 ) -> dict[str, object]:
-    """What the review page shows and carries."""
+    """What the review page shows and carries, each choice's report named as class details name
+    it."""
     header = draft.header
     items = shown_items(review, draft)
     counts: dict[str, int] = {}
@@ -684,7 +689,9 @@ def review_context(
         "cell": cell,
         "saved_now": saved_now,
         "school_record": school_record,
-        "choice_labels": choice_labels,
+        "choice_labels": partial(
+            choice_labels, names=report_names(review.reports, state.clock.zone)
+        ),
         "student_line": header.student_line,
         "identity": review.identity.status.value,
         "statuses": IdentityStatus,

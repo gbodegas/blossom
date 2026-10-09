@@ -19,7 +19,8 @@ import stat
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from dataclasses import replace
+from datetime import UTC, datetime
 from html import unescape
 from typing import Final
 from zoneinfo import ZoneInfo
@@ -46,8 +47,15 @@ from blossom.grades.draft import (
     capture_key,
 )
 from blossom.grades.identity import name_form, name_form_key
-from blossom.grades.projection import MadeCurrent
-from blossom.grades.review import Cell, CurrentValue, GradeReportSaved, ItemStatus, ReviewItem
+from blossom.grades.projection import MadeCurrent, ScopeHeld, project
+from blossom.grades.review import (
+    Cell,
+    ClassReport,
+    CurrentValue,
+    GradeReportSaved,
+    ItemStatus,
+    ReviewItem,
+)
 from blossom.grades.text_reader import read_grade_report
 from blossom.household import secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
@@ -57,7 +65,6 @@ from blossom.settings import Settings
 from blossom.stores import gradebook
 from blossom.stores.gradebook import (
     VIEW_TABLES,
-    ClassReport,
     GradeReportNotSaved,
     GradeTransactionLost,
 )
@@ -4220,17 +4227,159 @@ def test_the_same_row_of_two_reports_added_the_same_day_is_numbered_the_same_way
         first = review_page(browser, TWINS_AWAY)
         second = review_page(browser, TWINS_AWAY)
 
-    added = f"{PRACTICE} · report added August 19"
+    second_added = f"{PRACTICE} · second report added August 19"
     options = named_choices(first, 5)
     assert sorted(options.values()) == [
         "Cell Diagram · due 09/26",
-        f"{added} · row 1 of that report · saved entry 1 of 2",
-        f"{added} · row 1 of that report · saved entry 2 of 2",
-        f"{added} · row 2 of that report",
+        f"{PRACTICE} · report added August 19",
+        f"{second_added} · row 1 of that report",
+        f"{second_added} · row 2 of that report",
     ]
     assert named_choices(second, 5) == options
     assert named_choices(second, 6) == options
     assert named_candidates(first, 5) == options
+
+
+DIFFERENT_TWINS: Final = {
+    "match.5": "different",
+    "match.6": "different",
+    "select.5": "1",
+    "select.6": "1",
+}
+"""Both practice rows of ``TWINS`` saved as results of their own."""
+
+
+def twins_after_one_practice(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """``ONE_IXL`` and then ``TWINS`` saved late on October 7 where the household is, each its
+    own report, the twins as results of their own; the class they went into."""
+    late = FrozenClock(datetime(2026, 10, 8, 2, 0, tzinfo=UTC), ZoneInfo(FIXTURE_TIMEZONE))
+    monkeypatch.setattr(store_of(browser), "_clock", late)
+    first_saved(browser, ONE_IXL)
+    twins = as_sent(review_page(browser, TWINS))
+    saved = browser.post(SAVE, data={**twins, **DIFFERENT_TWINS}, headers=PAGE)
+    assert saved.status_code == 303, saved.text
+    return capture_class(store_of(browser), draft_of(ONE_IXL))
+
+
+def last_shown_order(settings: Settings) -> dict[str, int]:
+    """Each result by the acceptance order of the newest report that shows it."""
+    with sqlite3.connect(f"file:{database(settings)}?mode=ro", uri=True) as db:
+        found = db.execute(
+            "SELECT o.result_id, MAX(r.acceptance_order) FROM grade_result_observations AS o "
+            "JOIN grade_reports AS r ON r.report_id = o.report_id "
+            "AND r.student_id = o.student_id GROUP BY o.result_id"
+        ).fetchall()
+    return {str(result): int(order) for result, order in found}
+
+
+def reports_listed(page: str) -> list[str]:
+    """The lines of class details' "Reports in this term", in its order, without their use."""
+    listed = page.split("Reports in this term", 1)[1]
+    return re.findall(r"<li>([^<]*): (?:Current|Kept as an earlier report)</li>", listed)
+
+
+def report_named_by(label: str) -> str:
+    """The words a practice choice's label names its report by."""
+    return label.removeprefix(f"{PRACTICE} · ").split(" · ")[0]
+
+
+@pytest.mark.parametrize("made_current", [False, True])
+def test_a_choice_names_its_report_as_class_details_name_the_same_report(
+    made_current: bool, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two reports added the same day, each the newest to show a different choice, and, made
+    current by an action, a copy of the first."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        class_id = twins_after_one_practice(browser, monkeypatch)
+        if made_current:
+            made = confirm_current(store_of(browser), draft_of(ONE_IXL))
+            assert isinstance(made, MadeCurrent), made
+        page = review_page(browser, TWINS_AWAY)
+        details = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+
+    by_order = {
+        1: "report added October 7",
+        2: "second report added October 7",
+        3: "report added October 7, made current October 7",
+    }
+    first = by_order[3] if made_current else by_order[1]
+    second = f"{PRACTICE} · {by_order[2]}"
+    last = last_shown_order(settings)
+    for row in (5, 6):
+        options = named_choices(page, row)
+        assert sorted(options.values()) == [
+            "Cell Diagram · due 09/26",
+            f"{PRACTICE} · {first}",
+            f"{second} · row 1 of that report",
+            f"{second} · row 2 of that report",
+        ]
+        assert named_candidates(page, row) == options
+        for result, label in options.items():
+            if label.startswith(PRACTICE):
+                assert report_named_by(label) == by_order[last[result]], (result, label)
+    said = words(details.text)
+    listed = ["Report added October 7", "Second report added October 7"]
+    assert reports_listed(details.text) == listed
+    if made_current:
+        assert "Last shown in the second report added October 7" in said, said
+        assert "B- Report added October 7 · Made current October 7" in said, said
+    else:
+        assert "Last shown in the report added October 7" in said, said
+
+
+def projected_in_reverse(held: ScopeHeld) -> grade_review.ClassRecord:
+    """What ``project`` gives, each result's latest observation listed in the other order, which
+    is the order a row offers its choices in."""
+    record = project(held)
+    return replace(record, latest=dict(reversed(list(record.latest.items()))))
+
+
+def test_a_choice_keeps_its_name_and_saves_its_own_result_whatever_order_it_is_shown_in(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        twins_after_one_practice(browser, monkeypatch)
+        shown = review_page(browser, TWINS_AWAY)
+        monkeypatch.setattr(gradebook, "project", projected_in_reverse)
+        other = review_page(browser, TWINS_AWAY)
+        (picked,) = (
+            result
+            for result, label in named_candidates(other, 5).items()
+            if label.endswith("second report added October 7 · row 1 of that report")
+        )
+        form = {**unticked(as_sent(other), "5"), "select.5": "1", "match.5": picked}
+        saved = browser.post(SAVE, data=form, headers=PAGE)
+
+    assert saved.status_code == 303, saved.text
+    for row in (5, 6):
+        assert list(named_choices(other, row)) == list(reversed(named_choices(shown, row)))
+        assert named_choices(other, row) == named_choices(shown, row)
+        assert named_candidates(other, row) == named_candidates(shown, row)
+    assert list(named_candidates(other, 5)).index(picked) != list(named_candidates(shown, 5)).index(
+        picked
+    )
+    assert decision_of(settings, "Zebra Field Notes") == ("answer", picked)
+
+
+def test_a_choice_last_shown_in_the_eleventh_report_added_one_day_says_eleventh(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, *same_day_drafts(10))
+        twins = as_sent(review_page(browser, TWINS))
+        saved = browser.post(SAVE, data={**twins, **DIFFERENT_TWINS}, headers=PAGE)
+        assert saved.status_code == 303, saved.text
+        page = review_page(browser, TWINS_AWAY)
+        details = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+
+    eleventh = f"{PRACTICE} · eleventh report added August 19"
+    for row in (5, 6):
+        options = sorted(named_choices(page, row).values())
+        assert f"{eleventh} · row 1 of that report" in options, options
+        assert f"{eleventh} · row 2 of that report" in options, options
+    assert reports_listed(details.text)[-1] == "Eleventh report added August 19"
 
 
 def test_a_check_that_answers_every_open_row_still_names_every_choice(
@@ -4270,7 +4419,7 @@ def facts(
     due: Cell | None = (Presence.REPORTED, "09/22"),
     points: str = "9.0",
     category: str = "Homework / Practice",
-    added: date = PLAN_DATE,
+    report: str = "report-1",
     order: int = 1,
     position: int = 1,
 ) -> "grade_review.ChoiceFacts":
@@ -4280,15 +4429,21 @@ def facts(
         due=due,
         points=(Presence.REPORTED, points) if points else (Presence.BLANK, ""),
         max_points=(Presence.REPORTED, "10.0"),
-        report_added=added,
+        report_id=report,
         report_order=order,
         position=position,
     )
 
 
+ONE_NAME: Final = {"report-1": "report added August 19"}
+"""Report names for choices that share one report."""
+
+
 def test_a_choice_is_named_by_title_and_due_date_alone_when_those_tell_it_apart() -> None:
     labels = grade_routes.choice_labels(
-        ["result-a", "result-b"], {"result-a": facts(), "result-b": facts("Cell Diagram")}
+        ["result-a", "result-b"],
+        {"result-a": facts(), "result-b": facts("Cell Diagram")},
+        names=ONE_NAME,
     )
 
     assert labels == {
@@ -4305,6 +4460,7 @@ def test_a_due_date_never_captured_is_said_and_never_filled_in() -> None:
             "result-b": facts(due=(Presence.BLANK, ""), points=""),
             "result-c": facts(due=(Presence.BLANK, "")),
         },
+        names=ONE_NAME,
     )
 
     assert labels == {
@@ -4315,20 +4471,25 @@ def test_a_due_date_never_captured_is_said_and_never_filled_in() -> None:
 
 
 def test_the_last_tier_numbers_each_group_in_one_order_whatever_order_it_is_given() -> None:
+    """Two reports one capture made current the same day share a name, so their choices go on
+    to the row and then to their saved entry."""
+    made = "report added August 19, made current August 20"
     offered = {
-        "result-c": facts(order=2),
-        "result-a": facts(order=1, position=2),
-        "result-b": facts(order=1),
+        "result-c": facts(report="report-3", order=3),
+        "result-a": facts(report="report-2", order=2, position=2),
+        "result-b": facts(report="report-2", order=2),
     }
+    names = {"report-2": made, "report-3": made}
 
-    labels = grade_routes.choice_labels(["result-c", "result-a", "result-b"], offered)
+    labels = grade_routes.choice_labels(["result-c", "result-a", "result-b"], offered, names=names)
 
-    tail = "report added August 19 · row 1 of that report"
+    tail = f"{made} · row 1 of that report"
     assert labels == {
         "result-b": f"{PRACTICE} · {tail} · saved entry 1 of 2",
         "result-c": f"{PRACTICE} · {tail} · saved entry 2 of 2",
-        "result-a": f"{PRACTICE} · report added August 19 · row 2 of that report",
+        "result-a": f"{PRACTICE} · {made} · row 2 of that report",
     }
+    assert grade_routes.choice_labels(list(reversed(offered)), offered, names=names) == labels
 
 
 def test_report_text_that_repeats_a_later_tier_still_gives_distinct_labels() -> None:
@@ -4341,12 +4502,33 @@ def test_report_text_that_repeats_a_later_tier_still_gives_distinct_labels() -> 
         "result-e": facts(category=f"Homework / Practice · {tail}", order=3),
     }
 
-    labels = grade_routes.choice_labels(list(offered), offered)
+    labels = grade_routes.choice_labels(list(offered), offered, names=ONE_NAME)
 
     assert len(set(labels.values())) == 3
     assert labels["result-a"].endswith("row 1 of that report · saved entry 1 of 3")
     assert labels["result-b"].endswith("row 1 of that report · saved entry 2 of 3")
     assert labels["result-e"] == f"{PRACTICE} · {tail} · saved entry 3 of 3"
+
+
+def test_a_choice_names_its_report_by_the_words_class_details_give_it() -> None:
+    """The place word comes from the reports' acceptance order, never the order choices are
+    given in."""
+    names = grade_routes.report_names(same_day_reports(11), ZoneInfo(FIXTURE_TIMEZONE))
+    offered = {
+        "result-k": facts(report="report-11", order=11),
+        "result-b": facts(report="report-2", order=2),
+        "result-a": facts(report="report-1", order=1),
+    }
+
+    labels = grade_routes.choice_labels(list(offered), offered, names=names)
+
+    assert labels == {
+        "result-a": f"{PRACTICE} · report added October 9",
+        "result-b": f"{PRACTICE} · second report added October 9",
+        "result-k": f"{PRACTICE} · eleventh report added October 9",
+    }
+    given_otherwise = dict(reversed(offered.items()))
+    assert grade_routes.choice_labels(list(given_otherwise), given_otherwise, names=names) == labels
 
 
 # ------------------------------------------------------------- the script beside a row's list
