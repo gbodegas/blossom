@@ -880,13 +880,10 @@ def test_a_typed_date_with_marks_inside_keeps_the_whole_first_sentence_focused(
 def test_a_title_with_marks_inside_keeps_her_whole_first_sentence_focused(
     title: str, failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run that ended on a due date already passed names the work in the answer's first
-    sentence, and that whole sentence takes the focus, however its title is punctuated, on
-    her week and its stand-in."""
-    opening = (
-        f"Blossom can't make today's plan: {title} (Math, due August 18) has a due date that "
-        "already passed, so no plan can finish it on time."
-    )
+    """A run that ended on a due date already passed opens with a short first sentence and
+    names the work after it, and that first sentence alone takes the focus, however the
+    work's title is punctuated, on her week and its stand-in."""
+    opening = "Blossom can't make today's plan."
     late = PastDueView(
         assignment_id=ESSAY_ID, title=title, course="Math", due_date=date(2026, 8, 18)
     )
@@ -898,7 +895,10 @@ def test_a_title_with_marks_inside_keeps_her_whole_first_sentence_focused(
             failing = refusing() if failure == "store error" else too_slow
             monkeypatch.setattr(state_of(client).drafts, "newest_published", failing)
         answer = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
-    said = f"{opening} Your homework updates are saved."
+    said = (
+        f"{opening} {title} (Math, due August 18) has a due date that already passed, so no "
+        "plan can finish it on time. Your homework updates are saved."
+    )
     assert answer.status_code == 409
     if failure == "page":
         assert her_line(answer.text).startswith(f"{said} Check the dates for {title}.")
