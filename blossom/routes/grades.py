@@ -142,7 +142,7 @@ CHANGED_WHILE_REVIEWING: Final = (
 )
 ANSWER_DOESNT_FIT: Final = (
     "An answer doesn't fit this report now: another page saved it, or the name check changed. "
-    "Nothing was saved. Answer again where asked."
+    "Nothing was saved."
 )
 NOT_NEW: Final = "A ticked result isn't new any more. Nothing was saved. Check the ticks again."
 TEXT_CHANGED: Final = "The report text changed. Nothing was saved. Review the text again."
@@ -548,10 +548,12 @@ class Posted:
 
 
 def revision_of(text: str) -> int | None:
-    """A revision as a page carries it: ``none``, or a whole number."""
+    """A revision as a page carries it: ``none``, or a whole number in ASCII digits. A digit
+    of another script, or a character ``str.isdigit`` takes that ``int`` can't read, is
+    ``Damaged`` like any other."""
     if text == "none":
         return None
-    if not text.isdigit():
+    if not (text.isascii() and text.isdigit()):
         raise Damaged(text)
     return int(text)
 
