@@ -555,6 +555,7 @@ def test_matching_answers_bound_to_no_question_asked_now_return_the_review() -> 
     unanswered = save(store, moved, review, selection={cell.key})
     assert isinstance(unanswered, ReviewReturned)
     assert unanswered.why is ReturnReason.SELECTION
+    assert unanswered.still_asking == {cell.key}
     assert store._connection.total_changes == before
     assert TERM_KEY not in review.ready
 
@@ -1438,6 +1439,7 @@ def test_a_value_the_page_never_showed_as_matching_an_earlier_one_never_goes_bac
 
     assert isinstance(returned, ReviewReturned)
     assert returned.why is ReturnReason.SELECTION
+    assert (returned.refused, returned.still_asking) == (frozenset({cell.key}), frozenset())
     assert reports_of(store) == 2
     shown = saved(save(store, AGAIN, review, matches=answer, selection=(), use="current"))
     value = store.current_values(class_of(store), "T1").results[cell.question.ids[0]]

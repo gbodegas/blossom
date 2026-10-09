@@ -1186,6 +1186,28 @@ def test_a_check_answers_in_the_save_s_order_without_writing() -> None:
     assert store._connection.total_changes == changes
 
 
+def test_a_check_refuses_the_ticks_a_save_refuses_and_names_those_on_rows_still_asking() -> None:
+    """A tick on a value the save wouldn't take returns the review on Check as on Save, writing
+    nothing; the refused ticks on rows whose question is open are named apart."""
+    store = in_memory()
+    saved(save(store))
+    renamed = draft_of(REPORT.replace(SEVEN, SEVEN.replace("Cell Diagram", "Cell Drawing")))
+    review = review_of(store, renamed)
+    (row,) = [item for item in review.rows if item.question is not None]
+    changes = store._connection.total_changes
+
+    asking = frozenset({row.key})
+    for chosen in (asking, frozenset({TERM_KEY, row.key})):
+        for outcome in (
+            check(store, review, renamed, selection=chosen),
+            save(store, renamed, review, selection=chosen),
+        ):
+            assert isinstance(outcome, ReviewReturned), outcome
+            assert outcome.why is ReturnReason.SELECTION
+            assert (outcome.refused, outcome.still_asking) == (chosen, asking)
+    assert store._connection.total_changes == changes
+
+
 def test_the_recorded_save_names_its_class_term_and_answer_even_for_a_no_op() -> None:
     store = in_memory()
     review = review_of(store)

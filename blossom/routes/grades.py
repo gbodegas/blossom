@@ -61,7 +61,6 @@ from blossom.grades.review import (
     ReturnReason,
     ReviewItem,
     ReviewPage,
-    ReviewReturned,
     SaveOutcome,
     StillAsked,
     class_asked,
@@ -159,6 +158,25 @@ FORM: Final[Mapping[str, Field]] = {
 """Every name the review form may send. An item's and a row's are sent once per position, as
 ``select.3``, and every page sends each "always" field."""
 ALWAYS: Final = frozenset(name for name, field in FORM.items() if field.where == "always")
+POSITION_FREE: Final = frozenset(
+    name for name, field in FORM.items() if field.where in ("always", "answer")
+)
+"""The names no row's place decides: each sent once at most, whatever the text."""
+BY_A_ROW: Final = frozenset(name for name, field in FORM.items() if field.where in ("item", "row"))
+"""The bases of the names a row's place decides, as ``select`` in ``select.3``."""
+TEXT_AND_KEY: Final = frozenset({"report_text", "text_key"})
+
+
+def not_text_or_key(name: str) -> bool:
+    """Whether ``name`` is any but the text's and its key's, which the form's first read
+    passes over."""
+    return name not in TEXT_AND_KEY
+
+
+def by_a_row(name: str) -> bool:
+    """Whether ``name`` is on the base of a name a row's place decides, whatever follows it."""
+    return name.split(".", 1)[0] in BY_A_ROW
+
 
 PASTE_HINT: Final = "Copy one class's grade report from the school's gradebook, then paste it here."
 NOTHING_PASTED: Final = "Nothing was pasted. Nothing was saved. Paste a grade report."
@@ -648,7 +666,7 @@ class Positions:
     @property
     def names(self) -> frozenset[str]:
         """Every field name the review's form may send for this draft."""
-        names = {name for name, field in FORM.items() if field.where in ("always", "answer")}
+        names = set(POSITION_FREE)
         for position in range(len(self.keys)):
             for name, field in FORM.items():
                 if field.where == "item" or (field.where == "row" and position in self.rows):
@@ -679,8 +697,9 @@ class RowValues:
 
 
 @dataclass(frozen=True)
-class PageValues:
-    """Every page-filled value of a review form, read against its grammar."""
+class PositionFree:
+    """The page-filled values of a review form that no row's place decides, read against their
+    grammar."""
 
     acceptance_id: str
     revision: int | None
@@ -692,6 +711,19 @@ class PageValues:
     first_month: str | None
     chosen_class: Literal["new"] | tuple[str, int | None] | None
     use: ReportUse | None
+
+    @property
+    def same_class(self) -> str | None:
+        """The year's class the page chose as this report's, or None."""
+        return self.chosen_class[0] if isinstance(self.chosen_class, tuple) else None
+
+
+@dataclass(frozen=True)
+class PageValues:
+    """Every page-filled value of a review form, read against its grammar: those no row's place
+    decides, the ticked positions, and each row's fields."""
+
+    free: PositionFree
     ticked: frozenset[int]
     rows: Mapping[int, RowValues]
 
@@ -731,15 +763,13 @@ def row_values(fields: Mapping[str, str], position: int) -> RowValues:
     return RowValues(candidates, choices, match, choose)
 
 
-def page_values(fields: Mapping[str, str], positions: Positions) -> PageValues:
-    """Every page-filled value of a review form checked whole against its grammar, and each row
-    against its own lists, before anything else reads one; ``Damaged`` at the first that
-    fails."""
+def position_free(fields: Mapping[str, str]) -> PositionFree:
+    """The page-filled values no row's place decides, each checked whole against its grammar
+    before anything reads one; ``Damaged`` at the first that fails. Any other name is left
+    unread."""
     for name, value in fields.items():
-        field = FORM.get(name.partition(".")[0])
-        if field is None:
-            raise Damaged(name)
-        if field.value is not None and not field.value.fullmatch(value):
+        grammar = FORM[name].value if name in POSITION_FREE else None
+        if grammar is not None and not grammar.fullmatch(value):
             raise Damaged(name)
     chosen_class: Literal["new"] | tuple[str, int | None] | None = None
     if fields.get("class") == "new":
@@ -748,7 +778,7 @@ def page_values(fields: Mapping[str, str], positions: Positions) -> PageValues:
         class_id, _, class_revision = fields["class"].partition(":")
         chosen_class = (class_id, revision_of(class_revision))
     identity = fields.get("identity")
-    return PageValues(
+    return PositionFree(
         acceptance_id=fields["acceptance_id"],
         revision=revision_of(fields["revision"]),
         source_key=fields["source_key"],
@@ -759,6 +789,22 @@ def page_values(fields: Mapping[str, str], positions: Positions) -> PageValues:
         first_month=fields.get("first_month") or None,
         chosen_class=chosen_class,
         use=cast("ReportUse | None", fields.get("use")),
+    )
+
+
+def page_values(fields: Mapping[str, str], positions: Positions) -> PageValues:
+    """Every page-filled value of a review form checked whole against its grammar, and each row
+    against its own lists, before anything else reads one; ``Damaged`` at the first that
+    fails."""
+    free = position_free(fields)
+    for name, value in fields.items():
+        field = FORM.get(name.partition(".")[0])
+        if field is None:
+            raise Damaged(name)
+        if field.value is not None and not field.value.fullmatch(value):
+            raise Damaged(name)
+    return PageValues(
+        free=free,
         ticked=frozenset(
             position for position in range(len(positions.keys)) if f"select.{position}" in fields
         ),
@@ -828,44 +874,45 @@ def posted_of(
     """The answers and ticks a whole review form sends: the page's own values as
     ``page_values`` read them, and the parent's typed text from ``fields``."""
     header = draft.header
-    page = ReviewPage(values.acceptance_id, values.revision, values.source_key)
+    free = values.free
+    page = ReviewPage(free.acceptance_id, free.revision, free.source_key)
     problems: list[str] = []
     setup: tuple[str, str] | None = None
-    if values.setup == "report":
+    if free.setup == "report":
         setup = (header.year_label, header.term_label)
-    elif values.setup == "other":
+    elif free.setup == "other":
         setup = (folded(fields.get("setup_year", "")), folded(fields.get("setup_term", "")))
         if not is_school_year(setup[0]):
             problems.append(YEAR_FORM)
         if not setup[1]:
             problems.append(TERM_BLANK)
     first_month: tuple[str, int] | None = None
-    if values.first_month is not None and values.first_month != "unsure":
-        first_month = (header.year_label, int(values.first_month))
+    if free.first_month is not None and free.first_month != "unsure":
+        first_month = (header.year_label, int(free.first_month))
     new_class = same_class = None
     same_revision: int | None = None
-    if values.chosen_class == "new":
+    if free.chosen_class == "new":
         new_class = folded(fields.get("class_name", ""))
         if not new_class:
             problems.append(CLASS_BLANK)
-    elif values.chosen_class is not None:
-        same_class, same_revision = values.chosen_class
+    elif free.chosen_class is not None:
+        same_class, same_revision = free.chosen_class
     matches, to_resolve = matches_of(values, positions)
     if to_resolve:
         problems.append(CHOOSE_WHICH)
     selection = frozenset(positions.keys[position] for position in values.ticked)
     answers = None
-    if values.identity is not None:
+    if free.identity is not None:
         answers = GradeAnswers(
-            identity=values.identity,
-            identity_form=values.identity_form,
+            identity=free.identity,
+            identity_form=free.identity_form,
             setup=setup,
             first_month=first_month,
             new_class=new_class,
             same_class=same_class,
             same_class_revision=same_revision,
             matches=tuple(matches),
-            use=values.use,
+            use=free.use,
         )
         problems.extend(TOO_LONG_LABEL[label] for label in labels_too_long(answers))
     elif new_class is not None and len(new_class) > CLASS_NAME_LIMIT:
@@ -942,31 +989,48 @@ class ReviewForm:
     positions: Positions
     fields: dict[str, str]
     posted: Posted
+    free: PositionFree
     text_changed: bool = False
 
 
 async def review_form_of(request: Request, state: ApplicationState) -> ReviewForm | Response:
     """The review form a save or a check sent, or the paste page saying why it can't be read:
-    the text first, then every field by the names the text's own draft allows, then the text
-    against the key its page carried."""
-    first, _ = await fields_of(request, TEXT)
+    the text and its key first, read alone; then, for the text its page carried, every field by
+    the names its draft allows; for any other text, only the fields no row's place decides, so
+    nothing a row sent is read against rows the text may not hold."""
+    first, whole = await fields_of(request, TEXT_AND_KEY, ignored=not_text_or_key)
     text = first.get("report_text", "")
     if not text.strip():
         return paste_page(request, state, said=NOTHING_PASTED, status_code=422)
     if len(text) > TEXT_MAX_LENGTH:
         return paste_page(request, state, text=text, said=TOO_LONG, status_code=422)
+    sent_key = first.get("text_key", "")
+    if not whole or not HEX_KEY.fullmatch(sent_key):
+        return paste_page(request, state, text=text, said=NOT_WHOLE, status_code=422)
     reading = read_grade_report(text)
     draft = reading.draft
     if draft is None:
         said = NOT_READ[reading.not_read or NotRead.NO_HEADER]
         return paste_page(request, state, text=text, said=said, status_code=422)
     positions = positions_of(draft)
-    names = positions.names
-    fields, whole = await fields_of(request, names, may_be_absent=names - ALWAYS)
+    changed = sent_key != text_key(text)
     try:
-        if not whole:
-            raise Damaged(NOT_WHOLE)
-        values = page_values(fields, positions)
+        if changed:
+            fields, whole = await fields_of(
+                request,
+                POSITION_FREE,
+                may_be_absent=POSITION_FREE - ALWAYS,
+                ignored=by_a_row,
+            )
+            if not whole:
+                raise Damaged(NOT_WHOLE)
+            values = PageValues(position_free(fields), ticked=frozenset(), rows={})
+        else:
+            names = positions.names
+            fields, whole = await fields_of(request, names, may_be_absent=names - ALWAYS)
+            if not whole:
+                raise Damaged(NOT_WHOLE)
+            values = page_values(fields, positions)
         posted = posted_of(values, fields, draft, positions)
     except Damaged:
         return paste_page(request, state, text=text, said=NOT_WHOLE, status_code=422)
@@ -978,7 +1042,8 @@ async def review_form_of(request: Request, state: ApplicationState) -> ReviewFor
         positions,
         fields,
         posted,
-        text_changed=values.text_key != text_key(text),
+        values.free,
+        text_changed=changed,
     )
 
 
@@ -1095,7 +1160,11 @@ def returned_page(
         )
     if isinstance(outcome, AlreadyRecorded):
         review = state.project_state.review_grade_report(
-            form.draft, capture_key(form.draft), key=key, complete=form.complete
+            form.draft,
+            capture_key(form.draft),
+            key=key,
+            complete=form.complete,
+            same_class=form.free.same_class,
         )
         kept = still_asked(review, answers, outcome.uncovered or posted.selection)
         fields, ticks = kept_fields(kept, review, form.draft, form.positions)
@@ -1115,6 +1184,21 @@ def returned_page(
     if isinstance(outcome, GradeReview):
         return review_page(request, state, form, outcome, fields=form.fields, ticks=ticks_of(form))
     review = outcome.review
+    refused = outcome.refused
+    if outcome.why is ReturnReason.SELECTION and refused and refused <= outcome.still_asking:
+        at = {item_key: position for position, item_key in enumerate(form.positions.keys)}
+        return review_page(
+            request,
+            state,
+            form,
+            replace(review, acceptance_id=posted.page.acceptance_id),
+            said=CORRECT_THE_MARKED,
+            problems=(CHOOSE_WHICH,),
+            to_resolve=frozenset(at[item_key] for item_key in outcome.still_asking),
+            fields=form.fields,
+            ticks=ticks_of(form),
+            status_code=422,
+        )
     if outcome.why is ReturnReason.ANSWERS:
         typos = still_typos(review, answers)
         if typos is not None:
@@ -1161,30 +1245,30 @@ def changed_text(
     request: Request, state: ApplicationState, form: ReviewForm, key: bytes
 ) -> Response:
     """The answer to a form whose text isn't the one its page carried, as a save answers a
-    changed report: the text as sent reviewed again, keeping what still answers it, and
-    nothing written."""
+    changed report: the text as sent reviewed fresh in the class the page chose, keeping the
+    answers that still answer it, or with no answer about the name the fields as sent, every
+    row as a fresh review shows it, and nothing written."""
     answers = form.posted.answers
     review = state.project_state.review_grade_report(
         form.draft,
         capture_key(form.draft),
         key=key,
         complete=form.complete,
-        same_class=None if answers is None else answers.same_class,
+        same_class=form.free.same_class,
     )
-    if answers is None:
-        return review_page(
-            request,
-            state,
-            form,
-            review,
-            said=TEXT_CHANGED,
-            fields=form.fields,
-            ticks=ticks_of(form),
-            kept_sentence=TEXT_KEPT_ANSWER_AGAIN,
-            status_code=409,
-        )
-    return returned_page(
-        request, state, form, answers, ReviewReturned(review, ReturnReason.SOURCE), key
+    fields = form.fields
+    if answers is not None:
+        kept = still_asked(review, answers, form.posted.selection)
+        fields, _ = kept_fields(kept, review, form.draft, form.positions)
+    return review_page(
+        request,
+        state,
+        form,
+        review,
+        said=TEXT_CHANGED,
+        fields=fields,
+        kept_sentence=TEXT_KEPT_ANSWER_AGAIN,
+        status_code=409,
     )
 
 
@@ -1199,7 +1283,11 @@ def refused_answers(
     if answers is not None and (not posted.problems or answers.identity is IdentityAnswer.NOT_HERS):
         return answers
     review = state.project_state.review_grade_report(
-        form.draft, capture_key(form.draft), key=key, complete=form.complete
+        form.draft,
+        capture_key(form.draft),
+        key=key,
+        complete=form.complete,
+        same_class=form.free.same_class,
     )
     review = replace(
         review,

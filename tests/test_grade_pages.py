@@ -43,7 +43,7 @@ from blossom.grades.text_reader import read_grade_report
 from blossom.household import secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes import grades as grade_routes
-from blossom.routes.forms import FormRoute
+from blossom.routes.forms import FormRoute, fields_of
 from blossom.settings import Settings
 from blossom.stores import gradebook
 from blossom.stores.gradebook import GradeReportNotSaved, GradeTransactionLost
@@ -1533,8 +1533,9 @@ def test_a_changed_text_is_answered_before_anything_else_the_form_says(
 def test_a_changed_text_the_secret_kept_from_a_check_is_answered_when_sent_again(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The retry page sends the form back as it came, so the key of the text its page carried
-    still meets the changed text on the next save."""
+    """The retry page sends back the fields no row's place decides as they came, so the key of
+    the text its page carried still meets the changed text on the next save, and nothing a row
+    sent rides along."""
     with at(open_household(tmp_path)) as browser:
         form = answered(review_page(browser, STRAY))
         del browser.app.state.grade_name_key  # type: ignore[attr-defined]
@@ -1544,7 +1545,10 @@ def test_a_changed_text_the_secret_kept_from_a_check_is_answered_when_sent_again
         again = browser.post(SAVE, data=sent_from(retry.text), headers=PAGE)
 
     assert retry.status_code == 500
-    assert sent_from(retry.text) == {**form, "report_text": REPORT}
+    sent = {**form, "report_text": REPORT}
+    assert sent_from(retry.text) == {
+        name: value for name, value in sent.items() if name in POSITION_FREE
+    }
     assert again.status_code == 409
     assert escape(grade_routes.TEXT_CHANGED) in again.text
 
@@ -2173,6 +2177,421 @@ def test_a_check_then_a_save_choosing_another_row_s_assignment_saves(
     assert checked.status_code == 200
     assert again["choices.6"].split() == [first, second]
     assert saved.status_code == 303, saved.text
+
+
+# ------------------------------------------------------------- the text first, then its rows
+
+
+def rows_moved(text: str, first: str, second: str) -> str:
+    """``text`` with the lines that start ``first`` and ``second`` in each other's places."""
+    lines = text.split("\n")
+    one, other = (
+        next(at for at, line in enumerate(lines) if line.startswith(start))
+        for start in (first, second)
+    )
+    lines[one], lines[other] = lines[other], lines[one]
+    return "\n".join(lines)
+
+
+def row_left_out(text: str, start: str) -> str:
+    """``text`` without the line that starts ``start``."""
+    return "\n".join(line for line in text.split("\n") if not line.startswith(start))
+
+
+CELL_LINE = next(line for line in LINES if line.startswith("| Cell Diagram"))
+LEAF_LINE = CELL_LINE.replace("Cell Diagram", "Leaf Rubbing").replace("09/26", "09/29")
+CHANGED_ROWS = {
+    "a row removed": (REPORT, row_left_out(REPORT, "| Osmosis")),
+    "two rows swapped": (REPORT, rows_moved(REPORT, "| Seed", "| Cell")),
+    "a row added": (REPORT, REPORT.replace(CELL_LINE, f"{CELL_LINE}\n{LEAF_LINE}")),
+    "a stray line removed": (STRAY, REPORT),
+    "spaces in a cell": CHANGED_ALIKE["spaces in a cell"],
+}
+"""A text reviewed and the text sent back in its place, its rows moved, added, or kept."""
+RETITLED_NO_LINE = RETITLED.replace("**Bramble, Wren**", "")
+"""The retitled report with no student line, so the page asks about the name."""
+OTHER_SECTION = RETITLED_NO_LINE.replace("**07 BIO - C**", "**07 BIO - D**")
+"""The retitled report under another section's class code, so the page asks which class."""
+POSITION_FREE: Final = frozenset(
+    {
+        "report_text",
+        "acceptance_id",
+        "revision",
+        "source_key",
+        "text_key",
+        "identity_form",
+        "identity",
+        "setup",
+        "setup_year",
+        "setup_term",
+        "first_month",
+        "class",
+        "class_name",
+        "use",
+    }
+)
+"""The names a review form sends that no row's place decides."""
+
+
+def by_assignment(page: str) -> dict[str, tuple[bool, str | None, str | None]]:
+    """What a page's form sends for each row of its text, by the row's title: the tick, the
+    radio answer and the list's pick."""
+    form = sent_from(page)
+    draft = read_grade_report(form["report_text"]).draft
+    assert draft is not None
+    titles = [row.assignment.text for category in draft.categories for row in category.rows]
+    positions = grade_routes.positions_of(draft)
+    return {
+        title: (f"select.{at}" in form, form.get(f"match.{at}"), form.get(f"choose.{at}"))
+        for at, title in zip(positions.rows, titles, strict=True)
+    }
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("name", ["answered", "unanswered"])
+@pytest.mark.parametrize(("shown", "sent"), list(CHANGED_ROWS.values()), ids=list(CHANGED_ROWS))
+def test_a_changed_text_keeps_no_row_s_tick_and_ticks_what_a_fresh_review_does(
+    route: str, name: str, shown: str, sent: str, tmp_path: pathlib.Path
+) -> None:
+    """A text that changed after its review is reviewed fresh before any field a row's place
+    names is read: the answers no row decides stay, and every row shows what a fresh review
+    shows."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = {**sent_from(review_page(browser, shown)), "class_name": "Bio Lab"}
+        del form["select.5"]
+        if name == "answered":
+            form["identity"] = "hers"
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data={**form, "report_text": sent}, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+        fresh = review_page(browser, sent)
+
+    assert answer.status_code == 409, answer.text[:300]
+    assert problem_said(answer.text) == (
+        f"{grade_routes.TEXT_CHANGED} {grade_routes.TEXT_KEPT_ANSWER_AGAIN}"
+    )
+    returned = sent_from(answer.text)
+    assert returned["report_text"] == sent
+    assert returned["class_name"] == "Bio Lab"
+    assert returned.get("identity") == ("hers" if name == "answered" else None)
+    assert by_assignment(answer.text) == by_assignment(fresh)
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("name", ["answered", "unanswered"])
+def test_rows_swapped_after_review_carry_no_tick_or_answer_to_each_other(
+    route: str, name: str, tmp_path: pathlib.Path
+) -> None:
+    """Two rows that differ in tick and answer, sent back in each other's places: neither
+    assignment takes the other's tick or answer."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        form = sent_from(review_page(browser, RETITLED_NO_LINE))
+        pick = form["choices.5"].split()[0]
+        form.update({"choose.5": pick, "select.5": "1", "match.6": "different"})
+        form.pop("select.6", None)
+        if name == "answered":
+            form["identity"] = "confirmed"
+        sent = rows_moved(RETITLED_NO_LINE, "| Zebra", "| Yarrow")
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data={**form, "report_text": sent}, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+        fresh = review_page(browser, sent)
+
+    assert answer.status_code == 409, answer.text[:300]
+    rows = by_assignment(answer.text)
+    assert rows["Yarrow Pressing"] == (False, None, "")
+    assert rows["Zebra Field Notes"] == (False, None, "")
+    assert rows == by_assignment(fresh)
+    assert sent_from(answer.text).get("identity") == ("confirmed" if name == "answered" else None)
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        {"match.8": "xyz"},
+        {"select.5": "yes"},
+        {"choose.6": "not a result"},
+        {"candidates.7": "a  b"},
+        {"select.x": "1"},
+    ],
+    ids=["match of a row gone", "tick", "pick", "candidates", "tick by no place"],
+)
+def test_a_changed_text_reads_no_row_s_field_so_a_damaged_one_changes_nothing(
+    route: str, damaged: dict[str, str], tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    sent = row_left_out(REPORT, "| Osmosis")
+    with at(settings) as browser:
+        form = {**answered(review_page(browser)), **damaged, "report_text": sent}
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 409, answer.text[:300]
+    assert escape(grade_routes.TEXT_CHANGED) in answer.text
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        {"revision": "007"},
+        {"acceptance_id": "acceptance-x"},
+        {"identity": "maybe"},
+        {"class": "klass-1:none"},
+        {"first_month": "13"},
+        {"use": "later"},
+        {"color": "red"},
+    ],
+    ids=["revision", "acceptance", "identity", "class", "month", "use", "another form's"],
+)
+def test_a_changed_text_with_a_damaged_field_no_row_decides_is_refused(
+    route: str, damaged: dict[str, str], tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    sent = row_left_out(REPORT, "| Osmosis")
+    with at(settings) as browser:
+        form = {**answered(review_page(browser)), **damaged, "report_text": sent}
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422, answer.text[:300]
+    assert escape(grade_routes.NOT_WHOLE) in answer.text
+    assert escape(sent.splitlines()[0]) in answer.text
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("text", ["unchanged", "changed"])
+@pytest.mark.parametrize(
+    "case",
+    ["text_key left out", "text_key twice", "text_key malformed", "report_text twice"],
+)
+def test_the_text_and_its_key_each_come_once_whether_or_not_the_text_changed(
+    route: str, text: str, case: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form: dict[str, str | list[str]] = {**answered(review_page(browser))}
+        reviewed_text = str(form["report_text"])
+        if text == "changed":
+            form["report_text"] = row_left_out(reviewed_text, "| Osmosis")
+        if case == "text_key left out":
+            del form["text_key"]
+        elif case == "text_key twice":
+            form["text_key"] = [str(form["text_key"])] * 2
+        elif case == "text_key malformed":
+            form["text_key"] = str(form["text_key"]).upper()
+        else:
+            form["report_text"] = [str(form["report_text"]), reviewed_text]
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422, answer.text[:300]
+    assert escape(grade_routes.NOT_WHOLE) in answer.text
+    assert after == before
+
+
+def checked_in_her_class(browser: TestClient) -> dict[str, str]:
+    """The other section's review checked with "It's the same class as" her saved class, the
+    name answered and nothing ticked: the page it returns asks its rows' questions in that
+    class."""
+    first_saved(browser)
+    page = review_page(browser, OTHER_SECTION)
+    offered = [value for _, name, value in form_values(page, SAVE) if name == "class"]
+    form = {**unticked(sent_from(page)), "identity": "confirmed", "class": offered[-1]}
+    checked = browser.post(CHECK, data=form, headers=PAGE)
+    assert checked.status_code == 200, checked.text[:300]
+    again = sent_from(checked.text)
+    assert again["class"] == offered[-1]
+    assert {"candidates.5", "choices.6"} <= again.keys()
+    return again
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("case", ["a conflict on one row", "the name unanswered"])
+def test_a_review_returned_to_correct_an_answer_keeps_the_class_chosen(
+    route: str, case: str, tmp_path: pathlib.Path
+) -> None:
+    """The page asking for a correction is the review in the class the page chose, with its
+    rows' questions, choices and answers."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = checked_in_her_class(browser)
+        pick = form["choices.6"].split()[0]
+        form.update({"match.5": form["candidates.5"], "match.6": "different", "choose.6": pick})
+        if case == "the name unanswered":
+            del form["identity"]
+            form["choose.6"] = ""
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422, answer.text[:300]
+    assert sent_from(answer.text) == form
+    if case == "a conflict on one row":
+        assert marked(answer.text) == {6}
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("name", ["answered", "unanswered"])
+def test_a_changed_text_is_reviewed_in_the_class_chosen(
+    route: str, name: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = checked_in_her_class(browser)
+        if name == "unanswered":
+            del form["identity"]
+        sent = OTHER_SECTION.replace("| 27.0    |", "|  27.0   |")
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data={**form, "report_text": sent}, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 409, answer.text[:300]
+    returned = sent_from(answer.text)
+    assert returned["class"] == form["class"]
+    assert {"candidates.5", "choices.5", "candidates.6", "choices.6"} <= returned.keys()
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_a_page_saved_before_is_shown_again_in_the_class_chosen(
+    route: str, tmp_path: pathlib.Path
+) -> None:
+    """The save that recorded the page named its class code for her class, so the page shown
+    again reads in that class with no question about it."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = {**checked_in_her_class(browser), "match.5": "different", "match.6": "different"}
+        assert browser.post(SAVE, data=unticked(form), headers=PAGE).status_code == 303
+        answer = browser.post(route, data={**form, "select.5": "1"}, headers=PAGE)
+
+    assert answer.status_code == 200, answer.text[:300]
+    assert escape(grade_routes.SAVED_ELSEWHERE) in answer.text
+    assert 'name="class"' not in answer.text
+    assert "Microscope Practice" in answer.text
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_a_tick_on_a_row_still_asking_marks_the_row_and_keeps_everything(
+    route: str, tmp_path: pathlib.Path
+) -> None:
+    """A tick on a row whose question is open is answered on Check as on Save: the row is marked
+    with its question, and nothing is lost."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        form = {**as_sent(review_page(browser, RETITLED)), "select.5": "1"}
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422, answer.text[:300]
+    assert problem_said(answer.text).startswith(
+        f"{grade_routes.CHOOSE_WHICH} {grade_routes.CORRECT_THE_MARKED}"
+    )
+    assert marked(answer.text) == {5}
+    assert sent_from(answer.text) == form
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("ticks", [("1",), ("1", "5")], ids=["a saved category", "mixed"])
+def test_a_tick_on_a_value_not_new_is_answered_on_check_as_on_save(
+    route: str, ticks: tuple[str, ...], tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        form = as_sent(review_page(browser, RETITLED))
+        form.update({f"select.{position}": "1" for position in ticks})
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 409, answer.text[:300]
+    assert escape(grade_routes.NOT_NEW) in answer.text
+    assert marked(answer.text) == set()
+    assert after == before
+
+
+def test_the_text_is_read_first_and_a_changed_one_reads_no_row_s_field(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The names each read of the form allows, pinned: the text and its key alone, then every
+    name of the text's own review when it is the text reviewed, and only the names no row's
+    place decides when it isn't; a changed text never reaches the reading of the rows."""
+    reads: list[tuple[frozenset[str], dict[str, object]]] = []
+    ran: list[str] = []
+    real_fields_of = fields_of
+
+    async def read(
+        request: Request, allowed: frozenset[str], **options: object
+    ) -> tuple[dict[str, str], bool]:
+        reads.append((allowed, options))
+        return await real_fields_of(request, allowed, **options)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(grade_routes, "fields_of", read)
+    for name in ("page_values", "row_values"):
+        original = getattr(grade_routes, name)
+
+        def watched(
+            *args: object, _original: Callable[..., object] = original, _name: str = name
+        ) -> object:
+            ran.append(_name)
+            return _original(*args)
+
+        monkeypatch.setattr(grade_routes, name, watched)
+    with at(open_household(tmp_path)) as browser:
+        form = answered(review_page(browser))
+        reads.clear()
+        unchanged = browser.post(CHECK, data=form, headers=PAGE)
+        unchanged_reads, unchanged_ran = list(reads), list(ran)
+        reads.clear()
+        ran.clear()
+        sent = row_left_out(form["report_text"], "| Osmosis")
+        changed = browser.post(CHECK, data={**form, "report_text": sent}, headers=PAGE)
+    positions = positions_on(changed.text)
+    text_only = frozenset({"report_text", "text_key"})
+
+    assert unchanged.status_code == 200
+    assert changed.status_code == 409
+    whole = positions_on(unchanged.text).names
+    assert [allowed for allowed, _ in unchanged_reads] == [text_only, whole]
+    assert [allowed for allowed, _ in reads] == [text_only, POSITION_FREE]
+    assert {name.split(".")[0] for name in positions.names} - POSITION_FREE == {
+        "select",
+        "candidates",
+        "choices",
+        "match",
+        "choose",
+    }
+    assert "page_values" in unchanged_ran
+    assert ran == []
+    first_ignored = reads[0][1]["ignored"]
+    rows_ignored = reads[1][1]["ignored"]
+    assert callable(first_ignored)
+    assert callable(rows_ignored)
+    for name in ("identity", "select.5", "color", "class"):
+        assert first_ignored(name), name
+    for name in text_only:
+        assert not first_ignored(name), name
+    for name in ("select.5", "match.x", "choose", "candidates.12", "choices.0"):
+        assert rows_ignored(name), name
+    for name in (*POSITION_FREE, "color", "selects.1", "matched"):
+        assert not rows_ignored(name), name
+    assert reads[1][1]["may_be_absent"] == POSITION_FREE - grade_routes.ALWAYS
 
 
 # ------------------------------------------------------------- each choice named by its assignment

@@ -150,6 +150,7 @@ async def fields_of(
     allowed: frozenset[str],
     *,
     may_be_absent: frozenset[str] = frozenset(),
+    ignored: Callable[[str], bool] | None = None,
 ) -> tuple[dict[str, str], bool]:
     """The form's fields, and whether the form was whole.
 
@@ -159,7 +160,8 @@ async def fields_of(
     left out makes it not whole, and nothing is written for such a form.
     ``may_be_absent`` names the fields a browser leaves out of the page's
     own form, a group of radio buttons with none chosen; the caller asks
-    for the choice. The first text value of each allowed field is still
+    for the choice. A name ``ignored`` matches is passed over unread, as if
+    it weren't sent. The first text value of each allowed field is still
     handed back, so the page that refuses can keep what was typed. A body the parser can't
     read is ``FormUnreadable``.
     """
@@ -167,6 +169,8 @@ async def fields_of(
     fields: dict[str, str] = {}
     whole = True
     for name, value in form.multi_items():
+        if ignored is not None and ignored(name):
+            continue
         if name not in allowed or name in fields or not isinstance(value, str):
             whole = False
             continue

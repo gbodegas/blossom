@@ -486,10 +486,13 @@ class ReturnReason(StrEnum):
 
 @dataclass(frozen=True)
 class ReviewReturned:
-    """Nothing was written; the review as it reads now, under a fresh acceptance ID."""
+    """Nothing was written; the review as it reads now, under a fresh acceptance ID. For ticks
+    a save can't take, the keys refused, and those of them on rows still asking."""
 
     review: GradeReview
     why: ReturnReason
+    refused: frozenset[str] = frozenset()
+    still_asking: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1160,6 +1163,16 @@ def matches_asked(review: GradeReview, matches: Collection[MatchAnswer]) -> bool
         elif item.question is None or not _binds(answer, item.question):
             return False
     return True
+
+
+def rows_still_asking(review: GradeReview) -> frozenset[str]:
+    """The keys of the rows that still ask: an open question or choices offered, and no answer
+    bound to the row, whatever status the row shows meanwhile."""
+    return frozenset(
+        item.key
+        for item in review.rows
+        if item.how is None and (item.question is not None or bool(item.choices))
+    )
 
 
 def item_keys(draft: GradeReportDraft) -> tuple[str, ...]:

@@ -481,8 +481,9 @@ history.
 A grade report keeps the school's own words for her results, notes included,
 and school text may contain names. The student and teacher lines are never
 kept as text; only the keyed form of her name is. A class name given when a
-class is first added is at most 60 characters, and a term typed for the first
-setup at most 20; these are length limits only.
+class is first added is at most 60 characters. The term confirmed at the
+first setup is at most 20, whether typed under "Another" or the report's own
+term chosen with "This report's". These are length limits only.
 
 A `.env` written from an example that named `data/synthetic` needs
 `BLOSSOM_FIXTURE_PATH` cleared before the first start with the record in the
