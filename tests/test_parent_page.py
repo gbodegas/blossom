@@ -2156,6 +2156,17 @@ def test_the_plan_form_sits_in_the_card_its_rules_name() -> None:
     assert page.count("plan-panel") == 1
 
 
+def test_a_plan_card_without_the_plan_form_keeps_the_ordinary_card() -> None:
+    """With no API key the card holds only its note, so it takes none of the rules that set
+    its side insets aside for the evening field."""
+    with support.browser() as client:
+        page = client.get("/parent").text
+
+    assert "No API key is configured" in page
+    assert 'action="/parent/actions/plan"' not in page
+    assert "plan-panel" not in page
+
+
 @pytest.mark.parametrize("who", ["her", "another origin", "signed out"])
 def test_a_family_press_refused_at_the_door_reads_and_starts_no_run(
     who: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
