@@ -519,6 +519,9 @@ RECORD_FIELDS: Final = (
     ("note", "Note"),
 )
 """The school record details of a result, by field, with their labels."""
+REVIEW_RECORD_FIELDS: Final = (("average", "Average"), *RECORD_FIELDS)
+"""A review row's school record details: its average as the report wrote it, then the
+record cells, since the row shows its score, maximum, status and due date already."""
 
 
 def presence_words(what: str, cell: Cell) -> str:
@@ -565,7 +568,7 @@ def school_record(category: GradeCategory, row: GradeRow) -> SchoolRecord:
         cues.append("Adjusted")
     if cells["note"][0] is Presence.REPORTED and cells["note"][1].strip():
         cues.append("Teacher's note")
-    lines = [f"{label}: {record_text(cells[field])}" for field, label in RECORD_FIELDS]
+    lines = [f"{label}: {record_text(cells[field])}" for field, label in REVIEW_RECORD_FIELDS]
     return SchoolRecord(lines, cues)
 
 

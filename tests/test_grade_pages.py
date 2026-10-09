@@ -773,12 +773,20 @@ def test_each_result_row_s_school_record_details_are_closed_and_say_each_cell_it
     assert record_details(page, "Seed Germination Log") == (
         '<details class="steps">',
         "School record details: Adjusted, Teacher's note",
-        ["Curve: 2.0", "Bonus: 1.0", "Penalty: 0.5", "Weight: 1.0", "Note: Redo the labels"],
+        [
+            "Average: 90.0",
+            "Curve: 2.0",
+            "Bonus: 1.0",
+            "Penalty: 0.5",
+            "Weight: 1.0",
+            "Note: Redo the labels",
+        ],
     )
     assert record_details(page, "Microscope Practice") == (
         '<details class="steps">',
         "School record details",
         [
+            "Average: 90.0",
             "Curve: left blank",
             "Bonus: couldn't be read: EX",
             "Penalty: not in the copy",
@@ -789,7 +797,14 @@ def test_each_result_row_s_school_record_details_are_closed_and_say_each_cell_it
     assert record_details(page, "Cell Diagram") == (
         '<details class="steps">',
         "School record details",
-        ["Curve: 0.0", "Bonus: 0.0", "Penalty: left blank", "Weight: 1.0", "Note: left blank"],
+        [
+            "Average: 70.0",
+            "Curve: 0.0",
+            "Bonus: 0.0",
+            "Penalty: left blank",
+            "Weight: 1.0",
+            "Note: left blank",
+        ],
     )
 
 
@@ -833,12 +848,20 @@ def test_a_save_with_every_school_record_details_closed_saves_each_record_cell(
     [
         (
             {"curve": "0", "bonus": "0.0", "penalty": "-0.0", "note": " "},
-            ["Curve: 0", "Bonus: 0.0", "Penalty: -0.0", "Weight: 1.0", "Note: left blank"],
+            [
+                "Average: 90.0",
+                "Curve: 0",
+                "Bonus: 0.0",
+                "Penalty: -0.0",
+                "Weight: 1.0",
+                "Note: left blank",
+            ],
             [],
         ),
         (
             {"curve": "", "bonus": "", "penalty": "-1.5", "note": "Late"},
             [
+                "Average: 90.0",
                 "Curve: left blank",
                 "Bonus: left blank",
                 "Penalty: -1.5",
@@ -877,6 +900,42 @@ def test_a_row_s_school_record_says_zero_apart_from_blank_and_names_its_cues(
     record = grade_routes.school_record(category, row)
 
     assert (record.lines, record.cues) == (lines, cues)
+
+
+@pytest.mark.parametrize(
+    ("average", "line"),
+    [
+        (GradeNumber.read("90.0"), "Average: 90.0"),
+        (GradeNumber.read(""), "Average: left blank"),
+        (GradeNumber.read("EX"), "Average: couldn't be read: EX"),
+        (GradeNumber.not_captured(), "Average: not in the copy"),
+    ],
+)
+def test_a_row_s_school_record_says_its_average_as_the_report_wrote_it_first(
+    average: GradeNumber, line: str
+) -> None:
+    category = grade_drafts.GradeCategory(
+        name=GradeValue.read("Labs"),
+        weight=GradeNumber.read("25.0"),
+        average=GradeNumber.read("83.8"),
+        rows=(),
+    )
+    row = grade_drafts.GradeRow(
+        assignment=GradeValue.read("Microscope Practice"),
+        points=GradeNumber.read("27.0"),
+        max_points=GradeNumber.read("30.0"),
+        average=average,
+        status=GradeValue.read("Valid"),
+        due=grade_drafts.DueText.read("09/24"),
+        curve=GradeNumber.read("0.0"),
+        bonus=GradeNumber.read("0.0"),
+        penalty=GradeNumber.read(""),
+        weight=GradeNumber.read("1.0"),
+        note=GradeValue.read(""),
+        occurrence=1,
+    )
+
+    assert grade_routes.school_record(category, row).lines[:2] == [line, "Curve: 0.0"]
 
 
 def test_no_family_grade_route_calls_a_model(
