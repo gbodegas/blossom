@@ -71,6 +71,7 @@ from tests.support import (
     signed_in_household,
     store_of,
     whole_form,
+    without_columns,
     words,
 )
 
@@ -760,6 +761,214 @@ def test_a_saved_value_is_described_under_its_field_s_name() -> None:
     ]
 
 
+RECORDED = without_columns(
+    REPORT.replace(
+        "| 09/22   | 0.0       | 0.0       |             | 1.0        |          |",
+        "| 09/22   | 2.0       | 1.0       | 0.5         | 1.0        | Redo the labels |",
+    ).replace("| 09/24   | 0.0       | 0.0       |", "| 09/24   |           | EX        |"),
+    "Labs",
+    "Penalty",
+    "Note",
+)
+"""Wren's report with a curve, a bonus, a penalty and a note on Seed Germination Log, and on
+Microscope Practice a blank curve, an unreadable bonus, and no Penalty or Note in the copy."""
+
+
+def result_cards(page: str) -> list[str]:
+    """Each result card of a review, as written."""
+    results = page.split('id="values-heading"', 1)[1].split("</section>", 1)[0]
+    return [card.split("</article>", 1)[0] for card in results.split("<article")[1:]]
+
+
+def record_details(page: str, title: str) -> tuple[str, str, list[str]]:
+    """The opening tag of the school record details on the review's row titled ``title``, its
+    summary's words, and the words of each of its lines."""
+    (card,) = [
+        card
+        for card in result_cards(page)
+        if words(re.findall(r"<h3>.*?</h3>", card, flags=re.DOTALL)[0]) == title
+    ]
+    (details,) = re.findall(r"<details[^>]*>.*?</details>", card, flags=re.DOTALL)
+    summary = re.search(r"<summary>(.*?)</summary>", details, flags=re.DOTALL)
+    assert summary is not None
+    lines = [words(line) for line in re.findall(r"<li>(.*?)</li>", details, flags=re.DOTALL)]
+    return details.split(">", 1)[0] + ">", words(summary[1]), lines
+
+
+def test_each_result_row_s_school_record_details_are_closed_and_say_each_cell_it_saves(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        page = review_page(browser, RECORDED)
+
+    assert record_details(page, "Seed Germination Log") == (
+        '<details class="steps">',
+        "School record details: Adjusted, Teacher's note",
+        [
+            "Average: 90.0",
+            "Curve: 2.0",
+            "Bonus: 1.0",
+            "Penalty: 0.5",
+            "Weight: 1.0",
+            "Note: Redo the labels",
+        ],
+    )
+    assert record_details(page, "Microscope Practice") == (
+        '<details class="steps">',
+        "School record details",
+        [
+            "Average: 90.0",
+            "Curve: left blank",
+            "Bonus: couldn't be read: EX",
+            "Penalty: not in the copy",
+            "Weight: 1.0",
+            "Note: not in the copy",
+        ],
+    )
+    assert record_details(page, "Cell Diagram") == (
+        '<details class="steps">',
+        "School record details",
+        [
+            "Average: 70.0",
+            "Curve: 0.0",
+            "Bonus: 0.0",
+            "Penalty: left blank",
+            "Weight: 1.0",
+            "Note: left blank",
+        ],
+    )
+
+
+def test_only_result_rows_hold_school_record_details_and_none_holds_a_control(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        page = review_page(browser, RECORDED)
+
+    cards = result_cards(page)
+    held = [len(re.findall(r"<details\b", card)) for card in cards]
+    assert held == [0, 0, 0, 0, 0, 1, 1, 1, 1]
+    for details in re.findall(r"<details\b.*?</details>", page, flags=re.DOTALL):
+        assert not re.search(r"<(input|select|textarea|button)\b", details)
+
+
+def test_a_save_with_every_school_record_details_closed_saves_each_record_cell(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        _, said = outcome_of(browser, answered(review_page(browser, RECORDED)))
+
+    assert "Saved. 8 added. 1 is left to check." in said
+    with sqlite3.connect(database(settings)) as connection:
+        saved = connection.execute(
+            "SELECT trim(assignment_text), trim(curve_text), trim(bonus_text), "
+            "trim(penalty_text), penalty_presence, trim(note_text), note_presence "
+            "FROM grade_result_observations WHERE trim(assignment_text) IN (?, ?) "
+            "ORDER BY position",
+            ("Seed Germination Log", "Osmosis with Potato Slices"),
+        ).fetchall()
+    assert saved == [
+        ("Seed Germination Log", "2.0", "1.0", "0.5", "reported", "Redo the labels", "reported"),
+        ("Osmosis with Potato Slices", "0.0", "0.0", "", "not_captured", "", "not_captured"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cells", "lines", "cues"),
+    [
+        (
+            {"curve": "0", "bonus": "0.0", "penalty": "-0.0", "note": " "},
+            [
+                "Average: 90.0",
+                "Curve: 0",
+                "Bonus: 0.0",
+                "Penalty: -0.0",
+                "Weight: 1.0",
+                "Note: left blank",
+            ],
+            [],
+        ),
+        (
+            {"curve": "", "bonus": "", "penalty": "-1.5", "note": "Late"},
+            [
+                "Average: 90.0",
+                "Curve: left blank",
+                "Bonus: left blank",
+                "Penalty: -1.5",
+                "Weight: 1.0",
+                "Note: Late",
+            ],
+            ["Adjusted", "Teacher's note"],
+        ),
+    ],
+)
+def test_a_row_s_school_record_says_zero_apart_from_blank_and_names_its_cues(
+    cells: dict[str, str], lines: list[str], cues: list[str]
+) -> None:
+    category = grade_drafts.GradeCategory(
+        name=GradeValue.read("Labs"),
+        weight=GradeNumber.read("25.0"),
+        average=GradeNumber.read("83.8"),
+        rows=(),
+    )
+    written = {"weight": "1.0", **cells}
+    row = grade_drafts.GradeRow(
+        assignment=GradeValue.read("Microscope Practice"),
+        points=GradeNumber.read("27.0"),
+        max_points=GradeNumber.read("30.0"),
+        average=GradeNumber.read("90.0"),
+        status=GradeValue.read("Valid"),
+        due=grade_drafts.DueText.read("09/24"),
+        curve=GradeNumber.read(written["curve"]),
+        bonus=GradeNumber.read(written["bonus"]),
+        penalty=GradeNumber.read(written["penalty"]),
+        weight=GradeNumber.read(written["weight"]),
+        note=GradeValue.read(written["note"]),
+        occurrence=1,
+    )
+
+    record = grade_routes.school_record(category, row)
+
+    assert (record.lines, record.cues) == (lines, cues)
+
+
+@pytest.mark.parametrize(
+    ("average", "line"),
+    [
+        (GradeNumber.read("90.0"), "Average: 90.0"),
+        (GradeNumber.read(""), "Average: left blank"),
+        (GradeNumber.read("EX"), "Average: couldn't be read: EX"),
+        (GradeNumber.not_captured(), "Average: not in the copy"),
+    ],
+)
+def test_a_row_s_school_record_says_its_average_as_the_report_wrote_it_first(
+    average: GradeNumber, line: str
+) -> None:
+    category = grade_drafts.GradeCategory(
+        name=GradeValue.read("Labs"),
+        weight=GradeNumber.read("25.0"),
+        average=GradeNumber.read("83.8"),
+        rows=(),
+    )
+    row = grade_drafts.GradeRow(
+        assignment=GradeValue.read("Microscope Practice"),
+        points=GradeNumber.read("27.0"),
+        max_points=GradeNumber.read("30.0"),
+        average=average,
+        status=GradeValue.read("Valid"),
+        due=grade_drafts.DueText.read("09/24"),
+        curve=GradeNumber.read("0.0"),
+        bonus=GradeNumber.read("0.0"),
+        penalty=GradeNumber.read(""),
+        weight=GradeNumber.read("1.0"),
+        note=GradeValue.read(""),
+        occurrence=1,
+    )
+
+    assert grade_routes.school_record(category, row).lines[:2] == [line, "Curve: 0.0"]
+
+
 def test_no_family_grade_route_calls_a_model(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1221,7 +1430,7 @@ def test_a_save_from_the_review_lands_on_its_outcome_by_its_acceptance_id(
     assert "Saved. 9 added." in said
     assert "Biology" in said
     assert "T1 · 2026-2027" in said
-    assert grade_routes.NAME_CONFIRMED in said
+    assert "Her name was confirmed with this report." in said
     assert "Nothing was saved" not in said
 
 
