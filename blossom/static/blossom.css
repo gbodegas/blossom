@@ -1151,12 +1151,14 @@ button[disabled] {
 }
 
 /* A refusal on Family review, and on the page that stands in for it, can name a request by
-   its 32-character id, one word wider than a phone's line. The alert at the top of the
-   family page, and the one explanation a page gives as it arrives, break such a word where
-   they must, so nothing of it is cut and the page never scrolls sideways; a line that fits
-   is as it was. */
+   its 32-character id, one word wider than a phone's line, and her week's problem line can
+   name an assignment or a class by a word as long. The alert at the top of the family page,
+   the one explanation a page gives as it arrives, and her week's problem line with its links
+   break such a word where they must, so nothing of it is cut and the page never scrolls
+   sideways; a line that fits is as it was. */
 #problem,
-#problem-summary {
+#problem-summary,
+.week-problem {
   overflow-wrap: anywhere;
 }
 
