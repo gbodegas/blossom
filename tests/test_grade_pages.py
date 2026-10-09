@@ -37,7 +37,14 @@ from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.grades import draft as grade_drafts
 from blossom.grades import review as grade_review
-from blossom.grades.draft import GradeNumber, GradeReportDraft, GradeValue, Presence, capture_key
+from blossom.grades.draft import (
+    GradeNumber,
+    GradeReportDraft,
+    GradeValue,
+    Presence,
+    TermResult,
+    capture_key,
+)
 from blossom.grades.identity import name_form, name_form_key
 from blossom.grades.review import Cell, CurrentValue, GradeReportSaved, ItemStatus, ReviewItem
 from blossom.grades.text_reader import read_grade_report
@@ -2344,6 +2351,188 @@ def test_class_details_say_category_name_left_blank(tmp_path: pathlib.Path) -> N
         assert page.status_code == 200
         assert "Category name left blank: weight 25.0, average 83.8" in said
         assert "Name left blank" not in said
+
+
+TERM_CELLS: Final[dict[str, dict[Presence, tuple[Cell, str]]]] = {
+    "percent": {
+        Presence.REPORTED: ((Presence.REPORTED, "81.9"), "81.9%"),
+        Presence.BLANK: ((Presence.BLANK, ""), "percent left blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "8l.9"), "percent couldn't be read: 8l.9"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "percent not in the copy"),
+    },
+    "letter": {
+        Presence.REPORTED: ((Presence.REPORTED, "B-"), "B-"),
+        Presence.BLANK: ((Presence.BLANK, ""), "letter grade left blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "A?"), "letter grade couldn't be read: A?"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "letter grade not in the copy"),
+    },
+}
+"""Each term cell in each presence, and the words Grades and class details say for it."""
+SCORE_CELLS: Final[dict[str, dict[Presence, tuple[Cell, str]]]] = {
+    "points": {
+        Presence.REPORTED: ((Presence.REPORTED, "18.0"), "18.0"),
+        Presence.BLANK: ((Presence.BLANK, ""), "blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "EX"), "couldn't be read: EX"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "not in the copy"),
+    },
+    "max_points": {
+        Presence.REPORTED: ((Presence.REPORTED, "20.0"), "20.0"),
+        Presence.BLANK: ((Presence.BLANK, ""), "maximum left blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "TBD"), "maximum couldn't be read: TBD"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "maximum not in the copy"),
+    },
+    "average": {
+        Presence.REPORTED: ((Presence.REPORTED, "90.0"), "90.0%"),
+        Presence.BLANK: ((Presence.BLANK, ""), "average left blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "X9"), "average couldn't be read: X9"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "average not in the copy"),
+    },
+}
+"""Each score cell in each presence, and the words class details say for it."""
+SAVED_PRESENCES: Final = (Presence.REPORTED, Presence.BLANK, Presence.NOT_CAPTURED)
+"""The presences a saved cell holds: a value with a cell that couldn't be read is never offered
+to a save."""
+
+
+def term_said(percent: Presence, letter: Presence) -> str:
+    """The term grade line for a percent and a letter in these presences."""
+    if {percent, letter} == {Presence.BLANK}:
+        return "Term grade left blank"
+    if {percent, letter} == {Presence.NOT_CAPTURED}:
+        return "Term grade not in the copy"
+    shown = (TERM_CELLS["percent"][percent][1], TERM_CELLS["letter"][letter][1])
+    return "School-reported grade " + " · ".join(shown)
+
+
+def score_said(points: Presence, most: Presence, average: Presence) -> str:
+    """The score line for points, a maximum and an average in these presences."""
+    if {points, most, average} == {Presence.BLANK}:
+        return "Score left blank"
+    if {points, most, average} == {Presence.NOT_CAPTURED}:
+        return "Score not in the copy"
+    shown = (
+        SCORE_CELLS[field][presence][1]
+        for field, presence in (("points", points), ("max_points", most), ("average", average))
+    )
+    return "School score: {} / {} · {}".format(*shown)
+
+
+def as_number(cell: Cell) -> GradeNumber:
+    return GradeNumber(text=cell[1], presence=cell[0])
+
+
+@pytest.mark.parametrize("percent", list(Presence))
+@pytest.mark.parametrize("letter", list(Presence))
+def test_a_term_grade_line_says_each_cell_as_written_or_by_its_presence(
+    percent: Presence, letter: Presence
+) -> None:
+    """No cell of the term grade is dropped for another's presence: the percent and the letter
+    each read as written, or as the review says a cell that wasn't reported."""
+    value = CurrentValue(
+        cells={
+            "percent": TERM_CELLS["percent"][percent][0],
+            "letter": TERM_CELLS["letter"][letter][0],
+        },
+        report_id="report",
+        order=1,
+    )
+
+    assert grade_routes.term_grade(value) == term_said(percent, letter)
+
+
+@pytest.mark.parametrize("points", list(Presence))
+@pytest.mark.parametrize("most", list(Presence))
+@pytest.mark.parametrize("average", list(Presence))
+def test_a_score_line_says_each_cell_as_written_or_by_its_presence(
+    points: Presence, most: Presence, average: Presence
+) -> None:
+    """No cell of a score is dropped for another's presence: the points, the maximum and the
+    average each read as written, or as the review says a cell that wasn't reported."""
+    value = CurrentValue(
+        cells={
+            "points": SCORE_CELLS["points"][points][0],
+            "max_points": SCORE_CELLS["max_points"][most][0],
+            "average": SCORE_CELLS["average"][average][0],
+        },
+        report_id="report",
+        order=1,
+    )
+
+    assert grade_routes.score_of(value) == score_said(points, most, average)
+
+
+@pytest.mark.parametrize(
+    ("percent", "letter"),
+    [
+        (percent, letter)
+        for percent in SAVED_PRESENCES
+        for letter in SAVED_PRESENCES
+        if {percent, letter} != {Presence.NOT_CAPTURED}
+    ],
+)
+def test_grades_and_class_details_show_each_term_cell_the_save_kept(
+    percent: Presence, letter: Presence, tmp_path: pathlib.Path
+) -> None:
+    (percent_cell, _), (letter_cell, _) = (
+        TERM_CELLS["percent"][percent],
+        TERM_CELLS["letter"][letter],
+    )
+    term = TermResult(
+        percent=as_number(percent_cell),
+        letter=GradeValue(text=letter_cell[1], presence=letter_cell[0]),
+    )
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM.model_copy(update={"term": term}))
+        grades = [
+            words(browser.get(address, headers=PAGE).text) for address in (HER_GRADES, GRADES)
+        ]
+        details = [
+            words(browser.get(address.format(class_id=class_id, n=1), headers=PAGE).text)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    line = term_said(percent, letter)
+    for said in grades:
+        assert f"Biology {line} Report added" in said, said
+    for said in details:
+        assert f"T1 · 2026-2027 {line} Report added" in said, said
+
+
+def test_class_details_show_each_score_cell_the_save_kept(tmp_path: pathlib.Path) -> None:
+    states = [
+        (points, most, average)
+        for points in SAVED_PRESENCES
+        for most in SAVED_PRESENCES
+        for average in SAVED_PRESENCES
+    ]
+    homework = FIRST_TERM.categories[0]
+    rows = tuple(
+        homework.rows[0].model_copy(
+            update={
+                "assignment": GradeValue.read(f"Log {n:02}"),
+                "points": as_number(SCORE_CELLS["points"][points][0]),
+                "max_points": as_number(SCORE_CELLS["max_points"][most][0]),
+                "average": as_number(SCORE_CELLS["average"][average][0]),
+            }
+        )
+        for n, (points, most, average) in enumerate(states, start=1)
+    )
+    draft = FIRST_TERM.model_copy(
+        update={
+            "categories": (homework.model_copy(update={"rows": rows}), *FIRST_TERM.categories[1:])
+        }
+    )
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, draft)
+        pages = [
+            words(browser.get(address.format(class_id=class_id, n=1), headers=PAGE).text)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    for said in pages:
+        for n, (points, most, average) in enumerate(states, start=1):
+            line = score_said(points, most, average)
+            assert f"Log {n:02} Homework / Practice {line} Due September 22" in said, (n, said)
 
 
 def test_a_newer_report_that_repeats_the_term_grade_leaves_it_named_by_its_supplier(

@@ -1862,17 +1862,37 @@ def cell_text(cell: Cell, what: str) -> str:
     return cell[1] if cell[0] is Presence.REPORTED else presence_words(what, cell)
 
 
+ABSENT_ALIKE: Final = frozenset({Presence.BLANK, Presence.NOT_CAPTURED})
+"""The presences a line names once when every cell of it holds the same one."""
+
+
+def absent_alike(*cells: Cell) -> Cell | None:
+    """The first of ``cells`` when all were left blank, or all are not in the copy; None when a
+    line has to say each of them."""
+    first = cells[0][0]
+    if first in ABSENT_ALIKE and all(cell[0] is first for cell in cells):
+        return cells[0]
+    return None
+
+
+def as_said(cell: Cell, label: str) -> str:
+    """A percent cell of a line: as written, with its sign, or the review's words for a cell
+    under ``label`` that wasn't reported."""
+    if cell[0] is Presence.REPORTED:
+        return as_percent(cell[1])
+    return described(*cell, label)
+
+
 def term_grade(value: CurrentValue) -> str:
-    """The school-reported term grade as written: the percent and the letter."""
+    """The school-reported term grade: the percent and the letter, each as written or in the
+    review's words for its presence; one presence for the line when both share a blank or
+    uncaptured one."""
     percent, letter = value.cells["percent"], value.cells["letter"]
-    if percent[0] is not Presence.REPORTED and letter[0] is not Presence.REPORTED:
-        return presence_words("Term grade", percent)
-    parts = []
-    if percent[0] is Presence.REPORTED:
-        parts.append(as_percent(percent[1]))
-    if letter[0] is Presence.REPORTED:
-        parts.append(letter[1])
-    return "School-reported grade " + " · ".join(parts)
+    alike = absent_alike(percent, letter)
+    if alike is not None:
+        return presence_words("Term grade", alike)
+    said = (as_said(percent, "percent"), described(*letter, "letter grade"))
+    return "School-reported grade " + " · ".join(said)
 
 
 def newest_current(reports: tuple[ClassReport, ...]) -> ClassReport | None:
@@ -2070,18 +2090,18 @@ class ResultShown:
 
 
 def score_of(value: CurrentValue) -> str:
-    """The school score as written: points out of max, with the percent the school reported,
-    or the words for a score that wasn't reported."""
+    """The school score: points out of the maximum, then the percent the school reported, each
+    as written or in the review's words for its presence; one presence for the line when all
+    three share a blank or uncaptured one."""
     points, most = value.cells["points"], value.cells["max_points"]
     average = value.cells["average"]
-    if points[0] is not Presence.REPORTED:
-        return presence_words("Score", points)
-    score = f"School score: {points[1]}"
-    if most[0] is Presence.REPORTED:
-        score += f" / {most[1]}"
-    if average[0] is Presence.REPORTED:
-        score += f" · {as_percent(average[1])}"
-    return score
+    alike = absent_alike(points, most, average)
+    if alike is not None:
+        return presence_words("Score", alike)
+    return (
+        f"School score: {described(*points, None)} / {described(*most, 'maximum')}"
+        f" · {as_said(average, 'average')}"
+    )
 
 
 def due_of(value: CurrentValue, resolved: date | None, names: dict[str, str]) -> str:
