@@ -3447,21 +3447,90 @@ def test_a_page_without_the_use_is_checked_and_saved_with_its_default(
     assert answer.status_code == (200 if route == CHECK else 303), answer.text[:300]
 
 
-def test_a_returned_page_that_newly_asks_the_use_saves_with_its_default(
-    tmp_path: pathlib.Path,
+CELL_SCORED = {score: REPORT.replace("| 7.0 ", f"| {score} ") for score in ("8.0", "9.0")}
+"""Wren's report with its Cell Diagram scored again: once saved, each replaces the 7.0."""
+SEED_SCORED = {
+    score: REPORT.replace("| Seed Germination Log | 18.0 ", f"| Seed Germination Log | {score} ")
+    for score in ("19.0", "17.0")
+}
+"""Wren's report with its Seed Germination Log scored again and the 7.0 a newer report replaced:
+each starts on keeping the copy as an earlier report."""
+ASKING_THE_USE: Final = {"current": CELL_SCORED, "earlier": SEED_SCORED}
+"""The copies whose review asks the use, by the use it starts on."""
+
+
+def use_asked_on(browser: TestClient, default: str) -> list[str]:
+    """Wren's report saved, then for "earlier" a newer Cell Diagram saved over its 7.0; the two
+    copies whose review asks the use starting on ``default``."""
+    first_saved(browser)
+    if default == "earlier":
+        newer = as_sent(review_page(browser, CELL_SCORED["8.0"]))
+        assert browser.post(SAVE, data=newer, headers=PAGE).status_code == 303
+    return list(ASKING_THE_USE[default].values())
+
+
+def use_on_record(settings: Settings) -> str:
+    """The use the newest report was saved with."""
+    with sqlite3.connect(f"file:{database(settings)}?mode=ro", uri=True) as db:
+        found = db.execute(
+            "SELECT use FROM grade_reports ORDER BY acceptance_order DESC LIMIT 1"
+        ).fetchone()
+    assert found is not None
+    return str(found[0])
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("default", ["current", "earlier"])
+def test_a_returned_page_that_newly_asks_the_use_checks_and_saves_its_default(
+    route: str, default: str, tmp_path: pathlib.Path
 ) -> None:
-    with at(open_household(tmp_path)) as browser:
-        first_saved(browser)
+    """A page that asked no use, returned with the use asked: the use starts where a fresh
+    review of the same text starts, and saving the page as shown saves what saving that fresh
+    review does in a household just like it."""
+    settings = open_household(tmp_path / "returned")
+    with at(settings) as browser:
+        changed = use_asked_on(browser, default)[0]
         form = as_sent(review_page(browser))
-        changed = form["report_text"].replace("| 7.0 ", "| 8.0 ")
-        returned = browser.post(SAVE, data={**form, "report_text": changed}, headers=PAGE)
-        saved = browser.post(SAVE, data=sent_from(returned.text), headers=PAGE)
+        returned = browser.post(route, data={**form, "report_text": changed}, headers=PAGE)
+        shown = sent_from(returned.text)
+        _, said = outcome_of(browser, shown)
+    twin = open_household(tmp_path / "fresh")
+    with at(twin) as browser:
+        use_asked_on(browser, default)
+        fresh = as_sent(review_page(browser, changed))
+        _, fresh_said = outcome_of(browser, fresh)
 
     assert "use" not in form
-    assert returned.status_code == 409
-    assert 'name="use" value="current"' in returned.text
-    assert "use" not in sent_from(returned.text)
-    assert saved.status_code == 303, saved.text[:300]
+    assert returned.status_code == 409, returned.text[:300]
+    offered = [value for _, name, value in form_values(returned.text, SAVE) if name == "use"]
+    assert offered == ["current", "earlier"]
+    assert shown["use"] == fresh["use"] == default
+    kept_as_said({**form, "report_text": changed}, returned.text, source=True)
+    assert use_on_record(settings) == use_on_record(twin) == default
+    assert said == fresh_said
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("default", ["current", "earlier"])
+def test_a_use_chosen_against_its_default_stays_checked_and_saved_while_it_is_asked(
+    route: str, default: str, tmp_path: pathlib.Path
+) -> None:
+    """A page whose use was chosen against where it starts, returned with the use still asked
+    and starting there: the choice stays checked as made, and saving the page saves it."""
+    chosen = "earlier" if default == "current" else "current"
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        asking, changed = use_asked_on(browser, default)
+        form = {**as_sent(review_page(browser, asking)), "use": chosen}
+        returned = browser.post(route, data={**form, "report_text": changed}, headers=PAGE)
+        fresh = sent_from(review_page(browser, changed))
+        outcome_of(browser, sent_from(returned.text))
+
+    assert returned.status_code == 409, returned.text[:300]
+    assert fresh["use"] == default
+    assert sent_from(returned.text)["use"] == chosen
+    kept_as_said({**form, "report_text": changed}, returned.text, source=True)
+    assert use_on_record(settings) == chosen
 
 
 @pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])

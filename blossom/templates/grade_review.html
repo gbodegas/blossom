@@ -206,13 +206,15 @@
       </section>
 
       {% if review.use %}
+        {# The use the fields carry, else the one a fresh review starts on: what a save takes for none. #}
+        {% set use_shown = p.get("use") or review.use.default %}
         <fieldset class="choice" id="use-question">
           <legend>How should Blossom use this report?</legend>
           {% if review.use.repeats %}
             <p class="helper">This report repeats values a newer report replaced.</p>
           {% endif %}
-          <label><input type="radio" name="use" value="current"{% if (fresh and review.use.default == "current") or p.get("use") == "current" %} checked{% endif %}> <span>{% if complete %}Use this as the current school record{% else %}Use these values where this report provides them{% endif %}</span></label>
-          <label><input type="radio" name="use" value="earlier"{% if (fresh and review.use.default == "earlier") or p.get("use") == "earlier" %} checked{% endif %}> <span>Keep as an earlier report</span></label>
+          <label><input type="radio" name="use" value="current"{% if use_shown == "current" %} checked{% endif %}> <span>{% if complete %}Use this as the current school record{% else %}Use these values where this report provides them{% endif %}</span></label>
+          <label><input type="radio" name="use" value="earlier"{% if use_shown == "earlier" %} checked{% endif %}> <span>Keep as an earlier report</span></label>
         </fieldset>
       {% endif %}
 
