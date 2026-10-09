@@ -1204,6 +1204,34 @@ pre.body {
   min-width: 0;
 }
 
+/* The evening field shows the whole date only at its own width, about 9.75rem + 12.5px as
+   Edge draws it, and on a phone with large text the card's side borders and padding leave too
+   short a line for it. There, and only there, the card sets them aside, all at once: each
+   value below is the ordinary one on a screen at least 15.45rem + 14.5px wide (the field, the
+   card's ordinary 1.6rem padding and borders, and the page's side margin) and the bare one on
+   a narrower screen. The middle value, a thousand times the screen's width past that point,
+   makes the switch within a tenth of a pixel. */
+.panel.plan-panel {
+  border-inline-width: clamp(0px, 100000vw - 15450rem - 14500px, 1px);
+  padding-inline: clamp(0px, 100000vw - 15450rem - 14500px, 1.6rem);
+}
+
+/* On a narrow screen the card's padding is 1.2rem, so the switch is at 14.65rem + 14.5px.
+   Below it the card also reaches into the page's side margin, leaving 4% of the screen's
+   width at each edge as Add assignments does, and the field's side padding is 2% of the
+   screen's width. */
+@media (max-width: 30rem) {
+  .panel.plan-panel {
+    border-inline-width: clamp(0px, 100000vw - 14650rem - 14500px, 1px);
+    padding-inline: clamp(0px, 100000vw - 14650rem - 14500px, 1.2rem);
+    margin-inline: clamp(4vw - 1.25rem, 100000vw - 14650rem - 14500px, 0px);
+  }
+
+  .plan-panel input[type="date"] {
+    padding-inline: clamp(2vw, 100000vw - 14650rem - 14500px, 0.85rem);
+  }
+}
+
 /* On a phone with text at 200%, a card or Help leaves a line too short for the longest word
    of a decision's button, of her Ask a parent for help in Help or about one note, of a
    button under her update on a card, or of a problem line in Help, once the ordinary side
