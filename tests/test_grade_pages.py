@@ -1016,6 +1016,36 @@ def test_not_hers_ends_the_import_and_writes_nothing(tmp_path: pathlib.Path) -> 
     assert after == before
 
 
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("revision", "\N{SUPERSCRIPT TWO}"),
+        ("revision", "\N{ARABIC-INDIC DIGIT THREE}"),
+        ("revision", "A"),
+        ("class", "class:biology:\N{SUPERSCRIPT TWO}"),
+    ],
+    ids=["superscript", "other-digit", "letter", "class-superscript"],
+)
+def test_a_revision_outside_its_form_is_refused_with_the_text_kept(
+    route: str, field: str, value: str, tmp_path: pathlib.Path
+) -> None:
+    """A page writes a revision in ASCII digits only; any other character, a digit of another
+    script among them, is a form that isn't whole."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = answered(review_page(browser), **{field: value})
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422
+    assert escape(grade_routes.NOT_WHOLE) in answer.text
+    assert escape(REPORT.splitlines()[0]) in answer.text
+    assert 'name="report_text"' in answer.text
+    assert after == before
+
+
 @pytest.mark.parametrize(("field", "label"), [("class_name", "class name"), ("setup_term", "term")])
 def test_a_label_over_its_limit_is_named_and_nothing_is_saved(
     field: str, label: str, tmp_path: pathlib.Path
@@ -1255,8 +1285,7 @@ def test_answers_another_tab_settled_return_the_review_and_keep_what_still_appli
     assert escape(grade_routes.ANSWER_DOESNT_FIT) in answer.text
     assert problem_said(answer.text) == (
         "An answer doesn't fit this report now: another page saved it, or the name check "
-        "changed. Nothing was saved. Answer again where asked. Your text is kept. Check the "
-        "answers again."
+        "changed. Nothing was saved. Your text is kept. Check the answers again."
     )
     kept = whole_form(answer.text, SAVE)
     assert kept["identity"] == "shown"
