@@ -231,6 +231,12 @@ def due_on(day: date) -> str:
     return f"{day:%B} {day.day}"
 
 
+def named_work(work: PastDueView) -> str:
+    """``Map quiz (Geography, due August 18)``: past-due work by its title, course and due
+    date."""
+    return f"{work.title} ({work.course}, due {due_on(work.due_date)})"
+
+
 def saved_sentence(*, parent: bool) -> str:
     """That her updates are kept, to her or to a parent reading her page."""
     return "Her homework updates are saved." if parent else "Your homework updates are saved."
@@ -284,7 +290,7 @@ def ended_sentences(
     category = failure_category(outcome)
     what: Sentences
     if category == DATE_PROBLEM and past_due:
-        named = [f"{work.title} ({work.course}, due {due_on(work.due_date)})" for work in past_due]
+        named = [named_work(work) for work in past_due]
         listed = named[0] if len(named) == 1 else ", ".join(named[:-1]) + f" and {named[-1]}"
         has, it = ("has a due date", "it") if len(named) == 1 else ("have due dates", "them")
         what = (

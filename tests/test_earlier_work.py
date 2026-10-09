@@ -66,6 +66,7 @@ from tests.support import (
     fixture_settings,
     form_fields,
     fresh_plan_fields,
+    her_line,
     human_text,
     plan_block,
     plan_form,
@@ -1587,7 +1588,7 @@ def test_undated_work_whose_only_school_date_passed_ends_the_press_before_any_mo
     """With no date on record, the work is always in today's window and never earlier work
     to choose; its only date, the portal's October 1, has passed and no date is still to
     come, so every plan would fail the deadline check over it. The press names it and its
-    day, links to its dates, and asks no model."""
+    day once, in its link to its dates, and asks no model."""
     briefs: list[Scripted[DailyPlan]] = []
     with household(OCT_3, ONLY_PAST, briefs=briefs) as client:
         store_of(client).record_claims(
@@ -1600,9 +1601,10 @@ def test_undated_work_whose_only_school_date_passed_ends_the_press_before_any_mo
     assert section(shown) == "" or ONLY_PAST.assignment_id not in section(shown)
     assert answer.status_code == 409
     assert (
-        "Blossom can&#39;t make today&#39;s plan. Atlas page (Art, due October 1) has a due "
-        "date that already passed, so no plan can finish it on time."
+        "Blossom can&#39;t make today&#39;s plan. Some work has a due date that already passed, "
+        "so no plan can finish it on time."
     ) in unwrapped(answer.text)
-    assert "Check the dates for Atlas page." in answer.text
+    assert "Check the dates for Atlas page (Art, due October 1).</a>" in answer.text
+    assert her_line(answer.text).count("Atlas page") == 1
     assert [planner.calls for planner in briefs] == [0]
     assert [run.outcome for run in ended] == ["date_problem"]

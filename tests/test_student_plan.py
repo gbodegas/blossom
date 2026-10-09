@@ -1005,8 +1005,9 @@ def test_each_way_a_run_ends_without_a_plan_is_said_with_a_way_forward() -> None
 
 
 def test_work_dated_before_today_is_named_with_a_link_to_its_dates_and_no_model_is_asked() -> None:
-    """The work is named with a link to its dates, no model is asked, and the plan button
-    keeps its own words, since planning again can't fix a date."""
+    """The work is named once, in a link to its dates with its course and due date, no model
+    is asked, and the plan button keeps its own words, since planning again can't fix a
+    date."""
     planners: list[Scripted[DailyPlan]] = []
     with browser() as client:
         state = state_of(client)
@@ -1022,14 +1023,14 @@ def test_work_dated_before_today_is_named_with_a_link_to_its_dates_and_no_model_
 
     line = the_line(page)
     assert (
-        "Blossom can&#39;t make today&#39;s plan. Map quiz (Geography, due August 18) has a due "
-        "date that already passed, so no plan can finish it on time. Your homework updates "
-        "are saved."
+        "Blossom can&#39;t make today&#39;s plan. Some work has a due date that already passed, "
+        "so no plan can finish it on time. Your homework updates are saved."
     ) in line
     assert (
         '<a href="/student/assignments/assignment-map-quiz?return_to=week#evidence">'
-        "Check the dates for Map quiz.</a>"
+        "Check the dates for Map quiz (Geography, due August 18).</a>"
     ) in line
+    assert words(line).count("Map quiz") == 1
     assert '<a href="#title-assignment-science-fair-proposal">See homework.</a>' in line
     assert TRY_AGAIN not in page
     assert (

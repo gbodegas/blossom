@@ -185,6 +185,7 @@ from blossom.routes.runs import (
     graph_for_a_run,
     landed,
     make_plan,
+    named_work,
     not_saved,
     not_saved_sentences,
     plan_form_from,
@@ -457,10 +458,10 @@ safe."""
 @dataclass(frozen=True)
 class PlanFailure:
     """A plan press that ended without a plan, for the line that says so: each assignment the
-    run named for a date that already passed, by its title and the address of its dates, the
-    link to where a run named by the answer stands, and whether another press may help, which
-    the plan button then offers as Try again: never after an unconfirmed outcome or a date
-    problem, which planning again can't fix."""
+    run named for a date that already passed, by its title, course and due date and the
+    address of its dates, the link to where a run named by the answer stands, and whether
+    another press may help, which the plan button then offers as Try again: never after an
+    unconfirmed outcome or a date problem, which planning again can't fix."""
 
     checks: tuple[tuple[str, str], ...] = ()
     run: RunCheck | None = None
@@ -3923,10 +3924,12 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         # says so and shows that plan, never landing as if this press made it.
         return await not_made(NEWER_PLAN)
     if run.draft_id is None:
+        # Her week names each past-due assignment once, in its link to its dates, so its line
+        # names none; the stand-in has no links, so its words name them.
         return await not_made(
             before(
                 status.HTTP_409_CONFLICT,
-                ended_sentences(run.outcome, parent=parent, past_due=run.past_due),
+                ended_sentences(run.outcome, parent=parent),
                 ended_sentences(run.outcome, parent=parent, past_due=run.past_due, where=False),
             ),
             None
@@ -3934,7 +3937,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             else PlanFailure(
                 checks=tuple(
                     (
-                        work.title,
+                        named_work(work),
                         details_href(work.assignment_id, fragment=EVIDENCE, return_to="week"),
                     )
                     for work in run.past_due

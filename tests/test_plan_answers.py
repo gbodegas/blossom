@@ -951,9 +951,10 @@ def test_a_typed_date_with_marks_inside_keeps_the_whole_first_sentence_focused(
 def test_a_title_with_marks_inside_keeps_her_whole_first_sentence_focused(
     title: str, failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run that ended on a due date already passed opens with a short first sentence and
-    names the work after it, and that first sentence alone takes the focus, however the
-    work's title is punctuated, on her week and its stand-in."""
+    """A run that ended on a due date already passed opens with a short first sentence, and
+    that first sentence alone takes the focus, however the work's title is punctuated: on her
+    week, which names the work once, in its link, and on its stand-in, which has no link and
+    names the work after the opening."""
     opening = "Blossom can't make today's plan."
     late = PastDueView(
         assignment_id=ESSAY_ID, title=title, course="Math", due_date=date(2026, 8, 18)
@@ -966,17 +967,66 @@ def test_a_title_with_marks_inside_keeps_her_whole_first_sentence_focused(
             failing = refusing() if failure == "store error" else too_slow
             monkeypatch.setattr(state_of(client).drafts, "newest_published", failing)
         answer = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
-    said = (
-        f"{opening} {title} (Math, due August 18) has a due date that already passed, so no "
-        "plan can finish it on time. Your homework updates are saved."
-    )
+    named = f"{title} (Math, due August 18)"
+    saved = "Your homework updates are saved."
     assert answer.status_code == 409
     if failure == "page":
-        assert her_line(answer.text).startswith(f"{said} Check the dates for {title}.")
+        assert her_line(answer.text) == (
+            f"{ENDED_REASONS['date_problem']} {saved} Check the dates for {named}. See homework."
+        )
         assert opening_focused(answer.text, HER_TOP_LINE) == opening
     else:
-        assert the_answer_alert(answer.text) == f"{said} {YOUR_WEEK_NOT_SHOWN_LINE}"
+        assert the_answer_alert(answer.text) == (
+            f"{opening} {named} has a due date that already passed, so no plan can finish it on "
+            f"time. {saved} {YOUR_WEEK_NOT_SHOWN_LINE}"
+        )
         assert opening_focused(answer.text, STAND_IN_LINE) == opening
+
+
+PAST_DUE = [
+    ("Read Ch. 3 and answer the review questions at the end", "Biology", date(2026, 8, 17)),
+    ("Map quiz", "Geography", date(2026, 8, 18)),
+    ("Canal Era timeline with five primary sources", "World History", date(2026, 8, 14)),
+]
+"""Work a run found due before today, as title, course and due date."""
+
+
+@pytest.mark.parametrize("count", [1, 3])
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_her_date_problem_names_each_assignment_once_in_its_link(
+    reader: str, count: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Her week's answer to a press that ended on due dates already passed says the problem
+    once, naming no work, and names each assignment once, in its link to its dates, with its
+    title, course and due date, to her and to a parent reading her page."""
+    late = [
+        PastDueView(assignment_id=f"assignment-late-{n}", title=title, course=course, due_date=day)
+        for n, (title, course, day) in enumerate(PAST_DUE[:count])
+    ]
+    ended = SimpleNamespace(outcome="date_problem", draft_id=None, past_due=late)
+    with browser(key=True, **SIGNED_IN) as client:
+        sign_in_as(client, reader)
+        form = fresh_plan_fields(client)
+        planning_answers(monkeypatch, student_routes, SimpleNamespace(view=ended))
+        answer = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+    saved = (
+        f"{HER_UPDATES_SAVED} {FAMILY_REVIEW_SHOWS}"
+        if reader == "parent"
+        else "Your homework updates are saved."
+    )
+    links = [
+        f"Check the dates for {work.title} ({work.course}, due {work.due_date:%B} "
+        f"{work.due_date.day})."
+        for work in late
+    ]
+    line = her_line(answer.text)
+    assert answer.status_code == 409
+    assert line == f"{ENDED_REASONS['date_problem']} {saved} {' '.join(links)} See homework."
+    assert [line.count(work.title) for work in late] == [1] * count
+    for work, link in zip(late, links, strict=True):
+        href = f"/student/assignments/{work.assignment_id}?return_to=week#evidence"
+        assert f'<a href="{href}">{link}</a>' in answer.text
+    assert opening_focused(answer.text, HER_TOP_LINE) == "Blossom can't make today's plan."
 
 
 @pytest.mark.parametrize("row", [row for row in ANSWERED if row.form], ids=lambda row: row.row)
