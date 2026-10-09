@@ -1777,19 +1777,79 @@ CONTEXT_UNKNOWN: Final = (
 )
 CLASS_NOT_ON_RECORD: Final = "Blossom has no record for this class and term."
 NO_REPORT_ADDED: Final = "No grade report added"
-ORDINALS: Final = (
+UNITS: Final = (
     "",
-    "second ",
-    "third ",
-    "fourth ",
-    "fifth ",
-    "sixth ",
-    "seventh ",
-    "eighth ",
-    "ninth ",
-    "tenth ",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
 )
-"""How a report's name says its place among the reports added the same day."""
+"""The counts below twenty, spelled."""
+TENS: Final = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+"""Each ten from twenty up, spelled."""
+SCALES: Final = (
+    (10**12, "trillion"),
+    (10**9, "billion"),
+    (10**6, "million"),
+    (1000, "thousand"),
+    (100, "hundred"),
+)
+"""The words for counts of a hundred and more, largest first."""
+PLACE_WORDS: Final = {
+    "one": "first",
+    "two": "second",
+    "three": "third",
+    "five": "fifth",
+    "eight": "eighth",
+    "nine": "ninth",
+    "twelve": "twelfth",
+}
+"""The spelled counts whose place word isn't the count with "th" after it."""
+
+
+def spelled(count: int) -> str:
+    """A positive count in words, as "twenty-one" or "one hundred one"."""
+    for size, word in SCALES:
+        if count >= size:
+            rest = count % size
+            return f"{spelled(count // size)} {word}" + (f" {spelled(rest)}" if rest else "")
+    if count < len(UNITS):
+        return UNITS[count]
+    rest = count % 10
+    return TENS[count // 10] + (f"-{UNITS[rest]}" if rest else "")
+
+
+def ordinal(count: int) -> str:
+    """A positive count's place in words, as "eleventh", "twenty-first" or "one hundredth"."""
+    if count < 1:
+        msg = "a place is a positive count"
+        raise ValueError(msg)
+    words = spelled(count)
+    cut = max(words.rfind(" "), words.rfind("-")) + 1
+    last = words[cut:]
+    if last in PLACE_WORDS:
+        place = PLACE_WORDS[last]
+    elif last.endswith("y"):
+        place = f"{last[:-1]}ieth"
+    else:
+        place = f"{last}th"
+    return words[:cut] + place
+
 
 student_router = APIRouter(prefix="/student/grades")
 
@@ -1832,8 +1892,8 @@ def report_names(reports: tuple[ClassReport, ...], zone: tzinfo) -> dict[str, st
         day = days[report.report_id]
         same_day = [other.report_id for other in imported if days[other.report_id] == day]
         place = same_day.index(report.report_id)
-        ordinal = ORDINALS[place] if place < len(ORDINALS) else f"report {place + 1}, "
-        names[report.report_id] = f"{ordinal}report added {day}"
+        named = f"{ordinal(place + 1)} " if place else ""
+        names[report.report_id] = f"{named}report added {day}"
         of_capture[report.latest_of_capture] = names[report.report_id]
     for report in reports:
         if report.acted_at is not None:
@@ -2077,13 +2137,14 @@ async def current_term(request: Request, state: State) -> Response:
 @dataclass(frozen=True)
 class ResultShown:
     """A result on class details: its title and category, its score as reported, its due date,
-    the school's status for it, where it was last shown, and its school record details."""
+    the school's status for it or the words for its presence, where it was last shown, and its
+    school record details."""
 
     title: str
     category: str
     score: str
     due: str
-    status: str | None
+    status: str
     showing: list[str]
     record: list[str]
     cues: list[str]
@@ -2154,7 +2215,11 @@ def result_shown(
         category=cell_text(cells["category"], "Category"),
         score=score,
         due=due_of(value, resolved, names),
-        status=f"Gradebook status: {status[1]}" if status[0] is Presence.REPORTED else None,
+        status=(
+            f"Gradebook status: {status[1]}"
+            if status[0] is Presence.REPORTED
+            else presence_words("Gradebook status", status)
+        ),
         showing=showing,
         record=record,
         cues=cues,

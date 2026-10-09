@@ -15,7 +15,7 @@
     <p class="note"><span class="authored-text">{{ item.category }}</span></p>
     <p>{{ item.score }}</p>
     <p>{{ item.due }}</p>
-    {% if item.status %}<p>{{ item.status }}</p>{% endif %}
+    <p>{{ item.status }}</p>
     {% for line in item.showing %}
       <p class="note">{{ line }}</p>
     {% endfor %}

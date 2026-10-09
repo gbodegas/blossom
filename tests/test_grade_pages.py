@@ -46,6 +46,7 @@ from blossom.grades.draft import (
     capture_key,
 )
 from blossom.grades.identity import name_form, name_form_key
+from blossom.grades.projection import MadeCurrent
 from blossom.grades.review import Cell, CurrentValue, GradeReportSaved, ItemStatus, ReviewItem
 from blossom.grades.text_reader import read_grade_report
 from blossom.household import secret_beside
@@ -54,7 +55,12 @@ from blossom.routes import grades as grade_routes
 from blossom.routes.forms import FormRoute, fields_of
 from blossom.settings import Settings
 from blossom.stores import gradebook
-from blossom.stores.gradebook import VIEW_TABLES, GradeReportNotSaved, GradeTransactionLost
+from blossom.stores.gradebook import (
+    VIEW_TABLES,
+    ClassReport,
+    GradeReportNotSaved,
+    GradeTransactionLost,
+)
 from blossom.stores.paths import SECRET_NAME, UnsafeCheckpointPath
 from tests.support import (
     FIXTURE_TIMEZONE,
@@ -67,6 +73,7 @@ from tests.support import (
     as_stored,
     capture_class,
     closed_world,
+    confirm_current,
     elements_of,
     every_route,
     files_in,
@@ -2535,6 +2542,60 @@ def test_class_details_show_each_score_cell_the_save_kept(tmp_path: pathlib.Path
             assert f"Log {n:02} Homework / Practice {line} Due September 22" in said, (n, said)
 
 
+STATUS_CELLS: Final[dict[Presence, tuple[Cell, str]]] = {
+    Presence.REPORTED: ((Presence.REPORTED, "Missing"), "Gradebook status: Missing"),
+    Presence.BLANK: ((Presence.BLANK, ""), "Gradebook status left blank"),
+    Presence.UNREADABLE: ((Presence.UNREADABLE, "M?"), "Gradebook status couldn't be read: M?"),
+    Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "Gradebook status not in the copy"),
+}
+"""The school's status for a result in each presence, and the line class details say for it."""
+
+
+@pytest.mark.parametrize("presence", list(Presence))
+def test_a_result_s_status_line_says_the_status_as_written_or_by_its_presence(
+    presence: Presence,
+) -> None:
+    """Every result has a status line: the status as written, or as the review says a cell that
+    wasn't reported."""
+    cells: dict[str, Cell] = dict.fromkeys(grade_review.RESULT_FIELDS, (Presence.BLANK, ""))
+    cells["assignment"] = (Presence.REPORTED, "Cell Diagram")
+    cells["status"] = STATUS_CELLS[presence][0]
+    value = CurrentValue(cells=cells, report_id="report", order=1)
+
+    _, shown = grade_routes.result_shown(
+        value, year="2026-2027", first_month=8, newest=None, names={}
+    )
+
+    assert shown.status == STATUS_CELLS[presence][1]
+
+
+def test_class_details_say_a_status_left_blank_or_not_in_the_copy(tmp_path: pathlib.Path) -> None:
+    """A Status cell left blank, and a copy whose Labs table has no Status column, each say so
+    on the result's own card; a reported status reads as written."""
+    blank = REPORT.replace("| Valid      | 09/22", "|            | 09/22", 1)
+    text = without_columns(blank, "Labs", "Status")
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, draft_of(text))
+        pages = [
+            words(browser.get(address.format(class_id=class_id, n=1), headers=PAGE).text)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    cards = [
+        "Osmosis with Potato Slices Labs School score: 31.0 / 40.0 · 77.5% Due October 2"
+        " Gradebook status not in the copy",
+        "Cell Diagram Homework / Practice School score: 7.0 / 10.0 · 70.0% Due September 26"
+        " Gradebook status: Missing",
+        "Microscope Practice Labs School score: 27.0 / 30.0 · 90.0% Due September 24"
+        " Gradebook status not in the copy",
+        "Seed Germination Log Homework / Practice School score: 18.0 / 20.0 · 90.0%"
+        " Due September 22 Gradebook status left blank",
+    ]
+    for said in pages:
+        for card in cards:
+            assert card in said, (card, said)
+
+
 def test_a_newer_report_that_repeats_the_term_grade_leaves_it_named_by_its_supplier(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -2590,7 +2651,7 @@ def supplier_line(grade: str, saved: list[str]) -> str:
     """The line naming the report that supplied ``grade``: the seeded report, or the save that
     wrote it, by its place among the reports added that day."""
     place = 0 if grade == "81.9" else saved.index(grade) + 1
-    return f"{grade_routes.ORDINALS[place]}report added".capitalize()
+    return f"{grade_routes.ordinal(place + 1) + ' ' if place else ''}report added".capitalize()
 
 
 @pytest.mark.parametrize(("grades", "details"), [(HER_GRADES, HER_CLASS_AT), (GRADES, CLASS_AT)])
@@ -2623,6 +2684,127 @@ def test_a_save_between_a_page_s_reads_leaves_each_value_named_by_its_supplier(
     assert shown is not None
     line = supplier_line(shown[1], pages[1][1])
     assert re.search(rf"{line} [A-Z][a-z]+ \d{{1,2}}: Current", details_said), details_said
+
+
+@pytest.mark.parametrize(
+    ("count", "said"),
+    [
+        (1, "first"),
+        (2, "second"),
+        (10, "tenth"),
+        (11, "eleventh"),
+        (12, "twelfth"),
+        (19, "nineteenth"),
+        (20, "twentieth"),
+        (21, "twenty-first"),
+        (99, "ninety-ninth"),
+        (100, "one hundredth"),
+        (101, "one hundred first"),
+        (111, "one hundred eleventh"),
+    ],
+)
+def test_an_ordinal_is_spelled_for_any_positive_count(count: int, said: str) -> None:
+    assert grade_routes.ordinal(count) == said
+
+
+def test_an_ordinal_has_no_place_below_one() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        grade_routes.ordinal(0)
+
+
+SAME_DAY: Final = {10: "tenth", 11: "eleventh", 12: "twelfth", 21: "twenty-first"}
+"""Counts of reports added the same day, and the place word of the last of them."""
+
+
+def same_day_reports(count: int, *, acted_from: int | None = None) -> tuple[ClassReport, ...]:
+    """``count`` reports imported on October 9, each its own capture, and with ``acted_from`` a
+    report made current on October 10 from that report's capture, which is then its newest."""
+    made = "report-made"
+    reports = [
+        ClassReport(
+            report_id=f"report-{n}",
+            order=n,
+            use="current",
+            imported_at="2026-10-09T16:00:00+00:00",
+            acted_at=None,
+            latest_of_capture=made if n == acted_from else f"report-{n}",
+        )
+        for n in range(1, count + 1)
+    ]
+    if acted_from is not None:
+        reports.append(
+            ClassReport(
+                report_id=made,
+                order=count + 1,
+                use="current",
+                imported_at="2026-10-10T16:00:00+00:00",
+                acted_at="2026-10-10T16:00:00+00:00",
+                latest_of_capture=made,
+            )
+        )
+    return tuple(reports)
+
+
+@pytest.mark.parametrize("count", list(SAME_DAY))
+def test_each_report_added_the_same_day_is_named_by_its_spelled_place(count: int) -> None:
+    names = grade_routes.report_names(same_day_reports(count), ZoneInfo(FIXTURE_TIMEZONE))
+
+    assert names["report-1"] == "report added October 9"
+    assert names["report-2"] == "second report added October 9"
+    assert names[f"report-{count}"] == f"{SAME_DAY[count]} report added October 9"
+    assert not any(re.search(r"\breport \d", name) for name in names.values()), names
+
+
+def test_a_report_made_current_from_the_eleventh_capture_keeps_its_place_word() -> None:
+    names = grade_routes.report_names(
+        same_day_reports(12, acted_from=11), ZoneInfo(FIXTURE_TIMEZONE)
+    )
+
+    assert names["report-11"] == "eleventh report added October 9"
+    assert names["report-made"] == "eleventh report added October 9, made current October 10"
+    assert grade_routes.as_line(names["report-11"]) == "Eleventh report added October 9"
+    assert grade_routes.as_line(names["report-made"]) == (
+        "Eleventh report added October 9 · Made current October 10"
+    )
+
+
+def same_day_drafts(count: int) -> list[GradeReportDraft]:
+    """``count`` copies of the report, each its own capture by its term grade."""
+    return [draft_of(REPORT.replace("**81.9**", f"**{60 + n}.9**")) for n in range(1, count + 1)]
+
+
+@pytest.mark.parametrize("count", list(SAME_DAY))
+def test_class_details_name_the_last_of_many_same_day_reports_by_its_spelled_place(
+    count: int, tmp_path: pathlib.Path
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, *same_day_drafts(count))
+        page = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+
+    said = words(page.text)
+    place = SAME_DAY[count].capitalize()
+    assert page.status_code == 200
+    assert f"School-reported grade {60 + count}.9% · B- {place} report added August 19" in said
+    assert f"{place} report added August 19: Current" in said, said
+    assert not re.search(r"\b[Rr]eport \d", said), said
+
+
+def test_class_details_name_a_report_made_current_from_the_eleventh_capture(
+    tmp_path: pathlib.Path,
+) -> None:
+    drafts = same_day_drafts(12)
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, *drafts)
+        made = confirm_current(store_of(browser), drafts[10])
+        assert isinstance(made, MadeCurrent), made
+        page = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+
+    said = words(page.text)
+    line = "Eleventh report added August 19 · Made current August 19"
+    assert page.status_code == 200
+    assert f"School-reported grade 71.9% · B- {line}" in said, said
+    assert "Eleventh report added August 19: Current" in said, said
+    assert not re.search(r"\b[Rr]eport \d", said), said
 
 
 def test_class_details_without_a_confirmed_month_keep_dates_as_written(
