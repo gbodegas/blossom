@@ -602,15 +602,21 @@ SQLite's `-journal`, `-wal` and `-shm` files beside it, the two `.lock`
 files and `household.secret`; a file not there yet is made by the start as
 usual. With the flag off, it refuses to start when a state folder holds
 `TEST-COPY`, whether the folder is named directly or reached through a
-link, so a marked copy never runs without its label.
+symbolic link or junction, so a marked folder never runs without its label.
 
 These checks can't tell where the data came from. They hold for a copy made
 as above, on local storage, that no other program changes while Blossom
-checks or runs it. Three things are outside them: a `TEST-COPY` file put in
-the household's own folder, which makes that folder pass for a copy and
-shows only when the household's own Blossom next starts and refuses it;
-files swapped by another program during the check or the run; and network
-mounts, where a link made on the server can't be seen.
+checks or runs it. Four things are outside them:
+
+- a `TEST-COPY` file put in the household's own folder, which makes that
+  folder pass for a copy and shows only when the household's own Blossom
+  next starts and refuses it.
+- files swapped by another program during the check or the run.
+- network mounts, where a link made on the server can't be seen.
+- a state file in an unmarked folder that is a hard link to a file
+  elsewhere. Both names refer to the same file. With the test-copy flag
+  off, the checks do not reject that hard link, and writing through either
+  name changes the shared file.
 
 ## Homework notes
 
