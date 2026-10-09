@@ -17,6 +17,7 @@ household secret: read at startup with sign-in on, and at the first review with 
 """
 
 import asyncio
+import hashlib
 import ipaddress
 import logging
 import re
@@ -60,6 +61,7 @@ from blossom.grades.review import (
     ReturnReason,
     ReviewItem,
     ReviewPage,
+    ReviewReturned,
     SaveOutcome,
     StillAsked,
     class_asked,
@@ -114,6 +116,15 @@ MATCH_ANSWER: Final = re.compile(rf"different|choose|{RESULT_ID.pattern}")
 EMPTY_OR_RESULT_ID: Final = re.compile(rf"(?:{RESULT_ID.pattern})?")
 
 
+def text_key(text: str) -> str:
+    """The key of a report text as a review form sends it back: the SHA-256 of the text in hex,
+    each line break read as a line feed, since a browser's form sends every one as a carriage
+    return and a line feed, and a null character read as the replacement character the page's
+    parser puts in its place."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "\ufffd")
+    return hashlib.sha256(lines.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class Field:
     """One name the review form may send: whether the page fills it or the parent types it,
@@ -129,6 +140,7 @@ FORM: Final[Mapping[str, Field]] = {
     "acceptance_id": Field("page", "always", ACCEPTANCE_ID),
     "revision": Field("page", "always", NONE_OR_REVISION),
     "source_key": Field("page", "always", HEX_KEY),
+    "text_key": Field("page", "always", HEX_KEY),
     "identity_form": Field("page", "always", NONE_OR_HEX_KEY),
     "identity": Field("page", "answer", one_of(answer.value for answer in IdentityAnswer)),
     "setup": Field("page", "answer", one_of(("report", "other"))),
@@ -601,6 +613,7 @@ def review_context(
         "months": MONTHS,
         "unrecognized": unrecognized,
         "text": text,
+        "text_key": text_key(text),
         "save": SAVE,
         "check": CHECK,
         "edit": EDIT,
@@ -672,6 +685,7 @@ class PageValues:
     acceptance_id: str
     revision: int | None
     source_key: str
+    text_key: str
     identity_form: str | None
     identity: IdentityAnswer | None
     setup: str | None
@@ -738,6 +752,7 @@ def page_values(fields: Mapping[str, str], positions: Positions) -> PageValues:
         acceptance_id=fields["acceptance_id"],
         revision=revision_of(fields["revision"]),
         source_key=fields["source_key"],
+        text_key=fields["text_key"],
         identity_form=None if fields["identity_form"] == "none" else fields["identity_form"],
         identity=None if identity is None else IdentityAnswer(identity),
         setup=fields.get("setup"),
@@ -918,7 +933,7 @@ def kept_fields(
 @dataclass(frozen=True)
 class ReviewForm:
     """A review form read whole: its text, the reading and draft of that text, the positions,
-    the fields as sent, and what they answer."""
+    the fields as sent, what they answer, and whether the text isn't the one its page carried."""
 
     text: str
     unrecognized: list[str]
@@ -927,11 +942,13 @@ class ReviewForm:
     positions: Positions
     fields: dict[str, str]
     posted: Posted
+    text_changed: bool = False
 
 
 async def review_form_of(request: Request, state: ApplicationState) -> ReviewForm | Response:
     """The review form a save or a check sent, or the paste page saying why it can't be read:
-    the text first, then every field by the names the text's own draft allows."""
+    the text first, then every field by the names the text's own draft allows, then the text
+    against the key its page carried."""
     first, _ = await fields_of(request, TEXT)
     text = first.get("report_text", "")
     if not text.strip():
@@ -961,6 +978,7 @@ async def review_form_of(request: Request, state: ApplicationState) -> ReviewFor
         positions,
         fields,
         posted,
+        text_changed=values.text_key != text_key(text),
     )
 
 
@@ -1139,6 +1157,37 @@ async def key_or_retry(
         return retry_page(request, state, form, NO_NAME_CHECK)
 
 
+def changed_text(
+    request: Request, state: ApplicationState, form: ReviewForm, key: bytes
+) -> Response:
+    """The answer to a form whose text isn't the one its page carried, as a save answers a
+    changed report: the text as sent reviewed again, keeping what still answers it, and
+    nothing written."""
+    answers = form.posted.answers
+    review = state.project_state.review_grade_report(
+        form.draft,
+        capture_key(form.draft),
+        key=key,
+        complete=form.complete,
+        same_class=None if answers is None else answers.same_class,
+    )
+    if answers is None:
+        return review_page(
+            request,
+            state,
+            form,
+            review,
+            said=TEXT_CHANGED,
+            fields=form.fields,
+            ticks=ticks_of(form),
+            kept_sentence=TEXT_KEPT_ANSWER_AGAIN,
+            status_code=409,
+        )
+    return returned_page(
+        request, state, form, answers, ReviewReturned(review, ReturnReason.SOURCE), key
+    )
+
+
 def refused_answers(
     request: Request, state: ApplicationState, form: ReviewForm, key: bytes
 ) -> GradeAnswers | Response:
@@ -1183,6 +1232,8 @@ async def save_report(request: Request, state: State) -> Response:
     key = await key_or_retry(request, state, form)
     if isinstance(key, Response):
         return key
+    if form.text_changed:
+        return changed_text(request, state, form, key)
     answers = refused_answers(request, state, form, key)
     if isinstance(answers, Response):
         return answers
@@ -1220,6 +1271,8 @@ async def check_answers(request: Request, state: State) -> Response:
     key = await key_or_retry(request, state, form)
     if isinstance(key, Response):
         return key
+    if form.text_changed:
+        return changed_text(request, state, form, key)
     answers = refused_answers(request, state, form, key)
     if isinstance(answers, Response):
         return answers

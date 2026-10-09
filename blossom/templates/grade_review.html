@@ -44,6 +44,7 @@
     <input type="hidden" name="acceptance_id" value="{{ review.acceptance_id }}">
     <input type="hidden" name="revision" value="{{ 'none' if review.revision is none else review.revision }}">
     <input type="hidden" name="source_key" value="{{ review.source_key }}">
+    <input type="hidden" name="text_key" value="{{ text_key }}">
     <input type="hidden" name="identity_form" value="{{ review.identity.form or 'none' }}">
 
     <div class="review-main">
