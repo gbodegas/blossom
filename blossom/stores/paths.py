@@ -17,8 +17,9 @@ on, the folder each state file really lands in must hold one, and no existing st
 may be a link or anything but a plain file; with the flag off, a marker in a configured or
 real folder is refused. The check can't tell where the data came from. It holds for copies
 on local storage that no other process changes while Blossom checks or uses them. A marker
-put in the household's own folder, files swapped by another process, and network mounts
-are outside it.
+put in the household's own folder, files swapped by another process, network mounts, and,
+with the flag off, a state file in an unmarked folder that is a hard link to a file
+elsewhere are outside it.
 """
 
 import ctypes

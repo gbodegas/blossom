@@ -64,6 +64,7 @@ from tests.support import (
     Scripted,
     ended_run,
     family_line,
+    family_line_focused,
     family_plan,
     fixture_settings,
     forgetful_fixture_plan,
@@ -81,6 +82,7 @@ from tests.support import (
     sign_in_as,
     state_of,
     store_of,
+    unwrapped,
     whole_form,
 )
 
@@ -1435,8 +1437,9 @@ def run_line(page: str) -> str | None:
 
 
 def problem_line(page: str) -> str:
+    """The family page's top line as written, a plan answer's opening read as part of it."""
     start = page.index('<p class="problem" role="alert" id="problem"')
-    return page[start : page.index("</p>", start) + 4]
+    return unwrapped(page[start : page.index("</p>", start) + 4])
 
 
 def clocked_browser(clock: support.FakeTime) -> TestClient:
@@ -1587,8 +1590,8 @@ FAMILY_ANSWERS: dict[str, tuple[Callable[[], Exception], int, str, str | None]] 
             )
         ),
         409,
-        "The last plan request, for Thursday, August 20, is still being finished. Try again "
-        "in about 41 seconds. Her homework updates are saved.",
+        "A plan for Thursday, August 20 is being made. Try again in about 41 seconds. Her "
+        "homework updates are saved.",
         family_link(FAMILY_RUN, ON_THAT_REQUEST),
     ),
     "not saved": (
@@ -1809,8 +1812,6 @@ def test_a_plan_for_another_evening_no_review_can_resume_says_only_when_it_close
 
 # ------------------------------------------------------- one press, one run
 
-FOCUSED_LINE = '<p class="problem" role="alert" id="problem" tabindex="-1" autofocus>'
-RESTING_LINE = '<p class="problem" role="alert" id="problem">'
 RUN_CHECK = '<span class="run-check"><a href="/parent?run='
 
 
@@ -1861,11 +1862,10 @@ def test_a_used_family_form_with_another_date_starts_nothing_and_keeps_the_date(
 
     assert again.status_code == 409
     assert family_line(again.text) == (
-        f"{FAMILY_ASKED_FOR_AUGUST_19} {THAT_PLAN_SHOWN_BELOW} {NOTHING_FOR_AUGUST_20} "
-        f"{FAMILY_FOR_A_NEW_PLAN}"
+        f"{FAMILY_ASKED_FOR_AUGUST_19} {THAT_PLAN_SHOWN_BELOW} {NOTHING_FOR_AUGUST_20}"
     )
     assert date_kept(again.text) == later
-    assert FOCUSED_LINE in again.text
+    assert family_line_focused(again.text)
     assert len(runs) == 1
 
 
@@ -1881,12 +1881,11 @@ def test_a_used_family_form_with_an_unreadable_date_names_its_request() -> None:
 
     assert again.status_code == 409
     assert family_line(again.text) == (
-        f"{FAMILY_ASKED_FOR_AUGUST_19} {THAT_PLAN_SHOWN_BELOW} {FAMILY_DATE_NOT_READ} "
-        f"{FAMILY_FOR_A_NEW_PLAN}"
+        f"{FAMILY_ASKED_FOR_AUGUST_19} {THAT_PLAN_SHOWN_BELOW} {FAMILY_DATE_NOT_READ}"
     )
     assert date_kept(again.text) == PLAN_DATE.isoformat()
     assert plan_fold_open(again.text) is True
-    assert FOCUSED_LINE in again.text
+    assert family_line_focused(again.text)
     assert len(runs) == 1
 
 
@@ -1907,7 +1906,7 @@ def test_a_used_family_form_for_a_passed_evening_answers_what_it_did() -> None:
 
     assert again.status_code == 409
     assert "has passed" not in again.text
-    assert str(escape(parent_routes.PLAN_INTERRUPTED)) in again.text
+    assert str(escape(parent_routes.PLAN_INTERRUPTED)) in unwrapped(again.text)
     assert len(runs) == 1
 
 
@@ -1931,7 +1930,7 @@ def test_a_family_form_that_is_not_whole_starts_nothing_and_keeps_the_date(
 
     assert posted.status_code == 422
     assert FAMILY_FORM_NOT_WHOLE in family_line(posted.text)
-    assert FOCUSED_LINE in posted.text
+    assert family_line_focused(posted.text)
     assert date_kept(posted.text) == later
     assert runs == []
 
@@ -1970,7 +1969,7 @@ def test_an_old_family_form_starts_nothing_and_keeps_the_date() -> None:
 
     assert posted.status_code == 409
     assert FAMILY_FORM_EXPIRED in family_line(posted.text)
-    assert FOCUSED_LINE in posted.text
+    assert family_line_focused(posted.text)
     assert date_kept(posted.text) == later
     assert runs == []
 
@@ -1989,7 +1988,7 @@ def test_a_family_form_whose_run_is_running_offers_only_a_check() -> None:
     assert blocking is None
     assert pressed.status_code == 202
     assert "Check on it." in pressed.text
-    assert FOCUSED_LINE in pressed.text
+    assert family_line_focused(pressed.text)
     assert RUN_CHECK in pressed.text
     assert 'action="/parent/actions/plan"' not in pressed.text
     assert [run for run, _, _ in runs] == [form["run_id"]]
@@ -2010,7 +2009,7 @@ def test_a_family_answer_left_unconfirmed_offers_only_a_check(
 
     assert pressed.status_code == 202
     assert "Check again." in pressed.text
-    assert FOCUSED_LINE in pressed.text
+    assert family_line_focused(pressed.text)
     assert RUN_CHECK in pressed.text
     assert 'action="/parent/actions/plan"' not in pressed.text
 
@@ -2026,9 +2025,9 @@ def test_a_family_form_behind_a_newer_plan_starts_nothing_and_opens_that_plan() 
         runs = runs_recorded(client)
 
     assert pressed.status_code == 409
-    said = " ".join(unescape(pressed.text).split())
+    said = " ".join(unescape(unwrapped(pressed.text)).split())
     assert f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_FOR_A_NEW_PLAN}" in said
-    assert FOCUSED_LINE in pressed.text
+    assert family_line_focused(pressed.text)
     assert len(runs) == 1
     fresh = form_fields(pressed.text, "/parent/actions/plan")
     assert fresh["run_id"] not in {stale["run_id"], runs[0][0]}
@@ -2072,15 +2071,15 @@ def test_a_plan_published_while_the_family_page_is_read_leaves_its_form_behind_i
     assert form["newest_plan"] == shown
     assert "draft:plan:between" not in page
     assert pressed.status_code == 409
-    said = " ".join(unescape(pressed.text).split())
+    said = " ".join(unescape(unwrapped(pressed.text)).split())
     assert f"{FAMILY_NEWER_PLAN_AUGUST_19} {SHOWN_BELOW_WAITING} {FAMILY_FOR_A_NEW_PLAN}" in said
     assert [run for run, _, _ in runs][1:] == ["plan:between"]
 
 
 def test_a_refused_date_is_said_at_the_top_with_the_focus_and_kept_in_the_form() -> None:
-    """An evening that has passed is said at the top in its own words, the line takes the
-    focus as every answer to the plan form does, and the open form keeps the evening chosen
-    under a fresh id, so nothing is started."""
+    """An evening that has passed is said at the top in its own words, the line's first
+    sentence takes the focus as in every answer to the plan form, and the open form keeps
+    the evening chosen under a fresh id, so nothing is started."""
     earlier = (PLAN_DATE - timedelta(days=1)).isoformat()
     with browser() as client:
         form = family_plan(client, earlier)
@@ -2089,8 +2088,7 @@ def test_a_refused_date_is_said_at_the_top_with_the_focus_and_kept_in_the_form()
 
     assert posted.status_code == 422
     assert family_line(posted.text) == FAMILY_EVENING_PASSED
-    assert FOCUSED_LINE in posted.text
-    assert RESTING_LINE not in posted.text
+    assert family_line_focused(posted.text)
     assert plan_fold_open(posted.text) is True
     assert date_kept(posted.text) == earlier
     assert form_fields(posted.text, "/parent/actions/plan")["run_id"] != form["run_id"]
@@ -2100,7 +2098,8 @@ def test_a_refused_date_is_said_at_the_top_with_the_focus_and_kept_in_the_form()
 def test_the_plan_form_and_its_answers_are_held_by_their_own_rules() -> None:
     """Every rule naming the plan form, its card or the run check's place is the one checked
     in a browser: the card sets its side insets aside where the evening field can't show the
-    whole date, the check link is padded to 44 pixels, and a focused line widens as hers does."""
+    whole date, the check link is padded to 44 pixels in its sentence, a focused line widens its
+    edge as hers does, and a plan answer's focused first sentence is ringed as a control is."""
     css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
     folded = {
         name: [" ".join(rule.split()) for rule in rules_for(css, name)]
@@ -2141,6 +2140,9 @@ def test_the_plan_form_and_its_answers_are_held_by_their_own_rules() -> None:
     assert folded["run-check"] == ["display: inline-block; padding: 0.8rem 0; margin: -0.8rem 0;"]
     assert focus == support.declared_for(".week-problem:focus")
     assert len(focus) == 1
+    assert support.declared_for(".problem .opening:focus") == [
+        "outline: 3px solid var(--blue-action); outline-offset: 2px;"
+    ]
 
 
 def test_the_plan_form_sits_in_the_card_its_rules_name() -> None:

@@ -582,8 +582,8 @@ EDITS = {
     "comment-inside-a-sum": ("calc(2rem + 1px)", "calc(2rem/**/+/**/1px)"),
     "no-break-space-in-a-selector": (".colophon a {", ".colophon\xa0a {"),
     "no-break-space-in-a-value": (
-        "outline: 3px solid var(--blue-action)",
-        "outline: 3px\xa0solid var(--blue-action)",
+        "summary:focus-visible {\n  outline: 3px solid var(--blue-action)",
+        "summary:focus-visible {\n  outline: 3px\xa0solid var(--blue-action)",
     ),
     "html-comment-mark-before-the-footer": (".colophon {", "--> .colophon {"),
     "comment-inside-a-name": (".colophon a {", ".colo/**/phon a {"),

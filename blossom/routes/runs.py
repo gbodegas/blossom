@@ -66,6 +66,7 @@ from blossom.stores.drafts import (
     WriterBusy,
 )
 from blossom.stores.help_requests import NotARequestId, request_id_from
+from blossom.templating import ended
 from blossom.views import (
     AlreadyPlanningView,
     PastDueView,
@@ -122,7 +123,11 @@ NOTHING_TO_SCHEDULE: Final = "Nothing to schedule from the work in this planning
 """What every planning route answers, 409, for an evening whose window holds no work
 still to do: nothing has been planned, no run has been written, and no model asked."""
 
-COULD_NOT_START: Final = "Blossom couldn't start a plan this time. Try again in a moment."
+COULD_NOT_START_SENTENCES: Final = (
+    "Blossom couldn't start a plan this time.",
+    "Try again in a moment.",
+)
+COULD_NOT_START: Final = " ".join(COULD_NOT_START_SENTENCES)
 """What a planning route answers, 503, when the week couldn't be read, the graph couldn't be
 built, or the run couldn't be admitted in time. No model is asked. A failure before admission
 records no run; an admission the route stopped waiting for can still insert its run, which then
@@ -212,6 +217,11 @@ def failure_category(outcome: str) -> str | None:
     return CATEGORIES.get(outcome)
 
 
+Sentences = tuple[str, ...]
+"""Words as the sentences they are built from, in order, each whole, so the first is known
+from how the words were made, whatever a typed value or a title inside it holds."""
+
+
 def due_on(day: date) -> str:
     """``August 18``: a day as her page says it."""
     return f"{day:%B} {day.day}"
@@ -236,14 +246,36 @@ def ended_without_a_plan(
     evening: date | None = None,
     where: bool = True,
 ) -> str:
-    """The same, as her page says it: what went wrong in plain words, that her updates are
-    kept, and, to a parent reading her page, where the run's record is. The run's own name
-    for how it ended is never shown, and work is named only when the record shows its date
-    has passed. ``unchanged`` adds that her plan is the one she had; ``evening`` is the run's
-    evening when it is not today's, which a date problem names. ``where`` false leaves out
-    where the record is, for a stand-in that can't show it."""
+    """``ended_sentences`` as one line reads them."""
+    return " ".join(
+        ended_sentences(
+            outcome,
+            parent=parent,
+            past_due=past_due,
+            unchanged=unchanged,
+            evening=evening,
+            where=where,
+        )
+    )
+
+
+def ended_sentences(
+    outcome: str,
+    *,
+    parent: bool,
+    past_due: Sequence[PastDueView] = (),
+    unchanged: bool = False,
+    evening: date | None = None,
+    where: bool = True,
+) -> Sentences:
+    """Why a run ended without a plan, as her page says it, a sentence each: what went wrong
+    in plain words, that her updates are kept, and, to a parent reading her page, where the
+    run's record is. The run's own name for how it ended is never shown, and work is named
+    only when the record shows its date has passed. ``unchanged`` adds that her plan is the
+    one she had; ``evening`` is the run's evening when it is not today's, which a date problem
+    names. ``where`` false leaves out where the record is."""
     if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
-        return NOTHING_TO_SCHEDULE
+        return (NOTHING_TO_SCHEDULE,)
     category = failure_category(outcome)
     if category == DATE_PROBLEM and past_due:
         named = [f"{work.title} ({work.course}, due {due_on(work.due_date)})" for work in past_due]
@@ -271,7 +303,7 @@ def ended_without_a_plan(
         what = "Blossom couldn't finish a reliable plan this time."
     then = "Family review shows what happened." if parent and where else ""
     kept = plan_unchanged(parent=parent) if unchanged else ""
-    return " ".join(part for part in (what, kept, saved_sentence(parent=parent), then) if part)
+    return tuple(part for part in (what, kept, saved_sentence(parent=parent), then) if part)
 
 
 Graphs = Annotated[PlanGraphs, Depends(plan_graphs)]
@@ -392,14 +424,19 @@ def seconds_to_wait(run: RunState) -> int:
     return max(1, int(-(-(run.seconds_left + SETTLE_GRACE_SECONDS) // 1)))
 
 
-def already_planning(run: RunState, *, parent: bool) -> str:
+def planning_sentences(run: RunState, *, parent: bool) -> Sentences:
     """What a press answers while the household's one run is still running: whose evening
     it is for, how long to wait, and that her updates are kept."""
     return (
-        f"The last plan request, for {evening_named(run.plan_date)}, is still being "
-        f"finished. Try again in about {seconds_to_wait(run)} seconds. "
-        f"{saved_sentence(parent=parent)}"
+        f"A plan for {evening_named(run.plan_date)} is being made.",
+        f"Try again in about {seconds_to_wait(run)} seconds.",
+        saved_sentence(parent=parent),
     )
+
+
+def already_planning(run: RunState, *, parent: bool) -> str:
+    """``planning_sentences`` as one line reads them."""
+    return " ".join(planning_sentences(run, parent=parent))
 
 
 class AlreadyPlanning(HTTPException):
@@ -417,7 +454,7 @@ class AlreadyPlanning(HTTPException):
         self.run = run
 
 
-def not_saved(*, parent: bool, kept: bool = False) -> str:
+def not_saved_sentences(*, parent: bool, kept: bool = False) -> Sentences:
     """What a request answers when the store refused the plan's publication before it began,
     or was found not to have published it, to her or to a parent reading her page. ``kept``
     adds that her plan hasn't changed, when the evening is known to have one."""
@@ -425,7 +462,12 @@ def not_saved(*, parent: bool, kept: bool = False) -> str:
     if kept:
         plan = "her current plan" if parent else "your current plan"
         made = f"{made}, so {plan} hasn't changed"
-    return f"{made}. Try again in a moment. {saved_sentence(parent=parent)}"
+    return f"{made}.", "Try again in a moment.", saved_sentence(parent=parent)
+
+
+def not_saved(*, parent: bool, kept: bool = False) -> str:
+    """``not_saved_sentences`` as one line reads them."""
+    return " ".join(not_saved_sentences(parent=parent, kept=kept))
 
 
 class NotSaved(HTTPException):
@@ -532,47 +574,69 @@ Needs = Literal["nothing", "plan", "button", "place", "shown"]
 """What the page sent must show for a clause to be said: nothing, today's plan (her page),
 the plan button or form, the plan the answer is about, or that plan in the waiting list or
 under today's heading."""
-NOT_USED: Final = "Blossom couldn't use that plan request. No plan was started."
-OPENED_A_WEEK_AGO: Final = "That page was opened a week or more ago. No new plan was started."
+NOT_USED: Final = ("Blossom couldn't use that plan request.", "No plan was started.")
+OPENED_A_WEEK_AGO: Final = ("That page was opened a week or more ago.", "No new plan was started.")
 """The two refusals of a plan form on either page: one that isn't whole or names no plan, and
 one issued ``FORM_LIFETIME`` or more before it was sent."""
 
 
 @dataclass(frozen=True)
 class Clause:
-    """One sentence of an answer's line, said when the page shows what it ``needs``, and
-    ``otherwise`` said in its place when it doesn't."""
+    """One sentence of an answer's line, whole, said when the page shows what it ``needs``,
+    and ``otherwise``, one sentence or none, said in its place when it doesn't."""
 
     words: str
     needs: Needs = "nothing"
     otherwise: str = ""
 
 
+def opening_and_rest(sentences: Sentences) -> tuple[str, str]:
+    """Sentences as the first and the rest after it, which is empty for one sentence."""
+    first, *rest = sentences
+    return first, " ".join(rest)
+
+
 @dataclass(frozen=True)
 class PlanAnswer:
-    """What a plan press answers on a page: its row, status, line, the words its stand-in
+    """What a plan press answers on a page: its row, status, line, the sentences its stand-in
     says, what the page keeps, whether it offers a plan form, and the plan it is about."""
 
     row: PlanRow
     status: int
     line: tuple[Clause, ...]
-    elsewhere: str
+    elsewhere: Sentences
     keeps: date | None = None
     offers_form: bool = True
     open_plan: str | None = None
     check: RunCheck | None = None
 
-    def said(self, shows: Callable[[Needs], bool]) -> str:
-        """The line as the page says it, each clause kept only when ``shows`` its need."""
-        return " ".join(
+    def sentences(self, shows: Callable[[Needs], bool]) -> Sentences:
+        """The line's sentences as the page says them, each clause kept only when ``shows``
+        its need."""
+        return tuple(
             part
             for clause in self.line
             if (part := clause.words if shows(clause.needs) else clause.otherwise)
         )
 
+    def said(self, shows: Callable[[Needs], bool]) -> str:
+        """The line as the page says it."""
+        return " ".join(self.sentences(shows))
+
+    def opening(self, shows: Callable[[Needs], bool]) -> tuple[str, str]:
+        """The line as the page says it, as its first sentence, which takes the focus, and
+        the rest."""
+        return opening_and_rest(self.sentences(shows))
+
+    def stand_in(self, line: str) -> tuple[str, str]:
+        """The stand-in's line, its own sentences, the last ending one, and then ``line``
+        when there is one, as its first sentence and the rest."""
+        *said, last = self.elsewhere
+        return opening_and_rest((*said, ended(last), line) if line else self.elsewhere)
+
 
 def fact(*words: str) -> tuple[Clause, ...]:
-    """Sentences an answer says whatever the page shows."""
+    """Sentences an answer says whatever the page shows, a clause each."""
     return tuple(Clause(said) for said in words)
 
 
