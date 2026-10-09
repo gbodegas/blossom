@@ -469,8 +469,9 @@ with its text, and nothing is saved.
 
 With sign-in off, as a sample or test copy runs, the first grade report makes
 `household.secret` beside the database, and the grade pages for parents open
-only in a browser on the computer running Blossom, at `localhost` or
-`127.0.0.1`. That mode can't tell a parent from her on that computer, so
+only in a browser on the computer running Blossom: any loopback client and
+Host, for example `localhost`, `127.0.0.1` or `[::1]`. That mode can't tell
+a parent from her on that computer, so
 phones and tablets need sign-in for these pages. Never set
 `FORWARDED_ALLOW_IPS` and never put a proxy in front of Blossom: either makes
 a request from another device look as if it came from this one. With sign-in

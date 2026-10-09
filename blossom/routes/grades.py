@@ -46,6 +46,7 @@ from blossom.grades.review import (
     TERM_LIMIT,
     AlreadyRecorded,
     Cell,
+    ChoiceFacts,
     GradeAnswers,
     GradeReportSaved,
     GradeReview,
@@ -476,6 +477,67 @@ def saved_now(cells: Mapping[str, Cell]) -> list[str]:
     ]
 
 
+TOLD_APART_BY: Final[tuple[Callable[[ChoiceFacts], str], ...]] = (
+    lambda one: (
+        f"saved score {described(*one.points, None)} / {described(*one.max_points, 'maximum')}"
+    ),
+    lambda one: described(*one.category, "Category name"),
+    lambda one: f"report added {one.report_added:%B} {one.report_added.day}",
+    lambda one: f"row {one.position} of that report",
+)
+"""What a choice's name adds, in order, while it is still the same as another's."""
+
+
+def numbered(
+    labels: dict[str, str], facts: Mapping[str, ChoiceFacts], groups: list[list[str]]
+) -> None:
+    """Each label of ``groups`` with its place among its group, in one order that a refresh
+    keeps: the report's acceptance order, then the row's position, then the result."""
+    for group in groups:
+        ordered = sorted(group, key=lambda one: (facts[one].report_order, facts[one].position, one))
+        for place, result in enumerate(ordered, start=1):
+            labels[result] = f"{labels[result]} · saved entry {place} of {len(ordered)}"
+
+
+def tied(labels: Mapping[str, str]) -> list[list[str]]:
+    """The groups of results whose labels are the same, across the whole control."""
+    groups: dict[str, list[str]] = {}
+    for result, label in labels.items():
+        groups.setdefault(label, []).append(result)
+    return [group for group in groups.values() if len(group) > 1]
+
+
+def choice_labels(ids: Iterable[str], offered: Mapping[str, ChoiceFacts]) -> dict[str, str]:
+    """How a control names each result it offers, never by its ID: its title and due date, then,
+    only while labels are the same, the saved score, the category, the day its report was added,
+    its row there, and its saved entry among those still the same."""
+    facts = {result: offered[result] for result in ids}
+    labels = {
+        result: " · ".join(
+            (
+                described(*one.title, "Assignment"),
+                STATUS_WORDS[ItemStatus.DUE_NOT_CAPTURED]
+                if one.due is None
+                else described(*one.due, "due", named=True),
+            )
+        )
+        for result, one in facts.items()
+    }
+    for told_apart_by in TOLD_APART_BY:
+        for group in tied(labels):
+            for result in group:
+                labels[result] = f"{labels[result]} · {told_apart_by(facts[result])}"
+    before = dict(labels)
+    numbered(labels, facts, tied(labels))
+    if tied(labels):
+        labels = before
+        numbered(labels, facts, [list(labels)])
+    if tied(labels):
+        msg = "a control's choices share a name"
+        raise RuntimeError(msg)
+    return labels
+
+
 def status_word(shown: Shown) -> str:
     """How the review names a value's status: a value the copy didn't capture by its own
     fields, any other by its status alone."""
@@ -526,6 +588,7 @@ def review_context(
         "status_word": status_word,
         "cell": cell,
         "saved_now": saved_now,
+        "choice_labels": choice_labels,
         "student_line": header.student_line,
         "identity": review.identity.status.value,
         "statuses": IdentityStatus,

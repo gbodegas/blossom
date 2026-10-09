@@ -289,8 +289,8 @@ def create_lifespan(
                     # sweep that fails still closes the stores.
                     await sweep_saved_state(checkpointer, state.drafts, state.clock)
                     setattr(app.state, STATE_ATTRIBUTE, state)
-                    # The key name forms are made under comes from the same read of the
-                    # secret as the sign-in keys. With sign-in off, the first grade review
+                    # The key that name forms are made under comes from the same read of
+                    # the secret as the sign-in keys. With sign-in off, the first grade review
                     # reads it, so a household that never adds a report never makes one.
                     app.state.grade_name_key = None
                     if settings.household_sign_in:

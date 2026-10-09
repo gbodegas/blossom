@@ -2300,6 +2300,7 @@ def test_a_missing_due_date_is_never_matching_evidence_and_never_equals_another(
         revision=1,
         held=ClassRecord(CurrentValues(None, {}, {}), {}, seen, {}, {}),
         saved={},
+        places={("report-1", one): (at, OBSERVED_AT.date()) for at, one in enumerate(seen, 1)},
     )
     review = review_from(draft, capture_key(draft), "acceptance-1", on_record, complete=False)
     sketch, seed = row(review, "Leaf Sketch"), row(review, "Seed Germination Log")

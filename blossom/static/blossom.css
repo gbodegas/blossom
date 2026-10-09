@@ -1844,6 +1844,15 @@ pre.example {
   flex: 1 1 8rem;
 }
 
+/* A choice of an existing assignment is named by its title, its due date and as much more
+   as tells it apart, which can be longer than a whole line on any screen. Where the browser
+   offers the customizable select, the chosen value wraps onto as many lines as it needs and
+   breaks a long word where it must; elsewhere the select stays one line. */
+.grade-review select {
+  appearance: base-select;
+  overflow-wrap: anywhere;
+}
+
 /* On a phone with text at 200%, a card of the grade review, or the outcome of a saved
    report, leaves a line too short for a word of a class, category or assignment name once
    the ordinary side padding is taken out. The card's side padding gives way first, to

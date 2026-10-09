@@ -16,9 +16,12 @@ import re
 import sqlite3
 import stat
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, date, datetime
 from html import unescape
+from typing import Final
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.params import Form as FormParameter
@@ -30,10 +33,12 @@ from starlette.requests import Request
 from blossom import anthropic_client
 from blossom.agent import graph as agent_graph
 from blossom.app import create_app
+from blossom.clock import FrozenClock
 from blossom.grades import draft as grade_drafts
+from blossom.grades import review as grade_review
 from blossom.grades.draft import GradeNumber, GradeValue, Presence, capture_key
 from blossom.grades.identity import name_form, name_form_key
-from blossom.grades.review import ItemStatus, ReviewItem
+from blossom.grades.review import Cell, ItemStatus, ReviewItem
 from blossom.grades.text_reader import read_grade_report
 from blossom.household import secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
@@ -44,16 +49,20 @@ from blossom.stores import gradebook
 from blossom.stores.gradebook import GradeReportNotSaved, GradeTransactionLost
 from blossom.stores.paths import SECRET_NAME, UnsafeCheckpointPath
 from tests.support import (
+    FIXTURE_TIMEZONE,
     FIXTURES,
     HERS,
     PLAN_DATE,
     THEIRS,
+    Chain,
     as_a_browser_sends,
     closed_world,
+    elements_of,
     every_route,
     files_in,
     fixture_settings,
     form_values,
+    rules_reaching,
     save_grade,
     signed_in,
     signed_in_household,
@@ -830,7 +839,7 @@ def test_the_grade_review_s_own_rule_is_pinned_and_only_its_form_carries_its_cla
         if "grade-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("grade-review") == 7
+    assert css.count("grade-review") == 8
     assert css.count(GRADE_REVIEW_RULE) == 1
     assert css.count(IDENTITY_RULES) == 1
     assert css.count(CARD_RULES) == 1
@@ -880,6 +889,158 @@ def test_the_grade_panel_rule_is_pinned_and_only_the_paste_and_retry_panels_carr
     for carrier in carriers:
         page = (TEMPLATES / carrier).read_text(encoding="utf-8")
         assert page.count('<section class="panel grade-panel">') == 1
+
+
+GRADE_SELECTS_RULE = (
+    ".grade-review select {\n  appearance: base-select;\n  overflow-wrap: anywhere;\n}\n"
+)
+"""The grade review's rule for its selects, pinned whole: where the browser offers the
+customizable select, the chosen value wraps, at every width."""
+GRADE_SELECT_CHECK = (
+    "A rule that can reach a select of the grade review changed or appeared. Check the review "
+    "in a browser with its longest choice chosen, at 320, 375 and 414 px with 200% text and at "
+    "1280 px, and in a browser without the customizable select: the whole chosen name shows, "
+    "nothing scrolls sideways, the select is at least 44 px tall and its focus outline shows. "
+    "Then copy the rules found into GRADE_SELECT_RULES."
+)
+GRADE_SELECT_RULES: tuple[str, ...] = (
+    '@font-face { font-family: "Quicksand"; src: '
+    'url("/static/fonts/Quicksand-Variable.ttf") format("truetype"); font-weight: 300 700; '
+    "font-style: normal; font-display: swap }",
+    '@font-face { font-family: "Outfit"; src: url("/static/fonts/Outfit-Variable.ttf") '
+    'format("truetype"); font-weight: 300 700; font-style: normal; font-display: swap }',
+    ":root { --canvas: #fdf5f7; --rule: rgba(155, 184, 211, 0.1); --blue-action: #4c7193; "
+    "--text: #4a5c6f; --surface: rgba(255, 255, 255, 0.6); --surface-strong: rgba(255, "
+    "255, 255, 0.82); --edge: rgba(155, 184, 211, 0.28); --shadow: 0 8px 24px rgba(155, "
+    "184, 211, 0.15); --rose-ink: #96505f; --radius: 16px; --radius-small: 12px; "
+    '--font-body: "Outfit", "Rubik", "Quicksand", system-ui, sans-serif }',
+    "* { box-sizing: border-box }",
+    "html { color-scheme: light }",
+    "body { margin: 0; min-height: 100vh; font-family: var(--font-body); font-weight: 400; "
+    "color: var(--text); line-height: 1.6; background: repeating-linear-gradient(to "
+    "bottom, transparent 0 2rem, var(--rule) 2rem calc(2rem + 1px)), var(--canvas) }",
+    "main { max-width: 46rem; margin: 0 auto; padding: 0.5rem 1.25rem 3rem }",
+    "section { margin-block: 2rem }",
+    "article, .panel { background: var(--surface); border: 1px solid var(--edge); "
+    "border-radius: var(--radius); padding: 1.35rem 1.6rem; margin-block: 1.1rem; "
+    "box-shadow: var(--shadow); backdrop-filter: blur(8px) }",
+    "input:focus-visible, textarea:focus-visible, select:focus-visible, "
+    "button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid "
+    "var(--blue-action); outline-offset: 2px }",
+    "@media (max-width: 30rem) / article, .panel { padding: 1.1rem 1.2rem }",
+    "textarea, select { font: inherit; font-family: var(--font-body); color: var(--text); "
+    "padding: 0.55rem 0.85rem; border: 1px solid var(--edge); border-radius: "
+    "var(--radius-small); background: var(--surface-strong) }",
+    "select { min-height: 2.75rem }",
+    ":root { --field-edge: #6b7d90 }",
+    'input[type="text"], input[type="date"], input[type="password"], textarea, select { '
+    "border-color: var(--field-edge); min-width: 0; max-width: 100% }",
+    'input[aria-invalid="true"], textarea[aria-invalid="true"], '
+    'select[aria-invalid="true"] { border-color: var(--rose-ink); border-width: 2px }',
+    ".choice { margin: 0.75rem 0; padding: 0.75rem 1rem; border: 1px solid "
+    "var(--field-edge); border-radius: var(--radius-small) }",
+    ".grade-review .choice { min-width: 0; padding-inline: clamp(0px, 13vw - 1rem, 1rem) }",
+    ".grade-review select { appearance: base-select; overflow-wrap: anywhere }",
+    ".grade-review .panel, .grade-review article, .grade-outcome { margin-inline: min(0px, "
+    "13vw - 2.25rem); padding-inline: clamp(0px, 13vw - 1rem, 1.6rem) }",
+    "@media (max-width: 30rem) / .grade-review .panel, .grade-review article, "
+    ".grade-outcome { padding-inline: clamp(0px, 13vw - 1rem, 1.2rem) }",
+    "main.wide { max-width: 46rem }",
+    "@media (min-width: 72rem) / main.wide { max-width: 72rem }",
+    "@media (min-width: 72rem) / main.wide .review-form { display: grid; "
+    "grid-template-columns: minmax(0, 46rem) minmax(16rem, 22rem); gap: 0 2rem; "
+    "align-items: start }",
+)
+"""Every rule that can reach a select of the grade review or an element above it, with the
+custom properties it uses and the font faces, as the stylesheet writes them: what the selects
+were checked with in a browser."""
+
+
+def select_chains(page: str) -> set[Chain]:
+    """Each select of a page and every element above it, as tag, classes and id."""
+    return {
+        tuple(
+            (one.tag, one.classes, one.attributes.get("id"))
+            for one in [select, *select.ancestors()]
+        )
+        for select in elements_of(page)
+        if select.tag == "select"
+    }
+
+
+def check_grade_select_rules(css: str, chains: set[Chain]) -> None:
+    assert rules_reaching(css, *chains) == list(GRADE_SELECT_RULES), GRADE_SELECT_CHECK
+
+
+def test_the_rules_that_reach_the_grade_review_s_selects_are_the_checked_ones(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every state of the review is styled by the one stylesheet and nothing inline, and the
+    rules that can reach its selects are the ones they were checked with."""
+    chains: set[Chain] = set()
+    for state, page in every_review_state(tmp_path, monkeypatch).items():
+        chains |= select_chains(page)
+        assert "<style" not in page.lower(), state
+        assert ' style="' not in page, state
+    css = STYLESHEET.read_text(encoding="utf-8")
+
+    assert {chain[0][2] for chain in chains} >= {"first-month", "choose-5", "choose-6"}
+    assert css.count(GRADE_SELECTS_RULE) == 1
+    check_grade_select_rules(css, chains)
+
+
+def one_list(tmp_path: pathlib.Path) -> set[Chain]:
+    """The selects of a review whose row offers saved results to choose from."""
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser)
+        return select_chains(review_page(browser, UNRELATED))
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        pytest.param(lambda css: css.replace(GRADE_SELECTS_RULE, ""), id="no-rule"),
+        pytest.param(
+            lambda css: css.replace(
+                GRADE_SELECTS_RULE, GRADE_SELECTS_RULE.replace("base-select", "auto")
+            ),
+            id="native",
+        ),
+        pytest.param(
+            lambda css: css.replace(
+                GRADE_SELECTS_RULE, GRADE_SELECTS_RULE.replace("anywhere", "normal")
+            ),
+            id="long-word-kept",
+        ),
+        pytest.param(
+            lambda css: css.replace(
+                GRADE_SELECTS_RULE, "@media (max-width: 30rem) {\n" + GRADE_SELECTS_RULE + "}\n"
+            ),
+            id="narrow-only",
+        ),
+        pytest.param(
+            lambda css: css + "\n.grade-review select { white-space: nowrap; }\n", id="nowrap"
+        ),
+        pytest.param(
+            lambda css: css + "\n.grade-review .choice { white-space: nowrap; }\n",
+            id="nowrap-above",
+        ),
+        pytest.param(lambda css: css + "\nselect { max-width: none; }\n", id="every-select"),
+    ],
+)
+def test_a_rule_that_can_reach_a_grade_select_fails_the_check(
+    tmp_path: pathlib.Path, edit: Callable[[str], str]
+) -> None:
+    chains = one_list(tmp_path)
+    with pytest.raises(AssertionError):
+        check_grade_select_rules(edit(STYLESHEET.read_text(encoding="utf-8")), chains)
+
+
+def test_a_rule_for_another_page_s_select_passes_the_grade_select_check(
+    tmp_path: pathlib.Path,
+) -> None:
+    css = STYLESHEET.read_text(encoding="utf-8") + "\n.adding-note select { color: red; }\n"
+    check_grade_select_rules(css, one_list(tmp_path))
 
 
 # ------------------------------------------------------------- the save, the check, the outcome
@@ -1405,7 +1566,7 @@ def decision_of(settings: Settings, title: str) -> tuple[str, str | None]:
             (f"%{title}%",),
         ).fetchone()
     assert found is not None, title
-    return found
+    return str(found[0]), None if found[1] is None else str(found[1])
 
 
 def results_on_record(settings: Settings) -> int:
@@ -1508,7 +1669,7 @@ def test_every_id_and_key_the_store_mints_fits_its_pattern(tmp_path: pathlib.Pat
     assert gradebook.ACCEPTANCE_ID.fullmatch(gradebook.new_acceptance_id())
     assert grade_drafts.HEX_KEY.fullmatch(capture_key(draft))
     assert grade_drafts.HEX_KEY.fullmatch(name_form(key, "Bramble, Wren"))
-    assert grade_routes.ACCEPTANCE_ID is gradebook.ACCEPTANCE_ID
+    assert vars(grade_routes)["ACCEPTANCE_ID"] is gradebook.ACCEPTANCE_ID
 
 
 def malformed(field: str, value: str) -> list[str | None]:
@@ -1852,3 +2013,347 @@ def test_a_check_then_a_save_choosing_another_row_s_assignment_saves(
     assert checked.status_code == 200
     assert again["choices.6"].split() == [first, second]
     assert saved.status_code == 303, saved.text
+
+
+# ------------------------------------------------------------- each choice named by its assignment
+
+SAME_SCORE = REPORT.replace(
+    "| Cell Diagram             | 7.0     | 10.0    | 70.0    | Missing    | 09/26   |",
+    "| IXL Practice             | 9.0     | 10.0    | 90.0    | Valid      | 09/22   |",
+).replace(
+    "| Microscope Practice                | 27.0    | 30.0    | 90.0    | Valid      | 09/24   |",
+    "| IXL Practice                       | 9.0     | 10.0    | 90.0    | Valid      | 09/22   |",
+)
+"""Wren's report with a practice row in two categories, the same title, due date and score."""
+SAME_SCORE_AWAY = SAME_SCORE.replace(
+    "| IXL Practice             |", "| Yarrow Pressing          |"
+).replace("| IXL Practice                       |", "| Zebra Field Notes                  |")
+"""Both practice rows retitled away: each offers the two saved results."""
+SAME_SCORE_LOWER = SAME_SCORE.replace(
+    "| IXL Practice             | 9.0     | 10.0    | 90.0    |",
+    "| IXL Practice             | 7.0     | 10.0    | 70.0    |",
+)
+"""A later copy of the report with the Homework / Practice row's score changed."""
+TWINS = IXL.replace("| 8.0     | 10.0    | 80.0    |", "| 9.0     | 10.0    | 90.0    |")
+"""Two practice rows in one category with the same title, due date and score."""
+TWINS_AWAY = TWINS.replace("| IXL Practice         |", "| Zebra Field Notes    |").replace(
+    "| IXL Practice             |", "| Yarrow Pressing          |"
+)
+"""The twin rows retitled away: each asks which of the saved results it is."""
+ONE_IXL = REPORT.replace(
+    "| Seed Germination Log | 18.0    | 20.0    | 90.0    | Valid      | 09/22   |",
+    "| IXL Practice         | 9.0     | 10.0    | 90.0    | Valid      | 09/22   |",
+)
+"""Wren's report with one practice row, at row 1."""
+PRACTICE: Final = "IXL Practice · due 09/22 · saved score 9.0 / 10.0 · Homework / Practice"
+
+
+def named_choices(page: str, row: int) -> dict[str, str]:
+    """Each result a row's list offers, by its value, with the words its option shows."""
+    select = page.split(f'id="choose-{row}"', 1)[1].split("</select>", 1)[0]
+    found = re.findall(r'<option value="([^"]*)"[^>]*>([^<]*)</option>', select)
+    return {value: unescape(text) for value, text in found if value}
+
+
+def named_candidates(page: str, row: int) -> dict[str, str]:
+    """Each result a row's question offers by radio, by its value, with the words beside it."""
+    found = re.findall(
+        rf'<input type="radio" name="match\.{row}" value="(result-[0-9a-f]{{32}})"[^>]*>'
+        r" <span>(.*?)</span></label>",
+        page,
+    )
+    return {value: words(text) for value, text in found}
+
+
+def every_control_named(page: str) -> list[list[str]]:
+    """The words of each list's options and of each question's result radios on a page."""
+    rows = {int(row) for row in re.findall(r'name="(?:choose|match)\.(\d+)"', page)}
+    listed = [row for row in rows if f'id="choose-{row}"' in page]
+    named = [list(named_choices(page, row).values()) for row in listed]
+    named.extend(list(named_candidates(page, row).values()) for row in rows)
+    return [labels for labels in named if labels]
+
+
+def test_choices_that_share_a_title_and_due_date_are_told_apart_by_the_saved_score(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser, IXL)
+        page = review_page(browser, IXL_AWAY)
+        form = as_sent(page)
+
+    ids = form["choices.5"].split()
+    expected = {
+        "IXL Practice · due 09/22 · saved score 9.0 / 10.0",
+        "IXL Practice · due 09/22 · saved score 8.0 / 10.0",
+    }
+    for row in (5, 6):
+        options = named_choices(page, row)
+        assert list(options) == ids
+        assert set(options.values()) == expected
+        assert named_candidates(page, row) == options
+
+
+def test_choices_that_share_a_title_due_date_and_score_are_told_apart_by_category(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser, SAME_SCORE)
+        page = review_page(browser, SAME_SCORE_AWAY)
+
+    for row in (6, 7):
+        assert sorted(named_choices(page, row).values()) == [
+            "IXL Practice · due 09/22 · saved score 9.0 / 10.0 · Homework / Practice",
+            "IXL Practice · due 09/22 · saved score 9.0 / 10.0 · Labs",
+        ]
+
+
+def test_a_later_copy_kept_as_earlier_leaves_the_saved_score_as_saved(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The saved score is the result's current value, not the newest copy's."""
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser, SAME_SCORE)
+        lower = {**as_sent(review_page(browser, SAME_SCORE_LOWER)), "use": "earlier"}
+        kept = browser.post(SAVE, data=lower, headers=PAGE)
+        assert kept.status_code == 303, kept.text
+        page = review_page(browser, SAME_SCORE_AWAY)
+
+    assert sorted(named_choices(page, 6).values()) == [
+        "IXL Practice · due 09/22 · saved score 9.0 / 10.0 · Homework / Practice",
+        "IXL Practice · due 09/22 · saved score 9.0 / 10.0 · Labs",
+    ]
+
+
+def test_two_results_of_one_report_are_told_apart_by_row_on_the_day_it_was_added_there(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The day is the household's: 02:00 UTC on October 8 is October 7 in New York."""
+    with at(open_household(tmp_path)) as browser:
+        late = FrozenClock(datetime(2026, 10, 8, 2, 0, tzinfo=UTC), ZoneInfo(FIXTURE_TIMEZONE))
+        monkeypatch.setattr(store_of(browser), "_clock", late)
+        first_saved(browser, TWINS)
+        page = review_page(browser, TWINS_AWAY)
+
+    for row in (5, 6):
+        assert sorted(named_choices(page, row).values()) == [
+            f"{PRACTICE} · report added October 7 · row 1 of that report",
+            f"{PRACTICE} · report added October 7 · row 2 of that report",
+        ]
+        assert named_candidates(page, row) == named_choices(page, row)
+
+
+def test_the_same_row_of_two_reports_added_the_same_day_is_numbered_the_same_way_each_time(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser, ONE_IXL)
+        twins = as_sent(review_page(browser, TWINS))
+        different = {"match.5": "different", "match.6": "different", "select.5": "1"}
+        saved = browser.post(SAVE, data={**twins, **different, "select.6": "1"}, headers=PAGE)
+        assert saved.status_code == 303, saved.text
+        first = review_page(browser, TWINS_AWAY)
+        second = review_page(browser, TWINS_AWAY)
+
+    added = f"{PRACTICE} · report added August 19"
+    options = named_choices(first, 5)
+    assert sorted(options.values()) == [
+        "Cell Diagram · due 09/26",
+        f"{added} · row 1 of that report · saved entry 1 of 2",
+        f"{added} · row 1 of that report · saved entry 2 of 2",
+        f"{added} · row 2 of that report",
+    ]
+    assert named_choices(second, 5) == options
+    assert named_choices(second, 6) == options
+    assert named_candidates(first, 5) == options
+
+
+def test_a_check_that_answers_every_open_row_still_names_every_choice(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser)
+        form = as_sent(review_page(browser, RETITLED))
+        answers = {"match.5": form["candidates.5"], "match.6": form["candidates.6"]}
+        checked = browser.post(CHECK, data={**form, **answers}, headers=PAGE)
+
+    assert checked.status_code == 200, checked.text
+    for row in (5, 6):
+        assert sorted(named_choices(checked.text, row).values()) == [
+            "Cell Diagram · due 09/26",
+            "Seed Germination Log · due 09/22",
+        ]
+    assert "result-" not in words(checked.text)
+
+
+def test_no_review_state_shows_an_id_and_each_control_names_its_choices_apart(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = every_review_state(tmp_path, monkeypatch)
+    named = 0
+    for state, page in pages.items():
+        assert "result-" not in words(page), state
+        for labels in every_control_named(page):
+            named += 1
+            assert len(set(labels)) == len(labels), (state, labels)
+    assert named > 0
+
+
+def facts(
+    title: str = "IXL Practice",
+    *,
+    due: Cell | None = (Presence.REPORTED, "09/22"),
+    points: str = "9.0",
+    category: str = "Homework / Practice",
+    added: date = PLAN_DATE,
+    order: int = 1,
+    position: int = 1,
+) -> "grade_review.ChoiceFacts":
+    return grade_review.ChoiceFacts(
+        title=(Presence.REPORTED, title),
+        category=(Presence.REPORTED, category),
+        due=due,
+        points=(Presence.REPORTED, points) if points else (Presence.BLANK, ""),
+        max_points=(Presence.REPORTED, "10.0"),
+        report_added=added,
+        report_order=order,
+        position=position,
+    )
+
+
+def test_a_choice_is_named_by_title_and_due_date_alone_when_those_tell_it_apart() -> None:
+    labels = grade_routes.choice_labels(
+        ["result-a", "result-b"], {"result-a": facts(), "result-b": facts("Cell Diagram")}
+    )
+
+    assert labels == {
+        "result-a": "IXL Practice · due 09/22",
+        "result-b": "Cell Diagram · due 09/22",
+    }
+
+
+def test_a_due_date_never_captured_is_said_and_never_filled_in() -> None:
+    labels = grade_routes.choice_labels(
+        ["result-a", "result-b", "result-c"],
+        {
+            "result-a": facts(due=None),
+            "result-b": facts(due=(Presence.BLANK, ""), points=""),
+            "result-c": facts(due=(Presence.BLANK, "")),
+        },
+    )
+
+    assert labels == {
+        "result-a": "IXL Practice · Due date not captured",
+        "result-b": "IXL Practice · due left blank · saved score blank / 10.0",
+        "result-c": "IXL Practice · due left blank · saved score 9.0 / 10.0",
+    }
+
+
+def test_the_last_tier_numbers_each_group_in_one_order_whatever_order_it_is_given() -> None:
+    offered = {
+        "result-c": facts(order=2),
+        "result-a": facts(order=1, position=2),
+        "result-b": facts(order=1),
+    }
+
+    labels = grade_routes.choice_labels(["result-c", "result-a", "result-b"], offered)
+
+    tail = "report added August 19 · row 1 of that report"
+    assert labels == {
+        "result-b": f"{PRACTICE} · {tail} · saved entry 1 of 2",
+        "result-c": f"{PRACTICE} · {tail} · saved entry 2 of 2",
+        "result-a": f"{PRACTICE} · report added August 19 · row 2 of that report",
+    }
+
+
+def test_report_text_that_repeats_a_later_tier_still_gives_distinct_labels() -> None:
+    """A category written like the tiers after it ties a numbered label; the whole list is then
+    numbered in the last tier's order."""
+    tail = "report added August 19 · row 1 of that report · saved entry 1 of 2"
+    offered = {
+        "result-a": facts(order=1),
+        "result-b": facts(order=2),
+        "result-e": facts(category=f"Homework / Practice · {tail}", order=3),
+    }
+
+    labels = grade_routes.choice_labels(list(offered), offered)
+
+    assert len(set(labels.values())) == 3
+    assert labels["result-a"].endswith("row 1 of that report · saved entry 1 of 3")
+    assert labels["result-b"].endswith("row 1 of that report · saved entry 2 of 3")
+    assert labels["result-e"] == f"{PRACTICE} · {tail} · saved entry 3 of 3"
+
+
+# ------------------------------------------------------------- the script beside a row's list
+
+SCRIPT = STYLESHEET.parent / "blossom.js"
+REVIEW_LISTENER: Final = """  var review = document.querySelector("form.review-form");
+  if (review) {
+    review.addEventListener("change", function (event) {
+      var name = event.target.name || "";
+      /* An entry picked by hand from a grade row's list also answers the row with "Choose an
+         existing assignment". A value the browser restores sends no change, and one a script
+         sets isn't trusted, so neither moves the answer. */
+      if (event.isTrusted && name.indexOf("choose.") === 0 && event.target.value) {
+        var choose = review.querySelector(
+          "input[type='radio'][name='match." + name.slice(7) + "'][value='choose']"
+        );
+        if (choose) {
+          choose.checked = true;
+        }
+      }
+      if (name.indexOf("kind-") !== 0 && name.indexOf("occurrence-") !== 0) {
+        return;
+      }
+      if (name.indexOf("kind-") === 0) {
+        var card = event.target.closest("article");
+        var effect = card ? card.querySelector(".effect") : null;
+        if (effect) {
+          var base = effect.dataset.base === undefined ? effect.textContent : effect.dataset.base;
+          var chosen = event.target.value === "TASK" ? "task" : "homework";
+          /* A choice carried from a page before, marked beside the select,
+             is the parent's whatever it is set to, the suggestion included. */
+          var carried = card.querySelector("input[name='chosen-" + name.slice(5) + "']");
+          effect.textContent = event.target.value === event.target.dataset.saved && !carried
+            ? base
+            : (base ? base + " " : "") + "The type becomes " + chosen + ", as chosen.";
+        }
+      }
+      var button = review.querySelector("button.primary[disabled]");
+      if (button) {
+        button.disabled = false;
+        button.removeAttribute("aria-disabled");
+        button.classList.remove("done");
+        button.textContent = button.dataset.changedLabel || button.textContent;
+      }
+    });
+  }"""
+"""The review forms' one listener, whole: only a trusted change of a row's list to an entry
+selects that row's "Choose an existing assignment", before the inbox review's own branches."""
+
+
+def test_only_an_entry_picked_by_hand_selects_choose_an_existing_assignment() -> None:
+    """Nothing on load, on a page shown again or on a value restored moves a row's answer: the
+    one listener is pinned whole, and no other line of the script names a row's answer or list."""
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert script.count(REVIEW_LISTENER) == 1
+    rest = script.replace(REVIEW_LISTENER, "")
+    assert [line for line in rest.splitlines() if "choose." in line or "match." in line] == []
+    assert script.count('addEventListener("change"') == 1
+
+
+def test_a_returned_page_keeps_a_remembered_different_beside_a_pick_as_sent(
+    tmp_path: pathlib.Path,
+) -> None:
+    """With scripts off, the conflict comes back with both answers as sent: the page itself
+    never switches the row to "Choose an existing assignment"."""
+    with at(open_household(tmp_path)) as browser:
+        form = remembered_review(browser)
+        form.update({"choose.6": form["choices.6"].split()[0], "select.6": "1"})
+        answer = browser.post(CHECK, data=form, headers=PAGE)
+
+    assert answer.status_code == 422, answer.text
+    assert 'name="match.6" value="different" checked' in answer.text
+    assert 'name="match.6" value="choose">' in answer.text
+    assert f'value="{form["choose.6"]}" selected' in answer.text
