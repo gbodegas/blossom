@@ -813,16 +813,38 @@ def test_a_line_that_matches_a_confirmed_form_is_shown_with_no_question(
 
 STYLESHEET = pathlib.Path(grade_routes.__file__).parents[1] / "static" / "blossom.css"
 TEMPLATES = STYLESHEET.parents[1] / "templates"
-GRADE_REVIEW_RULE = ".grade-review .choice {\n  min-width: 0;\n}\n"
-"""The grade review's rule for its fieldsets, pinned whole."""
+GRADE_REVIEW_RULE = (
+    ".grade-review .choice {\n  min-width: 0;\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n"
+)
+"""The grade review's rule for its fieldsets, pinned whole: a fieldset takes the page's width,
+and its side padding gives way on a narrow screen with large text."""
 IDENTITY_RULES = (
-    ".grade-review .choice.identity {\n  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"
     ".grade-review .choice.identity label {\n  flex-wrap: wrap;\n}\n\n"
     ".grade-review .choice.identity label > span {\n  flex: 1 1 8rem;\n}\n"
 )
-"""The grade review's rules for its "Is this her?" choices, pinned whole: the fieldset's side
-padding gives way on a narrow screen with large text, and a choice's words go under its radio
-when less than 8rem is left beside it."""
+"""The grade review's rules for its "Is this her?" choices, pinned whole: a choice's words go
+under its radio when less than 8rem is left beside it."""
+CARD_RULES = (
+    ".grade-review .panel,\n.grade-review article,\n.grade-outcome {\n"
+    "  margin-inline: min(0px, 13vw - 2.25rem);\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
+    "@media (max-width: 30rem) {\n"
+    "  .grade-review .panel,\n  .grade-review article,\n  .grade-outcome {\n"
+    "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
+)
+"""The grade review's cards and the saved report's outcome, pinned whole: on a narrow screen
+with large text, a card's side padding gives way and the card reaches into the page's side
+margin, so a word of a class, category or assignment name breaks only where the line can't
+hold it."""
+SHARED_CARD_RULES = (
+    "main {\n  max-width: 46rem;\n  margin: 0 auto;\n  padding: 0.5rem 1.25rem 3rem;\n}\n",
+    "article,\n.panel {\n  background: var(--surface);\n  border: 1px solid var(--edge);\n"
+    "  border-radius: var(--radius);\n  padding: 1.35rem 1.6rem;\n  margin-block: 1.1rem;\n",
+    "  article,\n  .panel {\n    padding: 1.1rem 1.2rem;\n  }\n",
+)
+"""The page's side margin and the card insets every page shares, pinned as they stand: the
+cards' rules above give way from these values and reach into this margin."""
 SHARED_CHOICE_RULE = (
     ".choice {\n  margin: 0.75rem 0;\n  padding: 0.75rem 1rem;\n"
     "  border: 1px solid var(--field-edge);\n  border-radius: var(--radius-small);\n}\n"
@@ -839,11 +861,30 @@ def test_the_grade_review_s_own_rule_is_pinned_and_only_its_form_carries_its_cla
         if "grade-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("grade-review") == 4
+    assert css.count("grade-review") == 7
     assert css.count(GRADE_REVIEW_RULE) == 1
     assert css.count(IDENTITY_RULES) == 1
+    assert css.count(CARD_RULES) == 1
     assert css.count(SHARED_CHOICE_RULE) == 1
     assert carriers == ["grade_review.html"]
+
+
+def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_page_carries_its_class() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "grade-outcome" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("grade-outcome") == 2
+    assert css.count(CARD_RULES) == 1
+    for shared in SHARED_CARD_RULES:
+        assert css.count(shared) == 1, shared
+    assert carriers == ["grade_saved.html"]
+    page = (TEMPLATES / "grade_saved.html").read_text(encoding="utf-8")
+    outcome = '<section class="panel grade-outcome" aria-labelledby="outcome-heading">'
+    assert page.count(outcome) == 1
 
 
 GRADE_PANEL_RULE = (
