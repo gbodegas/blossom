@@ -15,7 +15,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from concurrent.futures import Future
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from time import monotonic
 from types import SimpleNamespace
 from typing import Any, cast, get_args
@@ -33,6 +33,7 @@ from blossom.routes.runs import (
     CouldNotStart,
     NotSaved,
     Unconfirmed,
+    ended_sentences,
     plan_graphs,
 )
 from blossom.routes.student import place_key
@@ -580,6 +581,36 @@ def test_family_used_form_for_a_later_evenings_date_problem_names_that_evening(
     assert family_line(answer.text) == (
         f"This form was used for Thursday, August 20. {said} {HER_UPDATES_SAVED} {nothing}"
     )
+
+
+@pytest.mark.parametrize("parent", [False, True], ids=["her", "parent"])
+@pytest.mark.parametrize("count", [1, 2], ids=["one", "two"])
+@pytest.mark.parametrize(
+    ("evening", "named"),
+    [(LATER_EVENING, "Thursday, August 20"), (date(2026, 8, 18), "Tuesday, August 18")],
+    ids=["later", "earlier"],
+)
+def test_a_date_problem_for_another_evening_names_no_work_as_already_passed(
+    evening: date, named: str, count: int, parent: bool
+) -> None:
+    """A date problem for an evening that isn't today says that evening's sentences even with
+    past-due work from the record, which is due before that evening and may still be ahead,
+    and never says today's plan or a date already passed."""
+    work = [
+        PastDueView(
+            assignment_id=key, title=title, course=course, due_date=evening - timedelta(days=back)
+        )
+        for key, title, course, back in (
+            ("assignment-map-quiz", "Map quiz", "Geography", 1),
+            ("assignment-atlas-page", "Atlas page", "Art", 2),
+        )
+    ][:count]
+    said = ended_sentences("date_problem", parent=parent, past_due=work, evening=evening)
+    opening, whole = cant_make_the_plan_for(named)
+    yours = "Your homework updates are saved."
+    usual = (HER_UPDATES_SAVED, FAMILY_REVIEW_SHOWS) if parent else (yours,)
+    assert said == (opening, whole.removeprefix(f"{opening} "), *usual)
+    assert not any("today's plan" in part or "already passed" in part for part in said)
 
 
 def test_family_check_page_for_an_ended_run_keeps_its_evening() -> None:
