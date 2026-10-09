@@ -15,7 +15,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from concurrent.futures import Future
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from time import monotonic
 from types import SimpleNamespace
 from typing import Any, cast, get_args
@@ -33,6 +33,7 @@ from blossom.routes.runs import (
     CouldNotStart,
     NotSaved,
     Unconfirmed,
+    ended_sentences,
     plan_graphs,
 )
 from blossom.routes.student import place_key
@@ -511,6 +512,107 @@ def test_family_ended_repeat_on_the_stand_in_says_why_and_what_is_saved(
     assert FAMILY_REVIEW_SHOWS not in alert
 
 
+def cant_make_the_plan_for(named: str) -> tuple[str, str]:
+    """A date problem for an evening that isn't today, as its opening and then the whole."""
+    opening = f"Blossom can't make the plan for {named}."
+    return opening, (
+        f"{opening} Some work is due before that evening, so no plan can finish it on time."
+    )
+
+
+@pytest.mark.parametrize("shown", [True, False], ids=["page", "stand-in"])
+@pytest.mark.parametrize(
+    ("evening", "named"),
+    [(LATER_EVENING, "Thursday, August 20"), (date(2026, 8, 18), "Tuesday, August 18")],
+    ids=["later", "earlier"],
+)
+def test_family_ended_repeat_names_the_evening_of_its_date_problem(
+    evening: date, named: str, shown: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A used form whose run, for an evening that isn't today, ended on a date problem says
+    the date problem against that evening, on the page and on the stand-in, and its first
+    sentence, naming the evening, takes the focus."""
+    with browser(key=True) as client:
+        form = family_plan(client, evening.isoformat())
+        ended_run(
+            state_of(client).drafts,
+            thread_id=form["run_id"],
+            plan_date=evening,
+            outcome="date_problem",
+        )
+        if not shown:
+            monkeypatch.setattr(state_of(client).drafts, "review_snapshot", refusing())
+        answer = client.post(FAMILY_PLAN_ACTION, data=form)
+        monkeypatch.undo()
+    opening, said = cant_make_the_plan_for(named)
+    assert answer.status_code == 409
+    if shown:
+        assert family_line(answer.text) == f"{said} {HER_UPDATES_SAVED} {FAMILY_REVIEW_SHOWS}"
+        assert opening_focused(answer.text, FAMILY_LINE) == opening
+    else:
+        alert = the_answer_alert(answer.text)
+        assert alert == f"{said} {HER_UPDATES_SAVED} {FAMILY_NOT_SHOWN_LINE}"
+        assert opening_focused(answer.text, STAND_IN_LINE) == opening
+
+
+@pytest.mark.parametrize("chosen", [PLAN_DATE.isoformat(), "someday"], ids=["W-5", "W-5u"])
+def test_family_used_form_for_a_later_evenings_date_problem_names_that_evening(
+    chosen: str,
+) -> None:
+    """A used form whose run, for a later evening, ended on a date problem, sent with another
+    evening or a date that can't be read, says the date problem against the run's own
+    evening, never as today's plan."""
+    with browser(key=True) as client:
+        form = family_plan(client, LATER_EVENING.isoformat())
+        ended_run(
+            state_of(client).drafts,
+            thread_id=form["run_id"],
+            plan_date=LATER_EVENING,
+            outcome="date_problem",
+        )
+        answer = client.post(FAMILY_PLAN_ACTION, data={**form, "plan_date": chosen})
+    _, said = cant_make_the_plan_for("Thursday, August 20")
+    nothing = (
+        "No plan was started for Wednesday, August 19."
+        if chosen == PLAN_DATE.isoformat()
+        else FAMILY_DATE_NOT_READ
+    )
+    assert answer.status_code == 409
+    assert family_line(answer.text) == (
+        f"This form was used for Thursday, August 20. {said} {HER_UPDATES_SAVED} {nothing}"
+    )
+
+
+@pytest.mark.parametrize("parent", [False, True], ids=["her", "parent"])
+@pytest.mark.parametrize("count", [1, 2], ids=["one", "two"])
+@pytest.mark.parametrize(
+    ("evening", "named"),
+    [(LATER_EVENING, "Thursday, August 20"), (date(2026, 8, 18), "Tuesday, August 18")],
+    ids=["later", "earlier"],
+)
+def test_a_date_problem_for_another_evening_names_no_work_as_already_passed(
+    evening: date, named: str, count: int, parent: bool
+) -> None:
+    """A date problem for an evening that isn't today says that evening's sentences even with
+    past-due work from the record, which is due before that evening and may still be ahead,
+    and never says today's plan or a date already passed."""
+    work = [
+        PastDueView(
+            assignment_id=key, title=title, course=course, due_date=evening - timedelta(days=back)
+        )
+        for key, title, course, back in (
+            ("assignment-map-quiz", "Map quiz", "Geography", 1),
+            ("assignment-atlas-page", "Atlas page", "Art", 2),
+        )
+    ][:count]
+    said = ended_sentences("date_problem", parent=parent, past_due=work, evening=evening)
+    opening, whole = cant_make_the_plan_for(named)
+    yours = "Your homework updates are saved."
+    usual = (HER_UPDATES_SAVED, FAMILY_REVIEW_SHOWS) if parent else (yours,)
+    assert said == (opening, whole.removeprefix(f"{opening} "), *usual)
+    assert not any("today's plan" in part or "already passed" in part for part in said)
+
+
 def test_family_check_page_for_an_ended_run_keeps_its_evening() -> None:
     """The page a run's check link opens, for the newest run of an evening still ahead that
     ended without a plan, holds that evening in the open fold, and says nothing about it."""
@@ -880,13 +982,10 @@ def test_a_typed_date_with_marks_inside_keeps_the_whole_first_sentence_focused(
 def test_a_title_with_marks_inside_keeps_her_whole_first_sentence_focused(
     title: str, failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run that ended on a due date already passed names the work in the answer's first
-    sentence, and that whole sentence takes the focus, however its title is punctuated, on
-    her week and its stand-in."""
-    opening = (
-        f"Blossom can't make today's plan: {title} (Math, due August 18) has a due date that "
-        "already passed, so no plan can finish it on time."
-    )
+    """A run that ended on a due date already passed opens with a short first sentence and
+    names the work after it, and that first sentence alone takes the focus, however the
+    work's title is punctuated, on her week and its stand-in."""
+    opening = "Blossom can't make today's plan."
     late = PastDueView(
         assignment_id=ESSAY_ID, title=title, course="Math", due_date=date(2026, 8, 18)
     )
@@ -898,7 +997,10 @@ def test_a_title_with_marks_inside_keeps_her_whole_first_sentence_focused(
             failing = refusing() if failure == "store error" else too_slow
             monkeypatch.setattr(state_of(client).drafts, "newest_published", failing)
         answer = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
-    said = f"{opening} Your homework updates are saved."
+    said = (
+        f"{opening} {title} (Math, due August 18) has a due date that already passed, so no "
+        "plan can finish it on time. Your homework updates are saved."
+    )
     assert answer.status_code == 409
     if failure == "page":
         assert her_line(answer.text).startswith(f"{said} Check the dates for {title}.")

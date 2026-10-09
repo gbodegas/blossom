@@ -222,6 +222,10 @@ Sentences = tuple[str, ...]
 from how the words were made, whatever a typed value or a title inside it holds."""
 
 
+TODAYS_PLAN_NOT_MADE: Final = "Blossom can't make today's plan."
+"""How a date problem for today's evening opens, before the work it is about."""
+
+
 def due_on(day: date) -> str:
     """``August 18``: a day as her page says it."""
     return f"{day:%B} {day.day}"
@@ -269,41 +273,43 @@ def ended_sentences(
     where: bool = True,
 ) -> Sentences:
     """Why a run ended without a plan, as her page says it, a sentence each: what went wrong
-    in plain words, that her updates are kept, and, to a parent reading her page, where the
-    run's record is. The run's own name for how it ended is never shown, and work is named
-    only when the record shows its date has passed. ``unchanged`` adds that her plan is the
-    one she had; ``evening`` is the run's evening when it is not today's, which a date problem
-    names. ``where`` false leaves out where the record is."""
+    in plain words, a date problem as a short opening and then the work and why no plan can
+    finish it, that her updates are kept, and, to a parent reading her page, where the
+    run's record is. The run's own name for how it ended is never shown, and work from the record is
+    named only for today's evening, since only there has its date passed. ``unchanged`` adds that
+    her plan is the one she had; ``evening`` is the run's evening when it is not today's, which a
+    date problem names. ``where`` false leaves out where the record is."""
     if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
         return (NOTHING_TO_SCHEDULE,)
     category = failure_category(outcome)
-    if category == DATE_PROBLEM and past_due:
+    what: Sentences
+    if category == DATE_PROBLEM and evening is not None:
+        what = (
+            f"Blossom can't make the plan for {evening_named(evening)}.",
+            "Some work is due before that evening, so no plan can finish it on time.",
+        )
+    elif category == DATE_PROBLEM and past_due:
         named = [f"{work.title} ({work.course}, due {due_on(work.due_date)})" for work in past_due]
         listed = named[0] if len(named) == 1 else ", ".join(named[:-1]) + f" and {named[-1]}"
         has, it = ("has a due date", "it") if len(named) == 1 else ("have due dates", "them")
         what = (
-            f"Blossom can't make today's plan: {listed} {has} that already passed, so no "
-            f"plan can finish {it} on time."
+            TODAYS_PLAN_NOT_MADE,
+            f"{listed} {has} that already passed, so no plan can finish {it} on time.",
         )
-    elif category == DATE_PROBLEM and evening is None:
+    elif category == DATE_PROBLEM:
         what = (
-            "Blossom can't make today's plan: some work has a due date that already passed, "
-            "so no plan can finish it on time."
-        )
-    elif category == DATE_PROBLEM and evening is not None:
-        what = (
-            f"Blossom can't make the plan for {evening_named(evening)}: some work is due "
-            "before that evening, so no plan can finish it on time."
+            TODAYS_PLAN_NOT_MADE,
+            "Some work has a due date that already passed, so no plan can finish it on time.",
         )
     elif category == TIMEOUT:
-        what = "Planning took too long, so Blossom stopped."
+        what = ("Planning took too long, so Blossom stopped.",)
     elif category == SERVICE:
-        what = "Blossom couldn't get a plan from the planning service this time."
+        what = ("Blossom couldn't get a plan from the planning service this time.",)
     else:
-        what = "Blossom couldn't finish a reliable plan this time."
+        what = ("Blossom couldn't finish a reliable plan this time.",)
     then = "Family review shows what happened." if parent and where else ""
     kept = plan_unchanged(parent=parent) if unchanged else ""
-    return tuple(part for part in (what, kept, saved_sentence(parent=parent), then) if part)
+    return tuple(part for part in (*what, kept, saved_sentence(parent=parent), then) if part)
 
 
 Graphs = Annotated[PlanGraphs, Depends(plan_graphs)]

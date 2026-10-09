@@ -2096,20 +2096,46 @@ def test_a_refused_date_is_said_at_the_top_with_the_focus_and_kept_in_the_form()
 
 
 def test_the_plan_form_and_its_answers_are_held_by_their_own_rules() -> None:
-    """Every rule naming the plan form or the run check's place is the one checked in a
-    browser: the evening field may shrink inside the form at large text, the check link is
-    padded to 44 pixels in its sentence, a focused line widens its edge as hers does, and a
-    plan answer's focused first sentence is ringed as a control is."""
+    """Every rule naming the plan form, its card or the run check's place is the one checked
+    in a browser: the card sets its side insets aside where the evening field can't show the
+    whole date, the check link is padded to 44 pixels in its sentence, a focused line widens its
+    edge as hers does, and a plan answer's focused first sentence is ringed as a control is."""
     css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
     folded = {
         name: [" ".join(rule.split()) for rule in rules_for(css, name)]
-        for name in ("plan-form", "run-check")
+        for name in ("plan-form", "plan-panel", "run-check")
     }
     focus = support.declared_for('#problem[tabindex="-1"]:focus')
+    narrow = "100000vw - 14650rem - 14500px"
 
     assert folded["plan-form"] == [
         "display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; align-items: end;",
         "min-width: 0;",
+    ]
+    assert folded["plan-panel"] == [
+        "border-inline-width: clamp(0px, 100000vw - 15450rem - 14500px, 1px);"
+        " padding-inline: clamp(0px, 100000vw - 15450rem - 14500px, 1.6rem);",
+        f"border-inline-width: clamp(0px, {narrow}, 1px);"
+        f" padding-inline: clamp(0px, {narrow}, 1.2rem);"
+        f" margin-inline: clamp(4vw - 1.25rem, {narrow}, 0px);",
+        f"padding-inline: clamp(2vw, {narrow}, 0.85rem);",
+    ]
+    # The switch points above are the field's width plus these insets, measured in a browser.
+    assert support.declared_for(".panel") == [
+        "background: var(--surface); border: 1px solid var(--edge);"
+        " border-radius: var(--radius); padding: 1.35rem 1.6rem; margin-block: 1.1rem;"
+        " box-shadow: var(--shadow); backdrop-filter: blur(8px);",
+        "padding: 1.1rem 1.2rem;",
+    ]
+    assert support.declared_for("main") == [
+        "max-width: 46rem; margin: 0 auto; padding: 0.5rem 1.25rem 3rem;"
+    ]
+    assert support.declared_for('input[type="date"]') == [
+        "font: inherit; font-family: var(--font-body); color: var(--text);"
+        " padding: 0.55rem 0.85rem; border: 1px solid var(--edge);"
+        " border-radius: var(--radius-small); background: var(--surface-strong);"
+        " max-width: 32rem;",
+        "border-color: var(--field-edge); min-width: 0; max-width: 100%;",
     ]
     assert folded["run-check"] == ["display: inline-block; padding: 0.8rem 0; margin: -0.8rem 0;"]
     assert focus == support.declared_for(".week-problem:focus")
@@ -2117,6 +2143,28 @@ def test_the_plan_form_and_its_answers_are_held_by_their_own_rules() -> None:
     assert support.declared_for(".problem .opening:focus") == [
         "outline: 3px solid var(--blue-action); outline-offset: 2px;"
     ]
+
+
+def test_the_plan_form_sits_in_the_card_its_rules_name() -> None:
+    """The family plan form is held by the card whose rules give its field the whole date."""
+    with support.browser(key=True) as client:
+        page = client.get("/parent").text
+
+    card = re.search(r'<section class="panel plan-panel">(.*?)</section>', page, re.S)
+    assert card is not None
+    assert '<form method="post" action="/parent/actions/plan" class="plan-form"' in card.group(1)
+    assert page.count("plan-panel") == 1
+
+
+def test_a_plan_card_without_the_plan_form_keeps_the_ordinary_card() -> None:
+    """With no API key the card holds only its note, so it takes none of the rules that set
+    its side insets aside for the evening field."""
+    with support.browser() as client:
+        page = client.get("/parent").text
+
+    assert "No API key is configured" in page
+    assert 'action="/parent/actions/plan"' not in page
+    assert "plan-panel" not in page
 
 
 @pytest.mark.parametrize("who", ["her", "another origin", "signed out"])
