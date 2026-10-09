@@ -13,9 +13,11 @@ result is its stable ID, and an ambiguous match never saves without a parent's a
 grade save writes her own account or the school's submission status. G-I2: what a plan is made
 from reads the same across every grade write. G-I5: nothing saves for another student or for an
 identity no one confirmed. G-I12: the grade modules import nothing that reaches a model. G-I18:
-no grade write changes the current context a parent chose. G-I11: a delete removes exactly its
-class and term and keeps the revision, raised. G-I6: saved reports, observations and corrections
-never change, and each correction keeps the value as read.
+no grade write changes the current context a parent chose, but a parent's explicit choice of the
+current term. G-I11: a delete removes exactly its class and term and keeps the revision, raised.
+G-I6: saved reports, observations and corrections never change, and each correction keeps the
+value as read. A remembered term is a viewer's own, outside the gradebook's tables, so G-I1's
+closed world holds it.
 """
 
 import ast
@@ -54,9 +56,13 @@ from blossom.noticing import canonical_active_input, planning_digest, read_every
 from blossom.settings import PACKAGE_ROOT
 from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
+    VIEW_TABLES,
     AlreadyDeleted,
     AnswerNotAsked,
     ClassTermDeleted,
+    ContextChanged,
+    ContextSet,
+    ContextStood,
     CorrectionPage,
     CorrectionRecorded,
     CorrectionReturned,
@@ -247,6 +253,28 @@ def second_term_delete(store: ProjectStateStore) -> list[tuple[str, Callable[[],
     ]
 
 
+FIRST_TERM = (YEAR, "T1")
+NEXT_TERM = (YEAR, "T2")
+CURRENT_TERM_CHOSEN = ("the current term chosen", "the first term chosen again")
+"""The steps of ``every_grade_write`` that change the current context: a parent's explicit
+choice of the current term, each one."""
+
+
+def current_term_choices(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
+    """A parent's choice of the current term, its retry, a page from before it, and the first
+    term chosen again, which leaves the context as the first setup made it."""
+
+    def chosen(shown: tuple[str, str], term: tuple[str, str]) -> object:
+        return store.set_current_context(shown, term, "parent")
+
+    return [
+        (CURRENT_TERM_CHOSEN[0], lambda: expect(ContextSet, chosen(FIRST_TERM, NEXT_TERM))),
+        ("its retry", lambda: expect(ContextStood, chosen(FIRST_TERM, NEXT_TERM))),
+        ("a page from before it", lambda: expect(ContextChanged, chosen(FIRST_TERM, FIRST_TERM))),
+        (CURRENT_TERM_CHOSEN[1], lambda: expect(ContextSet, chosen(NEXT_TERM, FIRST_TERM))),
+    ]
+
+
 def assertions(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
     """A Status "Missing" asserted on Seed through the class-details action's copy, its retry, a
     stale page, its withdrawal, and a letter asserted on the term."""
@@ -394,6 +422,7 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
             lambda: records_nothing_new(store),
         ),
         *second_term_delete(store),
+        *current_term_choices(store),
         (
             "the secret replaced, confirmed again",
             lambda: expect(GradeReportSaved, answered(WREN_REPORT, NEW_KEY, IdentityAnswer.HERS)),
@@ -462,21 +491,23 @@ def test_g_i1_her_record_arrives_on_a_file_from_before_and_changes_nothing_else(
     with household_client("open", tmp_path) as client:
         path = database_of(client)
     raw = sqlite3.connect(path)
-    for table in GRADEBOOK_TABLES:
+    for table in (*GRADEBOOK_TABLES, *VIEW_TABLES):
         raw.execute(f"DROP TABLE {table}")
     raw.commit()
     raw.close()
-    before = closed_world([path], leaving_out=GRADEBOOK_TABLES)
+    before = closed_world([path], leaving_out=(*GRADEBOOK_TABLES, *VIEW_TABLES))
 
     store = ProjectStateStore.open(path, fixture_clock())
     made = store.student_id()
     store.close()
     again = ProjectStateStore.open(path, fixture_clock())
     kept = again.student_id()
+    remembered = as_stored(again, "grade_view_choices")
     again.close()
 
-    assert closed_world([path], leaving_out=GRADEBOOK_TABLES) == before
+    assert closed_world([path], leaving_out=(*GRADEBOOK_TABLES, *VIEW_TABLES)) == before
     assert kept == made
+    assert remembered == []
 
 
 def test_g_i13_no_gradebook_table_or_log_line_holds_a_name(
@@ -513,16 +544,19 @@ def test_g_i15_every_gradebook_row_carries_her_one_student_id(tmp_path: pathlib.
     for _, write in every_grade_write(store):
         write()
     store.add_name_form(NEW_KEY, "Wren Bramble", "parent")
+    store.choose_view("student", NEXT_TERM)
+    store.choose_view("parent", FIRST_TERM)
+    tables = (*GRADEBOOK_TABLES, *VIEW_TABLES)
 
     carried = {
         table: {
             row[0]
             for row in store._connection.execute(f"SELECT student_id FROM {table}")  # noqa: S608
         }
-        for table in GRADEBOOK_TABLES
+        for table in tables
     }
 
-    assert carried == {table: {store.student_id()} for table in GRADEBOOK_TABLES}
+    assert carried == {table: {store.student_id()} for table in tables}
 
 
 def test_g_i15_a_form_kept_under_another_student_id_matches_nothing() -> None:
@@ -549,6 +583,7 @@ def test_g_i1_no_grade_save_changes_anything_outside_the_gradebook(
             pathlib.Path(state.settings.checkpoint_path),
             pathlib.Path(state.settings.trace_path),
         ]
+        remembered(state.project_state)
         before = closed_world(files, leaving_out=GRADEBOOK_TABLES)
         seen = []
         for label, write in every_grade_write(state.project_state):
@@ -557,8 +592,61 @@ def test_g_i1_no_grade_save_changes_anything_outside_the_gradebook(
         accepted = as_stored(state.project_state, "grade_acceptances")
 
     assert any(name.endswith("assignments") for name in before)
+    assert len(before[f"{files[0].name} rows of grade_view_choices"]) == 3  # type: ignore[arg-type]
     assert seen == [(label, True) for label, _ in seen]
     assert len(accepted) == 13
+
+
+def remembered(store: ProjectStateStore) -> None:
+    """A remembered term for each viewer, written as the record keeps it, so the closed world
+    every grade write is checked against holds one row per viewer."""
+    student_id = store.student_id()
+    store._connection.executemany(
+        "INSERT INTO grade_view_choices (student_id, viewer, year_label, term_label) "
+        "VALUES (?, ?, ?, ?)",
+        [(student_id, viewer, YEAR, "T1") for viewer in ("student", "parent", "anyone")],
+    )
+    store._connection.commit()
+
+
+def test_a_viewer_s_choice_changes_no_grade_table_and_no_other_viewer_s_row(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Choosing, choosing again, and following the current term each write that viewer's row
+    alone: every grade table, the other viewers' rows and the closed world beyond read the
+    same."""
+    with household_client("open", tmp_path) as client:
+        state = state_of(client)
+        store = state.project_state
+        files = [
+            pathlib.Path(state.settings.database_path),
+            pathlib.Path(state.settings.checkpoint_path),
+            pathlib.Path(state.settings.trace_path),
+        ]
+        for _, write in every_grade_write(store):
+            write()
+        remembered(store)
+        grades = {table: as_stored(store, table) for table in GRADEBOOK_TABLES}
+        world = closed_world(files, leaving_out=(*GRADEBOOK_TABLES, *VIEW_TABLES))
+        others = [row for row in as_stored(store, "grade_view_choices") if row[1] != b"student"]
+        seen = []
+        for view in (NEXT_TERM, FIRST_TERM, None):
+            store.choose_view("student", view)
+            seen.append(
+                (
+                    {table: as_stored(store, table) for table in GRADEBOOK_TABLES} == grades,
+                    closed_world(files, leaving_out=(*GRADEBOOK_TABLES, *VIEW_TABLES)) == world,
+                    [r for r in as_stored(store, "grade_view_choices") if r[1] != b"student"]
+                    == others,
+                    store.view_of("student"),
+                )
+            )
+
+    assert seen == [
+        (True, True, True, NEXT_TERM),
+        (True, True, True, FIRST_TERM),
+        (True, True, True, None),
+    ]
 
 
 def test_g_i8_a_retry_writes_nothing_and_returns_the_recorded_outcome(
@@ -976,28 +1064,34 @@ EARLIER_YEAR = draft_of(
 
 def test_g_i18_no_grade_write_changes_the_current_context(tmp_path: pathlib.Path) -> None:
     """After the first setup confirms the year and term, every grade write, imports for another
-    term and another year included, leaves the current context as the parent chose it."""
+    term and another year included, leaves the current context as the parent chose it: only a
+    parent's explicit choice of the current term changes it."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     steps = [
         *every_grade_write(store),
         ("another term", lambda: saved_report(save_grade(store, SECOND_TERM, key=NEW_KEY))),
         ("another year", lambda: saved_report(save_grade(store, EARLIER_YEAR, key=NEW_KEY))),
     ]
+    first: list[tuple[object, ...]] = []
     chosen: list[tuple[object, ...]] = []
-    seen = []
+    changed_by = []
     for label, write in steps:
         write()
         now = as_stored(store, "grade_context")
-        if not chosen:
+        if not first:
+            first = chosen = now
+        elif now != chosen:
+            changed_by.append((label, [row[1:4] for row in now]))
             chosen = now
-        else:
-            seen.append((label, now == chosen))
     years = store._connection.execute("SELECT label FROM grade_years ORDER BY label").fetchall()
     store.close()
 
-    assert [row[1:4] for row in chosen] == [(YEAR.encode(), b"T1", b"parent")]
-    assert seen
-    assert seen == [(label, True) for label, _ in seen]
+    assert [row[1:4] for row in first] == [(YEAR.encode(), b"T1", b"parent")]
+    assert changed_by == [
+        (CURRENT_TERM_CHOSEN[0], [(YEAR.encode(), b"T2", b"parent")]),
+        (CURRENT_TERM_CHOSEN[1], [(YEAR.encode(), b"T1", b"parent")]),
+    ]
+    assert len(steps) > len(changed_by) + 2
     assert years == [("2025-2026",), (YEAR,)]
 
 

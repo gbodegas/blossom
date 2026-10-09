@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""The grade pages: adding a report by pasting it, its review, its save, and the save's outcome.
+"""The grade pages: adding a report by pasting it, its review, its save, the save's outcome,
+Grades, and class details.
 
 Every family grade route is a parent's. With sign-in on, the gate holds them to a signed-in
 parent. With sign-in off, the router's own dependency holds them to the computer running
@@ -14,6 +15,12 @@ address or a log. A save checks the page against the record and writes once or n
 outcome is read again by acceptance ID behind the same checks as any family request. The student
 line is shown as read and compared only through its keyed form, under the key drawn from the
 household secret: read at startup with sign-in on, and at the first review with sign-in off.
+
+Grades and class details read alone. Her pages, under ``/student/grades``, are any viewer's; the
+family's, under ``/parent/grades``, are a parent's, with the controls a parent reads. Each viewer
+keeps one remembered term, which steers only the term Grades opens on; class details names its
+term by its place in the class's year in its address. A parent's choice of the current term
+changes the household's context alone, compared and set, and leaves every remembered term.
 """
 
 import asyncio
@@ -23,6 +30,7 @@ import logging
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
+from datetime import date, datetime, tzinfo
 from typing import Annotated, Final, Literal, cast, get_args
 
 from fastapi import APIRouter, Depends, Request
@@ -30,6 +38,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.requests import Request as StarletteRequest
 
 from blossom.dependencies import ApplicationState, get_application_state
+from blossom.grades.dates import due_date_of
 from blossom.grades.draft import (
     HEX_KEY,
     GradeCategory,
@@ -50,6 +59,8 @@ from blossom.grades.review import (
     AlreadyRecorded,
     Cell,
     ChoiceFacts,
+    CurrentValue,
+    CurrentValues,
     GradeAnswers,
     GradeReportSaved,
     GradeReview,
@@ -80,14 +91,23 @@ from blossom.grades.text_reader import NotRead, read_grade_report, reading_compl
 from blossom.household import UnreadableHouseholdSecret, read_authority, secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes.forms import fields_of
-from blossom.routes.student import templates
+from blossom.routes.student import parent_reads, templates, viewer_of
 from blossom.stores.gradebook import (
     ACCEPTANCE_ID,
     CLASS_ID,
     RESULT_ID,
     REVISION_MAX,
+    ClassReport,
     ConfirmedBy,
+    ContextChanged,
+    ContextNotOnRecord,
+    GradebookRecords,
+    GradeReportNotSaved,
     GradeTransactionLost,
+    Term,
+    TermNotOnRecord,
+    Viewer,
+    ViewNotOnRecord,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
 
@@ -1714,5 +1734,583 @@ def saved_report(acceptance_id: str, request: Request, state: State) -> Response
             "recorded": recorded,
             "lines": outcome_lines(recorded.saved),
             "name_said": NAME_CONFIRMED if name_confirmed(recorded) else None,
+            "class_link": class_link(state, recorded),
+            "grades": GRADES,
         },
     )
+
+
+def class_link(state: ApplicationState, recorded: RecordedSave) -> str | None:
+    """The address of class details of the class and term a save went into, by the term's place
+    in the class's year; None when the term isn't on record."""
+    terms = state.project_state.terms_of_year(recorded.year)
+    if recorded.term not in terms:
+        return None
+    n = terms.index(recorded.term) + 1
+    return CLASS_AT.format(base=GRADES, class_id=recorded.class_id, n=n)
+
+
+# ------------------------------------------------------------- Grades and class details
+
+GRADES: Final = "/parent/grades"
+HER_GRADES: Final = "/student/grades"
+CURRENT_TERM: Final = "/parent/grades/current-term"
+CLASS_AT: Final = "{base}/classes/{class_id}/terms/{n}"
+FOLLOW_CURRENT: Final = "current"
+"""The chooser's value for following the current term."""
+VIEW_FIELDS: Final = frozenset({"view"})
+CONTEXT_FIELDS: Final = frozenset({"shown", "term"})
+POSITION: Final = re.compile(r"[1-9][0-9]{0,3}")
+"""A term's place in its class's year, from 1, as an address writes it."""
+
+NO_REPORTS_YET: Final = "No grade reports yet."
+ADD_ONE: Final = "Add one to start."
+TERM_NOT_ON_RECORD: Final = (
+    "That term isn't on record. Nothing was saved. Choose a term from the list."
+)
+CONTEXT_CHANGED: Final = (
+    "The current term changed while this page was open. Nothing was saved. "
+    "Check the current term again."
+)
+CONTEXT_UNKNOWN: Final = (
+    "Blossom couldn't tell whether the current term changed. Check the current term again."
+)
+CLASS_NOT_ON_RECORD: Final = "Blossom has no record for this class and term."
+NO_REPORT_ADDED: Final = "No grade report added"
+UNITS: Final = (
+    "",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+)
+"""The counts below twenty, spelled."""
+TENS: Final = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+"""Each ten from twenty up, spelled."""
+SCALES: Final = (
+    (10**12, "trillion"),
+    (10**9, "billion"),
+    (10**6, "million"),
+    (1000, "thousand"),
+    (100, "hundred"),
+)
+"""The words for counts of a hundred and more, largest first."""
+PLACE_WORDS: Final = {
+    "one": "first",
+    "two": "second",
+    "three": "third",
+    "five": "fifth",
+    "eight": "eighth",
+    "nine": "ninth",
+    "twelve": "twelfth",
+}
+"""The spelled counts whose place word isn't the count with "th" after it."""
+
+
+def spelled(count: int) -> str:
+    """A positive count in words, as "twenty-one" or "one hundred one"."""
+    for size, word in SCALES:
+        if count >= size:
+            rest = count % size
+            return f"{spelled(count // size)} {word}" + (f" {spelled(rest)}" if rest else "")
+    if count < len(UNITS):
+        return UNITS[count]
+    rest = count % 10
+    return TENS[count // 10] + (f"-{UNITS[rest]}" if rest else "")
+
+
+def ordinal(count: int) -> str:
+    """A positive count's place in words, as "eleventh", "twenty-first" or "one hundredth"."""
+    if count < 1:
+        msg = "a place is a positive count"
+        raise ValueError(msg)
+    words = spelled(count)
+    cut = max(words.rfind(" "), words.rfind("-")) + 1
+    last = words[cut:]
+    if last in PLACE_WORDS:
+        place = PLACE_WORDS[last]
+    elif last.endswith("y"):
+        place = f"{last[:-1]}ieth"
+    else:
+        place = f"{last}th"
+    return words[:cut] + place
+
+
+student_router = APIRouter(prefix="/student/grades")
+
+
+def term_named(term: Term) -> str:
+    """A term as a page names it: ``T1 · 2026-2027``."""
+    return f"{term[1]} · {term[0]}"
+
+
+def term_sent(term: Term) -> str:
+    """A term as a form sends it: the school year, a space, the term."""
+    return f"{term[0]} {term[1]}"
+
+
+def term_posted(value: str) -> Term | None:
+    """The term a form sent, or None when the value isn't one: a school year, then a term."""
+    year, _, term = value.partition(" ")
+    return (year, term) if is_school_year(year) and term else None
+
+
+def spoken_date(day: date) -> str:
+    """A day as a page says it: ``September 30``."""
+    return f"{day.strftime('%B')} {day.day}"
+
+
+def spoken_day(moment: str, zone: tzinfo) -> str:
+    """A stored moment's day where the household is: ``September 30``."""
+    return spoken_date(datetime.fromisoformat(moment).astimezone(zone).date())
+
+
+def report_names(reports: tuple[ClassReport, ...], zone: tzinfo) -> dict[str, str]:
+    """Each report as a sentence names it: "report added September 30", with its place among
+    the reports added that day when it shares one, by acceptance order. A report an action made
+    carries its capture's name and the day it was made current."""
+    imported = [report for report in reports if report.acted_at is None]
+    days = {report.report_id: spoken_day(report.imported_at, zone) for report in imported}
+    names: dict[str, str] = {}
+    of_capture: dict[str, str] = {}
+    for report in imported:
+        day = days[report.report_id]
+        same_day = [other.report_id for other in imported if days[other.report_id] == day]
+        place = same_day.index(report.report_id)
+        named = f"{ordinal(place + 1)} " if place else ""
+        names[report.report_id] = f"{named}report added {day}"
+        of_capture[report.latest_of_capture] = names[report.report_id]
+    for report in reports:
+        if report.acted_at is not None:
+            source = of_capture.get(
+                report.latest_of_capture, f"report added {spoken_day(report.imported_at, zone)}"
+            )
+            made = spoken_day(report.acted_at, zone)
+            names[report.report_id] = f"{source}, made current {made}"
+    return names
+
+
+def as_line(name: str) -> str:
+    """A report's name as a line of its own: "Report added September 30 · Made current
+    October 8"."""
+    line = name.replace(", made current ", " · Made current ")
+    return line[:1].upper() + line[1:]
+
+
+def as_percent(text: str) -> str:
+    """A percent the school reported, as written, with its sign."""
+    return text if text.endswith("%") else f"{text}%"
+
+
+def cell_text(cell: Cell, what: str) -> str:
+    """A cell as written, or the words for its presence."""
+    return cell[1] if cell[0] is Presence.REPORTED else presence_words(what, cell)
+
+
+ABSENT_ALIKE: Final = frozenset({Presence.BLANK, Presence.NOT_CAPTURED})
+"""The presences a line names once when every cell of it holds the same one."""
+
+
+def absent_alike(*cells: Cell) -> Cell | None:
+    """The first of ``cells`` when all were left blank, or all are not in the copy; None when a
+    line has to say each of them."""
+    first = cells[0][0]
+    if first in ABSENT_ALIKE and all(cell[0] is first for cell in cells):
+        return cells[0]
+    return None
+
+
+def as_said(cell: Cell, label: str) -> str:
+    """A percent cell of a line: as written, with its sign, or the review's words for a cell
+    under ``label`` that wasn't reported."""
+    if cell[0] is Presence.REPORTED:
+        return as_percent(cell[1])
+    return described(*cell, label)
+
+
+def term_grade(value: CurrentValue) -> str:
+    """The school-reported term grade: the percent and the letter, each as written or in the
+    review's words for its presence; one presence for the line when both share a blank or
+    uncaptured one."""
+    percent, letter = value.cells["percent"], value.cells["letter"]
+    alike = absent_alike(percent, letter)
+    if alike is not None:
+        return presence_words("Term grade", alike)
+    said = (as_said(percent, "percent"), described(*letter, "letter grade"))
+    return "School-reported grade " + " · ".join(said)
+
+
+def newest_current(reports: tuple[ClassReport, ...]) -> ClassReport | None:
+    """The current report with the highest acceptance order, if any."""
+    current = [report for report in reports if report.use == "current"]
+    return current[-1] if current else None
+
+
+@dataclass(frozen=True)
+class TermSummary:
+    """A class and term's grade lines: the term grade and the report that supplied it."""
+
+    grade: str
+    supplied_by: str
+
+
+def term_summary(values: CurrentValues, names: dict[str, str]) -> TermSummary | None:
+    """The term grade, named by the report that supplied it; None when no current report
+    supplied one."""
+    if values.term is None:
+        return None
+    supplied = as_line(names.get(values.term.report_id, "report"))
+    return TermSummary(term_grade(values.term), supplied)
+
+
+@dataclass(frozen=True)
+class ClassRow:
+    """A class on Grades: its name, its details' address when the term is on record, and its
+    term grade when a current report supplied one."""
+
+    name: str
+    link: str | None
+    reported: bool
+    summary: TermSummary | None
+
+
+def class_rows(store: GradebookRecords, term: Term, base: str, zone: tzinfo) -> list[ClassRow]:
+    """Each class of the open term's year, by name, with its term grade in that term."""
+    year, label = term
+    terms = store.terms_of_year(year)
+    position = terms.index(label) + 1 if label in terms else None
+    rows = []
+    for one in store.classes_in(year, label):
+        link = None
+        if position is not None:
+            link = CLASS_AT.format(base=base, class_id=one.class_id, n=position)
+        summary = None
+        if one.reported:
+            read = store.class_term(one.class_id, label)
+            summary = term_summary(read.current, report_names(read.reports, zone))
+        rows.append(ClassRow(one.name, link, one.reported, summary))
+    return rows
+
+
+def grades_page(
+    request: Request, state: ApplicationState, *, said: str | None = None, status_code: int = 200
+) -> Response:
+    """Grades for whoever reads: the term the viewer chose, else the current one, each class's
+    term grade in it, the chooser, and a parent's controls in a parent's voice. A read alone."""
+    store = state.project_state
+    contexts = store.grade_contexts()
+    view = store.view_of(cast(Viewer, viewer_of(request)))
+    open_term = view or contexts.current
+    family = parent_reads(request)
+    base = GRADES if family else HER_GRADES
+    terms = list(contexts.terms)
+    if contexts.current is not None and contexts.current not in terms:
+        terms.append(contexts.current)
+    rows = class_rows(store, open_term, base, state.clock.zone) if open_term else []
+    make_current = None
+    if (
+        family
+        and open_term is not None
+        and contexts.current is not None
+        and open_term != contexts.current
+        and open_term in contexts.terms
+    ):
+        make_current = {
+            "shown": term_sent(contexts.current),
+            "term": term_sent(open_term),
+            "named": term_named(open_term),
+        }
+    showing = view is not None and contexts.current is not None and view != contexts.current
+    chooser = []
+    if len(terms) > 1:
+        chooser = [(term_sent(term), term_named(term), term == view) for term in terms]
+    return templates.TemplateResponse(
+        request,
+        "grades.html",
+        {
+            "family_tree": request.url.path.startswith(GRADES),
+            "family": family,
+            "said": said,
+            "open_term": term_named(open_term) if open_term else None,
+            "rows": rows,
+            "reported": any(row.reported for row in rows),
+            "chooser": chooser,
+            "following": view is None,
+            "view_action": f"{base}/view",
+            "showing": showing,
+            "current_term": term_named(contexts.current) if contexts.current else None,
+            "make_current": make_current,
+            "add": ADD,
+            "current_action": CURRENT_TERM,
+            "follow": FOLLOW_CURRENT,
+            "no_reports": NO_REPORTS_YET,
+            "add_one": ADD_ONE,
+            "no_report_added": NO_REPORT_ADDED,
+            "marks": state.settings.page_marks,
+        },
+        status_code=status_code,
+    )
+
+
+@student_router.get("", response_class=HTMLResponse)
+def her_grades(request: Request, state: State) -> Response:
+    """Route 5: Grades, in the voice of whoever reads."""
+    return grades_page(request, state)
+
+
+@family_router.get("", response_class=HTMLResponse)
+def family_grades(request: Request, state: State) -> Response:
+    """Route 5p: Grades in a parent's voice."""
+    return grades_page(request, state)
+
+
+async def chosen_view(request: Request, state: ApplicationState, base: str) -> Response:
+    """A viewer's term for Grades, kept as their own row: a term on record, or the current one
+    followed. Anything else is refused and nothing is written."""
+    fields, whole = await fields_of(request, VIEW_FIELDS)
+    value = fields.get("view", "")
+    view = None if value == FOLLOW_CURRENT else term_posted(value)
+    if not whole or (value != FOLLOW_CURRENT and view is None):
+        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+    try:
+        async with state.decision_lock:
+            state.project_state.choose_view(cast(Viewer, viewer_of(request)), view)
+    except ViewNotOnRecord:
+        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+    return RedirectResponse(base, status_code=303)
+
+
+@student_router.post("/view", response_class=HTMLResponse)
+async def her_view(request: Request, state: State) -> Response:
+    """Route 6: the reader's term for Grades, from her pages."""
+    return await chosen_view(request, state, HER_GRADES)
+
+
+@family_router.post("/view", response_class=HTMLResponse)
+async def family_view(request: Request, state: State) -> Response:
+    """Route 7: the reader's term for Grades, from the family's pages."""
+    return await chosen_view(request, state, GRADES)
+
+
+@family_router.post("/current-term", response_class=HTMLResponse)
+async def current_term(request: Request, state: State) -> Response:
+    """Route 8: a parent's choice of the current term, applied only while the term the page
+    showed as current still is. Every remembered term stays as it was."""
+    fields, whole = await fields_of(request, CONTEXT_FIELDS)
+    shown = term_posted(fields.get("shown", ""))
+    chosen = term_posted(fields.get("term", ""))
+    if not whole or shown is None or chosen is None:
+        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+    try:
+        async with state.decision_lock:
+            outcome = state.project_state.set_current_context(shown, chosen, role_of(state))
+    except TermNotOnRecord:
+        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+    except GradeTransactionLost as error:
+        logger.warning("The current term may not have been set: %s", type(error).__name__)
+        return grades_page(request, state, said=CONTEXT_UNKNOWN, status_code=500)
+    except GradeReportNotSaved as error:
+        logger.warning("The current term was not set: %s", type(error).__name__)
+        return grades_page(request, state, said=NOT_SAVED, status_code=500)
+    if isinstance(outcome, ContextChanged):
+        return grades_page(request, state, said=CONTEXT_CHANGED, status_code=409)
+    if isinstance(outcome, ContextNotOnRecord):
+        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+    return RedirectResponse(GRADES, status_code=303)
+
+
+@dataclass(frozen=True)
+class ResultShown:
+    """A result on class details: its title and category, its score as reported, its due date,
+    the school's status for it or the words for its presence, where it was last shown, and its
+    school record details."""
+
+    title: str
+    category: str
+    score: str
+    due: str
+    status: str
+    showing: list[str]
+    record: list[str]
+    cues: list[str]
+
+
+def score_of(value: CurrentValue) -> str:
+    """The school score: points out of the maximum, then the percent the school reported, each
+    as written or in the review's words for its presence; one presence for the line when all
+    three share a blank or uncaptured one."""
+    points, most = value.cells["points"], value.cells["max_points"]
+    average = value.cells["average"]
+    alike = absent_alike(points, most, average)
+    if alike is not None:
+        return presence_words("Score", alike)
+    return (
+        f"School score: {described(*points, None)} / {described(*most, 'maximum')}"
+        f" · {as_said(average, 'average')}"
+    )
+
+
+def due_of(value: CurrentValue, resolved: date | None, names: dict[str, str]) -> str:
+    """A result's due date: the day, resolved under the month on record, or as written."""
+    if resolved is not None:
+        due = f"Due {spoken_date(resolved)}"
+    elif value.due is None:
+        due = "Due date not captured"
+    elif value.due.cell[0] is Presence.REPORTED:
+        due = f"Due date shown: {value.due.cell[1]}"
+    else:
+        due = presence_words("Due date", value.due.cell)
+    if value.due is not None and value.due.report.report_id != value.report_id:
+        due += f", from the {names.get(value.due.report.report_id, 'report')}"
+    return due
+
+
+def result_shown(
+    value: CurrentValue,
+    *,
+    year: str,
+    first_month: int | None,
+    newest: ClassReport | None,
+    names: dict[str, str],
+) -> tuple[date | None, ResultShown]:
+    """A result's lines for class details, with its due date when it resolves under the month
+    on record."""
+    cells = value.cells
+    resolved = None if value.due is None else due_date_of(value.due.cell, year, first_month)
+    score = score_of(value)
+    if value.last_shown is not None and value.last_shown.report_id != value.report_id:
+        score += f", from the {names.get(value.report_id, 'report')}"
+    showing = []
+    last = value.last_shown
+    if last is not None and newest is not None and last.report_id != newest.report_id:
+        showing.append(f"Last shown in the {names.get(last.report_id, 'report')}")
+    if value.not_shown is not None:
+        showing.append(f"Not shown in the {names.get(value.not_shown.report_id, 'report')}")
+    record = [f"{label}: {record_text(cells[field])}" for field, label in RECORD_FIELDS]
+    cues = []
+    if any(
+        cells[field][0] is Presence.REPORTED and adjusts(cells[field][1]) for field in ADJUSTING
+    ):
+        cues.append("Adjusted")
+    if cells["note"][0] is Presence.REPORTED and cells["note"][1].strip():
+        cues.append("Teacher's note")
+    status = cells["status"]
+    return resolved, ResultShown(
+        title=cell_text(cells["assignment"], "Title"),
+        category=cell_text(cells["category"], "Category"),
+        score=score,
+        due=due_of(value, resolved, names),
+        status=(
+            f"Gradebook status: {status[1]}"
+            if status[0] is Presence.REPORTED
+            else presence_words("Gradebook status", status)
+        ),
+        showing=showing,
+        record=record,
+        cues=cues,
+    )
+
+
+def category_line(value: CurrentValue) -> str:
+    """A category as the school reported it: its name, weight and average, each as written or
+    in the words for the presence its cell holds."""
+    name, weight, average = (value.cells[field] for field in ("name", "weight", "average"))
+    said = [
+        f"{what} {cell[1]}" if cell[0] is Presence.REPORTED else presence_words(what, cell)
+        for what, cell in (("weight", weight), ("average", average))
+    ]
+    return f"{cell_text(name, 'Category name')}: {', '.join(said)}"
+
+
+def class_page(request: Request, state: ApplicationState, class_id: str, n: str) -> Response:
+    """Class details of her class in the term at place ``n`` of its year: the term grade, each
+    result by due date, newest first, the dates not confirmed apart, and the term's reports. A
+    read alone; a class or place not on record is a page saying so."""
+    store = state.project_state
+    base = GRADES if parent_reads(request) else HER_GRADES
+    context: dict[str, object] = {
+        "family_tree": request.url.path.startswith(GRADES),
+        "grades": base,
+        "marks": state.settings.page_marks,
+    }
+    named = store.class_named(class_id)
+    terms = store.terms_of_year(named.year) if named is not None else ()
+    if named is None or not POSITION.fullmatch(n) or int(n) > len(terms):
+        return templates.TemplateResponse(
+            request,
+            "grade_class.html",
+            {**context, "missing": CLASS_NOT_ON_RECORD},
+            status_code=404,
+        )
+    term = terms[int(n) - 1]
+    read = store.class_term(class_id, term)
+    reports, values = read.reports, read.current
+    names = report_names(reports, state.clock.zone)
+    newest = newest_current(reports)
+    first_month = store.first_month_of(named.year)
+    dated: list[tuple[date, str, ResultShown]] = []
+    undated: list[ResultShown] = []
+    for value in values.results.values():
+        resolved, shown = result_shown(
+            value, year=named.year, first_month=first_month, newest=newest, names=names
+        )
+        if resolved is None:
+            undated.append(shown)
+        else:
+            dated.append((resolved, folded(shown.title).casefold(), shown))
+    dated.sort(key=lambda item: (-item[0].toordinal(), item[1]))
+    undated.sort(key=lambda shown: folded(shown.title).casefold())
+    uses = {report.report_id: report.use for report in reports}
+    captures: dict[str, ClassReport] = {}
+    for report in reports:
+        captures.setdefault(report.latest_of_capture, report)
+    return templates.TemplateResponse(
+        request,
+        "grade_class.html",
+        {
+            **context,
+            "missing": None,
+            "name": named.name,
+            "term": term_named((named.year, term)),
+            "reported": bool(reports),
+            "summary": term_summary(values, names),
+            "no_report_added": NO_REPORT_ADDED,
+            "dated": [shown for _, _, shown in dated],
+            "undated": undated,
+            "categories": [category_line(value) for value in values.categories.values()],
+            "reports": [
+                (
+                    as_line(names.get(first.report_id, "report")),
+                    "Current" if uses[latest] == "current" else "Kept as an earlier report",
+                )
+                for latest, first in captures.items()
+            ],
+        },
+    )
+
+
+@student_router.get("/classes/{class_id}/terms/{n}", response_class=HTMLResponse)
+def her_class(class_id: str, n: str, request: Request, state: State) -> Response:
+    """Route 9: class details, in the voice of whoever reads."""
+    return class_page(request, state, class_id, n)
+
+
+@family_router.get("/classes/{class_id}/terms/{n}", response_class=HTMLResponse)
+def family_class(class_id: str, n: str, request: Request, state: State) -> Response:
+    """Route 9p: class details in a parent's voice."""
+    return class_page(request, state, class_id, n)

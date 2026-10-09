@@ -35,6 +35,8 @@ from blossom.stores import gradebook
 from blossom.stores.gradebook import (
     AlreadyDeleted,
     ClassTermDeleted,
+    ContextSet,
+    ContextStood,
     CorrectionRecorded,
     DeletePreview,
     FirstMonthCorrected,
@@ -945,6 +947,61 @@ def test_a_refused_first_month_correction_leaves_nothing_of_it(
         assert assignments(store) == rows + 2 * (attempt + 1)
     assert again() == FirstMonthCorrected(YEAR, 9)
     assert again() == FirstMonthStood(YEAR, 9)
+
+
+CURRENT_TERM: tuple[Site, ...] = ((sqlite3.SQLITE_UPDATE, "grade_context"),)
+"""The one write statement of a parent's choice of the current term: the context alone."""
+
+
+def test_a_current_term_choice_writes_exactly_the_named_statements(
+    opened: Callable[[str], ProjectStateStore],
+) -> None:
+    store = opened("first use")
+    for draft in (WREN, OTHER_TERM):
+        assert isinstance(save_grade(store, draft, key=KEY), GradeReportSaved)
+    seen: set[Site] = set()
+
+    def note(action: int, table: str | None, *_: object) -> int:
+        if action in WRITES and table is not None:
+            seen.add((action, table))
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(note)
+    outcome = store.set_current_context((YEAR, "T1"), (YEAR, "T2"), "parent")
+    store._connection.set_authorizer(None)
+
+    assert outcome == ContextSet((YEAR, "T2"))
+    assert seen == set(CURRENT_TERM)
+
+
+def test_a_refused_current_term_choice_leaves_nothing_of_it(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path
+) -> None:
+    """Refused three times inside a caller's transaction, the choice leaves the file as it was,
+    with the caller's writes kept; lifted, the same page sets the term once, and sent again it
+    stands."""
+    store = opened("first use")
+    for draft in (WREN, OTHER_TERM):
+        assert isinstance(save_grade(store, draft, key=KEY), GradeReportSaved)
+    before, rows = world(path), assignments(store)
+
+    def again() -> object:
+        return store.set_current_context((YEAR, "T1"), (YEAR, "T2"), "parent")
+
+    for attempt in range(3):
+        store._connection.set_authorizer(refusing(*CURRENT_TERM))
+        with store.comparing_and_writing():
+            unrelated(store, f"before-{attempt}")
+            with pytest.raises(GradeReportNotSaved, match="current term could not be set"):
+                again()
+            unrelated(store, f"after-{attempt}")
+        store._connection.set_authorizer(None)
+
+        assert not store._connection.in_transaction
+        assert world(path) == before
+        assert assignments(store) == rows + 2 * (attempt + 1)
+    assert again() == ContextSet((YEAR, "T2"))
+    assert again() == ContextStood((YEAR, "T2"))
 
 
 DELETE: tuple[Site, ...] = (

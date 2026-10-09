@@ -1,0 +1,78 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% set page = "parent-grades" if family_tree else "grades" %}
+{% block title %}Blossom - Grades{% endblock %}
+{#
+  Grades for whoever reads: the term the reader chose, else the current one, and each class of
+  its year with the term grade the school reported and the report that supplied it. A reader
+  who chose another term is told which term is current, with a press that follows it again. A
+  parent's voice adds the way to add a report and, on a term other than the current one, the
+  choice of it as the current term, a form of its own. No name appears here.
+#}
+{% block content %}
+  <h1>Grades</h1>
+  {% if said %}
+    <p class="problem" role="alert" id="problem">{{ said }}</p>
+  {% endif %}
+  {% if showing %}
+    <p class="note">Showing {{ open_term }}. Your household's current term in Blossom is {{ current_term }}.</p>
+    <form method="post" action="{{ view_action }}">
+      <input type="hidden" name="view" value="{{ follow }}">
+      <div class="actions">
+        <button type="submit" class="secondary">Show the current term</button>
+      </div>
+    </form>
+  {% endif %}
+  {% if make_current %}
+    <form method="post" action="{{ current_action }}">
+      <input type="hidden" name="shown" value="{{ make_current.shown }}">
+      <input type="hidden" name="term" value="{{ make_current.term }}">
+      <div class="actions">
+        <button type="submit" class="secondary make-current">Use {{ make_current.named }} as the household's current term</button>
+      </div>
+    </form>
+  {% endif %}
+  {% if chooser %}
+    <form method="post" action="{{ view_action }}">
+      <div class="field">
+        <label for="term-view">School year and term</label>
+        <select id="term-view" name="view">
+          <option value="{{ follow }}"{% if following %} selected{% endif %}>Current term</option>
+          {% for value, named, chosen in chooser %}
+            <option value="{{ value }}"{% if chosen %} selected{% endif %}>{{ named }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="actions">
+        <button type="submit" class="secondary">Show</button>
+      </div>
+    </form>
+  {% endif %}
+  {% if open_term %}
+    <h2>{{ open_term }}</h2>
+    {% if reported %}
+      {% for row in rows %}
+        <section class="panel grade-card" aria-labelledby="class-{{ loop.index }}">
+          <h3 id="class-{{ loop.index }}"><span class="authored-text">{{ row.name }}</span></h3>
+          {% if row.summary %}
+            <p>{{ row.summary.grade }}</p>
+            <p class="note">{{ row.summary.supplied_by }}</p>
+          {% elif not row.reported %}
+            <p class="note">{{ no_report_added }}</p>
+          {% endif %}
+          {% if row.link %}
+            <p class="details-link"><a href="{{ row.link }}"><span class="authored-text">See {{ row.name }}</span></a></p>
+          {% endif %}
+        </section>
+      {% endfor %}
+    {% else %}
+      <p>No grade reports for {{ open_term }}.</p>
+    {% endif %}
+  {% else %}
+    <p>{{ no_reports }}{% if family %} {{ add_one }}{% endif %}</p>
+  {% endif %}
+  {% if family %}
+    <p class="return"><a href="{{ add }}">Add grade report</a></p>
+  {% endif %}
+{% endblock %}

@@ -144,6 +144,20 @@ GRADEBOOK_TABLES: Final = (
 )
 """Every table a grade write may change. Every other table of the file, and the checkpoint and
 trace files, are a closed world no grade write touches."""
+VIEW_TABLES: Final = ("grade_view_choices",)
+"""The tables only a viewer's own page writes: each viewer's remembered term on Grades. They sit
+outside ``GRADEBOOK_TABLES``, in the closed world no grade write touches."""
+Viewer = Literal["student", "parent", "anyone"]
+"""Who a remembered term belongs to: her, a signed-in parent, or anyone with the sign-in off."""
+CREATE_VIEW_CHOICES: Final = """
+CREATE TABLE IF NOT EXISTS grade_view_choices (
+    student_id TEXT NOT NULL,
+    viewer TEXT NOT NULL CHECK (viewer IN ('student', 'parent', 'anyone')),
+    year_label TEXT NOT NULL,
+    term_label TEXT NOT NULL,
+    PRIMARY KEY (student_id, viewer)
+)
+"""
 TEXT_KIND: Final = "grade_text"
 """The kind of an acceptance of a pasted report, whose source key is its capture key."""
 
@@ -629,6 +643,44 @@ RECORDED_SAVE: Final = (
     "WHERE a.student_id = ? AND a.acceptance_id = ? AND a.kind = ?"
 )
 CURRENT_CONTEXT: Final = "SELECT year_label, term_label FROM grade_context WHERE student_id = ?"
+CHANGE_CONTEXT: Final = (
+    "UPDATE grade_context SET year_label = ?, term_label = ?, set_by = ?, set_at = ? "
+    "WHERE student_id = ? AND year_label = ? AND term_label = ?"
+)
+TERMS_ON_RECORD: Final = "SELECT year_label, label, made_at FROM grade_terms WHERE student_id = ?"
+TERM_ON_RECORD: Final = (
+    "SELECT 1 FROM grade_terms WHERE student_id = ? AND year_label = ? AND label = ?"
+)
+CLASSES_REPORTED: Final = (
+    "SELECT DISTINCT class_id FROM grade_reports WHERE student_id = ? AND term_label = ?"
+)
+CLASS_REPORTS: Final = (
+    "SELECT r.report_id, r.acceptance_order, r.use, r.imported_at, a.acted_at, ("
+    "SELECT latest.report_id FROM grade_reports AS latest "
+    "WHERE latest.student_id = r.student_id AND latest.class_id = r.class_id "
+    "AND latest.term_label = r.term_label AND latest.source_key = r.source_key "
+    "ORDER BY latest.acceptance_order DESC LIMIT 1) "
+    "FROM grade_reports AS r LEFT JOIN grade_current_actions AS a "
+    "ON a.report_made = r.report_id AND a.student_id = r.student_id "
+    "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? "
+    "ORDER BY r.acceptance_order"
+)
+CLASS_NAMED: Final = (
+    "SELECT year_label, display_name FROM grade_classes WHERE student_id = ? AND class_id = ?"
+)
+REPORT_SCOPE: Final = (
+    "SELECT class_id, term_label, source_key FROM grade_reports "
+    "WHERE student_id = ? AND report_id = ?"
+)
+VIEW_OF: Final = (
+    "SELECT year_label, term_label FROM grade_view_choices WHERE student_id = ? AND viewer = ?"
+)
+CHOOSE_VIEW: Final = (
+    "INSERT INTO grade_view_choices (student_id, viewer, year_label, term_label) "
+    "VALUES (?, ?, ?, ?) ON CONFLICT (student_id, viewer) DO UPDATE SET "
+    "year_label = excluded.year_label, term_label = excluded.term_label"
+)
+FOLLOW_CURRENT: Final = "DELETE FROM grade_view_choices WHERE student_id = ? AND viewer = ?"
 SET_CONTEXT: Final = (
     "INSERT INTO grade_context (student_id, year_label, term_label, set_by, set_at) "
     "VALUES (?, ?, ?, ?, ?)"
@@ -1023,6 +1075,10 @@ def _first_month_refused(error: BaseException) -> Exception:
     return GradeReportNotSaved(f"the first month could not be corrected: {type(error).__name__}")
 
 
+def _context_refused(error: BaseException) -> Exception:
+    return GradeReportNotSaved(f"the current term could not be set: {type(error).__name__}")
+
+
 def _correction_refused(error: BaseException) -> Exception:
     return GradeReportNotSaved(f"the value could not be corrected: {type(error).__name__}")
 
@@ -1134,6 +1190,107 @@ class ClassTermDeleted:
 
 
 DeleteOutcome = ClassTermDeleted | AlreadyDeleted | DeleteReturned | NothingToDelete
+
+Term = tuple[str, str]
+"""A school year and a term within it, as the record keeps them: ``("2026-2027", "T1")``."""
+
+
+class ViewNotOnRecord(ValueError):
+    """A remembered term that is neither the current one nor a term on record for her; nothing
+    was written."""
+
+
+class TermNotOnRecord(ValueError):
+    """A term chosen as current that isn't on record for her; nothing was written."""
+
+
+@dataclass(frozen=True)
+class GradeContexts:
+    """The current year and term, None before the first setup, and every term on record, by
+    school year, then when each term was made, then its label."""
+
+    current: Term | None
+    terms: tuple[Term, ...]
+
+
+@dataclass(frozen=True)
+class ClassInTerm:
+    """A class of the year, and whether the term holds a report for it."""
+
+    class_id: str
+    name: str
+    reported: bool
+
+
+@dataclass(frozen=True)
+class ClassOfYear:
+    """A class by its ID, with its display name and its school year."""
+
+    class_id: str
+    name: str
+    year: str
+
+
+@dataclass(frozen=True)
+class ClassReport:
+    """A report of a class and term: its acceptance order and use, when it was imported, when
+    an action made it (None for an import), and the newest report of its capture."""
+
+    report_id: str
+    order: int
+    use: ReportUse
+    imported_at: str
+    acted_at: str | None
+    latest_of_capture: str
+
+
+@dataclass(frozen=True)
+class ClassTermRead:
+    """Her class and term's reports by acceptance order and each target's current value, read
+    together, so every report a value names is among the reports."""
+
+    reports: tuple[ClassReport, ...]
+    current: CurrentValues
+
+
+@dataclass(frozen=True)
+class ReportScope:
+    """A report's class, term and source key."""
+
+    class_id: str
+    term: str
+    source_key: str
+
+
+@dataclass(frozen=True)
+class ContextSet:
+    """The current year and term are ``context`` now, set by this choice."""
+
+    context: Term
+
+
+@dataclass(frozen=True)
+class ContextStood:
+    """The current year and term were ``context`` already, as a page sent again finds them;
+    nothing was written."""
+
+    context: Term
+
+
+@dataclass(frozen=True)
+class ContextChanged:
+    """The current year and term aren't the ones the page showed: ``context`` is on record.
+    Nothing was written."""
+
+    context: Term
+
+
+@dataclass(frozen=True)
+class ContextNotOnRecord:
+    """No year and term are on record yet; nothing was written."""
+
+
+ContextOutcome = ContextSet | ContextStood | ContextChanged | ContextNotOnRecord
 
 CorrectionKind = Literal["parent_assertion", "transcription"]
 
@@ -1290,11 +1447,13 @@ class GradebookRecords:
                 self._grade_depth -= 1
 
     def _create_gradebook_tables(self) -> None:
-        """The tables, and her record on a file without one, in the caller's transaction."""
+        """The tables, the remembered terms' included, and her record on a file without one, in
+        the caller's transaction."""
         self._connection.execute(CREATE_STUDENT)
         self._connection.execute(CREATE_NAME_FORMS)
         for statement in CREATE_REPORT_TABLES:
             self._connection.execute(statement)
+        self._connection.execute(CREATE_VIEW_CHOICES)
         self._tie_acceptances()
         if self._connection.execute(STUDENT_ON_RECORD).fetchone() is None:
             self._connection.execute(MAKE_STUDENT, (new_student_id(), self._stamp()))
@@ -1889,6 +2048,133 @@ class GradebookRecords:
                 return FirstMonthChanged(year, stored)
             self._connection.execute(CORRECT_FIRST_MONTH, (month, by, student_id, year, stored))
             return FirstMonthCorrected(year, month)
+
+    def grade_contexts(self) -> GradeContexts:
+        """The current year and term, a typed setup term with no report included, and every term
+        on record, by school year, then when it was made, then its label. A read alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            current = self._connection.execute(CURRENT_CONTEXT, (student_id,)).fetchone()
+            rows = self._connection.execute(TERMS_ON_RECORD, (student_id,)).fetchall()
+        ordered = sorted(rows, key=lambda row: (str(row[0]), str(row[2]), folded(str(row[1]))))
+        return GradeContexts(
+            current=None if current is None else (str(current[0]), str(current[1])),
+            terms=tuple((str(year), str(label)) for year, label, _ in ordered),
+        )
+
+    def terms_of_year(self, year: str) -> tuple[str, ...]:
+        """Her terms of ``year`` on record, by when each was made, then its label: a term's
+        position here, from 1, is how an address names it. A read alone."""
+        return tuple(term for at, term in self.grade_contexts().terms if at == year)
+
+    def classes_in(self, year: str, term: str) -> tuple[ClassInTerm, ...]:
+        """Each of her classes of ``year``, by name, then ID, and whether ``term`` holds a report
+        for it. A read alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            classes = self._connection.execute(CLASSES_OF_YEAR, (student_id, year)).fetchall()
+            reported = {
+                str(row[0])
+                for row in self._connection.execute(CLASSES_REPORTED, (student_id, folded(term)))
+            }
+        ordered = sorted(classes, key=lambda row: (folded(str(row[1])), str(row[0])))
+        return tuple(
+            ClassInTerm(str(class_id), str(name), str(class_id) in reported)
+            for class_id, name in ordered
+        )
+
+    def class_named(self, class_id: str) -> ClassOfYear | None:
+        """Her class ``class_id``, with its name and year; None when no such class of hers is
+        on record. A read alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            row = self._connection.execute(CLASS_NAMED, (student_id, class_id)).fetchone()
+        return None if row is None else ClassOfYear(class_id, str(row[1]), str(row[0]))
+
+    def class_term(self, class_id: str, term: str) -> ClassTermRead:
+        """Her class and term's reports by acceptance order, each with its use, its import time,
+        its making action's time and its capture's newest report, with each target's current
+        value, under one hold of the store's lock: no grade write lands between them. A read
+        alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            rows = self._connection.execute(
+                CLASS_REPORTS, (student_id, class_id, folded(term))
+            ).fetchall()
+            current = self._class_record(student_id, class_id, folded(term)).current
+        reports = tuple(
+            ClassReport(
+                report_id=str(report_id),
+                order=int(order),
+                use=cast(ReportUse, str(use)),
+                imported_at=str(imported_at),
+                acted_at=None if acted_at is None else str(acted_at),
+                latest_of_capture=str(latest),
+            )
+            for report_id, order, use, imported_at, acted_at, latest in rows
+        )
+        return ClassTermRead(reports=reports, current=current)
+
+    def report_scope(self, report_id: str) -> ReportScope | None:
+        """Her report's class, term and source key; None when no such report of hers is on
+        record. A read alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            row = self._connection.execute(REPORT_SCOPE, (student_id, report_id)).fetchone()
+        return None if row is None else ReportScope(str(row[0]), str(row[1]), str(row[2]))
+
+    def view_of(self, viewer: Viewer) -> Term | None:
+        """The term ``viewer`` chose to see on Grades; None when they follow the current one.
+        A read alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            row = self._connection.execute(VIEW_OF, (student_id, viewer)).fetchone()
+        return None if row is None else (str(row[0]), str(row[1]))
+
+    def choose_view(self, viewer: Viewer, view: Term | None) -> None:
+        """``viewer``'s choice of the term Grades opens on, kept as their row alone: a term that
+        is the current one or on record for her, or None to follow the current one. Any other is
+        ``ViewNotOnRecord``, and nothing is written. Never a grade write."""
+        if viewer not in get_args(Viewer):
+            msg = "a remembered term belongs to her, a parent, or anyone"
+            raise ValueError(msg)
+        with self._lock, self._writing():
+            student_id = self._her_name_record()[0]
+            if view is None:
+                self._connection.execute(FOLLOW_CURRENT, (student_id, viewer))
+                return
+            year, term = view
+            current = self._connection.execute(CURRENT_CONTEXT, (student_id,)).fetchone()
+            on_record = self._connection.execute(TERM_ON_RECORD, (student_id, year, term))
+            if (current is None or (str(current[0]), str(current[1])) != view) and (
+                on_record.fetchone() is None
+            ):
+                raise ViewNotOnRecord(view)
+            self._connection.execute(CHOOSE_VIEW, (student_id, viewer, year, term))
+
+    def set_current_context(self, shown: Term, chosen: Term, role: ConfirmedBy) -> ContextOutcome:
+        """A parent's choice of ``chosen`` as the current year and term, one grade write that
+        compares and sets the context alone: it applies only while ``shown`` is on record, a
+        context already ``chosen`` stands, and a term not on record is ``TermNotOnRecord``.
+        Everyone's remembered term stays as it was."""
+        by = _confirmer(role)
+        with self._grade_write(_context_refused):
+            student_id = self._her_name_record()[0]
+            row = self._connection.execute(CURRENT_CONTEXT, (student_id,)).fetchone()
+            if row is None:
+                return ContextNotOnRecord()
+            stored = (str(row[0]), str(row[1]))
+            if stored == chosen:
+                return ContextStood(stored)
+            if stored != shown:
+                return ContextChanged(stored)
+            on_record = self._connection.execute(TERM_ON_RECORD, (student_id, *chosen))
+            if on_record.fetchone() is None:
+                raise TermNotOnRecord(chosen)
+            self._connection.execute(
+                CHANGE_CONTEXT, (*chosen, by, self._stamp(), student_id, *stored)
+            )
+            return ContextSet(chosen)
 
     def correct_value(
         self,

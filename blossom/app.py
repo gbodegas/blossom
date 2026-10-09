@@ -138,6 +138,7 @@ def create_app(
     app.include_router(note_links.student_router)
     app.include_router(note_links.family_router)
     app.include_router(grades.family_router)
+    app.include_router(grades.student_router)
     app.include_router(school_instructions.router)
     app.include_router(parent.router)
     app.include_router(inbox.router)

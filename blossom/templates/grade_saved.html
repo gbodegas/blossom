@@ -1,7 +1,7 @@
 {# SPDX-License-Identifier: AGPL-3.0-or-later #}
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {% extends "base.html" %}
-{% set page = "parent" %}
+{% set page = "parent-grades" %}
 {% block title %}Blossom - Add grade report{% endblock %}
 {% block content %}
   <h1>Add grade report</h1>
@@ -28,6 +28,10 @@
         <p class="note">Grades open on {{ recorded.context[1] }} · {{ recorded.context[0] }}.</p>
       {% endif %}
     </section>
+    {% if class_link %}
+      <p class="return"><a href="{{ class_link }}"><span class="authored-text">See {{ recorded.class_name }}</span></a></p>
+    {% endif %}
+    <p class="return"><a href="{{ grades }}">Grades</a></p>
     <p class="return"><a href="{{ add }}">Add another report</a></p>
   {% else %}
     <p class="problem" role="alert" id="problem">{{ said }}</p>

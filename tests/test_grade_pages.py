@@ -37,9 +37,17 @@ from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.grades import draft as grade_drafts
 from blossom.grades import review as grade_review
-from blossom.grades.draft import GradeNumber, GradeValue, Presence, capture_key
+from blossom.grades.draft import (
+    GradeNumber,
+    GradeReportDraft,
+    GradeValue,
+    Presence,
+    TermResult,
+    capture_key,
+)
 from blossom.grades.identity import name_form, name_form_key
-from blossom.grades.review import Cell, ItemStatus, ReviewItem
+from blossom.grades.projection import MadeCurrent
+from blossom.grades.review import Cell, CurrentValue, GradeReportSaved, ItemStatus, ReviewItem
 from blossom.grades.text_reader import read_grade_report
 from blossom.household import secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
@@ -47,7 +55,12 @@ from blossom.routes import grades as grade_routes
 from blossom.routes.forms import FormRoute, fields_of
 from blossom.settings import Settings
 from blossom.stores import gradebook
-from blossom.stores.gradebook import GradeReportNotSaved, GradeTransactionLost
+from blossom.stores.gradebook import (
+    VIEW_TABLES,
+    ClassReport,
+    GradeReportNotSaved,
+    GradeTransactionLost,
+)
 from blossom.stores.paths import SECRET_NAME, UnsafeCheckpointPath
 from tests.support import (
     FIXTURE_TIMEZONE,
@@ -57,12 +70,16 @@ from tests.support import (
     THEIRS,
     Chain,
     as_a_browser_sends,
+    as_stored,
+    capture_class,
     closed_world,
+    confirm_current,
     elements_of,
     every_route,
     files_in,
     fixture_settings,
     form_values,
+    grade_answers,
     rules_reaching,
     save_grade,
     signed_in,
@@ -83,6 +100,13 @@ EDIT = "/parent/grades/add/edit"
 CHECK = "/parent/grades/add/check"
 SAVE = "/parent/grades/add/save"
 SAVED = "/parent/grades/saved/{acceptance_id}"
+GRADES = "/parent/grades"
+HER_GRADES = "/student/grades"
+VIEW = "/parent/grades/view"
+HER_VIEW = "/student/grades/view"
+CURRENT_TERM = "/parent/grades/current-term"
+CLASS_AT = "/parent/grades/classes/{class_id}/terms/{n}"
+HER_CLASS_AT = "/student/grades/classes/{class_id}/terms/{n}"
 UNKNOWN = "acceptance-" + "0" * 32
 FAMILY_GRADE_ROUTES = {
     ("GET", ADD),
@@ -91,8 +115,14 @@ FAMILY_GRADE_ROUTES = {
     ("POST", CHECK),
     ("POST", SAVE),
     ("GET", SAVED),
+    ("GET", GRADES),
+    ("POST", VIEW),
+    ("POST", CURRENT_TERM),
+    ("GET", CLASS_AT),
 }
 """Every family grade route and method, named here so a route added without a row fails."""
+HER_GRADE_ROUTES = {("GET", HER_GRADES), ("POST", HER_VIEW), ("GET", HER_CLASS_AT)}
+"""Every grade route of her pages, which any viewer may open."""
 LOOPBACK = "127.0.0.1:8781"
 
 
@@ -141,6 +171,17 @@ def every_family_request(browser: TestClient, **headers: str) -> dict[tuple[str,
     statuses[("POST", SAVE)] = saved.status_code
     outcome = saved.headers.get("location", SAVED.format(acceptance_id=UNKNOWN))
     statuses[("GET", SAVED)] = browser.get(outcome, headers=asked).status_code
+    grades = browser.get(GRADES, headers=asked)
+    statuses[("GET", GRADES)] = grades.status_code
+    term = {"view": "2026-2027 T1"}
+    statuses[("POST", VIEW)] = browser.post(VIEW, data=term, headers=asked).status_code
+    same = {"shown": "2026-2027 T1", "term": "2026-2027 T1"}
+    statuses[("POST", CURRENT_TERM)] = browser.post(
+        CURRENT_TERM, data=same, headers=asked
+    ).status_code
+    linked = re.search(r'href="(/parent/grades/classes/[^"]+/terms/1)"', grades.text)
+    details = linked[1] if linked else CLASS_AT.format(class_id="class-unknown", n=1)
+    statuses[("GET", CLASS_AT)] = browser.get(details, headers=asked).status_code
     return statuses
 
 
@@ -151,6 +192,10 @@ ALLOWED = {
     ("POST", CHECK): 200,
     ("POST", SAVE): 303,
     ("GET", SAVED): 200,
+    ("GET", GRADES): 200,
+    ("POST", VIEW): 303,
+    ("POST", CURRENT_TERM): 303,
+    ("GET", CLASS_AT): 200,
 }
 """What each route answers the household or a parent pressing it as a page would."""
 
@@ -171,11 +216,11 @@ def test_the_table_names_every_family_grade_route(tmp_path: pathlib.Path) -> Non
     served = {
         (method, route.path)
         for route in every_route(app.routes)
-        if isinstance(route, APIRoute) and route.path.startswith("/parent/grades")
+        if isinstance(route, APIRoute) and route.path.startswith((GRADES, HER_GRADES))
         for method in route.methods or ()
     }
 
-    assert served == FAMILY_GRADE_ROUTES
+    assert served == FAMILY_GRADE_ROUTES | HER_GRADE_ROUTES
 
 
 def test_no_grade_route_reads_a_form_before_its_dependencies(tmp_path: pathlib.Path) -> None:
@@ -186,7 +231,7 @@ def test_no_grade_route_reads_a_form_before_its_dependencies(tmp_path: pathlib.P
         if isinstance(route, APIRoute) and route.endpoint.__module__ == grade_routes.__name__
     ]
 
-    assert len(grade_routes_served) == len(FAMILY_GRADE_ROUTES)
+    assert len(grade_routes_served) == len(FAMILY_GRADE_ROUTES | HER_GRADE_ROUTES)
     for route in grade_routes_served:
         assert not isinstance(route, FormRoute), route.path
         for parameter in inspect.signature(route.endpoint).parameters.values():
@@ -1014,17 +1059,17 @@ IDENTITY_RULES = (
 """The grade review's rules for its "Is this her?" choices, pinned whole: a choice's words go
 under its radio when less than 8rem is left beside it."""
 CARD_RULES = (
-    ".grade-review .panel,\n.grade-review article,\n.grade-outcome {\n"
+    ".grade-review .panel,\n.grade-review article,\n.grade-outcome,\n.grade-card {\n"
     "  margin-inline: min(0px, 13vw - 2.25rem);\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
     "@media (max-width: 30rem) {\n"
-    "  .grade-review .panel,\n  .grade-review article,\n  .grade-outcome {\n"
+    "  .grade-review .panel,\n  .grade-review article,\n  .grade-outcome,\n  .grade-card {\n"
     "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
 )
-"""The grade review's cards and the saved report's outcome, pinned whole: on a narrow screen
-with large text, a card's side padding gives way and the card reaches into the page's side
-margin, so a word of a class, category or assignment name breaks only where the line can't
-hold it."""
+"""The grade review's cards, the saved report's outcome, and the cards of Grades and class
+details, pinned whole: on a narrow screen with large text, a card's side padding gives way and
+the card reaches into the page's side margin, so a word of a class, category or assignment name
+breaks only where the line can't hold it."""
 SHARED_CARD_RULES = (
     "main {\n  max-width: 46rem;\n  margin: 0 auto;\n  padding: 0.5rem 1.25rem 3rem;\n}\n",
     "article,\n.panel {\n  background: var(--surface);\n  border: 1px solid var(--edge);\n"
@@ -1073,6 +1118,108 @@ def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_page_carries_its_c
     page = (TEMPLATES / "grade_saved.html").read_text(encoding="utf-8")
     outcome = '<section class="panel grade-outcome" aria-labelledby="outcome-heading">'
     assert page.count(outcome) == 1
+
+
+def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "grade-card" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("grade-card") == 2
+    assert css.count(CARD_RULES) == 1
+    for shared in SHARED_CARD_RULES:
+        assert css.count(shared) == 1, shared
+    assert carriers == ["grade_class.html", "grades.html"]
+    grades = (TEMPLATES / "grades.html").read_text(encoding="utf-8")
+    card = '<section class="panel grade-card" aria-labelledby="class-{{ loop.index }}">'
+    assert grades.count(card) == 1
+    assert grades.count("<section") == 1
+    details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+    assert details.count('<section class="panel grade-card">') == 1
+    assert details.count("<section") == 1
+
+
+HEADING_RULE = ".grade-heading {\n  margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);\n}\n"
+"""Class details' headings, pinned whole: on a narrow screen with large text, a heading reaches
+into the page's side margin until it is 0.3rem from the screen's edge, so a word of a class's
+name breaks only where the whole line can't hold it."""
+SHARED_HEADING_RULES = (
+    "h1 {\n  font-size: 2.1rem;\n  font-weight: 700;\n  color: var(--blue-action);\n"
+    "  margin: 0.75rem 0 0.25rem;\n  letter-spacing: 0.01em;\n}\n",
+    "h2 {\n  font-size: 1.3rem;\n  font-weight: 600;\n  color: var(--blue-action);\n"
+    "  margin: 0 0 0.6rem;\n}\n",
+    SHARED_CARD_RULES[0],
+)
+"""The headings' own rules and the page's side margin, pinned as they stand: the headings' rule
+above replaces their side margins of nothing and reaches into this margin."""
+
+
+def test_the_class_details_headings_rule_is_pinned_and_only_its_headings_carry_it() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "grade-heading" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("grade-heading") == 1
+    assert css.count(HEADING_RULE) == 1
+    for shared in SHARED_HEADING_RULES:
+        assert css.count(shared) == 1, shared
+    assert carriers == ["grade_class.html"]
+    page = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+    named = '<h1 class="grade-heading"><span class="authored-text">{{ name }}</span></h1>'
+    assert page.count(named) == 1
+    assert page.count('<h2 class="grade-heading">') == 3
+    assert page.count("<h2") == 3
+
+
+MAKE_CURRENT_RULE = (
+    "button.make-current {\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);\n"
+    "  overflow-wrap: anywhere;\n"
+    "}\n\n"
+    "@media (max-width: 30rem) {\n"
+    "  button.make-current {\n"
+    "    flex: 1 1 100%;\n"
+    "    border-radius: var(--radius);\n"
+    "  }\n"
+    "}\n"
+)
+"""The parent's choice of the household's current term, pinned whole: on a narrow screen the
+button takes the whole line with a card's corners, with large text its side padding gives way,
+and only a word wider than the whole line breaks."""
+SHARED_BUTTON_RULES = (
+    ".actions {\n  display: flex;\n  gap: 0.6rem;\n  flex-wrap: wrap;\n}\n",
+    "button {\n  font: inherit;\n  font-family: var(--font-display);\n  font-weight: 700;\n"
+    "  min-height: 2.75rem;\n  padding: 0.6rem 1.35rem;\n",
+)
+"""The row of actions and the button every page shares, pinned as they stand: the choice's rule
+above gives way from their padding and keeps their 44 pixel height."""
+
+
+def test_the_current_term_choice_s_rule_is_pinned_and_only_grades_carries_it() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "make-current" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("make-current") == 2
+    assert css.count(MAKE_CURRENT_RULE) == 1
+    for shared in SHARED_BUTTON_RULES:
+        assert css.count(shared) == 1, shared
+    assert carriers == ["grades.html"]
+    page = (TEMPLATES / "grades.html").read_text(encoding="utf-8")
+    button = (
+        '<button type="submit" class="secondary make-current">'
+        "Use {{ make_current.named }} as the household's current term</button>"
+    )
+    assert page.count(button) == 1
 
 
 GRADE_PANEL_RULE = (
@@ -1151,10 +1298,10 @@ GRADE_SELECT_RULES: tuple[str, ...] = (
     "var(--field-edge); border-radius: var(--radius-small) }",
     ".grade-review .choice { min-width: 0; padding-inline: clamp(0px, 13vw - 1rem, 1rem) }",
     ".grade-review select { appearance: base-select; overflow-wrap: anywhere }",
-    ".grade-review .panel, .grade-review article, .grade-outcome { margin-inline: min(0px, "
-    "13vw - 2.25rem); padding-inline: clamp(0px, 13vw - 1rem, 1.6rem) }",
+    ".grade-review .panel, .grade-review article, .grade-outcome, .grade-card { "
+    "margin-inline: min(0px, 13vw - 2.25rem); padding-inline: clamp(0px, 13vw - 1rem, 1.6rem) }",
     "@media (max-width: 30rem) / .grade-review .panel, .grade-review article, "
-    ".grade-outcome { padding-inline: clamp(0px, 13vw - 1rem, 1.2rem) }",
+    ".grade-outcome, .grade-card { padding-inline: clamp(0px, 13vw - 1rem, 1.2rem) }",
     "main.wide { max-width: 46rem }",
     "@media (min-width: 72rem) / main.wide { max-width: 72rem }",
     "@media (min-width: 72rem) / main.wide .review-form { display: grid; "
@@ -1300,6 +1447,20 @@ def test_a_save_from_the_review_lands_on_its_outcome_by_its_acceptance_id(
     assert "T1 · 2026-2027" in said
     assert "Her name was confirmed with this report." in said
     assert "Nothing was saved" not in said
+
+
+def test_an_outcome_links_its_class_details_and_grades(tmp_path: pathlib.Path) -> None:
+    with at(open_household(tmp_path)) as browser:
+        saved = browser.post(SAVE, data=answered(review_page(browser)), headers=PAGE)
+        outcome = browser.get(saved.headers["location"], headers=PAGE)
+        class_id = capture_class(store_of(browser), FIRST_TERM)
+        details = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+
+    link = f'<a href="{CLASS_AT.format(class_id=class_id, n=1)}"><span class="authored-text">See'
+    assert link in outcome.text
+    assert "See Biology" in words(outcome.text)
+    assert f'<a href="{GRADES}">Grades</a></p>' in outcome.text
+    assert details.status_code == 200
 
 
 def test_a_save_that_records_only_the_acceptance_never_says_nothing_was_saved(
@@ -1847,6 +2008,975 @@ def test_not_hers_ends_the_import_whatever_else_the_form_holds(tmp_path: pathlib
     assert answer.status_code == 200
     assert escape(grade_routes.NOT_HERS) in answer.text
     assert after == before
+
+
+# ------------------------------------------------------------- Grades and class details
+
+SEED_KEY = name_form_key(b"5" * 64)
+"""The key the seeded reports' name forms are kept under; the pages read none."""
+
+
+def draft_of(text: str) -> GradeReportDraft:
+    reading = read_grade_report(text)
+    assert reading.draft is not None, reading.not_read
+    return reading.draft
+
+
+FIRST_TERM = draft_of(REPORT)
+SECOND_TERM = draft_of(REPORT.replace("**T1**", "**T2**"))
+
+
+def seeded(browser: TestClient, *drafts: GradeReportDraft, month: int | None = 8) -> str:
+    """Each report saved through the store, never the routes these tests read, and the class
+    they went into."""
+    store = store_of(browser)
+    for draft in drafts:
+        review = store.review_grade_report(draft, capture_key(draft), key=SEED_KEY)
+        answers = grade_answers(review, month=month)
+        outcome = save_grade(store, draft, key=SEED_KEY, review=review, answers=answers)
+        assert isinstance(outcome, GradeReportSaved), outcome
+    return capture_class(store, drafts[0])
+
+
+def grade_tables(settings: Settings) -> dict[str, object]:
+    return closed_world([database(settings)], leaving_out=VIEW_TABLES)
+
+
+def nav_of(page: str) -> str:
+    return page.split('<nav class="places"', 1)[1].split("</nav>", 1)[0]
+
+
+def test_grades_before_any_report_say_so_in_each_voice(tmp_path: pathlib.Path) -> None:
+    with at(open_household(tmp_path)) as browser:
+        hers = browser.get(HER_GRADES, headers=PAGE)
+        theirs = browser.get(GRADES, headers=PAGE)
+
+    assert (hers.status_code, theirs.status_code) == (200, 200)
+    assert "No grade reports yet." in words(hers.text)
+    assert "Add one to start" not in hers.text
+    assert f'href="{ADD}"' not in hers.text
+    assert "No grade reports yet. Add one to start." in words(theirs.text)
+    assert f'href="{ADD}"' in theirs.text
+
+
+def test_grades_name_each_class_s_term_grade_and_the_report_that_supplied_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        hers = browser.get(HER_GRADES, headers=PAGE)
+        theirs = browser.get(GRADES, headers=PAGE)
+
+    for page, details in ((hers, HER_CLASS_AT), (theirs, CLASS_AT)):
+        said = words(page.text)
+        assert page.status_code == 200
+        assert "Biology" in said
+        assert "T1 · 2026-2027" in said
+        assert "School-reported grade 81.9% · B-" in said
+        assert re.search(r"Report added [A-Z][a-z]+ \d{1,2}\b", said), said
+        assert f'href="{details.format(class_id=class_id, n=1)}"' in page.text
+        assert not [name for name in ("bramble", "wren") if name in page.text.casefold()]
+
+
+def test_grades_parent_controls_follow_the_reader_never_the_address(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A parent signed in reads a parent's controls on her address too; she never does. The
+    sentence naming the household's current term reads the same for both."""
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        seeded(browser, FIRST_TERM, SECOND_TERM)
+        signed_in(browser, THEIRS)
+        browser.post(VIEW, data={"view": "2026-2027 T2"}, headers=PAGE)
+        theirs = browser.get(HER_GRADES, headers=PAGE)
+        browser.post("/sign-out")
+        signed_in(browser, HERS)
+        browser.post(HER_VIEW, data={"view": "2026-2027 T2"}, headers=PAGE)
+        hers = browser.get(HER_GRADES, headers=PAGE)
+
+    showing = "Showing T2 · 2026-2027. Your household's current term in Blossom is T1 · 2026-2027."
+    assert showing in words(theirs.text)
+    assert showing in words(hers.text)
+    assert f'href="{ADD}"' in theirs.text
+    assert f'action="{CURRENT_TERM}"' in theirs.text
+    assert f'action="{VIEW}"' in theirs.text
+    assert "Use T2 · 2026-2027 as the household's current term" in words(theirs.text)
+    assert f'href="{ADD}"' not in hers.text
+    assert CURRENT_TERM not in hers.text
+    assert "Use T2" not in words(hers.text)
+    assert f'action="{HER_VIEW}"' in hers.text
+    assert "/parent/grades" not in hers.text
+
+
+def test_a_viewer_s_term_writes_their_choice_alone_and_grades_say_which_is_current(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        seeded(browser, FIRST_TERM, SECOND_TERM)
+        first = browser.get(HER_GRADES, headers=PAGE)
+        chooser = whole_form(first.text, HER_VIEW)
+        grades = grade_tables(settings)
+        chose = browser.post(HER_VIEW, data={"view": "2026-2027 T2"}, headers=PAGE)
+        grades_after = grade_tables(settings)
+        showing = browser.get(HER_GRADES, headers=PAGE)
+        followed = browser.post(HER_VIEW, data={"view": "current"}, headers=PAGE)
+        current = browser.get(HER_GRADES, headers=PAGE)
+
+    assert chooser == {"view": "current"}
+    assert re.findall(r'<option value="([^"]*)"', first.text) == [
+        "current",
+        "2026-2027 T1",
+        "2026-2027 T2",
+    ]
+    assert (chose.status_code, chose.headers["location"]) == (303, HER_GRADES)
+    assert grades_after == grades
+    assert (
+        "Showing T2 · 2026-2027. Your household's current term in Blossom is T1 · 2026-2027."
+        in words(showing.text)
+    )
+    assert '<input type="hidden" name="view" value="current">' in showing.text
+    assert "Show the current term" in words(showing.text)
+    assert (followed.status_code, followed.headers["location"]) == (303, HER_GRADES)
+    assert "current term in Blossom is" not in words(current.text)
+
+
+@pytest.mark.parametrize("view", ["2026-2027 T9", "2030-2031 T1", "T1", "", "2026-2027"])
+def test_a_term_not_on_record_is_refused_and_nothing_is_written(
+    view: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        seeded(browser, FIRST_TERM)
+        before = closed_world([database(settings)], leaving_out=())
+        refused = browser.post(HER_VIEW, data={"view": view}, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert refused.status_code == 422
+    assert escape(grade_routes.TERM_NOT_ON_RECORD) in refused.text
+    assert after == before
+
+
+def test_reading_grades_and_class_details_writes_nothing(tmp_path: pathlib.Path) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        class_id = seeded(browser, FIRST_TERM, SECOND_TERM)
+        browser.post(HER_VIEW, data={"view": "2026-2027 T2"}, headers=PAGE)
+        before = closed_world([database(settings)], leaving_out=())
+        pages = [
+            browser.get(address, headers=PAGE).status_code
+            for address in (
+                HER_GRADES,
+                GRADES,
+                HER_CLASS_AT.format(class_id=class_id, n=1),
+                CLASS_AT.format(class_id=class_id, n=2),
+            )
+        ]
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert pages == [200, 200, 200, 200]
+    assert after == before
+
+
+def test_a_parent_s_current_term_leaves_every_remembered_term_as_it_was(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        seeded(browser, FIRST_TERM, SECOND_TERM)
+        browser.post(VIEW, data={"view": "2026-2027 T2"}, headers=PAGE)
+        remembered = as_stored(store_of(browser), "grade_view_choices")
+        form = whole_form(browser.get(GRADES, headers=PAGE).text, CURRENT_TERM)
+        chosen = browser.post(CURRENT_TERM, data=form, headers=PAGE)
+        context = store_of(browser).grade_contexts().current
+        remembered_after = as_stored(store_of(browser), "grade_view_choices")
+        again = browser.post(CURRENT_TERM, data=form, headers=PAGE)
+        before = closed_world([database(settings)], leaving_out=())
+        stale = browser.post(
+            CURRENT_TERM, data={"shown": "2026-2027 T1", "term": "2026-2027 T1"}, headers=PAGE
+        )
+        missing = browser.post(
+            CURRENT_TERM, data={"shown": "2026-2027 T2", "term": "2026-2027 T9"}, headers=PAGE
+        )
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert form == {"shown": "2026-2027 T1", "term": "2026-2027 T2"}
+    assert (chosen.status_code, chosen.headers["location"]) == (303, GRADES)
+    assert context == ("2026-2027", "T2")
+    assert remembered_after == remembered
+    assert (again.status_code, again.headers["location"]) == (303, GRADES)
+    assert stale.status_code == 409
+    assert escape(grade_routes.CONTEXT_CHANGED) in stale.text
+    assert missing.status_code == 422
+    assert escape(grade_routes.TERM_NOT_ON_RECORD) in missing.text
+    assert after == before
+
+
+def test_a_typed_setup_term_with_no_report_shows_no_class_link(tmp_path: pathlib.Path) -> None:
+    with at(open_household(tmp_path)) as browser:
+        form = answered(
+            review_page(browser), setup="other", setup_year="2026-2027", setup_term="Fall"
+        )
+        assert browser.post(SAVE, data=form, headers=PAGE).status_code == 303
+        page = browser.get(GRADES, headers=PAGE)
+
+    assert page.status_code == 200
+    assert "No grade reports for Fall · 2026-2027." in words(page.text)
+    assert "/terms/" not in page.text
+    assert re.findall(r'<option value="([^"]*)"', page.text) == [
+        "current",
+        "2026-2027 T1",
+        "2026-2027 Fall",
+    ]
+
+
+def test_class_details_list_results_by_due_date_with_scores_as_reported(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        page = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+
+    said = words(page.text)
+    newest_first = [
+        "Osmosis with Potato Slices",
+        "Cell Diagram",
+        "Microscope Practice",
+        "Seed Germination Log",
+    ]
+    assert page.status_code == 200
+    assert "T1 · 2026-2027" in said
+    assert "School-reported grade 81.9% · B-" in said
+    places = [said.index(title) for title in newest_first]
+    assert places == sorted(places)
+    assert "School score: 18.0 / 20.0 · 90.0%" in said
+    assert "Due September 22" in said
+    assert "Gradebook status: Missing" in said
+    assert "Date not confirmed" not in said
+    assert "School record details" in said
+    assert "Penalty: left blank" in said
+    assert "Category details" in said
+    assert "Labs: weight 25.0, average 83.8" in said
+    assert "Quizzes: weight 20.0, average left blank" in said
+    assert "no grade reported" not in said
+    assert not [name for name in ("bramble", "wren") if name in page.text.casefold()]
+
+
+def test_class_details_name_each_category_cell_by_its_stored_presence(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A category's weight and average read as written, or by the presence the save stored:
+    left blank or not in the copy, each apart and never "no grade reported"."""
+    labs = "**Labs** |   | **Weight = 25.0**"
+    homework_average = "**Category Average**\n\n|   |\n| - |\n\n**80.0**\n\n"
+    draft = draft_of(REPORT.replace(labs, labs.replace("25.0", "")).replace(homework_average, ""))
+    tests_ = draft.categories[3].model_copy(update={"weight": GradeNumber.not_captured()})
+    draft = draft.model_copy(update={"categories": (*draft.categories[:3], tests_)})
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, draft)
+        pages = [
+            browser.get(address.format(class_id=class_id, n=1), headers=PAGE)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    for page in pages:
+        said = words(page.text)
+        assert page.status_code == 200
+        assert "Homework / Practice: weight 15.0, average not in the copy" in said
+        assert "Labs: weight left blank, average 83.8" in said
+        assert "Quizzes: weight 20.0, average left blank" in said
+        assert "Tests /Projects: weight not in the copy, average left blank" in said
+        assert "no grade reported" not in said
+
+
+@pytest.mark.parametrize(
+    ("weight", "average", "line"),
+    [
+        ((Presence.REPORTED, "25.0"), (Presence.REPORTED, "83.8"), "weight 25.0, average 83.8"),
+        ((Presence.REPORTED, "0.0"), (Presence.REPORTED, "0.0"), "weight 0.0, average 0.0"),
+        ((Presence.BLANK, ""), (Presence.BLANK, ""), "weight left blank, average left blank"),
+        (
+            (Presence.UNREADABLE, "TBD"),
+            (Presence.UNREADABLE, "EX"),
+            "weight couldn't be read: TBD, average couldn't be read: EX",
+        ),
+        (
+            (Presence.NOT_CAPTURED, ""),
+            (Presence.NOT_CAPTURED, ""),
+            "weight not in the copy, average not in the copy",
+        ),
+        ((Presence.BLANK, ""), (Presence.REPORTED, "0.0"), "weight left blank, average 0.0"),
+    ],
+)
+def test_a_category_line_keeps_zero_blank_unreadable_and_uncaptured_apart(
+    weight: Cell, average: Cell, line: str
+) -> None:
+    value = CurrentValue(
+        cells={"name": (Presence.REPORTED, "Labs"), "weight": weight, "average": average},
+        report_id="report",
+        order=1,
+    )
+
+    assert grade_routes.category_line(value) == f"Labs: {line}"
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ((Presence.BLANK, ""), "Category name left blank"),
+        ((Presence.UNREADABLE, "##"), "Category name couldn't be read: ##"),
+        ((Presence.NOT_CAPTURED, ""), "Category name not in the copy"),
+    ],
+)
+def test_a_category_name_not_reported_reads_as_the_review_says_it(name: Cell, said: str) -> None:
+    value = CurrentValue(
+        cells={
+            "name": name,
+            "weight": (Presence.REPORTED, "25.0"),
+            "average": (Presence.REPORTED, "83.8"),
+        },
+        report_id="report",
+        order=1,
+    )
+
+    assert grade_routes.category_line(value) == f"{said}: weight 25.0, average 83.8"
+
+
+def test_class_details_say_category_name_left_blank(tmp_path: pathlib.Path) -> None:
+    labs = FIRST_TERM.categories[1].model_copy(update={"name": GradeValue.read("")})
+    draft = FIRST_TERM.model_copy(
+        update={"categories": (FIRST_TERM.categories[0], labs, *FIRST_TERM.categories[2:])}
+    )
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, draft)
+        pages = [
+            browser.get(address.format(class_id=class_id, n=1), headers=PAGE)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    for page in pages:
+        said = words(page.text)
+        assert page.status_code == 200
+        assert "Category name left blank: weight 25.0, average 83.8" in said
+        assert "Name left blank" not in said
+
+
+TERM_CELLS: Final[dict[str, dict[Presence, tuple[Cell, str]]]] = {
+    "percent": {
+        Presence.REPORTED: ((Presence.REPORTED, "81.9"), "81.9%"),
+        Presence.BLANK: ((Presence.BLANK, ""), "percent left blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "8l.9"), "percent couldn't be read: 8l.9"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "percent not in the copy"),
+    },
+    "letter": {
+        Presence.REPORTED: ((Presence.REPORTED, "B-"), "B-"),
+        Presence.BLANK: ((Presence.BLANK, ""), "letter grade left blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "A?"), "letter grade couldn't be read: A?"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "letter grade not in the copy"),
+    },
+}
+"""Each term cell in each presence, and the words Grades and class details say for it."""
+SCORE_CELLS: Final[dict[str, dict[Presence, tuple[Cell, str]]]] = {
+    "points": {
+        Presence.REPORTED: ((Presence.REPORTED, "18.0"), "18.0"),
+        Presence.BLANK: ((Presence.BLANK, ""), "blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "EX"), "couldn't be read: EX"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "not in the copy"),
+    },
+    "max_points": {
+        Presence.REPORTED: ((Presence.REPORTED, "20.0"), "20.0"),
+        Presence.BLANK: ((Presence.BLANK, ""), "maximum left blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "TBD"), "maximum couldn't be read: TBD"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "maximum not in the copy"),
+    },
+    "average": {
+        Presence.REPORTED: ((Presence.REPORTED, "90.0"), "90.0%"),
+        Presence.BLANK: ((Presence.BLANK, ""), "average left blank"),
+        Presence.UNREADABLE: ((Presence.UNREADABLE, "X9"), "average couldn't be read: X9"),
+        Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "average not in the copy"),
+    },
+}
+"""Each score cell in each presence, and the words class details say for it."""
+SAVED_PRESENCES: Final = (Presence.REPORTED, Presence.BLANK, Presence.NOT_CAPTURED)
+"""The presences a saved cell holds: a value with a cell that couldn't be read is never offered
+to a save."""
+
+
+def term_said(percent: Presence, letter: Presence) -> str:
+    """The term grade line for a percent and a letter in these presences."""
+    if {percent, letter} == {Presence.BLANK}:
+        return "Term grade left blank"
+    if {percent, letter} == {Presence.NOT_CAPTURED}:
+        return "Term grade not in the copy"
+    shown = (TERM_CELLS["percent"][percent][1], TERM_CELLS["letter"][letter][1])
+    return "School-reported grade " + " · ".join(shown)
+
+
+def score_said(points: Presence, most: Presence, average: Presence) -> str:
+    """The score line for points, a maximum and an average in these presences."""
+    if {points, most, average} == {Presence.BLANK}:
+        return "Score left blank"
+    if {points, most, average} == {Presence.NOT_CAPTURED}:
+        return "Score not in the copy"
+    shown = (
+        SCORE_CELLS[field][presence][1]
+        for field, presence in (("points", points), ("max_points", most), ("average", average))
+    )
+    return "School score: {} / {} · {}".format(*shown)
+
+
+def as_number(cell: Cell) -> GradeNumber:
+    return GradeNumber(text=cell[1], presence=cell[0])
+
+
+@pytest.mark.parametrize("percent", list(Presence))
+@pytest.mark.parametrize("letter", list(Presence))
+def test_a_term_grade_line_says_each_cell_as_written_or_by_its_presence(
+    percent: Presence, letter: Presence
+) -> None:
+    """No cell of the term grade is dropped for another's presence: the percent and the letter
+    each read as written, or as the review says a cell that wasn't reported."""
+    value = CurrentValue(
+        cells={
+            "percent": TERM_CELLS["percent"][percent][0],
+            "letter": TERM_CELLS["letter"][letter][0],
+        },
+        report_id="report",
+        order=1,
+    )
+
+    assert grade_routes.term_grade(value) == term_said(percent, letter)
+
+
+@pytest.mark.parametrize("points", list(Presence))
+@pytest.mark.parametrize("most", list(Presence))
+@pytest.mark.parametrize("average", list(Presence))
+def test_a_score_line_says_each_cell_as_written_or_by_its_presence(
+    points: Presence, most: Presence, average: Presence
+) -> None:
+    """No cell of a score is dropped for another's presence: the points, the maximum and the
+    average each read as written, or as the review says a cell that wasn't reported."""
+    value = CurrentValue(
+        cells={
+            "points": SCORE_CELLS["points"][points][0],
+            "max_points": SCORE_CELLS["max_points"][most][0],
+            "average": SCORE_CELLS["average"][average][0],
+        },
+        report_id="report",
+        order=1,
+    )
+
+    assert grade_routes.score_of(value) == score_said(points, most, average)
+
+
+@pytest.mark.parametrize(
+    ("percent", "letter"),
+    [
+        (percent, letter)
+        for percent in SAVED_PRESENCES
+        for letter in SAVED_PRESENCES
+        if {percent, letter} != {Presence.NOT_CAPTURED}
+    ],
+)
+def test_grades_and_class_details_show_each_term_cell_the_save_kept(
+    percent: Presence, letter: Presence, tmp_path: pathlib.Path
+) -> None:
+    (percent_cell, _), (letter_cell, _) = (
+        TERM_CELLS["percent"][percent],
+        TERM_CELLS["letter"][letter],
+    )
+    term = TermResult(
+        percent=as_number(percent_cell),
+        letter=GradeValue(text=letter_cell[1], presence=letter_cell[0]),
+    )
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM.model_copy(update={"term": term}))
+        grades = [
+            words(browser.get(address, headers=PAGE).text) for address in (HER_GRADES, GRADES)
+        ]
+        details = [
+            words(browser.get(address.format(class_id=class_id, n=1), headers=PAGE).text)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    line = term_said(percent, letter)
+    for said in grades:
+        assert f"Biology {line} Report added" in said, said
+    for said in details:
+        assert f"T1 · 2026-2027 {line} Report added" in said, said
+
+
+def test_class_details_show_each_score_cell_the_save_kept(tmp_path: pathlib.Path) -> None:
+    states = [
+        (points, most, average)
+        for points in SAVED_PRESENCES
+        for most in SAVED_PRESENCES
+        for average in SAVED_PRESENCES
+    ]
+    homework = FIRST_TERM.categories[0]
+    rows = tuple(
+        homework.rows[0].model_copy(
+            update={
+                "assignment": GradeValue.read(f"Log {n:02}"),
+                "points": as_number(SCORE_CELLS["points"][points][0]),
+                "max_points": as_number(SCORE_CELLS["max_points"][most][0]),
+                "average": as_number(SCORE_CELLS["average"][average][0]),
+            }
+        )
+        for n, (points, most, average) in enumerate(states, start=1)
+    )
+    draft = FIRST_TERM.model_copy(
+        update={
+            "categories": (homework.model_copy(update={"rows": rows}), *FIRST_TERM.categories[1:])
+        }
+    )
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, draft)
+        pages = [
+            words(browser.get(address.format(class_id=class_id, n=1), headers=PAGE).text)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    for said in pages:
+        for n, (points, most, average) in enumerate(states, start=1):
+            line = score_said(points, most, average)
+            assert f"Log {n:02} Homework / Practice {line} Due September 22" in said, (n, said)
+
+
+STATUS_CELLS: Final[dict[Presence, tuple[Cell, str]]] = {
+    Presence.REPORTED: ((Presence.REPORTED, "Missing"), "Gradebook status: Missing"),
+    Presence.BLANK: ((Presence.BLANK, ""), "Gradebook status left blank"),
+    Presence.UNREADABLE: ((Presence.UNREADABLE, "M?"), "Gradebook status couldn't be read: M?"),
+    Presence.NOT_CAPTURED: ((Presence.NOT_CAPTURED, ""), "Gradebook status not in the copy"),
+}
+"""The school's status for a result in each presence, and the line class details say for it."""
+
+
+@pytest.mark.parametrize("presence", list(Presence))
+def test_a_result_s_status_line_says_the_status_as_written_or_by_its_presence(
+    presence: Presence,
+) -> None:
+    """Every result has a status line: the status as written, or as the review says a cell that
+    wasn't reported."""
+    cells: dict[str, Cell] = dict.fromkeys(grade_review.RESULT_FIELDS, (Presence.BLANK, ""))
+    cells["assignment"] = (Presence.REPORTED, "Cell Diagram")
+    cells["status"] = STATUS_CELLS[presence][0]
+    value = CurrentValue(cells=cells, report_id="report", order=1)
+
+    _, shown = grade_routes.result_shown(
+        value, year="2026-2027", first_month=8, newest=None, names={}
+    )
+
+    assert shown.status == STATUS_CELLS[presence][1]
+
+
+def test_class_details_say_a_status_left_blank_or_not_in_the_copy(tmp_path: pathlib.Path) -> None:
+    """A Status cell left blank, and a copy whose Labs table has no Status column, each say so
+    on the result's own card; a reported status reads as written."""
+    blank = REPORT.replace("| Valid      | 09/22", "|            | 09/22", 1)
+    text = without_columns(blank, "Labs", "Status")
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, draft_of(text))
+        pages = [
+            words(browser.get(address.format(class_id=class_id, n=1), headers=PAGE).text)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    cards = [
+        "Osmosis with Potato Slices Labs School score: 31.0 / 40.0 · 77.5% Due October 2"
+        " Gradebook status not in the copy",
+        "Cell Diagram Homework / Practice School score: 7.0 / 10.0 · 70.0% Due September 26"
+        " Gradebook status: Missing",
+        "Microscope Practice Labs School score: 27.0 / 30.0 · 90.0% Due September 24"
+        " Gradebook status not in the copy",
+        "Seed Germination Log Homework / Practice School score: 18.0 / 20.0 · 90.0%"
+        " Due September 22 Gradebook status left blank",
+    ]
+    for said in pages:
+        for card in cards:
+            assert card in said, (card, said)
+
+
+def test_a_newer_report_that_repeats_the_term_grade_leaves_it_named_by_its_supplier(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A newer capture that shows the same term grade records no new one, so the grade stays
+    named by the report that supplied it, and no line claims the newer report lacked it."""
+    seven = "| Cell Diagram             | 7.0 "
+    newer = draft_of(REPORT.replace(seven, seven.replace("7.0", "8.0")))
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM, newer)
+        grades = words(browser.get(HER_GRADES, headers=PAGE).text)
+        details = words(browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE).text)
+
+    for said in (grades, details):
+        assert "School-reported grade 81.9% · B-" in said
+        assert re.search(r"Report added [A-Z][a-z]+ \d{1,2} ", said), said
+        assert "not shown" not in said.casefold()
+    assert re.search(r"Second report added [A-Z][a-z]+ \d{1,2}: Current", details), details
+    assert "School score: 8.0 / 10.0" in details
+
+
+def saves_between_reads(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Each public call to the household's store followed, once it returns, by a real save of
+    the same report with a new term grade; the term grades saved, in order, fill the list."""
+    store = store_of(browser)
+    saved: list[str] = []
+    saving = False
+
+    def after(method: Callable[..., object]) -> Callable[..., object]:
+        def call(*args: object, **kwargs: object) -> object:
+            nonlocal saving
+            answer = method(*args, **kwargs)
+            if not saving:
+                saving = True
+                try:
+                    grade = f"{82 + len(saved)}.9"
+                    draft = draft_of(REPORT.replace("**81.9**", f"**{grade}**"))
+                    outcome = save_grade(store, draft, key=SEED_KEY)
+                    assert isinstance(outcome, GradeReportSaved), outcome
+                    saved.append(grade)
+                finally:
+                    saving = False
+            return answer
+
+        return call
+
+    for name in dir(type(store)):
+        if not name.startswith("_") and inspect.isfunction(getattr(type(store), name)):
+            monkeypatch.setattr(store, name, after(getattr(store, name)))
+    return saved
+
+
+def supplier_line(grade: str, saved: list[str]) -> str:
+    """The line naming the report that supplied ``grade``: the seeded report, or the save that
+    wrote it, by its place among the reports added that day."""
+    place = 0 if grade == "81.9" else saved.index(grade) + 1
+    return f"{grade_routes.ordinal(place + 1) + ' ' if place else ''}report added".capitalize()
+
+
+@pytest.mark.parametrize(("grades", "details"), [(HER_GRADES, HER_CLASS_AT), (GRADES, CLASS_AT)])
+def test_a_save_between_a_page_s_reads_leaves_each_value_named_by_its_supplier(
+    grades: str, details: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save that commits after any of the page's reads, between the reports and the values
+    among them, never leaves a value named by a report the page didn't read with it."""
+    pages = []
+    for place, address in enumerate((grades, details)):
+        (tmp_path / str(place)).mkdir()
+        with at(open_household(tmp_path / str(place))) as browser:
+            class_id = seeded(browser, FIRST_TERM)
+            saved = saves_between_reads(browser, monkeypatch)
+            page = browser.get(address.format(class_id=class_id, n=1), headers=PAGE)
+            monkeypatch.undo()
+        pages.append((page, saved))
+
+    for page, saved in pages:
+        said = words(page.text)
+        shown = re.search(r"School-reported grade (\d+\.\d)% · B- ", said)
+        assert page.status_code == 200
+        assert saved, "no save landed during the page's reads"
+        assert shown is not None, said
+        line = supplier_line(shown[1], saved)
+        assert f"School-reported grade {shown[1]}% · B- {line} " in said, said
+        assert not re.search(r"\b(from|in) the report\b(?! added)", said), said
+    details_said = words(pages[1][0].text)
+    shown = re.search(r"School-reported grade (\d+\.\d)% · B- ", details_said)
+    assert shown is not None
+    line = supplier_line(shown[1], pages[1][1])
+    assert re.search(rf"{line} [A-Z][a-z]+ \d{{1,2}}: Current", details_said), details_said
+
+
+@pytest.mark.parametrize(
+    ("count", "said"),
+    [
+        (1, "first"),
+        (2, "second"),
+        (10, "tenth"),
+        (11, "eleventh"),
+        (12, "twelfth"),
+        (19, "nineteenth"),
+        (20, "twentieth"),
+        (21, "twenty-first"),
+        (99, "ninety-ninth"),
+        (100, "one hundredth"),
+        (101, "one hundred first"),
+        (111, "one hundred eleventh"),
+    ],
+)
+def test_an_ordinal_is_spelled_for_any_positive_count(count: int, said: str) -> None:
+    assert grade_routes.ordinal(count) == said
+
+
+def test_an_ordinal_has_no_place_below_one() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        grade_routes.ordinal(0)
+
+
+SAME_DAY: Final = {10: "tenth", 11: "eleventh", 12: "twelfth", 21: "twenty-first"}
+"""Counts of reports added the same day, and the place word of the last of them."""
+
+
+def same_day_reports(count: int, *, acted_from: int | None = None) -> tuple[ClassReport, ...]:
+    """``count`` reports imported on October 9, each its own capture, and with ``acted_from`` a
+    report made current on October 10 from that report's capture, which is then its newest."""
+    made = "report-made"
+    reports = [
+        ClassReport(
+            report_id=f"report-{n}",
+            order=n,
+            use="current",
+            imported_at="2026-10-09T16:00:00+00:00",
+            acted_at=None,
+            latest_of_capture=made if n == acted_from else f"report-{n}",
+        )
+        for n in range(1, count + 1)
+    ]
+    if acted_from is not None:
+        reports.append(
+            ClassReport(
+                report_id=made,
+                order=count + 1,
+                use="current",
+                imported_at="2026-10-10T16:00:00+00:00",
+                acted_at="2026-10-10T16:00:00+00:00",
+                latest_of_capture=made,
+            )
+        )
+    return tuple(reports)
+
+
+@pytest.mark.parametrize("count", list(SAME_DAY))
+def test_each_report_added_the_same_day_is_named_by_its_spelled_place(count: int) -> None:
+    names = grade_routes.report_names(same_day_reports(count), ZoneInfo(FIXTURE_TIMEZONE))
+
+    assert names["report-1"] == "report added October 9"
+    assert names["report-2"] == "second report added October 9"
+    assert names[f"report-{count}"] == f"{SAME_DAY[count]} report added October 9"
+    assert not any(re.search(r"\breport \d", name) for name in names.values()), names
+
+
+def test_a_report_made_current_from_the_eleventh_capture_keeps_its_place_word() -> None:
+    names = grade_routes.report_names(
+        same_day_reports(12, acted_from=11), ZoneInfo(FIXTURE_TIMEZONE)
+    )
+
+    assert names["report-11"] == "eleventh report added October 9"
+    assert names["report-made"] == "eleventh report added October 9, made current October 10"
+    assert grade_routes.as_line(names["report-11"]) == "Eleventh report added October 9"
+    assert grade_routes.as_line(names["report-made"]) == (
+        "Eleventh report added October 9 · Made current October 10"
+    )
+
+
+def same_day_drafts(count: int) -> list[GradeReportDraft]:
+    """``count`` copies of the report, each its own capture by its term grade."""
+    return [draft_of(REPORT.replace("**81.9**", f"**{60 + n}.9**")) for n in range(1, count + 1)]
+
+
+@pytest.mark.parametrize("count", list(SAME_DAY))
+def test_class_details_name_the_last_of_many_same_day_reports_by_its_spelled_place(
+    count: int, tmp_path: pathlib.Path
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, *same_day_drafts(count))
+        page = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+
+    said = words(page.text)
+    place = SAME_DAY[count].capitalize()
+    assert page.status_code == 200
+    assert f"School-reported grade {60 + count}.9% · B- {place} report added August 19" in said
+    assert f"{place} report added August 19: Current" in said, said
+    assert not re.search(r"\b[Rr]eport \d", said), said
+
+
+def test_class_details_name_a_report_made_current_from_the_eleventh_capture(
+    tmp_path: pathlib.Path,
+) -> None:
+    drafts = same_day_drafts(12)
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, *drafts)
+        made = confirm_current(store_of(browser), drafts[10])
+        assert isinstance(made, MadeCurrent), made
+        page = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+
+    said = words(page.text)
+    line = "Eleventh report added August 19 · Made current August 19"
+    assert page.status_code == 200
+    assert f"School-reported grade 71.9% · B- {line}" in said, said
+    assert "Eleventh report added August 19: Current" in said, said
+    assert not re.search(r"\b[Rr]eport \d", said), said
+
+
+def test_class_details_without_a_confirmed_month_keep_dates_as_written(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM, month=None)
+        page = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+
+    said = words(page.text)
+    assert page.status_code == 200
+    assert "Date not confirmed" in said
+    assert "Due date shown: 09/22" in said
+    assert "Due September" not in said
+
+
+def test_class_details_take_their_term_from_the_address_never_the_selection(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM, SECOND_TERM)
+        browser.post(HER_VIEW, data={"view": "2026-2027 T2"}, headers=PAGE)
+        first = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        second = browser.get(HER_CLASS_AT.format(class_id=class_id, n=2), headers=PAGE)
+
+    assert "T1 · 2026-2027" in words(first.text)
+    assert "T2 · 2026-2027" not in words(first.text)
+    assert "T2 · 2026-2027" in words(second.text)
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "/student/grades/classes/class-unknown/terms/1",
+        "/student/grades/classes/{class_id}/terms/2",
+        "/student/grades/classes/{class_id}/terms/0",
+        "/student/grades/classes/{class_id}/terms/one",
+        "/student/grades/classes/{class_id}/terms/01",
+        "/parent/grades/classes/class-unknown/terms/1",
+        "/parent/grades/classes/{class_id}/terms/2",
+    ],
+)
+def test_a_class_or_term_position_not_on_record_is_not_found(
+    address: str, tmp_path: pathlib.Path
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        page = browser.get(address.format(class_id=class_id), headers=PAGE)
+
+    assert page.status_code == 404
+    assert "Blossom has no record for this class and term." in words(page.text)
+
+
+def test_grades_is_in_the_masthead_for_whoever_reads(tmp_path: pathlib.Path) -> None:
+    with at(open_household(tmp_path)) as browser:
+        her_week = browser.get("/student/due-this-week", headers=PAGE)
+        review = browser.get("/parent", headers=PAGE)
+        hers = browser.get(HER_GRADES, headers=PAGE)
+        theirs = browser.get(GRADES, headers=PAGE)
+    (tmp_path / "on").mkdir()
+    with at(signed_in_household(tmp_path / "on"), host="testserver") as browser:
+        signed_in(browser, THEIRS)
+        parent_on_her_week = browser.get("/student/due-this-week", headers=PAGE)
+
+    assert '<a href="/student/grades">Grades</a>' in nav_of(her_week.text)
+    assert '<a href="/parent/grades">Grades</a>' in nav_of(review.text)
+    assert '<a href="/student/grades" aria-current="page">Grades</a>' in nav_of(hers.text)
+    assert ">My week</a>" in nav_of(hers.text)
+    assert '<a href="/parent/grades" aria-current="page">Grades</a>' in nav_of(theirs.text)
+    assert ">Student week</a>" in nav_of(theirs.text)
+    assert '<a href="/parent/grades">Grades</a>' in nav_of(parent_on_her_week.text)
+
+
+def family_grade_pages(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Each family grade page as a parent reaches it: the paste, the review, a check, a save
+    the store refuses, a save's outcome, Grades and class details."""
+    pages = {"add": browser.get(ADD, headers=PAGE)}
+    pages["review"] = browser.post(REVIEW, data={"report_text": REPORT}, headers=PAGE)
+    form = answered(pages["review"].text)
+    pages["check"] = browser.post(CHECK, data=form, headers=PAGE)
+
+    def refused(*args: object, **kwargs: object) -> None:
+        said = "refused"
+        raise GradeReportNotSaved(said)
+
+    monkeypatch.setattr(store_of(browser), "save_grade_report", refused)
+    pages["retry"] = browser.post(SAVE, data=form, headers=PAGE)
+    monkeypatch.undo()
+    saved = browser.post(SAVE, data=form, headers=PAGE)
+    assert saved.status_code == 303, saved.text
+    pages["saved"] = browser.get(saved.headers["location"], headers=PAGE)
+    pages["grades"] = browser.get(GRADES, headers=PAGE)
+    class_id = capture_class(store_of(browser), FIRST_TERM)
+    pages["class"] = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+    assert {name: page.status_code for name, page in pages.items()} == {
+        "add": 200,
+        "review": 200,
+        "check": 200,
+        "retry": 500,
+        "saved": 200,
+        "grades": 200,
+        "class": 200,
+    }
+    return {name: page.text for name, page in pages.items()}
+
+
+def marks_grades_in_a_parent_s_voice(page: str) -> bool:
+    """Whether the masthead marks Grades alone as the current place, in a parent's voice."""
+    nav = nav_of(page)
+    return (
+        '<a href="/parent/grades" aria-current="page">Grades</a>' in nav
+        and '<a href="/parent">Family review</a>' in nav
+        and nav.count("aria-current") == 1
+        and ">Student week</a>" in nav
+        and ">My week</a>" not in nav
+    )
+
+
+def test_every_family_grade_page_marks_grades_not_family_review_with_sign_in_off(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        pages = family_grade_pages(browser, monkeypatch)
+    with at(settings, client="192.0.2.10") as browser:
+        pages["refused"] = browser.get(ADD, headers=PAGE).text
+
+    assert escape(grade_routes.ONLY_HERE) in pages["refused"]
+    unmarked = [name for name, page in pages.items() if not marks_grades_in_a_parent_s_voice(page)]
+    assert unmarked == []
+
+
+def test_every_family_grade_page_marks_grades_not_family_review_for_a_parent_signed_in(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        signed_in(browser, THEIRS)
+        pages = family_grade_pages(browser, monkeypatch)
+
+    unmarked = [name for name, page in pages.items() if not marks_grades_in_a_parent_s_voice(page)]
+    assert unmarked == []
+
+
+def test_her_grade_pages_mark_grades_in_each_sign_in_mode(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "off").mkdir()
+    (tmp_path / "on").mkdir()
+    with at(open_household(tmp_path / "off")) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        off = [
+            browser.get(address, headers=PAGE).text
+            for address in (HER_GRADES, HER_CLASS_AT.format(class_id=class_id, n=1))
+        ]
+    with at(signed_in_household(tmp_path / "on"), host="testserver") as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        signed_in(browser, HERS)
+        on = [
+            browser.get(address, headers=PAGE).text
+            for address in (HER_GRADES, HER_CLASS_AT.format(class_id=class_id, n=1))
+        ]
+
+    for page in off:
+        nav = nav_of(page)
+        assert '<a href="/student/grades" aria-current="page">Grades</a>' in nav
+        assert '<a href="/parent">Family review</a>' in nav
+        assert nav.count("aria-current") == 1
+        assert ">My week</a>" in nav
+    for page in on:
+        nav = nav_of(page)
+        assert '<a href="/student/grades" aria-current="page">Grades</a>' in nav
+        assert "Family review" not in nav
+        assert nav.count("aria-current") == 1
+        assert ">My week</a>" in nav
 
 
 # ------------------------------------------------------------- the review form's grammar
