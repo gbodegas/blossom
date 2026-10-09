@@ -1121,6 +1121,15 @@ class ClassReport:
 
 
 @dataclass(frozen=True)
+class ClassTermRead:
+    """Her class and term's reports by acceptance order and each target's current value, read
+    together, so every report a value names is among the reports."""
+
+    reports: tuple[ClassReport, ...]
+    current: CurrentValues
+
+
+@dataclass(frozen=True)
 class ReportScope:
     """A report's class, term and source key."""
 
@@ -1839,15 +1848,18 @@ class GradebookRecords:
             row = self._connection.execute(CLASS_NAMED, (student_id, class_id)).fetchone()
         return None if row is None else ClassOfYear(class_id, str(row[1]), str(row[0]))
 
-    def class_reports(self, class_id: str, term: str) -> tuple[ClassReport, ...]:
+    def class_term(self, class_id: str, term: str) -> ClassTermRead:
         """Her class and term's reports by acceptance order, each with its use, its import time,
-        its making action's time, and its capture's newest report. A read alone."""
+        its making action's time and its capture's newest report, with each target's current
+        value, under one hold of the store's lock: no grade write lands between them. A read
+        alone."""
         with self._lock:
             student_id = self._her_name_record()[0]
             rows = self._connection.execute(
                 CLASS_REPORTS, (student_id, class_id, folded(term))
             ).fetchall()
-        return tuple(
+            current = self._class_record(student_id, class_id, folded(term)).current
+        reports = tuple(
             ClassReport(
                 report_id=str(report_id),
                 order=int(order),
@@ -1858,6 +1870,7 @@ class GradebookRecords:
             )
             for report_id, order, use, imported_at, acted_at, latest in rows
         )
+        return ClassTermRead(reports=reports, current=current)
 
     def report_scope(self, report_id: str) -> ReportScope | None:
         """Her report's class, term and source key; None when no such report of hers is on

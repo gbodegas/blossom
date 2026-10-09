@@ -1329,9 +1329,8 @@ def class_rows(store: GradebookRecords, term: Term, base: str, zone: tzinfo) -> 
             link = CLASS_AT.format(base=base, class_id=one.class_id, n=position)
         summary = None
         if one.reported:
-            reports = store.class_reports(one.class_id, label)
-            values = store.current_values(one.class_id, label)
-            summary = term_summary(values, report_names(reports, zone))
+            read = store.class_term(one.class_id, label)
+            summary = term_summary(read.current, report_names(read.reports, zone))
         rows.append(ClassRow(one.name, link, one.reported, summary))
     return rows
 
@@ -1571,7 +1570,7 @@ def category_line(value: CurrentValue) -> str:
         f"{what} {cell[1]}" if cell[0] is Presence.REPORTED else presence_words(what, cell)
         for what, cell in (("weight", weight), ("average", average))
     ]
-    return f"{cell_text(name, 'Name')}: {', '.join(said)}"
+    return f"{cell_text(name, 'Category name')}: {', '.join(said)}"
 
 
 def class_page(request: Request, state: ApplicationState, class_id: str, n: str) -> Response:
@@ -1595,8 +1594,8 @@ def class_page(request: Request, state: ApplicationState, class_id: str, n: str)
             status_code=404,
         )
     term = terms[int(n) - 1]
-    reports = store.class_reports(class_id, term)
-    values = store.current_values(class_id, term)
+    read = store.class_term(class_id, term)
+    reports, values = read.reports, read.current
     names = report_names(reports, state.clock.zone)
     newest = newest_current(reports)
     first_month = store.first_month_of(named.year)

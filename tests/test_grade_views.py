@@ -143,14 +143,18 @@ def test_a_class_s_reports_follow_acceptance_order_with_the_action_that_made_one
     saved(store, WREN, EIGHT)
     made = confirm_current(store, WREN)
     class_id = capture_class(store, WREN)
-    reports = store.class_reports(class_id, "T1")
+    read = store.class_term(class_id, "T1")
+    reports = read.reports
     (acted_at,) = store._connection.execute("SELECT acted_at FROM grade_current_actions").fetchone()
     scope = store.report_scope(reports[0].report_id)
     unknown = store.report_scope("report-not-on-record")
-    none_in_second = store.class_reports(class_id, "T2")
+    none_in_second = store.class_term(class_id, "T2")
     store.close()
 
     assert isinstance(made, MadeCurrent)
+    assert read.current.results
+    suppliers = [value.report_id for value in read.current.results.values()]
+    assert set(suppliers) <= {report.report_id for report in reports}
     assert [report.order for report in reports] == [1, 2, 3]
     assert [report.use for report in reports] == ["current", "current", "current"]
     assert [report.acted_at for report in reports] == [None, None, acted_at]
@@ -163,7 +167,8 @@ def test_a_class_s_reports_follow_acceptance_order_with_the_action_that_made_one
     assert scope is not None
     assert scope == ReportScope(class_id, "T1", scope.source_key)
     assert unknown is None
-    assert none_in_second == ()
+    assert none_in_second.reports == ()
+    assert not none_in_second.current.results
 
 
 def test_a_viewer_s_choice_writes_their_row_alone_and_no_grade_table(

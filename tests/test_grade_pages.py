@@ -14,7 +14,7 @@ import os
 import pathlib
 import re
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from html import unescape
 
@@ -1674,6 +1674,47 @@ def test_a_category_line_keeps_zero_blank_unreadable_and_uncaptured_apart(
     assert grade_routes.category_line(value) == f"Labs: {line}"
 
 
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ((Presence.BLANK, ""), "Category name left blank"),
+        ((Presence.UNREADABLE, "##"), "Category name couldn't be read: ##"),
+        ((Presence.NOT_CAPTURED, ""), "Category name not in the copy"),
+    ],
+)
+def test_a_category_name_not_reported_reads_as_the_review_says_it(name: Cell, said: str) -> None:
+    value = CurrentValue(
+        cells={
+            "name": name,
+            "weight": (Presence.REPORTED, "25.0"),
+            "average": (Presence.REPORTED, "83.8"),
+        },
+        report_id="report",
+        order=1,
+    )
+
+    assert grade_routes.category_line(value) == f"{said}: weight 25.0, average 83.8"
+
+
+def test_class_details_say_category_name_left_blank(tmp_path: pathlib.Path) -> None:
+    labs = FIRST_TERM.categories[1].model_copy(update={"name": GradeValue.read("")})
+    draft = FIRST_TERM.model_copy(
+        update={"categories": (FIRST_TERM.categories[0], labs, *FIRST_TERM.categories[2:])}
+    )
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, draft)
+        pages = [
+            browser.get(address.format(class_id=class_id, n=1), headers=PAGE)
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    for page in pages:
+        said = words(page.text)
+        assert page.status_code == 200
+        assert "Category name left blank: weight 25.0, average 83.8" in said
+        assert "Name left blank" not in said
+
+
 def test_a_newer_report_that_repeats_the_term_grade_leaves_it_named_by_its_supplier(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1692,6 +1733,76 @@ def test_a_newer_report_that_repeats_the_term_grade_leaves_it_named_by_its_suppl
         assert "not shown" not in said.casefold()
     assert re.search(r"Second report added [A-Z][a-z]+ \d{1,2}: Current", details), details
     assert "School score: 8.0 / 10.0" in details
+
+
+def saves_between_reads(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Each public call to the household's store followed, once it returns, by a real save of
+    the same report with a new term grade; the term grades saved, in order, fill the list."""
+    store = store_of(browser)
+    saved: list[str] = []
+    saving = False
+
+    def after(method: Callable[..., object]) -> Callable[..., object]:
+        def call(*args: object, **kwargs: object) -> object:
+            nonlocal saving
+            answer = method(*args, **kwargs)
+            if not saving:
+                saving = True
+                try:
+                    grade = f"{82 + len(saved)}.9"
+                    draft = draft_of(REPORT.replace("**81.9**", f"**{grade}**"))
+                    outcome = save_grade(store, draft, key=SEED_KEY)
+                    assert isinstance(outcome, GradeReportSaved), outcome
+                    saved.append(grade)
+                finally:
+                    saving = False
+            return answer
+
+        return call
+
+    for name in dir(type(store)):
+        if not name.startswith("_") and inspect.isfunction(getattr(type(store), name)):
+            monkeypatch.setattr(store, name, after(getattr(store, name)))
+    return saved
+
+
+def supplier_line(grade: str, saved: list[str]) -> str:
+    """The line naming the report that supplied ``grade``: the seeded report, or the save that
+    wrote it, by its place among the reports added that day."""
+    place = 0 if grade == "81.9" else saved.index(grade) + 1
+    return f"{grade_routes.ORDINALS[place]}report added".capitalize()
+
+
+@pytest.mark.parametrize(("grades", "details"), [(HER_GRADES, HER_CLASS_AT), (GRADES, CLASS_AT)])
+def test_a_save_between_a_page_s_reads_leaves_each_value_named_by_its_supplier(
+    grades: str, details: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save that commits after any of the page's reads, between the reports and the values
+    among them, never leaves a value named by a report the page didn't read with it."""
+    pages = []
+    for place, address in enumerate((grades, details)):
+        (tmp_path / str(place)).mkdir()
+        with at(open_household(tmp_path / str(place))) as browser:
+            class_id = seeded(browser, FIRST_TERM)
+            saved = saves_between_reads(browser, monkeypatch)
+            page = browser.get(address.format(class_id=class_id, n=1), headers=PAGE)
+            monkeypatch.undo()
+        pages.append((page, saved))
+
+    for page, saved in pages:
+        said = words(page.text)
+        shown = re.search(r"School-reported grade (\d+\.\d)% · B- ", said)
+        assert page.status_code == 200
+        assert saved, "no save landed during the page's reads"
+        assert shown is not None, said
+        line = supplier_line(shown[1], saved)
+        assert f"School-reported grade {shown[1]}% · B- {line} " in said, said
+        assert not re.search(r"\b(from|in) the report\b(?! added)", said), said
+    details_said = words(pages[1][0].text)
+    shown = re.search(r"School-reported grade (\d+\.\d)% · B- ", details_said)
+    assert shown is not None
+    line = supplier_line(shown[1], pages[1][1])
+    assert re.search(rf"{line} [A-Z][a-z]+ \d{{1,2}}: Current", details_said), details_said
 
 
 def test_class_details_without_a_confirmed_month_keep_dates_as_written(
@@ -1763,3 +1874,104 @@ def test_grades_is_in_the_masthead_for_whoever_reads(tmp_path: pathlib.Path) -> 
     assert '<a href="/parent/grades" aria-current="page">Grades</a>' in nav_of(theirs.text)
     assert ">Student week</a>" in nav_of(theirs.text)
     assert '<a href="/parent/grades">Grades</a>' in nav_of(parent_on_her_week.text)
+
+
+def family_grade_pages(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Each family grade page as a parent reaches it: the paste, the review, a check, a save
+    the store refuses, a save's outcome, Grades and class details."""
+    pages = {"add": browser.get(ADD, headers=PAGE)}
+    pages["review"] = browser.post(REVIEW, data={"report_text": REPORT}, headers=PAGE)
+    form = answered(pages["review"].text)
+    pages["check"] = browser.post(CHECK, data=form, headers=PAGE)
+
+    def refused(*args: object, **kwargs: object) -> None:
+        said = "refused"
+        raise GradeReportNotSaved(said)
+
+    monkeypatch.setattr(store_of(browser), "save_grade_report", refused)
+    pages["retry"] = browser.post(SAVE, data=form, headers=PAGE)
+    monkeypatch.undo()
+    saved = browser.post(SAVE, data=form, headers=PAGE)
+    assert saved.status_code == 303, saved.text
+    pages["saved"] = browser.get(saved.headers["location"], headers=PAGE)
+    pages["grades"] = browser.get(GRADES, headers=PAGE)
+    class_id = capture_class(store_of(browser), FIRST_TERM)
+    pages["class"] = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+    assert {name: page.status_code for name, page in pages.items()} == {
+        "add": 200,
+        "review": 200,
+        "check": 200,
+        "retry": 500,
+        "saved": 200,
+        "grades": 200,
+        "class": 200,
+    }
+    return {name: page.text for name, page in pages.items()}
+
+
+def marks_grades_in_a_parent_s_voice(page: str) -> bool:
+    """Whether the masthead marks Grades alone as the current place, in a parent's voice."""
+    nav = nav_of(page)
+    return (
+        '<a href="/parent/grades" aria-current="page">Grades</a>' in nav
+        and '<a href="/parent">Family review</a>' in nav
+        and nav.count("aria-current") == 1
+        and ">Student week</a>" in nav
+        and ">My week</a>" not in nav
+    )
+
+
+def test_every_family_grade_page_marks_grades_not_family_review_with_sign_in_off(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        pages = family_grade_pages(browser, monkeypatch)
+    with at(settings, client="192.0.2.10") as browser:
+        pages["refused"] = browser.get(ADD, headers=PAGE).text
+
+    assert escape(grade_routes.ONLY_HERE) in pages["refused"]
+    unmarked = [name for name, page in pages.items() if not marks_grades_in_a_parent_s_voice(page)]
+    assert unmarked == []
+
+
+def test_every_family_grade_page_marks_grades_not_family_review_for_a_parent_signed_in(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        signed_in(browser, THEIRS)
+        pages = family_grade_pages(browser, monkeypatch)
+
+    unmarked = [name for name, page in pages.items() if not marks_grades_in_a_parent_s_voice(page)]
+    assert unmarked == []
+
+
+def test_her_grade_pages_mark_grades_in_each_sign_in_mode(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "off").mkdir()
+    (tmp_path / "on").mkdir()
+    with at(open_household(tmp_path / "off")) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        off = [
+            browser.get(address, headers=PAGE).text
+            for address in (HER_GRADES, HER_CLASS_AT.format(class_id=class_id, n=1))
+        ]
+    with at(signed_in_household(tmp_path / "on"), host="testserver") as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        signed_in(browser, HERS)
+        on = [
+            browser.get(address, headers=PAGE).text
+            for address in (HER_GRADES, HER_CLASS_AT.format(class_id=class_id, n=1))
+        ]
+
+    for page in off:
+        nav = nav_of(page)
+        assert '<a href="/student/grades" aria-current="page">Grades</a>' in nav
+        assert '<a href="/parent">Family review</a>' in nav
+        assert nav.count("aria-current") == 1
+        assert ">My week</a>" in nav
+    for page in on:
+        nav = nav_of(page)
+        assert '<a href="/student/grades" aria-current="page">Grades</a>' in nav
+        assert "Family review" not in nav
+        assert nav.count("aria-current") == 1
+        assert ">My week</a>" in nav
