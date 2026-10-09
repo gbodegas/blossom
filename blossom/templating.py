@@ -3,7 +3,6 @@
 """The one place the pages' templates are built, with the filters both pages use."""
 
 import hashlib
-import re
 from typing import Final
 
 from fastapi.templating import Jinja2Templates
@@ -74,26 +73,11 @@ def ended(words: str) -> str:
     return trimmed if trimmed.rstrip(CLOSING_MARKS).endswith(SENTENCE_ENDS) else f"{trimmed}."
 
 
-FIRST_SENTENCE: Final = re.compile(
-    rf"(.*?[{re.escape(''.join(SENTENCE_ENDS))}][{re.escape(CLOSING_MARKS)}]*)\s+(.*)", re.S
-)
-"""A line's first sentence, ended as ``ended`` ends one, and the rest after the space."""
-
-
-def first_sentence(words: str) -> tuple[str, str]:
-    """``words`` split after their first sentence, which ends at a mark ``ended`` knows, any
-    closing quote or bracket after it included, and a space: that sentence and the rest, which
-    is empty for words of one sentence."""
-    found = FIRST_SENTENCE.fullmatch(words)
-    return (words, "") if found is None else (found.group(1), found.group(2))
-
-
 def page_templates() -> Jinja2Templates:
     """The packaged templates, with ``clock`` for times, ``long_date`` for a date with its
     year, ``spoken_day`` for a day with its weekday, and its year when it is not today's,
     ``present`` for a saved plan's text, ``ended`` for typed words that close a
-    sentence, ``first_sentence`` for a line split after its first sentence, which takes the
-    focus, ``details_href`` for the address of an
+    sentence, ``details_href`` for the address of an
     assignment's details, ``assignment_anchor`` for the id of an assignment's card or row,
     ``title_anchor`` for the id of its title on her week, where a link to it lands,
     ``week_href`` for her week with one card in view,
@@ -112,7 +96,6 @@ def page_templates() -> Jinja2Templates:
     templates.env.filters["clock"] = spoken_time
     templates.env.filters["spoken_day"] = spoken_day
     templates.env.filters["ended"] = ended
-    templates.env.filters["first_sentence"] = first_sentence
     templates.env.filters["step_sentence"] = step_sentence
     templates.env.globals["step_label"] = step_label
     templates.env.filters["long_date"] = long_date

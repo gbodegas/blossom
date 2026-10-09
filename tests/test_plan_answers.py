@@ -37,6 +37,7 @@ from blossom.routes.runs import (
 )
 from blossom.routes.student import place_key
 from blossom.stores.drafts import RunState, StoreBusy, WriterBusy
+from blossom.views import PastDueView
 from tests.support import (
     ENDED_REASONS,
     ESSAY_ID,
@@ -72,6 +73,7 @@ from tests.support import (
     SHOWN_BELOW_UNDER_EARLIER_PLANS,
     SHOWN_BELOW_UNDER_TODAYS_REVIEWED_PLAN,
     SHOWN_BELOW_WAITING,
+    STAND_IN_LINE,
     THAT_PLAN_SHOWN_BELOW,
     THEIRS,
     YOUR_WEEK_NOT_SHOWN_LINE,
@@ -838,6 +840,72 @@ def test_each_answer_on_the_stand_in_says_its_own_words(
     line = YOUR_WEEK_NOT_SHOWN_LINE if row.row.startswith("her-") else FAMILY_NOT_SHOWN_LINE
     assert answer.status_code == row.status
     assert the_answer_alert(answer.text) == f"{row.stand_in} {line}"
+    assert opening_focused(answer.text, STAND_IN_LINE) == first_sentence(row.stand_in)
+
+
+TYPED = ["Dr. Tomorrow", "Read Ch. 3", "Q&A? Part 2!"]
+"""Dates typed with a sentence's marks inside them, each followed by more words; the answer
+quotes each one."""
+TITLED = ["'Dr. Tomorrow'", "Read Ch. 3", "Q&A? Part 2!"]
+"""Titles with a sentence's marks inside them: a closing quote, a period, a question mark and
+an exclamation mark, each followed by more words."""
+
+
+@pytest.mark.parametrize("failure", ["page", "store error", "too slow"])
+@pytest.mark.parametrize("typed", TYPED)
+def test_a_typed_date_with_marks_inside_keeps_the_whole_first_sentence_focused(
+    typed: str, failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A date typed with a sentence's marks inside it is quoted whole in the answer's first
+    sentence, and that whole sentence takes the focus, on the family page and its stand-in."""
+    opening = f"{typed!r} is not a date."
+    with browser(key=True) as client:
+        form = {**fresh_plan_fields(client), "plan_date": typed}
+        if failure != "page":
+            failing = refusing() if failure == "store error" else too_slow
+            monkeypatch.setattr(state_of(client).drafts, "review_snapshot", failing)
+        answer = client.post(FAMILY_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+    said = f"{opening} Use the form YYYY-MM-DD."
+    assert answer.status_code == 422
+    if failure == "page":
+        assert family_line(answer.text) == said
+        assert opening_focused(answer.text, FAMILY_LINE) == opening
+    else:
+        assert the_answer_alert(answer.text) == f"{said} {FAMILY_NOT_SHOWN_LINE}"
+        assert opening_focused(answer.text, STAND_IN_LINE) == opening
+
+
+@pytest.mark.parametrize("failure", ["page", "store error", "too slow"])
+@pytest.mark.parametrize("title", TITLED)
+def test_a_title_with_marks_inside_keeps_her_whole_first_sentence_focused(
+    title: str, failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that ended on a due date already passed names the work in the answer's first
+    sentence, and that whole sentence takes the focus, however its title is punctuated, on
+    her week and its stand-in."""
+    opening = (
+        f"Blossom can't make today's plan: {title} (Math, due August 18) has a due date that "
+        "already passed, so no plan can finish it on time."
+    )
+    late = PastDueView(
+        assignment_id=ESSAY_ID, title=title, course="Math", due_date=date(2026, 8, 18)
+    )
+    ended = SimpleNamespace(outcome="date_problem", draft_id=None, past_due=[late])
+    with browser(key=True) as client:
+        form = fresh_plan_fields(client)
+        planning_answers(monkeypatch, student_routes, SimpleNamespace(view=ended))
+        if failure != "page":
+            failing = refusing() if failure == "store error" else too_slow
+            monkeypatch.setattr(state_of(client).drafts, "newest_published", failing)
+        answer = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+    said = f"{opening} Your homework updates are saved."
+    assert answer.status_code == 409
+    if failure == "page":
+        assert her_line(answer.text).startswith(f"{said} Check the dates for {title}.")
+        assert opening_focused(answer.text, HER_TOP_LINE) == opening
+    else:
+        assert the_answer_alert(answer.text) == f"{said} {YOUR_WEEK_NOT_SHOWN_LINE}"
+        assert opening_focused(answer.text, STAND_IN_LINE) == opening
 
 
 @pytest.mark.parametrize("row", [row for row in ANSWERED if row.form], ids=lambda row: row.row)

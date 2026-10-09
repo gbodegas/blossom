@@ -40,9 +40,11 @@
     {#
       A plan press's answer gives the focus to its first sentence, inside the
       alert, so the answer arrives with its opening on the screen however long
-      the rest is, and the rest follows by scrolling.
+      the rest is, and the rest follows by scrolling. The answer hands over that
+      sentence and the rest as it built them, so words typed or titled with a
+      period inside them never move where the sentence ends.
     #}
-    <p class="problem" role="alert" id="problem">{% if focus_problem %}{% set opening, rest = problem|first_sentence %}<span class="opening" tabindex="-1" autofocus>{{ opening }}</span>{% if rest %} {{ rest }}{% endif %}{% else %}{{ problem }}{% endif %}{% if problem_check %} <span class="run-check"><a href="{{ problem_check.href }}">{{ problem_check.label }}</a></span>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% elif help_reply and (help_reply.at_reply or help_reply.below) and help_reply_listed %} <a href="#reply-{{ help_reply.request_id }}">Go to the field.</a>{% elif reason_kept and (reason_kept.at_reason or reason_kept.stale) and reason_at %} <a href="#review-note-{{ reason_at }}">Go to the field.</a>{% endif %}</p>
+    <p class="problem" role="alert" id="problem">{% if problem_opening %}{% set opening, rest = problem_opening %}<span class="opening" tabindex="-1" autofocus>{{ opening }}</span>{% if rest %} {{ rest }}{% endif %}{% else %}{{ problem }}{% endif %}{% if problem_check %} <span class="run-check"><a href="{{ problem_check.href }}">{{ problem_check.label }}</a></span>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% elif help_reply and (help_reply.at_reply or help_reply.below) and help_reply_listed %} <a href="#reply-{{ help_reply.request_id }}">Go to the field.</a>{% elif reason_kept and (reason_kept.at_reason or reason_kept.stale) and reason_at %} <a href="#review-note-{{ reason_at }}">Go to the field.</a>{% endif %}</p>
     {% if help_reply and help_reply.reply and not help_reply_listed %}
       <label for="kept-reply">Reply, as typed</label>
       <textarea id="kept-reply" rows="3" readonly>{{ help_reply.reply }}</textarea>

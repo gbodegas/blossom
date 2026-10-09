@@ -1351,14 +1351,14 @@ def first_sentence(said: str) -> str:
 
 
 def opening_focused(page: str, line: str) -> str:
-    """The words of the sentence that the line whose tag is ``line`` opens with and gives the
-    focus to, or empty when it gives none: nothing else on the page asks for the focus, and
-    that sentence is the line's first."""
+    """The words the line whose tag is ``line`` opens with and gives the focus to, or empty
+    when it gives none: nothing else on the page asks for the focus, and the rest of the line
+    follows after a space. Which sentence that is, a test compares with the words it expects."""
     found = re.search(re.escape(line + OPENING) + r"(.*?)</span>(.*?)</p>", page, re.S)
     if found is None or page.count("autofocus") != 1:
         return ""
-    said = words(found.group(1))
-    return said if said == first_sentence(words(found.group(0))) else ""
+    rest = found.group(2)
+    return words(found.group(1)) if not rest or rest.startswith(" ") else ""
 
 
 def unwrapped(html: str) -> str:

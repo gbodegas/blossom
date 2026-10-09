@@ -156,6 +156,7 @@ from blossom.routes.runs import (
     CHECK_AGAIN,
     CHECK_ON_THAT_REQUEST,
     COULD_NOT_START,
+    COULD_NOT_START_SENTENCES,
     NOT_USED,
     OPENED_A_WEEK_AGO,
     PLAN_ANSWERS,
@@ -167,14 +168,16 @@ from blossom.routes.runs import (
     Clause,
     CouldNotStart,
     Graphs,
+    Needs,
     NotSaved,
     PlanAnswer,
     RunCheck,
     RunNotice,
     SameRun,
+    Sentences,
     Unconfirmed,
-    already_planning,
     being_made,
+    ended_sentences,
     ended_without_a_plan,
     evening_named,
     fact,
@@ -183,7 +186,9 @@ from blossom.routes.runs import (
     landed,
     make_plan,
     not_saved,
+    not_saved_sentences,
     plan_form_from,
+    planning_sentences,
     require_model,
     require_work,
     run_check,
@@ -548,30 +553,33 @@ PLAN_LABEL_MARK: Final = "{plan label}"
 """Where a plan answer names the plan button: the page puts the button's own words there,
 Plan today, Plan again or Make a smaller plan."""
 FOR_A_NEW_PLAN: Final = Clause(f"For a new plan, press {PLAN_LABEL_MARK}.", "button")
-NEWER_PLAN_MADE: Final = "A newer plan for today was made. This press did not replace it."
+NEWER_PLAN_MADE: Final = ("A newer plan for today was made.", "This press did not replace it.")
 NEWER_PLAN: Final = PlanAnswer(
     "her-newer-plan",
     status.HTTP_409_CONFLICT,
-    (Clause(NEWER_PLAN_MADE), Clause("It is shown below.", "plan"), FOR_A_NEW_PLAN),
+    (*fact(*NEWER_PLAN_MADE), Clause("It is shown below.", "plan"), FOR_A_NEW_PLAN),
     NEWER_PLAN_MADE,
 )
 FORM_NOT_WHOLE: Final = PlanAnswer(
     "her-not-whole",
     status.HTTP_422_UNPROCESSABLE_CONTENT,
-    (Clause(NOT_USED), FOR_A_NEW_PLAN),
+    (*fact(*NOT_USED), FOR_A_NEW_PLAN),
     NOT_USED,
 )
 FORM_EXPIRED: Final = PlanAnswer(
     "her-expired",
     status.HTTP_409_CONFLICT,
-    (Clause(OPENED_A_WEEK_AGO), FOR_A_NEW_PLAN),
+    (*fact(*OPENED_A_WEEK_AGO), FOR_A_NEW_PLAN),
     OPENED_A_WEEK_AGO,
 )
-PLAN_MADE_ALREADY_SAID: Final = "That request made a plan for today. No new plan was started."
+PLAN_MADE_ALREADY_SAID: Final = (
+    "That request made a plan for today.",
+    "No new plan was started.",
+)
 PLAN_MADE_ALREADY: Final = PlanAnswer(
     "her-plan-made",
     status.HTTP_409_CONFLICT,
-    (Clause(PLAN_MADE_ALREADY_SAID), FOR_A_NEW_PLAN),
+    (*fact(*PLAN_MADE_ALREADY_SAID), FOR_A_NEW_PLAN),
     PLAN_MADE_ALREADY_SAID,
 )
 
@@ -579,9 +587,9 @@ PLAN_MADE_ALREADY: Final = PlanAnswer(
 def another_evening(evening: date) -> PlanAnswer:
     """A plan press for an evening that isn't today, which starts nothing, naming that
     evening."""
-    said = f"That plan button was for {evening_named(evening)}. No new plan was started."
+    said = (f"That plan button was for {evening_named(evening)}.", "No new plan was started.")
     return PlanAnswer(
-        "her-another-evening", status.HTTP_409_CONFLICT, (Clause(said), FOR_A_NEW_PLAN), said
+        "her-another-evening", status.HTTP_409_CONFLICT, (*fact(*said), FOR_A_NEW_PLAN), said
     )
 
 
@@ -2136,8 +2144,8 @@ def student_page(
        an Undo or a Remove just took a request of hers away, which Today says to her alone,
        beside what the signals kept for today say now.
     ``plan_answer`` is a plan press's answer, its line
-       made from what this page shows: today's plan, and the plan button. Its first sentence
-       takes the focus in place of the line.
+       made from what this page shows: today's plan, and the plan button. Its first sentence,
+       as the answer is built, takes the focus in place of the line.
     """
     viewer = viewer_of(request)
     # An address that only brings a card into view, as a way back from its details does.
@@ -2196,14 +2204,20 @@ def student_page(
     )
     planned = in_todays_plan(view.earlier, record, None if todays is None else todays.reading)
     view = view.model_copy(update={"earlier": kept_in_place(planned, earlier_note)})
+    problem_opening: tuple[str, str] | None = None
     if plan_answer is not None:
         # A press's line says a plan is shown, or names the button, only when this page does.
         button = view.can_plan and plan_answer.offers_form and not view.nothing_to_plan
-        problem = plan_answer.said(
-            lambda needs: needs == "nothing"
-            or (needs == "plan" and view.plan is not None)
-            or (needs == "button" and button)
-        )
+
+        def shows(needs: Needs) -> bool:
+            return (
+                needs == "nothing"
+                or (needs == "plan" and view.plan is not None)
+                or (needs == "button" and button)
+            )
+
+        problem = plan_answer.said(shows)
+        problem_opening = plan_answer.opening(shows)
     if earlier_note is not None and (
         viewer == "parent" or not receipt_holds(earlier_note, planned)
     ):
@@ -2276,7 +2290,7 @@ def student_page(
             "problem": card.problem if card is not None and by_a_card else problem,
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "pressed": pressed,
-            "focus_opening": plan_answer is not None,
+            "problem_opening": problem_opening,
             "plan_failure": plan_failure,
             # A fresh form for every page, except one that answers a run that may still
             # publish, which offers only the check.
@@ -3323,7 +3337,7 @@ class NotShown:
     """What a press's answer says when the page it is shown on can't be read: a heading that
     names the press, the press's own words as they read without that page, the line that
     says which page can't be shown, the ways back, and what she chose and typed. ``opening``
-    gives the focus to the words' first sentence, as a plan press's answer does."""
+    is a plan press's answer as its first sentence, which takes the focus, and the rest."""
 
     heading: str
     said: str
@@ -3331,7 +3345,7 @@ class NotShown:
     ways_back: list[ReturnLink]
     card: CardState | None = None
     hand_in: HandInCard | None = None
-    opening: bool = False
+    opening: tuple[str, str] | None = None
 
 
 def shown_once(
@@ -3761,11 +3775,9 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     async def not_made(answer: PlanAnswer, failure: PlanFailure | None = None) -> HTMLResponse:
         # Her page is read on a worker thread, for at most the store's wait; past it,
         # the page that reads no store says the answer's own words for it.
-        fallback = replace(
-            week_not_shown(request, PLAN_NOT_MADE, answer.elsewhere),
-            said=answer.elsewhere,
-            opening=True,
-        )
+        said = " ".join(answer.elsewhere)
+        shown = week_not_shown(request, PLAN_NOT_MADE, said)
+        fallback = replace(shown, said=said, opening=answer.stand_in(shown.line))
         failure = (
             PlanFailure(try_again=False, uncertain=True)
             if failure is None and not answer.offers_form
@@ -3794,9 +3806,9 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         except Unfinished:
             return not_shown(request, state, fallback, answer.status)
 
-    def before(code: int, said: str, elsewhere: str | None = None) -> PlanAnswer:
+    def before(code: int, said: Sentences, elsewhere: Sentences | None = None) -> PlanAnswer:
         # An answer the button gave before each form planned once, said as it was.
-        return PlanAnswer("her-before", code, fact(said), said if elsewhere is None else elsewhere)
+        return PlanAnswer("her-before", code, fact(*said), said if elsewhere is None else elsewhere)
 
     async def repeated(run: RunState) -> Response:
         # A form whose run is recorded is answered by that run as it stands.
@@ -3809,7 +3821,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                     "her-running",
                     status.HTTP_202_ACCEPTED,
                     fact(notice.said),
-                    notice.said,
+                    (notice.said,),
                     offers_form=False,
                 ),
                 PlanFailure(run=notice.check, try_again=False, uncertain=True),
@@ -3829,8 +3841,8 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             PlanAnswer(
                 "her-ended",
                 status.HTTP_409_CONFLICT,
-                fact(ended_without_a_plan(run.reason, parent=parent)),
-                ended_without_a_plan(run.reason, parent=parent, where=False),
+                fact(*ended_sentences(run.reason, parent=parent)),
+                ended_sentences(run.reason, parent=parent, where=False),
             ),
             None
             if run.reason == NOTHING_TO_SCHEDULE_OUTCOME
@@ -3866,23 +3878,24 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return await not_made(FORM_NOT_WHOLE)
     except AlreadyPlanning as error:
         return await not_made(
-            before(error.status_code, already_planning(error.run, parent=parent)),
+            before(error.status_code, planning_sentences(error.run, parent=parent)),
             PlanFailure(run=run_check(PAGE, error.run.run_id, CHECK_ON_THAT_REQUEST)),
         )
     except NotSaved as error:
         return await not_made(
-            before(error.status_code, not_saved(parent=parent, kept=error.kept)), PlanFailure()
+            before(error.status_code, not_saved_sentences(parent=parent, kept=error.kept)),
+            PlanFailure(),
         )
     except CouldNotStart as error:
         return await not_made(
-            before(error.status_code, f"{COULD_NOT_START} {saved_sentence(parent=parent)}"),
+            before(error.status_code, (*COULD_NOT_START_SENTENCES, saved_sentence(parent=parent))),
             PlanFailure(),
         )
     except Unconfirmed as unconfirmed:
-        said = f"{UNCONFIRMED} {saved_sentence(parent=parent)}"
+        said = (UNCONFIRMED, saved_sentence(parent=parent))
         return await not_made(
             PlanAnswer(
-                "her-unconfirmed", status.HTTP_202_ACCEPTED, fact(said), said, offers_form=False
+                "her-unconfirmed", status.HTTP_202_ACCEPTED, fact(*said), said, offers_form=False
             ),
             PlanFailure(
                 run=run_check(PAGE, unconfirmed.run_id, CHECK_AGAIN),
@@ -3892,15 +3905,15 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         )
     except HTTPException as error:
         return await not_made(
-            before(error.status_code, f"Blossom could not make a plan: {error.detail}")
+            before(error.status_code, (f"Blossom could not make a plan: {error.detail}",))
         )
     except Exception:
         logger.exception("today's plan failed on the way")
         return await not_made(
             before(
                 status.HTTP_409_CONFLICT,
-                ended_without_a_plan(INTERRUPTED, parent=parent),
-                ended_without_a_plan(INTERRUPTED, parent=parent, where=False),
+                ended_sentences(INTERRUPTED, parent=parent),
+                ended_sentences(INTERRUPTED, parent=parent, where=False),
             ),
             PlanFailure(),
         )
@@ -3913,10 +3926,8 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return await not_made(
             before(
                 status.HTTP_409_CONFLICT,
-                ended_without_a_plan(run.outcome, parent=parent, past_due=run.past_due),
-                ended_without_a_plan(
-                    run.outcome, parent=parent, past_due=run.past_due, where=False
-                ),
+                ended_sentences(run.outcome, parent=parent, past_due=run.past_due),
+                ended_sentences(run.outcome, parent=parent, past_due=run.past_due, where=False),
             ),
             None
             if run.outcome == NOTHING_TO_SCHEDULE_OUTCOME
