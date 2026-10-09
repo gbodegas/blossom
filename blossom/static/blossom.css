@@ -1824,25 +1824,46 @@ pre.example {
 
 /* A fieldset is as wide as its widest word and field by default. On the grade review, at
    enlarged text on a phone, that is wider than the page, so there it takes the page's width
-   and its words wrap inside it. */
+   and its words wrap inside it. Its side padding gives way first, to 13vw - 1rem where that
+   is narrower, so a word of a choice, such as a class's name, breaks only where the whole
+   line can't hold it. Every screen 247 pixels or wider with ordinary text, and 493 pixels or
+   wider with text at 200%, keeps the ordinary padding. */
 .grade-review .choice {
   min-width: 0;
-}
-
-/* On a phone with text at 200%, the "Is this her?" choices leave too narrow a line beside
-   each radio. The fieldset's side padding gives way, to 13vw - 1rem where that is narrower,
-   and a choice's words go under its radio when less than 8rem is left beside it. Every
-   screen 246 pixels or wider with ordinary text keeps the ordinary padding and layout. */
-.grade-review .choice.identity {
   padding-inline: clamp(0px, 13vw - 1rem, 1rem);
 }
 
+/* On a phone with text at 200%, the "Is this her?" choices leave too narrow a line beside
+   each radio, so a choice's words go under its radio when less than 8rem is left beside it.
+   Every screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
 .grade-review .choice.identity label {
   flex-wrap: wrap;
 }
 
 .grade-review .choice.identity label > span {
   flex: 1 1 8rem;
+}
+
+/* On a phone with text at 200%, a card of the grade review, or the outcome of a saved
+   report, leaves a line too short for a word of a class, category or assignment name once
+   the ordinary side padding is taken out. The card's side padding gives way first, to
+   13vw - 1rem where that is narrower, and the card reaches into the page's 1.25rem side
+   margin until it is 13vw - 1rem from the screen's edge, so a word breaks only where the
+   whole line can't hold it. Every screen 277 pixels or wider with ordinary text, and 640
+   pixels or wider with text at 200%, keeps the ordinary padding and margin. */
+.grade-review .panel,
+.grade-review article,
+.grade-outcome {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+@media (max-width: 30rem) {
+  .grade-review .panel,
+  .grade-review article,
+  .grade-outcome {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
 }
 
 .choice legend {
