@@ -15,10 +15,12 @@
   The second opens a folded disclosure when a link on the page points inside
   it, so "What is shared" shows what it names.
 
-  The third is for the review page: when everything read is saved already,
+  The third is for the review pages: when everything read is saved already,
   its Save button is disabled, and a type changed on a card or a question
   answered hands the button back, as "Save changes"; the card's own line
-  says what the changed type does.
+  says what the changed type does. On the grade review, an entry picked by
+  hand from a row's list also selects that row's "Choose an existing
+  assignment"; the server still checks the row's answers either way.
 
   The fourth is for a page shown again: by the browser's back/forward cache,
   from a copy it kept, or fetched again by Back, Forward or a refresh. A new
@@ -181,6 +183,17 @@
   if (review) {
     review.addEventListener("change", function (event) {
       var name = event.target.name || "";
+      /* An entry picked by hand from a grade row's list also answers the row with "Choose an
+         existing assignment". A value the browser restores sends no change, and one a script
+         sets isn't trusted, so neither moves the answer. */
+      if (event.isTrusted && name.indexOf("choose.") === 0 && event.target.value) {
+        var choose = review.querySelector(
+          "input[type='radio'][name='match." + name.slice(7) + "'][value='choose']"
+        );
+        if (choose) {
+          choose.checked = true;
+        }
+      }
       if (name.indexOf("kind-") !== 0 && name.indexOf("occurrence-") !== 0) {
         return;
       }

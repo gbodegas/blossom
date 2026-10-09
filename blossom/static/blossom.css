@@ -1269,6 +1269,15 @@ pre.body {
   }
 }
 
+/* The buttons of the grade paste and retry pages hold the page's own words, never a typed one.
+   On a phone with text at 200%, their side padding gives way first, to 13vw - 1rem where that
+   is narrower, and a word stays whole. Every screen 290 pixels or wider with ordinary text,
+   and 580 pixels or wider with text at 200%, keeps the ordinary padding. */
+.grade-panel .decision button {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);
+  overflow-wrap: normal;
+}
+
 label {
   display: flex;
   flex-direction: column;
@@ -1858,6 +1867,59 @@ pre.example {
   padding: 0.75rem 1rem;
   border: 1px solid var(--field-edge);
   border-radius: var(--radius-small);
+}
+
+/* A fieldset is as wide as its widest word and field by default. On the grade review, at
+   enlarged text on a phone, that is wider than the page, so there it takes the page's width
+   and its words wrap inside it. Its side padding gives way first, to 13vw - 1rem where that
+   is narrower, so a word of a choice, such as a class's name, breaks only where the whole
+   line can't hold it. Every screen 247 pixels or wider with ordinary text, and 493 pixels or
+   wider with text at 200%, keeps the ordinary padding. */
+.grade-review .choice {
+  min-width: 0;
+  padding-inline: clamp(0px, 13vw - 1rem, 1rem);
+}
+
+/* On a phone with text at 200%, the "Is this her?" choices leave too narrow a line beside
+   each radio, so a choice's words go under its radio when less than 8rem is left beside it.
+   Every screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
+.grade-review .choice.identity label {
+  flex-wrap: wrap;
+}
+
+.grade-review .choice.identity label > span {
+  flex: 1 1 8rem;
+}
+
+/* A choice of an existing assignment is named by its title, its due date and as much more
+   as tells it apart, which can be longer than a whole line on any screen. Where the browser
+   offers the customizable select, the chosen value wraps onto as many lines as it needs and
+   breaks a long word where it must; elsewhere the select stays one line. */
+.grade-review select {
+  appearance: base-select;
+  overflow-wrap: anywhere;
+}
+
+/* On a phone with text at 200%, a card of the grade review, or the outcome of a saved
+   report, leaves a line too short for a word of a class, category or assignment name once
+   the ordinary side padding is taken out. The card's side padding gives way first, to
+   13vw - 1rem where that is narrower, and the card reaches into the page's 1.25rem side
+   margin until it is 13vw - 1rem from the screen's edge, so a word breaks only where the
+   whole line can't hold it. Every screen 277 pixels or wider with ordinary text, and 640
+   pixels or wider with text at 200%, keeps the ordinary padding and margin. */
+.grade-review .panel,
+.grade-review article,
+.grade-outcome {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+@media (max-width: 30rem) {
+  .grade-review .panel,
+  .grade-review article,
+  .grade-outcome {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
 }
 
 .choice legend {

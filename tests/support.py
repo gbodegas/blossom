@@ -41,6 +41,7 @@ from langchain_core.tracers.langchain import LangChainTracer
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
+from starlette.routing import BaseRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from blossom.agent.compose import Composition, compose
@@ -760,6 +761,16 @@ PATHS = ("BLOSSOM_DATABASE_PATH", "BLOSSOM_CHECKPOINT_PATH", "BLOSSOM_TRACE_PATH
 """The settings that place one household's three files."""
 
 
+def every_route(routes: Iterable[BaseRoute]) -> Iterator[BaseRoute]:
+    """Every route the application answers on, each included router opened up."""
+    for route in routes:
+        included = getattr(route, "original_router", None)
+        if included is None:
+            yield route
+        else:
+            yield from every_route(included.routes)
+
+
 def files_in(folder: pathlib.Path) -> dict[str, str]:
     """The three files of one household under ``folder``, so a second app can open them
     on another day or with the sign-in on."""
@@ -1089,6 +1100,70 @@ def whole_form(html: str, action: str) -> dict[str, str]:
     found = [fields for where, fields in _FormReader(html).forms if where == action]
     assert len(found) == 1, (action, len(found))
     return dict(found[0])
+
+
+class _ValueReader(HTMLParser):
+    """Every control of every form with each value it may send: each radio's, checkbox's and
+    option's value, checked or not, and each other input's and text area's. A control it
+    doesn't know, an option with no value or a named button is refused, not read."""
+
+    def __init__(self, page: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.controls: list[tuple[str, str, str, str]] = []
+        self._action: str | None = None
+        self._list: str | None = None
+        self._area: list[str] | None = None
+        self.feed(page)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        given = dict(attrs)
+        if tag == "form":
+            self._action = given.get("action") or ""
+            return
+        if self._action is None:
+            return
+        name = given.get("name")
+        if tag == "option":
+            assert self._list is not None, given
+            assert given.get("value") is not None, given
+            self.controls.append((self._action, "option", self._list, str(given["value"])))
+        elif tag == "select":
+            assert name, given
+            self._list = name
+        elif tag == "input":
+            kind = given.get("type") or "text"
+            assert kind in ("hidden", "text", "radio", "checkbox"), given
+            assert name, given
+            self.controls.append((self._action, kind, name, given.get("value") or ""))
+        elif tag == "textarea":
+            assert name, given
+            self._area = [self._action, "textarea", name, ""]
+        elif tag == "button":
+            assert name is None, given
+
+    def handle_data(self, data: str) -> None:
+        if self._area is not None:
+            self._area[3] += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "textarea" and self._area is not None:
+            action, kind, name, value = self._area
+            self.controls.append((action, kind, name, value))
+            self._area = None
+        elif tag == "select":
+            self._list = None
+        elif tag == "form":
+            self._action = None
+
+
+def form_values(html: str, action: str) -> list[tuple[str, str, str]]:
+    """Every control of the forms with this action as (its kind, its name, a value it may
+    send): each radio's, checkbox's and option's value, not only the checked ones."""
+    return [
+        (kind, name, value)
+        for where, kind, name, value in _ValueReader(html).controls
+        if where == action
+    ]
 
 
 def form_fields(html: str, action: str) -> dict[str, str]:
@@ -3295,3 +3370,176 @@ def one_query_holds(query: str, view: View) -> bool:
         else:
             raise UnreadCss(query)
     return result
+
+
+# ------------------------------------------------------------- the rules that can reach an element
+
+COMMENT_OR_STRING = re.compile(
+    r"/\*.*?\*/|(\"(?:[^\"\\\n\r\f]|\\.)*\"|'(?:[^'\\\n\r\f]|\\.)*')|[\"']", re.DOTALL
+)
+"""A comment, a string, or a quote that opens no string a browser can read."""
+GROUPS = ("@media", "@supports", "@container")
+"""At-rules whose rules apply under a condition, which is pinned with each rule."""
+SKIPPED = ("@keyframes", "@-webkit-keyframes")
+"""At-rules that hold no rules for elements."""
+FONT_FACE = "@font-face"
+"""Kept with the rules that reach an element, since a font face changes how its text is drawn."""
+CSS_SPACE = " \t\n\r\f"
+VAR_NAME = re.compile(r"var\(\s*(--[\w-]+)")
+UNQUOTED_URL = re.compile(r"url\(\s*[^\s'\"]", re.IGNORECASE)
+"""A ``url()`` without quotes, in which a browser reads ``/*`` as part of the address."""
+
+
+def flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def split_top(text: str, at: str) -> list[str]:
+    """``text`` split at each ``at`` outside brackets and strings, each part flattened, empty
+    ones left out."""
+    shadow = COMMENT_OR_STRING.sub(lambda found: "_" * len(found.group(0)), text)
+    parts, depth, start = [], 0, 0
+    for index, character in enumerate(shadow):
+        depth += 1 if character in "([" else -1 if character in ")]" else 0
+        if character == at and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    return [flat(part) for part in [*parts, text[start:]] if part.strip()]
+
+
+def uncommented(found: re.Match[str]) -> str:
+    """A string as it is, or a comment as a space, which is what a comment is to a browser
+    when a space is next to it. A comment between two tokens fails, and so does a quote that
+    opens no string a browser can read."""
+    if found.group(1):
+        return found.group(1)
+    text, (start, end) = found.string, found.span()
+    assert found.group(0).startswith("/*"), f"unclosed string at {start}"
+    assert text[start - 1 : start] in CSS_SPACE or text[end : end + 1] in CSS_SPACE, (
+        f"comment between two tokens at {start}"
+    )
+    return " "
+
+
+def css_rules(css: str) -> list[tuple[str, str, list[str]]]:
+    """Every style rule as the conditions around it, its selector list, and its declarations.
+    Anything else fails: a ``;`` outside every block or directly inside a group, which a
+    browser reads as the end of an at-rule or as part of the next selector, a nested rule, an
+    at-rule outside GROUPS and SKIPPED, a statement such as ``@import``, an unclosed brace,
+    bracket, string or comment, a brace inside brackets, an escape, a ``url()`` without
+    quotes, and, outside strings, ``<!--``, ``-->`` or a space a browser doesn't read as one."""
+    assert "\\" not in css, "escape"
+    assert not UNQUOTED_URL.search(css), "url() without quotes"
+    text = COMMENT_OR_STRING.sub(uncommented, css)
+    rules: list[tuple[str, str, list[str]]] = []
+    heads: list[str] = []
+    closers: list[str] = []
+    start = index = 0
+    while index < len(text):
+        character = text[index]
+        if character in "\"'":
+            quoted = COMMENT_OR_STRING.match(text, index)
+            assert quoted, f"unclosed string at {index}"
+            index = quoted.end()
+            continue
+        assert not text.startswith(("/*", "<!--", "-->"), index), f"comment mark at {index}"
+        assert not character.isspace() or character in CSS_SPACE, f"odd space at {index}"
+        if character in "([":
+            closers.append(")" if character == "(" else "]")
+        elif character in ")]":
+            assert closers[-1:] == [character], f"stray {character} at {index}"
+            closers.pop()
+        assert not (closers and character in "{}"), f"brace inside brackets at {index}"
+        assert not (character == ";" and (not heads or heads[-1].startswith(GROUPS))), (
+            f"semicolon between rules at {index}"
+        )
+        if character == "{":
+            assert not heads or heads[-1].startswith(GROUPS + SKIPPED), (
+                f"rule nested in {heads[-1]}"
+            )
+            heads.append(flat(text[start:index]))
+            start = index + 1
+        elif character == "}":
+            assert heads, f"closing brace with nothing open at {index}"
+            head = heads.pop()
+            if any(above.startswith(SKIPPED) for above in [*heads, head]):
+                pass
+            elif head.startswith("@") and head != FONT_FACE:
+                assert head.startswith(GROUPS), f"at-rule: {head}"
+            else:
+                rules.append((" / ".join(heads), head, split_top(text[start:index], ";")))
+            start = index + 1
+        index += 1
+    assert not heads, f"the sheet ends inside {heads[-1] if heads else ''}"
+    assert not text[start:].strip(), f"the sheet ends with {flat(text[start:])}"
+    return rules
+
+
+Chain = tuple[tuple[str, frozenset[str], str | None], ...]
+
+
+def may_match(compound: str, chain: Chain) -> bool:
+    """Whether one compound selector could match the element or one around it, by tag,
+    classes and id alone. Everything else is set aside, which can only widen the match."""
+    bare = re.sub(r"::?[\w-]+", "", compound)
+    tag = re.match(r"\*|[\w-]*", bare).group(0).lower()  # type: ignore[union-attr]
+    classes = set(re.findall(r"\.([\w-]+)", bare))
+    ids = set(re.findall(r"#([\w-]+)", bare))
+    return any(
+        tag in ("", "*", name) and classes <= have and ids <= {own} for name, have, own in chain
+    )
+
+
+def may_reach(one: str, chain: Chain) -> bool:
+    """Whether a selector could style the element or one around it. It cannot only when a
+    compound that has to match the element or one above it matches none of them; a
+    compound before ``+`` or ``~`` matches a sibling and is passed over. What brackets and
+    strings hold is set aside first. A selector with a namespace, ``&`` or a bracket inside a
+    bracket of its kind counts as reaching."""
+    one = COMMENT_OR_STRING.sub('""', one)
+    if re.search(r"[|&]|\([^)]*\(|\[[^\]]*\[", one):
+        return True
+    bare = re.sub(r"\[[^\]]*\]|\([^()]*\)", "", one)
+    pieces = [piece for piece in re.split(r"\s*([>+~])\s*|\s+", bare.strip()) if piece]
+    for place, piece in enumerate(pieces):
+        after = pieces[place + 1] if place + 1 < len(pieces) else ""
+        if piece not in (">", "+", "~") and after not in ("+", "~") and not may_match(piece, chain):
+            return False
+    return True
+
+
+def rules_reaching(css: str, *chains: Chain) -> list[str]:
+    """The rules of ``css`` that can reach the element at the start of any of ``chains``, or an
+    element above it, each written as one line, with only the custom properties the others
+    use, directly or through another, and the font faces."""
+    reaching = [
+        rule
+        for rule in css_rules(css)
+        if rule[1] == FONT_FACE
+        or any(may_reach(one, chain) for one in split_top(rule[1], ",") for chain in chains)
+    ]
+    declared = [line for _, _, lines in reaching for line in lines]
+    named = {
+        name for line in declared if not line.startswith("--") for name in VAR_NAME.findall(line)
+    }
+    while (
+        more := {
+            name
+            for line in declared
+            if property_of(line) in named
+            for name in VAR_NAME.findall(line)
+        }
+        - named
+    ):
+        named |= more
+    found = []
+    for conditions, head, lines in reaching:
+        kept = [line for line in lines if not line.startswith("--") or property_of(line) in named]
+        if kept:
+            where = f"{conditions} / " if conditions else ""
+            found.append(f"{where}{head} {{ {'; '.join(kept)} }}")
+    return found
+
+
+def property_of(declaration: str) -> str:
+    return declaration.split(":", 1)[0].strip()

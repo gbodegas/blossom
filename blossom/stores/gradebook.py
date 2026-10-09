@@ -51,8 +51,8 @@ import threading
 import uuid
 from collections.abc import Callable, Collection, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
-from dataclasses import dataclass
-from datetime import UTC
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime
 from typing import Final, Literal, cast, get_args
 
 from blossom.clock import Clock
@@ -105,6 +105,7 @@ from blossom.grades.review import (
     MatchAnswer,
     NotHers,
     OnRecord,
+    RecordedSave,
     ReportUse,
     ReturnReason,
     ReviewPage,
@@ -117,6 +118,8 @@ from blossom.grades.review import (
     rejected_text,
     review_from,
     row_key,
+    rows_still_asking,
+    selectable,
     use_asked,
 )
 
@@ -596,6 +599,12 @@ RESULTS_OBSERVED: Final = (
     "ON r.report_id = o.report_id AND r.student_id = o.student_id "
     "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? ORDER BY o.position"
 )
+LATEST_PLACES: Final = (
+    "SELECT o.report_id, o.result_id, o.position, r.imported_at "
+    "FROM grade_result_observations AS o JOIN grade_reports AS r "
+    "ON r.report_id = o.report_id AND r.student_id = o.student_id "
+    "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ?"
+)
 DECIDED: Final = (
     "SELECT o.report_id, o.evidence, o.result_id, o.how, o.rejected "
     "FROM grade_match_decisions AS o "
@@ -613,6 +622,13 @@ RECORDED: Final = (
     "SELECT source_key, report_id, accepted, added, updated, already_saved, left_to_check, "
     "shown, answers_kept FROM grade_acceptances WHERE student_id = ? AND acceptance_id = ?"
 )
+RECORDED_SAVE: Final = (
+    "SELECT a.identity_status, a.identity_answer, a.class_id, c.display_name, c.year_label, "
+    "a.term_label FROM grade_acceptances AS a JOIN grade_classes AS c "
+    "ON c.class_id = a.class_id AND c.student_id = a.student_id "
+    "WHERE a.student_id = ? AND a.acceptance_id = ? AND a.kind = ?"
+)
+CURRENT_CONTEXT: Final = "SELECT year_label, term_label FROM grade_context WHERE student_id = ?"
 SET_CONTEXT: Final = (
     "INSERT INTO grade_context (student_id, year_label, term_label, set_by, set_at) "
     "VALUES (?, ?, ?, ?, ?)"
@@ -837,6 +853,16 @@ VALUE_FIELDS: Final = {
 which target a value is."""
 LETTER: Final = re.compile(r"[A-F][+-]?")
 """A letter grade, as a parent may assert one."""
+
+
+ACCEPTANCE_ID: Final = re.compile(r"acceptance-[0-9a-f]{32}")
+"""The shape of the acceptance IDs ``new_acceptance_id`` mints."""
+CLASS_ID: Final = re.compile(r"class-[0-9a-f]{32}")
+"""The shape of the class IDs a save mints."""
+RESULT_ID: Final = re.compile(r"result-[0-9a-f]{32}")
+"""The shape of the result IDs a save mints."""
+REVISION_MAX: Final = 2**63 - 1
+"""The largest scope revision the store's integer column holds."""
 
 
 def new_acceptance_id() -> str:
@@ -1357,15 +1383,25 @@ class GradebookRecords:
             return NameConfirmedAgain(identity.form)
 
     def review_grade_report(
-        self, draft: GradeReportDraft, source_key: str, *, key: bytes, complete: bool = False
+        self,
+        draft: GradeReportDraft,
+        source_key: str,
+        *,
+        key: bytes,
+        complete: bool = False,
+        same_class: str | None = None,
+        matches: tuple[MatchAnswer, ...] = (),
     ) -> GradeReview:
         """What saving ``draft`` would do, under a fresh acceptance ID: the identity of its
         line, its setup questions, the scope revision, each value's status, and the
-        report-level choice. ``complete`` is ``reading_complete`` of the reading the draft came
-        from; a reading not known complete never offers the choice for absence alone. A read
-        alone."""
+        report-level choice, the statuses read in ``same_class`` when no alias matched and it
+        is one of the year's classes, with ``matches`` applied as a save applies them.
+        ``complete`` is ``reading_complete`` of the reading the draft came from; a reading not
+        known complete never offers the choice for absence alone. A read alone."""
         with self._lock:
-            return self._review_locked(draft, source_key, key, same_class=None, complete=complete)
+            return self._review_locked(
+                draft, source_key, key, same_class=same_class, matches=matches, complete=complete
+            )
 
     def current_values(self, class_id: str, term: str) -> CurrentValues:
         """Each target's current value in her class and term, the term however its label is
@@ -1397,52 +1433,15 @@ class GradebookRecords:
         chosen = frozenset(selection)
         with self._grade_write(_report_refused):
             student_id = self._her_name_record()[0]
-            recorded = self._recorded(student_id, page.acceptance_id)
-            if recorded is not None:
-                outcome, recorded_source = recorded
-                covered = {item_key for item_key, _ in outcome.accepted}
-                if recorded_source != source_key:
-                    covered = set()
-                return AlreadyRecorded(outcome, chosen - covered)
-            if answers.identity is IdentityAnswer.NOT_HERS:
-                return NotHers()
-            review = self._review_locked(draft, source_key, key, same_class=None, complete=complete)
-            into = review
-            if answers.same_class is not None:
-                into = self._review_locked(
-                    draft, source_key, key, same_class=answers.same_class, complete=complete
-                )
-            if page.source_key != source_key:
-                return ReviewReturned(into, ReturnReason.SOURCE)
-            if review.revision != page.revision or (
-                answers.same_class is not None
-                and self._revision_of(student_id, answers.same_class, draft)
-                != answers.same_class_revision
-            ):
-                return ReviewReturned(into, ReturnReason.REVISION)
-            if (
-                not answers_asked(review, answers)
-                or not matches_asked(into, answers.matches)
-                or not use_asked(into, answers.use)
-            ):
-                return ReviewReturned(into, ReturnReason.ANSWERS)
-            settled = into
-            if answers.matches:
-                settled = self._review_locked(
-                    draft,
-                    source_key,
-                    key,
-                    same_class=answers.same_class,
-                    matches=answers.matches,
-                    complete=complete,
-                )
-            # A value goes back to one a newer report replaced only under the parent's choice
-            # of current, and only when the page showed it as matching an earlier saved value.
-            allowed = settled.ready
-            if answers.use == "current":
-                allowed |= into.back_to & settled.back_to
-            if not chosen <= allowed:
-                return ReviewReturned(into, ReturnReason.SELECTION)
+            checked = self._checked(
+                student_id, draft, source_key, key, page, answers, chosen, complete=complete
+            )
+            if not isinstance(checked, tuple):
+                return checked
+            into, settled = checked
+            refused = _selection_refused(into, settled, answers, chosen)
+            if refused is not None:
+                return refused
             use: ReportUse = answers.use or (
                 "current" if settled.use is None else settled.use.default
             )
@@ -1458,6 +1457,127 @@ class GradebookRecords:
                 complete=complete,
                 use=use,
             )
+
+    def check_grade_answers(
+        self,
+        draft: GradeReportDraft,
+        source_key: str,
+        *,
+        key: bytes,
+        complete: bool,
+        page: ReviewPage,
+        answers: GradeAnswers,
+        selection: Collection[str],
+    ) -> SaveOutcome | GradeReview:
+        """The save's own checks of a page, in its order, writing nothing: a recorded acceptance
+        ID's outcome, "Not hers", or the review returned and why, a tick the save can't take
+        among them; otherwise the review with the answers applied, each row keeping the choices
+        it offered, under the page's own acceptance ID and revision. A read alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            checked = self._checked(
+                student_id,
+                draft,
+                source_key,
+                key,
+                page,
+                answers,
+                frozenset(selection),
+                complete=complete,
+            )
+        if not isinstance(checked, tuple):
+            return checked
+        into, settled = checked
+        refused = _selection_refused(into, settled, answers, frozenset(selection))
+        if refused is not None:
+            return refused
+        offered = {item.key: item.choices for item in into.rows}
+        rows = tuple(
+            item if item.choices else replace(item, choices=offered.get(item.key, ()))
+            for item in settled.rows
+        )
+        return replace(settled, rows=rows, acceptance_id=page.acceptance_id, revision=page.revision)
+
+    def recorded_save(self, acceptance_id: str) -> RecordedSave | None:
+        """Her save of a pasted report recorded under ``acceptance_id``, with its class and term
+        and the current year and term; None when no such save of hers is on record. A read
+        alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            recorded = self._recorded(student_id, acceptance_id)
+            row = self._connection.execute(
+                RECORDED_SAVE, (student_id, acceptance_id, TEXT_KIND)
+            ).fetchone()
+            context = self._connection.execute(CURRENT_CONTEXT, (student_id,)).fetchone()
+        if recorded is None or row is None:
+            return None
+        status, answer, class_id, class_name, year, term = row
+        return RecordedSave(
+            saved=recorded[0],
+            identity_status=IdentityStatus(status),
+            identity_answer=IdentityAnswer(answer),
+            class_id=str(class_id),
+            class_name=str(class_name),
+            year=str(year),
+            term=str(term),
+            context=None if context is None else (str(context[0]), str(context[1])),
+        )
+
+    def _checked(
+        self,
+        student_id: str,
+        draft: GradeReportDraft,
+        source_key: str,
+        key: bytes,
+        page: ReviewPage,
+        answers: GradeAnswers,
+        chosen: frozenset[str],
+        *,
+        complete: bool,
+    ) -> SaveOutcome | tuple[GradeReview, GradeReview]:
+        """A page against the record, in the save's order, under the caller's lock: a recorded
+        acceptance ID, "Not hers", a changed source, a changed revision, answers to no question
+        asked now; otherwise the review in the class the page chose, and with its answers."""
+        recorded = self._recorded(student_id, page.acceptance_id)
+        if recorded is not None:
+            outcome, recorded_source = recorded
+            covered = {item_key for item_key, _ in outcome.accepted}
+            if recorded_source != source_key:
+                covered = set()
+            return AlreadyRecorded(outcome, chosen - covered)
+        if answers.identity is IdentityAnswer.NOT_HERS:
+            return NotHers()
+        review = self._review_locked(draft, source_key, key, same_class=None, complete=complete)
+        into = review
+        if answers.same_class is not None:
+            into = self._review_locked(
+                draft, source_key, key, same_class=answers.same_class, complete=complete
+            )
+        if page.source_key != source_key:
+            return ReviewReturned(into, ReturnReason.SOURCE)
+        if review.revision != page.revision or (
+            answers.same_class is not None
+            and self._revision_of(student_id, answers.same_class, draft)
+            != answers.same_class_revision
+        ):
+            return ReviewReturned(into, ReturnReason.REVISION)
+        if (
+            not answers_asked(review, answers)
+            or not matches_asked(into, answers.matches)
+            or not use_asked(into, answers.use)
+        ):
+            return ReviewReturned(into, ReturnReason.ANSWERS)
+        settled = into
+        if answers.matches:
+            settled = self._review_locked(
+                draft,
+                source_key,
+                key,
+                same_class=answers.same_class,
+                matches=answers.matches,
+                complete=complete,
+            )
+        return into, settled
 
     def _review_locked(
         self,
@@ -1491,8 +1611,15 @@ class GradebookRecords:
         held = NOTHING_HELD
         joins = None
         turned_down: dict[str, set[str]] = {}
+        places: dict[tuple[str, str], tuple[int, date]] = {}
         if reviewed is not None:
             held = self._class_record(student_id, reviewed, term)
+            zone = self._clock.zone
+            for report_id, result_id, position, imported_at in self._connection.execute(
+                LATEST_PLACES, (student_id, reviewed, term)
+            ):
+                added = datetime.fromisoformat(str(imported_at)).astimezone(zone).date()
+                places[(str(report_id), str(result_id))] = (int(position), added)
             (joins,) = self._connection.execute(
                 CAPTURE_JOINS, (student_id, reviewed, term, source_key)
             ).fetchone()
@@ -1527,6 +1654,7 @@ class GradebookRecords:
             shown=shown,
             joins=None if joins is None else int(joins),
             turned_down={key: frozenset(texts) for key, texts in turned_down.items()},
+            places=places,
         )
         return review_from(
             draft, source_key, new_acceptance_id(), on_record, matches, complete=complete
@@ -2411,3 +2539,15 @@ def _confirmer(role: str) -> ConfirmedBy:
         msg = "only a parent, or the household with the sign-in off, changes grade records"
         raise ValueError(msg)
     return cast(ConfirmedBy, role)
+
+
+def _selection_refused(
+    into: GradeReview, settled: GradeReview, answers: GradeAnswers, chosen: frozenset[str]
+) -> ReviewReturned | None:
+    """The review returned when ``chosen`` ticks a value a save can't take, naming the ticks
+    refused and those of them on rows still asking; None when it takes them all."""
+    refused = chosen - selectable(into, settled, answers.use)
+    if not refused:
+        return None
+    asking = refused & rows_still_asking(settled)
+    return ReviewReturned(into, ReturnReason.SELECTION, refused, asking)

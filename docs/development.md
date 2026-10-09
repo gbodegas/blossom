@@ -465,6 +465,32 @@ what makes the change take. "Sign out" forgets the device it is pressed on
 and nothing else; to sign every device out at once, stop the app, delete
 `household.secret`, and start it again.
 
+Grade reports are a parent's to add, on the Add grade report page. With
+sign-in on, a signed-in parent can add one from any device. The review checks
+the student line on a report against a keyed form of her confirmed name, made
+under a key drawn from `household.secret`, so replacing that file also means
+her next grade report asks again whether the name on it is hers; nothing
+already saved changes. A paste Blossom can't read as a grade report comes back
+with its text, and nothing is saved.
+
+With sign-in off, as a sample or test copy runs, the first grade report makes
+`household.secret` beside the database, and the grade pages for parents open
+only in a browser on the computer running Blossom: any loopback client and
+Host, for example `localhost`, `127.0.0.1` or `[::1]`. That mode can't tell
+a parent from her on that computer, so
+phones and tablets need sign-in for these pages. Never set
+`FORWARDED_ALLOW_IPS` and never put a proxy in front of Blossom: either makes
+a request from another device look as if it came from this one. With sign-in
+off, the browser may also keep a review page, student line included, in its
+history.
+
+A grade report keeps the school's own words for her results, notes included,
+and school text may contain names. The student and teacher lines are never
+kept as text; only the keyed form of her name is. A class name given when a
+class is first added is at most 60 characters. The term confirmed at the
+first setup is at most 20, whether typed under "Another" or the report's own
+term chosen with "This report's". These are length limits only.
+
 A `.env` written from an example that named `data/synthetic` needs
 `BLOSSOM_FIXTURE_PATH` cleared before the first start with the record in the
 file. The family's file is safe either way, since a fixture is read only into

@@ -34,6 +34,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from blossom.agent.retention import sweep_saved_state
 from blossom.agent.trace import LocalRunTracer
 from blossom.clock import Clock, SystemClock, clock_from
+from blossom.grades.identity import name_form_key
 from blossom.household import SignInAttempts, keys_for, secret_beside
 from blossom.routes.forms import quiet_the_parser
 from blossom.sample_notes import plant_notes
@@ -298,13 +299,17 @@ def create_lifespan(
                     # sweep that fails still closes the stores.
                     await sweep_saved_state(checkpointer, state.drafts, state.clock)
                     setattr(app.state, STATE_ATTRIBUTE, state)
+                    # The key that name forms are made under comes from the same read of
+                    # the secret as the sign-in keys. With sign-in off, the first grade review
+                    # reads it, so a household that never adds a report never makes one.
+                    app.state.grade_name_key = None
                     if settings.household_sign_in:
                         # A key per person, drawn from the secret kept beside the
                         # database and that person's passphrase: a restart keeps
                         # everyone signed in, a changed passphrase signs one person out.
-                        app.state.household_keys = keys_for(
-                            secret_beside(settings.database_path), settings
-                        )
+                        secret = secret_beside(settings.database_path)
+                        app.state.household_keys = keys_for(secret, settings)
+                        app.state.grade_name_key = name_form_key(secret)
                     # The same rules on a schedule, so a process that outlives a
                     # signal's week or a draft's fortnight keeps them without a restart.
                     sweeper = asyncio.create_task(

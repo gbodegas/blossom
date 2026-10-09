@@ -1,0 +1,235 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% set wide = true %}
+{% block title %}Blossom - Review grade report{% endblock %}
+{% block content %}
+  <h1>Review grade report</h1>
+  <ol class="steps-line" aria-label="Steps">
+    <li>1. Paste</li>
+    <li aria-current="step"><strong>2. Review</strong></li>
+    <li>3. Saved</li>
+  </ol>
+  {#
+    A page a save or a check answered without saving says first what wasn't processed and
+    why, and keeps the text and every answer that still answers what the review asks.
+  #}
+  {% if said %}
+    <p class="problem" role="alert" id="problem">{% for problem in problems %}{{ problem }} {% endfor %}{{ said }}{% if kept_sentence %} {{ kept_sentence }}{% endif %}{% if recorded %} <a href="{{ recorded }}">See what was saved</a>{% endif %}</p>
+    {% if left_out %}
+      <p class="note">{{ left_out_said }}</p>
+      <ul class="unread">
+        {% for title in left_out %}
+          <li><span class="authored-text">{{ title }}</span></li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endif %}
+  <p class="note review-summary" role="status">
+    {{ items|length }} result{% if items|length != 1 %}s{% endif %}: {% for word, count in counts.items() %}{{ count }} {{ word }}{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
+
+  {#
+    Every value is named by its position in the review, never by what it says, and every
+    choice the save will hold against the record is sent as an opaque ID or a fixed word.
+    The text goes back whole, with the line break after the tag that keeps its own first one.
+    No answer is chosen where the record asks to confirm the student line.
+  #}
+  {% set fresh = posted is none %}
+  {% set p = posted or {} %}
+  <form method="post" action="{{ save }}" class="review-form grade-review">
+    <textarea name="report_text" hidden>
+{{ text }}</textarea>
+    <input type="hidden" name="acceptance_id" value="{{ review.acceptance_id }}">
+    <input type="hidden" name="revision" value="{{ 'none' if review.revision is none else review.revision }}">
+    <input type="hidden" name="source_key" value="{{ review.source_key }}">
+    <input type="hidden" name="text_key" value="{{ text_key }}">
+    <input type="hidden" name="identity_form" value="{{ review.identity.form or 'none' }}">
+
+    <div class="review-main">
+      <section class="panel" aria-labelledby="about-heading">
+        <h2 id="about-heading">About this report</h2>
+        <fieldset class="choice identity" id="about-this-report">
+          {% if identity == "matches" %}
+            <legend>Shows <span class="authored-text">{{ student_line }}</span></legend>
+            <input type="hidden" name="identity" value="shown">
+          {% elif identity == "missing" %}
+            <legend>{{ no_student_line }}</legend>
+            <label><input type="radio" name="identity" value="confirmed"{% if p.get("identity") == "confirmed" %} checked{% endif %}> <span>These are her grades</span></label>
+            <label><input type="radio" name="identity" value="not_hers"{% if p.get("identity") == "not_hers" %} checked{% endif %}> <span>Not hers</span></label>
+          {% else %}
+            <legend>{% if identity == "not_confirmed" %}This name isn't one confirmed for her{% elif identity == "confirm_again" %}Please confirm that this report is hers again.{% else %}Is this her?{% endif %}</legend>
+            <p class="note">Student line: <span class="authored-text">{{ student_line }}</span></p>
+            <label><input type="radio" name="identity" value="hers"{% if p.get("identity") == "hers" %} checked{% endif %}> <span>Yes, this is her name</span></label>
+            <label><input type="radio" name="identity" value="misread"{% if p.get("identity") == "misread" %} checked{% endif %}> <span>The name was misread <span class="source">Blossom won't remember this spelling.</span></span></label>
+            <label><input type="radio" name="identity" value="not_hers"{% if p.get("identity") == "not_hers" %} checked{% endif %}> <span>Not hers</span></label>
+          {% endif %}
+        </fieldset>
+
+        {% if review.setup %}
+          <fieldset class="choice" id="setup-question" aria-describedby="setup-hint">
+            <legend>Current school year and term</legend>
+            <p class="helper" id="setup-hint">Grades open on these. Adding a report for another term doesn't change them.</p>
+            <label><input type="radio" name="setup" value="report"{% if fresh or p.get("setup") == "report" %} checked{% endif %}> <span>This report's: {{ review.setup[1] }} · {{ review.setup[0] }}</span></label>
+            <label><input type="radio" name="setup" value="other"{% if p.get("setup") == "other" %} checked{% endif %}> <span>Another:</span></label>
+            <label for="setup-year">School year</label>
+            <div class="field">
+              <input id="setup-year" type="text" name="setup_year" maxlength="9" size="9" placeholder="2026-2027" value="{{ p.get('setup_year', '') }}">
+            </div>
+            <label for="setup-term">Term</label>
+            <div class="field">
+              <input id="setup-term" type="text" name="setup_term" maxlength="{{ term_limit }}" size="8" value="{{ p.get('setup_term', '') }}">
+            </div>
+          </fieldset>
+        {% endif %}
+
+        {% if review.first_month %}
+          <div class="field">
+            <label for="first-month">Month the {{ review.first_month }} school year starts</label>
+            <select id="first-month" name="first_month" aria-describedby="month-hint">
+              <option value="">Choose a month</option>
+              {% for month in months %}
+                <option value="{{ loop.index }}"{% if p.get("first_month") == loop.index|string %} selected{% endif %}>{{ month }}</option>
+              {% endfor %}
+              <option value="unsure"{% if p.get("first_month") == "unsure" %} selected{% endif %}>Not sure yet</option>
+            </select>
+            <p class="helper" id="month-hint">Not sure yet: due dates stay as the report writes them.</p>
+          </div>
+        {% endif %}
+
+        {% set question = review.class_question %}
+        {% if question.matched %}
+          <p>Class: <span class="authored-text">{{ question.offered_name }}</span></p>
+        {% else %}
+          <fieldset class="choice" id="class-question">
+            <legend>Class</legend>
+            <label><input type="radio" name="class" value="new"{% if (fresh and not question.existing) or p.get("class") == "new" %} checked{% endif %}> <span>Name for this class</span></label>
+            <div class="field">
+              <input id="class-name" type="text" name="class_name" maxlength="{{ class_name_limit }}" size="12" value="{{ p['class_name'] if 'class_name' in p else question.offered_name }}" aria-label="Name for this class">
+            </div>
+            {% for class_id, name, revision in question.existing %}
+              {% set value = class_id ~ ":" ~ ("none" if revision is none else revision) %}
+              <label><input type="radio" name="class" value="{{ value }}"{% if p.get("class") == value %} checked{% endif %}> <span>It's the same class as <span class="authored-text">{{ name }}</span></span></label>
+            {% endfor %}
+          </fieldset>
+        {% endif %}
+        <p>Term: {{ term_label }}</p>
+      </section>
+
+      {% if unrecognized %}
+        <section class="panel needs-review" aria-labelledby="unrecognized-heading">
+          <h2 id="unrecognized-heading">Lines Blossom didn't recognize</h2>
+          <p class="note">These lines aren't saved. Check that nothing you need is here.</p>
+          <ul class="unread">
+            {% for line in unrecognized %}
+              <li><code>{{ line }}</code></li>
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
+
+      <section aria-labelledby="values-heading">
+        <h2 id="values-heading">Results</h2>
+        {% for shown in items %}
+          {% set item = shown.item %}
+          {% set i = shown.position %}
+          {% set ticked = shown.ticked if ticks is none else i in ticks %}
+          {% set matched = p.get("match." ~ i) %}
+          <article class="assignment">
+            {% if shown.kind == "term" %}
+              <h3>Term grade on this report: {{ cell(term.percent, "percent") }} · {{ cell(term.letter, "letter grade") }}</h3>
+            {% endif %}
+            {% if shown.kind == "category" %}
+              {% set category = shown.category %}
+              <h3><span class="authored-text">{{ cell(category.name, "Category name") }}</span>: {{ cell(category.weight, "weight", named=true) }}, {{ cell(category.average, "average", named=true) }}</h3>
+            {% elif shown.kind == "row" %}
+              {% set row = shown.row %}
+              <p class="course-name">{{ cell(shown.category.name, "Category name") }}</p>
+              <h3><span class="authored-text">{{ cell(row.assignment, "Assignment") }}</span></h3>
+              <p class="effect">School score: {{ cell(row.points) }} / {{ cell(row.max_points, "maximum") }} · {{ cell(row.status, "Status") }} · Due date shown: {{ cell(row.due) }}</p>
+            {% endif %}
+            <p class="status">
+              <span class="pill">{{ status_word(shown) }}</span>
+              {% if item.due_not_captured and item.status.value != "due_not_captured" %}<span class="pill">Due date not captured</span>{% endif %}
+            </p>
+            {% if item.status.value == "changed" and item.current %}
+              <p class="source">Saved now: {{ saved_now(item.current.cells)|join(" · ") }}</p>
+            {% endif %}
+            {% if shown.kind == "row" %}
+              {% set record = school_record(shown.category, shown.row) %}
+              <details class="steps">
+                <summary>School record details{% if record.cues %}: {{ record.cues|join(", ") }}{% endif %}</summary>
+                <ul>
+                  {% for line in record.lines %}
+                    <li><span class="authored-text">{{ line }}</span></li>
+                  {% endfor %}
+                </ul>
+              </details>
+            {% endif %}
+            {% if shown.selectable %}
+              <fieldset class="choice" id="item-{{ i }}"{% if i in to_resolve %} aria-describedby="item-{{ i }}-problem"{% endif %}>
+                <legend>{% if item.question %}{% if item.question.kind.value == "which" %}Which assignment is this?{% elif item.question.kind.value == "renamed" %}Same assignment, renamed?{% else %}Same assignment, due date changed?{% endif %}{% else %}Save this result{% endif %}</legend>
+                {% if i in to_resolve %}
+                  <p class="problem" id="item-{{ i }}-problem">{{ choose_which }}</p>
+                {% endif %}
+                {% if item.question or item.choices %}
+                  <p class="helper">Answer the question to save this result.</p>
+                {% endif %}
+                <label><input type="checkbox" name="select.{{ i }}" value="1"{% if ticked %} checked{% endif %}> <span>Save this result</span></label>
+                {% if item.question %}
+                  <input type="hidden" name="candidates.{{ i }}" value="{{ item.question.ids|join(' ') }}">
+                  {% set asked = choice_labels(item.question.ids, review.offered) %}
+                  {% for candidate in item.question.candidates %}
+                    <label><input type="radio" name="match.{{ i }}" value="{{ candidate.result_id }}"{% if matched == candidate.result_id %} checked{% endif %}> <span>{% if item.question.candidates|length == 1 %}Same assignment{% else %}<span class="authored-text">{{ asked[candidate.result_id] }}</span>{% endif %}</span></label>
+                  {% endfor %}
+                  <label><input type="radio" name="match.{{ i }}" value="different"{% if matched == "different" or (matched is none and item.remembered) %} checked{% endif %}> <span>A different assignment</span></label>
+                {% endif %}
+                {% if item.choices %}
+                  <input type="hidden" name="choices.{{ i }}" value="{{ item.choices|join(' ') }}">
+                  {% if item.question %}
+                    <label><input type="radio" name="match.{{ i }}" value="choose"{% if matched == "choose" %} checked{% endif %}> <span>Choose an existing assignment</span></label>
+                  {% endif %}
+                  <label for="choose-{{ i }}">Choose an existing assignment</label>
+                  <select id="choose-{{ i }}" name="choose.{{ i }}">
+                    <option value=""></option>
+                    {% set named = choice_labels(item.choices, review.offered) %}
+                    {% for result_id in item.choices %}
+                      <option value="{{ result_id }}"{% if p.get("choose." ~ i) == result_id %} selected{% endif %}>{{ named[result_id] }}</option>
+                    {% endfor %}
+                  </select>
+                {% endif %}
+              </fieldset>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </section>
+
+      {% if review.use %}
+        <fieldset class="choice" id="use-question">
+          <legend>How should Blossom use this report?</legend>
+          {% if review.use.repeats %}
+            <p class="helper">This report repeats values a newer report replaced.</p>
+          {% endif %}
+          <label><input type="radio" name="use" value="current"{% if (fresh and review.use.default == "current") or p.get("use") == "current" %} checked{% endif %}> <span>{% if complete %}Use this as the current school record{% else %}Use these values where this report provides them{% endif %}</span></label>
+          <label><input type="radio" name="use" value="earlier"{% if (fresh and review.use.default == "earlier") or p.get("use") == "earlier" %} checked{% endif %}> <span>Keep as an earlier report</span></label>
+        </fieldset>
+      {% endif %}
+
+      <div class="actions">
+        <button type="submit" class="primary">Save selected results</button>
+        <button type="submit" class="secondary" formaction="{{ check }}">Check these answers</button>
+      </div>
+    </div>
+  </form>
+
+  {# A form of its own, holding one copy of the text and nothing else. #}
+  <form method="post" action="{{ edit }}" class="decision">
+    <textarea name="report_text" hidden>
+{{ text }}</textarea>
+    <div class="actions">
+      <button type="submit" class="secondary">Edit this text</button>
+    </div>
+  </form>
+  <p class="return"><a href="{{ add }}">Paste a different report</a></p>
+{% endblock %}

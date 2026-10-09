@@ -1,0 +1,38 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% block title %}Blossom - Review grade report{% endblock %}
+{% block content %}
+  <h1>Review grade report</h1>
+  <ol class="steps-line" aria-label="Steps">
+    <li>1. Paste</li>
+    <li aria-current="step"><strong>2. Review</strong></li>
+    <li>3. Saved</li>
+  </ol>
+  {#
+    The review's form as it came, under the same acceptance ID, so pressing Save again saves
+    once or answers with the save already recorded. Nothing here was read from the record.
+  #}
+  <p class="problem" role="alert" id="problem">{{ said }} {{ kept_sentence }}</p>
+  <section class="panel grade-panel">
+    <form method="post" action="{{ save }}" class="decision">
+      <textarea name="report_text" hidden>
+{{ text }}</textarea>
+      {% for name, value in fields.items() %}
+        <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endfor %}
+      <div class="actions">
+        <button type="submit" class="primary">Save selected results</button>
+      </div>
+    </form>
+    <form method="post" action="{{ edit }}" class="decision">
+      <textarea name="report_text" hidden>
+{{ text }}</textarea>
+      <div class="actions">
+        <button type="submit" class="secondary">Edit this text</button>
+      </div>
+    </form>
+    <p class="return"><a href="{{ add }}">Paste a different report</a></p>
+  </section>
+{% endblock %}

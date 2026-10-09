@@ -43,8 +43,9 @@ asked now, or a question left unanswered, saves nothing.
 
 import json
 from collections import Counter
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import date
 from enum import StrEnum
 from typing import Final, Literal, get_args
 
@@ -303,6 +304,23 @@ ReportUse = Literal["current", "earlier"]
 
 
 @dataclass(frozen=True)
+class ChoiceFacts:
+    """What tells a result offered for matching apart from the others: its title, category and
+    due cell from its newest observation (``due`` None when no observation captured one), its
+    score from its current value, else that observation, and that observation's report, by the
+    day it was added in the household's zone and its acceptance order, and the row's position."""
+
+    title: Cell
+    category: Cell
+    due: Cell | None
+    points: Cell
+    max_points: Cell
+    report_added: date
+    report_order: int
+    position: int
+
+
+@dataclass(frozen=True)
 class UseChoice:
     """The report-level choice for the new report a save makes: "Use this as the current school
     record" ("Use these values where this report provides them" for a partial reading) or "Keep
@@ -332,6 +350,9 @@ class GradeReview:
     categories: tuple[ReviewItem, ...]
     rows: tuple[ReviewItem, ...]
     use: UseChoice | None = None
+    offered: Mapping[str, ChoiceFacts] = field(default_factory=dict)
+    """By result ID, what tells apart each result a row may choose or a question asks about: the
+    results no row resolved to before any answer applies, and every question's candidates."""
 
     @property
     def items(self) -> tuple[ReviewItem, ...]:
@@ -437,6 +458,22 @@ class AlreadyRecorded:
     uncovered: frozenset[str]
 
 
+@dataclass(frozen=True)
+class RecordedSave:
+    """A committed save of a pasted report as recorded: its outcome, the question about the line
+    and its answer, the class it went into (ID, display name, school year) and the term, and the
+    current year and term as they stand now, None before the first setup."""
+
+    saved: GradeReportSaved
+    identity_status: IdentityStatus
+    identity_answer: IdentityAnswer
+    class_id: str
+    class_name: str
+    year: str
+    term: str
+    context: tuple[str, str] | None
+
+
 class ReturnReason(StrEnum):
     """Why a save returned the review and wrote nothing."""
 
@@ -453,10 +490,13 @@ class ReturnReason(StrEnum):
 
 @dataclass(frozen=True)
 class ReviewReturned:
-    """Nothing was written; the review as it reads now, under a fresh acceptance ID."""
+    """Nothing was written; the review as it reads now, under a fresh acceptance ID. For ticks
+    a save can't take, the keys refused, and those of them on rows still asking."""
 
     review: GradeReview
     why: ReturnReason
+    refused: frozenset[str] = frozenset()
+    still_asking: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -517,6 +557,9 @@ class OnRecord:
     turned_down: Mapping[str, frozenset[str]] = field(default_factory=dict)
     """By row key, the candidates each "A different assignment" this capture's row records keep
     turned down in the class and term reviewed, as ``rejected_text`` writes them."""
+    places: Mapping[tuple[str, str], tuple[int, date]] = field(default_factory=dict)
+    """By report and result, the row position of each observation in the class and term
+    reviewed, and the day its report was added in the household's zone."""
 
     def covers(self, target: str) -> bool:
         """Whether a current report newer than the one this capture's rest joins supplied or
@@ -817,9 +860,10 @@ def _reused(rows: list[_Row], matching: _Matching, settled: set[str]) -> dict[st
 
 def _resolved_rows(
     on_record: OnRecord, rows: list[_Row], matches: Collection[MatchAnswer]
-) -> tuple[ReviewItem, ...]:
-    """Each row resolved: through this capture's acceptance or row records (identity only for a
-    row it showed), by equal evidence, by a reused answer, by an answer bound to the question
+) -> tuple[tuple[ReviewItem, ...], tuple[str, ...]]:
+    """Each row resolved, with the results no row resolved to before any answer applies: through
+    this capture's acceptance or row records (identity only for a row it showed), by equal
+    evidence, by a reused answer, by an answer bound to the question
     asked now or a choice bound to the results offered, as a new result, or with its question
     open. A row whose identity reads but a value doesn't asks as any row does and stays
     Couldn't read, a row missing only its due date asks the same way and stays Due date not
@@ -903,12 +947,35 @@ def _resolved_rows(
             items.append(ReviewItem(row.key, ItemStatus.UNREADABLE))
         else:
             items.append(opened(row))
-    return tuple(
+    resolved_rows = tuple(
         replace(item, due_not_captured=True)
         if row.cells["due"][0] is Presence.NOT_CAPTURED
         else item
         for row, item in zip(rows, items, strict=True)
     )
+    return resolved_rows, free
+
+
+def choice_facts(on_record: OnRecord, results: Iterable[str]) -> dict[str, ChoiceFacts]:
+    """What tells each of ``results`` apart, from its newest observation and its current value."""
+    held = on_record.held
+    offered = {}
+    for result in results:
+        seen = held.latest[result]
+        current = held.current.results.get(result)
+        score = (current or seen).cells
+        position, added = on_record.places[(seen.report_id, result)]
+        offered[result] = ChoiceFacts(
+            title=seen.cells["assignment"],
+            category=seen.cells["category"],
+            due=None if seen.due is None else seen.due.cell,
+            points=score["points"],
+            max_points=score["max_points"],
+            report_added=added,
+            report_order=seen.order,
+            position=position,
+        )
+    return offered
 
 
 def _unasserted(held: ClassRecord) -> ClassRecord:
@@ -973,7 +1040,9 @@ def review_from(
     )
     term_cells = cells_of(TERM_FIELDS, (term.percent, term.letter))
     term_item = item(TERM_KEY, term_cells, held.current.term) if captured else None
-    rows = _resolved_rows(on_record, _rows_of(draft), matches)
+    rows, free = _resolved_rows(on_record, _rows_of(draft), matches)
+    asked = [one for item in rows if item.question is not None for one in item.question.ids]
+    offered = choice_facts(on_record, dict.fromkeys([*free, *asked]))
     values = (*(() if term_item is None else (term_item,)), *categories, *rows)
     return GradeReview(
         acceptance_id=acceptance_id,
@@ -991,6 +1060,7 @@ def review_from(
         categories=categories,
         rows=rows,
         use=None if on_record.joins is not None else _use_choice(held, values, rows, complete),
+        offered=offered,
     )
 
 
@@ -1017,38 +1087,79 @@ def _use_choice(
     return UseChoice("earlier" if repeats else "current", repeats)
 
 
+CLASS_NAME_LIMIT: Final = 60
+"""The most characters a class name a page sends may hold, its spaces folded."""
+TERM_LIMIT: Final = 20
+"""The most characters a term a page confirms as current may hold, its spaces folded."""
+Label = Literal["class_name", "term"]
+"""A label a page sends that a limit bounds: a new class's name, or the setup's term."""
+
+
 def is_current_context(setup: tuple[str, str]) -> bool:
     """Whether a year and term a parent confirms as current are a school year's label and a
-    term."""
+    term within its limit."""
     year, term = setup
-    return is_school_year(year) and bool(folded(term))
+    return is_school_year(year) and 0 < len(folded(term)) <= TERM_LIMIT
 
 
-def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
-    """Whether ``answers`` answer the questions ``review`` asks and no other: the line's own
-    question with the form of the line read now, a school year and term confirmed as current
-    when the setup is asked (the report's offered, any other allowed), the first month of the
-    year asked about (left unconfirmed when absent), and one answer for a class no alias matched."""
+def labels_too_long(answers: GradeAnswers) -> tuple[Label, ...]:
+    """Which of the labels ``answers`` sends exceed their limits, offered or typed: the new
+    class's name, then the setup's term."""
+    over: list[Label] = []
+    if answers.new_class is not None and len(folded(answers.new_class)) > CLASS_NAME_LIMIT:
+        over.append("class_name")
+    if answers.setup is not None and len(folded(answers.setup[1])) > TERM_LIMIT:
+        over.append("term")
+    return tuple(over)
+
+
+def identity_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether the identity answer answers the line's own question, for the form of the line
+    read now."""
     identity = review.identity
-    if answers.identity_form != identity.form:
-        return False
-    if answers.identity not in ANSWERS_FOR[identity.status]:
-        return False
+    return (
+        answers.identity_form == identity.form and answers.identity in ANSWERS_FOR[identity.status]
+    )
+
+
+def setup_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether the setup is answered exactly when it is asked, with a school year and a term
+    within its limit (the report's offered, any other allowed)."""
     if (answers.setup is None) != (review.setup is None):
         return False
-    if answers.setup is not None and not is_current_context(answers.setup):
-        return False
-    if answers.first_month is not None:
-        year, month = answers.first_month
-        if year != review.first_month or not 1 <= month <= 12:
-            return False
+    return answers.setup is None or is_current_context(answers.setup)
+
+
+def first_month_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether a first month, when sent, is a month of the year asked about; none leaves it
+    unconfirmed."""
+    if answers.first_month is None:
+        return True
+    year, month = answers.first_month
+    return year == review.first_month and 1 <= month <= 12
+
+
+def class_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether the class has one answer when no alias matched it, and none when one did: a new
+    class's name within its limit, or one of the year's classes offered."""
     question = review.class_question
     if question.matched is not None:
         return answers.new_class is None and answers.same_class is None
     if answers.same_class is not None:
         offered = {class_id for class_id, _, _ in question.existing}
         return answers.new_class is None and answers.same_class in offered
-    return answers.new_class is not None and bool(folded(answers.new_class))
+    return answers.new_class is not None and 0 < len(folded(answers.new_class)) <= CLASS_NAME_LIMIT
+
+
+def answers_asked(review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether ``answers`` answer the questions ``review`` asks and no other: the line's own
+    question, the setup, the year's first month and the class, each checked alone."""
+    return (
+        identity_asked(review, answers)
+        and setup_asked(review, answers)
+        and first_month_asked(review, answers)
+        and class_asked(review, answers)
+    )
 
 
 def use_asked(review: GradeReview, use: str | None) -> bool:
@@ -1076,3 +1187,80 @@ def matches_asked(review: GradeReview, matches: Collection[MatchAnswer]) -> bool
         elif item.question is None or not _binds(answer, item.question):
             return False
     return True
+
+
+def selectable(into: GradeReview, settled: GradeReview, use: str | None) -> frozenset[str]:
+    """The keys a save may select: the values ready once the matching answers apply, and under
+    the parent's choice of current, those both reviews show as matching an earlier saved one."""
+    # A value goes back to one a newer report replaced only under the parent's choice of
+    # current, and only when the page showed it as matching an earlier saved value.
+    allowed = settled.ready
+    if use == "current":
+        allowed |= into.back_to & settled.back_to
+    return allowed
+
+
+def rows_still_asking(review: GradeReview) -> frozenset[str]:
+    """The keys of the rows that still ask: an open question or choices offered, and no answer
+    bound to the row, whatever status the row shows meanwhile."""
+    return frozenset(
+        item.key
+        for item in review.rows
+        if item.how is None and (item.question is not None or bool(item.choices))
+    )
+
+
+def item_keys(draft: GradeReportDraft) -> tuple[str, ...]:
+    """The key of each value ``draft`` gives, in a review's item order: the term result when the
+    copy has one, the categories, then the rows. A page names its items by position here."""
+    term = draft.term
+    captured = (term.percent.presence, term.letter.presence) != (
+        Presence.NOT_CAPTURED,
+        Presence.NOT_CAPTURED,
+    )
+    rows = tuple(row.key for row in _rows_of(draft))
+    return (*((TERM_KEY,) if captured else ()), *category_keys(draft), *rows)
+
+
+@dataclass(frozen=True)
+class StillAsked:
+    """The parts of a page's answers and ticks that still answer what a review asks now. A part
+    dropped is None or left out, so its control shows unanswered."""
+
+    identity: IdentityAnswer | None
+    setup: tuple[str, str] | None
+    first_month: tuple[str, int] | None
+    new_class: str | None
+    same_class: str | None
+    matches: tuple[MatchAnswer, ...]
+    use: ReportUse | None
+    selection: frozenset[str]
+
+
+def still_asked(
+    review: GradeReview,
+    answers: GradeAnswers,
+    selection: Collection[str],
+    settle: Callable[[tuple[MatchAnswer, ...]], GradeReview],
+) -> StillAsked:
+    """What of ``answers`` and ``selection`` still answers ``review``, each part checked alone:
+    each match answer in the page's order, unless an earlier kept one took its row or result;
+    each tick a save could select with the kept answers applied, by ``settle``."""
+    matches: list[MatchAnswer] = []
+    for answer in answers.matches:
+        if matches_asked(review, (*matches, answer)):
+            matches.append(answer)
+    use = answers.use if use_asked(review, answers.use) else None
+    settled = settle(tuple(matches)) if matches else review
+    allowed = selectable(review, settled, use)
+    kept_class = class_asked(review, answers)
+    return StillAsked(
+        identity=answers.identity if identity_asked(review, answers) else None,
+        setup=answers.setup if setup_asked(review, answers) else None,
+        first_month=answers.first_month if first_month_asked(review, answers) else None,
+        new_class=answers.new_class if kept_class else None,
+        same_class=answers.same_class if kept_class else None,
+        matches=tuple(matches),
+        use=use,
+        selection=frozenset(selection) & allowed,
+    )
