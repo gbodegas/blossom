@@ -1208,10 +1208,10 @@ pre.body {
   padding-inline: clamp(0px, 100000vw - 15450rem - 14500px, 1.6rem);
 }
 
-/* On a narrow screen the card's padding is 1.2rem, so the point is 14.65rem + 14.5px. Below
-   it the card also reaches into the page's side margin, leaving 4% of the screen's width at
-   each edge as Add assignments does, and the field's side padding is 2% of the screen's
-   width. */
+/* On a narrow screen the card's padding is 1.2rem, so the switch is at 14.65rem + 14.5px.
+   Below it the card also reaches into the page's side margin, leaving 4% of the screen's
+   width at each edge as Add assignments does, and the field's side padding is 2% of the
+   screen's width. */
 @media (max-width: 30rem) {
   .panel.plan-panel {
     border-inline-width: clamp(0px, 100000vw - 14650rem - 14500px, 1px);
