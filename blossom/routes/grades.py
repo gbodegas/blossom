@@ -28,7 +28,7 @@ import hashlib
 import ipaddress
 import logging
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, tzinfo
 from typing import Annotated, Final, Literal, cast, get_args
@@ -596,9 +596,9 @@ def status_word(shown: Shown) -> str:
     return STATUS_WORDS[shown.item.status]
 
 
-def all_kept(kept: StillAsked, answers: GradeAnswers) -> bool:
-    """Whether every answer the page sent still answers the review, none dropped."""
-    return (
+def all_kept(kept: StillAsked, answers: GradeAnswers, selection: Collection[str]) -> bool:
+    """Whether every answer and tick the page sent still answers the review, none dropped."""
+    return kept.selection == frozenset(selection) and (
         kept.identity,
         kept.setup,
         kept.first_month,
@@ -1151,6 +1151,30 @@ def titles(review: GradeReview, draft: GradeReportDraft, keys: frozenset[str]) -
     return named
 
 
+def kept_of(
+    state: ApplicationState,
+    form: ReviewForm,
+    review: GradeReview,
+    answers: GradeAnswers,
+    selection: Collection[str],
+    key: bytes,
+) -> StillAsked:
+    """What of ``answers`` and ``selection`` still answers ``review``, each tick judged as a
+    save would judge it, with the kept matching answers applied."""
+
+    def settle(matches: tuple[MatchAnswer, ...]) -> GradeReview:
+        return state.project_state.review_grade_report(
+            form.draft,
+            capture_key(form.draft),
+            key=key,
+            complete=form.complete,
+            same_class=form.free.same_class,
+            matches=matches,
+        )
+
+    return still_asked(review, answers, selection, settle)
+
+
 def ticks_of(form: ReviewForm) -> frozenset[int]:
     """The positions the form ticked."""
     return frozenset(
@@ -1186,7 +1210,7 @@ def returned_page(
             complete=form.complete,
             same_class=form.free.same_class,
         )
-        kept = still_asked(review, answers, outcome.uncovered or posted.selection)
+        kept = kept_of(state, form, review, answers, outcome.uncovered or posted.selection, key)
         fields, ticks = kept_fields(kept, review, form.draft, form.positions)
         left = titles(review, form.draft, outcome.uncovered) if outcome.uncovered else None
         return review_page(
@@ -1199,7 +1223,9 @@ def returned_page(
             ticks=ticks,
             recorded=outcome_address(outcome.saved.acceptance_id),
             left_out=left,
-            kept_sentence=BOTH_KEPT if all_kept(kept, answers) else TEXT_KEPT_ANSWER_AGAIN,
+            kept_sentence=(
+                BOTH_KEPT if all_kept(kept, answers, posted.selection) else TEXT_KEPT_ANSWER_AGAIN
+            ),
         )
     if isinstance(outcome, GradeReview):
         return review_page(request, state, form, outcome, fields=form.fields, ticks=ticks_of(form))
@@ -1233,9 +1259,9 @@ def returned_page(
                 ticks=ticks_of(form),
                 status_code=422,
             )
-    kept = still_asked(review, answers, posted.selection)
+    kept = kept_of(state, form, review, answers, posted.selection, key)
     fields, ticks = kept_fields(kept, review, form.draft, form.positions)
-    every = outcome.why is not ReturnReason.SOURCE and all_kept(kept, answers)
+    every = outcome.why is not ReturnReason.SOURCE and all_kept(kept, answers, posted.selection)
     kept_sentence = BOTH_KEPT if every else TEXT_KEPT_ANSWER_AGAIN
     return review_page(
         request,
@@ -1278,7 +1304,7 @@ def changed_text(
     )
     fields = form.fields
     if answers is not None:
-        kept = still_asked(review, answers, form.posted.selection)
+        kept = kept_of(state, form, review, answers, form.posted.selection, key)
         fields, _ = kept_fields(kept, review, form.draft, form.positions)
     return review_page(
         request,

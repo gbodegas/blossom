@@ -109,6 +109,7 @@ from blossom.grades.review import (
     review_from,
     row_key,
     rows_still_asking,
+    selectable,
     use_asked,
 )
 
@@ -1348,16 +1349,17 @@ class GradebookRecords:
         key: bytes,
         complete: bool = False,
         same_class: str | None = None,
+        matches: tuple[MatchAnswer, ...] = (),
     ) -> GradeReview:
         """What saving ``draft`` would do, under a fresh acceptance ID: the identity of its
         line, its setup questions, the scope revision, each value's status, and the
         report-level choice, the statuses read in ``same_class`` when no alias matched and it
-        is one of the year's classes. ``complete`` is ``reading_complete`` of the reading the
-        draft came from; a reading not known complete never offers the choice for absence
-        alone. A read alone."""
+        is one of the year's classes, with ``matches`` applied as a save applies them.
+        ``complete`` is ``reading_complete`` of the reading the draft came from; a reading not
+        known complete never offers the choice for absence alone. A read alone."""
         with self._lock:
             return self._review_locked(
-                draft, source_key, key, same_class=same_class, complete=complete
+                draft, source_key, key, same_class=same_class, matches=matches, complete=complete
             )
 
     def current_values(self, class_id: str, term: str) -> CurrentValues:
@@ -2423,12 +2425,7 @@ def _selection_refused(
 ) -> ReviewReturned | None:
     """The review returned when ``chosen`` ticks a value a save can't take, naming the ticks
     refused and those of them on rows still asking; None when it takes them all."""
-    # A value goes back to one a newer report replaced only under the parent's choice of
-    # current, and only when the page showed it as matching an earlier saved value.
-    allowed = settled.ready
-    if answers.use == "current":
-        allowed |= into.back_to & settled.back_to
-    refused = chosen - allowed
+    refused = chosen - selectable(into, settled, answers.use)
     if not refused:
         return None
     asking = refused & rows_still_asking(settled)

@@ -94,6 +94,17 @@ def review_of(
 answers_to = grade_answers
 
 
+def settled_by(
+    store: ProjectStateStore, draft: GradeReportDraft = WREN_DRAFT, *, key: bytes = KEY
+) -> Callable[[tuple[MatchAnswer, ...]], GradeReview]:
+    """How a returned page settles the review of ``draft`` with the matching answers it keeps."""
+
+    def settle(matches: tuple[MatchAnswer, ...]) -> GradeReview:
+        return store.review_grade_report(draft, capture_key(draft), key=key, matches=matches)
+
+    return settle
+
+
 def save(
     store: ProjectStateStore,
     draft: GradeReportDraft = WREN_DRAFT,
@@ -1030,7 +1041,9 @@ def test_still_asked_keeps_every_part_that_still_answers() -> None:
     review = review_of(store)
     answers = answers_to(review)
 
-    assert still_asked(review, answers, review.ready) == everything_kept(review, answers)
+    kept = still_asked(review, answers, review.ready, settled_by(store))
+
+    assert kept == everything_kept(review, answers)
 
 
 def test_still_asked_drops_the_identity_alone_when_the_line_s_form_changed() -> None:
@@ -1039,7 +1052,7 @@ def test_still_asked_drops_the_identity_alone_when_the_line_s_form_changed() -> 
     answers = answers_to(review)
     again = review_of(store, key=NEW_KEY)
 
-    kept = still_asked(again, answers, review.ready)
+    kept = still_asked(again, answers, review.ready, settled_by(store, key=NEW_KEY))
 
     assert kept == dataclasses.replace(everything_kept(again, answers), identity=None)
 
@@ -1052,7 +1065,7 @@ def test_still_asked_drops_the_setup_and_month_alone_once_another_class_set_them
     again = review_of(store)
     shown = dataclasses.replace(answers, identity=IdentityAnswer.SHOWN)
 
-    kept = still_asked(again, shown, review.ready)
+    kept = still_asked(again, shown, review.ready, settled_by(store))
 
     assert (again.setup, again.first_month) == (None, None)
     assert kept == dataclasses.replace(everything_kept(again, shown), setup=None, first_month=None)
@@ -1068,7 +1081,7 @@ def test_still_asked_drops_the_class_alone_once_an_alias_matches_it() -> None:
         answers, identity=IdentityAnswer.SHOWN, setup=None, first_month=None
     )
 
-    kept = still_asked(again, shown, review.ready)
+    kept = still_asked(again, shown, review.ready, settled_by(store))
 
     assert again.class_question.matched is not None
     assert kept.new_class is None
@@ -1083,7 +1096,7 @@ def test_still_asked_drops_a_use_no_choice_offers_and_a_tick_not_ready() -> None
     review = review_of(store)
     answers = dataclasses.replace(answers_to(review), use="earlier")
 
-    kept = still_asked(review, answers, {*first.ready, "not-a-key"})
+    kept = still_asked(review, answers, {*first.ready, "not-a-key"}, settled_by(store))
 
     assert review.use is None
     assert kept.use is None
@@ -1101,9 +1114,28 @@ def test_still_asked_keeps_match_answers_alone_and_drops_a_second_for_the_same_r
     elsewhere = MatchAnswer("not-a-row", (), None)
     answers = dataclasses.replace(answers_to(review), matches=(elsewhere, different, different))
 
-    kept = still_asked(review, answers, ())
+    kept = still_asked(review, answers, (), settled_by(store, renamed))
 
     assert kept.matches == (different,)
+
+
+def test_still_asked_keeps_a_tick_its_kept_answer_makes_ready() -> None:
+    """A tick on a row that asks is judged with the row's kept answer applied, as a save
+    judges it: kept with the answer, dropped without one."""
+    store = in_memory()
+    saved(save(store))
+    renamed = draft_of(REPORT.replace(SEVEN, SEVEN.replace("Cell Diagram", "Cell Drawing")))
+    review = review_of(store, renamed)
+    (row,) = [item for item in review.rows if item.question is not None]
+    assert row.question is not None
+    same = MatchAnswer(row.key, row.question.ids, row.question.ids[0])
+    answers = dataclasses.replace(answers_to(review), matches=(same,))
+    unanswered = dataclasses.replace(answers, matches=())
+    settle = settled_by(store, renamed)
+
+    assert row.key not in review.ready
+    assert still_asked(review, answers, {row.key}, settle).selection == {row.key}
+    assert still_asked(review, unanswered, {row.key}, settle).selection == frozenset()
 
 
 # ------------------------------------------------------------- the check and the recorded save
