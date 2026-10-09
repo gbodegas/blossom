@@ -47,6 +47,7 @@ from blossom.routes.runs import (
     PlanGraphs,
     Unconfirmed,
     already_planning,
+    ended_sentences,
     ended_without_a_plan,
     plan_graphs,
 )
@@ -320,13 +321,36 @@ def test_why_there_is_no_plan_is_said_in_plain_words_to_whoever_reads_it() -> No
         due_date=date(2026, 8, 18),
     )
     assert ended_without_a_plan("date_problem", parent=False, past_due=[quiz]) == (
-        "Blossom can't make today's plan: Map quiz (Geography, due August 18) has a due date "
+        "Blossom can't make today's plan. Map quiz (Geography, due August 18) has a due date "
         "that already passed, so no plan can finish it on time. Your homework updates are saved."
     )
+    atlas = PastDueView(
+        assignment_id="assignment-atlas-page",
+        title="Atlas page",
+        course="Art",
+        due_date=date(2026, 8, 17),
+    )
+    assert ended_without_a_plan("date_problem", parent=True, past_due=[quiz, atlas]) == (
+        "Blossom can't make today's plan. Map quiz (Geography, due August 18) and Atlas page "
+        "(Art, due August 17) have due dates that already passed, so no plan can finish them "
+        "on time. Her homework updates are saved. Family review shows what happened."
+    )
     assert ended_without_a_plan("date_problem", parent=False) == (
-        "Blossom can't make today's plan: some work has a due date that already passed, so no "
+        "Blossom can't make today's plan. Some work has a due date that already passed, so no "
         "plan can finish it on time. Your homework updates are saved."
     ), "nothing is named that the record does not show"
+    assert ended_without_a_plan("date_problem", parent=False, evening=date(2026, 8, 20)) == (
+        "Blossom can't make the plan for Thursday, August 20. Some work is due before that "
+        "evening, so no plan can finish it on time. Your homework updates are saved."
+    )
+    openings = [
+        ended_sentences("date_problem", parent=False, past_due=named)[0]
+        for named in ([quiz], [quiz, atlas], [])
+    ]
+    assert openings == ["Blossom can't make today's plan."] * 3, "the work follows the opening"
+    assert ended_sentences("date_problem", parent=True, evening=date(2026, 8, 20))[0] == (
+        "Blossom can't make the plan for Thursday, August 20."
+    )
     for outcome in ("checks_failed", "timed_out", "service_failed", "date_problem"):
         assert "fits this evening" not in ended_without_a_plan(outcome, parent=False)
     assert ended_without_a_plan("nothing_to_schedule", parent=False) == NOTHING_TO_SCHEDULE
@@ -998,7 +1022,7 @@ def test_work_dated_before_today_is_named_with_a_link_to_its_dates_and_no_model_
 
     line = the_line(page)
     assert (
-        "Blossom can&#39;t make today&#39;s plan: Map quiz (Geography, due August 18) has a due "
+        "Blossom can&#39;t make today&#39;s plan. Map quiz (Geography, due August 18) has a due "
         "date that already passed, so no plan can finish it on time. Your homework updates "
         "are saved."
     ) in line
@@ -1711,7 +1735,7 @@ def test_a_date_problem_found_on_load_is_said_as_one_and_names_its_evening() -> 
     line = run_line(date_problem)
     assert line is not None
     assert (
-        "Blossom can&#39;t make today&#39;s plan: some work has a due date that already "
+        "Blossom can&#39;t make today&#39;s plan. Some work has a due date that already "
         "passed, so no plan can finish it on time. Your homework updates are saved."
     ) in line
     assert "reliable" not in line
@@ -1722,7 +1746,7 @@ def test_a_date_problem_found_on_load_is_said_as_one_and_names_its_evening() -> 
     line = run_line(another_evening)
     assert line is not None
     assert (
-        "Blossom can&#39;t make the plan for Thursday, August 20: some work is due before "
+        "Blossom can&#39;t make the plan for Thursday, August 20. Some work is due before "
         "that evening, so no plan can finish it on time."
     ) in line
     assert "today" not in line

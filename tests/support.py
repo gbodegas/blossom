@@ -1185,7 +1185,7 @@ ENDED_REASONS = {
     "timed_out": "Planning took too long, so Blossom stopped.",
     "service_failed": "Blossom couldn't get a plan from the planning service this time.",
     "date_problem": (
-        "Blossom can't make today's plan: some work has a due date that already passed, so "
+        "Blossom can't make today's plan. Some work has a due date that already passed, so "
         "no plan can finish it on time."
     ),
     "checks_failed": "Blossom couldn't finish a reliable plan this time.",

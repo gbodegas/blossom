@@ -1643,23 +1643,29 @@ def plan_made_already(evening: date, today: date) -> Sentences:
     return f"That request made a plan for {named}.", "No new plan was started."
 
 
-def what_the_run_did(run: RunState) -> tuple[tuple[Clause, ...], Sentences]:
+def what_the_run_did(run: RunState, today: date) -> tuple[tuple[Clause, ...], Sentences]:
     """A run a used form asked for, as its answer says it on the page, and without the page:
-    still being made, its plan, or why it ended, in the words its reason gives."""
+    still being made, its plan, or why it ended, in the words its reason gives for its own
+    evening, named when it isn't ``today``."""
     if run.status == "running":
         return fact(STILL_BEING_FINISHED), (STILL_BEING_FINISHED,)
     if run.status == "published":
         return (Clause(PLAN_SHOWN_BELOW, "shown", otherwise=PLAN_MADE),), (PLAN_MADE,)
-    ended = ended_sentences(run.reason, parent=True, where=False)
+    ended = ended_sentences(
+        run.reason,
+        parent=True,
+        evening=None if run.plan_date == today else run.plan_date,
+        where=False,
+    )
     return fact(*ended), ended
 
 
-def asked_another_evening(run: RunState, chosen: date) -> PlanAnswer:
+def asked_another_evening(run: RunState, chosen: date, today: date) -> PlanAnswer:
     """A used form sent with another evening: the evening it was used for, what came of it,
     and that the new evening wasn't planned."""
     asked = f"This form was used for {evening_named(run.plan_date)}."
     nothing = f"No plan was started for {evening_named(chosen)}."
-    outcome, elsewhere = what_the_run_did(run)
+    outcome, elsewhere = what_the_run_did(run, today)
     return PlanAnswer(
         "family-another-evening",
         status.HTTP_409_CONFLICT,
@@ -1671,11 +1677,11 @@ def asked_another_evening(run: RunState, chosen: date) -> PlanAnswer:
     )
 
 
-def asked_with_an_unreadable_date(run: RunState) -> PlanAnswer:
+def asked_with_an_unreadable_date(run: RunState, today: date) -> PlanAnswer:
     """A used form sent with a date that can't be read: the evening it was used for, what
     came of it, and that the new date couldn't be read, so nothing was started."""
     asked = f"This form was used for {evening_named(run.plan_date)}."
-    outcome, elsewhere = what_the_run_did(run)
+    outcome, elsewhere = what_the_run_did(run, today)
     return PlanAnswer(
         "family-unreadable-date",
         status.HTTP_409_CONFLICT,
@@ -1814,10 +1820,11 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     async def repeated(run: RunState, chosen: date | None) -> Response:
         # A form whose run is recorded is answered by that run, or by the evening it asked
         # for when it was sent with another.
+        today = state.clock.today()
         if chosen is None:
-            return await not_made(asked_with_an_unreadable_date(run))
+            return await not_made(asked_with_an_unreadable_date(run, today))
         if chosen != run.plan_date:
-            return await not_made(asked_another_evening(run, chosen))
+            return await not_made(asked_another_evening(run, chosen, today))
         if run.status == "running":
             notice = being_made(run, FAMILY_PAGE)
             return await not_made(
@@ -1836,7 +1843,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             # A published run made a plan, whatever came after it; nothing says it is the
             # newest.
             logger.warning("the plans after run %s could not be read: %s", run.run_id, error)
-            said = plan_made_already(run.plan_date, state.clock.today())
+            said = plan_made_already(run.plan_date, today)
             return await not_made(
                 PlanAnswer(
                     "family-plan-made",
@@ -1853,12 +1860,13 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 "family-plan-latest",
                 RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER),
             )
+        evening = None if run.plan_date == today else run.plan_date
         return await not_made(
             PlanAnswer(
                 "family-ended",
                 status.HTTP_409_CONFLICT,
-                fact(*ended_sentences(run.reason, parent=True)),
-                ended_sentences(run.reason, parent=True, where=False),
+                fact(*ended_sentences(run.reason, parent=True, evening=evening)),
+                ended_sentences(run.reason, parent=True, evening=evening, where=False),
                 keeps=run.plan_date,
             )
         )

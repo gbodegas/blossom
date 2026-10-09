@@ -78,6 +78,7 @@ from tests.support import (
     spoil,
     state_of,
     store_of,
+    unwrapped,
     week_card,
     with_clock,
     words,
@@ -1599,9 +1600,9 @@ def test_undated_work_whose_only_school_date_passed_ends_the_press_before_any_mo
     assert section(shown) == "" or ONLY_PAST.assignment_id not in section(shown)
     assert answer.status_code == 409
     assert (
-        "Blossom can&#39;t make today&#39;s plan: Atlas page (Art, due October 1) has a due "
+        "Blossom can&#39;t make today&#39;s plan. Atlas page (Art, due October 1) has a due "
         "date that already passed, so no plan can finish it on time."
-    ) in answer.text
+    ) in unwrapped(answer.text)
     assert "Check the dates for Atlas page." in answer.text
     assert [planner.calls for planner in briefs] == [0]
     assert [run.outcome for run in ended] == ["date_problem"]
