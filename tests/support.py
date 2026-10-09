@@ -1231,8 +1231,8 @@ FAMILY_PAST_THE_CALENDAR = (
     "Plans reach no later than 9999-12-24."
 )
 FAMILY_ALREADY_PLANNING = (
-    "The last plan request, for Thursday, August 20, is still being finished. Try again in "
-    "about 41 seconds. Her homework updates are saved."
+    "A plan for Thursday, August 20 is being made. Try again in about 41 seconds. Her "
+    "homework updates are saved."
 )
 FAMILY_NOT_SAVED = (
     "Blossom made a plan but couldn't save it. Try again in a moment. Her homework updates "
@@ -1333,9 +1333,43 @@ def family_line(page: str) -> str:
     return "" if found is None else words(found.group(1))
 
 
+OPENING = '<span class="opening" tabindex="-1" autofocus>'
+"""How a plan answer's line begins: its first sentence, which takes the focus in place of the
+line, so the opening is on the screen however long the rest is."""
+FAMILY_LINE = '<p class="problem" role="alert" id="problem">'
+HER_TOP_LINE = '<p class="problem week-problem" role="alert">'
+STAND_IN_LINE = '<p class="problem" role="alert" id="problem-summary">'
+"""The tags of a plan answer's line on the family page, her week and a page that reads no
+store, each taking no focus of its own."""
+
+
+def first_sentence(said: str) -> str:
+    """The first sentence of words written out here, each of whose sentences ends at a
+    period."""
+    head, stop, _ = said.partition(". ")
+    return f"{head}." if stop else said
+
+
+def opening_focused(page: str, line: str) -> str:
+    """The words the line whose tag is ``line`` opens with and gives the focus to, or empty
+    when it gives none: nothing else on the page asks for the focus, and the rest of the line
+    follows after a space. Which sentence that is, a test compares with the words it expects."""
+    found = re.search(re.escape(line + OPENING) + r"(.*?)</span>(.*?)</p>", page, re.S)
+    if found is None or page.count("autofocus") != 1:
+        return ""
+    rest = found.group(2)
+    return words(found.group(1)) if not rest or rest.startswith(" ") else ""
+
+
+def unwrapped(html: str) -> str:
+    """``html`` with a plan answer's opening read as part of its line, the tags that give the
+    focus to its first sentence left out, so the line compares as written."""
+    return re.sub(re.escape(OPENING) + r"(.*?)</span>", r"\1", html, count=1, flags=re.S)
+
+
 def family_line_focused(page: str) -> bool:
-    """Whether the family page's line takes the focus."""
-    return '<p class="problem" role="alert" id="problem" tabindex="-1" autofocus>' in page
+    """Whether the family page's line gives the focus to its first sentence."""
+    return bool(opening_focused(page, FAMILY_LINE))
 
 
 def plan_fold_open(page: str) -> bool | None:
@@ -2250,6 +2284,15 @@ def the_alert(page: str) -> str:
     return "" if found is None else words(found.group(1))
 
 
+def the_answer_alert(page: str) -> str:
+    """The words of a plan answer's one explanation on a page that reads no store, links and
+    all, when it gives the focus to its first sentence; empty otherwise."""
+    found = re.search(re.escape(STAND_IN_LINE) + r"(.*?)</p>", page, re.S)
+    if found is None or not opening_focused(page, STAND_IN_LINE):
+        return ""
+    return words(found.group(1))
+
+
 def database_of(client: TestClient) -> pathlib.Path:
     """The household's file the application on this client keeps its record in."""
     return pathlib.Path(state_of(client).settings.database_path)
@@ -2308,21 +2351,28 @@ STORE_FREE_NEVER = (
 
 
 def store_free_page(
-    answer: Answer, *, status: int, heading: str, alert: str, alert_id: str = "problem-summary"
+    answer: Answer,
+    *,
+    status: int,
+    heading: str,
+    alert: str,
+    alert_id: str = "problem-summary",
+    opening: bool = False,
 ) -> str:
     """What every page that reads no store holds and never holds: its status, its heading,
     one focused explanation with these words, no control, and no pointer to a page it does
-    not show. Its main part."""
+    not show. Its main part. With ``opening``, a plan answer's, the explanation gives the
+    focus to its first sentence."""
     assert answer.status_code == status, (answer.status_code, answer.text[:600])
     main = main_of(answer.text)
     assert f"<h1>{heading}</h1>" in main, main[:600]
+    focus = "" if opening else ' tabindex="-1" autofocus'
     found = re.search(
-        rf'<p class="problem" role="alert" id="{alert_id}" tabindex="-1" autofocus>(.*?)</p>',
-        main,
-        re.S,
+        rf'<p class="problem" role="alert" id="{alert_id}"{focus}>(.*?)</p>', main, re.S
     )
     assert found is not None, main[:600]
     assert words(found.group(1)) == alert, words(found.group(1))
+    assert not opening or opening_focused(main, found.group(0)[: found.start(1) - found.start()])
     assert answer.text.count("autofocus") == 1
     assert 'tabindex="' not in main.replace('tabindex="-1"', "")
     assert "<form" not in main

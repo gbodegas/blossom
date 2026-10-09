@@ -1645,9 +1645,7 @@ def test_the_json_routes_name_another_evenings_running_run(tmp_path: pathlib.Pat
         assert detail["run_id"] == "plan:2026-08-20:family"
         assert detail["plan_date"] == tomorrow.isoformat()
         assert 1 <= detail["seconds_left"] <= RUN_DEADLINE_SECONDS + 1
-        assert detail["message"].startswith(
-            "The last plan request, for Thursday, August 20, is still being finished."
-        )
+        assert detail["message"].startswith("A plan for Thursday, August 20 is being made.")
     assert hers.json()["detail"]["message"].endswith("Your homework updates are saved.")
     assert family.json()["detail"]["message"].endswith("Her homework updates are saved.")
     assert rows == 1

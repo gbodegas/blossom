@@ -99,6 +99,7 @@ from blossom.routes.runs import (
     CHECK_ON_IT,
     CHECK_ON_THAT_REQUEST,
     COULD_NOT_START,
+    COULD_NOT_START_SENTENCES,
     EVENING,
     NOT_USED,
     OPENED_A_WEEK_AGO,
@@ -119,9 +120,10 @@ from blossom.routes.runs import (
     RunCheck,
     RunNotice,
     SameRun,
+    Sentences,
     Unconfirmed,
-    already_planning,
     being_made,
+    ended_sentences,
     ended_without_a_plan,
     evening_named,
     fact,
@@ -130,7 +132,9 @@ from blossom.routes.runs import (
     landed,
     make_plan,
     not_saved,
+    not_saved_sentences,
     plan_form_from,
+    planning_sentences,
     refuse_an_empty_run,
     require_model,
     require_work,
@@ -371,9 +375,6 @@ WITHOUT_THE_PAGE: Final[dict[str, str]] = {
     CHECK_NOTE_TOO_LONG: (
         f"Nothing was written, because the note is longer than {CHECK_NOTE_MAX_LENGTH} characters."
     ),
-    PLAN_INTERRUPTED: (
-        "Blossom couldn't finish a reliable plan this time. Her homework updates are saved."
-    ),
     ALREADY_TAKEN_UP: "This request was already taken up. Your words weren't added.",
     FORM_ADDED_OTHER_WORDS: (
         "This page already sent a different update. Your new message wasn't added."
@@ -593,18 +594,19 @@ def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
     return read_a_plan(state, record, current=current, today=today).view
 
 
-def passed(evening: date) -> str:
+def passed(evening: date) -> Sentences:
     """Why a plan for a past evening is refused: no page of hers would ever show it."""
     return (
-        f"The evening of {evening.isoformat()} has passed. Plans are for today or a later evening."
+        f"The evening of {evening.isoformat()} has passed.",
+        "Plans are for today or a later evening.",
     )
 
 
-def beyond(evening: date) -> str:
+def beyond(evening: date) -> Sentences:
     """Why a plan for an evening past the calendar's edge is refused: its week cannot be read."""
     return (
-        f"The evening of {evening.isoformat()} is past the edge of the calendar. "
-        f"Plans reach no later than {(date.max - CALENDAR_MARGIN).isoformat()}."
+        f"The evening of {evening.isoformat()} is past the edge of the calendar.",
+        f"Plans reach no later than {(date.max - CALENDAR_MARGIN).isoformat()}.",
     )
 
 
@@ -634,9 +636,9 @@ async def start_plan(
     budget = graphs.budget()
     evening = request.plan_date or state.clock.today()
     if evening < state.clock.today():
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=passed(evening))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=" ".join(passed(evening)))
     if evening > date.max - CALENDAR_MARGIN:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=beyond(evening))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=" ".join(beyond(evening)))
     could_not_start = f"{COULD_NOT_START} {saved_sentence(parent=True)}"
     try:
         await require_work(state, evening, budget)
@@ -1035,7 +1037,6 @@ def review_page(
     status_code: int = status.HTTP_200_OK,
     plan_date_kept: str | None = None,
     offers_plan: bool = True,
-    focus_problem: bool = False,
     plan_answer: PlanAnswer | None = None,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to add assignments,
@@ -1051,9 +1052,10 @@ def review_page(
     link to the row, so it is met on a page that opens at its top.
     ``open_plan`` is a plan a link came back to, whose folds are opened.
     ``problem_check`` links the problem to the run it names, and ``run_notice`` is what
-    the page says about a planning run. ``focus_problem`` has the problem take the focus,
-    so a plan press it answers lands on its words. A waiting plan no review could resume says so in
-    place of its two buttons, as the decision itself refuses it. ``help_reply`` is the
+    the page says about a planning run. ``plan_answer`` is a plan press's answer, whose
+    first sentence takes the focus, so the press lands on its opening. A waiting plan no
+    review could resume says so in place of its two buttons, as the decision itself refuses
+    it. ``help_reply`` is the
     words a refused press sent back, shown in its request's box while that request is
     open on the page, and under the problem otherwise. Each open request's form gets a
     fresh id of its own, so the same form sent again is known as one. ``reason_kept`` is
@@ -1072,7 +1074,7 @@ def review_page(
         offers_plan = plan_answer.offers_form
         open_plan = plan_answer.open_plan
         problem_check = plan_answer.check
-        focus_problem = True
+    problem_opening: tuple[str, str] | None = None
     about_a_row = check is not None and check.problem is not None and problem is None
     # The household day is read once for the page. The drafts are read once
     # too, in one reading of the table: what waits, what was decided, and
@@ -1178,6 +1180,11 @@ def review_page(
             return held.get(needs, False)
 
         problem = plan_answer.said(shows).replace(PLACE_MARK, place or "")
+        first, rest = plan_answer.opening(shows)
+        problem_opening = (
+            first.replace(PLACE_MARK, place or ""),
+            rest.replace(PLACE_MARK, place or ""),
+        )
     return templates.TemplateResponse(
         request,
         "parent_review.html",
@@ -1202,7 +1209,7 @@ def review_page(
             "ended": ended,
             "unresumable": unresumable_now,
             "problem_check": problem_check,
-            "focus_problem": focus_problem,
+            "problem_opening": problem_opening,
             "run_notice": run_notice,
             # Open when the latest run of an evening still ahead made no plan, so the
             # parent sees why without looking for it.
@@ -1620,46 +1627,44 @@ STILL_BEING_FINISHED: Final = "That request is still being finished."
 PLAN_SHOWN_BELOW: Final = "That plan is shown below."
 PLAN_MADE: Final = "That plan was made."
 """What came of a used form's run when no page shows its plan."""
-DATE_NOT_READ: Final = "The new date couldn't be read. No new plan was started."
+DATE_NOT_READ: Final = ("The new date couldn't be read.", "No new plan was started.")
 
 
-def newer_plan_made(evening: date) -> str:
+def newer_plan_made(evening: date) -> Sentences:
     """Why a press from a page that didn't know an evening's newest plan replaced nothing,
     with no place on a page. Its own run may have started, so nothing says none did."""
-    return f"A newer plan for {evening_named(evening)} was made. This press did not replace it."
+    return f"A newer plan for {evening_named(evening)} was made.", "This press did not replace it."
 
 
-def plan_made_already(evening: date, today: date) -> str:
+def plan_made_already(evening: date, today: date) -> Sentences:
     """Why a used form whose run made a plan starts nothing, when what came after that plan
     can't be read: its evening named, or today."""
     named = "today" if evening == today else evening_named(evening)
-    return f"That request made a plan for {named}. No new plan was started."
+    return f"That request made a plan for {named}.", "No new plan was started."
 
 
-def what_the_run_did(run: RunState) -> tuple[Clause, str]:
+def what_the_run_did(run: RunState) -> tuple[tuple[Clause, ...], Sentences]:
     """A run a used form asked for, as its answer says it on the page, and without the page:
     still being made, its plan, or why it ended, in the words its reason gives."""
     if run.status == "running":
-        return Clause(STILL_BEING_FINISHED), STILL_BEING_FINISHED
+        return fact(STILL_BEING_FINISHED), (STILL_BEING_FINISHED,)
     if run.status == "published":
-        return Clause(PLAN_SHOWN_BELOW, "shown", otherwise=PLAN_MADE), PLAN_MADE
-    return (
-        Clause(ended_without_a_plan(run.reason, parent=True)),
-        ended_without_a_plan(run.reason, parent=True, where=False),
-    )
+        return (Clause(PLAN_SHOWN_BELOW, "shown", otherwise=PLAN_MADE),), (PLAN_MADE,)
+    ended = ended_sentences(run.reason, parent=True, where=False)
+    return fact(*ended), ended
 
 
 def asked_another_evening(run: RunState, chosen: date) -> PlanAnswer:
     """A used form sent with another evening: the evening it was used for, what came of it,
-    and that the new evening wasn't planned, with the way to a new plan when the form shows."""
+    and that the new evening wasn't planned."""
     asked = f"This form was used for {evening_named(run.plan_date)}."
     nothing = f"No plan was started for {evening_named(chosen)}."
     outcome, elsewhere = what_the_run_did(run)
     return PlanAnswer(
         "family-another-evening",
         status.HTTP_409_CONFLICT,
-        (Clause(asked), outcome, Clause(nothing), FOR_A_NEW_PLAN),
-        f"{asked} {elsewhere} {nothing}",
+        (Clause(asked), *outcome, Clause(nothing)),
+        (asked, *elsewhere, nothing),
         keeps=chosen,
         open_plan=run.draft.draft_id if run.status == "published" and run.draft else None,
         check=run_check(FAMILY_PAGE, run.run_id, CHECK_ON_IT) if run.status == "running" else None,
@@ -1668,26 +1673,26 @@ def asked_another_evening(run: RunState, chosen: date) -> PlanAnswer:
 
 def asked_with_an_unreadable_date(run: RunState) -> PlanAnswer:
     """A used form sent with a date that can't be read: the evening it was used for, what
-    came of it, and the way to a new plan when the form is shown."""
+    came of it, and that the new date couldn't be read, so nothing was started."""
     asked = f"This form was used for {evening_named(run.plan_date)}."
     outcome, elsewhere = what_the_run_did(run)
     return PlanAnswer(
         "family-unreadable-date",
         status.HTTP_409_CONFLICT,
-        (Clause(asked), outcome, Clause(DATE_NOT_READ), FOR_A_NEW_PLAN),
-        f"{asked} {elsewhere} {DATE_NOT_READ}",
+        (Clause(asked), *outcome, *fact(*DATE_NOT_READ)),
+        (asked, *elsewhere, *DATE_NOT_READ),
         open_plan=run.draft.draft_id if run.status == "published" and run.draft else None,
         check=run_check(FAMILY_PAGE, run.run_id, CHECK_ON_IT) if run.status == "running" else None,
     )
 
 
-def refused_form(row: PlanRow, code: int, said: str, kept: date | None) -> PlanAnswer:
+def refused_form(row: PlanRow, code: int, said: Sentences, kept: date | None) -> PlanAnswer:
     """A form that starts nothing as it came, keeping the date ``kept`` in the form, with the
     way to a new plan when the form is shown."""
     return PlanAnswer(
         row,
         code,
-        (Clause(said), FOR_A_NEW_PLAN),
+        (*fact(*said), FOR_A_NEW_PLAN),
         said,
         keeps=kept,
     )
@@ -1696,18 +1701,18 @@ def refused_form(row: PlanRow, code: int, said: str, kept: date | None) -> PlanA
 def said_as_it_is(
     row: PlanRow,
     code: int,
-    said: str,
+    said: Sentences,
     kept: date | None,
     check: RunCheck | None = None,
     *,
-    elsewhere: str | None = None,
+    elsewhere: Sentences | None = None,
 ) -> PlanAnswer:
     """An answer whose words name nothing on the page, so its stand-in says them too unless it
     has words of its own; the open plan form holds the date ``kept``, or today without one."""
     return PlanAnswer(
         row,
         code,
-        fact(said),
+        fact(*said),
         said if elsewhere is None else elsewhere,
         keeps=kept,
         check=check,
@@ -1733,10 +1738,11 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     more, starts nothing and keeps the date chosen when it can be read, and so does one whose
     page didn't know the evening's newest plan, which is then shown.
 
-    Every answer is a ``PlanAnswer``: a line whose clauses about the page are said only when
-    the page sent shows what they name, words of its own for the stand-in, and what it keeps.
-    Each line takes the focus, and each answer that shows the plan form opens it holding the
-    date chosen when it can be read, refusals of the date itself included.
+    Every answer is a ``PlanAnswer``: a line of sentences whose clauses about the page are
+    said only when the page sent shows what they name, sentences of its own for the stand-in,
+    and what it keeps. Each line's first sentence, as the answer is built, takes the focus,
+    and each answer that shows the plan form opens it holding the date chosen when it can be
+    read, refusals of the date itself included.
     A run that fails on the way for any reason other than a refusal is said on the page as a
     plan Blossom couldn't finish, and the failure goes to the process log. An evening that
     has passed is refused before anything runs, and so is one past the edge of the calendar,
@@ -1756,13 +1762,18 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         try:
             return await bounded(
                 lambda: refused_on_the_page(
-                    request, state, answer.elsewhere, answer.status, plan_answer=answer
+                    request, state, " ".join(answer.elsewhere), answer.status, plan_answer=answer
                 ),
                 STORE_WAIT_SECONDS,
             )
         except Unfinished:
             return family_not_shown(
-                request, state, answer.elsewhere, answer.status, line=FAMILY_NOT_SHOWN
+                request,
+                state,
+                " ".join(answer.elsewhere),
+                answer.status,
+                line=FAMILY_NOT_SHOWN,
+                opening=answer.stand_in(FAMILY_NOT_SHOWN),
             )
 
     def read_date(blank: date) -> date | None:
@@ -1784,7 +1795,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 PlanAnswer(
                     "family-newer-plan-unread",
                     status.HTTP_409_CONFLICT,
-                    (Clause(made), FOR_A_NEW_PLAN),
+                    (*fact(*made), FOR_A_NEW_PLAN),
                     made,
                     keeps=evening,
                 )
@@ -1793,7 +1804,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             PlanAnswer(
                 "family-newer-plan",
                 status.HTTP_409_CONFLICT,
-                (Clause(made), Clause(PLAN_SHOWN, "place"), FOR_A_NEW_PLAN),
+                (*fact(*made), Clause(PLAN_SHOWN, "place"), FOR_A_NEW_PLAN),
                 made,
                 keeps=evening,
                 open_plan=None if latest is None else latest.draft_id,
@@ -1814,7 +1825,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                     "family-running",
                     status.HTTP_202_ACCEPTED,
                     fact(notice.said),
-                    notice.said,
+                    (notice.said,),
                     offers_form=False,
                     check=notice.check,
                 )
@@ -1830,7 +1841,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 PlanAnswer(
                     "family-plan-made",
                     status.HTTP_409_CONFLICT,
-                    (Clause(said), FOR_A_NEW_PLAN),
+                    (*fact(*said), FOR_A_NEW_PLAN),
                     said,
                     keeps=run.plan_date,
                 )
@@ -1846,8 +1857,8 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             PlanAnswer(
                 "family-ended",
                 status.HTTP_409_CONFLICT,
-                fact(ended_without_a_plan(run.reason, parent=True)),
-                ended_without_a_plan(run.reason, parent=True, where=False),
+                fact(*ended_sentences(run.reason, parent=True)),
+                ended_sentences(run.reason, parent=True, where=False),
                 keeps=run.plan_date,
             )
         )
@@ -1880,7 +1891,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             said_as_it_is(
                 "family-not-a-date",
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"{plan_date!r} is not a date. Use the form YYYY-MM-DD.",
+                (f"{plan_date!r} is not a date.", "Use the form YYYY-MM-DD."),
                 None,
             )
         )
@@ -1926,7 +1937,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             said_as_it_is(
                 "family-already-planning",
                 error.status_code,
-                already_planning(error.run, parent=True),
+                planning_sentences(error.run, parent=True),
                 evening,
                 run_check(FAMILY_PAGE, error.run.run_id, CHECK_ON_THAT_REQUEST),
             )
@@ -1936,7 +1947,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             said_as_it_is(
                 "family-not-saved",
                 error.status_code,
-                not_saved(parent=True, kept=error.kept),
+                not_saved_sentences(parent=True, kept=error.kept),
                 evening,
             )
         )
@@ -1945,17 +1956,17 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             said_as_it_is(
                 "family-could-not-start",
                 error.status_code,
-                f"{COULD_NOT_START} {saved_sentence(parent=True)}",
+                (*COULD_NOT_START_SENTENCES, saved_sentence(parent=True)),
                 evening,
             )
         )
     except Unconfirmed as unconfirmed:
-        said = f"{UNCONFIRMED} {saved_sentence(parent=True)}"
+        said = (UNCONFIRMED, saved_sentence(parent=True))
         return await not_made(
             PlanAnswer(
                 "family-unconfirmed",
                 status.HTTP_202_ACCEPTED,
-                fact(said),
+                fact(*said),
                 said,
                 offers_form=False,
                 check=run_check(FAMILY_PAGE, unconfirmed.run_id, CHECK_AGAIN),
@@ -1963,7 +1974,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         )
     except HTTPException as error:
         return await not_made(
-            said_as_it_is("family-refused", error.status_code, str(error.detail), evening)
+            said_as_it_is("family-refused", error.status_code, (str(error.detail),), evening)
         )
     except Exception:
         logger.exception("the plan for %s failed on the way", evening)
@@ -1971,9 +1982,9 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             said_as_it_is(
                 "family-interrupted",
                 status.HTTP_409_CONFLICT,
-                PLAN_INTERRUPTED,
+                ended_sentences(INTERRUPTED, parent=True),
                 evening,
-                elsewhere=WITHOUT_THE_PAGE[PLAN_INTERRUPTED],
+                elsewhere=ended_sentences(INTERRUPTED, parent=True, where=False),
             )
         )
     if made.view.outcome == OVERTAKEN:
@@ -2107,9 +2118,11 @@ def family_not_shown(
     line: str | None = None,
     kept: FamilyKept | None = None,
     title: str = "Family review",
+    opening: tuple[str, str] | None = None,
 ) -> HTMLResponse:
     """The family page's stand-in, which reads no store: what happened, which page can't be
-    shown when a refusal's own page is what failed, and what a parent typed."""
+    shown when a refusal's own page is what failed, and what a parent typed. ``opening`` is a
+    plan press's answer as its first sentence, which takes the focus, and the rest."""
     typed = kept or FamilyKept()
     return templates.TemplateResponse(
         request,
@@ -2121,6 +2134,7 @@ def family_not_shown(
             "note": typed.note,
             "reply": typed.reply,
             "reason": typed.reason,
+            "opening": opening,
             "marks": state.settings.page_marks,
         },
         status_code=status_code,
@@ -2135,11 +2149,14 @@ def reviewed_once(
     status_code: int,
     kept: FamilyKept | None = None,
     elsewhere: str | None = None,
+    *,
+    opening: tuple[str, str] | None = None,
 ) -> HTMLResponse:
     """A refusal shown on the family page, tried once. When a read for that page fails, its
     stand-in, with the refusal's status, its words as they read without the page (``elsewhere``
     when given), and what was typed: made from what the request already held, so no store is
-    called after the failure. Any other failure is not caught here."""
+    called after the failure. ``opening``, a plan press's answer split after its first
+    sentence, gives that sentence the focus. Any other failure is not caught here."""
     try:
         return page()
     except sqlite3.Error as error:
@@ -2151,6 +2168,7 @@ def reviewed_once(
             status_code,
             line=FAMILY_NOT_SHOWN,
             kept=kept,
+            opening=opening,
         )
 
 
@@ -2167,7 +2185,6 @@ def refused_on_the_page(
     plan_date_kept: str | None = None,
     offers_plan: bool = True,
     open_plan: str | None = None,
-    focus_problem: bool = False,
     elsewhere: str | None = None,
     plan_answer: PlanAnswer | None = None,
 ) -> HTMLResponse:
@@ -2175,9 +2192,9 @@ def refused_on_the_page(
     would answer, ``check`` the link to the run it names, ``help_reply`` a reply to her
     request as typed, and ``reason_kept`` a note about a plan as typed, tried once.
     ``plan_date_kept`` refills the plan form's date, ``offers_plan`` false leaves the plan
-    form out, ``open_plan`` opens a plan, ``focus_problem`` has the problem take the focus, and
-    ``elsewhere`` is the problem as its stand-in says it. ``plan_answer`` is a plan press's
-    answer, its line made from the page and its stand-in words its own."""
+    form out, ``open_plan`` opens a plan, and ``elsewhere`` is the problem as its stand-in
+    says it. ``plan_answer`` is a plan press's answer, its line made from the page and its
+    stand-in words its own, whose first sentence as built takes the focus on both."""
     return reviewed_once(
         request,
         state,
@@ -2192,13 +2209,13 @@ def refused_on_the_page(
             plan_date_kept=plan_date_kept,
             offers_plan=offers_plan,
             open_plan=open_plan,
-            focus_problem=focus_problem,
             plan_answer=plan_answer,
         ),
         problem,
         status_code,
         kept,
-        elsewhere if plan_answer is None else plan_answer.elsewhere,
+        elsewhere if plan_answer is None else " ".join(plan_answer.elsewhere),
+        opening=None if plan_answer is None else plan_answer.stand_in(FAMILY_NOT_SHOWN),
     )
 
 

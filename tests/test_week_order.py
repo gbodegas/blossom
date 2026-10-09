@@ -47,9 +47,11 @@ from tests.support import (
     ESSAY_ID,
     FIXTURE_WEEK,
     HER_PAGE,
+    HER_TOP_LINE,
     LATER_WEEK,
     NOTHING_TO_PLAN,
     NOW,
+    OPENING,
     PAGE_HEADERS,
     PLAN_DATE,
     PROBLEM_CUE,
@@ -331,7 +333,8 @@ def in_an_update(page: str, place: int) -> bool:
 def marked_on_arrival(page: str, tag: str) -> bool:
     """Whether the rule for this element marks it when the focus arrives: the top line, a
     card's problem line in an update and the To turn in list's problem line widen their own
-    edge, a result line and the homework heading take the arrival cue, and a field its ring."""
+    edge, a result line and the homework heading take the arrival cue, and a field and a plan
+    answer's first sentence its ring."""
     place = page.index(tag)
     checks = [
         ('class="problem week-problem"' in tag, ".week-problem:focus", PROBLEM_CUE),
@@ -347,6 +350,7 @@ def marked_on_arrival(page: str, tag: str) -> bool:
         ('class="list-heading"' in tag, ".list-heading:focus", ARRIVAL_CUE),
         (tag.startswith("<input"), "input:focus-visible", RING),
         (tag.startswith("<textarea"), "textarea:focus-visible", RING),
+        (tag == OPENING, ".problem .opening:focus", RING),
     ]
     return any(matches and cue in declared_for(selector) for matches, selector, cue in checks)
 
@@ -1319,8 +1323,9 @@ def test_a_refusal_about_work_no_card_shows_is_said_at_the_top_with_the_focus(
 def test_a_plan_the_button_could_not_make_is_said_at_the_top_with_the_focus(
     case: str, reader: str, tmp_path: pathlib.Path
 ) -> None:
-    """The plan button's three refusals, from scripted graphs: the top line takes the
-    focus, and See homework is there below, since work is left and no plan was made."""
+    """The plan button's three refusals, from scripted graphs: the top line's first sentence
+    takes the focus, and See homework is there below, since work is left and no plan was
+    made."""
     graphs, status, said = PLAN_REFUSED[case]
     with reading(reader, tmp_path, graphs=graphs) as client:
         # With no model to ask the page offers no button, so the press carries a fresh form.
@@ -1330,8 +1335,10 @@ def test_a_plan_the_button_could_not_make_is_said_at_the_top_with_the_focus(
     assert answer.status_code == status
     page = main_of(answer.text)
     asked = one_focus(answer)
-    assert asked == TOP_FOCUSED
-    assert top_line(page).startswith(TOP_FOCUSED + said), top_line(page)
+    line = top_line(page)
+    assert asked == OPENING
+    assert line.startswith(HER_TOP_LINE + OPENING), line
+    assert line.replace(OPENING, "").replace("</span>", "", 1).startswith(HER_TOP_LINE + said)
     assert page.count('role="alert"') == 1
     assert see_homework(FAIR) in page
 

@@ -68,6 +68,7 @@ from tests.support import (
     plan_form,
     scripted_graphs,
     state_of,
+    unwrapped,
     work_listed,
 )
 
@@ -278,7 +279,7 @@ def test_the_wrong_evening_every_time_leaves_the_plan_already_there_alone() -> N
     assert again.status_code == 409
     assert (
         "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are "
-        "saved." in again.text
+        "saved." in unwrapped(again.text)
     )
     assert "fits this evening" not in again.text
     assert "something went wrong on the way" not in again.text

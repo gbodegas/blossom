@@ -1885,7 +1885,7 @@ results follow. Under writer contention near the deadline, a settle's outcome
 can be unconfirmed rather than timed out. And an admission the route gave up
 on, answered as couldn't start, can still insert its row, which then ends at
 its own deadline; until then a press gets the 409, which says truthfully that
-the last request is still being finished.
+a plan for that row's evening is being made and how many seconds to wait.
 
 Opening a drafts file restores two invariants whatever version wrote it: every
 published draft has its place in the published order, and one draft waits per

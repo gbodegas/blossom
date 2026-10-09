@@ -63,6 +63,7 @@ from tests.support import (
     HER_FORM_FROM_AUGUST_20,
     HER_FORM_NOT_WHOLE,
     HER_NEWER_PLAN,
+    HER_TOP_LINE,
     PLAN_DATE,
     SAME_ORIGIN,
     THEIRS,
@@ -82,6 +83,7 @@ from tests.support import (
     light_fixture_plan,
     model_graphs,
     ok,
+    opening_focused,
     plan_form,
     plan_on,
     record,
@@ -94,6 +96,8 @@ from tests.support import (
     signed_in_household,
     state_of,
     status_of,
+    unwrapped,
+    words,
 )
 
 PAGE = "/student/due-this-week"
@@ -344,7 +348,7 @@ def test_a_parent_who_plans_from_her_page_is_told_where_the_record_is(
     assert (
         "Blossom couldn&#39;t finish a reliable plan this time. Her homework updates are saved. "
         "Family review shows what happened."
-    ) in response.text
+    ) in unwrapped(response.text)
     assert "Your homework updates" not in response.text
 
 
@@ -364,7 +368,7 @@ def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() ->
     assert response.status_code == 409
     assert (
         "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are "
-        "saved." in response.text
+        "saved." in unwrapped(response.text)
     )
     assert "checks_failed" not in response.text
     assert "No plan for today yet." in response.text
@@ -919,15 +923,17 @@ def ended_page(client: TestClient) -> str:
 
 
 def the_line(page: str) -> str:
+    """Her week's top line as written, its opening read as part of it."""
     start = page.index('<p class="problem week-problem"')
-    return page[start : page.index("</p>", start) + 4]
+    return unwrapped(page[start : page.index("</p>", start) + 4])
 
 
 def test_each_way_a_run_ends_without_a_plan_is_said_with_a_way_forward() -> None:
     """Wrong-date answers, a plan cut off, an answer that couldn't be read, time running
     out, and a service still busy after its retries: each is said in its own words, says
-    her updates are saved, takes the focus, links to her homework, and the plan button
-    offers to try again. None says the evening is too full, and none asks for a parent."""
+    her updates are saved, gives the focus to its first sentence, links to her homework, and
+    the plan button offers to try again. None says the evening is too full, and none asks
+    for a parent."""
     clock = FakeTime()
     tomorrow = fixture_week_plan().model_copy(update={"plan_date": date(2026, 8, 20)})
     cases: dict[str, tuple[Callable[[], Ask[DailyPlan]], str]] = {
@@ -965,7 +971,8 @@ def test_each_way_a_run_ends_without_a_plan_is_said_with_a_way_forward() -> None
 
         line = the_line(page)
         assert f"{said} Your homework updates are saved." in line, name
-        assert 'role="alert" tabindex="-1" autofocus' in line, name
+        assert line.startswith(f"{HER_TOP_LINE}{said} "), name
+        assert opening_focused(page, HER_TOP_LINE) == words(said), name
         assert '<a href="#title-assignment-science-fair-proposal">See homework.</a>' in line, name
         assert TRY_AGAIN in page, name
         assert "fits this evening" not in page, name
@@ -1030,7 +1037,10 @@ def test_a_failed_run_keeps_her_updates_and_the_plan_already_there() -> None:
         waiting = [item.draft_id for item in state.drafts.waiting()]
         essay = status_of(state.project_state, ESSAY_ID)
 
-    assert "Planning took too long, so Blossom stopped. Your homework updates are saved." in page
+    assert (
+        "Planning took too long, so Blossom stopped. Your homework updates are saved."
+        in unwrapped(page)
+    )
     assert latest is not None
     assert latest.draft_id == first.draft_id
     assert waiting == [first.draft_id]
@@ -1084,10 +1094,7 @@ def test_a_press_while_a_plan_for_today_is_being_made_starts_nothing() -> None:
         latest = state.drafts.latest_for(PLAN_DATE)
         blocking = state.drafts.latest_run()
 
-    finishing = (
-        "The last plan request, for Wednesday, August 19, is still being finished. "
-        "Try again in about 91 seconds."
-    )
+    finishing = "A plan for Wednesday, August 19 is being made. Try again in about 91 seconds."
     line = the_line(page)
     assert blocked is None
     assert f"{finishing} Your homework updates are saved." in line
@@ -1147,8 +1154,8 @@ PRESS_ANSWERS: dict[str, tuple[Callable[[], Exception], int, str, str | None]] =
     "already planning": (
         lambda: AlreadyPlanning(STILL_RUNNING),
         409,
-        "The last plan request, for Wednesday, August 19, is still being finished. Try again "
-        "in about 41 seconds. {Your} homework updates are saved.",
+        "A plan for Wednesday, August 19 is being made. Try again in about 41 seconds. {Your} "
+        "homework updates are saved.",
         run_link(INFLIGHT, ON_THAT_REQUEST),
     ),
     "not saved": (
