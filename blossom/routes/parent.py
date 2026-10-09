@@ -1051,9 +1051,10 @@ def review_page(
     link to the row, so it is met on a page that opens at its top.
     ``open_plan`` is a plan a link came back to, whose folds are opened.
     ``problem_check`` links the problem to the run it names, and ``run_notice`` is what
-    the page says about a planning run. ``focus_problem`` has the problem take the focus,
-    so a plan press it answers lands on its words. A waiting plan no review could resume says so in
-    place of its two buttons, as the decision itself refuses it. ``help_reply`` is the
+    the page says about a planning run. ``focus_problem`` has the problem's first sentence
+    take the focus, so a plan press it answers lands on its opening. A waiting plan no
+    review could resume says so in place of its two buttons, as the decision itself refuses
+    it. ``help_reply`` is the
     words a refused press sent back, shown in its request's box while that request is
     open on the page, and under the problem otherwise. Each open request's form gets a
     fresh id of its own, so the same form sent again is known as one. ``reason_kept`` is
@@ -1643,22 +1644,20 @@ def what_the_run_did(run: RunState) -> tuple[Clause, str]:
         return Clause(STILL_BEING_FINISHED), STILL_BEING_FINISHED
     if run.status == "published":
         return Clause(PLAN_SHOWN_BELOW, "shown", otherwise=PLAN_MADE), PLAN_MADE
-    return (
-        Clause(ended_without_a_plan(run.reason, parent=True)),
-        ended_without_a_plan(run.reason, parent=True, where=False),
-    )
+    ended = ended_without_a_plan(run.reason, parent=True, where=False)
+    return Clause(ended), ended
 
 
 def asked_another_evening(run: RunState, chosen: date) -> PlanAnswer:
     """A used form sent with another evening: the evening it was used for, what came of it,
-    and that the new evening wasn't planned, with the way to a new plan when the form shows."""
+    and that the new evening wasn't planned."""
     asked = f"This form was used for {evening_named(run.plan_date)}."
     nothing = f"No plan was started for {evening_named(chosen)}."
     outcome, elsewhere = what_the_run_did(run)
     return PlanAnswer(
         "family-another-evening",
         status.HTTP_409_CONFLICT,
-        (Clause(asked), outcome, Clause(nothing), FOR_A_NEW_PLAN),
+        (Clause(asked), outcome, Clause(nothing)),
         f"{asked} {elsewhere} {nothing}",
         keeps=chosen,
         open_plan=run.draft.draft_id if run.status == "published" and run.draft else None,
@@ -1668,13 +1667,13 @@ def asked_another_evening(run: RunState, chosen: date) -> PlanAnswer:
 
 def asked_with_an_unreadable_date(run: RunState) -> PlanAnswer:
     """A used form sent with a date that can't be read: the evening it was used for, what
-    came of it, and the way to a new plan when the form is shown."""
+    came of it, and that the new date couldn't be read, so nothing was started."""
     asked = f"This form was used for {evening_named(run.plan_date)}."
     outcome, elsewhere = what_the_run_did(run)
     return PlanAnswer(
         "family-unreadable-date",
         status.HTTP_409_CONFLICT,
-        (Clause(asked), outcome, Clause(DATE_NOT_READ), FOR_A_NEW_PLAN),
+        (Clause(asked), outcome, Clause(DATE_NOT_READ)),
         f"{asked} {elsewhere} {DATE_NOT_READ}",
         open_plan=run.draft.draft_id if run.status == "published" and run.draft else None,
         check=run_check(FAMILY_PAGE, run.run_id, CHECK_ON_IT) if run.status == "running" else None,
@@ -1735,8 +1734,8 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
 
     Every answer is a ``PlanAnswer``: a line whose clauses about the page are said only when
     the page sent shows what they name, words of its own for the stand-in, and what it keeps.
-    Each line takes the focus, and each answer that shows the plan form opens it holding the
-    date chosen when it can be read, refusals of the date itself included.
+    Each line's first sentence takes the focus, and each answer that shows the plan form opens
+    it holding the date chosen when it can be read, refusals of the date itself included.
     A run that fails on the way for any reason other than a refusal is said on the page as a
     plan Blossom couldn't finish, and the failure goes to the process log. An evening that
     has passed is refused before anything runs, and so is one past the edge of the calendar,
@@ -1762,7 +1761,12 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             )
         except Unfinished:
             return family_not_shown(
-                request, state, answer.elsewhere, answer.status, line=FAMILY_NOT_SHOWN
+                request,
+                state,
+                answer.elsewhere,
+                answer.status,
+                line=FAMILY_NOT_SHOWN,
+                opening=True,
             )
 
     def read_date(blank: date) -> date | None:
@@ -2107,9 +2111,11 @@ def family_not_shown(
     line: str | None = None,
     kept: FamilyKept | None = None,
     title: str = "Family review",
+    opening: bool = False,
 ) -> HTMLResponse:
     """The family page's stand-in, which reads no store: what happened, which page can't be
-    shown when a refusal's own page is what failed, and what a parent typed."""
+    shown when a refusal's own page is what failed, and what a parent typed. With
+    ``opening``, a plan press's answer, the first sentence takes the focus."""
     typed = kept or FamilyKept()
     return templates.TemplateResponse(
         request,
@@ -2121,6 +2127,7 @@ def family_not_shown(
             "note": typed.note,
             "reply": typed.reply,
             "reason": typed.reason,
+            "opening": opening,
             "marks": state.settings.page_marks,
         },
         status_code=status_code,
@@ -2135,11 +2142,14 @@ def reviewed_once(
     status_code: int,
     kept: FamilyKept | None = None,
     elsewhere: str | None = None,
+    *,
+    opening: bool = False,
 ) -> HTMLResponse:
     """A refusal shown on the family page, tried once. When a read for that page fails, its
     stand-in, with the refusal's status, its words as they read without the page (``elsewhere``
     when given), and what was typed: made from what the request already held, so no store is
-    called after the failure. Any other failure is not caught here."""
+    called after the failure. ``opening`` gives the focus to its first sentence. Any other
+    failure is not caught here."""
     try:
         return page()
     except sqlite3.Error as error:
@@ -2151,6 +2161,7 @@ def reviewed_once(
             status_code,
             line=FAMILY_NOT_SHOWN,
             kept=kept,
+            opening=opening,
         )
 
 
@@ -2175,9 +2186,10 @@ def refused_on_the_page(
     would answer, ``check`` the link to the run it names, ``help_reply`` a reply to her
     request as typed, and ``reason_kept`` a note about a plan as typed, tried once.
     ``plan_date_kept`` refills the plan form's date, ``offers_plan`` false leaves the plan
-    form out, ``open_plan`` opens a plan, ``focus_problem`` has the problem take the focus, and
-    ``elsewhere`` is the problem as its stand-in says it. ``plan_answer`` is a plan press's
-    answer, its line made from the page and its stand-in words its own."""
+    form out, ``open_plan`` opens a plan, ``focus_problem`` has the problem's first sentence
+    take the focus, and ``elsewhere`` is the problem as its stand-in says it. ``plan_answer``
+    is a plan press's answer, its line made from the page and its stand-in words its own,
+    whose first sentence takes the focus on the stand-in too."""
     return reviewed_once(
         request,
         state,
@@ -2199,6 +2211,7 @@ def refused_on_the_page(
         status_code,
         kept,
         elsewhere if plan_answer is None else plan_answer.elsewhere,
+        opening=plan_answer is not None,
     )
 
 

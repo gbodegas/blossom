@@ -13,12 +13,19 @@
   arrives, with no script, as a refusal does on the pages this one stands in
   for. A press refused for who made it is answered here too, before anything
   of the record is read. When the page a press is shown on can't be read,
-  ``page_line`` says which page that is, after the press's own words.
+  ``page_line`` says which page that is, after the press's own words. A plan
+  press's answer gives the focus to its first sentence instead, so a long
+  answer arrives with its opening on the screen.
 #}
 {% block content %}
   <h1>{{ heading if heading is defined and heading else "Update not saved" }}</h1>
   {% set said = card.problem if card else (hand_in_card.problem if hand_in_card else note_problem) %}
-  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{% if page_line is defined and page_line %}{{ said|ended }} {{ page_line }}{% else %}{{ said }}{% endif %}</p>
+  {% if opening is defined and opening %}
+    {% set first, rest = ((said|ended ~ " " ~ page_line) if page_line else said)|first_sentence %}
+    <p class="problem" role="alert" id="problem-summary"><span class="opening" tabindex="-1" autofocus>{{ first }}</span>{% if rest %} {{ rest }}{% endif %}</p>
+  {% else %}
+    <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{% if page_line is defined and page_line %}{{ said|ended }} {{ page_line }}{% else %}{{ said }}{% endif %}</p>
+  {% endif %}
   {% if card and card.status %}
     <p>Your choice: {% if card.status == "done" %}Done{% else %}Not yet{% endif %}.</p>
   {% endif %}

@@ -967,6 +967,14 @@ a.assignment-link:focus-visible {
   box-shadow: inset 0.25rem 0 0 var(--rose-ink);
 }
 
+/* A plan press's answer gives the focus to its first sentence, inside the line, so a long
+   answer arrives with its opening on the screen. The sentence takes the ring a control
+   takes, drawn inside the line's padding. Plain :focus, as the line's own. */
+.problem .opening:focus {
+  outline: 3px solid var(--blue-action);
+  outline-offset: 2px;
+}
+
 /* Help breaks a long word, hers or a parent's word back, rather than widen the page. Its
    heading says what it is; a brighter surface with a petal edge sets it apart from the
    homework as well, and leaves every text and link color as it is on a card. */

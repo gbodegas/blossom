@@ -2136,7 +2136,8 @@ def student_page(
        an Undo or a Remove just took a request of hers away, which Today says to her alone,
        beside what the signals kept for today say now.
     ``plan_answer`` is a plan press's answer, its line
-       made from what this page shows: today's plan, and the plan button.
+       made from what this page shows: today's plan, and the plan button. Its first sentence
+       takes the focus in place of the line.
     """
     viewer = viewer_of(request)
     # An address that only brings a card into view, as a way back from its details does.
@@ -2275,6 +2276,7 @@ def student_page(
             "problem": card.problem if card is not None and by_a_card else problem,
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "pressed": pressed,
+            "focus_opening": plan_answer is not None,
             "plan_failure": plan_failure,
             # A fresh form for every page, except one that answers a run that may still
             # publish, which offers only the check.
@@ -3320,7 +3322,8 @@ def plain_way_back(back: ReturnTo, assignment_id: str) -> ReturnLink:
 class NotShown:
     """What a press's answer says when the page it is shown on can't be read: a heading that
     names the press, the press's own words as they read without that page, the line that
-    says which page can't be shown, the ways back, and what she chose and typed."""
+    says which page can't be shown, the ways back, and what she chose and typed. ``opening``
+    gives the focus to the words' first sentence, as a plan press's answer does."""
 
     heading: str
     said: str
@@ -3328,6 +3331,7 @@ class NotShown:
     ways_back: list[ReturnLink]
     card: CardState | None = None
     hand_in: HandInCard | None = None
+    opening: bool = False
 
 
 def shown_once(
@@ -3367,6 +3371,7 @@ def not_shown(
             ),
             "note_problem": fallback.said,
             "page_line": fallback.line,
+            "opening": fallback.opening,
             "ways_back": fallback.ways_back,
             "marks": state.settings.page_marks,
         },
@@ -3757,7 +3762,9 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         # Her page is read on a worker thread, for at most the store's wait; past it,
         # the page that reads no store says the answer's own words for it.
         fallback = replace(
-            week_not_shown(request, PLAN_NOT_MADE, answer.elsewhere), said=answer.elsewhere
+            week_not_shown(request, PLAN_NOT_MADE, answer.elsewhere),
+            said=answer.elsewhere,
+            opening=True,
         )
         failure = (
             PlanFailure(try_again=False, uncertain=True)

@@ -64,6 +64,7 @@ from tests.support import (
     database_of,
     ended_run,
     every_row,
+    family_line_focused,
     family_plan,
     fixture_settings,
     form_fields,
@@ -81,6 +82,7 @@ from tests.support import (
     sign_in_as,
     state_of,
     store_free_page,
+    unwrapped,
     walkthrough,
     ways_back_of,
     words,
@@ -821,6 +823,7 @@ def test_a_refusal_on_family_review_is_said_without_it_when_it_cannot_be_read(
         status=press.status,
         heading="Family review",
         alert=f"{said or press.said} {FAMILY}",
+        opening=path == "/parent/actions/plan",
     )
     if press.kept is None:
         assert "<textarea" not in main
@@ -932,7 +935,7 @@ def test_her_plan_that_failed_on_the_way_is_said_without_her_week_when_it_cannot
     assert readable.status_code == 409
     assert (
         "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are saved."
-    ) in readable.text
+    ) in unwrapped(readable.text)
     assert "went wrong" not in readable.text
     main = store_free_page(
         answer,
@@ -942,6 +945,7 @@ def test_her_plan_that_failed_on_the_way_is_said_without_her_week_when_it_cannot
             "Blossom couldn't finish a reliable plan this time. Your homework updates are "
             f"saved. {YOUR_WEEK}"
         ),
+        opening=True,
     )
     assert "went wrong" not in main
     assert ways_back_of(main) == [(HER_PAGE, "Back to my week")]
@@ -971,6 +975,7 @@ def test_her_plan_refused_before_a_run_keeps_its_status_without_her_week(
             "Blossom could not make a plan: no model can be constructed: ANTHROPIC_API_KEY is "
             f"not set. {HER_WEEK}"
         ),
+        opening=True,
     )
     assert ways_back_of(main) == [(HER_PAGE, "Back to her week")]
     assert after_the_failure(seen) == []
@@ -1002,6 +1007,7 @@ def test_a_family_plan_that_failed_on_the_way_is_said_without_family_review(
             "Blossom couldn't finish a reliable plan this time. Her homework updates are "
             f"saved. {FAMILY}"
         ),
+        opening=True,
     )
     assert "Family review shows what happened" not in main
     assert after_the_failure(seen) == []
@@ -1042,7 +1048,7 @@ def test_a_family_press_behind_a_newer_plan_it_cannot_place_is_still_refused(
     line = FAMILY_LINE.search(answer.text)
     assert line is not None
     assert words(line.group(1)) == f"{FAMILY_NEWER_PLAN_AUGUST_19} {FAMILY_FOR_A_NEW_PLAN}"
-    assert 'id="problem" tabindex="-1" autofocus>' in answer.text
+    assert family_line_focused(answer.text)
     assert 'action="/parent/actions/plan"' in answer.text
     assert after == before
 
@@ -1066,7 +1072,11 @@ def test_a_family_press_behind_a_newer_plan_is_said_without_family_review(
         after = runs_recorded(client)
 
     store_free_page(
-        answer, status=409, heading="Family review", alert=f"{FAMILY_NEWER_PLAN_AUGUST_19} {FAMILY}"
+        answer,
+        status=409,
+        heading="Family review",
+        alert=f"{FAMILY_NEWER_PLAN_AUGUST_19} {FAMILY}",
+        opening=True,
     )
     assert after_the_failure(seen) == []
     assert after == before
@@ -1132,7 +1142,9 @@ def test_a_family_plan_answer_on_the_stand_in_names_nothing_it_does_not_show(
         monkeypatch.undo()
         after = runs_recorded(client)
 
-    store_free_page(answer, status=status, heading="Family review", alert=f"{said} {FAMILY}")
+    store_free_page(
+        answer, status=status, heading="Family review", alert=f"{said} {FAMILY}", opening=True
+    )
     assert after_the_failure(seen) == []
     assert after == before
 

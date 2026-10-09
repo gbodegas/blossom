@@ -45,6 +45,7 @@ from tests.support import (
     FAMILY_FOR_A_NEW_PLAN,
     FAMILY_FORM_EXPIRED,
     FAMILY_FORM_NOT_WHOLE,
+    FAMILY_LINE,
     FAMILY_NEWER_PLAN_AUGUST_19,
     FAMILY_NEWER_PLAN_AUGUST_20,
     FAMILY_NOT_SHOWN_LINE,
@@ -62,8 +63,10 @@ from tests.support import (
     HER_PLAN_ACTION,
     HER_PLAN_ALREADY_MADE,
     HER_ROWS,
+    HER_TOP_LINE,
     HER_UPDATES_SAVED,
     HERS,
+    NOTHING_FOR_AUGUST_20,
     PAGE_HEADERS,
     PLAN_DATE,
     SHOWN_BELOW_UNDER_EARLIER_PLANS,
@@ -79,11 +82,13 @@ from tests.support import (
     family_line,
     family_line_focused,
     family_plan,
+    first_sentence,
     fixture_week_plan,
     form_fields,
     fresh_plan_fields,
     her_line,
     household_client,
+    opening_focused,
     plan_date_shown,
     plan_fold_open,
     plan_form,
@@ -93,7 +98,7 @@ from tests.support import (
     scripted_graphs,
     sign_in_as,
     state_of,
-    the_alert,
+    the_answer_alert,
 )
 
 ISSUED_LONG_AGO = "20260101T000000Z"
@@ -181,7 +186,7 @@ def test_her_answer_on_the_stand_in_names_no_place_or_button(
         monkeypatch.undo()
         assert runs_recorded(client) == before
     assert answer.status_code == status
-    assert the_alert(answer.text) == f"{fact} {YOUR_WEEK_NOT_SHOWN_LINE}"
+    assert the_answer_alert(answer.text) == f"{fact} {YOUR_WEEK_NOT_SHOWN_LINE}"
     assert f'action="{HER_PLAN_ACTION}"' not in answer.text
 
 
@@ -433,16 +438,42 @@ def test_family_used_form_with_an_unreadable_date_claims_nothing_about_the_field
         answer = client.post(FAMILY_PLAN_ACTION, data={**first, "plan_date": "someday"})
     assert answer.status_code == 409
     assert family_line(answer.text) == (
-        f"{FAMILY_ASKED_FOR_AUGUST_19} {THAT_PLAN_SHOWN_BELOW} {FAMILY_DATE_NOT_READ} "
-        f"{FAMILY_FOR_A_NEW_PLAN}"
+        f"{FAMILY_ASKED_FOR_AUGUST_19} {THAT_PLAN_SHOWN_BELOW} {FAMILY_DATE_NOT_READ}"
     )
     assert plan_fold_open(answer.text) is True
     assert plan_date_shown(answer.text) == PLAN_DATE.isoformat()
 
 
+@pytest.mark.parametrize("chosen", [LATER_EVENING.isoformat(), "someday"], ids=["W-5", "W-5u"])
+def test_family_used_form_for_an_ended_run_says_why_and_that_nothing_started(chosen: str) -> None:
+    """A used form whose run ended without a plan, sent with another evening or a date that
+    can't be read, says why that run ended, that her updates are saved and that nothing was
+    started, over the open plan form, with no direction to it."""
+    with browser(key=True) as client:
+        form = family_plan(client, PLAN_DATE.isoformat())
+        ended_run(
+            state_of(client).drafts,
+            thread_id=form["run_id"],
+            plan_date=PLAN_DATE,
+            outcome="date_problem",
+        )
+        answer = client.post(FAMILY_PLAN_ACTION, data={**form, "plan_date": chosen})
+    another = chosen == LATER_EVENING.isoformat()
+    nothing = NOTHING_FOR_AUGUST_20 if another else FAMILY_DATE_NOT_READ
+    assert answer.status_code == 409
+    assert family_line(answer.text) == (
+        f"{FAMILY_ASKED_FOR_AUGUST_19} {ENDED_REASONS['date_problem']} {HER_UPDATES_SAVED} "
+        f"{nothing}"
+    )
+    assert f'action="{FAMILY_PLAN_ACTION}"' in answer.text
+    assert plan_fold_open(answer.text) is True
+    assert plan_date_shown(answer.text) == (chosen if another else PLAN_DATE.isoformat())
+    assert family_line_focused(answer.text)
+
+
 def test_family_ended_repeat_keeps_its_evening_with_the_focus_on_the_line() -> None:
     """A used form whose run ended without a plan keeps that run's evening in the open fold,
-    and the line takes the focus."""
+    and the line's first sentence takes the focus."""
     with browser(key=True) as client:
         form = family_plan(client, LATER_EVENING.isoformat())
         ended_run(
@@ -473,7 +504,7 @@ def test_family_ended_repeat_on_the_stand_in_says_why_and_what_is_saved(
         answer = client.post(FAMILY_PLAN_ACTION, data=form)
         monkeypatch.undo()
     assert answer.status_code == 409
-    alert = the_alert(answer.text)
+    alert = the_answer_alert(answer.text)
     assert alert == f"{ENDED_REASONS[reason]} {HER_UPDATES_SAVED} {FAMILY_NOT_SHOWN_LINE}"
     assert FAMILY_REVIEW_SHOWS not in alert
 
@@ -758,7 +789,8 @@ def test_every_plan_row_is_in_a_table() -> None:
 @pytest.mark.parametrize("row", ROWS, ids=lambda row: row.row)
 def test_each_press_is_answered_by_its_row(row: AnswerRow, monkeypatch: pytest.MonkeyPatch) -> None:
     """Each press is answered by the row it names: an answer with that row's status and
-    fact, and a plan form only when the row offers one, or a landing on its page."""
+    fact, whose first sentence takes the focus, and a plan form only when the row offers
+    one, or a landing on its page."""
     from blossom.routes.runs import PlanAnswer
 
     answered: list[str] = []
@@ -784,6 +816,8 @@ def test_each_press_is_answered_by_its_row(row: AnswerRow, monkeypatch: pytest.M
         assert answer.headers["location"].startswith(row.lands)
         return
     assert line_of(row, answer.text).startswith(row.fact)
+    tag = HER_TOP_LINE if row.row.startswith("her-") else FAMILY_LINE
+    assert opening_focused(answer.text, tag) == first_sentence(row.fact)
     assert (f'action="{action}"' in answer.text) is row.form
 
 
@@ -793,7 +827,8 @@ def test_each_answer_on_the_stand_in_says_its_own_words(
     row: AnswerRow, failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When the page can't be read, or is read too late, the stand-in says the row's own
-    words and nothing about a place, a date kept or a button."""
+    words, its first sentence taking the focus, and nothing about a place, a date kept or a
+    button."""
     failing = refusing() if failure == "store error" else too_slow
     with browser(key=True) as client:
         action, form = prepared(client, row.row, monkeypatch)
@@ -802,7 +837,7 @@ def test_each_answer_on_the_stand_in_says_its_own_words(
         answer = client.post(action, data=form, headers=PAGE_HEADERS)
     line = YOUR_WEEK_NOT_SHOWN_LINE if row.row.startswith("her-") else FAMILY_NOT_SHOWN_LINE
     assert answer.status_code == row.status
-    assert the_alert(answer.text) == f"{row.stand_in} {line}"
+    assert the_answer_alert(answer.text) == f"{row.stand_in} {line}"
 
 
 @pytest.mark.parametrize("row", [row for row in ANSWERED if row.form], ids=lambda row: row.row)

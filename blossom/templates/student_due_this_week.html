@@ -29,7 +29,9 @@
     may be far below, and a browser that leaves the focus at the top still
     shows what went wrong. A problem no card on the page can hold is said here
     alone, as the alert, and after a press it takes the focus. A visit by
-    address asks for no focus. A plan press that ended without a plan links on
+    address asks for no focus. A plan press's answer gives the focus to its first
+    sentence instead, so the answer arrives with its opening on the screen
+    however long the rest is. A plan press that ended without a plan links on
     to her homework, and to the dates of any assignment it names; the plan
     button below offers to try again. Its See homework goes where the plan's
     place sends it: the title of the first card or row still to do in the week
@@ -47,7 +49,8 @@
   #}
   {% set plan_label = "Make a smaller plan" if view.smaller_wanted else ("Plan again" if view.plan else "Plan today") %}
   {% if problem %}
-    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem|replace(plan_label_mark, plan_label) }}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}{% if plan_failure %}{% if plan_failure.run %} <a href="{{ plan_failure.run.href }}">{{ plan_failure.run.label }}</a>{% endif %}{% for title, href in plan_failure.checks %} <a href="{{ href }}">Check the dates for {{ title }}.</a>{% endfor %} <a href="{{ see_homework_href }}">See homework.</a>{% endif %}</p>
+    {% set said = problem|replace(plan_label_mark, plan_label) %}
+    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed and not focus_opening %} tabindex="-1" autofocus{% endif %}{% endif %}>{% if focus_opening %}{% set opening, rest = said|first_sentence %}<span class="opening" tabindex="-1" autofocus>{{ opening }}</span>{% if rest %} {{ rest }}{% endif %}{% else %}{{ said }}{% endif %}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}{% if plan_failure %}{% if plan_failure.run %} <a href="{{ plan_failure.run.href }}">{{ plan_failure.run.label }}</a>{% endif %}{% for title, href in plan_failure.checks %} <a href="{{ href }}">Check the dates for {{ title }}.</a>{% endfor %} <a href="{{ see_homework_href }}">See homework.</a>{% endif %}</p>
   {% endif %}
 
   {% if view.week.current %}

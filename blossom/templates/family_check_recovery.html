@@ -9,11 +9,18 @@
   a parent typed, so nothing typed is lost with the failure. A refusal says
   which page can't be shown after its own words (``line``); a check, a
   reopening, or a reply the file refused says nothing was changed. Nothing
-  here reads the record, and nothing here says anything was saved.
+  here reads the record, and nothing here says anything was saved. A plan
+  press's answer gives the focus to its first sentence instead, so a long
+  answer arrives with its opening on the screen.
 #}
 {% block content %}
   <h1>Family review</h1>
-  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{% if line %}{{ said|ended }} {{ line }}{% else %}{{ said }}{% endif %}</p>
+  {% if opening %}
+    {% set first, rest = ((said|ended ~ " " ~ line) if line else said)|first_sentence %}
+    <p class="problem" role="alert" id="problem-summary"><span class="opening" tabindex="-1" autofocus>{{ first }}</span>{% if rest %} {{ rest }}{% endif %}</p>
+  {% else %}
+    <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{% if line %}{{ said|ended }} {{ line }}{% else %}{{ said }}{% endif %}</p>
+  {% endif %}
   {% if note %}
     <label for="kept-note">Your note, as typed</label>
     <textarea id="kept-note" rows="4" readonly>{{ note }}</textarea>

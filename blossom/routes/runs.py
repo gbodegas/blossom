@@ -241,7 +241,7 @@ def ended_without_a_plan(
     for how it ended is never shown, and work is named only when the record shows its date
     has passed. ``unchanged`` adds that her plan is the one she had; ``evening`` is the run's
     evening when it is not today's, which a date problem names. ``where`` false leaves out
-    where the record is, for a stand-in that can't show it."""
+    where the record is."""
     if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
         return NOTHING_TO_SCHEDULE
     category = failure_category(outcome)
@@ -396,9 +396,8 @@ def already_planning(run: RunState, *, parent: bool) -> str:
     """What a press answers while the household's one run is still running: whose evening
     it is for, how long to wait, and that her updates are kept."""
     return (
-        f"The last plan request, for {evening_named(run.plan_date)}, is still being "
-        f"finished. Try again in about {seconds_to_wait(run)} seconds. "
-        f"{saved_sentence(parent=parent)}"
+        f"A plan for {evening_named(run.plan_date)} is being made. "
+        f"Try again in about {seconds_to_wait(run)} seconds. {saved_sentence(parent=parent)}"
     )
 
 
