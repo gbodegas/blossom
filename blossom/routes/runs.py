@@ -275,15 +275,20 @@ def ended_sentences(
     """Why a run ended without a plan, as her page says it, a sentence each: what went wrong
     in plain words, a date problem as a short opening and then the work and why no plan can
     finish it, that her updates are kept, and, to a parent reading her page, where the
-    run's record is. The run's own name for how it ended is never shown, and work is named
-    only when the record shows its date has passed. ``unchanged`` adds that her plan is the
-    one she had; ``evening`` is the run's evening when it is not today's, which a date problem
-    names. ``where`` false leaves out where the record is."""
+    run's record is. The run's own name for how it ended is never shown, and work from the record is
+    named only for today's evening, since only there has its date passed. ``unchanged`` adds that
+    her plan is the one she had; ``evening`` is the run's evening when it is not today's, which a
+    date problem names. ``where`` false leaves out where the record is."""
     if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
         return (NOTHING_TO_SCHEDULE,)
     category = failure_category(outcome)
     what: Sentences
-    if category == DATE_PROBLEM and past_due:
+    if category == DATE_PROBLEM and evening is not None:
+        what = (
+            f"Blossom can't make the plan for {evening_named(evening)}.",
+            "Some work is due before that evening, so no plan can finish it on time.",
+        )
+    elif category == DATE_PROBLEM and past_due:
         named = [f"{work.title} ({work.course}, due {due_on(work.due_date)})" for work in past_due]
         listed = named[0] if len(named) == 1 else ", ".join(named[:-1]) + f" and {named[-1]}"
         has, it = ("has a due date", "it") if len(named) == 1 else ("have due dates", "them")
@@ -291,15 +296,10 @@ def ended_sentences(
             TODAYS_PLAN_NOT_MADE,
             f"{listed} {has} that already passed, so no plan can finish {it} on time.",
         )
-    elif category == DATE_PROBLEM and evening is None:
+    elif category == DATE_PROBLEM:
         what = (
             TODAYS_PLAN_NOT_MADE,
             "Some work has a due date that already passed, so no plan can finish it on time.",
-        )
-    elif category == DATE_PROBLEM and evening is not None:
-        what = (
-            f"Blossom can't make the plan for {evening_named(evening)}.",
-            "Some work is due before that evening, so no plan can finish it on time.",
         )
     elif category == TIMEOUT:
         what = ("Planning took too long, so Blossom stopped.",)
