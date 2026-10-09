@@ -8,6 +8,7 @@ everyone else before it reads a form or opens the store. A review writes nothing
 travels only in a form's body.
 """
 
+import ast
 import inspect
 import logging
 import os
@@ -3291,3 +3292,472 @@ def test_a_returned_page_keeps_a_remembered_different_beside_a_pick_as_sent(
     assert 'name="match.6" value="different" checked' in answer.text
     assert 'name="match.6" value="choose">' in answer.text
     assert f'value="{form["choose.6"]}" selected' in answer.text
+
+
+# ------------------------------------------------------------- what a returned page keeps
+
+Y2_REPORT = REPORT.replace("**2026-2027**", "**2025-2026**")
+"""Wren's report for the year before, which another tab saves."""
+Y2_NO_LINE = Y2_REPORT.replace("**Bramble, Wren**", "")
+EDITED_LINE = REPORT.replace("**Bramble, Wren**", "**Bramble, W**")
+"""Wren's report with its student line edited after review."""
+POSITION_FREE_ANSWERS: Final = frozenset(
+    {"identity", "setup", "setup_year", "setup_term", "first_month", "class", "class_name", "use"}
+)
+"""The answers a review form sends that no row's place decides."""
+
+
+def answers_sent(form: dict[str, str]) -> dict[str, str]:
+    """The answers among a form's fields: those no row's place decides, each row's radio, each
+    row's nonempty pick and each tick, a class by its ID alone."""
+    return {
+        name: value.partition(":")[0] if name == "class" else value
+        for name, value in form.items()
+        if name in POSITION_FREE_ANSWERS
+        or name.startswith(("match.", "select."))
+        or (name.startswith("choose.") and value)
+    }
+
+
+def kept_as_said(posted: dict[str, str], answer: str, *, source: bool = False) -> bool:
+    """Whether the returned page's form, sent unchanged, sends each answer posted as posted, and
+    the page says its answers are kept exactly when it does, never after a changed text."""
+    returned = answers_sent(sent_from(answer))
+    every = all(returned.get(name) == value for name, value in answers_sent(posted).items())
+    if 'id="problem"' in answer:
+        said = problem_said(answer)
+        assert (grade_routes.BOTH_KEPT in said) == (every and not source), said
+        assert (grade_routes.TEXT_KEPT_ANSWER_AGAIN in said) == (not every or source), said
+    return every
+
+
+def month_selected(page: str) -> list[str]:
+    """The month options a page marks selected, none where it asks no month."""
+    found = re.search(
+        r'<select id="first-month" name="first_month"[^>]*>(.*?)</select>', page, re.DOTALL
+    )
+    return [] if found is None else re.findall(r'<option value="([^"]*)" selected', found[1])
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("month", ["unsure", "8"])
+def test_a_month_answer_is_kept_as_sent_when_another_tab_saved_another_year(
+    route: str, month: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = answered(review_page(browser), first_month=month)
+        other = browser.post(SAVE, data=answered(review_page(browser, Y2_REPORT)), headers=PAGE)
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert other.status_code == 303
+    assert answer.status_code == 409, answer.text[:300]
+    assert problem_said(answer.text) == (
+        f"{grade_routes.ANSWER_DOESNT_FIT} {grade_routes.TEXT_KEPT_ANSWER_AGAIN}"
+    )
+    assert month_selected(answer.text) == [month]
+    assert sent_from(answer.text)["first_month"] == month
+    assert "setup" not in sent_from(answer.text)
+    assert not kept_as_said(form, answer.text)
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("month", ["unsure", "8"])
+def test_a_changed_text_keeps_another_setup_as_typed_and_the_next_save_marks_it(
+    route: str, month: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        typed = {"setup": "other", "setup_year": "2026-2027", "setup_term": ""}
+        form = answered(review_page(browser), **typed)
+        changed = form["report_text"].replace("| 7.0 ", "| 8.0 ")
+        before = closed_world([database(settings)], leaving_out=())
+        returned = browser.post(route, data={**form, "report_text": changed}, headers=PAGE)
+        again_form = answered(returned.text, first_month=month)
+        again = browser.post(SAVE, data=again_form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert returned.status_code == 409, returned.text[:300]
+    assert problem_said(returned.text) == (
+        f"{grade_routes.TEXT_CHANGED} {grade_routes.TEXT_KEPT_ANSWER_AGAIN}"
+    )
+    sent_back = sent_from(returned.text)
+    assert {name: sent_back.get(name) for name in typed} == typed
+    kept_as_said({**form, "report_text": changed}, returned.text, source=True)
+    assert again.status_code == 422, again.text[:300]
+    assert problem_said(again.text) == (
+        f"{grade_routes.TERM_BLANK} {grade_routes.CORRECT_THE_MARKED} {grade_routes.BOTH_KEPT}"
+    )
+    assert kept_as_said(again_form, again.text)
+    assert month_selected(again.text) == [month]
+    for page in (returned.text, again.text):
+        assert escape(grade_routes.ANSWER_DOESNT_FIT) not in page
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_an_edited_student_line_drops_the_answer_about_the_name(
+    route: str, tmp_path: pathlib.Path
+) -> None:
+    """The answer about the name is bound to the line it answered: after an edited line the
+    page asks it again, and saving that page confirms nothing."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = answered(review_page(browser))
+        returned = browser.post(route, data={**form, "report_text": EDITED_LINE}, headers=PAGE)
+        sent_back = sent_from(returned.text)
+        before = closed_world([database(settings)], leaving_out=())
+        saved = browser.post(SAVE, data=sent_back, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert returned.status_code == 409, returned.text[:300]
+    assert sent_back["identity_form"] != form["identity_form"]
+    assert "identity" not in sent_back
+    assert saved.status_code == 422, saved.text[:300]
+    assert escape(grade_routes.ANSWER_THE_NAME) in saved.text
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("identity", ["hers", "misread", "not_hers"])
+def test_a_changed_text_with_the_same_line_keeps_the_answer_about_the_name(
+    route: str, identity: str, tmp_path: pathlib.Path
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        form = answered(review_page(browser), identity=identity)
+        changed = form["report_text"].replace("| 7.0 ", "| 8.0 ")
+        returned = browser.post(route, data={**form, "report_text": changed}, headers=PAGE)
+
+    assert returned.status_code == 409, returned.text[:300]
+    assert sent_from(returned.text)["identity"] == identity
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_a_page_without_the_use_is_checked_and_saved_with_its_default(
+    route: str, tmp_path: pathlib.Path
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        form = answered(review_page(browser))
+        del form["use"]
+        answer = browser.post(route, data=form, headers=PAGE)
+
+    assert answer.status_code == (200 if route == CHECK else 303), answer.text[:300]
+
+
+def test_a_returned_page_that_newly_asks_the_use_saves_with_its_default(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser)
+        form = as_sent(review_page(browser))
+        changed = form["report_text"].replace("| 7.0 ", "| 8.0 ")
+        returned = browser.post(SAVE, data={**form, "report_text": changed}, headers=PAGE)
+        saved = browser.post(SAVE, data=sent_from(returned.text), headers=PAGE)
+
+    assert "use" not in form
+    assert returned.status_code == 409
+    assert 'name="use" value="current"' in returned.text
+    assert "use" not in sent_from(returned.text)
+    assert saved.status_code == 303, saved.text[:300]
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("month", ["unsure", "8"])
+def test_a_page_returned_for_the_name_says_when_another_tab_s_save_dropped_its_answers(
+    route: str, month: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = {**sent_from(review_page(browser, NO_LINE)), "first_month": month}
+        other = browser.post(SAVE, data=answered(review_page(browser, OTHER_CLASS)), headers=PAGE)
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert other.status_code == 303
+    assert answer.status_code == 422, answer.text[:300]
+    assert problem_said(answer.text) == (
+        f"{grade_routes.NOTHING_SAVED} {grade_routes.ANSWER_THE_NAME} "
+        f"{grade_routes.TEXT_KEPT_ANSWER_AGAIN}"
+    )
+    assert {"setup", "first_month"}.isdisjoint(sent_from(answer.text))
+    assert not kept_as_said(form, answer.text)
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_a_page_returned_for_the_name_drops_a_class_another_tab_saved_into(
+    route: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        page = review_page(browser, OTHER_SECTION)
+        offered = [value for _, name, value in form_values(page, SAVE) if name == "class"]
+        form = {**unticked(sent_from(page)), "class": offered[-1]}
+        other = browser.post(SAVE, data=as_sent(review_page(browser, RESCORED)), headers=PAGE)
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert other.status_code == 303
+    assert answer.status_code == 422, answer.text[:300]
+    now = [value for _, name, value in form_values(answer.text, SAVE) if name == "class"]
+    assert offered[-1] not in now
+    assert "class" not in sent_from(answer.text)
+    assert problem_said(answer.text).endswith(grade_routes.TEXT_KEPT_ANSWER_AGAIN)
+    assert not kept_as_said(form, answer.text)
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize(
+    ("case", "said"),
+    [
+        ("the setup left out", grade_routes.NOT_WHOLE),
+        ("the class left out", grade_routes.CHOOSE_CLASS),
+        ("the setup left out and the class left out", grade_routes.NOT_WHOLE),
+        ("the setup changed and the class left out", grade_routes.ANSWER_DOESNT_FIT),
+    ],
+)
+def test_an_answer_that_doesn_t_fit_says_why_in_the_save_s_order(
+    route: str, case: str, said: str, tmp_path: pathlib.Path
+) -> None:
+    """Each check the answers fail is read in the save's order: a question that changed since
+    the page says the answer doesn't fit, then a setup the page asked and sent unanswered is a
+    damaged form, then a class the page asked and left unanswered is marked."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = {**sent_from(review_page(browser, NO_LINE)), "identity": "confirmed"}
+        if "changed" in case:
+            year_before = {**sent_from(review_page(browser, Y2_NO_LINE)), "identity": "confirmed"}
+            assert browser.post(SAVE, data=year_before, headers=PAGE).status_code == 303
+        if "setup left out" in case:
+            del form["setup"]
+        if "class left out" in case:
+            del form["class"]
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert escape(said) in answer.text, words(answer.text)[:600]
+    if said == grade_routes.NOT_WHOLE:
+        assert answer.status_code == 422
+        assert escape(NO_LINE.splitlines()[0]) in answer.text
+    elif said == grade_routes.CHOOSE_CLASS:
+        assert answer.status_code == 422
+        assert problem_said(answer.text) == (
+            f"{grade_routes.CHOOSE_CLASS} {grade_routes.CORRECT_THE_MARKED} "
+            f"{grade_routes.BOTH_KEPT}"
+        )
+        assert kept_as_said(form, answer.text)
+    else:
+        assert answer.status_code == 409
+        assert escape(grade_routes.CHOOSE_CLASS) not in answer.text
+        kept_as_said(form, answer.text)
+    assert after == before
+
+
+@pytest.mark.parametrize("text", ["unchanged", "changed"])
+def test_the_retry_page_says_the_answers_are_kept_only_for_the_text_its_page_carried(
+    text: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        form = answered(review_page(browser, STRAY))
+        if text == "changed":
+            form["report_text"] = REPORT
+        del browser.app.state.grade_name_key  # type: ignore[attr-defined]
+        unreadable(tmp_path, monkeypatch)
+        retry = browser.post(SAVE, data=form, headers=PAGE)
+
+    assert retry.status_code == 500
+    kept = grade_routes.BOTH_KEPT if text == "unchanged" else grade_routes.TEXT_KEPT_ANSWER_AGAIN
+    assert problem_said(retry.text).endswith(kept)
+
+
+RETURNS: Final = (
+    "as posted",
+    "another year saved",
+    "her class saved",
+    "text changed",
+    "name unanswered",
+    "saved before",
+)
+"""Each way a check or a save answers with the review again."""
+ANSWERED: Final[dict[str, dict[str, str]]] = {
+    "month untouched": {"first_month": ""},
+    "month not sure": {"first_month": "unsure"},
+    "month August": {"first_month": "8"},
+    "setup another": {"setup": "other", "setup_year": "2026-2027", "setup_term": "T2"},
+    "setup another partly typed": {"setup": "other", "setup_year": "2026-27", "setup_term": ""},
+    "class named blank": {"class": "new", "class_name": ""},
+    "use earlier": {"use": "earlier"},
+    "name misread": {"identity": "misread"},
+}
+"""A first review's answers, each beside the page's defaults."""
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("answers", list(ANSWERED.values()), ids=list(ANSWERED))
+@pytest.mark.parametrize("how", RETURNS)
+def test_a_returned_page_sends_back_each_answer_as_sent_or_says_to_check_them_again(
+    route: str, answers: dict[str, str], how: str, tmp_path: pathlib.Path
+) -> None:
+    """Whatever returns the review, each answer it sends back is the one posted, never one made
+    from it, and it says the answers are kept exactly when every one is sent back."""
+    if how == "as posted" and route == SAVE:
+        return
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = answered(review_page(browser), **answers)
+        if how == "another year saved":
+            first_saved(browser, Y2_REPORT)
+        elif how == "her class saved":
+            first_saved(browser, RESCORED)
+        elif how == "text changed":
+            form["report_text"] = form["report_text"].replace("| 7.0 ", "| 8.0 ")
+        elif how == "name unanswered":
+            del form["identity"]
+        elif how == "saved before":
+            ready = browser.post(SAVE, data=unticked(answered(review_page(browser))), headers=PAGE)
+            assert ready.status_code == 303
+            form["acceptance_id"] = sent_from(review_page(browser))["acceptance_id"]
+        answer = browser.post(route, data=form, headers=PAGE)
+
+    if answer.status_code == 303 or f'action="{SAVE}"' not in answer.text:
+        return
+    returned = answers_sent(sent_from(answer.text))
+    for name, value in answers_sent(form).items():
+        if name in returned and (name, returned[name]) != ("identity", "shown"):
+            assert returned[name] == value, (name, value)
+    every = kept_as_said(form, answer.text, source=how == "text changed")
+    assert every or answer.status_code != 200 or how != "as posted"
+
+
+ROW_ANSWERS: Final = ("radio and tick", "pick alone", "a different assignment", "same class")
+"""A row's answers on the retitled report, and the year's class chosen on another section's."""
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("answer", ROW_ANSWERS)
+@pytest.mark.parametrize("how", [one for one in RETURNS if one != "another year saved"])
+def test_a_returned_page_sends_back_each_row_and_class_answer_as_sent_or_says_so(
+    route: str, answer: str, how: str, tmp_path: pathlib.Path
+) -> None:
+    if how == "as posted" and route == SAVE:
+        return
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        if answer == "same class":
+            form = checked_in_her_class(browser)
+            text = OTHER_SECTION
+        else:
+            first_saved(browser)
+            text = RETITLED
+            form = as_sent(review_page(browser, RETITLED))
+            if answer == "radio and tick":
+                form.update({"match.5": form["candidates.5"], "select.5": "1"})
+            elif answer == "pick alone":
+                form["choose.5"] = form["choices.5"].split()[0]
+            else:
+                form["match.5"] = "different"
+        if how == "her class saved":
+            other = browser.post(SAVE, data=as_sent(review_page(browser, RESCORED)), headers=PAGE)
+            assert other.status_code == 303, other.text[:300]
+        elif how == "text changed":
+            form["report_text"] = form["report_text"].replace("| 27.0    |", "|  27.0   |")
+        elif how == "name unanswered":
+            del form["identity"]
+        elif how == "saved before":
+            ready = browser.post(SAVE, data=unticked(form), headers=PAGE)
+            assert ready.status_code in (303, 422), ready.text[:300]
+            form["acceptance_id"] = sent_from(review_page(browser, text))["acceptance_id"]
+        answer_page = browser.post(route, data=form, headers=PAGE)
+
+    if answer_page.status_code == 303 or f'action="{SAVE}"' not in answer_page.text:
+        return
+    returned = answers_sent(sent_from(answer_page.text))
+    for name, value in answers_sent(form).items():
+        if name in returned and (name, returned[name]) != ("identity", "shown"):
+            assert returned[name] == value, (name, value)
+    every = kept_as_said(form, answer_page.text, source=how == "text changed")
+    assert every or answer_page.status_code != 200 or how != "as posted"
+
+
+def test_every_answer_a_returned_page_may_keep_has_its_one_rule_and_one_builder() -> None:
+    """Every name the review form sends but those the review mints again has an entry in the
+    table that decides whether a returned page keeps it, and every returned review's fields are
+    the form's as sent or come through that one function."""
+    minted = {name for name, field in grade_routes.FORM.items() if field.where == "always"}
+    assert set(grade_routes.KEPT_BY) == set(grade_routes.FORM) - minted
+    assert set(grade_routes.KEPT_BY) - grade_routes.ANSWER_NAMES == {"candidates", "choices"}
+    assert set(grade_routes.KEPT_BY) >= grade_routes.ANSWER_NAMES
+    tree = ast.parse(inspect.getsource(grade_routes))
+    built: list[tuple[str, str]] = []
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        for call in ast.walk(function):
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                continue
+            if call.func.id == "review_page":
+                given = {one.arg: ast.unparse(one.value) for one in call.keywords}
+                built.append((function.name, given.get("fields", "")))
+            elif call.func.id == "kept_on_return":
+                built.append((function.name, "kept_on_return"))
+    assert sorted(built) == sorted(
+        [
+            ("changed_text", "kept.fields"),
+            ("changed_text", "kept_on_return"),
+            ("refused_answers", "kept.fields"),
+            ("refused_answers", "kept_on_return"),
+            ("returned_page", "form.fields"),
+            ("returned_page", "form.fields"),
+            ("returned_page", "form.fields"),
+            ("returned_page", "kept.fields"),
+            ("returned_page", "kept.fields"),
+            ("returned_page", "kept_on_return"),
+            ("returned_page", "kept_on_return"),
+        ]
+    )
+    assert not hasattr(grade_routes, "kept_fields")
+    assert not hasattr(grade_routes, "all_kept")
+
+
+def calls_in(source: str, name: str) -> list[str]:
+    """The names each call in the function ``name`` of ``source`` calls, in the source's order."""
+    found = next(
+        one
+        for one in ast.walk(ast.parse(source))
+        if isinstance(one, ast.FunctionDef) and one.name == name
+    )
+    calls = [one for one in ast.walk(found) if isinstance(one, ast.Call)]
+    calls.sort(key=lambda one: (one.lineno, one.col_offset))
+    return [one.func.id for one in calls if isinstance(one.func, ast.Name)]
+
+
+ASKED: Final = (
+    "identity_asked",
+    "setup_asked",
+    "first_month_asked",
+    "class_asked",
+    "matches_asked",
+    "use_asked",
+)
+"""Each check a save's answers must pass, in the save's order."""
+
+
+def test_the_reason_an_answer_doesn_t_fit_reads_every_check_the_save_makes_in_its_order() -> None:
+    """The save returns the answers over these checks and no other, and the reason a returned
+    page gives reads each of them in the same order, so a check added to the save fails here
+    before it can fall through to a reason no one chose."""
+    checked = inspect.getsource(gradebook)
+    save = [one for one in calls_in(checked, "_checked") if one.endswith("_asked")]
+    assert save == ["answers_asked", "matches_asked", "use_asked"]
+    composed = calls_in(inspect.getsource(grade_review), "answers_asked")
+    assert composed == list(ASKED[:4])
+    why = calls_in(inspect.getsource(grade_routes), "answers_why")
+    assert [one for one in why if one in ASKED] == list(ASKED)
