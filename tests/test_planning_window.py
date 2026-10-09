@@ -42,7 +42,9 @@ from tests.support import (
     files_in,
     fixture_settings,
     fixture_week_plan,
+    form_fields,
     hidden,
+    plan_form,
     record,
     report,
     reported,
@@ -565,10 +567,12 @@ def test_a_plan_asked_for_after_browsing_another_week_reads_todays_window() -> N
         )
         client.get(HER_PAGE, params={"week": "2026-10-12"}, headers=PAGE_HEADERS)
         today = today_panel(client.get(HER_PAGE, headers=PAGE_HEADERS).text)
-        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        client.post("/student/actions/plan", data=plan_form(client), headers=PAGE_HEADERS)
 
     form = today[today.index('action="/student/actions/plan"') :]
-    assert "<input" not in form[: form.index("</form>")]
+    sent = form_fields(today, "/student/actions/plan")
+    assert set(sent) == {"run_id", "evening", "issued_at", "newest_plan"}
+    assert "2026-10-12" not in form[: form.index("</form>")]
     listed = work_listed(planners[0].briefs[0])
     for planned in (OCTOBER_3, OCTOBER_9, SYLLABUS, IN_BY_A_SOURCE):
         assert planned in listed

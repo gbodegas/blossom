@@ -107,6 +107,7 @@ from tests.support import (
     changed_by_hand,
     client_for,
     due,
+    family_plan,
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
@@ -118,6 +119,7 @@ from tests.support import (
     lands_on,
     main_of,
     ok,
+    plan_form,
     reading,
     refusing,
     report,
@@ -1874,7 +1876,7 @@ def test_a_plan_that_speaks_about_work_she_has_since_finished_says_so_on_both_pa
     """The notice names the work on her page and the family page, stays whatever a parent
     decided, and a plan from before plans carried their ids gets the general notice."""
     with browser(key=True) as client:
-        planned = client.post("/student/actions/plan")
+        planned = client.post("/student/actions/plan", data=plan_form(client))
         assert planned.status_code == 303
         quiet = client.get(PAGE, headers=PAGE_HEADERS).text
         report(client, ESSAY, "done")
@@ -1917,7 +1919,7 @@ def test_with_everything_in_the_window_reported_done_her_page_offers_no_plan_but
             report(client, item.assignment_id, "done")
         hers = client.get(PAGE, headers=PAGE_HEADERS).text
         family = client.get("/parent", headers=PAGE_HEADERS).text
-        posted = client.post("/parent/actions/plan", data={"plan_date": ""})
+        posted = client.post("/parent/actions/plan", data=family_plan(client, ""))
 
     assert NOTHING_TO_PLAN in hers
     assert 'action="/student/actions/plan"' not in hers
@@ -2061,7 +2063,7 @@ def test_a_done_saved_while_a_model_is_asked_leaves_the_plan_stale_and_named(dur
         client.app.dependency_overrides[plan_graphs] = override  # type: ignore[attr-defined]
         state = state_of(client)
         as_read = planning_digest(read_week(state.project_state, state.project_state, PLAN_DATE))
-        planned = client.post("/student/actions/plan")
+        planned = client.post("/student/actions/plan", data=plan_form(client))
         record = state.drafts.latest_for(PLAN_DATE)
         as_it_stands = planning_digest(
             read_week(state.project_state, state.project_state, PLAN_DATE)
@@ -2784,7 +2786,7 @@ def test_with_everything_done_the_today_panel_informs_and_asks_for_nothing(decis
     and that the plan differs from the record, and nothing in it sends her to a plan she
     cannot ask for."""
     with browser(key=True) as client:
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         draft_id = client.get("/parent/approvals").json()["waiting"][0]["draft_id"]
         if decision != "waiting":
             decided = client.post(
@@ -2820,7 +2822,7 @@ def test_a_plan_from_before_ids_and_a_smaller_evening_ask_for_nothing_either() -
     """The plan carries no ids and she has said today is too much: the panel gives the
     general notice about the plan's window, names no work, and offers no smaller plan."""
     with browser(key=True) as client:
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         state = state_of(client)
         changed_by_hand(state.drafts, "UPDATE drafts SET plan_assignment_ids=NULL")
         assert client.post("/student/actions/too-much").status_code == 303
@@ -2839,7 +2841,7 @@ def test_a_plan_from_before_ids_and_a_smaller_evening_ask_for_nothing_either() -
 
 def test_a_not_yet_in_the_window_brings_the_plan_button_back_and_one_outside_does_not() -> None:
     with browser(key=True) as client:
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         entered = client.post(
             "/parent/inbox/keep",
             data={"course": "Art", "title": "Poster", "due_date": "2026-09-10"},
@@ -3059,7 +3061,7 @@ def test_the_familys_planning_routes_refuse_a_run_that_found_nothing_left_to_pla
         monkeypatch.setattr(parent_routes, "require_work", work_is_left)
         over_json = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
         from_the_form = client.post(
-            "/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()}
+            "/parent/actions/plan", data=family_plan(client, PLAN_DATE.isoformat())
         )
         ended = state.drafts.runs_without_a_draft()
         asked = sum(planner.calls for planner in planners)
@@ -3099,7 +3101,7 @@ def test_two_assignments_with_one_title_are_told_apart_in_the_notice_by_their_id
             for item in state.project_state.all_assignments()
             if item.title == "Poster"
         )
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         changed_by_hand(
             state.drafts, "UPDATE drafts SET plan_assignment_ids=?", (json.dumps(posters),)
         )
@@ -3296,14 +3298,16 @@ def test_a_plan_press_stays_in_the_visit_and_keeps_its_cards_in_place() -> None:
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
             lambda: [without_the_essay], lambda: [accepting()]
         )
-        made = client.post("/student/actions/plan", data=fields, headers=PAGE_HEADERS)
+        again = form_fields(failed.text, "/student/actions/plan")
+        made = client.post("/student/actions/plan", data=again, headers=PAGE_HEADERS)
         shown = client.get(made.headers["location"], headers=PAGE_HEADERS).text
         returned = client.get(PAGE, headers=PAGE_HEADERS).text
 
-    assert fields == {"in_place": f"a:{place_key(ESSAY)}"}
+    assert fields["in_place"] == again["in_place"] == f"a:{place_key(ESSAY)}"
+    assert again["run_id"] != fields["run_id"], "Try again carries a form of its own"
     assert failed.status_code == 409
     assert placed(failed.text) == placed(before)
-    assert hidden(plan_form(failed.text), "in_place") == f"a:{place_key(ESSAY)}"
+    assert hidden(plan_button_form(failed.text), "in_place") == f"a:{place_key(ESSAY)}"
     assert made.status_code == 303
     landing = landing_in(made.headers["location"])
     assert made.headers["location"] == f"{PAGE}?show_plan=1&landing={landing}"
@@ -3313,7 +3317,7 @@ def test_a_plan_press_stays_in_the_visit_and_keeps_its_cards_in_place() -> None:
     assert ESSAY in placed(returned)[1], "her next visit puts it in the fold"
 
 
-def plan_form(page: str) -> str:
+def plan_button_form(page: str) -> str:
     """The plan button's form, whole."""
     start = page.index('action="/student/actions/plan"')
     return page[start : page.index("</form>", start)]

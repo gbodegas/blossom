@@ -2142,8 +2142,9 @@ ASK_ANEW = "If you still need help, you can send a new request."
 CANNOT_BE_READ = "This request for help can't be read right now, so nothing was changed."
 UNREADABLE_COUNT = "Help-Requests-Unreadable"
 FAMILY_LIST = "/parent/help-requests"
-FRESH_IDS = re.compile(r"[0-9a-f]{32}")
-"""The one-time ids a page makes for its forms, which differ on every reading."""
+FRESH_IDS = re.compile(r"[0-9a-f]{32}|\d{8}T\d{6}Z")
+"""The one-time ids a page makes for its forms, and the instant it issued its plan form,
+which differ on every reading."""
 SENT = "Your request is saved. A parent can see it in Family review."
 HELP_STEP_NOT_SAVED = (
     "That could not be saved, and nothing was changed. Your reply is below. Try again."

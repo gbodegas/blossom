@@ -37,7 +37,14 @@
   <p class="lead-action"><a href="#add-assignments">Add assignments</a> · <a href="/parent/grades/add">Add grade report</a></p>
 
   {% if problem %}
-    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_check %} <a href="{{ problem_check.href }}">{{ problem_check.label }}</a>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% elif help_reply and (help_reply.at_reply or help_reply.below) and help_reply_listed %} <a href="#reply-{{ help_reply.request_id }}">Go to the field.</a>{% elif reason_kept and (reason_kept.at_reason or reason_kept.stale) and reason_at %} <a href="#review-note-{{ reason_at }}">Go to the field.</a>{% endif %}</p>
+    {#
+      A plan press's answer gives the focus to its first sentence, inside the
+      alert, so the answer arrives with its opening on the screen however long
+      the rest is, and the rest follows by scrolling. The answer hands over that
+      sentence and the rest as it built them, so words typed or titled with a
+      period inside them never move where the sentence ends.
+    #}
+    <p class="problem" role="alert" id="problem">{% if problem_opening %}{% set opening, rest = problem_opening %}<span class="opening" tabindex="-1" autofocus>{{ opening }}</span>{% if rest %} {{ rest }}{% endif %}{% else %}{{ problem }}{% endif %}{% if problem_check %} <span class="run-check"><a href="{{ problem_check.href }}">{{ problem_check.label }}</a></span>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% elif help_reply and (help_reply.at_reply or help_reply.below) and help_reply_listed %} <a href="#reply-{{ help_reply.request_id }}">Go to the field.</a>{% elif reason_kept and (reason_kept.at_reason or reason_kept.stale) and reason_at %} <a href="#review-note-{{ reason_at }}">Go to the field.</a>{% endif %}</p>
     {% if help_reply and help_reply.reply and not help_reply_listed %}
       <label for="kept-reply">Reply, as typed</label>
       <textarea id="kept-reply" rows="3" readonly>{{ help_reply.reply }}</textarea>
@@ -46,9 +53,6 @@
       <label for="kept-reason">Note about this plan (optional)</label>
       <textarea id="kept-reason" rows="3" readonly>{{ reason_kept.reason }}</textarea>
     {% endif %}
-  {% endif %}
-  {% if refreshed_at %}
-    <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
   {% endif %}
   {#
     Where a planning run stands: the one the address names, or the household's
@@ -73,6 +77,9 @@
   #}
   <section id="help-she-asked-for" tabindex="-1">
     <h2>Help she asked for</h2>
+    {% if refreshed_at %}
+      <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
+    {% endif %}
     {#
       Each request is the group her page shows (``help_request.html``), said to
       a parent, then the form that moves it: one short box with the same cap as
@@ -122,7 +129,7 @@
       </article>
     {% endfor %}
     <p class="note refresh">
-      <a href="/parent?refreshed=1">Refresh requests</a>. Refresh to see updates. Save or send your note first.
+      <a href="{{ refresh_requests }}">Refresh requests</a>. Refresh to see updates. Save or send your note first.
     </p>
     {% if help_resolved %}
       <details class="steps">
@@ -619,20 +626,23 @@ Cover both books with paper.</pre>
       </form>
     </section>
   </details>
-  <details class="steps panel-fold">
+  <details class="steps panel-fold"{% if plan_open %} open{% endif %}>
     <summary>Help with a plan</summary>
     <section class="panel">
       <h2>Plan an evening for her</h2>
       {% if model_available %}
+        {% if plan_form %}
         <form method="post" action="/parent/actions/plan" class="plan-form"
               data-pending="Making the plan"
               data-pending-later="Still working. The planner reads her week and writes the plan, which can take up to about a minute and a half"
               data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
+          {% for name, value in plan_form.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
           <label>Evening of
-            <input type="date" name="plan_date" value="{{ today }}">
+            <input type="date" name="plan_date" value="{{ plan_date_value }}">
           </label>
           <button type="submit" class="primary">Plan it</button>
         </form>
+        {% endif %}
         <p class="note">
           She usually plans from her own page. A plan made here for today is on her page
           the moment it is made; one for another evening reaches her page on that day.

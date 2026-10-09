@@ -68,6 +68,9 @@ from blossom.stores.drafts import (
     RunState,
     Settled,
 )
+from blossom.stores.help_requests import HELP_RETENTION_DAYS
+from blossom.stores.traces import TRACE_RETENTION_DAYS
+from blossom.stores.workload_signals import SIGNAL_RETENTION_DAYS
 from blossom.views import PlanRunView
 from tests.support import (
     FIXTURE_TIMEZONE,
@@ -77,6 +80,7 @@ from tests.support import (
     Scripted,
     Spending,
     accepting,
+    ended_run,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
@@ -3017,3 +3021,36 @@ def test_a_graph_that_comes_back_past_the_runs_limit_is_timed_out(
     assert left == []
     assert latest == kept
     assert running == frozenset()
+
+
+def test_run_rows_survive_every_sweep_so_a_used_form_stays_used(tmp_path: pathlib.Path) -> None:
+    """Long past every retention rule, the sweep has left each run's row: a form sent that
+    late still finds the run its id names, published or ended, and starts nothing."""
+    files = files_in(tmp_path)
+    state = build_application_state(
+        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **files), InMemorySaver(), monotonic
+    )
+    try:
+        kept = Draft(draft_id="draft:plan:kept", body="Plan", created_at=OBSERVED_AT)
+        settled_run(state.drafts, kept, thread_id="plan:kept", plan_date=PLAN_DATE)
+        ended_run(state.drafts, thread_id="plan:ended", plan_date=PLAN_DATE, outcome="no_plan")
+    finally:
+        state.close()
+    longest = max(
+        PAUSED_RETENTION_DAYS, TRACE_RETENTION_DAYS, HELP_RETENTION_DAYS, SIGNAL_RETENTION_DAYS
+    )
+    later = PLAN_DATE + timedelta(days=longest + 30)
+    state = build_application_state(
+        fixture_settings(BLOSSOM_TODAY=later.isoformat(), **files), InMemorySaver(), monotonic
+    )
+    try:
+        asyncio.run(sweep_aged(state))
+        published = state.drafts.run_status("plan:kept", reconcile=False)
+        ended = state.drafts.run_status("plan:ended", reconcile=False)
+    finally:
+        state.close()
+
+    assert published is not None
+    assert published.status == "published"
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", "no_plan")

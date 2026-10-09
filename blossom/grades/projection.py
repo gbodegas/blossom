@@ -11,13 +11,17 @@ source added as the next current report, named ``"new"``. Every difference betwe
 an effect, from what to what, unless reading ``"new"`` as the source makes it none. The canonical
 form of the preview is JSON with sorted keys and fixed separators, and its SHA-256 digest is what
 a confirmation carries.
+
+A parent's assertion belongs to the original reading: a copy the class-details action made finds
+its original through the action's copy list, so the assertion shows beside the original and every
+copy, and never beside an independent reading. It is a mark beside the cells, never in them.
 """
 
 import hashlib
 import json
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Final
 
 from blossom.grades.draft import Presence
@@ -45,12 +49,51 @@ its cells."""
 Decided = tuple[str, str, str | None, str, str | None]
 """A row record: its report, its row evidence, the result it names (None for "different"), how,
 and the candidates a "different" one turned down."""
+Copies = Mapping[str, tuple[str, frozenset[tuple[str, str]]]]
+"""By each report the class-details action made, its source report and the kind and target of
+each observation it copied."""
+Recorded = tuple[str, str, str, str, str, str, str]
+"""A correction record: its original's report, kind and target, the field, the text recorded,
+``reported`` or ``withdrawn``, and its kind."""
+Marks = Mapping[tuple[str, str, str], Mapping[str, Cell]]
+"""By observation (kind, target, report), each field's standing parent assertion."""
+
+
+def original_of(kind: str, target: str, report: str, copies: Copies) -> str:
+    """The report of the reading ``report`` holds for ``kind`` and ``target``: while an action
+    made the report and copied that observation, its source; the first report that didn't."""
+    while report in copies and (kind, target) in copies[report][1]:
+        report = copies[report][0]
+    return report
+
+
+def apply_corrections(
+    observed: tuple[Observed, ...], corrections: tuple[Recorded, ...], copies: Copies
+) -> Marks:
+    """Each observation's standing parent assertions, from its original's records in sequence
+    order: the latest record of each field decides, and a withdrawal leaves none."""
+    standing: dict[tuple[str, str, str], dict[str, Cell]] = {}
+    for report_id, kind, target, name, text, presence, how in corrections:
+        if how != "parent_assertion":
+            continue
+        fields = standing.setdefault((kind, target, report_id), {})
+        if presence == "withdrawn":
+            fields.pop(name, None)
+        else:
+            fields[name] = (Presence.REPORTED, text)
+    marks: dict[tuple[str, str, str], Mapping[str, Cell]] = {}
+    for kind, target, report_id, _ in observed:
+        found = standing.get((kind, target, original_of(kind, target, report_id, copies)))
+        if found:
+            marks[kind, target, report_id] = dict(found)
+    return marks
 
 
 @dataclass(frozen=True)
 class ScopeHeld:
     """What a class and term store: each report's acceptance order, use and number of result
-    rows; whether each report is complete; every observation; and every row record."""
+    rows; whether each report is complete; every observation; every row record; and the
+    parent's assertions on each observation."""
 
     reports: Mapping[str, tuple[int, str, int]]
     complete: Mapping[str, bool]
@@ -58,6 +101,8 @@ class ScopeHeld:
     and each of them complete. A report missing here is incomplete."""
     observed: tuple[Observed, ...]
     decided: tuple[Decided, ...]
+    marks: Marks = field(default_factory=dict)
+    """Each observation's standing parent assertions, kept apart from its cells."""
 
 
 def project(held: ScopeHeld) -> ClassRecord:
@@ -81,7 +126,9 @@ def project(held: ScopeHeld) -> ClassRecord:
 
     for kind, target, report_id, cells in observed:
         order, use, _ = reports[report_id]
-        value = CurrentValue(cells, report_id, order)
+        value = CurrentValue(
+            cells, report_id, order, asserted=held.marks.get((kind, target, report_id), {})
+        )
         if kind == "result":
             latest[target] = value
             if cells["due"][0] is not Presence.NOT_CAPTURED:
@@ -145,8 +192,9 @@ def project(held: ScopeHeld) -> ClassRecord:
 
 def with_copy(held: ScopeHeld, source: str) -> ScopeHeld:
     """``held`` with the report the action would make: next in acceptance order, current, the
-    source's number of result rows and completeness, a copy of each of its observations, and a
-    ``same_capture`` copy of each of its row records that names a result."""
+    source's number of result rows and completeness, a copy of each of its observations with
+    their assertions, and a ``same_capture`` copy of each of its row records that names a
+    result."""
     order = max(order for order, _, _ in held.reports.values()) + 1
     rows = held.reports[source][2]
     return ScopeHeld(
@@ -164,6 +212,14 @@ def with_copy(held: ScopeHeld, source: str) -> ScopeHeld:
             for report_id, evidence, result, _, _ in held.decided
             if report_id == source and result is not None
         ),
+        marks={
+            **held.marks,
+            **{
+                (kind, target, NEW): fields
+                for (kind, target, report_id), fields in held.marks.items()
+                if report_id == source
+            },
+        },
     )
 
 

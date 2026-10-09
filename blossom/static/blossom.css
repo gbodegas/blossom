@@ -455,7 +455,8 @@ article h2 {
    how many instructions wait; in Help, a refusal's link and the family review
    link a parent reads; at the top of her week, the link from a problem to the
    card it is about, and Refresh list beside the line that says why a card stays
-   where it was; on a note's small page, Try again. */
+   where it was; on a note's small page, Try again; on the family review, the
+   link from a plan press's answer to the run it names. */
 .notice a,
 .refresh a,
 .stays-here a,
@@ -467,7 +468,8 @@ article h2 {
 .school-instructions .source a,
 .help-panel .problem a,
 .help-panel #ask-for-help a,
-.week-problem a {
+.week-problem a,
+#problem .run-check a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: -0.8rem 0;
@@ -918,14 +920,16 @@ a.assignment-link:focus-visible {
   scroll-margin-top: 33vh;
 }
 
-/* The headings of the week's homework, of Turning it in and of Help, and the line that says
-   where her request for a shorter plan stands, stop a little below the top of the screen
-   when a link or a redirect lands on them, so their cue shows whole. */
+/* The headings of the week's homework, of Turning it in and of Help, the line that says
+   where her request for a shorter plan stands, and the family page's Help she asked for,
+   stop a little below the top of the screen when a link or a redirect lands on them, so
+   their cue shows whole. */
 .list-heading,
 #too-much-state,
 #turning-it-in,
 #help,
-#ask-for-help {
+#ask-for-help,
+#help-she-asked-for {
   scroll-margin-top: 0.75rem;
 }
 
@@ -954,12 +958,21 @@ a.assignment-link:focus-visible {
 #note-problem:focus,
 .detail .problem[tabindex="-1"]:focus,
 .week-problem:focus,
+#problem[tabindex="-1"]:focus,
 .update .problem[tabindex="-1"]:focus,
 #to-turn-in-problem:focus,
 .help-panel .problem[tabindex="-1"]:focus {
   outline: 3px solid transparent;
   outline-offset: 4px;
   box-shadow: inset 0.25rem 0 0 var(--rose-ink);
+}
+
+/* A plan press's answer gives the focus to its first sentence, inside the line, so a long
+   answer arrives with its opening on the screen. The sentence takes the ring a control
+   takes, drawn inside the line's padding. Plain :focus, as the line's own. */
+.problem .opening:focus {
+  outline: 3px solid var(--blue-action);
+  outline-offset: 2px;
 }
 
 /* Help breaks a long word, hers or a parent's word back, rather than widen the page. Its
@@ -1183,6 +1196,12 @@ pre.body {
 
 .decision button {
   overflow-wrap: anywhere;
+}
+
+/* The family plan form's evening field may be narrower than its own width at large text,
+   rather than widen the page past a phone's screen; anywhere wider it keeps that width. */
+.plan-form label {
+  min-width: 0;
 }
 
 /* On a phone with text at 200%, a card or Help leaves a line too short for the longest word

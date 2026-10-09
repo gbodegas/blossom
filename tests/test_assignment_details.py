@@ -58,6 +58,7 @@ from tests.support import (
     form_fields,
     hidden,
     landing_in,
+    plan_form,
     report,
     reported,
     school_said,
@@ -227,7 +228,7 @@ def test_a_change_to_the_record_shows_on_the_details_and_not_on_the_saved_plan()
     says the current record is unavailable, and offers no link; the address answers 404."""
     with browser(key=True) as client:
         walkthrough(client)
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         store = state_of(client).project_state
         item = store.one_assignment(ESSAY_ID)
         assert item is not None
@@ -284,7 +285,7 @@ def test_she_saves_changes_and_undoes_on_the_details_and_comes_back_to_them() ->
     Undo restores what stood and never leaves the details."""
     with browser(key=True) as client:
         walkthrough(client)
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         record = state_of(client).drafts.latest_for(PLAN_DATE)
         assert record is not None
         first = client.get(f"{DETAILS}?return_to=today", headers=PAGE_HEADERS).text
@@ -763,11 +764,11 @@ def test_every_way_back_lands_where_it_says_and_opens_what_encloses_it() -> None
     with browser(key=True) as client:
         namesake = walkthrough(client)
         none_yet = client.get(f"{DETAILS}?return_to=today", headers=PAGE_HEADERS).text
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         drafts = state_of(client).drafts
         first = drafts.latest_for(PLAN_DATE)
         assert first is not None
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         second = drafts.latest_for(PLAN_DATE)
         assert second is not None
         report(client, ESSAY_ID, "done")

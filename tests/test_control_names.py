@@ -35,6 +35,7 @@ from tests.support import (
     client_for,
     control_names,
     due,
+    family_plan,
     field_names,
     fixture_week_plan,
     form_fields,
@@ -109,7 +110,7 @@ def pages(tmp_path: pathlib.Path) -> dict[str, str]:
             lambda: [fixture_week_plan()], lambda: [accepting()]
         )
         with_an_instruction(client, ESSAY_ID)
-        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        client.post("/parent/actions/plan", data=family_plan(client, PLAN_DATE.isoformat()))
         shown = {"family": client.get("/parent").text}
         shown["week, new"] = client.get(HER_PAGE).text
         shown["details, new"] = client.get(DETAILS).text
@@ -593,7 +594,7 @@ def test_looks_good_says_its_whole_name_in_a_label(reader: str, tmp_path: pathli
         "BLOSSOM_TRACE_PATH": str(tmp_path / "traces.sqlite3"),
     }
     with browser(key=True, **files) as client:
-        made = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        made = client.post("/parent/actions/plan", data=family_plan(client, PLAN_DATE.isoformat()))
         assert made.status_code == 303, made.text[:300]
         page = client.get("/parent").text
     if reader == "parent":

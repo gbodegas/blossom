@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from blossom.captures import NotACaptureId, capture_id_from
+from blossom.clock import Clock
 from blossom.dependencies import create_lifespan
 from blossom.household import HouseholdGate
 from blossom.routes import (
@@ -109,7 +110,10 @@ def unreadable_form(marks: PageMarks) -> Callable[[Request, Exception], HTMLResp
 
 
 def create_app(
-    settings: Settings | None = None, *, monotonic: Callable[[], float] = time.monotonic
+    settings: Settings | None = None,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    real_clock: Clock | None = None,
 ) -> FastAPI:
     """Build the application without starting it.
 
@@ -119,10 +123,11 @@ def create_app(
     and forcing hosted tracing off both happen in the lifespan, which
     ``uvicorn`` runs at startup and ``TestClient`` runs only as a context
     manager, so tests use ``with TestClient(app) as client:``. ``monotonic`` is
-    the clock runs are timed on, which a test may move by hand.
+    the clock runs are timed on, which a test may move by hand, and ``real_clock`` the real
+    time a test may pin.
     """
     resolved = get_settings() if settings is None else settings
-    app = FastAPI(title="Blossom", lifespan=create_lifespan(resolved, monotonic))
+    app = FastAPI(title="Blossom", lifespan=create_lifespan(resolved, monotonic, real_clock))
     app.mount("/static", StaticFiles(directory=resolved.static_path), name="static")
     app.include_router(household.router)
     app.include_router(student.router)

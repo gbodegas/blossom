@@ -224,7 +224,7 @@ Three files under `.local/` outlive a restart:
   `grade_student`, one row with a random ID made at the first start and the
   key check for her name forms, and `grade_name_forms`, the keyed forms of
   the student lines a parent confirmed as hers, never the names themselves.
-  Fourteen more keep the grade reports a parent accepted, each row under her
+  Fifteen more keep the grade reports a parent accepted, each row under her
   student ID: `grade_context`, the current school year and term;
   `grade_years`, `grade_terms`, `grade_classes` and `grade_class_aliases`;
   `grade_reports`, with `grade_term_observations`,
@@ -240,9 +240,15 @@ Three files under `.local/` outlive a restart:
   class and term it covers, which a repeated press is answered from; and
   `grade_current_actions`, one record of each confirmed "Use saved values
   from this report as current": the report it copied, the report it made
-  current, and what it copied. A delete of one class's grades for one term
-  removes that class and term's reports, values, results, acceptances and
-  actions, and keeps her record, years, terms, classes and aliases.
+  current, and what it copied; and `grade_corrections`, added only, a
+  parent's assertion on a saved value or its withdrawal, each on the
+  original reading with the cell as read, the report the parent acted on,
+  who and when, never changing the value as written. An assertion takes a
+  closed form only: a number, a letter grade A to F with + or -, or a status
+  the class and term already hold. A delete of one class's grades for one
+  term removes that class and term's reports, values, results, assertions
+  and their history, acceptances and actions, and keeps her record, years,
+  terms, classes and aliases.
   A file from before any of them gains the tables on the first start, and
   a file whose acceptances have no class and term gains them once: each is
   tied to its report's, or its capture's, or the start stops with every
@@ -622,15 +628,21 @@ SQLite's `-journal`, `-wal` and `-shm` files beside it, the two `.lock`
 files and `household.secret`; a file not there yet is made by the start as
 usual. With the flag off, it refuses to start when a state folder holds
 `TEST-COPY`, whether the folder is named directly or reached through a
-link, so a marked copy never runs without its label.
+symbolic link or junction, so a marked folder never runs without its label.
 
 These checks can't tell where the data came from. They hold for a copy made
 as above, on local storage, that no other program changes while Blossom
-checks or runs it. Three things are outside them: a `TEST-COPY` file put in
-the household's own folder, which makes that folder pass for a copy and
-shows only when the household's own Blossom next starts and refuses it;
-files swapped by another program during the check or the run; and network
-mounts, where a link made on the server can't be seen.
+checks or runs it. Four things are outside them:
+
+- a `TEST-COPY` file put in the household's own folder, which makes that
+  folder pass for a copy and shows only when the household's own Blossom
+  next starts and refuses it.
+- files swapped by another program during the check or the run.
+- network mounts, where a link made on the server can't be seen.
+- a state file in an unmarked folder that is a hard link to a file
+  elsewhere. Both names refer to the same file. With the test-copy flag
+  off, the checks do not reject that hard link, and writing through either
+  name changes the shared file.
 
 ## Homework notes
 

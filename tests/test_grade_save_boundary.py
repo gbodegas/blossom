@@ -5,8 +5,8 @@
 A caller that holds the store's writer, writes, saves a report and catches the save's refusal
 keeps its own work and none of the save: every write statement of a save is refused in turn,
 the release of the save's savepoint as well, and the file is compared whole after each. The
-same holds for the class-details action, a first month's correction and a class and term's
-delete, and G-I20 runs every
+same holds for the class-details action, a first month's correction, a class and term's
+delete and a parent's assertion, and G-I20 runs every
 write's statements in one loop. When SQLite itself ends the caller's transaction, everything in
 it is gone, and the save says so with an error that is not a refusal, so no caller commits the
 rest of its block alone.
@@ -19,10 +19,11 @@ from collections.abc import Callable, Iterator
 
 import pytest
 
-from blossom.grades.draft import GradeReportDraft, capture_key
+from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key
 from blossom.grades.identity import name_form_key
 from blossom.grades.projection import ActionRecorded, CurrentPreview, MadeCurrent
 from blossom.grades.review import (
+    TERM_KEY,
     AlreadyRecorded,
     GradeAnswers,
     GradeReportSaved,
@@ -36,10 +37,12 @@ from blossom.stores.gradebook import (
     ClassTermDeleted,
     ContextSet,
     ContextStood,
+    CorrectionRecorded,
     DeletePreview,
     FirstMonthCorrected,
     FirstMonthStood,
     GradeReportNotSaved,
+    ValueCorrected,
 )
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
@@ -48,6 +51,7 @@ from tests.support import (
     capture_class,
     closed_world,
     confirm_current,
+    correction_page,
     current_preview,
     fixture_clock,
     grade_answers,
@@ -403,6 +407,7 @@ def test_every_grade_write_happens_inside_the_saves_one_savepoint(
         assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
         corrected = store.correct_first_month(YEAR, shown=8, month=9, role="parent")
         class_id = capture_class(store, WREN)
+        asserted = parent_assertion(store, saved=True)()
         held = store.delete_preview(class_id, "T1")
         assert isinstance(held, DeletePreview)
         removed = store.delete_class_term(class_id, "T1", revision=held.revision, role="parent")
@@ -420,12 +425,14 @@ def test_every_grade_write_happens_inside_the_saves_one_savepoint(
             written.append(depth > 0)
     ending = ("BEGIN", "COMMIT", "END")
     assert corrected == FirstMonthCorrected(YEAR, 9)
+    assert isinstance(asserted, ValueCorrected)
     assert isinstance(removed, ClassTermDeleted)
-    assert statements.count("SAVEPOINT GRADE_SAVE") >= 3
+    assert statements.count("SAVEPOINT GRADE_SAVE") >= 4
     assert depth == 0
     assert not [text for text in inside if text.startswith(ending) or text == "ROLLBACK"]
     assert [text for text in inside if text.startswith("UPDATE GRADE_YEARS")]
     assert [text for text in inside if text.startswith("DELETE FROM GRADE_REPORTS")]
+    assert [text for text in inside if text.startswith("INSERT INTO GRADE_CORRECTIONS")]
     assert written
     assert all(written)
 
@@ -998,6 +1005,7 @@ def test_a_refused_current_term_choice_leaves_nothing_of_it(
 
 
 DELETE: tuple[Site, ...] = (
+    (sqlite3.SQLITE_DELETE, "grade_corrections"),
     (sqlite3.SQLITE_DELETE, "grade_match_decisions"),
     (sqlite3.SQLITE_DELETE, "grade_term_observations"),
     (sqlite3.SQLITE_DELETE, "grade_category_observations"),
@@ -1069,6 +1077,79 @@ def test_a_refused_delete_leaves_nothing_of_it(
     assert isinstance(delete(), AlreadyDeleted)
 
 
+CORRECTION: tuple[Site, ...] = (
+    (sqlite3.SQLITE_INSERT, "grade_corrections"),
+    (sqlite3.SQLITE_INSERT, "grade_scope_revisions"),
+    UPSERT_ARM,
+)
+"""Every write statement of a parent's assertion: its record and the revision's upsert, both
+arms."""
+
+
+def parent_assertion(store: ProjectStateStore, *, saved: bool = False) -> Callable[[], object]:
+    """A parent's letter asserted on Wren's first term: the page's post, ready to send."""
+    if not saved:
+        assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    class_id = capture_class(store, WREN)
+    page = correction_page(store, class_id, "term", TERM_KEY)
+    return lambda: store.correct_value(
+        class_id,
+        "T1",
+        page=page,
+        field="letter",
+        how="parent_assertion",
+        value=GradeValue(text="A-", presence=Presence.REPORTED),
+        role="parent",
+    )
+
+
+def test_an_assertion_writes_exactly_the_named_statements(
+    opened: Callable[[str], ProjectStateStore],
+) -> None:
+    store = opened("first use")
+    assertion = parent_assertion(store)
+    seen: set[Site] = set()
+
+    def note(action: int, table: str | None, *_: object) -> int:
+        if action in WRITES and table is not None:
+            seen.add((action, table))
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(note)
+    outcome = assertion()
+    store._connection.set_authorizer(None)
+
+    assert isinstance(outcome, ValueCorrected)
+    assert seen == set(CORRECTION)
+
+
+@pytest.mark.parametrize("site", CORRECTION)
+def test_a_refused_assertion_leaves_nothing_of_it(
+    opened: Callable[[str], ProjectStateStore], path: pathlib.Path, site: Site
+) -> None:
+    """Refused at each of its statements inside a caller's transaction, the assertion leaves the
+    file as it was, with the caller's writes kept; lifted, the same page records it once, and
+    sent again it returns the recorded outcome."""
+    store = opened("first use")
+    assertion = parent_assertion(store)
+    before, rows = world(path), assignments(store)
+
+    store._connection.set_authorizer(refusing(site))
+    with store.comparing_and_writing():
+        unrelated(store, "before")
+        with pytest.raises(GradeReportNotSaved, match="value could not be corrected"):
+            assertion()
+        unrelated(store, "after")
+    store._connection.set_authorizer(None)
+
+    assert not store._connection.in_transaction
+    assert world(path) == before
+    assert assignments(store) == rows + 2
+    lifted = assertion()
+    assert isinstance(lifted, ValueCorrected)
+    assert assertion() == CorrectionRecorded(lifted)
+
+
 Write = Callable[[ProjectStateStore], Callable[[], object]]
 """A grade write's setup on a fresh file: the write, ready to send, and to send again."""
 
@@ -1132,6 +1213,7 @@ EVERY_WRITE: dict[str, tuple[Write, tuple[Site, ...], type]] = {
     "the class-details action": (class_details_action, ACTION, MadeCurrent),
     "a first-month correction": (first_month_correction, FIRST_MONTH, FirstMonthCorrected),
     "a class and term's delete": (class_and_term_delete, DELETE, ClassTermDeleted),
+    "a parent's assertion": (parent_assertion, CORRECTION, ValueCorrected),
 }
 """Every kind of grade write, with each write statement it makes and what it returns lifted."""
 

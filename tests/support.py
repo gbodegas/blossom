@@ -88,7 +88,14 @@ from blossom.plan_reading import anchor_for
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.routes.navigation import assignment_anchor, details_href
-from blossom.routes.runs import PlanGraphs, make_plan, plan_graphs
+from blossom.routes.runs import (
+    ISSUED_AT,
+    RUN_ID,
+    PlanGraphs,
+    fresh_plan_form,
+    make_plan,
+    plan_graphs,
+)
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
     DEFAULT_EVENING_MINUTES,
@@ -99,6 +106,7 @@ from blossom.settings import (
     Settings,
 )
 from blossom.stores.drafts import DraftRecord, DraftsStore, Outcome, RunState, Settled
+from blossom.stores.gradebook import CorrectionPage, new_correction_id
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -1167,6 +1175,292 @@ def form_fields(html: str, action: str) -> dict[str, str]:
     return {name: unescape(value) for name, value in found}
 
 
+FAMILY_PLAN_ACTION = "/parent/actions/plan"
+HER_PLAN_ACTION = "/student/actions/plan"
+
+
+def plan_form(client: TestClient, page: str = HER_PAGE, **changed: str) -> dict[str, str]:
+    """The hidden fields of the plan form on ``page`` as it renders now, her week or the
+    family page, read the way a browser sends them back, with ``changed`` over them. Fails
+    when the page shows no plan button."""
+    action = FAMILY_PLAN_ACTION if page.startswith("/parent") else HER_PLAN_ACTION
+    shown = client.get(page, headers=PAGE_HEADERS)
+    assert f'action="{action}"' in shown.text, f"{page} shows no plan button"
+    return {**form_fields(shown.text, action), **changed}
+
+
+def fresh_plan_fields(client: TestClient, **changed: str) -> dict[str, str]:
+    """The fields a fresh page's plan form would carry for today, built from the state
+    without showing a page, for presses a test makes where no page offers the button."""
+    state = state_of(client)
+    fresh = fresh_plan_form(state, state.clock.today(), state.drafts.newest_published())
+    return {**fresh.fields(), **changed}
+
+
+def family_plan(client: TestClient, plan_date: str, **changed: str) -> dict[str, str]:
+    """The family page's plan form as it renders now, with ``plan_date`` chosen."""
+    return plan_form(client, "/parent", plan_date=plan_date, **changed)
+
+
+MINTED_FIELD = re.compile(rf'(<input type="hidden" name="(?:{RUN_ID}|{ISSUED_AT})" value=")[^"]*"')
+
+
+def without_minted_fields(html: str) -> str:
+    """``html`` with the id and issue time each render of a plan form mints left blank, so
+    two renders of the same state compare equal."""
+    return MINTED_FIELD.sub(r'\g<1>"', html)
+
+
+def runs_recorded(client: TestClient) -> list[tuple[str, str, str]]:
+    """Every run the drafts file records, oldest first: its id, evening and status, read
+    through a connection of its own."""
+    connection = sqlite3.connect(state_of(client).settings.database_path)
+    try:
+        rows = connection.execute(
+            "SELECT thread_id, plan_date, status FROM runs ORDER BY rowid"
+        ).fetchall()
+    finally:
+        connection.close()
+    return [(str(run), str(evening), str(status)) for run, evening, status in rows]
+
+
+# ------------------------------------------------- what the plan presses answer
+
+# Every sentence and clause the two plan presses answer with, written out here and never
+# read from the application, so a change to the words is a change these tests see.
+HER_NEWER_PLAN = "A newer plan for today was made. This press did not replace it."
+HER_FORM_NOT_WHOLE = "Blossom couldn't use that plan request. No plan was started."
+HER_FORM_EXPIRED = "That page was opened a week or more ago. No new plan was started."
+HER_FORM_FROM_AUGUST_18 = "That plan button was for Tuesday, August 18. No new plan was started."
+HER_FORM_FROM_AUGUST_20 = "That plan button was for Thursday, August 20. No new plan was started."
+HER_PLAN_ALREADY_MADE = "That request made a plan for today. No new plan was started."
+HER_FOR_A_NEW_PLAN = "For a new plan, press Plan again."
+HER_FOR_A_NEW_PLAN_TODAY = "For a new plan, press Plan today."
+YOUR_WEEK_NOT_SHOWN_LINE = "Your week can't be shown right now."
+FAMILY_FORM_NOT_WHOLE = "Blossom couldn't use that plan request. No plan was started."
+FAMILY_FORM_EXPIRED = "That page was opened a week or more ago. No new plan was started."
+FAMILY_NEWER_PLAN_AUGUST_19 = (
+    "A newer plan for Wednesday, August 19 was made. This press did not replace it."
+)
+FAMILY_PLAN_ALREADY_MADE_TODAY = "That request made a plan for today. No new plan was started."
+FAMILY_PLAN_ALREADY_MADE_AUGUST_20 = (
+    "That request made a plan for Thursday, August 20. No new plan was started."
+)
+FAMILY_ASKED_FOR_AUGUST_19 = "This form was used for Wednesday, August 19."
+SHOWN_BELOW_WAITING = "That plan is shown below, waiting for review."
+SHOWN_BELOW_UNDER_TODAYS_REVIEWED_PLAN = "That plan is shown below, under Today's reviewed plan."
+THAT_PLAN_SHOWN_BELOW = "That plan is shown below."
+FAMILY_FOR_A_NEW_PLAN = "For a new plan, press Plan it."
+FAMILY_DATE_NOT_READ = "The new date couldn't be read. No new plan was started."
+NOTHING_FOR_AUGUST_20 = "No plan was started for Thursday, August 20."
+HER_UPDATES_SAVED = "Her homework updates are saved."
+FAMILY_REVIEW_SHOWS = "Family review shows what happened."
+FAMILY_NOT_SHOWN_LINE = "Family review can't be shown right now."
+ENDED_REASONS = {
+    "timed_out": "Planning took too long, so Blossom stopped.",
+    "service_failed": "Blossom couldn't get a plan from the planning service this time.",
+    "date_problem": (
+        "Blossom can't make today's plan: some work has a due date that already passed, so "
+        "no plan can finish it on time."
+    ),
+    "checks_failed": "Blossom couldn't finish a reliable plan this time.",
+}
+"""How a run that ended without a plan says why, by the reason it ended for."""
+
+
+@dataclasses.dataclass(frozen=True)
+class AnswerRow:
+    """One answer a plan press gives on a page: its row, its status, how its line begins, the
+    words its stand-in says, and whether it offers a plan form; or, for a press that lands on
+    the page it planned for, the address it lands on."""
+
+    row: str
+    status: int
+    fact: str = ""
+    stand_in: str = ""
+    form: bool = True
+    lands: str = ""
+
+
+HER_UNCONFIRMED = (
+    "Blossom couldn't confirm that the new plan was saved. Your homework updates are saved."
+)
+FAMILY_UNCONFIRMED = (
+    "Blossom couldn't confirm that the new plan was saved. Her homework updates are saved."
+)
+HER_INTERRUPTED = (
+    "Blossom couldn't finish a reliable plan this time. Your homework updates are saved."
+)
+HER_PLAN_SHOWN = "/student/due-this-week?show_plan=1"
+FAMILY_NEWER_PLAN_AUGUST_20 = (
+    "A newer plan for Thursday, August 20 was made. This press did not replace it."
+)
+SHOWN_BELOW_UNDER_EARLIER_PLANS = "That plan is shown below, under Earlier plans."
+BEING_MADE_AUGUST_19 = "The plan request for Wednesday, August 19 is still being finished."
+FAMILY_NOT_A_DATE = "'someday' is not a date. Use the form YYYY-MM-DD."
+FAMILY_EVENING_PASSED = (
+    "The evening of 2026-08-18 has passed. Plans are for today or a later evening."
+)
+FAMILY_PAST_THE_CALENDAR = (
+    "The evening of 9999-12-25 is past the edge of the calendar. "
+    "Plans reach no later than 9999-12-24."
+)
+FAMILY_ALREADY_PLANNING = (
+    "A plan for Thursday, August 20 is being made. Try again in about 41 seconds. Her "
+    "homework updates are saved."
+)
+FAMILY_NOT_SAVED = (
+    "Blossom made a plan but couldn't save it. Try again in a moment. Her homework updates "
+    "are saved."
+)
+FAMILY_COULD_NOT_START = (
+    "Blossom couldn't start a plan this time. Try again in a moment. Her homework updates are "
+    "saved."
+)
+FAMILY_NOTHING_TO_SCHEDULE = "Nothing to schedule from the work in this planning window."
+FAMILY_INTERRUPTED = (
+    "Blossom couldn't finish a reliable plan this time. Her homework updates are saved."
+)
+HER_ROWS = (
+    AnswerRow("her-not-whole", 422, HER_FORM_NOT_WHOLE, HER_FORM_NOT_WHOLE),
+    AnswerRow("her-another-evening", 409, HER_FORM_FROM_AUGUST_18, HER_FORM_FROM_AUGUST_18),
+    AnswerRow("her-expired", 409, HER_FORM_EXPIRED, HER_FORM_EXPIRED),
+    AnswerRow("her-running", 202, BEING_MADE_AUGUST_19, BEING_MADE_AUGUST_19, form=False),
+    AnswerRow("her-newer-plan", 409, HER_NEWER_PLAN, HER_NEWER_PLAN),
+    AnswerRow("her-plan-made", 409, HER_PLAN_ALREADY_MADE, HER_PLAN_ALREADY_MADE),
+    AnswerRow(
+        "her-ended",
+        409,
+        "Planning took too long, so Blossom stopped. Your homework updates are saved.",
+        "Planning took too long, so Blossom stopped. Your homework updates are saved.",
+    ),
+    AnswerRow("her-unconfirmed", 202, HER_UNCONFIRMED, HER_UNCONFIRMED, form=False),
+    AnswerRow("her-before", 409, HER_INTERRUPTED, HER_INTERRUPTED),
+    AnswerRow("her-made", 303, lands=HER_PLAN_SHOWN),
+    AnswerRow("her-plan-latest", 303, lands=HER_PLAN_SHOWN),
+)
+"""Her plan button's answers and landings."""
+FAMILY_ROWS = (
+    AnswerRow("family-not-whole", 422, FAMILY_FORM_NOT_WHOLE, FAMILY_FORM_NOT_WHOLE),
+    AnswerRow("family-expired", 409, FAMILY_FORM_EXPIRED, FAMILY_FORM_EXPIRED),
+    AnswerRow(
+        "family-another-evening",
+        409,
+        FAMILY_ASKED_FOR_AUGUST_19,
+        f"{FAMILY_ASKED_FOR_AUGUST_19} That plan was made. {NOTHING_FOR_AUGUST_20}",
+    ),
+    AnswerRow(
+        "family-unreadable-date",
+        409,
+        FAMILY_ASKED_FOR_AUGUST_19,
+        f"{FAMILY_ASKED_FOR_AUGUST_19} That plan was made. {FAMILY_DATE_NOT_READ}",
+    ),
+    AnswerRow("family-running", 202, BEING_MADE_AUGUST_19, BEING_MADE_AUGUST_19, form=False),
+    AnswerRow("family-newer-plan", 409, FAMILY_NEWER_PLAN_AUGUST_19, FAMILY_NEWER_PLAN_AUGUST_19),
+    AnswerRow(
+        "family-newer-plan-unread",
+        409,
+        FAMILY_NEWER_PLAN_AUGUST_19,
+        FAMILY_NEWER_PLAN_AUGUST_19,
+    ),
+    AnswerRow(
+        "family-plan-made",
+        409,
+        FAMILY_PLAN_ALREADY_MADE_TODAY,
+        FAMILY_PLAN_ALREADY_MADE_TODAY,
+    ),
+    AnswerRow(
+        "family-ended",
+        409,
+        f"{ENDED_REASONS['timed_out']} {HER_UPDATES_SAVED} {FAMILY_REVIEW_SHOWS}",
+        f"{ENDED_REASONS['timed_out']} {HER_UPDATES_SAVED}",
+    ),
+    AnswerRow("family-unconfirmed", 202, FAMILY_UNCONFIRMED, FAMILY_UNCONFIRMED, form=False),
+    AnswerRow("family-not-a-date", 422, FAMILY_NOT_A_DATE, FAMILY_NOT_A_DATE),
+    AnswerRow("family-passed", 422, FAMILY_EVENING_PASSED, FAMILY_EVENING_PASSED),
+    AnswerRow("family-beyond", 422, FAMILY_PAST_THE_CALENDAR, FAMILY_PAST_THE_CALENDAR),
+    AnswerRow("family-already-planning", 409, FAMILY_ALREADY_PLANNING, FAMILY_ALREADY_PLANNING),
+    AnswerRow("family-not-saved", 503, FAMILY_NOT_SAVED, FAMILY_NOT_SAVED),
+    AnswerRow("family-could-not-start", 503, FAMILY_COULD_NOT_START, FAMILY_COULD_NOT_START),
+    AnswerRow("family-refused", 409, FAMILY_NOTHING_TO_SCHEDULE, FAMILY_NOTHING_TO_SCHEDULE),
+    AnswerRow(
+        "family-interrupted",
+        409,
+        f"{FAMILY_INTERRUPTED} {FAMILY_REVIEW_SHOWS}",
+        FAMILY_INTERRUPTED,
+    ),
+    AnswerRow("family-made", 303, lands="/parent"),
+    AnswerRow("family-plan-latest", 303, lands="/parent"),
+    AnswerRow("family-ended-first", 303, lands="/parent"),
+)
+"""The family Plan it's answers and landings."""
+
+
+def her_line(page: str) -> str:
+    """The words of the line her week answers a press with, links and all, or empty."""
+    found = re.search(r'<p class="problem week-problem"[^>]*>(.*?)</p>', page, re.S)
+    return "" if found is None else words(found.group(1))
+
+
+def family_line(page: str) -> str:
+    """The words of the line the family page answers a press with, links and all, or empty."""
+    found = re.search(r'<p class="problem" role="alert" id="problem"[^>]*>(.*?)</p>', page, re.S)
+    return "" if found is None else words(found.group(1))
+
+
+OPENING = '<span class="opening" tabindex="-1" autofocus>'
+"""How a plan answer's line begins: its first sentence, which takes the focus in place of the
+line, so the opening is on the screen however long the rest is."""
+FAMILY_LINE = '<p class="problem" role="alert" id="problem">'
+HER_TOP_LINE = '<p class="problem week-problem" role="alert">'
+STAND_IN_LINE = '<p class="problem" role="alert" id="problem-summary">'
+"""The tags of a plan answer's line on the family page, her week and a page that reads no
+store, each taking no focus of its own."""
+
+
+def first_sentence(said: str) -> str:
+    """The first sentence of words written out here, each of whose sentences ends at a
+    period."""
+    head, stop, _ = said.partition(". ")
+    return f"{head}." if stop else said
+
+
+def opening_focused(page: str, line: str) -> str:
+    """The words the line whose tag is ``line`` opens with and gives the focus to, or empty
+    when it gives none: nothing else on the page asks for the focus, and the rest of the line
+    follows after a space. Which sentence that is, a test compares with the words it expects."""
+    found = re.search(re.escape(line + OPENING) + r"(.*?)</span>(.*?)</p>", page, re.S)
+    if found is None or page.count("autofocus") != 1:
+        return ""
+    rest = found.group(2)
+    return words(found.group(1)) if not rest or rest.startswith(" ") else ""
+
+
+def unwrapped(html: str) -> str:
+    """``html`` with a plan answer's opening read as part of its line, the tags that give the
+    focus to its first sentence left out, so the line compares as written."""
+    return re.sub(re.escape(OPENING) + r"(.*?)</span>", r"\1", html, count=1, flags=re.S)
+
+
+def family_line_focused(page: str) -> bool:
+    """Whether the family page's line gives the focus to its first sentence."""
+    return bool(opening_focused(page, FAMILY_LINE))
+
+
+def plan_fold_open(page: str) -> bool | None:
+    """Whether the family page's Help with a plan is open, or ``None`` when it isn't there."""
+    found = re.search(
+        r'<details class="steps panel-fold"( open)?>\s*<summary>Help with a plan</summary>', page
+    )
+    return None if found is None else found.group(1) is not None
+
+
+def plan_date_shown(page: str) -> str | None:
+    """The date the family page's plan form holds, or ``None`` when it shows no form."""
+    found = re.search(r'<input type="date" name="plan_date" value="([^"]*)">', page)
+    return None if found is None else found.group(1)
+
+
 def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:
     """Send her update from the card as it stands on the week ``week`` names, the fixture
     week unless it names another, and return the address it goes back to."""
@@ -1615,7 +1909,7 @@ def walkthrough(client: TestClient) -> str:
 
 def planned(client: TestClient) -> DraftRecord:
     """Make today's plan from her page and return its record."""
-    made = client.post("/student/actions/plan")
+    made = client.post("/student/actions/plan", data=plan_form(client))
     assert made.status_code == 303, made.text[:300]
     record = state_of(client).drafts.latest_for(PLAN_DATE)
     assert record is not None
@@ -1979,6 +2273,31 @@ def confirm_current(
     )
 
 
+def correction_page(
+    store: ProjectStateStore,
+    class_id: str,
+    kind: str,
+    target: str,
+    *,
+    term: str = "T1",
+    report_id: str | None = None,
+) -> CorrectionPage:
+    """A page for a value of ``target`` in her class and term: a fresh correction ID, the
+    revision, and the report its current value comes from, or ``report_id`` when given."""
+    current = store.current_values(class_id, term)
+    value = {
+        "term": current.term,
+        "category": current.categories.get(target),
+        "result": current.results.get(target),
+    }[kind]
+    (revision,) = store._connection.execute(
+        "SELECT revision FROM grade_scope_revisions WHERE class_id = ? AND term_label = ?",
+        (class_id, term),
+    ).fetchone()
+    source = report_id if report_id is not None or value is None else value.report_id
+    return CorrectionPage(new_correction_id(), int(revision), str(source), kind, target)
+
+
 def without_columns(text: str, category: str, *columns: str) -> str:
     """The report ``text`` with ``columns``, by their headers, left out of ``category``'s result
     table, so each of its rows has those cells not captured."""
@@ -2040,6 +2359,15 @@ def the_alert(page: str) -> str:
     return "" if found is None else words(found.group(1))
 
 
+def the_answer_alert(page: str) -> str:
+    """The words of a plan answer's one explanation on a page that reads no store, links and
+    all, when it gives the focus to its first sentence; empty otherwise."""
+    found = re.search(re.escape(STAND_IN_LINE) + r"(.*?)</p>", page, re.S)
+    if found is None or not opening_focused(page, STAND_IN_LINE):
+        return ""
+    return words(found.group(1))
+
+
 def database_of(client: TestClient) -> pathlib.Path:
     """The household's file the application on this client keeps its record in."""
     return pathlib.Path(state_of(client).settings.database_path)
@@ -2098,21 +2426,28 @@ STORE_FREE_NEVER = (
 
 
 def store_free_page(
-    answer: Answer, *, status: int, heading: str, alert: str, alert_id: str = "problem-summary"
+    answer: Answer,
+    *,
+    status: int,
+    heading: str,
+    alert: str,
+    alert_id: str = "problem-summary",
+    opening: bool = False,
 ) -> str:
     """What every page that reads no store holds and never holds: its status, its heading,
     one focused explanation with these words, no control, and no pointer to a page it does
-    not show. Its main part."""
+    not show. Its main part. With ``opening``, a plan answer's, the explanation gives the
+    focus to its first sentence."""
     assert answer.status_code == status, (answer.status_code, answer.text[:600])
     main = main_of(answer.text)
     assert f"<h1>{heading}</h1>" in main, main[:600]
+    focus = "" if opening else ' tabindex="-1" autofocus'
     found = re.search(
-        rf'<p class="problem" role="alert" id="{alert_id}" tabindex="-1" autofocus>(.*?)</p>',
-        main,
-        re.S,
+        rf'<p class="problem" role="alert" id="{alert_id}"{focus}>(.*?)</p>', main, re.S
     )
     assert found is not None, main[:600]
     assert words(found.group(1)) == alert, words(found.group(1))
+    assert not opening or opening_focused(main, found.group(0)[: found.start(1) - found.start()])
     assert answer.text.count("autofocus") == 1
     assert 'tabindex="' not in main.replace('tabindex="-1"', "")
     assert "<form" not in main

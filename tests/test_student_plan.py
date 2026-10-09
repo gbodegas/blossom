@@ -16,6 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from time import monotonic
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -26,7 +27,7 @@ from blossom.agent.graph import MAX_REVISIONS, Ask, CompiledPlanGraph, ModelAnsw
 from blossom.agent.runs import MODEL_RETRIES, RUN_DEADLINE_SECONDS
 from blossom.anthropic_client import ServiceBusy, ServiceFailed
 from blossom.app import create_app
-from blossom.clock import spoken_time
+from blossom.clock import FrozenClock, spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
@@ -56,6 +57,13 @@ from blossom.views import PastDueView
 from tests.support import (
     ESSAY_ID,
     FIXTURE_TIMEZONE,
+    HER_FOR_A_NEW_PLAN,
+    HER_FORM_EXPIRED,
+    HER_FORM_FROM_AUGUST_18,
+    HER_FORM_FROM_AUGUST_20,
+    HER_FORM_NOT_WHOLE,
+    HER_NEWER_PLAN,
+    HER_TOP_LINE,
     PLAN_DATE,
     SAME_ORIGIN,
     THEIRS,
@@ -70,18 +78,26 @@ from tests.support import (
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
+    form_fields,
+    fresh_plan_fields,
     light_fixture_plan,
     model_graphs,
     ok,
+    opening_focused,
+    plan_form,
     plan_on,
     record,
+    refusing,
     report,
+    runs_recorded,
     scripted_graphs,
     settled_run,
     signed_in,
     signed_in_household,
     state_of,
     status_of,
+    unwrapped,
+    words,
 )
 
 PAGE = "/student/due-this-week"
@@ -111,12 +127,15 @@ def browser(
     plan: Callable[[], DailyPlan] = fixture_week_plan,
     critic: Callable[[], CriticVerdict] = accepting,
     clock: Callable[[], float] = monotonic,
+    real_clock: FrozenClock | None = None,
 ) -> TestClient:
     """Her page with scripted models. ``key`` false is a household without an API key;
-    ``clock`` is the monotonic clock its runs are timed on."""
+    ``clock`` is the monotonic clock its runs are timed on, and ``real_clock`` pins real time."""
     environ = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"} if key else {}
     app = create_app(
-        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **environ), monotonic=clock
+        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **environ),
+        monotonic=clock,
+        real_clock=real_clock,
     )
     if key:
         app.dependency_overrides[plan_graphs] = scripted_graphs(
@@ -224,7 +243,7 @@ def test_her_page_offers_to_plan_today_and_says_why_it_cannot_without_a_key() ->
 
 def test_the_plan_is_on_her_page_the_moment_it_is_made() -> None:
     with browser() as client:
-        planned = client.post("/student/actions/plan")
+        planned = client.post("/student/actions/plan", data=plan_form(client))
         page = client.get(PAGE).text
         today = client.get("/student/plans/today").json()
         queue = client.get("/parent/approvals").json()["waiting"]
@@ -260,7 +279,7 @@ def test_without_a_plan_today_is_a_404() -> None:
 
 def test_without_a_key_the_page_says_so_and_keeps_working() -> None:
     with browser(key=False) as client:
-        response = client.post("/student/actions/plan")
+        response = client.post("/student/actions/plan", data=fresh_plan_fields(client))
         over_json = client.post("/student/plans")
 
     assert response.status_code == 503
@@ -323,13 +342,13 @@ def test_a_parent_who_plans_from_her_page_is_told_where_the_record_is(
     )
     with client:
         signed_in(client, THEIRS)
-        response = client.post("/student/actions/plan")
+        response = client.post("/student/actions/plan", data=fresh_plan_fields(client))
 
     assert response.status_code == 409
     assert (
         "Blossom couldn&#39;t finish a reliable plan this time. Her homework updates are saved. "
         "Family review shows what happened."
-    ) in response.text
+    ) in unwrapped(response.text)
     assert "Your homework updates" not in response.text
 
 
@@ -343,13 +362,13 @@ def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() ->
         lambda: [forgetful_fixture_plan()] * 3, lambda: [accepting()]
     )
     with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
-        response = client.post("/student/actions/plan")
+        response = client.post("/student/actions/plan", data=plan_form(client))
         over_json = client.post("/student/plans")
 
     assert response.status_code == 409
     assert (
         "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are "
-        "saved." in response.text
+        "saved." in unwrapped(response.text)
     )
     assert "checks_failed" not in response.text
     assert "No plan for today yet." in response.text
@@ -372,9 +391,9 @@ def test_a_failure_on_the_way_is_said_on_the_page_and_the_plan_stays() -> None:
         lambda: [fixture_week_plan()], lambda: [accepting()]
     )
     with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         app.dependency_overrides[plan_graphs] = scripted_graphs(list, lambda: [accepting()])
-        response = client.post("/student/actions/plan")
+        response = client.post("/student/actions/plan", data=plan_form(client))
         over_json = client.post("/student/plans")
         today = client.get("/student/plans/today").json()
         ended = state_of(client).drafts.latest_run()
@@ -409,7 +428,7 @@ def test_a_held_review_that_cannot_be_read_is_said_as_a_plan_not_finished(
 
     monkeypatch.setattr(run_routes, "finish_held_reviews", unreadable)
     with browser() as client:
-        page = client.post("/student/actions/plan")
+        page = client.post("/student/actions/plan", data=plan_form(client))
         over_json = client.post("/student/plans")
         state = state_of(client)
         ended = state.drafts.latest_run()
@@ -431,9 +450,9 @@ def test_a_held_review_that_cannot_be_read_is_said_as_a_plan_not_finished(
 
 def test_planning_again_replaces_the_plan_on_both_pages() -> None:
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         first = client.get("/student/plans/today").json()["draft_id"]
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         today = client.get("/student/plans/today").json()
         queue = client.get("/parent/approvals").json()["waiting"]
         earlier = client.get(f"/parent/approvals/{first}").json()
@@ -448,7 +467,7 @@ def test_planning_again_replaces_the_plan_on_both_pages() -> None:
 
 def test_a_parents_review_shows_under_her_plan_and_never_blocks_it() -> None:
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         draft_id = client.get("/student/plans/today").json()["draft_id"]
         before = client.get(PAGE).text
         client.post(
@@ -467,7 +486,7 @@ def test_a_parents_review_shows_under_her_plan_and_never_blocks_it() -> None:
 
 def test_a_change_asked_for_is_said_in_her_words() -> None:
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         draft_id = client.get("/student/plans/today").json()["draft_id"]
         client.post(
             f"/parent/approvals/{draft_id}",
@@ -490,7 +509,7 @@ def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
     one fold, folded on both pages for a plan the review accepted; every part of the saved
     plan once, and no second copy of it as text."""
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         body = client.get("/student/plans/today").json()["body"]
         saved = state_of(client).drafts.latest_for(PLAN_DATE)
         page = client.get(PAGE).text
@@ -511,7 +530,7 @@ def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
         '<a class="assignment-link details-link" '
         'href="/student/assignments/assignment-canal-essay?return_to=today#evidence"'
     ) in page
-    assert "return_to=family&amp;plan_id=draft%3Aplan%3A2026-08-19%3A" in theirs
+    assert f"return_to=family&amp;plan_id={quote(saved.draft_id, safe='')}" in theirs
     assert '<p class="plan-why">' in page
     assert '<h3 class="plan-heading">Not in this evening\'s plan</h3>' in page
     assert '<h4 class="plan-heading">Not in this evening\'s plan</h4>' in theirs
@@ -568,7 +587,7 @@ def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away(
     plan, no fold; and opening the page asks no model."""
     with browser() as client:
         before = client.get(PAGE).text
-        planned = client.post("/student/actions/plan")
+        planned = client.post("/student/actions/plan", data=plan_form(client))
         shown = client.get(planned.headers["location"]).text
         revisit = client.get(PAGE).text
         refreshed = client.get(PAGE, params={"refreshed": "1"}).text
@@ -598,7 +617,7 @@ def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away(
 def test_the_plan_unfolds_on_todays_week_however_the_week_was_named() -> None:
     """``show_plan`` is a presentation parameter and works beside ``week`` too."""
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         named = client.get(PAGE, params={"week": PLAN_DATE.isoformat(), "show_plan": "1"}).text
         other = client.get(PAGE, params={"week": "2026-08-24", "show_plan": "1"}).text
 
@@ -609,7 +628,7 @@ def test_the_plan_unfolds_on_todays_week_however_the_week_was_named() -> None:
 def test_the_plan_stays_unfolded_when_the_week_asked_for_cannot_be_shown() -> None:
     """The fallback renders today's week; the presentation flag rides along."""
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         bad = client.get(PAGE, params={"week": "bad", "show_plan": "1"})
         edge = client.get(PAGE, params={"week": "0001-01-01", "show_plan": "1"})
 
@@ -634,7 +653,7 @@ def test_a_review_the_reviewer_could_not_finish_is_said_outside_the_plan() -> No
     does not make that go away; the notes are in the plan, open."""
     warning = "Blossom's review could not settle every point. Open the plan to read its notes."
     with browser(critic=undecided) as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         draft_id = client.get("/student/plans/today").json()["draft_id"]
         before = client.get(PAGE).text
         client.post(f"/parent/approvals/{draft_id}", json={"approved": True, "reason": "fine"})
@@ -651,7 +670,7 @@ def test_a_review_the_reviewer_could_not_finish_is_said_outside_the_plan() -> No
 
 def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> None:
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         client.post("/student/help-requests", json={"note": "the essay outline"})
         request_id = client.get("/student/help-requests").json()[0]["request_id"]
         client.post(f"/parent/help-requests/{request_id}/resolve", json={"response": "done"})
@@ -681,7 +700,7 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
 
 def test_another_week_shows_its_work_and_a_way_back_instead_of_today() -> None:
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         other = client.get(PAGE, params={"week": "2026-08-24"}).text
 
     assert "<h1>Week of August 24</h1>" in other
@@ -702,7 +721,7 @@ def test_the_plan_button_follows_the_evening_as_it_stands() -> None:
         nothing_yet = client.get(PAGE).text
         client.post("/student/actions/too-much")
         signaled_no_plan = client.get(PAGE).text
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         small_plan_signaled = client.get(PAGE).text
         signal_id = client.get("/student/workload-signals").json()[0]["signal_id"]
         client.delete(f"/student/workload-signals/{signal_id}")
@@ -727,7 +746,7 @@ def test_the_plan_button_follows_the_evening_as_it_stands() -> None:
 
 def test_a_full_plan_under_a_signal_offers_a_smaller_one_and_keeps_the_plan() -> None:
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         body = client.get("/student/plans/today").json()["body"]
         saved = state_of(client).drafts.latest_for(PLAN_DATE)
         client.post("/student/actions/too-much")
@@ -744,7 +763,7 @@ def test_a_full_plan_under_a_signal_offers_a_smaller_one_and_keeps_the_plan() ->
 def test_the_planning_forms_carry_the_pending_words_and_the_others_do_not() -> None:
     """The enhancement is scoped by a data attribute; decision and help buttons keep their names."""
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         client.post("/student/help-requests")
         hers = client.get(PAGE).text
         theirs = client.get("/parent").text
@@ -782,7 +801,7 @@ def test_refresh_is_a_link_on_both_pages_and_a_visit_marks_nothing() -> None:
 
     assert '<a href="/student/due-this-week?refreshed=1#help">Refresh replies</a>' in hers
     assert "Refresh to see updates. Save or send your note first." in hers
-    assert '<a href="/parent?refreshed=1">Refresh requests</a>' in theirs
+    assert '<a href="/parent?refreshed=1#help-she-asked-for">Refresh requests</a>' in theirs
     assert state == "requested"
     assert "Waiting for a parent." in hers_after
 
@@ -792,7 +811,7 @@ def test_refresh_is_a_link_on_both_pages_and_a_visit_marks_nothing() -> None:
 
 def test_a_press_after_the_plan_tells_her_to_plan_again_in_her_words() -> None:
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         client.post("/student/actions/too-much")
         page = client.get(PAGE).text
         today = client.get("/student/plans/today").json()
@@ -809,7 +828,7 @@ def test_a_press_after_the_plan_tells_her_to_plan_again_in_her_words() -> None:
 def test_her_page_measures_the_plan_against_the_evening_whatever_a_parent_said() -> None:
     """A parent's review is not a reason to keep a plan that has stopped fitting the evening."""
     with browser() as client:
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         draft_id = client.get("/student/plans/today").json()["draft_id"]
         client.post(f"/parent/approvals/{draft_id}", json={"approved": True})
         client.post("/student/actions/too-much")
@@ -827,7 +846,7 @@ def test_her_page_measures_the_plan_against_the_evening_whatever_a_parent_said()
 def test_taking_the_signal_back_after_a_reduced_plan_says_so_in_her_words() -> None:
     with browser(plan=light_fixture_plan) as client:
         signal_id = client.post("/student/workload-signals").json()["signal"]["signal_id"]
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         reduced = client.get("/student/plans/today").json()
         client.delete(f"/student/workload-signals/{signal_id}")
         today = client.get("/student/plans/today").json()
@@ -856,7 +875,7 @@ def test_with_nothing_left_to_plan_her_routes_refuse_before_any_run() -> None:
                 item.assignment_id, "done", None, expected_head=None, now=CREATED, today=PLAN_DATE
             )
         over_json = client.post("/student/plans")
-        from_the_page = client.post("/student/actions/plan")
+        from_the_page = client.post("/student/actions/plan", data=fresh_plan_fields(client))
         ended = state.drafts.runs_without_a_draft()
 
     assert over_json.status_code == 409
@@ -898,21 +917,23 @@ def answer(
 
 def ended_page(client: TestClient) -> str:
     """Her plan press, as a page: the top line and the plan button."""
-    response = client.post("/student/actions/plan")
+    response = client.post("/student/actions/plan", data=plan_form(client))
     assert response.status_code == 409
     return response.text
 
 
 def the_line(page: str) -> str:
+    """Her week's top line as written, its opening read as part of it."""
     start = page.index('<p class="problem week-problem"')
-    return page[start : page.index("</p>", start) + 4]
+    return unwrapped(page[start : page.index("</p>", start) + 4])
 
 
 def test_each_way_a_run_ends_without_a_plan_is_said_with_a_way_forward() -> None:
     """Wrong-date answers, a plan cut off, an answer that couldn't be read, time running
     out, and a service still busy after its retries: each is said in its own words, says
-    her updates are saved, takes the focus, links to her homework, and the plan button
-    offers to try again. None says the evening is too full, and none asks for a parent."""
+    her updates are saved, gives the focus to its first sentence, links to her homework, and
+    the plan button offers to try again. None says the evening is too full, and none asks
+    for a parent."""
     clock = FakeTime()
     tomorrow = fixture_week_plan().model_copy(update={"plan_date": date(2026, 8, 20)})
     cases: dict[str, tuple[Callable[[], Ask[DailyPlan]], str]] = {
@@ -950,7 +971,8 @@ def test_each_way_a_run_ends_without_a_plan_is_said_with_a_way_forward() -> None
 
         line = the_line(page)
         assert f"{said} Your homework updates are saved." in line, name
-        assert 'role="alert" tabindex="-1" autofocus' in line, name
+        assert line.startswith(f"{HER_TOP_LINE}{said} "), name
+        assert opening_focused(page, HER_TOP_LINE) == words(said), name
         assert '<a href="#title-assignment-science-fair-proposal">See homework.</a>' in line, name
         assert TRY_AGAIN in page, name
         assert "fits this evening" not in page, name
@@ -1000,7 +1022,7 @@ def test_a_failed_run_keeps_her_updates_and_the_plan_already_there() -> None:
     update, and nothing waits in its place."""
     clock = FakeTime()
     with browser() as client:
-        assert client.post("/student/actions/plan").status_code == 303
+        assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         state = state_of(client)
         first = state.drafts.latest_for(PLAN_DATE)
         assert first is not None
@@ -1015,7 +1037,10 @@ def test_a_failed_run_keeps_her_updates_and_the_plan_already_there() -> None:
         waiting = [item.draft_id for item in state.drafts.waiting()]
         essay = status_of(state.project_state, ESSAY_ID)
 
-    assert "Planning took too long, so Blossom stopped. Your homework updates are saved." in page
+    assert (
+        "Planning took too long, so Blossom stopped. Your homework updates are saved."
+        in unwrapped(page)
+    )
     assert latest is not None
     assert latest.draft_id == first.draft_id
     assert waiting == [first.draft_id]
@@ -1037,7 +1062,7 @@ def test_one_press_is_one_run() -> None:
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
             lambda: [forgetful_fixture_plan()] * (MAX_REVISIONS + 1), list, planners=planners
         )
-        client.post("/student/actions/plan")
+        client.post("/student/actions/plan", data=plan_form(client))
         page = client.get(PAGE).text
         runs = state_of(client).drafts.runs_without_a_draft()
 
@@ -1069,10 +1094,7 @@ def test_a_press_while_a_plan_for_today_is_being_made_starts_nothing() -> None:
         latest = state.drafts.latest_for(PLAN_DATE)
         blocking = state.drafts.latest_run()
 
-    finishing = (
-        "The last plan request, for Wednesday, August 19, is still being finished. "
-        "Try again in about 91 seconds."
-    )
+    finishing = "A plan for Wednesday, August 19 is being made. Try again in about 91 seconds."
     line = the_line(page)
     assert blocked is None
     assert f"{finishing} Your homework updates are saved." in line
@@ -1132,8 +1154,8 @@ PRESS_ANSWERS: dict[str, tuple[Callable[[], Exception], int, str, str | None]] =
     "already planning": (
         lambda: AlreadyPlanning(STILL_RUNNING),
         409,
-        "The last plan request, for Wednesday, August 19, is still being finished. Try again "
-        "in about 41 seconds. {Your} homework updates are saved.",
+        "A plan for Wednesday, August 19 is being made. Try again in about 41 seconds. {Your} "
+        "homework updates are saved.",
         run_link(INFLIGHT, ON_THAT_REQUEST),
     ),
     "not saved": (
@@ -1197,7 +1219,9 @@ def test_each_answer_to_a_press_says_her_updates_are_saved_in_the_readers_words(
     with client:
         if parent:
             signed_in(client, THEIRS)
-        response = client.post("/student/actions/plan")
+        response = client.post(
+            "/student/actions/plan", data=fresh_plan_fields(client) if parent else plan_form(client)
+        )
 
     line = the_line(response.text)
     assert response.status_code == code
@@ -1292,7 +1316,8 @@ def test_a_week_that_cannot_be_read_before_a_press_is_a_plan_that_could_not_star
     with client:
         if parent:
             signed_in(client, THEIRS)
-        response = client.post(route)
+        form = fresh_plan_fields(client) if parent else plan_form(client)
+        response = client.post(route, data=form if "actions" in route else None)
         newest = state_of(client).drafts.latest_run()
 
     said = (
@@ -1331,7 +1356,8 @@ def test_a_graph_that_cannot_be_built_before_a_press_is_a_plan_that_could_not_st
     with client:
         if parent:
             signed_in(client, THEIRS)
-        response = client.post(route)
+        form = fresh_plan_fields(client) if parent else plan_form(client)
+        response = client.post(route, data=form if "actions" in route else None)
         newest = state_of(client).drafts.latest_run()
 
     said = (
@@ -1348,12 +1374,12 @@ def test_a_graph_that_cannot_be_built_before_a_press_is_a_plan_that_could_not_st
     assert newest is None
 
 
-def test_the_plan_button_keeps_its_label_when_the_answer_is_unconfirmed(
+def test_an_unconfirmed_answer_offers_only_a_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An answer whose plan may have been published offers to check again, never to try
-    again: the plan button keeps its own label. A refusal while a run is being finished
-    still offers Try again."""
+    again, and no plan button that could start another paid run. A refusal while a run is
+    being finished still offers Try again."""
     answers: dict[str, Callable[[], Exception]] = {
         "unconfirmed": lambda: Unconfirmed(UNSURE, PLAN_DATE),
         "already planning": lambda: AlreadyPlanning(STILL_RUNNING),
@@ -1368,10 +1394,9 @@ def test_the_plan_button_keeps_its_label_when_the_answer_is_unconfirmed(
 
         monkeypatch.setattr(student_routes, "make_plan", refused)
         with browser() as client:
-            pages[name] = client.post("/student/actions/plan").text
+            pages[name] = client.post("/student/actions/plan", data=plan_form(client)).text
 
-    plan_today = '<button type="submit" class="primary" aria-describedby="plan-scope">Plan today'
-    assert plan_today in pages["unconfirmed"]
+    assert 'action="/student/actions/plan"' not in pages["unconfirmed"]
     assert TRY_AGAIN not in pages["unconfirmed"]
     assert run_link(UNSURE, AGAIN) in the_line(pages["unconfirmed"])
     assert TRY_AGAIN in pages["already planning"]
@@ -1791,3 +1816,230 @@ def test_a_parent_making_her_plan_reads_it_in_her_words(
 
     assert (theirs.status_code, hers.status_code) == (201, 201)
     assert readers == ["family", "student"]
+
+
+# ------------------------------------------------------- one press, one run
+
+FORM_AGE = timedelta(days=7)
+
+
+def test_her_plan_form_sent_twice_makes_one_run() -> None:
+    """The same form sent twice is one run: the second press lands where the first did and
+    replaces nothing."""
+    with browser() as client:
+        form = plan_form(client)
+        first = client.post("/student/actions/plan", data=form)
+        made = client.get("/student/plans/today").json()["draft_id"]
+        again = client.post("/student/actions/plan", data=form)
+        today = client.get("/student/plans/today").json()["draft_id"]
+        queue = client.get("/parent/approvals").json()["waiting"]
+        runs = runs_recorded(client)
+
+    assert first.status_code == again.status_code == 303
+    assert again.headers["location"] == SHOWN
+    assert today == made
+    assert [item["draft_id"] for item in queue] == [made]
+    assert [run for run, _, _ in runs] == [form["run_id"]]
+
+
+def test_a_stale_plan_button_starts_nothing_and_shows_the_newer_plan() -> None:
+    """A page opened before a newer plan was made can't replace it: its press starts nothing,
+    says so, and shows the newer plan with a fresh button for a deliberate new request."""
+    with browser() as client:
+        stale = plan_form(client)
+        client.post("/student/actions/plan", data=plan_form(client))
+        newer = client.get("/student/plans/today").json()["draft_id"]
+        pressed = client.post("/student/actions/plan", data=stale)
+        today = client.get("/student/plans/today").json()
+        runs = runs_recorded(client)
+
+    assert pressed.status_code == 409
+    assert HER_NEWER_PLAN in the_line(pressed.text)
+    assert f"{HER_FOR_A_NEW_PLAN}</p>" in the_line(pressed.text)
+    assert today["draft_id"] == newer
+    assert today["decision"] is None
+    assert len(runs) == 1
+    fresh = form_fields(pressed.text, "/student/actions/plan")
+    assert fresh["run_id"] not in {stale["run_id"], runs[0][0]}
+    assert fresh["newest_plan"] == newer
+
+
+def without(name: str) -> Callable[[dict[str, str]], dict[str, str]]:
+    return lambda form: {key: value for key, value in form.items() if key != name}
+
+
+def with_value(name: str, value: str) -> Callable[[dict[str, str]], dict[str, str]]:
+    return lambda form: {**form, name: value}
+
+
+NOT_WHOLE: dict[str, Callable[[dict[str, str]], Any]] = {
+    "no id": without("run_id"),
+    "an id of another shape": with_value("run_id", "plan:2026-08-19:abc"),
+    "an id in capitals": lambda form: {**form, "run_id": form["run_id"].upper()},
+    "no evening": without("evening"),
+    "an evening that is no date": with_value("evening", "tonight"),
+    "no issue time": without("issued_at"),
+    "an issue time that is no time": with_value("issued_at", "a while ago"),
+    "an issue time far ahead": lambda form: {
+        **form,
+        "issued_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+    },
+    "no basis": without("newest_plan"),
+    "a basis naming no plan": with_value("newest_plan", "draft-never-made"),
+    "an id sent twice": lambda form: [*form.items(), ("run_id", form["run_id"])],
+}
+
+
+@pytest.mark.parametrize("change", NOT_WHOLE)
+def test_a_plan_form_that_is_not_whole_starts_nothing(change: str) -> None:
+    """A form from an incomplete or outdated page, or one made by hand, plans nothing, and the
+    page offers a fresh button."""
+    with browser() as client:
+        form = NOT_WHOLE[change](plan_form(client))
+        pressed = client.post("/student/actions/plan", data=form)
+        runs = runs_recorded(client)
+
+    assert pressed.status_code == 422
+    assert str(escape(HER_FORM_NOT_WHOLE)) in the_line(pressed.text)
+    assert runs == []
+    assert form_fields(pressed.text, "/student/actions/plan")["run_id"]
+
+
+def test_her_plan_form_from_another_evening_starts_nothing() -> None:
+    """A press is never moved to another evening: a form from yesterday's page plans
+    nothing today and says which page it came from."""
+    with browser() as client:
+        form = plan_form(client, evening=(PLAN_DATE - timedelta(days=1)).isoformat())
+        pressed = client.post("/student/actions/plan", data=form)
+        runs = runs_recorded(client)
+
+    assert pressed.status_code == 409
+    assert HER_FORM_FROM_AUGUST_18 in the_line(pressed.text)
+    assert runs == []
+
+
+def test_her_used_form_names_its_runs_evening_when_that_is_not_today() -> None:
+    """An id already used for another evening answers with that run's evening and starts
+    nothing; her page never answers with the family form's conflict."""
+    with browser() as client:
+        form = plan_form(client)
+        ended_run(
+            state_of(client).drafts,
+            thread_id=form["run_id"],
+            plan_date=PLAN_DATE + timedelta(days=1),
+            outcome="interrupted",
+        )
+        pressed = client.post("/student/actions/plan", data=form)
+        runs = runs_recorded(client)
+
+    assert pressed.status_code == 409
+    assert HER_FORM_FROM_AUGUST_20 in the_line(pressed.text)
+    assert "already asked" not in pressed.text
+    assert len(runs) == 1
+
+
+def test_an_old_plan_form_starts_nothing() -> None:
+    """A form issued seven real days ago or more is expired: it plans nothing, even when
+    the household's day is pinned to the evening it names."""
+    instant = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+    with browser(real_clock=FrozenClock(instant, ZoneInfo(FIXTURE_TIMEZONE))) as client:
+        form = plan_form(client, issued_at=(instant - FORM_AGE).isoformat())
+        pressed = client.post("/student/actions/plan", data=form)
+        runs = runs_recorded(client)
+
+    assert pressed.status_code == 409
+    assert HER_FORM_EXPIRED in the_line(pressed.text)
+    assert runs == []
+
+
+def test_a_form_whose_run_is_running_offers_only_a_check() -> None:
+    """A press whose run is still running starts nothing and offers to check on it, with no
+    plan button that could start another paid run."""
+    with browser() as client:
+        form = plan_form(client)
+        blocking = state_of(client).drafts.admit_run(
+            form["run_id"], plan_date=PLAN_DATE, deadline_mono=monotonic() + 60
+        )
+        pressed = client.post("/student/actions/plan", data=form)
+        runs = runs_recorded(client)
+
+    assert blocking is None
+    assert pressed.status_code == 202
+    line = the_line(pressed.text)
+    assert "The plan request for Wednesday, August 19 is still being finished." in line
+    assert "Check on it." in line
+    assert 'action="/student/actions/plan"' not in pressed.text
+    assert len(runs) == 1
+
+
+@pytest.mark.parametrize("reason", ["interrupted", "timed_out"])
+def test_a_form_whose_run_ended_answers_as_its_first_press_did(reason: str) -> None:
+    """A repeat of a run that ended without a plan says why, as the first press did, with
+    Try again on a fresh form, and starts nothing by itself."""
+    with browser() as client:
+        form = plan_form(client)
+        ended_run(
+            state_of(client).drafts, thread_id=form["run_id"], plan_date=PLAN_DATE, outcome=reason
+        )
+        pressed = client.post("/student/actions/plan", data=form)
+        runs = runs_recorded(client)
+
+    assert pressed.status_code == 409
+    assert str(escape(ended_without_a_plan(reason, parent=False))) in the_line(pressed.text)
+    assert TRY_AGAIN in pressed.text
+    assert form_fields(pressed.text, "/student/actions/plan")["run_id"] != form["run_id"]
+    assert len(runs) == 1
+
+
+def test_a_press_whose_run_cannot_be_looked_up_is_decided_by_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the first read of a form's run fails, admission decides in its own transaction:
+    the form makes its plan once, and the same form sent again starts nothing."""
+    with browser() as client:
+        form = plan_form(client)
+        monkeypatch.setattr(state_of(client).drafts, "run_status", refusing())
+        first = client.post("/student/actions/plan", data=form)
+        again = client.post("/student/actions/plan", data=form)
+        monkeypatch.undo()
+        runs = runs_recorded(client)
+
+    assert first.status_code == again.status_code == 303
+    assert [(run, status) for run, _, status in runs] == [(form["run_id"], "published")]
+
+
+def test_a_plan_published_while_her_page_is_read_leaves_its_button_behind_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Her page reads the newest plan's id before the plan it shows, so a plan published
+    between the two reads leaves the button naming the earlier one: its press starts
+    nothing rather than replace a plan the page may not have shown."""
+    with browser() as client:
+        drafts = state_of(client).drafts
+        before = drafts.newest_published()
+        read = drafts.newest_published
+        between: list[str] = []
+
+        def then_published() -> str:
+            known = read()
+            if not between:
+                between.append("plan:between")
+                landed = Draft(
+                    draft_id="draft:plan:between",
+                    body="Plan for Wednesday, August 19",
+                    created_at=datetime(2026, 8, 19, 22, 0, tzinfo=UTC),
+                )
+                settled_run(drafts, landed, thread_id="plan:between", plan_date=PLAN_DATE)
+            return known
+
+        monkeypatch.setattr(drafts, "newest_published", then_published)
+        form = plan_form(client)
+        monkeypatch.undo()
+        pressed = client.post("/student/actions/plan", data=form)
+        runs = runs_recorded(client)
+
+    assert between == ["plan:between"]
+    assert form["newest_plan"] == before
+    assert pressed.status_code == 409
+    assert HER_NEWER_PLAN in the_line(pressed.text)
+    assert [run for run, _, _ in runs] == ["plan:between"]
