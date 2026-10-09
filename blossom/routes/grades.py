@@ -1612,16 +1612,6 @@ ORDINALS: Final = (
     "tenth ",
 )
 """How a report's name says its place among the reports added the same day."""
-ADJUSTING: Final = ("curve", "bonus", "penalty")
-"""The school record's cells that adjust a score."""
-RECORD_FIELDS: Final = (
-    ("curve", "Curve"),
-    ("bonus", "Bonus"),
-    ("penalty", "Penalty"),
-    ("weight", "Weight"),
-    ("note", "Note"),
-)
-"""The school record details of a result, by field, with their labels."""
 
 student_router = APIRouter(prefix="/student/grades")
 
@@ -1687,16 +1677,6 @@ def as_line(name: str) -> str:
 def as_percent(text: str) -> str:
     """A percent the school reported, as written, with its sign."""
     return text if text.endswith("%") else f"{text}%"
-
-
-def presence_words(what: str, cell: Cell) -> str:
-    """A cell that wasn't reported, in the words for its presence."""
-    presence, text = cell
-    if presence is Presence.BLANK:
-        return f"{what} left blank"
-    if presence is Presence.UNREADABLE:
-        return f"{what} couldn't be read: {text}"
-    return f"{what} not in the copy"
 
 
 def cell_text(cell: Cell, what: str) -> str:
@@ -1924,19 +1904,6 @@ def score_of(value: CurrentValue) -> str:
     if average[0] is Presence.REPORTED:
         score += f" · {as_percent(average[1])}"
     return score
-
-
-def record_text(cell: Cell) -> str:
-    """A school record cell after its label: as written, or the words for its presence."""
-    return cell[1] if cell[0] is Presence.REPORTED else presence_words("", cell).strip()
-
-
-def adjusts(text: str) -> bool:
-    """Whether an adjusting cell's text says it changed a score: anything but a zero."""
-    try:
-        return float(text) != 0
-    except ValueError:
-        return bool(text.strip())
 
 
 def due_of(value: CurrentValue, resolved: date | None, names: dict[str, str]) -> str:
