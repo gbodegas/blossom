@@ -8,6 +8,7 @@ again is one row, a decision is stamped by the store's clock, and the rows are
 still there after the file is closed and reopened.
 """
 
+import inspect
 import logging
 import pathlib
 import sqlite3
@@ -20,8 +21,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import blossom
 from blossom.agent.runs import RUN_DEADLINE_SECONDS
-from blossom.agent.steps import RunTiming, StageTime, StepRecord
+from blossom.agent.steps import PastDueWork, RunTiming, StageTime, StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Draft, DraftStatus
 from blossom.stores.drafts import (
@@ -2284,3 +2286,107 @@ def test_two_connections_admitting_one_id_at_once_leave_one_run(tmp_path: pathli
     assert found is not None
     assert (found.run_id, found.status) == ("one-form", "running")
     assert rows == [("one-form", "running")]
+
+
+# ------------------------------------------------- the past-due work a run keeps
+
+SOURCE_ROOT = pathlib.Path(blossom.__file__).parent
+KEPT = [
+    PastDueWork(
+        assignment_id="assignment-map-quiz",
+        title="Map quiz",
+        course="Geography",
+        due_date=date(2026, 8, 18),
+    ),
+    PastDueWork(
+        assignment_id="assignment-late-reading",
+        title="Read Ch. 3",
+        course="Biology",
+        due_date=date(2026, 8, 17),
+    ),
+]
+
+
+def test_a_run_ended_on_its_date_problem_keeps_the_work_it_names_in_order() -> None:
+    """``end_run`` keeps the past-due work only when what it commits is the date problem, and
+    every read of the run returns it in the order given; any other ending keeps none."""
+    clock = FakeTime()
+    store = DraftsStore(
+        sqlite3.connect(":memory:", check_same_thread=False), fixture_clock(), clock
+    )
+    admitted(store, "r-date", now=clock)
+    ended = store.end_run("r-date", reason="date_problem", past_due=KEPT)
+    admitted(store, "r-checks", now=clock)
+    other = store.end_run("r-checks", reason="checks_failed", past_due=KEPT)
+    admitted(store, "r-late", now=clock, seconds=1)
+    clock.advance(2)
+    late = store.end_run("r-late", reason="date_problem", past_due=KEPT)
+    admitted(store, "r-none", now=clock)
+    none = store.end_run("r-none", reason="date_problem")
+    read = store.run_status("r-date", reconcile=False)
+    assert [
+        None if run is None else (run.reason, run.past_due)
+        for run in (ended, read, other, late, none)
+    ] == [
+        ("date_problem", tuple(KEPT)),
+        ("date_problem", tuple(KEPT)),
+        ("checks_failed", None),
+        ("timed_out", None),
+        ("date_problem", None),
+    ]
+    assert store.end_run("r-date", reason="date_problem", past_due=KEPT[:1]) == ended
+
+
+def test_a_file_whose_runs_keep_no_past_due_work_gains_the_column_and_starts(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A file from before runs kept their past-due work opens with the column added, its runs
+    keeping none."""
+    path = tmp_path / "state" / "blossom.sqlite3"
+    store = DraftsStore.open(path, fixture_clock())
+    ended_run(store, thread_id="r-old", plan_date=PLAN_DATE, outcome="date_problem")
+    store.close()
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("ALTER TABLE runs DROP COLUMN past_due")
+        connection.commit()
+    finally:
+        connection.close()
+
+    store = DraftsStore.open(path, fixture_clock())
+    try:
+        run = store.run_status("r-old", reconcile=False)
+    finally:
+        store.close()
+    reading = sqlite3.connect(path)
+    try:
+        kept = reading.execute("SELECT past_due FROM runs WHERE thread_id='r-old'").fetchall()
+    finally:
+        reading.close()
+    assert run is not None
+    assert (run.reason, run.past_due) == ("date_problem", None)
+    assert kept == [(None,)]
+
+
+def test_only_end_run_writes_the_past_due_work_and_no_table_is_added(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The kept work has one writer, ``end_run``, and lives in the run's own row: the file
+    holds the tables it held before."""
+    sources = {
+        path.relative_to(SOURCE_ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in SOURCE_ROOT.rglob("*.py")
+    }
+    writers = {name: text.count("SET past_due") for name, text in sources.items()}
+    path = tmp_path / "blossom.sqlite3"
+    DraftsStore.open(path, fixture_clock()).close()
+    reading = sqlite3.connect(path)
+    try:
+        tables = {
+            row[0] for row in reading.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    finally:
+        reading.close()
+    assert {name: count for name, count in writers.items() if count} == {"stores/drafts.py": 1}
+    assert "SET past_due" in inspect.getsource(DraftsStore.end_run)
+    assert tables == {"drafts", "runs", "steps"}

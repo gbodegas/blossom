@@ -13,12 +13,12 @@ The records are data about the run, not the run itself. Nothing reads them to
 decide what happens next; the graph's edges do that from the typed values.
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from typing import Final
 from zoneinfo import ZoneInfo
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, TypeAdapter
 
 from blossom.heuristic_relevance import Criterion, CriticVerdict
 from blossom.noticing import Noticing
@@ -77,6 +77,36 @@ class RunTiming(BaseModel):
     """Seconds from the start of the run until its answer was decided."""
     unconfirmed: bool = False
     """Whether the answer could not confirm that the plan was saved."""
+
+
+class PastDueWork(BaseModel):
+    """One assignment a run found due before its evening, as the run's record keeps it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    assignment_id: str
+    title: str
+    course: str
+    due_date: date
+
+
+PAST_DUE_WORK: Final = TypeAdapter(tuple[PastDueWork, ...])
+"""The past-due work a run keeps, as the JSON text its record holds."""
+
+
+def past_due_work(
+    assignments: Iterable[Assignment], past_due: Mapping[str, date]
+) -> tuple[PastDueWork, ...]:
+    """Each assignment ``past_due`` names that the run read, in ``past_due``'s order, by its
+    id, title, course and the due date that passed: what the run's answer and record name."""
+    read = {item.assignment_id: item for item in assignments}
+    return tuple(
+        PastDueWork(
+            assignment_id=name, title=read[name].title, course=read[name].course, due_date=day
+        )
+        for name, day in past_due.items()
+        if name in read
+    )
 
 
 EXPECT_RECORD_HOLDS = "the record's due dates hold against the school's sources"

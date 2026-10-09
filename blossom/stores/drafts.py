@@ -38,7 +38,7 @@ from typing import Final, Literal, NamedTuple, cast
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from blossom.agent.runs import RUN_DEADLINE_SECONDS
-from blossom.agent.steps import RunTiming, StepRecord
+from blossom.agent.steps import DATE_PROBLEM, PAST_DUE_WORK, PastDueWork, RunTiming, StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.plan_snapshot import PlanSnapshot
@@ -128,6 +128,9 @@ class RunState(NamedTuple):
     """The plan a published run put on the pages, when it was read with the run."""
     has_plan: bool = False
     """Whether the evening has a published plan as the run is read."""
+    past_due: tuple[PastDueWork, ...] | None = None
+    """The past-due work a run that ended on the date problem kept, in the order its answer
+    names it; ``None`` for a run that kept none, or whose kept work can't be read."""
 
 
 class StaleBasis(RuntimeError):
@@ -377,6 +380,9 @@ class DraftsStore:
         if "timing" not in run_columns:
             # A file from before runs were timed: its runs keep no time.
             self._connection.execute("ALTER TABLE runs ADD COLUMN timing TEXT")
+        if "past_due" not in run_columns:
+            # A file from before runs kept their past-due work: its runs keep none.
+            self._connection.execute("ALTER TABLE runs ADD COLUMN past_due TEXT")
         for column, kind in RUN_LIFECYCLE_COLUMNS:
             if column not in run_columns:
                 self._connection.execute(f"ALTER TABLE runs ADD COLUMN {column} {kind}")
@@ -930,6 +936,7 @@ class DraftsStore:
         steps: Sequence[StepRecord] = (),
         terminal: StepRecord | None = None,
         timing: RunTiming | None = None,
+        past_due: Sequence[PastDueWork] = (),
         wait: float = STORE_WAIT_SECONDS,
     ) -> RunState | None:
         """End a running run without a plan, and return the run as it stands.
@@ -937,8 +944,10 @@ class DraftsStore:
         Past the deadline the run ends ``timed_out``, whatever ``reason`` says. Its
         unpublished, undecided draft is deleted in the same transaction. Steps saved
         with its draft are kept and ``terminal`` is added after them; a run that saved
-        none keeps ``steps`` and then ``terminal``. A run that is not running is
-        returned unchanged, and ``None`` is returned for a run the store never admitted.
+        none keeps ``steps`` and then ``terminal``. A run that ends on the date problem
+        keeps ``past_due``, the work its answer names, in the same transaction. A run that
+        is not running is returned unchanged, and ``None`` is returned for a run the store
+        never admitted.
         """
         with self._session(wait, write=True):
             run = self._run_state(run_id)
@@ -947,7 +956,13 @@ class DraftsStore:
             (stored,) = self._connection.execute(
                 "SELECT COUNT(*) FROM steps WHERE thread_id=?", (run_id,)
             ).fetchone()
-            self._end(run_id, TIMED_OUT if run.seconds_left <= 0 else reason, timing)
+            ended = TIMED_OUT if run.seconds_left <= 0 else reason
+            self._end(run_id, ended, timing)
+            if ended == DATE_PROBLEM and past_due:
+                self._connection.execute(
+                    "UPDATE runs SET past_due=? WHERE thread_id=?",
+                    (PAST_DUE_WORK.dump_json(tuple(past_due)).decode(), run_id),
+                )
             ending = [] if terminal is None else [terminal]
             if stored:
                 self._add_steps(run_id, ending)
@@ -1037,6 +1052,7 @@ class DraftsStore:
             plan_unchanged=bool(row["plan_unchanged"]),
             draft=found,
             has_plan=bool(row["has_plan"]),
+            past_due=past_due_of(row),
         )
 
     def _last_published(self, plan_date: str) -> int:
@@ -1445,6 +1461,23 @@ def record_from(row: sqlite3.Row, steps: list[StepRecord]) -> DraftRecord:
     )
 
 
+def past_due_of(row: sqlite3.Row) -> tuple[PastDueWork, ...] | None:
+    """The past-due work a row of ``RUN_STATE`` kept; ``None`` for none, and for kept work
+    that can't be read, which is logged."""
+    kept = row["past_due"]
+    if kept is None:
+        return None
+    try:
+        return PAST_DUE_WORK.validate_json(str(kept))
+    except ValueError as error:
+        logger.warning(
+            "the past-due work of run %s could not be read: %s",
+            row["thread_id"],
+            type(error).__name__,
+        )
+        return None
+
+
 RUN_LIFECYCLE_COLUMNS: Final = (
     ("status", "TEXT"),
     ("deadline_mono", "REAL"),
@@ -1455,6 +1488,7 @@ RUN_LIFECYCLE_COLUMNS: Final = (
 
 RUN_STATE = """
     SELECT runs.thread_id, runs.plan_date, runs.status, runs.outcome, runs.deadline_mono,
+           runs.past_due,
            runs.base_order IS (
                SELECT COALESCE(MAX(drafts.published_order), 0) FROM drafts
                WHERE drafts.plan_date = runs.plan_date AND drafts.published = 1

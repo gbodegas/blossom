@@ -76,11 +76,12 @@
     {#
       Where the last plan request stands, when the address names its run or it is
       still being finished: a run still running links to "Check on it.", and one
-      that ended for today with no newer plan says why. A plan that was published
-      adds nothing here; it is shown.
+      that ended for today with no newer plan says why, and links to the dates of
+      the past-due work it named, as the answer to its press did. A plan that was
+      published adds nothing here; it is shown.
     #}
     {% if run_notice %}
-      <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run">{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}</p>
+      <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run">{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}{% for work, href in notice_checks %} <a href="{{ href }}">Check the dates for {{ work }}.</a>{% endfor %}</p>
     {% endif %}
     {#
       Work the plan includes that she reports as done is said here,

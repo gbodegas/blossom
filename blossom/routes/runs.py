@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
@@ -42,7 +42,15 @@ from blossom.agent.runs import (
     bounded,
     run_config,
 )
-from blossom.agent.steps import DATE_PROBLEM, RunTiming, StepRecord, describe_failure
+from blossom.agent.steps import (
+    DATE_PROBLEM,
+    PAST_DUE_WORK,
+    PastDueWork,
+    RunTiming,
+    StepRecord,
+    describe_failure,
+    past_due_work,
+)
 from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
 from blossom.anthropic_client import (
     MISSING_KEY,
@@ -229,6 +237,11 @@ TODAYS_PLAN_NOT_MADE: Final = "Blossom can't make today's plan."
 def due_on(day: date) -> str:
     """``August 18``: a day as her page says it."""
     return f"{day:%B} {day.day}"
+
+
+def past_due_views(kept: Iterable[PastDueWork]) -> list[PastDueView]:
+    """The past-due work a run named, in its order, as an answer shows it."""
+    return [PastDueView.model_validate(work.model_dump()) for work in kept]
 
 
 def named_work(work: PastDueView) -> str:
@@ -529,6 +542,9 @@ class RunNotice:
     check: RunCheck | None = None
     running: bool = False
     run: RunState | None = None
+    past_due: tuple[PastDueView, ...] = ()
+    """The past-due work a run of today's evening kept, while the plan it was admitted
+    against is still the evening's newest, which her week links after the notice."""
 
 
 STORE_FAILURES: Final = (Unfinished, StoreBusy, WriterBusy, sqlite3.Error)
@@ -665,16 +681,19 @@ def being_made(run: RunState, page: str) -> RunNotice:
 
 def ended_notice(run: RunState, *, parent: bool, today: date) -> RunNotice | None:
     """An ended run as a page says it: why, and, when the evening has a plan, that it is the
-    one she had. A run overtaken by a newer plan adds nothing, since that plan is shown."""
+    one she had, with the past-due work a run of today's evening kept while its plan is still
+    the newest. A run overtaken by a newer plan adds nothing, since that plan is shown."""
     if run.reason == OVERTAKEN:
         return None
+    kept = run.past_due if run.plan_date == today and run.plan_unchanged else None
     return RunNotice(
         ended_without_a_plan(
             run.reason,
             parent=parent,
             unchanged=run.plan_unchanged and run.has_plan,
             evening=None if run.plan_date == today else run.plan_date,
-        )
+        ),
+        past_due=tuple(past_due_views(kept or ())),
     )
 
 
@@ -753,7 +772,6 @@ class Unconfirmed(Exception):
 def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRunView:
     """What a finished or paused run looks like to the parent."""
     draft = result.get("draft")
-    read = {item.assignment_id: item for item in result.get("assignments", [])}
     return PlanRunView(
         thread_id=thread_id,
         plan_date=plan_date,
@@ -761,16 +779,9 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
         draft_id=None if draft is None else draft.draft_id,
         waiting="__interrupt__" in result,
         steps=list(result.get("steps", [])),
-        past_due=[
-            PastDueView(
-                assignment_id=name,
-                title=read[name].title,
-                course=read[name].course,
-                due_date=day,
-            )
-            for name, day in result.get("past_due", {}).items()
-            if name in read
-        ],
+        past_due=past_due_views(
+            past_due_work(result.get("assignments", []), result.get("past_due", {}))
+        ),
     )
 
 
@@ -1207,7 +1218,9 @@ class Planning:
             if error.run is None:
                 raise
             tidy_later(self.run_id, self.state)
-            return self.ended_view(error.run.reason, self.budget.steps)
+            return self.ended_view(
+                error.run.reason, self.budget.steps, past_due_views(error.run.past_due or ())
+            )
         except ModelUnavailable as error:
             await self.end(INTERRUPTED)
             tidy_later(self.run_id, self.state)
@@ -1226,10 +1239,16 @@ class Planning:
             return self.timed_out()
         committed = result.get("committed")
         if committed is not None:
-            # The record's own reason, as it committed, never one worked out here.
+            # The record's own reason and past-due work, as it committed them, never ones
+            # worked out here.
             tidy_later(self.run_id, self.state)
             ended = run_view(self.run_id, self.plan_date, {**result, "outcome": ""})
-            return self.ended_view(str(committed["reason"]), ended.steps, ended.past_due)
+            kept = committed.get("past_due")
+            return self.ended_view(
+                str(committed["reason"]),
+                ended.steps,
+                past_due_views(() if kept is None else PAST_DUE_WORK.validate_json(str(kept))),
+            )
         view = run_view(self.run_id, self.plan_date, result)
         if not view.waiting:
             await self.end(INTERRUPTED)

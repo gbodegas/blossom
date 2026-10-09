@@ -24,8 +24,11 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from blossom.agent import graph as graph_module
 from blossom.agent.runs import RUN_DEADLINE_SECONDS, Unfinished
 from blossom.drafts import DraftStatus
+from blossom.plan_checks import past_deadlines
+from blossom.reconciliation import SourceChannel
 from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
 from blossom.routes.runs import (
@@ -38,6 +41,7 @@ from blossom.routes.runs import (
 )
 from blossom.routes.student import place_key
 from blossom.stores.drafts import RunState, StoreBusy, WriterBusy
+from blossom.stores.project_state import Assignment
 from blossom.views import PastDueView
 from tests.support import (
     ENDED_REASONS,
@@ -62,6 +66,7 @@ from tests.support import (
     HER_FORM_FROM_AUGUST_18,
     HER_FORM_NOT_WHOLE,
     HER_NEWER_PLAN,
+    HER_PAGE,
     HER_PLAN_ACTION,
     HER_PLAN_ALREADY_MADE,
     HER_ROWS,
@@ -79,8 +84,10 @@ from tests.support import (
     THEIRS,
     YOUR_WEEK_NOT_SHOWN_LINE,
     AnswerRow,
+    Scripted,
     accepting,
     browser,
+    database_of,
     ended_run,
     family_line,
     family_line_focused,
@@ -95,13 +102,16 @@ from tests.support import (
     plan_date_shown,
     plan_fold_open,
     plan_form,
+    record,
     refusing,
     report,
+    reported,
     runs_recorded,
     scripted_graphs,
     sign_in_as,
     state_of,
     the_answer_alert,
+    words,
 )
 
 ISSUED_LONG_AGO = "20260101T000000Z"
@@ -1214,3 +1224,275 @@ def test_the_same_form_twice_makes_one_run(route: str) -> None:
         ran = runs_recorded(client)
     assert first.status_code == second.status_code == 303
     assert [run for run, _, _ in ran] == [form["run_id"]]
+
+
+# ------------------------------------------------- a run keeps the past-due work it names
+
+LONG_TITLE = "Photosynthesisandcellularrespirationvocabularyreview"
+LONG_COURSE = "Environmentalscienceandsustainability"
+KEPT_WORK = {
+    "one": [("assignment-map-quiz", "Map quiz", "Geography", "2026-08-18")],
+    "three": [
+        (
+            "assignment-late-reading",
+            "Read Ch. 3 and answer the review questions at the end",
+            "Biology",
+            "2026-08-17",
+        ),
+        ("assignment-map-quiz", "Map quiz", "Geography", "2026-08-18"),
+        (
+            "assignment-late-timeline",
+            "Canal Era timeline with five primary sources",
+            "World History",
+            "2026-08-14",
+        ),
+    ],
+    "long words": [("assignment-long-words", LONG_TITLE, LONG_COURSE, "2026-08-18")],
+}
+"""Work on record whose only date, the portal's, is before today's evening, as id, title,
+course and that date."""
+DATE_LINK = re.compile(r'<a href="([^"]*)">(Check the dates for [^<]*)</a>')
+PLAN_RUN_NOTICE = re.compile(r'<p [^>]*id="plan-run">(.*?)</p>', re.S)
+
+
+def past_due_on_record(
+    client: TestClient, work: list[tuple[str, str, str, str]], planners: list[Scripted[Any]]
+) -> None:
+    """``work`` on record with only the portal's date, and graphs with scripted models, each
+    planner built added to ``planners``."""
+    state = state_of(client)
+    state.project_state.upsert_assignments(
+        [
+            Assignment(
+                assignment_id=name,
+                course=course,
+                title=title,
+                due_date=None,
+                dependencies=[],
+                reported_submission_status="not_started",
+            )
+            for name, title, course, _ in work
+        ]
+    )
+    for name, _, _, day in work:
+        state.project_state.record_claims(name, [record(SourceChannel.LMS, day)])
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [fixture_week_plan()], lambda: [accepting()], planners=planners
+    )
+
+
+def date_links(html: str) -> list[tuple[str, str]]:
+    """Every "Check the dates" link in ``html``, as href and words, in order."""
+    return DATE_LINK.findall(html)
+
+
+def plan_run_notice(page: str) -> str:
+    """The HTML inside her week's notice about a planning run, or empty."""
+    found = PLAN_RUN_NOTICE.search(page)
+    return "" if found is None else found.group(1)
+
+
+async def form_run_unread(*_: object, **__: object) -> None:
+    """A read of the form's run that finds nothing, so admission decides."""
+    return None
+
+
+@pytest.mark.parametrize("case", list(KEPT_WORK))
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_a_used_form_says_the_first_answers_line_and_date_links(
+    reader: str, case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The used form pressed again, and again when admission is what finds its run, says the
+    first answer's line and its "Check the dates" links, the same ones in the same order, from
+    the work the run kept: one run, and no model asked."""
+    planners: list[Scripted[Any]] = []
+    with browser(key=True, **SIGNED_IN) as client:
+        sign_in_as(client, reader)
+        past_due_on_record(client, KEPT_WORK[case], planners)
+        form = plan_form(client)
+        first = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+        again = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+        monkeypatch.setattr(student_routes, "run_of_the_form", form_run_unread)
+        admitted = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+        runs = runs_recorded(client)
+    links = date_links(first.text)
+    expected = [
+        (
+            f"/student/assignments/{name}?return_to=week#evidence",
+            f"Check the dates for {title} ({course}, due August {int(day[-2:])}).",
+        )
+        for name, title, course, day in KEPT_WORK[case]
+    ]
+    assert sorted(links) == sorted(expected)
+    for answer in (first, again, admitted):
+        assert answer.status_code == 409
+        assert her_line(answer.text) == her_line(first.text)
+        assert date_links(answer.text) == links
+        assert opening_focused(answer.text, HER_TOP_LINE) == "Blossom can't make today's plan."
+    assert [run for run, _, _ in runs] == [form["run_id"]]
+    # Admission builds a graph before it finds the run; the graph is never asked.
+    assert [planner.calls for planner in planners] == [0, 0]
+
+
+@pytest.mark.parametrize("case", list(KEPT_WORK))
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_a_used_forms_stand_in_names_the_same_work_as_the_first(
+    reader: str, case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When her week can't be read, the stand-in of the first answer and of the used form
+    pressed again say the same words, naming each past-due assignment once."""
+    planners: list[Scripted[Any]] = []
+    with browser(key=True, **SIGNED_IN) as client:
+        sign_in_as(client, reader)
+        past_due_on_record(client, KEPT_WORK[case], planners)
+        form = plan_form(client)
+        monkeypatch.setattr(state_of(client).drafts, "newest_published", refusing())
+        first = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+        again = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+    said = the_answer_alert(first.text)
+    assert first.status_code == again.status_code == 409
+    assert said.startswith("Blossom can't make today's plan. ")
+    assert the_answer_alert(again.text) == said
+    assert [said.count(title) for _, title, _, _ in KEPT_WORK[case]] == [1] * len(KEPT_WORK[case])
+    assert [planner.calls for planner in planners] == [0]
+
+
+def test_a_run_that_runs_out_of_time_as_it_ends_links_no_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A date problem whose run's time has passed when the record ends it is recorded as timed
+    out: the first answer and the used form pressed again both say the time ran out, with no
+    "Check the dates" link."""
+    planners: list[Scripted[Any]] = []
+    found_late = past_deadlines
+    with browser(key=True) as client:
+        past_due_on_record(client, KEPT_WORK["one"], planners)
+        drafts = state_of(client).drafts
+
+        def late(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            # The store's clock passes the run's deadline while the week is read.
+            monkeypatch.setattr(drafts, "_monotonic", lambda: 1e12)
+            return found_late(*args, **kwargs)
+
+        monkeypatch.setattr(graph_module, "past_deadlines", late)
+        form = plan_form(client)
+        first = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+        again = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+        outcomes = [run.outcome for run in drafts.runs_without_a_draft()]
+    assert outcomes == ["timed_out"]
+    for answer in (first, again):
+        assert answer.status_code == 409
+        assert her_line(answer.text).startswith(ENDED_REASONS["timed_out"])
+        assert date_links(answer.text) == []
+    assert her_line(again.text) == her_line(first.text)
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_a_used_form_after_a_newer_plan_for_today_says_the_newer_plan(reader: str) -> None:
+    """After a date problem, the work is reported done and a fresh press makes today's plan:
+    the first, used form pressed again says a newer plan was made, and the address naming
+    its run links no work."""
+    planners: list[Scripted[Any]] = []
+    with browser(key=True, **SIGNED_IN) as client:
+        sign_in_as(client, reader)
+        past_due_on_record(client, KEPT_WORK["one"], planners)
+        used = plan_form(client)
+        first = client.post(HER_PLAN_ACTION, data=used, headers=PAGE_HEADERS)
+        reported(state_of(client).project_state, "done", "assignment-map-quiz")
+        made = client.post(HER_PLAN_ACTION, data=plan_form(client), headers=PAGE_HEADERS)
+        again = client.post(HER_PLAN_ACTION, data=used, headers=PAGE_HEADERS)
+        asked = client.get(HER_PAGE, params={"run": used["run_id"]}, headers=PAGE_HEADERS)
+    assert first.status_code == 409
+    assert made.status_code == 303
+    assert again.status_code == 409
+    assert her_line(again.text).startswith(f"{HER_NEWER_PLAN} It is shown below.")
+    assert date_links(again.text) == []
+    assert date_links(asked.text) == []
+    assert [planner.calls for planner in planners] == [0, 1]
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_a_run_that_kept_no_work_says_the_general_sentence(reader: str) -> None:
+    """A date-problem run whose record keeps no past-due work, as one from before runs kept
+    it, is answered with the general sentence and no "Check the dates" link, though past-due
+    work is on today's record."""
+    planners: list[Scripted[Any]] = []
+    with browser(key=True, **SIGNED_IN) as client:
+        sign_in_as(client, reader)
+        past_due_on_record(client, KEPT_WORK["one"], planners)
+        form = plan_form(client)
+        ended_run(
+            state_of(client).drafts,
+            thread_id=form["run_id"],
+            plan_date=PLAN_DATE,
+            outcome="date_problem",
+        )
+        again = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+        loaded = client.get(HER_PAGE, headers=PAGE_HEADERS)
+    assert again.status_code == 409
+    assert her_line(again.text).startswith(f"{ENDED_REASONS['date_problem']} ")
+    assert "Map quiz" not in her_line(again.text)
+    assert date_links(again.text) == []
+    assert ENDED_REASONS["date_problem"] in words(plan_run_notice(loaded.text))
+    assert date_links(loaded.text) == []
+    assert planners == []
+
+
+def test_a_kept_list_that_cannot_be_read_is_said_as_none(caplog: pytest.LogCaptureFixture) -> None:
+    """A run's kept work that can't be read is logged and read as none: her week loads, and the
+    used form pressed again says the general sentence with no link."""
+    planners: list[Scripted[Any]] = []
+    with browser(key=True) as client:
+        past_due_on_record(client, KEPT_WORK["one"], planners)
+        form = plan_form(client)
+        first = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+        connection = sqlite3.connect(database_of(client))
+        try:
+            connection.execute(
+                "UPDATE runs SET past_due=? WHERE thread_id=?", ('[{"title": 3', form["run_id"])
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        loaded = client.get(HER_PAGE, headers=PAGE_HEADERS)
+        again = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+    assert len(date_links(first.text)) == 1
+    assert loaded.status_code == 200
+    assert date_links(loaded.text) == []
+    assert again.status_code == 409
+    assert her_line(again.text).startswith(f"{ENDED_REASONS['date_problem']} ")
+    assert date_links(again.text) == []
+    assert f"the past-due work of run {form['run_id']} could not be read" in caplog.text
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_her_weeks_notices_for_the_run_link_the_same_work(reader: str) -> None:
+    """Her week on load, and with the address naming the run, says the run's notice in its own
+    words and then the first answer's "Check the dates" links, the same ones in the same
+    order; the family page's notice for the run links none."""
+    planners: list[Scripted[Any]] = []
+    with browser(key=True, **SIGNED_IN) as client:
+        sign_in_as(client, reader)
+        past_due_on_record(client, KEPT_WORK["three"], planners)
+        form = plan_form(client)
+        first = client.post(HER_PLAN_ACTION, data=form, headers=PAGE_HEADERS)
+        loaded = client.get(HER_PAGE, headers=PAGE_HEADERS)
+        asked = client.get(HER_PAGE, params={"run": form["run_id"]}, headers=PAGE_HEADERS)
+        family = (
+            client.get("/parent", params={"run": form["run_id"]}, headers=PAGE_HEADERS)
+            if reader == "parent"
+            else None
+        )
+    links = date_links(first.text)
+    labels = " ".join(label for _, label in links)
+    assert len(links) == 3
+    for page in (loaded, asked):
+        notice = plan_run_notice(page.text)
+        assert words(notice).startswith(f"{ENDED_REASONS['date_problem']} ")
+        assert words(notice).endswith(f" {labels}")
+        assert date_links(notice) == links
+        assert date_links(page.text) == links
+    if family is not None:
+        notice = plan_run_notice(family.text)
+        assert "Some work has a due date that already passed" in words(notice)
+        assert date_links(family.text) == []

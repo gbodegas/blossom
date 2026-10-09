@@ -82,6 +82,7 @@ from blossom.agent.steps import (
     EXPECT_RECORD_HOLDS,
     KEPT_FOR_REVIEW,
     NOTHING_TO_SCHEDULE,
+    PAST_DUE_WORK,
     StepRecord,
     describe_failure,
     describe_past_due,
@@ -90,6 +91,7 @@ from blossom.agent.steps import (
     describe_verification,
     describe_week,
     expect_plan,
+    past_due_work,
 )
 from blossom.anthropic_client import (
     MISSING_KEY,
@@ -213,17 +215,20 @@ two, and a test substitutes both."""
 
 
 class Committed(TypedDict):
-    """What the record committed for a run as it ended: its status and its reason."""
+    """What the record committed for a run as it ended: its status, its reason, and the
+    past-due work it kept, as the JSON text the record holds, or ``None``."""
 
     status: str
     reason: str
+    past_due: NotRequired[str | None]
 
 
 def committed(run: RunState | None) -> dict[str, Any]:
     """The state update that carries what the record committed for ``run``, if anything."""
     if run is None:
         return {}
-    return {"committed": Committed(status=run.status, reason=run.reason)}
+    kept = None if run.past_due is None else PAST_DUE_WORK.dump_json(run.past_due).decode()
+    return {"committed": Committed(status=run.status, reason=run.reason, past_due=kept)}
 
 
 class PlanState(TypedDict):
@@ -646,12 +651,18 @@ def build_plan_graph(
 
         A run that reaches the gate has its record saved with its draft, in
         ``compose``; this node ends the run with its steps, so the parent's page
-        can say why nothing came of it. Past the run's deadline the record says
-        ``timed_out`` whatever the run ended with, and ``committed`` says what it says.
+        can say why nothing came of it, and a date problem keeps the past-due work it
+        names. Past the run's deadline the record says ``timed_out`` whatever the run
+        ended with, and ``committed`` says what it says.
         """
         thread_id = str(config["configurable"]["thread_id"])
         return committed(
-            drafts.end_run(thread_id, reason=state["outcome"], steps=state.get("steps", []))
+            drafts.end_run(
+                thread_id,
+                reason=state["outcome"],
+                steps=state.get("steps", []),
+                past_due=past_due_work(state.get("assignments", []), state.get("past_due", {})),
+            )
         )
 
     def gate(state: PlanState) -> dict[str, Any]:

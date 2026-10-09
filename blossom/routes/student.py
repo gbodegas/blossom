@@ -57,7 +57,7 @@ import json
 import logging
 import secrets
 import sqlite3
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
@@ -171,6 +171,7 @@ from blossom.routes.runs import (
     Needs,
     NotSaved,
     PlanAnswer,
+    PlanRow,
     RunCheck,
     RunNotice,
     SameRun,
@@ -188,6 +189,7 @@ from blossom.routes.runs import (
     named_work,
     not_saved,
     not_saved_sentences,
+    past_due_views,
     plan_form_from,
     planning_sentences,
     require_model,
@@ -267,6 +269,7 @@ from blossom.views import (
     HelpRequestView,
     NamedAssignmentView,
     ParentUpdateView,
+    PastDueView,
     PublishedRunView,
     RunStatusView,
     SchoolStatementView,
@@ -469,6 +472,15 @@ class PlanFailure:
     uncertain: bool = False
     """Whether the run may still publish: the page then offers only the check, and no plan
     button that could start another run."""
+
+
+def date_checks(past_due: Iterable[PastDueView]) -> tuple[tuple[str, str], ...]:
+    """Each past-due assignment, in the order given, by its title, course and due date, and
+    the address of its dates on her week."""
+    return tuple(
+        (named_work(work), details_href(work.assignment_id, fragment=EVIDENCE, return_to="week"))
+        for work in past_due
+    )
 
 
 UPDATE_NOT_SAVED: Final = "Update not saved"
@@ -2300,6 +2312,9 @@ def student_page(
             else fresh_plan_form(state, today, newest).fields(),
             "plan_label_mark": PLAN_LABEL_MARK,
             "run_notice": run_notice,
+            # A notice about a run of today's evening links the past-due work it kept, as
+            # the answer to its press does.
+            "notice_checks": () if run_notice is None else date_checks(run_notice.past_due),
             "signal_removed": signal_removed and viewer != "parent",
             "in_place_said": kept.said(),
             "plan_reading": None if todays is None else todays.reading,
@@ -3811,6 +3826,24 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         # An answer the button gave before each form planned once, said as it was.
         return PlanAnswer("her-before", code, fact(*said), said if elsewhere is None else elsewhere)
 
+    async def ended_here(
+        row: PlanRow, outcome: str, past_due: Sequence[PastDueView]
+    ) -> HTMLResponse:
+        # A run that ended without a plan, said alike on its first press and on its form
+        # pressed again. Her week names each past-due assignment once, in its link to its
+        # dates, so its line names none; the stand-in has no links, so its words name them.
+        return await not_made(
+            PlanAnswer(
+                row,
+                status.HTTP_409_CONFLICT,
+                fact(*ended_sentences(outcome, parent=parent)),
+                ended_sentences(outcome, parent=parent, past_due=past_due, where=False),
+            ),
+            None
+            if outcome == NOTHING_TO_SCHEDULE_OUTCOME
+            else PlanFailure(checks=date_checks(past_due), try_again=outcome != DATE_PROBLEM),
+        )
+
     async def repeated(run: RunState) -> Response:
         # A form whose run is recorded is answered by that run as it stands.
         if run.plan_date != today:
@@ -3838,17 +3871,12 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             return await not_made(NEWER_PLAN)
         if run.status == "published":
             return landed("her-plan-latest", sent_in_place(f"{PAGE}?show_plan=1", kept))
-        return await not_made(
-            PlanAnswer(
-                "her-ended",
-                status.HTTP_409_CONFLICT,
-                fact(*ended_sentences(run.reason, parent=parent)),
-                ended_sentences(run.reason, parent=parent, where=False),
-            ),
-            None
-            if run.reason == NOTHING_TO_SCHEDULE_OUTCOME
-            else PlanFailure(try_again=run.reason != DATE_PROBLEM),
-        )
+        if run.reason == DATE_PROBLEM and not run.plan_unchanged:
+            # A plan for today was published since the run was admitted, so the run's own
+            # opening, that Blossom can't make today's plan, isn't true of the page: the newer
+            # plan is said, and shown.
+            return await not_made(NEWER_PLAN)
+        return await ended_here("her-ended", run.reason, past_due_views(run.past_due or ()))
 
     form = plan_form_from(fields, now) if whole else None
     if form is None:
@@ -3924,27 +3952,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         # says so and shows that plan, never landing as if this press made it.
         return await not_made(NEWER_PLAN)
     if run.draft_id is None:
-        # Her week names each past-due assignment once, in its link to its dates, so its line
-        # names none; the stand-in has no links, so its words name them.
-        return await not_made(
-            before(
-                status.HTTP_409_CONFLICT,
-                ended_sentences(run.outcome, parent=parent),
-                ended_sentences(run.outcome, parent=parent, past_due=run.past_due, where=False),
-            ),
-            None
-            if run.outcome == NOTHING_TO_SCHEDULE_OUTCOME
-            else PlanFailure(
-                checks=tuple(
-                    (
-                        named_work(work),
-                        details_href(work.assignment_id, fragment=EVIDENCE, return_to="week"),
-                    )
-                    for work in run.past_due
-                ),
-                try_again=run.outcome != DATE_PROBLEM,
-            ),
-        )
+        return await ended_here("her-before", run.outcome, run.past_due)
     return landed("her-made", sent_in_place(f"{PAGE}?show_plan=1", kept))
 
 

@@ -456,7 +456,8 @@ article h2 {
    link a parent reads; at the top of her week, the link from a problem to the
    card it is about, and Refresh list beside the line that says why a card stays
    where it was; on a note's small page, Try again; on the family review, the
-   link from a plan press's answer to the run it names. */
+   link from a plan press's answer to the run it names; and on either page, the
+   links of the notice that says where a plan request stands. */
 .notice a,
 .refresh a,
 .stays-here a,
@@ -469,7 +470,8 @@ article h2 {
 .help-panel .problem a,
 .help-panel #ask-for-help a,
 .week-problem a,
-#problem .run-check a {
+#problem .run-check a,
+#plan-run a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: -0.8rem 0;
