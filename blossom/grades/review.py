@@ -43,7 +43,7 @@ asked now, or a question left unanswered, saves nothing.
 
 import json
 from collections import Counter
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date
 from enum import StrEnum
@@ -1165,6 +1165,17 @@ def matches_asked(review: GradeReview, matches: Collection[MatchAnswer]) -> bool
     return True
 
 
+def selectable(into: GradeReview, settled: GradeReview, use: str | None) -> frozenset[str]:
+    """The keys a save may select: the values ready once the matching answers apply, and under
+    the parent's choice of current, those both reviews show as matching an earlier saved one."""
+    # A value goes back to one a newer report replaced only under the parent's choice of
+    # current, and only when the page showed it as matching an earlier saved value.
+    allowed = settled.ready
+    if use == "current":
+        allowed |= into.back_to & settled.back_to
+    return allowed
+
+
 def rows_still_asking(review: GradeReview) -> frozenset[str]:
     """The keys of the rows that still ask: an open question or choices offered, and no answer
     bound to the row, whatever status the row shows meanwhile."""
@@ -1203,17 +1214,21 @@ class StillAsked:
 
 
 def still_asked(
-    review: GradeReview, answers: GradeAnswers, selection: Collection[str]
+    review: GradeReview,
+    answers: GradeAnswers,
+    selection: Collection[str],
+    settle: Callable[[tuple[MatchAnswer, ...]], GradeReview],
 ) -> StillAsked:
     """What of ``answers`` and ``selection`` still answers ``review``, each part checked alone:
     each match answer in the page's order, unless an earlier kept one took its row or result;
-    each tick a save may select now."""
+    each tick a save could select with the kept answers applied, by ``settle``."""
     matches: list[MatchAnswer] = []
     for answer in answers.matches:
         if matches_asked(review, (*matches, answer)):
             matches.append(answer)
     use = answers.use if use_asked(review, answers.use) else None
-    allowed = review.ready | (review.back_to if use == "current" else frozenset())
+    settled = settle(tuple(matches)) if matches else review
+    allowed = selectable(review, settled, use)
     kept_class = class_asked(review, answers)
     return StillAsked(
         identity=answers.identity if identity_asked(review, answers) else None,

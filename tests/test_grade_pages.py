@@ -1233,8 +1233,9 @@ def test_a_check_after_another_tab_s_save_says_so_and_leaves_the_next_save_prote
     assert escape(grade_routes.CHANGED_WHILE_REVIEWING) in checked.text
     assert problem_said(checked.text) == (
         "These grades changed while you were reviewing. Nothing was saved. Check the review "
-        "again. Your text and answers are kept."
+        "again. Your text is kept. Check the answers again."
     )
+    assert "select." not in " ".join(sent_from(checked.text))
     assert between == before
     assert saved.status_code == 409
     assert escape(grade_routes.CHANGED_WHILE_REVIEWING) in saved.text
@@ -1437,7 +1438,7 @@ def test_a_tick_on_a_result_not_offered_returns_the_review_and_writes_nothing(
     assert escape(grade_routes.NOT_NEW) in answer.text
     assert problem_said(answer.text) == (
         "A ticked result isn't new any more. Nothing was saved. Check the ticks again. Your text "
-        "and answers are kept."
+        "is kept. Check the answers again."
     )
     assert "select.1" not in whole_form(answer.text, SAVE)
     assert after == before
@@ -2523,6 +2524,151 @@ def test_a_tick_on_a_value_not_new_is_answered_on_check_as_on_save(
     assert answer.status_code == 409, answer.text[:300]
     assert escape(grade_routes.NOT_NEW) in answer.text
     assert marked(answer.text) == set()
+    assert after == before
+
+
+# ------------------------------------------------------------- the ticks a returned page keeps
+
+RESCORED = REPORT.replace(
+    "| Microscope Practice                | 27.0    |",
+    "| Microscope Practice                | 28.0    |",
+)
+"""Wren's report with one lab rescored, which another tab saves."""
+
+
+def answered_and_ticked(browser: TestClient) -> dict[str, str]:
+    """The retitled report's review after the report's first save, its first renamed row
+    answered as the saved result it asks about and ticked: a save takes that tick only with the
+    answer applied."""
+    first_saved(browser)
+    form = as_sent(review_page(browser, RETITLED))
+    form.update({"match.5": form["candidates.5"], "select.5": "1"})
+    return form
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_a_tick_its_kept_answer_makes_ready_is_kept_when_another_tab_saved(
+    route: str, tmp_path: pathlib.Path
+) -> None:
+    """The review returned after another tab's save keeps each tick a save could take with the
+    answers it keeps, and says the answers are kept only when every answer and tick is."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = answered_and_ticked(browser)
+        other = browser.post(SAVE, data=as_sent(review_page(browser, RESCORED)), headers=PAGE)
+        assert other.status_code == 303, other.text[:300]
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+        saved = browser.post(SAVE, data=sent_from(answer.text), headers=PAGE)
+
+    assert answer.status_code == 409, answer.text[:300]
+    assert escape(grade_routes.CHANGED_WHILE_REVIEWING) in answer.text
+    returned = sent_from(answer.text)
+    assert (returned["match.5"], returned["select.5"]) == (form["match.5"], "1")
+    assert problem_said(answer.text) == (
+        f"{grade_routes.CHANGED_WHILE_REVIEWING} {grade_routes.BOTH_KEPT}"
+    )
+    assert after == before
+    assert saved.status_code == 303, saved.text[:300]
+    assert decision_of(settings, "Zebra") == ("answer", form["candidates.5"])
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("why", ["its value not new", "its row's answer not fitting"])
+def test_a_tick_dropped_from_a_returned_page_asks_for_the_answers_again(
+    route: str, why: str, tmp_path: pathlib.Path
+) -> None:
+    """A tick a save can't take with the answers kept is dropped, and the page says to check
+    the answers again: a value saved before, or a row another tab answered first."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = answered_and_ticked(browser)
+        if why == "its value not new":
+            form["select.1"] = "1"
+        else:
+            other = {**form, "match.5": "different"}
+            assert browser.post(SAVE, data=other, headers=PAGE).status_code == 303
+            form["acceptance_id"] = sent_from(review_page(browser, RETITLED))["acceptance_id"]
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 409, answer.text[:300]
+    returned = sent_from(answer.text)
+    if why == "its value not new":
+        assert escape(grade_routes.NOT_NEW) in answer.text
+        assert (returned["match.5"], returned["select.5"]) == (form["match.5"], "1")
+        assert "select.1" not in returned
+    else:
+        assert "match.5" not in returned
+        assert "select.5" not in returned
+    assert problem_said(answer.text).endswith(grade_routes.TEXT_KEPT_ANSWER_AGAIN)
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("use", ["sent", "left to its default"])
+def test_a_page_saved_before_keeps_a_tick_its_kept_answer_makes_ready(
+    route: str, use: str, tmp_path: pathlib.Path
+) -> None:
+    """A page sent again under the acceptance ID a save recorded, now with a row answered and
+    ticked that save left alone: the row's answer and its tick are offered again. The save
+    joined the report, so a choice of its use answers nothing now."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = answered_and_ticked(browser)
+        if use == "left to its default":
+            del form["use"]
+        left_alone = {
+            name: value for name, value in form.items() if name not in {"match.5", "select.5"}
+        }
+        assert browser.post(SAVE, data=left_alone, headers=PAGE).status_code == 303
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 200, answer.text[:300]
+    assert escape(grade_routes.SAVED_ELSEWHERE) in answer.text
+    returned = sent_from(answer.text)
+    assert (returned["match.5"], returned["select.5"]) == (form["match.5"], "1")
+    assert "use" not in returned
+    kept = (
+        grade_routes.BOTH_KEPT
+        if use == "left to its default"
+        else grade_routes.TEXT_KEPT_ANSWER_AGAIN
+    )
+    assert problem_said(answer.text) == (
+        f"{grade_routes.SAVED_ELSEWHERE} {kept} See what was saved"
+    )
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_a_changed_text_ticks_only_what_its_fresh_review_ticks(
+    route: str, tmp_path: pathlib.Path
+) -> None:
+    """A page whose text changed after review keeps no row's answer or tick: its rows show
+    what a fresh review shows, and the page asks for the answers again."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = answered_and_ticked(browser)
+        sent = RETITLED.replace("| 27.0    |", "|  27.0   |")
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data={**form, "report_text": sent}, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+        fresh = sent_from(review_page(browser, sent))
+
+    assert answer.status_code == 409, answer.text[:300]
+    returned = sent_from(answer.text)
+    assert returned["identity"] == form["identity"]
+    assert "match.5" not in returned
+    ticked = {name for name in returned if name.startswith("select.")}
+    assert ticked == {name for name in fresh if name.startswith("select.")}
+    assert "select.5" not in ticked
+    assert problem_said(answer.text) == (
+        f"{grade_routes.TEXT_CHANGED} {grade_routes.TEXT_KEPT_ANSWER_AGAIN}"
+    )
     assert after == before
 
 
