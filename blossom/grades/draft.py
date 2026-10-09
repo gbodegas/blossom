@@ -15,7 +15,7 @@ import json
 import re
 from decimal import Decimal
 from enum import StrEnum
-from typing import Self
+from typing import Final, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -276,6 +276,10 @@ def canonical(draft: GradeReportDraft) -> str:
         ],
     ]
     return json.dumps(shape, ensure_ascii=False, separators=(",", ":"))
+
+
+HEX_KEY: Final = re.compile(r"[0-9a-f]{64}")
+"""The shape of a capture key, and of a name form: a SHA-256 digest in lowercase hex."""
 
 
 def capture_key(draft: GradeReportDraft) -> str:

@@ -530,7 +530,7 @@ SET_BY_THE_SCRIPT: Final = re.compile(
     r"(?<![\w-])(fresh|seen)(?![\w-])|\[\s*class\s*[~|^$*]?=|\[\s*aria-hidden", re.IGNORECASE
 )
 
-SCRIPT: Final = "0d11bb7da668bb542c894726eb563da8d45f1a809e85189ea633d2191c853d48"
+SCRIPT: Final = "eb3d1d7681f9cce0f432d0ddc7b16bfa65d772aa3cbb750fc07d207fe679339a"
 """The SHA-256 of blossom.js as checked in a browser: any line of it can reach the petal."""
 
 LIFECYCLE: Final = (

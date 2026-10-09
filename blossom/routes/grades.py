@@ -27,10 +27,10 @@ import asyncio
 import ipaddress
 import logging
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, tzinfo
-from typing import Annotated, Final, cast
+from typing import Annotated, Final, Literal, cast, get_args
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -39,6 +39,7 @@ from starlette.requests import Request as StarletteRequest
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.grades.dates import due_date_of
 from blossom.grades.draft import (
+    HEX_KEY,
     GradeCategory,
     GradeReportDraft,
     GradeRow,
@@ -54,6 +55,7 @@ from blossom.grades.review import (
     TERM_LIMIT,
     AlreadyRecorded,
     Cell,
+    ChoiceFacts,
     CurrentValue,
     CurrentValues,
     GradeAnswers,
@@ -65,6 +67,7 @@ from blossom.grades.review import (
     MatchAnswer,
     NotHers,
     RecordedSave,
+    ReportUse,
     ReturnReason,
     ReviewItem,
     ReviewPage,
@@ -86,6 +89,10 @@ from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes.forms import fields_of
 from blossom.routes.student import parent_reads, templates, viewer_of
 from blossom.stores.gradebook import (
+    ACCEPTANCE_ID,
+    CLASS_ID,
+    RESULT_ID,
+    REVISION_MAX,
     ClassReport,
     ConfirmedBy,
     ContextChanged,
@@ -108,19 +115,58 @@ EDIT: Final = "/parent/grades/add/edit"
 SAVE: Final = "/parent/grades/add/save"
 CHECK: Final = "/parent/grades/add/check"
 SAVED_AT: Final = "/parent/grades/saved/{acceptance_id}"
-ACCEPTANCE_ID: Final = re.compile(r"acceptance-[0-9a-f]{32}")
-"""The shape of an acceptance ID, checked before any lookup."""
 TEXT: Final = frozenset({"report_text"})
-FIXED: Final = frozenset(
-    {"report_text", "acceptance_id", "revision", "source_key", "identity_form"}
-)
-"""The review form's fields a page always sends."""
-ANSWERED: Final = frozenset(
-    {"identity", "setup", "setup_year", "setup_term", "first_month", "class", "class_name", "use"}
-)
-"""The review form's answers, each of which a browser may leave out."""
-ROW_FIELDS: Final = ("match", "candidates", "choose", "choices")
-"""Each row's own fields, named with its position."""
+
+
+def one_of(values: Iterable[str]) -> re.Pattern[str]:
+    """A grammar that takes exactly one of ``values``."""
+    return re.compile("|".join(re.escape(value) for value in values))
+
+
+REVISION: Final = r"none|[1-9][0-9]{0,18}"
+NONE_OR_REVISION: Final = re.compile(REVISION)
+NONE_OR_HEX_KEY: Final = re.compile(rf"none|{HEX_KEY.pattern}")
+MONTH_ANSWER: Final = re.compile(r"(?:unsure|[1-9]|1[0-2])?")
+CLASS_ANSWER: Final = re.compile(rf"new|{CLASS_ID.pattern}:(?:{REVISION})")
+TICK: Final = re.compile("1")
+RESULT_IDS: Final = re.compile(rf"{RESULT_ID.pattern}(?: {RESULT_ID.pattern})*")
+MATCH_ANSWER: Final = re.compile(rf"different|choose|{RESULT_ID.pattern}")
+EMPTY_OR_RESULT_ID: Final = re.compile(rf"(?:{RESULT_ID.pattern})?")
+
+
+@dataclass(frozen=True)
+class Field:
+    """One name the review form may send: whether the page fills it or the parent types it,
+    where the page sends it, and the grammar a page-filled value fits whole."""
+
+    owner: Literal["page", "typed"]
+    where: Literal["always", "answer", "item", "row"]
+    value: re.Pattern[str] | None
+
+
+FORM: Final[Mapping[str, Field]] = {
+    "report_text": Field("typed", "always", None),
+    "acceptance_id": Field("page", "always", ACCEPTANCE_ID),
+    "revision": Field("page", "always", NONE_OR_REVISION),
+    "source_key": Field("page", "always", HEX_KEY),
+    "identity_form": Field("page", "always", NONE_OR_HEX_KEY),
+    "identity": Field("page", "answer", one_of(answer.value for answer in IdentityAnswer)),
+    "setup": Field("page", "answer", one_of(("report", "other"))),
+    "setup_year": Field("typed", "answer", None),
+    "setup_term": Field("typed", "answer", None),
+    "first_month": Field("page", "answer", MONTH_ANSWER),
+    "class": Field("page", "answer", CLASS_ANSWER),
+    "class_name": Field("typed", "answer", None),
+    "use": Field("page", "answer", one_of(get_args(ReportUse))),
+    "select": Field("page", "item", TICK),
+    "candidates": Field("page", "row", RESULT_IDS),
+    "choices": Field("page", "row", RESULT_IDS),
+    "match": Field("page", "row", MATCH_ANSWER),
+    "choose": Field("page", "row", EMPTY_OR_RESULT_ID),
+}
+"""Every name the review form may send. An item's and a row's are sent once per position, as
+``select.3``, and every page sends each "always" field."""
+ALWAYS: Final = frozenset(name for name, field in FORM.items() if field.where == "always")
 
 PASTE_HINT: Final = "Copy one class's grade report from the school's gradebook, then paste it here."
 NOTHING_PASTED: Final = "Nothing was pasted. Nothing was saved. Paste a grade report."
@@ -451,6 +497,67 @@ def saved_now(cells: Mapping[str, Cell]) -> list[str]:
     ]
 
 
+TOLD_APART_BY: Final[tuple[Callable[[ChoiceFacts], str], ...]] = (
+    lambda one: (
+        f"saved score {described(*one.points, None)} / {described(*one.max_points, 'maximum')}"
+    ),
+    lambda one: described(*one.category, "Category name"),
+    lambda one: f"report added {one.report_added:%B} {one.report_added.day}",
+    lambda one: f"row {one.position} of that report",
+)
+"""What a choice's name adds, in order, while it is still the same as another's."""
+
+
+def numbered(
+    labels: dict[str, str], facts: Mapping[str, ChoiceFacts], groups: list[list[str]]
+) -> None:
+    """Each label of ``groups`` with its place among its group, in one order that a refresh
+    keeps: the report's acceptance order, then the row's position, then the result."""
+    for group in groups:
+        ordered = sorted(group, key=lambda one: (facts[one].report_order, facts[one].position, one))
+        for place, result in enumerate(ordered, start=1):
+            labels[result] = f"{labels[result]} · saved entry {place} of {len(ordered)}"
+
+
+def tied(labels: Mapping[str, str]) -> list[list[str]]:
+    """The groups of results whose labels are the same, across the whole control."""
+    groups: dict[str, list[str]] = {}
+    for result, label in labels.items():
+        groups.setdefault(label, []).append(result)
+    return [group for group in groups.values() if len(group) > 1]
+
+
+def choice_labels(ids: Iterable[str], offered: Mapping[str, ChoiceFacts]) -> dict[str, str]:
+    """How a control names each result it offers, never by its ID: its title and due date, then,
+    only while labels are the same, the saved score, the category, the day its report was added,
+    its row there, and its saved entry among those still the same."""
+    facts = {result: offered[result] for result in ids}
+    labels = {
+        result: " · ".join(
+            (
+                described(*one.title, "Assignment"),
+                STATUS_WORDS[ItemStatus.DUE_NOT_CAPTURED]
+                if one.due is None
+                else described(*one.due, "due", named=True),
+            )
+        )
+        for result, one in facts.items()
+    }
+    for told_apart_by in TOLD_APART_BY:
+        for group in tied(labels):
+            for result in group:
+                labels[result] = f"{labels[result]} · {told_apart_by(facts[result])}"
+    before = dict(labels)
+    numbered(labels, facts, tied(labels))
+    if tied(labels):
+        labels = before
+        numbered(labels, facts, [list(labels)])
+    if tied(labels):
+        msg = "a control's choices share a name"
+        raise RuntimeError(msg)
+    return labels
+
+
 def status_word(shown: Shown) -> str:
     """How the review names a value's status: a value the copy didn't capture by its own
     fields, any other by its status alone."""
@@ -501,6 +608,7 @@ def review_context(
         "status_word": status_word,
         "cell": cell,
         "saved_now": saved_now,
+        "choice_labels": choice_labels,
         "student_line": header.student_line,
         "identity": review.identity.status.value,
         "statuses": IdentityStatus,
@@ -520,6 +628,8 @@ def review_context(
         "marks": state.settings.page_marks,
         "said": None,
         "problems": [],
+        "to_resolve": frozenset(),
+        "choose_which": CHOOSE_WHICH,
         "posted": None,
         "ticks": None,
         "recorded": None,
@@ -538,13 +648,18 @@ class Positions:
     first_row: int
 
     @property
+    def rows(self) -> range:
+        """The positions of the draft's rows."""
+        return range(self.first_row, len(self.keys))
+
+    @property
     def names(self) -> frozenset[str]:
         """Every field name the review's form may send for this draft."""
-        names = set(FIXED | ANSWERED)
+        names = {name for name, field in FORM.items() if field.where in ("always", "answer")}
         for position in range(len(self.keys)):
-            names.add(f"select.{position}")
-            if position >= self.first_row:
-                names.update(f"{field}.{position}" for field in ROW_FIELDS)
+            for name, field in FORM.items():
+                if field.where == "item" or (field.where == "row" and position in self.rows):
+                    names.add(f"{name}.{position}")
         return frozenset(names)
 
 
@@ -560,125 +675,207 @@ class Damaged(ValueError):
 
 
 @dataclass(frozen=True)
+class RowValues:
+    """A row's page-filled fields as sent: the candidates its question offered, the results its
+    list offered, its radio answer, and its list's pick (None where it has no list)."""
+
+    candidates: tuple[str, ...]
+    choices: tuple[str, ...]
+    match: str | None
+    choose: str | None
+
+
+@dataclass(frozen=True)
+class PageValues:
+    """Every page-filled value of a review form, read against its grammar."""
+
+    acceptance_id: str
+    revision: int | None
+    source_key: str
+    identity_form: str | None
+    identity: IdentityAnswer | None
+    setup: str | None
+    first_month: str | None
+    chosen_class: Literal["new"] | tuple[str, int | None] | None
+    use: ReportUse | None
+    ticked: frozenset[int]
+    rows: Mapping[int, RowValues]
+
+
+def revision_of(text: str) -> int | None:
+    """A revision its grammar took: None for ``none``, else a number the store's column holds."""
+    if text == "none":
+        return None
+    if int(text) > REVISION_MAX:
+        raise Damaged(text)
+    return int(text)
+
+
+def listed(fields: Mapping[str, str], name: str) -> tuple[str, ...]:
+    """The result IDs a row's list field carries, none where the row has no such list."""
+    return tuple(fields[name].split(" ")) if name in fields else ()
+
+
+def row_values(fields: Mapping[str, str], position: int) -> RowValues:
+    """A row's fields as sent, ``Damaged`` where they disagree with the lists the row carries:
+    a repeated result, a pick without a list or a list without a pick, a pick or a radio answer
+    its list didn't offer, and an answer that needs a list the row doesn't carry."""
+    candidates = listed(fields, f"candidates.{position}")
+    choices = listed(fields, f"choices.{position}")
+    match = fields.get(f"match.{position}")
+    choose = fields.get(f"choose.{position}")
+    if len(set(candidates)) != len(candidates) or len(set(choices)) != len(choices):
+        raise Damaged(position)
+    if (choose is None) != (not choices) or (choose and choose not in choices):
+        raise Damaged(position)
+    if match in ("different", "choose") and not candidates:
+        raise Damaged(position)
+    if match == "choose" and not choices:
+        raise Damaged(position)
+    if match not in (None, "different", "choose") and match not in candidates:
+        raise Damaged(position)
+    return RowValues(candidates, choices, match, choose)
+
+
+def page_values(fields: Mapping[str, str], positions: Positions) -> PageValues:
+    """Every page-filled value of a review form checked whole against its grammar, and each row
+    against its own lists, before anything else reads one; ``Damaged`` at the first that
+    fails."""
+    for name, value in fields.items():
+        field = FORM.get(name.partition(".")[0])
+        if field is None:
+            raise Damaged(name)
+        if field.value is not None and not field.value.fullmatch(value):
+            raise Damaged(name)
+    chosen_class: Literal["new"] | tuple[str, int | None] | None = None
+    if fields.get("class") == "new":
+        chosen_class = "new"
+    elif "class" in fields:
+        class_id, _, class_revision = fields["class"].partition(":")
+        chosen_class = (class_id, revision_of(class_revision))
+    identity = fields.get("identity")
+    return PageValues(
+        acceptance_id=fields["acceptance_id"],
+        revision=revision_of(fields["revision"]),
+        source_key=fields["source_key"],
+        identity_form=None if fields["identity_form"] == "none" else fields["identity_form"],
+        identity=None if identity is None else IdentityAnswer(identity),
+        setup=fields.get("setup"),
+        first_month=fields.get("first_month") or None,
+        chosen_class=chosen_class,
+        use=cast("ReportUse | None", fields.get("use")),
+        ticked=frozenset(
+            position for position in range(len(positions.keys)) if f"select.{position}" in fields
+        ),
+        rows={position: row_values(fields, position) for position in positions.rows},
+    )
+
+
+@dataclass(frozen=True)
 class Posted:
     """A review form as sent: the page it came from, its answers (None with no answer about the
-    name), the ticked keys, and what the parent must correct."""
+    name), the ticked keys, what the parent must correct, and the rows to resolve."""
 
     page: ReviewPage
     answers: GradeAnswers | None
     selection: frozenset[str]
     problems: tuple[str, ...]
+    to_resolve: frozenset[int] = frozenset()
 
 
-def revision_of(text: str) -> int | None:
-    """A revision as a page carries it: ``none``, or a whole number in ASCII digits. A digit
-    of another script, or a character ``str.isdigit`` takes that ``int`` can't read, is
-    ``Damaged`` like any other."""
-    if text == "none":
-        return None
-    if not (text.isascii() and text.isdigit()):
-        raise Damaged(text)
-    return int(text)
+RESOLVE: Final = "resolve"
+"""A row whose two answer controls disagree, or whose "Choose an existing assignment" names
+nothing: the parent resolves it."""
 
 
-def matches_of(fields: dict[str, str], positions: Positions) -> tuple[list[MatchAnswer], list[str]]:
-    """Each row's one answer, by position, and the rows whose "Choose an existing assignment"
-    names none."""
-    matches: list[MatchAnswer] = []
-    problems: list[str] = []
-    for position in range(positions.first_row, len(positions.keys)):
-        key = positions.keys[position]
-        candidates = tuple(fields.get(f"candidates.{position}", "").split())
-        choices = tuple(fields.get(f"choices.{position}", "").split())
-        chosen = fields.get(f"choose.{position}", "")
-        match = fields.get(f"match.{position}")
-        if match is None:
-            if chosen and not candidates:
-                matches.append(MatchAnswer(key, choices, chosen, chosen=True))
-            continue
-        if match == "different":
-            matches.append(MatchAnswer(key, candidates, None))
-        elif match == "choose":
-            if not chosen:
-                problems.append(CHOOSE_WHICH)
-                continue
-            matches.append(MatchAnswer(key, choices, chosen, chosen=True))
-        elif match in candidates:
-            matches.append(MatchAnswer(key, candidates, match))
-        else:
-            raise Damaged(match)
-    return matches, problems
+def row_answer(key: str, row: RowValues) -> MatchAnswer | Literal["resolve"] | None:
+    """A row's one answer from its radio and its list: a pick alone, or beside "Choose an
+    existing assignment" or the same candidate, is that result; a pick beside "A different
+    assignment" or another candidate contradicts it."""
+    pick = row.choose or None
+    if row.match is None:
+        return None if pick is None else MatchAnswer(key, row.choices, pick, chosen=True)
+    if row.match == "choose":
+        return RESOLVE if pick is None else MatchAnswer(key, row.choices, pick, chosen=True)
+    if row.match == "different":
+        return RESOLVE if pick is not None else MatchAnswer(key, row.candidates, None)
+    if pick is not None and pick != row.match:
+        return RESOLVE
+    return MatchAnswer(key, row.candidates, row.match)
 
 
-def posted_of(fields: dict[str, str], draft: GradeReportDraft, positions: Positions) -> Posted:
-    """The answers and ticks a whole review form sends, read by the grammar of its names alone;
-    ``Damaged`` when a field the page fills is outside its form."""
+def matches_of(
+    values: PageValues, positions: Positions
+) -> tuple[list[MatchAnswer], frozenset[int]]:
+    """Each row's one answer, by position, and the rows the parent must resolve: one whose
+    controls disagree or name nothing, and every row whose answer names a result another row's
+    answer names too."""
+    answers: dict[int, MatchAnswer] = {}
+    to_resolve: set[int] = set()
+    for position, row in values.rows.items():
+        answer = row_answer(positions.keys[position], row)
+        if isinstance(answer, MatchAnswer):
+            answers[position] = answer
+        elif answer == RESOLVE:
+            to_resolve.add(position)
+    named: dict[str, list[int]] = {}
+    for position, answer in answers.items():
+        if answer.result_id is not None:
+            named.setdefault(answer.result_id, []).append(position)
+    to_resolve.update(position for rows in named.values() if len(rows) > 1 for position in rows)
+    kept = [answer for position, answer in answers.items() if position not in to_resolve]
+    return kept, frozenset(to_resolve)
+
+
+def posted_of(
+    values: PageValues, fields: Mapping[str, str], draft: GradeReportDraft, positions: Positions
+) -> Posted:
+    """The answers and ticks a whole review form sends: the page's own values as
+    ``page_values`` read them, and the parent's typed text from ``fields``."""
     header = draft.header
-    page = ReviewPage(
-        fields["acceptance_id"], revision_of(fields["revision"]), fields["source_key"]
-    )
+    page = ReviewPage(values.acceptance_id, values.revision, values.source_key)
     problems: list[str] = []
     setup: tuple[str, str] | None = None
-    if fields.get("setup") == "report":
+    if values.setup == "report":
         setup = (header.year_label, header.term_label)
-    elif fields.get("setup") == "other":
+    elif values.setup == "other":
         setup = (folded(fields.get("setup_year", "")), folded(fields.get("setup_term", "")))
         if not is_school_year(setup[0]):
             problems.append(YEAR_FORM)
         if not setup[1]:
             problems.append(TERM_BLANK)
-    elif "setup" in fields:
-        raise Damaged(fields["setup"])
-    month = fields.get("first_month", "")
     first_month: tuple[str, int] | None = None
-    if month in {str(number) for number in range(1, 13)}:
-        first_month = (header.year_label, int(month))
-    elif month not in ("", "unsure"):
-        raise Damaged(month)
+    if values.first_month is not None and values.first_month != "unsure":
+        first_month = (header.year_label, int(values.first_month))
     new_class = same_class = None
     same_revision: int | None = None
-    chosen_class = fields.get("class")
-    if chosen_class == "new":
+    if values.chosen_class == "new":
         new_class = folded(fields.get("class_name", ""))
         if not new_class:
             problems.append(CLASS_BLANK)
-    elif chosen_class is not None:
-        class_id, _, revision = chosen_class.rpartition(":")
-        if not class_id:
-            raise Damaged(chosen_class)
-        same_class, same_revision = class_id, revision_of(revision)
-    use = fields.get("use")
-    if use not in (None, "current", "earlier"):
-        raise Damaged(use)
-    matches, unchosen = matches_of(fields, positions)
-    problems.extend(unchosen)
-    selection = set()
-    for position, key in enumerate(positions.keys):
-        ticked = fields.get(f"select.{position}")
-        if ticked is not None and ticked != "1":
-            raise Damaged(ticked)
-        if ticked is not None:
-            selection.add(key)
-    identity = fields.get("identity")
-    if identity is not None and identity not in set(IdentityAnswer):
-        raise Damaged(identity)
+    elif values.chosen_class is not None:
+        same_class, same_revision = values.chosen_class
+    matches, to_resolve = matches_of(values, positions)
+    if to_resolve:
+        problems.append(CHOOSE_WHICH)
+    selection = frozenset(positions.keys[position] for position in values.ticked)
     answers = None
-    if identity is not None:
+    if values.identity is not None:
         answers = GradeAnswers(
-            identity=IdentityAnswer(identity),
-            identity_form=None if fields["identity_form"] == "none" else fields["identity_form"],
+            identity=values.identity,
+            identity_form=values.identity_form,
             setup=setup,
             first_month=first_month,
             new_class=new_class,
             same_class=same_class,
             same_class_revision=same_revision,
             matches=tuple(matches),
-            use=use,  # type: ignore[arg-type]
+            use=values.use,
         )
         problems.extend(TOO_LONG_LABEL[label] for label in labels_too_long(answers))
     elif new_class is not None and len(new_class) > CLASS_NAME_LIMIT:
         problems.append(TOO_LONG_LABEL["class_name"])
-    return Posted(page, answers, frozenset(selection), tuple(dict.fromkeys(problems)))
+    return Posted(page, answers, selection, tuple(dict.fromkeys(problems)), to_resolve)
 
 
 def still_typos(review: GradeReview, answers: GradeAnswers) -> list[str] | None:
@@ -768,11 +965,12 @@ async def review_form_of(request: Request, state: ApplicationState) -> ReviewFor
         return paste_page(request, state, text=text, said=said, status_code=422)
     positions = positions_of(draft)
     names = positions.names
-    fields, whole = await fields_of(request, names, may_be_absent=names - FIXED)
+    fields, whole = await fields_of(request, names, may_be_absent=names - ALWAYS)
     try:
         if not whole:
             raise Damaged(NOT_WHOLE)
-        posted = posted_of(fields, draft, positions)
+        values = page_values(fields, positions)
+        posted = posted_of(values, fields, draft, positions)
     except Damaged:
         return paste_page(request, state, text=text, said=NOT_WHOLE, status_code=422)
     return ReviewForm(
@@ -794,6 +992,7 @@ def review_page(
     *,
     said: str | None = None,
     problems: tuple[str, ...] | list[str] = (),
+    to_resolve: frozenset[int] = frozenset(),
     fields: dict[str, str] | None = None,
     ticks: frozenset[int] | None = None,
     recorded: str | None = None,
@@ -812,6 +1011,7 @@ def review_page(
             "complete": form.complete,
             "said": said,
             "problems": list(problems),
+            "to_resolve": to_resolve,
             "kept_sentence": kept_sentence if said is not None else None,
             "posted": fields,
             "ticks": ticks,
@@ -986,6 +1186,7 @@ def refused_answers(
         review,
         said=unanswered if posted.answers is None else CORRECT_THE_MARKED,
         problems=posted.problems,
+        to_resolve=posted.to_resolve,
         fields=form.fields,
         ticks=ticks_of(form),
         status_code=422,

@@ -156,16 +156,20 @@
               <p class="source">Saved now: {{ saved_now(item.current.cells)|join(" · ") }}</p>
             {% endif %}
             {% if shown.selectable %}
-              <fieldset class="choice" id="item-{{ i }}">
+              <fieldset class="choice" id="item-{{ i }}"{% if i in to_resolve %} aria-describedby="item-{{ i }}-problem"{% endif %}>
                 <legend>{% if item.question %}{% if item.question.kind.value == "which" %}Which assignment is this?{% elif item.question.kind.value == "renamed" %}Same assignment, renamed?{% else %}Same assignment, due date changed?{% endif %}{% else %}Save this result{% endif %}</legend>
+                {% if i in to_resolve %}
+                  <p class="problem" id="item-{{ i }}-problem">{{ choose_which }}</p>
+                {% endif %}
                 {% if item.question or item.choices %}
                   <p class="helper">Answer the question to save this result.</p>
                 {% endif %}
                 <label><input type="checkbox" name="select.{{ i }}" value="1"{% if ticked %} checked{% endif %}> <span>Save this result</span></label>
                 {% if item.question %}
                   <input type="hidden" name="candidates.{{ i }}" value="{{ item.question.ids|join(' ') }}">
+                  {% set asked = choice_labels(item.question.ids, review.offered) %}
                   {% for candidate in item.question.candidates %}
-                    <label><input type="radio" name="match.{{ i }}" value="{{ candidate.result_id }}"{% if matched == candidate.result_id %} checked{% endif %}> <span>{% if item.question.candidates|length == 1 %}Same assignment{% else %}<span class="authored-text">{{ candidate.last.cells.get("assignment", ("", ""))[1] }}</span>{% endif %}</span></label>
+                    <label><input type="radio" name="match.{{ i }}" value="{{ candidate.result_id }}"{% if matched == candidate.result_id %} checked{% endif %}> <span>{% if item.question.candidates|length == 1 %}Same assignment{% else %}<span class="authored-text">{{ asked[candidate.result_id] }}</span>{% endif %}</span></label>
                   {% endfor %}
                   <label><input type="radio" name="match.{{ i }}" value="different"{% if matched == "different" or (matched is none and item.remembered) %} checked{% endif %}> <span>A different assignment</span></label>
                 {% endif %}
@@ -177,8 +181,9 @@
                   <label for="choose-{{ i }}">Choose an existing assignment</label>
                   <select id="choose-{{ i }}" name="choose.{{ i }}">
                     <option value=""></option>
+                    {% set named = choice_labels(item.choices, review.offered) %}
                     {% for result_id in item.choices %}
-                      <option value="{{ result_id }}"{% if p.get("choose." ~ i) == result_id %} selected{% endif %}>{{ result_id }}</option>
+                      <option value="{{ result_id }}"{% if p.get("choose." ~ i) == result_id %} selected{% endif %}>{{ named[result_id] }}</option>
                     {% endfor %}
                   </select>
                 {% endif %}

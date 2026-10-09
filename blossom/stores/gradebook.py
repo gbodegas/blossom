@@ -38,6 +38,7 @@ under the month on record when they are read.
 """
 
 import json
+import re
 import secrets
 import sqlite3
 import threading
@@ -45,7 +46,7 @@ import uuid
 from collections.abc import Callable, Collection, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, replace
-from datetime import UTC
+from datetime import UTC, date, datetime
 from typing import Final, Literal, cast, get_args
 
 from blossom.clock import Clock
@@ -562,6 +563,12 @@ RESULTS_OBSERVED: Final = (
     "ON r.report_id = o.report_id AND r.student_id = o.student_id "
     "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ? ORDER BY o.position"
 )
+LATEST_PLACES: Final = (
+    "SELECT o.report_id, o.result_id, o.position, r.imported_at "
+    "FROM grade_result_observations AS o JOIN grade_reports AS r "
+    "ON r.report_id = o.report_id AND r.student_id = o.student_id "
+    "WHERE r.student_id = ? AND r.class_id = ? AND r.term_label = ?"
+)
 DECIDED: Final = (
     "SELECT o.report_id, o.evidence, o.result_id, o.how, o.rejected "
     "FROM grade_match_decisions AS o "
@@ -800,6 +807,16 @@ DELETE_SCOPE: Final = (
 )
 """A class and term's delete, one statement per table, the reports' children before them: an
 acceptance and an action are found by their own class and term, report-less ones included."""
+
+
+ACCEPTANCE_ID: Final = re.compile(r"acceptance-[0-9a-f]{32}")
+"""The shape of the acceptance IDs ``new_acceptance_id`` mints."""
+CLASS_ID: Final = re.compile(r"class-[0-9a-f]{32}")
+"""The shape of the class IDs a save mints."""
+RESULT_ID: Final = re.compile(r"result-[0-9a-f]{32}")
+"""The shape of the result IDs a save mints."""
+REVISION_MAX: Final = 2**63 - 1
+"""The largest scope revision the store's integer column holds."""
 
 
 def new_acceptance_id() -> str:
@@ -1542,8 +1559,15 @@ class GradebookRecords:
         held = NOTHING_HELD
         joins = None
         turned_down: dict[str, set[str]] = {}
+        places: dict[tuple[str, str], tuple[int, date]] = {}
         if reviewed is not None:
             held = self._class_record(student_id, reviewed, term)
+            zone = self._clock.zone
+            for report_id, result_id, position, imported_at in self._connection.execute(
+                LATEST_PLACES, (student_id, reviewed, term)
+            ):
+                added = datetime.fromisoformat(str(imported_at)).astimezone(zone).date()
+                places[(str(report_id), str(result_id))] = (int(position), added)
             (joins,) = self._connection.execute(
                 CAPTURE_JOINS, (student_id, reviewed, term, source_key)
             ).fetchone()
@@ -1578,6 +1602,7 @@ class GradebookRecords:
             shown=shown,
             joins=None if joins is None else int(joins),
             turned_down={key: frozenset(texts) for key, texts in turned_down.items()},
+            places=places,
         )
         return review_from(
             draft, source_key, new_acceptance_id(), on_record, matches, complete=complete

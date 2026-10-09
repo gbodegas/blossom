@@ -45,6 +45,7 @@ import json
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import date
 from enum import StrEnum
 from typing import Final, Literal, get_args
 
@@ -299,6 +300,23 @@ ReportUse = Literal["current", "earlier"]
 
 
 @dataclass(frozen=True)
+class ChoiceFacts:
+    """What tells a result offered for matching apart from the others: its title, category and
+    due cell from its newest observation (``due`` None when no observation captured one), its
+    score from its current value, else that observation, and that observation's report, by the
+    day it was added in the household's zone and its acceptance order, and the row's position."""
+
+    title: Cell
+    category: Cell
+    due: Cell | None
+    points: Cell
+    max_points: Cell
+    report_added: date
+    report_order: int
+    position: int
+
+
+@dataclass(frozen=True)
 class UseChoice:
     """The report-level choice for the new report a save makes: "Use this as the current school
     record" ("Use these values where this report provides them" for a partial reading) or "Keep
@@ -328,6 +346,9 @@ class GradeReview:
     categories: tuple[ReviewItem, ...]
     rows: tuple[ReviewItem, ...]
     use: UseChoice | None = None
+    offered: Mapping[str, ChoiceFacts] = field(default_factory=dict)
+    """By result ID, what tells apart each result a row may choose or a question asks about: the
+    results no row resolved to before any answer applies, and every question's candidates."""
 
     @property
     def items(self) -> tuple[ReviewItem, ...]:
@@ -529,6 +550,9 @@ class OnRecord:
     turned_down: Mapping[str, frozenset[str]] = field(default_factory=dict)
     """By row key, the candidates each "A different assignment" this capture's row records keep
     turned down in the class and term reviewed, as ``rejected_text`` writes them."""
+    places: Mapping[tuple[str, str], tuple[int, date]] = field(default_factory=dict)
+    """By report and result, the row position of each observation in the class and term
+    reviewed, and the day its report was added in the household's zone."""
 
     def covers(self, target: str) -> bool:
         """Whether a current report newer than the one this capture's rest joins supplied or
@@ -829,9 +853,10 @@ def _reused(rows: list[_Row], matching: _Matching, settled: set[str]) -> dict[st
 
 def _resolved_rows(
     on_record: OnRecord, rows: list[_Row], matches: Collection[MatchAnswer]
-) -> tuple[ReviewItem, ...]:
-    """Each row resolved: through this capture's acceptance or row records (identity only for a
-    row it showed), by equal evidence, by a reused answer, by an answer bound to the question
+) -> tuple[tuple[ReviewItem, ...], tuple[str, ...]]:
+    """Each row resolved, with the results no row resolved to before any answer applies: through
+    this capture's acceptance or row records (identity only for a row it showed), by equal
+    evidence, by a reused answer, by an answer bound to the question
     asked now or a choice bound to the results offered, as a new result, or with its question
     open. A row whose identity reads but a value doesn't asks as any row does and stays
     Couldn't read, a row missing only its due date asks the same way and stays Due date not
@@ -915,12 +940,35 @@ def _resolved_rows(
             items.append(ReviewItem(row.key, ItemStatus.UNREADABLE))
         else:
             items.append(opened(row))
-    return tuple(
+    resolved_rows = tuple(
         replace(item, due_not_captured=True)
         if row.cells["due"][0] is Presence.NOT_CAPTURED
         else item
         for row, item in zip(rows, items, strict=True)
     )
+    return resolved_rows, free
+
+
+def choice_facts(on_record: OnRecord, results: Iterable[str]) -> dict[str, ChoiceFacts]:
+    """What tells each of ``results`` apart, from its newest observation and its current value."""
+    held = on_record.held
+    offered = {}
+    for result in results:
+        seen = held.latest[result]
+        current = held.current.results.get(result)
+        score = (current or seen).cells
+        position, added = on_record.places[(seen.report_id, result)]
+        offered[result] = ChoiceFacts(
+            title=seen.cells["assignment"],
+            category=seen.cells["category"],
+            due=None if seen.due is None else seen.due.cell,
+            points=score["points"],
+            max_points=score["max_points"],
+            report_added=added,
+            report_order=seen.order,
+            position=position,
+        )
+    return offered
 
 
 def review_from(
@@ -965,7 +1013,9 @@ def review_from(
     )
     term_cells = cells_of(TERM_FIELDS, (term.percent, term.letter))
     term_item = item(TERM_KEY, term_cells, held.current.term) if captured else None
-    rows = _resolved_rows(on_record, _rows_of(draft), matches)
+    rows, free = _resolved_rows(on_record, _rows_of(draft), matches)
+    asked = [one for item in rows if item.question is not None for one in item.question.ids]
+    offered = choice_facts(on_record, dict.fromkeys([*free, *asked]))
     values = (*(() if term_item is None else (term_item,)), *categories, *rows)
     return GradeReview(
         acceptance_id=acceptance_id,
@@ -983,6 +1033,7 @@ def review_from(
         categories=categories,
         rows=rows,
         use=None if on_record.joins is not None else _use_choice(held, values, rows, complete),
+        offered=offered,
     )
 
 
