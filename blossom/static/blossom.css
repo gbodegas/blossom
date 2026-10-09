@@ -1844,16 +1844,18 @@ pre.example {
   flex: 1 1 8rem;
 }
 
-/* On a phone with text at 200%, a card of the grade review, or the outcome of a saved
-   report, leaves a line too short for a word of a class, category or assignment name once
-   the ordinary side padding is taken out. The card's side padding gives way first, to
-   13vw - 1rem where that is narrower, and the card reaches into the page's 1.25rem side
-   margin until it is 13vw - 1rem from the screen's edge, so a word breaks only where the
-   whole line can't hold it. Every screen 277 pixels or wider with ordinary text, and 640
-   pixels or wider with text at 200%, keeps the ordinary padding and margin. */
+/* On a phone with text at 200%, a card of the grade review, the outcome of a saved report,
+   or a card of Grades or class details leaves a line too short for a word of a class,
+   category or assignment name once the ordinary side padding is taken out. The card's side
+   padding gives way first, to 13vw - 1rem where that is narrower, and the card reaches into
+   the page's 1.25rem side margin until it is 13vw - 1rem from the screen's edge, so a word
+   breaks only where the whole line can't hold it. Every screen 277 pixels or wider with
+   ordinary text, and 640 pixels or wider with text at 200%, keeps the ordinary padding and
+   margin. */
 .grade-review .panel,
 .grade-review article,
-.grade-outcome {
+.grade-outcome,
+.grade-card {
   margin-inline: min(0px, 13vw - 2.25rem);
   padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
 }
@@ -1861,8 +1863,37 @@ pre.example {
 @media (max-width: 30rem) {
   .grade-review .panel,
   .grade-review article,
-  .grade-outcome {
+  .grade-outcome,
+  .grade-card {
     padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
+}
+
+/* On a phone with text at 200%, class details' headings, a class's name among them, leave a
+   line too short for a word in the heading's large type. A heading reaches into the page's
+   1.25rem side margin, twice as fast as a card does, until it is 0.3rem from the screen's
+   edge, so a word breaks only where the whole line can't hold it. Every screen 277 pixels or
+   wider with ordinary text, and 554 pixels or wider with text at 200%, keeps the heading's
+   ordinary margin. */
+.grade-heading {
+  margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);
+}
+
+/* The parent's choice of the household's current term is a long label. On a narrow screen
+   the button takes the whole line, its words wrap by words, and its corners take a card's
+   radius, so lines that fill the button stay inside its outline. With text at 200%, its side
+   padding gives way first, to 13vw - 1rem where that is narrower, so a word breaks only where
+   the whole line can't hold it. Every screen 290 pixels or wider with ordinary text, and 580
+   pixels or wider with text at 200%, keeps the ordinary padding. */
+button.make-current {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 30rem) {
+  button.make-current {
+    flex: 1 1 100%;
+    border-radius: var(--radius);
   }
 }
 

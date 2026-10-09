@@ -10,7 +10,7 @@
   apart; then the categories and the term's reports. A class or place not on record says so.
 #}
 {% macro result(item) %}
-  <section class="panel">
+  <section class="panel grade-card">
     <h3><span class="authored-text">{{ item.title }}</span></h3>
     <p class="note"><span class="authored-text">{{ item.category }}</span></p>
     <p>{{ item.score }}</p>
@@ -35,7 +35,7 @@
     <h1>Grades</h1>
     <p class="problem" role="alert" id="problem">{{ missing }}</p>
   {% else %}
-    <h1><span class="authored-text">{{ name }}</span></h1>
+    <h1 class="grade-heading"><span class="authored-text">{{ name }}</span></h1>
     <p>{{ term }}</p>
     {% if summary %}
       <p>{{ summary.grade }}</p>
@@ -44,11 +44,11 @@
       <p class="note">{{ no_report_added }}</p>
     {% endif %}
     {% if dated %}
-      <h2>Assignments</h2>
+      <h2 class="grade-heading">Assignments</h2>
       {% for item in dated %}{{ result(item) }}{% endfor %}
     {% endif %}
     {% if undated %}
-      <h2>Date not confirmed</h2>
+      <h2 class="grade-heading">Date not confirmed</h2>
       {% for item in undated %}{{ result(item) }}{% endfor %}
     {% endif %}
     {% if categories %}
@@ -62,7 +62,7 @@
       </details>
     {% endif %}
     {% if reports %}
-      <h2>Reports in this term</h2>
+      <h2 class="grade-heading">Reports in this term</h2>
       <ul>
         {% for line, use in reports %}
           <li>{{ line }}: {{ use }}</li>

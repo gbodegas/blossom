@@ -826,17 +826,17 @@ IDENTITY_RULES = (
 """The grade review's rules for its "Is this her?" choices, pinned whole: a choice's words go
 under its radio when less than 8rem is left beside it."""
 CARD_RULES = (
-    ".grade-review .panel,\n.grade-review article,\n.grade-outcome {\n"
+    ".grade-review .panel,\n.grade-review article,\n.grade-outcome,\n.grade-card {\n"
     "  margin-inline: min(0px, 13vw - 2.25rem);\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
     "@media (max-width: 30rem) {\n"
-    "  .grade-review .panel,\n  .grade-review article,\n  .grade-outcome {\n"
+    "  .grade-review .panel,\n  .grade-review article,\n  .grade-outcome,\n  .grade-card {\n"
     "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
 )
-"""The grade review's cards and the saved report's outcome, pinned whole: on a narrow screen
-with large text, a card's side padding gives way and the card reaches into the page's side
-margin, so a word of a class, category or assignment name breaks only where the line can't
-hold it."""
+"""The grade review's cards, the saved report's outcome, and the cards of Grades and class
+details, pinned whole: on a narrow screen with large text, a card's side padding gives way and
+the card reaches into the page's side margin, so a word of a class, category or assignment name
+breaks only where the line can't hold it."""
 SHARED_CARD_RULES = (
     "main {\n  max-width: 46rem;\n  margin: 0 auto;\n  padding: 0.5rem 1.25rem 3rem;\n}\n",
     "article,\n.panel {\n  background: var(--surface);\n  border: 1px solid var(--edge);\n"
@@ -885,6 +885,108 @@ def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_page_carries_its_c
     page = (TEMPLATES / "grade_saved.html").read_text(encoding="utf-8")
     outcome = '<section class="panel grade-outcome" aria-labelledby="outcome-heading">'
     assert page.count(outcome) == 1
+
+
+def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "grade-card" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("grade-card") == 2
+    assert css.count(CARD_RULES) == 1
+    for shared in SHARED_CARD_RULES:
+        assert css.count(shared) == 1, shared
+    assert carriers == ["grade_class.html", "grades.html"]
+    grades = (TEMPLATES / "grades.html").read_text(encoding="utf-8")
+    card = '<section class="panel grade-card" aria-labelledby="class-{{ loop.index }}">'
+    assert grades.count(card) == 1
+    assert grades.count("<section") == 1
+    details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+    assert details.count('<section class="panel grade-card">') == 1
+    assert details.count("<section") == 1
+
+
+HEADING_RULE = ".grade-heading {\n  margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);\n}\n"
+"""Class details' headings, pinned whole: on a narrow screen with large text, a heading reaches
+into the page's side margin until it is 0.3rem from the screen's edge, so a word of a class's
+name breaks only where the whole line can't hold it."""
+SHARED_HEADING_RULES = (
+    "h1 {\n  font-size: 2.1rem;\n  font-weight: 700;\n  color: var(--blue-action);\n"
+    "  margin: 0.75rem 0 0.25rem;\n  letter-spacing: 0.01em;\n}\n",
+    "h2 {\n  font-size: 1.3rem;\n  font-weight: 600;\n  color: var(--blue-action);\n"
+    "  margin: 0 0 0.6rem;\n}\n",
+    SHARED_CARD_RULES[0],
+)
+"""The headings' own rules and the page's side margin, pinned as they stand: the headings' rule
+above replaces their side margins of nothing and reaches into this margin."""
+
+
+def test_the_class_details_headings_rule_is_pinned_and_only_its_headings_carry_it() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "grade-heading" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("grade-heading") == 1
+    assert css.count(HEADING_RULE) == 1
+    for shared in SHARED_HEADING_RULES:
+        assert css.count(shared) == 1, shared
+    assert carriers == ["grade_class.html"]
+    page = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+    named = '<h1 class="grade-heading"><span class="authored-text">{{ name }}</span></h1>'
+    assert page.count(named) == 1
+    assert page.count('<h2 class="grade-heading">') == 3
+    assert page.count("<h2") == 3
+
+
+MAKE_CURRENT_RULE = (
+    "button.make-current {\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1.35rem);\n"
+    "  overflow-wrap: anywhere;\n"
+    "}\n\n"
+    "@media (max-width: 30rem) {\n"
+    "  button.make-current {\n"
+    "    flex: 1 1 100%;\n"
+    "    border-radius: var(--radius);\n"
+    "  }\n"
+    "}\n"
+)
+"""The parent's choice of the household's current term, pinned whole: on a narrow screen the
+button takes the whole line with a card's corners, with large text its side padding gives way,
+and only a word wider than the whole line breaks."""
+SHARED_BUTTON_RULES = (
+    ".actions {\n  display: flex;\n  gap: 0.6rem;\n  flex-wrap: wrap;\n}\n",
+    "button {\n  font: inherit;\n  font-family: var(--font-display);\n  font-weight: 700;\n"
+    "  min-height: 2.75rem;\n  padding: 0.6rem 1.35rem;\n",
+)
+"""The row of actions and the button every page shares, pinned as they stand: the choice's rule
+above gives way from their padding and keeps their 44 pixel height."""
+
+
+def test_the_current_term_choice_s_rule_is_pinned_and_only_grades_carries_it() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "make-current" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("make-current") == 2
+    assert css.count(MAKE_CURRENT_RULE) == 1
+    for shared in SHARED_BUTTON_RULES:
+        assert css.count(shared) == 1, shared
+    assert carriers == ["grades.html"]
+    page = (TEMPLATES / "grades.html").read_text(encoding="utf-8")
+    button = (
+        '<button type="submit" class="secondary make-current">'
+        "Use {{ make_current.named }} as the household's current term</button>"
+    )
+    assert page.count(button) == 1
 
 
 GRADE_PANEL_RULE = (
