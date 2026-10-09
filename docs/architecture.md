@@ -891,10 +891,15 @@ day before the evening, by its own rule, ends a run at `retrieve` as
 `date_problem`, before any model is asked, since no plan could pass the check
 over it: work with no date still to come that she did not choose, such as
 undated work whose only school date has passed. Chosen earlier work and work a
-later date still holds for are planned. Each run's time, node by node, its
-requests and retries, the size of its answers, and how long generating,
-settling, and answering took are kept with its record, with a mark when its
-answer was unconfirmed.
+later date still holds for are planned. A run that ends as `date_problem` keeps
+the work it names in its record (each assignment's ID, title, class and due
+date, in the order its answer gives them), written in the transaction that
+ends it, so every answer about that run, the same form pressed again
+included, names the same work and asks no model. A record without that list,
+from an older file, says the general sentence and names no work. Each run's
+time, node by node, its requests and retries, the size of its answers, and
+how long generating, settling, and answering took are kept with its record,
+with a mark when its answer was unconfirmed.
 
 A run's record is its row in the `runs` table, keyed by its thread ID, which is
 also its run ID: a status of `running`, `published`, or `ended`, its deadline on

@@ -892,6 +892,16 @@ def test_the_homework_heading_is_a_place_to_land_with_the_arrival_cue() -> None:
     assert ".week-problem a" in in_sentence_rule()
 
 
+def test_her_weeks_problem_line_breaks_a_long_word_where_it_must() -> None:
+    """Her week's problem line and its links break a title or class wider than a phone's line
+    where they must, as the family page's alert does, so the page never scrolls sideways. The
+    browser shows what this gives; here the rule is pinned, and the links take it from the line."""
+    assert declared_for(".week-problem") == ["overflow-wrap: anywhere;"]
+    assert declared_for(".week-problem") == declared_for("#problem")
+    assert not any("overflow-wrap" in inside for inside in declared_for(".week-problem a"))
+    assert not any("overflow-wrap" in inside for inside in declared_for(".problem"))
+
+
 # ------------------------------------------------------------------ the sentence on another week
 
 
