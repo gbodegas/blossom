@@ -13,7 +13,9 @@ import logging
 import os
 import pathlib
 import re
+import sqlite3
 import stat
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from html import unescape
@@ -28,8 +30,9 @@ from starlette.requests import Request
 from blossom import anthropic_client
 from blossom.agent import graph as agent_graph
 from blossom.app import create_app
+from blossom.grades import draft as grade_drafts
 from blossom.grades.draft import GradeNumber, GradeValue, Presence, capture_key
-from blossom.grades.identity import name_form_key
+from blossom.grades.identity import name_form, name_form_key
 from blossom.grades.review import ItemStatus, ReviewItem
 from blossom.grades.text_reader import read_grade_report
 from blossom.household import secret_beside
@@ -37,6 +40,7 @@ from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes import grades as grade_routes
 from blossom.routes.forms import FormRoute
 from blossom.settings import Settings
+from blossom.stores import gradebook
 from blossom.stores.gradebook import GradeReportNotSaved, GradeTransactionLost
 from blossom.stores.paths import SECRET_NAME, UnsafeCheckpointPath
 from tests.support import (
@@ -49,6 +53,7 @@ from tests.support import (
     every_route,
     files_in,
     fixture_settings,
+    form_values,
     save_grade,
     signed_in,
     signed_in_household,
@@ -78,11 +83,6 @@ FAMILY_GRADE_ROUTES = {
 }
 """Every family grade route and method, named here so a route added without a row fails."""
 LOOPBACK = "127.0.0.1:8781"
-GRAMMAR = re.compile(
-    r"report_text|acceptance_id|revision|source_key|identity_form|identity|setup|setup_year"
-    r"|setup_term|first_month|class|class_name|use|(select|match|candidates|choose|choices)\.\d+"
-)
-"""The names a review's form may send: fixed words, and each item's names by its position."""
 
 
 def open_household(tmp_path: pathlib.Path) -> Settings:
@@ -541,7 +541,7 @@ def test_each_item_is_named_by_its_position(tmp_path: pathlib.Path) -> None:
     assert {f"select.{i}" for i in range(9)} <= names
     assert "select.9" not in names
     assert "Seed Germination Log" in page
-    assert all(GRAMMAR.fullmatch(name) for name in names), sorted(names)
+    assert names <= positions_on(page).names, sorted(names)
 
 
 def test_the_review_asks_the_setup_month_and_class_with_the_report_s_labels(
@@ -1012,36 +1012,6 @@ def test_not_hers_ends_the_import_and_writes_nothing(tmp_path: pathlib.Path) -> 
     assert after == before
 
 
-@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("revision", "\N{SUPERSCRIPT TWO}"),
-        ("revision", "\N{ARABIC-INDIC DIGIT THREE}"),
-        ("revision", "A"),
-        ("class", "class:biology:\N{SUPERSCRIPT TWO}"),
-    ],
-    ids=["superscript", "other-digit", "letter", "class-superscript"],
-)
-def test_a_revision_outside_its_form_is_refused_with_the_text_kept(
-    route: str, field: str, value: str, tmp_path: pathlib.Path
-) -> None:
-    """A page writes a revision in ASCII digits only; any other character, a digit of another
-    script among them, is a form that isn't whole."""
-    settings = open_household(tmp_path)
-    with at(settings) as browser:
-        form = answered(review_page(browser), **{field: value})
-        before = closed_world([database(settings)], leaving_out=())
-        answer = browser.post(route, data=form, headers=PAGE)
-        after = closed_world([database(settings)], leaving_out=())
-
-    assert answer.status_code == 422
-    assert escape(grade_routes.NOT_WHOLE) in answer.text
-    assert escape(REPORT.splitlines()[0]) in answer.text
-    assert 'name="report_text"' in answer.text
-    assert after == before
-
-
 @pytest.mark.parametrize(("field", "label"), [("class_name", "class name"), ("setup_term", "term")])
 def test_a_label_over_its_limit_is_named_and_nothing_is_saved(
     field: str, label: str, tmp_path: pathlib.Path
@@ -1359,3 +1329,526 @@ def test_not_hers_ends_the_import_whatever_else_the_form_holds(tmp_path: pathlib
     assert answer.status_code == 200
     assert escape(grade_routes.NOT_HERS) in answer.text
     assert after == before
+
+
+# ------------------------------------------------------------- the review form's grammar
+
+OTHER_CLASS = REPORT.replace("**07 BIO - C**", "**07 CHEM - A**")
+"""Wren's report under another class's name, so the review offers her saved class."""
+RETITLED = REPORT.replace("| Seed Germination Log |", "| Zebra Field Notes |").replace(
+    "| Cell Diagram             |", "| Yarrow Pressing          |"
+)
+"""Wren's report with its first two rows retitled: each asks whether it is a saved result."""
+UNRELATED = REPORT.replace(
+    "| Cell Diagram             | 7.0     | 10.0    | 70.0    | Missing    | 09/26   |",
+    "| Yarrow Pressing          | 7.0     | 15.0    | 70.0    | Missing    | 10/09   |",
+)
+"""Wren's report with a row no saved result may be: it offers the free results alone."""
+IXL = REPORT.replace(
+    "| Seed Germination Log | 18.0    | 20.0    | 90.0    | Valid      | 09/22   |",
+    "| IXL Practice         | 9.0     | 10.0    | 90.0    | Valid      | 09/22   |",
+).replace(
+    "| Cell Diagram             | 7.0     | 10.0    | 70.0    | Missing    | 09/26   |",
+    "| IXL Practice             | 8.0     | 10.0    | 80.0    | Valid      | 09/22   |",
+)
+"""Wren's report with two practice rows that share a title and a due date."""
+IXL_AWAY = IXL.replace("| IXL Practice         |", "| Zebra Field Notes    |").replace(
+    "| IXL Practice             |", "| Yarrow Pressing          |"
+)
+"""The practice rows retitled away: each asks which of the two saved results it is."""
+OTHER_DIGITS = (
+    "\N{ARABIC-INDIC DIGIT THREE}",
+    "\N{SUPERSCRIPT TWO}",
+    "\N{FULLWIDTH DIGIT THREE}",
+)
+MAY_BE_EMPTY = frozenset({"first_month", "choose"})
+"""The page fields whose grammar takes an empty value."""
+
+
+def first_saved(browser: TestClient, text: str = REPORT) -> None:
+    """``text`` saved whole, every result ticked."""
+    saved = browser.post(SAVE, data=answered(review_page(browser, text)), headers=PAGE)
+    assert saved.status_code == 303, saved.text
+
+
+def as_sent(page: str) -> dict[str, str]:
+    """A review's form as sent with nothing changed, its first answer about the name chosen
+    where the page asks one."""
+    form = sent_from(page)
+    asked = [value for _, name, value in form_values(page, SAVE) if name == "identity"]
+    form.setdefault("identity", asked[0])
+    return form
+
+
+def positions_on(page: str) -> grade_routes.Positions:
+    """The positions of the draft a page's form carries."""
+    draft = read_grade_report(sent_from(page)["report_text"]).draft
+    assert draft is not None
+    return grade_routes.positions_of(draft)
+
+
+def marked(page: str) -> set[int]:
+    """The rows a returned review marks for the parent to resolve."""
+    rows = {int(found) for found in re.findall(r'id="item-(\d+)-problem"', page)}
+    for row in rows:
+        assert f'aria-describedby="item-{row}-problem"' in page
+    return rows
+
+
+def decision_of(settings: Settings, title: str) -> tuple[str, str | None]:
+    """How the newest report's row titled ``title`` resolved, and the result it names."""
+    with sqlite3.connect(f"file:{database(settings)}?mode=ro", uri=True) as db:
+        found = db.execute(
+            "SELECT d.how, d.result_id FROM grade_match_decisions AS d "
+            "JOIN grade_reports AS r ON r.report_id = d.report_id "
+            "WHERE d.row_key LIKE ? ORDER BY r.acceptance_order DESC LIMIT 1",
+            (f"%{title}%",),
+        ).fetchone()
+    assert found is not None, title
+    return found
+
+
+def results_on_record(settings: Settings) -> int:
+    with sqlite3.connect(f"file:{database(settings)}?mode=ro", uri=True) as db:
+        return int(db.execute("SELECT COUNT(*) FROM grade_results").fetchone()[0])
+
+
+def every_review_state(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Each state the review's form renders in, by name, from two households of Wren's."""
+    pages = {}
+    with at(open_household(tmp_path / "one")) as browser:
+        pages["first use"] = review_page(browser)
+        pages["no student line"] = review_page(browser, NO_LINE)
+        first_saved(browser)
+        pages["class matched, holding data"] = review_page(browser)
+        pages["another class"] = review_page(browser, OTHER_CLASS)
+        pages["choices alone"] = review_page(browser, UNRELATED)
+        renamed = review_page(browser, RETITLED)
+        pages["renamed rows"] = renamed
+        form = as_sent(renamed)
+        checked = browser.post(CHECK, data={**form, "match.5": form["candidates.5"]}, headers=PAGE)
+        assert checked.status_code == 200, checked.text
+        pages["checked"] = checked.text
+        refused = browser.post(CHECK, data={**form, "match.5": "choose"}, headers=PAGE)
+        assert refused.status_code == 422, refused.text
+        pages["refused"] = refused.text
+        different = {**form, "match.5": form["candidates.5"], "match.6": "different"}
+        assert browser.post(SAVE, data=different, headers=PAGE).status_code == 303
+        pages["remembered different"] = review_page(browser, RETITLED)
+
+        def refuse(*args: object, **kwargs: object) -> None:
+            said = "refused"
+            raise GradeReportNotSaved(said)
+
+        monkeypatch.setattr(store_of(browser), "save_grade_report", refuse)
+        retry = browser.post(SAVE, data=as_sent(review_page(browser, OTHER_CLASS)), headers=PAGE)
+        assert retry.status_code == 500, retry.text
+        pages["retry"] = retry.text
+    with at(open_household(tmp_path / "two")) as browser:
+        first_saved(browser, IXL)
+        pages["which question"] = review_page(browser, IXL_AWAY)
+    return pages
+
+
+def test_every_control_of_every_review_state_has_its_row_of_the_grammar(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every name each state renders has one row of the form's table, each value a page-owned
+    control may send fits its grammar alone and beside what the page sends, and exactly the
+    text inputs and text areas are the parent's own."""
+    rendered: set[str] = set()
+    for state, page in every_review_state(tmp_path, monkeypatch).items():
+        positions = positions_on(page)
+        sent = as_sent(page)
+        grade_routes.page_values(sent, positions)
+        for kind, name, value in form_values(page, SAVE):
+            field = grade_routes.FORM.get(name.split(".")[0])
+            assert field is not None, (state, name)
+            rendered.add(name.split(".")[0])
+            if state != "retry":
+                typed = kind in ("text", "textarea")
+                assert (field.owner == "typed") == typed, (state, name, kind)
+            if field.owner == "page":
+                assert field.value is not None, name
+                assert field.value.fullmatch(value), (state, name, value)
+                grade_routes.page_values({**sent, name: value}, positions)
+
+    assert rendered == set(grade_routes.FORM)
+
+
+def test_every_name_the_form_may_send_comes_from_the_table(tmp_path: pathlib.Path) -> None:
+    positions = positions_on(reviewed(tmp_path))
+
+    always = {name for name, field in grade_routes.FORM.items() if field.where == "always"}
+    assert always == {"report_text", "acceptance_id", "revision", "source_key", "identity_form"}
+    assert {name.split(".")[0] for name in positions.names} == set(grade_routes.FORM)
+    assert "select.8" in positions.names
+    assert "match.4" not in positions.names
+    assert "match.5" in positions.names
+
+
+def test_every_id_and_key_the_store_mints_fits_its_pattern(tmp_path: pathlib.Path) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        key = browser.app.state.grade_name_key  # type: ignore[attr-defined]
+    with sqlite3.connect(f"file:{database(settings)}?mode=ro", uri=True) as db:
+        classes = [found for (found,) in db.execute("SELECT class_id FROM grade_classes")]
+        results = [found for (found,) in db.execute("SELECT result_id FROM grade_results")]
+        accepted = [found for (found,) in db.execute("SELECT acceptance_id FROM grade_acceptances")]
+    draft = read_grade_report(REPORT).draft
+    assert draft is not None
+
+    assert classes
+    assert results
+    assert accepted
+    assert all(gradebook.CLASS_ID.fullmatch(found) for found in classes)
+    assert all(gradebook.RESULT_ID.fullmatch(found) for found in results)
+    assert all(gradebook.ACCEPTANCE_ID.fullmatch(found) for found in accepted)
+    assert gradebook.ACCEPTANCE_ID.fullmatch(gradebook.new_acceptance_id())
+    assert grade_drafts.HEX_KEY.fullmatch(capture_key(draft))
+    assert grade_drafts.HEX_KEY.fullmatch(name_form(key, "Bramble, Wren"))
+    assert grade_routes.ACCEPTANCE_ID is gradebook.ACCEPTANCE_ID
+
+
+def malformed(field: str, value: str) -> list[str | None]:
+    """Values outside ``field``'s grammar, each made from ``value``, one the page rendered:
+    another script's digit added or put in, one more character, its case, its prefix or
+    separator changed, a leading zero, a list's space doubled or a tab, a token repeated, and
+    empty. None stands for the field left out."""
+    samples: list[str | None] = [value + digit for digit in OTHER_DIGITS]
+    samples += [re.sub(r"[0-9]", OTHER_DIGITS[0], value, count=1), value + "a", value.upper()]
+    samples += [value.replace("-", "_", 1), value.replace(":", ""), "0" + value]
+    samples += [f"{value} {value}", f"{value}  {value}", f"{value}\t{value}"]
+    if field not in MAY_BE_EMPTY:
+        samples.append("")
+    if field == "revision":
+        samples += ["0", "9" * 19, "9" * 20, "9" * 5000]
+    if field == "class":
+        class_id = value.rpartition(":")[0]
+        samples += [f"{class_id}:{digits}" for digits in ("0", "07", "9" * 19, "9" * 5000)]
+        samples += [f"k{value}", f"{class_id}a:none"]
+    if field in ("candidates", "choices"):
+        samples.append(value.replace(" ", "  ") + " " + value.split()[0])
+    if field == "choose":
+        samples.append(None)
+    return [sample for sample in dict.fromkeys(samples) if sample != value]
+
+
+def matrix_bases(browser: TestClient) -> list[tuple[str, dict[str, str], str]]:
+    """For each page field of the table, a form a review rendered that sends it, and the name
+    it sends it under: a saved report's review for the fields every page sends and the rows,
+    the first review for its answers, and another class's review for the class."""
+    first = as_sent(review_page(browser))
+    first.update(setup="report", first_month="9", use="current")
+    first_saved(browser)
+    renamed = as_sent(review_page(browser, RETITLED))
+    candidate = renamed["candidates.5"]
+    pick = renamed["choices.5"].split()[0]
+    other_class = review_page(browser, OTHER_CLASS)
+    another = as_sent(other_class)
+    offered = [value for _, name, value in form_values(other_class, SAVE) if name == "class"]
+    another["class"] = offered[-1]
+    bases: list[tuple[str, dict[str, str], str]] = []
+    for name, field in grade_routes.FORM.items():
+        if field.owner != "page":
+            continue
+        if field.where in ("always", "answer", "item"):
+            form = renamed if field.where == "always" else first
+            form = another if name == "class" else form
+            bases.append((name, form, "select.0" if field.where == "item" else name))
+        elif name == "match":
+            bases.append((name, {**renamed, "match.5": candidate}, "match.5"))
+        elif name == "choose":
+            bases.append((name, {**renamed, "match.5": "choose", "choose.5": pick}, "choose.5"))
+            bases.append((name, {**renamed, "choose.5": pick}, "choose.5"))
+        else:
+            answered_row = {**renamed, "match.5": candidate, "choose.5": ""}
+            if name == "choices":
+                answered_row = {**renamed, "match.5": "choose", "choose.5": pick}
+            bases.append((name, answered_row, f"{name}.5"))
+            bases.append((name, answered_row, f"{name}.6"))
+    return bases
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_each_page_value_outside_its_grammar_is_refused_before_any_store_call(
+    route: str, tmp_path: pathlib.Path
+) -> None:
+    """The refusals are made from the table, so a page field gets them when it is added: each
+    is a form that isn't whole, its text kept and nothing written, and posted to an app that
+    has never made the household secret, it still makes none."""
+    settings = open_household(tmp_path / "household")
+    fresh_folder = tmp_path / "fresh"
+    fresh_folder.mkdir()
+    not_refused: list[tuple[str, str]] = []
+    with at(settings) as browser, at(open_household(fresh_folder)) as fresh:
+        bases = matrix_bases(browser)
+        before = closed_world([database(settings)], leaving_out=())
+        positions = positions_on(review_page(browser, REPORT))
+        for field, base, name in bases:
+            grade_routes.page_values(base, positions)
+            control = browser.post(CHECK, data=base, headers=PAGE)
+            assert grade_routes.NOT_WHOLE not in unescape(control.text), (field, name)
+            for sample in malformed(field, base[name]):
+                form = {key: value for key, value in base.items() if key != name}
+                if sample is not None:
+                    form[name] = sample
+                for client in (browser, fresh):
+                    answer = client.post(route, data=form, headers=PAGE)
+                    refused = answer.status_code == 422 and (
+                        escape(grade_routes.NOT_WHOLE) in answer.text
+                        and escape(REPORT.splitlines()[0]) in answer.text
+                        and 'name="report_text"' in answer.text
+                    )
+                    if not refused:
+                        not_refused.append((name, repr(sample)[:40]))
+        after = closed_world([database(settings)], leaving_out=())
+        key_made = getattr(fresh.app.state, "grade_name_key", None)  # type: ignore[attr-defined]
+
+    assert not_refused == []
+    assert after == before
+    assert not (fresh_folder / SECRET_NAME).exists()
+    assert key_made is None
+
+
+@pytest.mark.parametrize(
+    ("row_values", "rule"),
+    [
+        ({"candidates.5": None}, "a candidate with no candidates"),
+        ({"match.5": "different", "candidates.5": None}, "different with no candidates"),
+        ({"match.5": "choose", "candidates.5": None}, "choose with no candidates"),
+        ({"match.5": "choose", "choices.5": None}, "choose with no choices"),
+        ({"choices.5": None}, "a pick with no choices"),
+        ({"match.5": "result-" + "f" * 32}, "a candidate not offered"),
+        ({"match.5": "choose", "choose.5": "result-" + "f" * 32}, "a pick not offered"),
+    ],
+)
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_a_row_s_fields_that_disagree_with_its_own_lists_are_refused(
+    route: str, row_values: dict[str, str | None], rule: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        form = as_sent(review_page(browser, RETITLED))
+        form["match.5"] = form["candidates.5"]
+        if row_values.get("match.5") == "choose":
+            form["choose.5"] = form["choices.5"].split()[0]
+        for name, value in row_values.items():
+            if value is None:
+                form.pop(name)
+            else:
+                form[name] = value
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422, rule
+    assert escape(grade_routes.NOT_WHOLE) in answer.text
+    assert after == before
+
+
+def test_a_well_formed_form_posted_to_an_app_with_no_secret_makes_one(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The control for the refusals above: the same kind of app does make the secret for a
+    form that is whole."""
+    fresh_folder = tmp_path / "fresh"
+    fresh_folder.mkdir()
+    with at(open_household(tmp_path / "household")) as browser:
+        form = answered(review_page(browser))
+    with at(open_household(fresh_folder)) as fresh:
+        answer = fresh.post(CHECK, data=form, headers=PAGE)
+
+    assert grade_routes.NOT_WHOLE not in unescape(answer.text)
+    assert (fresh_folder / SECRET_NAME).exists()
+
+
+def test_a_well_formed_acceptance_id_never_minted_saves_exactly_as_a_minted_one(
+    tmp_path: pathlib.Path,
+) -> None:
+    fresh_id = f"acceptance-{uuid.uuid4().hex}"
+    with at(open_household(tmp_path)) as browser:
+        form = {**answered(review_page(browser)), "acceptance_id": fresh_id}
+        location, said = outcome_of(browser, form)
+
+    assert location == SAVED.format(acceptance_id=fresh_id)
+    assert "Saved. 9 added." in said
+
+
+# ------------------------------------------------------------- a row's two answer controls
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("tick", [True, False], ids=["ticked", "unticked"])
+def test_a_pick_with_no_radio_is_the_row_s_answer(
+    route: str, tick: bool, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        form = as_sent(review_page(browser, RETITLED))
+        pick = form["candidates.5"]
+        form["choose.5"] = pick
+        if tick:
+            form["select.5"] = "1"
+        counted_before = results_on_record(settings)
+        answer = browser.post(route, data=form, headers=PAGE)
+        counted_after = results_on_record(settings)
+
+    assert counted_after == counted_before
+    if route == CHECK:
+        assert answer.status_code == 200, answer.text
+        assert f'value="{pick}" selected' in answer.text
+        return
+    assert answer.status_code == 303, answer.text
+    assert decision_of(settings, "Zebra") == ("chosen", pick)
+
+
+def remembered_review(browser: TestClient) -> dict[str, str]:
+    """The retitled report's review again after a save answered its second row "A different
+    assignment", which the page now checks by default."""
+    first_saved(browser)
+    form = as_sent(review_page(browser, RETITLED))
+    different = {**unticked(form), "match.5": form["candidates.5"], "match.6": "different"}
+    assert browser.post(SAVE, data=different, headers=PAGE).status_code == 303
+    page = review_page(browser, RETITLED)
+    assert 'name="match.6" value="different" checked' in page
+    return as_sent(page)
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("case", ["remembered different", "another candidate", "different"])
+def test_a_pick_that_contradicts_the_row_s_radio_keeps_everything_and_marks_the_row(
+    route: str, case: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        if case == "remembered different":
+            form = remembered_review(browser)
+            form.update({"choose.6": form["choices.6"].split()[0], "select.6": "1"})
+            row = 6
+        else:
+            first_saved(browser)
+            form = as_sent(review_page(browser, RETITLED))
+            other = next(c for c in form["choices.5"].split() if c != form["candidates.5"])
+            radio = form["candidates.5"] if case == "another candidate" else "different"
+            form.update({"match.5": radio, "choose.5": other, "select.5": "1"})
+            row = 5
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422, answer.text
+    assert problem_said(answer.text).startswith(
+        f"{grade_routes.CHOOSE_WHICH} {grade_routes.CORRECT_THE_MARKED}"
+    )
+    assert marked(answer.text) == {row}
+    assert sent_from(answer.text) == form
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_a_candidate_radio_and_the_same_pick_agree(route: str, tmp_path: pathlib.Path) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        form = as_sent(review_page(browser, RETITLED))
+        same = form["candidates.5"]
+        form.update({"match.5": same, "choose.5": same})
+        answer = browser.post(route, data=form, headers=PAGE)
+
+    if route == CHECK:
+        assert answer.status_code == 200, answer.text
+        return
+    assert answer.status_code == 303, answer.text
+    assert decision_of(settings, "Zebra") == ("answer", same)
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_choose_with_no_pick_asks_which_and_marks_the_row(
+    route: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        form = {**as_sent(review_page(browser, RETITLED)), "match.5": "choose"}
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422
+    assert escape(grade_routes.CHOOSE_WHICH) in answer.text
+    assert marked(answer.text) == {5}
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("case", ["two picks", "a radio and a pick", "two radios"])
+def test_two_rows_naming_one_assignment_keep_everything_and_mark_both(
+    route: str, case: str, tmp_path: pathlib.Path
+) -> None:
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        if case == "two radios":
+            first_saved(browser, IXL)
+            form = as_sent(review_page(browser, IXL_AWAY))
+            same = form["candidates.5"].split()[0]
+            assert same in form["candidates.6"].split()
+            form.update({"match.5": same, "match.6": same})
+        else:
+            first_saved(browser)
+            form = as_sent(review_page(browser, RETITLED))
+            same = form["candidates.5"]
+            if case == "two picks":
+                form.update({"choose.5": same, "choose.6": same})
+            else:
+                form.update({"match.5": same, "choose.6": same})
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422, answer.text
+    assert problem_said(answer.text).startswith(
+        f"{grade_routes.CHOOSE_WHICH} {grade_routes.CORRECT_THE_MARKED}"
+    )
+    assert marked(answer.text) == {5, 6}
+    assert sent_from(answer.text) == form
+    assert after == before
+
+
+def test_a_fresh_review_s_list_starts_at_its_empty_placeholder_with_nothing_selected(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser)
+        page = review_page(browser, RETITLED)
+
+    for row in (5, 6):
+        options = [value for _, name, value in form_values(page, SAVE) if name == f"choose.{row}"]
+        assert options[0] == ""
+        assert len(options) == 3
+    assert " selected" not in page.split('id="choose-5"', 1)[1].split("</select>", 1)[0]
+    assert as_sent(page)["choose.5"] == ""
+
+
+def test_a_check_then_a_save_choosing_another_row_s_assignment_saves(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Choosing on one row and checking leaves the other row's list whole."""
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser)
+        form = as_sent(review_page(browser, RETITLED))
+        first, second = form["choices.5"].split()
+        checked = browser.post(
+            CHECK, data={**form, "match.5": "choose", "choose.5": first}, headers=PAGE
+        )
+        again = as_sent(checked.text)
+        saved = browser.post(
+            SAVE, data={**again, "match.6": "choose", "choose.6": second}, headers=PAGE
+        )
+
+    assert checked.status_code == 200
+    assert again["choices.6"].split() == [first, second]
+    assert saved.status_code == 303, saved.text

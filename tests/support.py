@@ -1094,6 +1094,70 @@ def whole_form(html: str, action: str) -> dict[str, str]:
     return dict(found[0])
 
 
+class _ValueReader(HTMLParser):
+    """Every control of every form with each value it may send: each radio's, checkbox's and
+    option's value, checked or not, and each other input's and text area's. A control it
+    doesn't know, an option with no value or a named button is refused, not read."""
+
+    def __init__(self, page: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.controls: list[tuple[str, str, str, str]] = []
+        self._action: str | None = None
+        self._list: str | None = None
+        self._area: list[str] | None = None
+        self.feed(page)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        given = dict(attrs)
+        if tag == "form":
+            self._action = given.get("action") or ""
+            return
+        if self._action is None:
+            return
+        name = given.get("name")
+        if tag == "option":
+            assert self._list is not None, given
+            assert given.get("value") is not None, given
+            self.controls.append((self._action, "option", self._list, str(given["value"])))
+        elif tag == "select":
+            assert name, given
+            self._list = name
+        elif tag == "input":
+            kind = given.get("type") or "text"
+            assert kind in ("hidden", "text", "radio", "checkbox"), given
+            assert name, given
+            self.controls.append((self._action, kind, name, given.get("value") or ""))
+        elif tag == "textarea":
+            assert name, given
+            self._area = [self._action, "textarea", name, ""]
+        elif tag == "button":
+            assert name is None, given
+
+    def handle_data(self, data: str) -> None:
+        if self._area is not None:
+            self._area[3] += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "textarea" and self._area is not None:
+            action, kind, name, value = self._area
+            self.controls.append((action, kind, name, value))
+            self._area = None
+        elif tag == "select":
+            self._list = None
+        elif tag == "form":
+            self._action = None
+
+
+def form_values(html: str, action: str) -> list[tuple[str, str, str]]:
+    """Every control of the forms with this action as (its kind, its name, a value it may
+    send): each radio's, checkbox's and option's value, not only the checked ones."""
+    return [
+        (kind, name, value)
+        for where, kind, name, value in _ValueReader(html).controls
+        if where == action
+    ]
+
+
 def form_fields(html: str, action: str) -> dict[str, str]:
     """The hidden fields of the form with this action, as a browser would send them back:
     each value read out of its attribute, so what the page escaped arrives as it was."""

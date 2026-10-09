@@ -38,6 +38,7 @@ under the month on record when they are read.
 """
 
 import json
+import re
 import secrets
 import sqlite3
 import threading
@@ -748,6 +749,16 @@ DELETE_SCOPE: Final = (
 )
 """A class and term's delete, one statement per table, the reports' children before them: an
 acceptance and an action are found by their own class and term, report-less ones included."""
+
+
+ACCEPTANCE_ID: Final = re.compile(r"acceptance-[0-9a-f]{32}")
+"""The shape of the acceptance IDs ``new_acceptance_id`` mints."""
+CLASS_ID: Final = re.compile(r"class-[0-9a-f]{32}")
+"""The shape of the class IDs a save mints."""
+RESULT_ID: Final = re.compile(r"result-[0-9a-f]{32}")
+"""The shape of the result IDs a save mints."""
+REVISION_MAX: Final = 2**63 - 1
+"""The largest scope revision the store's integer column holds."""
 
 
 def new_acceptance_id() -> str:
