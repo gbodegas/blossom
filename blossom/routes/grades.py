@@ -44,6 +44,7 @@ from blossom.grades.draft import (
 from blossom.grades.identity import IdentityStatus, name_form_key
 from blossom.grades.review import (
     CLASS_NAME_LIMIT,
+    RESULT_FIELDS,
     TERM_LIMIT,
     AlreadyRecorded,
     Cell,
@@ -63,6 +64,7 @@ from blossom.grades.review import (
     ReviewPage,
     SaveOutcome,
     StillAsked,
+    cells_of,
     class_asked,
     first_month_asked,
     identity_asked,
@@ -243,7 +245,7 @@ LEFT_OUT: Final = "These results weren't part of that save:"
 NOT_ON_RECORD: Final = "This save's outcome isn't on record."
 NO_VALUES_CHANGED: Final = "No grade values changed."
 ALL_ALREADY_SAVED: Final = "Every result in this report was already saved."
-NAME_CONFIRMED: Final = "Her name is confirmed for her grade reports."
+NAME_CONFIRMED: Final = "Her name was confirmed with this report."
 STATUS_WORDS: Final[dict[ItemStatus, str]] = {
     ItemStatus.NEW: "New",
     ItemStatus.CHANGED: "Changed",
@@ -507,6 +509,66 @@ def saved_now(cells: Mapping[str, Cell]) -> list[str]:
     ]
 
 
+ADJUSTING: Final = ("curve", "bonus", "penalty")
+"""The school record's cells that adjust a score."""
+RECORD_FIELDS: Final = (
+    ("curve", "Curve"),
+    ("bonus", "Bonus"),
+    ("penalty", "Penalty"),
+    ("weight", "Weight"),
+    ("note", "Note"),
+)
+"""The school record details of a result, by field, with their labels."""
+
+
+def presence_words(what: str, cell: Cell) -> str:
+    """A cell that wasn't reported, in the words for its presence."""
+    presence, text = cell
+    if presence is Presence.BLANK:
+        return f"{what} left blank"
+    if presence is Presence.UNREADABLE:
+        return f"{what} couldn't be read: {text}"
+    return f"{what} not in the copy"
+
+
+def record_text(cell: Cell) -> str:
+    """A school record cell after its label: as written, or the words for its presence."""
+    return cell[1] if cell[0] is Presence.REPORTED else presence_words("", cell).strip()
+
+
+def adjusts(text: str) -> bool:
+    """Whether an adjusting cell's text says it changed a score: anything but a zero."""
+    try:
+        return float(text) != 0
+    except ValueError:
+        return bool(text.strip())
+
+
+@dataclass(frozen=True)
+class SchoolRecord:
+    """A review row's school record details: each record cell its save stores, under its label,
+    and the cues its summary names."""
+
+    lines: list[str]
+    cues: list[str]
+
+
+def school_record(category: GradeCategory, row: GradeRow) -> SchoolRecord:
+    """The school record details of ``row``, each cell as written or in the words for its
+    presence, with "Adjusted" when a curve, bonus or penalty is reported and not zero, and
+    "Teacher's note" when the note has text."""
+    cells = cells_of(RESULT_FIELDS, (category.name, *row.cells()))
+    cues = []
+    if any(
+        cells[field][0] is Presence.REPORTED and adjusts(cells[field][1]) for field in ADJUSTING
+    ):
+        cues.append("Adjusted")
+    if cells["note"][0] is Presence.REPORTED and cells["note"][1].strip():
+        cues.append("Teacher's note")
+    lines = [f"{label}: {record_text(cells[field])}" for field, label in RECORD_FIELDS]
+    return SchoolRecord(lines, cues)
+
+
 TOLD_APART_BY: Final[tuple[Callable[[ChoiceFacts], str], ...]] = (
     lambda one: (
         f"saved score {described(*one.points, None)} / {described(*one.max_points, 'maximum')}"
@@ -618,6 +680,7 @@ def review_context(
         "status_word": status_word,
         "cell": cell,
         "saved_now": saved_now,
+        "school_record": school_record,
         "choice_labels": choice_labels,
         "student_line": header.student_line,
         "identity": review.identity.status.value,

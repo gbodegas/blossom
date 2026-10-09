@@ -156,6 +156,17 @@
             {% if item.status.value == "changed" and item.current %}
               <p class="source">Saved now: {{ saved_now(item.current.cells)|join(" · ") }}</p>
             {% endif %}
+            {% if shown.kind == "row" %}
+              {% set record = school_record(shown.category, shown.row) %}
+              <details class="steps">
+                <summary>School record details{% if record.cues %}: {{ record.cues|join(", ") }}{% endif %}</summary>
+                <ul>
+                  {% for line in record.lines %}
+                    <li><span class="authored-text">{{ line }}</span></li>
+                  {% endfor %}
+                </ul>
+              </details>
+            {% endif %}
             {% if shown.selectable %}
               <fieldset class="choice" id="item-{{ i }}"{% if i in to_resolve %} aria-describedby="item-{{ i }}-problem"{% endif %}>
                 <legend>{% if item.question %}{% if item.question.kind.value == "which" %}Which assignment is this?{% elif item.question.kind.value == "renamed" %}Same assignment, renamed?{% else %}Same assignment, due date changed?{% endif %}{% else %}Save this result{% endif %}</legend>
