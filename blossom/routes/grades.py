@@ -52,6 +52,7 @@ from blossom.grades.draft import (
 )
 from blossom.grades.identity import IdentityStatus, name_form_key
 from blossom.grades.review import (
+    ANSWERS_FOR,
     CLASS_NAME_LIMIT,
     RESULT_FIELDS,
     TERM_LIMIT,
@@ -661,27 +662,6 @@ def status_word(shown: Shown) -> str:
     return STATUS_WORDS[shown.item.status]
 
 
-def all_kept(kept: StillAsked, answers: GradeAnswers, selection: Collection[str]) -> bool:
-    """Whether every answer and tick the page sent still answers the review, none dropped."""
-    return kept.selection == frozenset(selection) and (
-        kept.identity,
-        kept.setup,
-        kept.first_month,
-        kept.new_class,
-        kept.same_class,
-        kept.matches,
-        kept.use,
-    ) == (
-        answers.identity,
-        answers.setup,
-        answers.first_month,
-        answers.new_class,
-        answers.same_class,
-        answers.matches,
-        answers.use,
-    )
-
-
 def review_context(
     review: GradeReview,
     draft: GradeReportDraft,
@@ -1006,63 +986,6 @@ def posted_of(
     return Posted(page, answers, selection, tuple(dict.fromkeys(problems)), to_resolve)
 
 
-def still_typos(review: GradeReview, answers: GradeAnswers) -> list[str] | None:
-    """For a review a save returned over its answers: what the parent must correct when every
-    answer that fails still answers a question asked now, or None when one answers a question
-    not asked now."""
-    if not identity_asked(review, answers) or not first_month_asked(review, answers):
-        return None
-    if not matches_asked(review, answers.matches) or not use_asked(review, answers.use):
-        return None
-    problems: list[str] = []
-    if not setup_asked(review, answers):
-        if (answers.setup is None) != (review.setup is None):
-            return None
-        problems.append(YEAR_FORM)
-    if not class_asked(review, answers):
-        question = review.class_question
-        if question.matched is not None or answers.same_class is not None:
-            return None
-        problems.append(CLASS_BLANK if answers.new_class is not None else CHOOSE_CLASS)
-    return problems or None
-
-
-def kept_fields(
-    kept: StillAsked, review: GradeReview, draft: GradeReportDraft, positions: Positions
-) -> tuple[dict[str, str], frozenset[int]]:
-    """The fields and ticks a returned review shows from what still answers it."""
-    fields: dict[str, str] = {}
-    if kept.identity is not None:
-        fields["identity"] = kept.identity.value
-    if kept.setup is not None:
-        header = draft.header
-        if kept.setup == (header.year_label, header.term_label):
-            fields["setup"] = "report"
-        else:
-            fields.update(setup="other", setup_year=kept.setup[0], setup_term=kept.setup[1])
-    if kept.first_month is not None:
-        fields["first_month"] = str(kept.first_month[1])
-    if kept.new_class is not None:
-        fields.update({"class": "new", "class_name": kept.new_class})
-    elif kept.same_class is not None:
-        for class_id, _, revision in review.class_question.existing:
-            if class_id == kept.same_class:
-                fields["class"] = f"{class_id}:{'none' if revision is None else revision}"
-    at = {key: position for position, key in enumerate(positions.keys)}
-    for answer in kept.matches:
-        position = at[answer.row_key]
-        if answer.chosen:
-            fields[f"choose.{position}"] = answer.result_id or ""
-            item = next(item for item in review.rows if item.key == answer.row_key)
-            if item.question is not None:
-                fields[f"match.{position}"] = "choose"
-        else:
-            fields[f"match.{position}"] = answer.result_id or "different"
-    if kept.use is not None:
-        fields["use"] = kept.use
-    return fields, frozenset(at[key] for key in kept.selection)
-
-
 @dataclass(frozen=True)
 class ReviewForm:
     """A review form read whole: its text, the reading and draft of that text, the positions,
@@ -1133,6 +1056,258 @@ async def review_form_of(request: Request, state: ApplicationState) -> ReviewFor
     )
 
 
+# ------------------------------------------------------------- what a returned review keeps
+
+ANSWER_NAMES: Final = frozenset(
+    {
+        "identity",
+        "setup",
+        "setup_year",
+        "setup_term",
+        "first_month",
+        "class",
+        "class_name",
+        "use",
+        "match",
+        "choose",
+        "select",
+    }
+)
+"""The bases of the names whose values answer the review: each answer no row's place decides,
+each row's radio and pick, and each tick. A row's offered lists are drawn again from the
+review, and an empty pick is its placeholder."""
+RowNow = tuple[bool, str | None, str | None]
+"""An item as a review page writes it now: whether it is selectable, and its row's candidates
+and choices as the page sends them, None where it sends none."""
+
+
+@dataclass(frozen=True)
+class Returning:
+    """What a returned review keeps a form's fields against: the form, the review as it reads
+    now, what of the answers and ticks still answers it where a save checked them (None where
+    nothing was checked against the record), whether a chosen class whose revision moved is
+    shown at its current one, and each item as the page writes it now."""
+
+    form: ReviewForm
+    review: GradeReview
+    still: StillAsked | None
+    rewrite_class: bool
+    rows_now: Mapping[int, RowNow]
+
+    @property
+    def answered(self) -> dict[str, MatchAnswer]:
+        """Each row's answer as sent, by the row's key."""
+        answers = self.form.posted.answers
+        return {} if answers is None else {answer.row_key: answer for answer in answers.matches}
+
+
+def names_offered(status: IdentityStatus) -> frozenset[str]:
+    """The answers about the line a review page offers: those a save takes, and "Not hers"
+    wherever the page asks."""
+    offered = set(ANSWERS_FOR[status])
+    if status is not IdentityStatus.MATCHES:
+        offered.add(IdentityAnswer.NOT_HERS)
+    return frozenset(answer.value for answer in offered)
+
+
+def identity_kept(at: Returning, name: str, value: str) -> str | None:
+    """The answer about the name, while the line it answered is the line read now and the page
+    offers that answer."""
+    identity = at.review.identity
+    if at.form.free.identity_form != identity.form:
+        return None
+    return value if value in names_offered(identity.status) else None
+
+
+def setup_kept(at: Returning, name: str, value: str) -> str | None:
+    """The setup's choice and its year and term as typed, while the setup is asked."""
+    return value if at.review.setup is not None else None
+
+
+def month_kept(at: Returning, name: str, value: str) -> str | None:
+    """The month as sent, untouched or "Not sure yet" alike, while the month is asked."""
+    return value if at.review.first_month is not None else None
+
+
+def class_kept(at: Returning, name: str, value: str) -> str | None:
+    """The class chosen, while the class is asked and the choice offered: a new one as sent, and
+    the same class as sent at its revision now, or at its current one where ``rewrite_class``."""
+    question = at.review.class_question
+    if question.matched is not None:
+        return None
+    if value == "new":
+        return value
+    chosen = value.partition(":")[0]
+    for class_id, _, revision in question.existing:
+        if class_id == chosen:
+            now = f"{class_id}:{'none' if revision is None else revision}"
+            return now if now == value or at.rewrite_class else None
+    return None
+
+
+def class_name_kept(at: Returning, name: str, value: str) -> str | None:
+    """The class's name as typed, while the class is asked, whatever class is chosen."""
+    return value if at.review.class_question.matched is None else None
+
+
+def use_kept(at: Returning, name: str, value: str) -> str | None:
+    """The use chosen, while the use is asked."""
+    return value if at.review.use is not None else None
+
+
+def row_kept(at: Returning, name: str, value: str) -> str | None:
+    """A row's field or an item's tick: never after a changed text; where nothing was checked
+    against the record, a row's fields while its lists as sent are the review's now and a tick
+    while its item is selectable; otherwise exactly when what it carries still answers."""
+    base, _, place = name.partition(".")
+    position = int(place)
+    if at.form.text_changed:
+        return None
+    selectable, candidates, choices = at.rows_now.get(position, (False, None, None))
+    if at.still is None:
+        if base == "select":
+            return value if selectable else None
+        fields = at.form.fields
+        sent = (fields.get(f"candidates.{position}"), fields.get(f"choices.{position}"))
+        return value if sent == (candidates, choices) else None
+    key = at.form.positions.keys[position]
+    if base == "select":
+        return value if key in at.still.selection else None
+    answer = at.answered.get(key)
+    return value if answer is not None and answer in at.still.matches else None
+
+
+KEPT_BY: Final[Mapping[str, Callable[[Returning, str, str], str | None]]] = {
+    "identity": identity_kept,
+    "setup": setup_kept,
+    "setup_year": setup_kept,
+    "setup_term": setup_kept,
+    "first_month": month_kept,
+    "class": class_kept,
+    "class_name": class_name_kept,
+    "use": use_kept,
+    "select": row_kept,
+    "candidates": row_kept,
+    "choices": row_kept,
+    "match": row_kept,
+    "choose": row_kept,
+}
+"""What decides whether a returned review keeps each name the form sends, but those the review
+mints again: the question it answers, asked now and still offering it."""
+
+
+def rows_now(review: GradeReview, draft: GradeReportDraft) -> dict[int, RowNow]:
+    """Each item of ``review`` by its position, as its page writes it."""
+    now: dict[int, RowNow] = {}
+    for shown in shown_items(review, draft):
+        item = shown.item
+        asks = shown.selectable
+        now[shown.position] = (
+            asks,
+            " ".join(item.question.ids) if asks and item.question is not None else None,
+            " ".join(item.choices) if asks and item.choices else None,
+        )
+    return now
+
+
+def answers_of(fields: Mapping[str, str]) -> dict[str, str]:
+    """The answers among ``fields``: every name on an answer's base but an empty pick, a class
+    by its ID alone."""
+    return {
+        name: value.partition(":")[0] if name == "class" else value
+        for name, value in fields.items()
+        if name.partition(".")[0] in ANSWER_NAMES and not (name.startswith("choose.") and not value)
+    }
+
+
+@dataclass(frozen=True)
+class Kept:
+    """What a returned review shows of a form: the fields it keeps, the ticks (None for the
+    review's own), and what it says of the answers."""
+
+    fields: dict[str, str]
+    ticks: frozenset[int] | None
+    sentence: str
+
+
+def kept_on_return(
+    form: ReviewForm,
+    review: GradeReview,
+    still: StillAsked | None,
+    *,
+    rewrite_class: bool,
+    source: bool,
+) -> Kept:
+    """The form's fields a returned review keeps, each as sent while the question it answers is
+    asked now and still offers it, and dropped otherwise; "Your text and answers are kept."
+    only when every answer sent is kept and ``source`` doesn't say the text changed."""
+    at = Returning(form, review, still, rewrite_class, rows_now(review, form.draft))
+    fields: dict[str, str] = {}
+    for name, value in form.fields.items():
+        decides = KEPT_BY.get(name.partition(".")[0])
+        kept = None if decides is None else decides(at, name, value)
+        if kept is not None:
+            fields[name] = kept
+    ticks = None
+    if not form.text_changed:
+        ticks = frozenset(
+            int(name.partition(".")[2]) for name in fields if name.startswith("select.")
+        )
+    every = not source and answers_of(fields) == answers_of(form.fields)
+    return Kept(fields, ticks, BOTH_KEPT if every else TEXT_KEPT_ANSWER_AGAIN)
+
+
+def rows_changed(form: ReviewForm, review: GradeReview, answers: GradeAnswers) -> bool:
+    """Whether a row answer ``review`` doesn't take was sent from a row whose lists aren't the
+    ones the review offers now."""
+    now = rows_now(review, form.draft)
+    at = {key: position for position, key in enumerate(form.positions.keys)}
+    fields = form.fields
+    for answer in answers.matches:
+        if matches_asked(review, (answer,)):
+            continue
+        position = at[answer.row_key]
+        sent = (fields.get(f"candidates.{position}"), fields.get(f"choices.{position}"))
+        if sent != now[position][1:]:
+            return True
+    return False
+
+
+def answers_why(form: ReviewForm, review: GradeReview, answers: GradeAnswers) -> str:
+    """Why the answers don't fit the review a save returned, from each check they fail in the
+    save's order: one whose question the page asked otherwise than the review asks it now
+    doesn't fit; then a setup both ask, sent unanswered, is a damaged form; then a class both
+    ask, left unanswered, is to be chosen. A failure none of these names doesn't fit."""
+    fields = form.fields
+    question = review.class_question
+    failing: list[str | None] = []
+    if not identity_asked(review, answers):
+        failing.append(ANSWER_DOESNT_FIT)
+    if not setup_asked(review, answers):
+        asked = "setup_year" in fields
+        if asked != (review.setup is not None):
+            failing.append(ANSWER_DOESNT_FIT)
+        else:
+            failing.append(NOT_WHOLE if asked and answers.setup is None else None)
+    if not first_month_asked(review, answers):
+        failing.append(ANSWER_DOESNT_FIT if "first_month" in fields else None)
+    if not class_asked(review, answers):
+        asked = "class_name" in fields
+        offered = {class_id for class_id, _, _ in question.existing}
+        unanswered = answers.new_class is None and answers.same_class is None
+        if asked != (question.matched is None) or answers.same_class not in {None, *offered}:
+            failing.append(ANSWER_DOESNT_FIT)
+        else:
+            failing.append(CHOOSE_CLASS if asked and unanswered else None)
+    if not matches_asked(review, answers.matches):
+        failing.append(ANSWER_DOESNT_FIT if rows_changed(form, review, answers) else None)
+    if not use_asked(review, answers.use):
+        failing.append(ANSWER_DOESNT_FIT)
+    if not failing or None in failing or ANSWER_DOESNT_FIT in failing:
+        return ANSWER_DOESNT_FIT
+    return NOT_WHOLE if NOT_WHOLE in failing else CHOOSE_CLASS
+
+
 def review_page(
     request: Request,
     state: ApplicationState,
@@ -1180,7 +1355,7 @@ def retry_page(request: Request, state: ApplicationState, form: ReviewForm, said
         "grade_retry.html",
         {
             "said": said,
-            "kept_sentence": BOTH_KEPT,
+            "kept_sentence": TEXT_KEPT_ANSWER_AGAIN if form.text_changed else BOTH_KEPT,
             "text": form.text,
             "fields": {name: value for name, value in form.fields.items() if name != "report_text"},
             "save": SAVE,
@@ -1276,8 +1451,8 @@ def returned_page(
             complete=form.complete,
             same_class=form.free.same_class,
         )
-        kept = kept_of(state, form, review, answers, outcome.uncovered or posted.selection, key)
-        fields, ticks = kept_fields(kept, review, form.draft, form.positions)
+        still = kept_of(state, form, review, answers, outcome.uncovered or posted.selection, key)
+        kept = kept_on_return(form, review, still, rewrite_class=True, source=False)
         left = titles(review, form.draft, outcome.uncovered) if outcome.uncovered else None
         return review_page(
             request,
@@ -1285,13 +1460,11 @@ def returned_page(
             form,
             review,
             said=SAVED_ELSEWHERE,
-            fields=fields,
-            ticks=ticks,
+            fields=kept.fields,
+            ticks=kept.ticks,
             recorded=outcome_address(outcome.saved.acceptance_id),
             left_out=left,
-            kept_sentence=(
-                BOTH_KEPT if all_kept(kept, answers, posted.selection) else TEXT_KEPT_ANSWER_AGAIN
-            ),
+            kept_sentence=kept.sentence,
         )
     if isinstance(outcome, GradeReview):
         return review_page(request, state, form, outcome, fields=form.fields, ticks=ticks_of(form))
@@ -1312,32 +1485,38 @@ def returned_page(
             status_code=422,
         )
     if outcome.why is ReturnReason.ANSWERS:
-        typos = still_typos(review, answers)
-        if typos is not None:
+        why = answers_why(form, review, answers)
+        if why == NOT_WHOLE:
+            return paste_page(request, state, text=form.text, said=NOT_WHOLE, status_code=422)
+        if why == CHOOSE_CLASS:
             return review_page(
                 request,
                 state,
                 form,
                 review,
                 said=CORRECT_THE_MARKED,
-                problems=typos,
+                problems=(CHOOSE_CLASS,),
                 fields=form.fields,
                 ticks=ticks_of(form),
                 status_code=422,
             )
-    kept = kept_of(state, form, review, answers, posted.selection, key)
-    fields, ticks = kept_fields(kept, review, form.draft, form.positions)
-    every = outcome.why is not ReturnReason.SOURCE and all_kept(kept, answers, posted.selection)
-    kept_sentence = BOTH_KEPT if every else TEXT_KEPT_ANSWER_AGAIN
+    still = kept_of(state, form, review, answers, posted.selection, key)
+    kept = kept_on_return(
+        form,
+        review,
+        still,
+        rewrite_class=outcome.why is ReturnReason.REVISION,
+        source=outcome.why is ReturnReason.SOURCE,
+    )
     return review_page(
         request,
         state,
         form,
         review,
         said=RETURNED[outcome.why],
-        fields=fields,
-        ticks=ticks,
-        kept_sentence=kept_sentence,
+        fields=kept.fields,
+        ticks=kept.ticks,
+        kept_sentence=kept.sentence,
         status_code=409,
     )
 
@@ -1358,9 +1537,8 @@ def changed_text(
 ) -> Response:
     """The answer to a form whose text isn't the one its page carried, as a save answers a
     changed report: the text as sent reviewed fresh in the class the page chose, keeping the
-    answers that still answer it, or with no answer about the name the fields as sent, every
-    row as a fresh review shows it, and nothing written."""
-    answers = form.posted.answers
+    answers no row decides that still answer it, every row as a fresh review shows it, and
+    nothing written."""
     review = state.project_state.review_grade_report(
         form.draft,
         capture_key(form.draft),
@@ -1368,18 +1546,16 @@ def changed_text(
         complete=form.complete,
         same_class=form.free.same_class,
     )
-    fields = form.fields
-    if answers is not None:
-        kept = kept_of(state, form, review, answers, form.posted.selection, key)
-        fields, _ = kept_fields(kept, review, form.draft, form.positions)
+    kept = kept_on_return(form, review, None, rewrite_class=False, source=True)
     return review_page(
         request,
         state,
         form,
         review,
         said=TEXT_CHANGED,
-        fields=fields,
-        kept_sentence=TEXT_KEPT_ANSWER_AGAIN,
+        fields=kept.fields,
+        ticks=kept.ticks,
+        kept_sentence=kept.sentence,
         status_code=409,
     )
 
@@ -1408,6 +1584,7 @@ def refused_answers(
         source_key=posted.page.source_key,
     )
     unanswered = f"{NOTHING_SAVED} {ANSWER_THE_NAME}"
+    kept = kept_on_return(form, review, None, rewrite_class=False, source=False)
     return review_page(
         request,
         state,
@@ -1416,8 +1593,9 @@ def refused_answers(
         said=unanswered if posted.answers is None else CORRECT_THE_MARKED,
         problems=posted.problems,
         to_resolve=posted.to_resolve,
-        fields=form.fields,
-        ticks=ticks_of(form),
+        fields=kept.fields,
+        ticks=kept.ticks,
+        kept_sentence=kept.sentence,
         status_code=422,
     )
 
