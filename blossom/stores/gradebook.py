@@ -108,6 +108,7 @@ from blossom.grades.review import (
     rejected_text,
     review_from,
     row_key,
+    rows_still_asking,
     use_asked,
 )
 
@@ -1395,13 +1396,9 @@ class GradebookRecords:
             if not isinstance(checked, tuple):
                 return checked
             into, settled = checked
-            # A value goes back to one a newer report replaced only under the parent's choice
-            # of current, and only when the page showed it as matching an earlier saved value.
-            allowed = settled.ready
-            if answers.use == "current":
-                allowed |= into.back_to & settled.back_to
-            if not chosen <= allowed:
-                return ReviewReturned(into, ReturnReason.SELECTION)
+            refused = _selection_refused(into, settled, answers, chosen)
+            if refused is not None:
+                return refused
             use: ReportUse = answers.use or (
                 "current" if settled.use is None else settled.use.default
             )
@@ -1430,9 +1427,9 @@ class GradebookRecords:
         selection: Collection[str],
     ) -> SaveOutcome | GradeReview:
         """The save's own checks of a page, in its order, writing nothing: a recorded acceptance
-        ID's outcome, "Not hers", or the review returned and why; otherwise the review with the
-        answers applied, each row keeping the choices it offered, under the page's own acceptance
-        ID and revision. A read alone."""
+        ID's outcome, "Not hers", or the review returned and why, a tick the save can't take
+        among them; otherwise the review with the answers applied, each row keeping the choices
+        it offered, under the page's own acceptance ID and revision. A read alone."""
         with self._lock:
             student_id = self._her_name_record()[0]
             checked = self._checked(
@@ -1448,6 +1445,9 @@ class GradebookRecords:
         if not isinstance(checked, tuple):
             return checked
         into, settled = checked
+        refused = _selection_refused(into, settled, answers, frozenset(selection))
+        if refused is not None:
+            return refused
         offered = {item.key: item.choices for item in into.rows}
         rows = tuple(
             item if item.choices else replace(item, choices=offered.get(item.key, ()))
@@ -2416,3 +2416,20 @@ def _confirmer(role: str) -> ConfirmedBy:
         msg = "only a parent, or the household with the sign-in off, changes grade records"
         raise ValueError(msg)
     return cast(ConfirmedBy, role)
+
+
+def _selection_refused(
+    into: GradeReview, settled: GradeReview, answers: GradeAnswers, chosen: frozenset[str]
+) -> ReviewReturned | None:
+    """The review returned when ``chosen`` ticks a value a save can't take, naming the ticks
+    refused and those of them on rows still asking; None when it takes them all."""
+    # A value goes back to one a newer report replaced only under the parent's choice of
+    # current, and only when the page showed it as matching an earlier saved value.
+    allowed = settled.ready
+    if answers.use == "current":
+        allowed |= into.back_to & settled.back_to
+    refused = chosen - allowed
+    if not refused:
+        return None
+    asking = refused & rows_still_asking(settled)
+    return ReviewReturned(into, ReturnReason.SELECTION, refused, asking)
