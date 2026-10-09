@@ -1340,15 +1340,24 @@ class GradebookRecords:
             return NameConfirmedAgain(identity.form)
 
     def review_grade_report(
-        self, draft: GradeReportDraft, source_key: str, *, key: bytes, complete: bool = False
+        self,
+        draft: GradeReportDraft,
+        source_key: str,
+        *,
+        key: bytes,
+        complete: bool = False,
+        same_class: str | None = None,
     ) -> GradeReview:
         """What saving ``draft`` would do, under a fresh acceptance ID: the identity of its
         line, its setup questions, the scope revision, each value's status, and the
-        report-level choice. ``complete`` is ``reading_complete`` of the reading the draft came
-        from; a reading not known complete never offers the choice for absence alone. A read
-        alone."""
+        report-level choice, the statuses read in ``same_class`` when no alias matched and it
+        is one of the year's classes. ``complete`` is ``reading_complete`` of the reading the
+        draft came from; a reading not known complete never offers the choice for absence
+        alone. A read alone."""
         with self._lock:
-            return self._review_locked(draft, source_key, key, same_class=None, complete=complete)
+            return self._review_locked(
+                draft, source_key, key, same_class=same_class, complete=complete
+            )
 
     def current_values(self, class_id: str, term: str) -> CurrentValues:
         """Each target's current value in her class and term, the term however its label is

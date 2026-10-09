@@ -1604,6 +1604,148 @@ def test_a_check_of_a_changed_text_says_so_and_writes_nothing(tmp_path: pathlib.
     assert after == before
 
 
+LINES = REPORT.split("\n")
+STRAY = "\n".join([*LINES[:8], "A stray line", *LINES[8:]])
+"""Wren's report with a line Blossom doesn't recognize between its header and its Term Grade
+row, so its reading isn't complete."""
+CHANGED_ALIKE = {
+    "stray line left out": (STRAY, REPORT),
+    "spaces in a cell": (
+        REPORT,
+        REPORT.replace("| Seed Germination Log | 18.0    |", "| Seed Germination Log |  18.0   |"),
+    ),
+    "blank line added": (REPORT, REPORT.replace("**PERCENT**\n", "**PERCENT**\n\n", 1)),
+    "line added": (REPORT, REPORT + "Printed for the family\n"),
+}
+"""A text reviewed and the text sent back in its place, each read to the same capture key."""
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize(("shown", "sent"), list(CHANGED_ALIKE.values()), ids=list(CHANGED_ALIKE))
+def test_a_text_changed_but_read_alike_says_so_and_writes_nothing(
+    route: str, shown: str, sent: str, tmp_path: pathlib.Path
+) -> None:
+    """The form binds the text it carried, not only its reading: a reading the page showed as
+    incomplete, sent back without its stray line, isn't saved as complete."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        page = review_page(browser, shown)
+        form = answered(page)
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data={**form, "report_text": sent}, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+    draft = read_grade_report(sent).draft
+    assert draft is not None
+
+    assert capture_key(draft) == form["source_key"]
+    assert answer.status_code == 409, answer.text[:300]
+    assert problem_said(answer.text) == (
+        "The report text changed. Nothing was saved. Review the text again. Your text is kept. "
+        "Check the answers again."
+    )
+    returned = sent_from(answer.text)
+    assert returned["report_text"] == sent
+    assert returned["acceptance_id"] != form["acceptance_id"]
+    assert returned["identity"] == "hers"
+    if shown == STRAY:
+        assert "Lines Blossom didn" in page
+        assert "Lines Blossom didn" not in answer.text
+    assert after == before
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("before_it", ["name unanswered", "not hers", "saved"])
+def test_a_changed_text_is_answered_before_anything_else_the_form_says(
+    route: str, before_it: str, tmp_path: pathlib.Path
+) -> None:
+    """The text is checked before the name's answer, "Not hers" or a recorded save is read."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        form = sent_from(review_page(browser, STRAY))
+        if before_it == "not hers":
+            form["identity"] = "not_hers"
+        if before_it == "saved":
+            form = answered(review_page(browser, STRAY))
+            assert browser.post(SAVE, data=form, headers=PAGE).status_code == 303
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data={**form, "report_text": REPORT}, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 409, answer.text[:300]
+    assert escape(grade_routes.TEXT_CHANGED) in answer.text
+    assert sent_from(answer.text)["report_text"] == REPORT
+    assert after == before
+
+
+def test_a_changed_text_the_secret_kept_from_a_check_is_answered_when_sent_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry page sends the form back as it came, so the key of the text its page carried
+    still meets the changed text on the next save."""
+    with at(open_household(tmp_path)) as browser:
+        form = answered(review_page(browser, STRAY))
+        del browser.app.state.grade_name_key  # type: ignore[attr-defined]
+        unreadable(tmp_path, monkeypatch)
+        retry = browser.post(SAVE, data={**form, "report_text": REPORT}, headers=PAGE)
+        monkeypatch.undo()
+        again = browser.post(SAVE, data=sent_from(retry.text), headers=PAGE)
+
+    assert retry.status_code == 500
+    assert sent_from(retry.text) == {**form, "report_text": REPORT}
+    assert again.status_code == 409
+    assert escape(grade_routes.TEXT_CHANGED) in again.text
+
+
+ROUND_TRIPS = {
+    "line feeds": REPORT,
+    "carriage returns": as_a_browser_sends({"text": REPORT})["text"],
+    "a leading line break": as_a_browser_sends({"text": "\n" + REPORT})["text"],
+    "trailing spaces": "\r\n".join(f"{line}  \t" for line in LINES),
+    "letters, < and &": REPORT.replace("Seed Germination Log", "Señal & <Growth> Log &amp;"),
+    "tabs": as_a_browser_sends(
+        {
+            "text": "\n"
+            + (FIXTURES / "grade_clipboard" / "science-grade-report.txt").read_bytes().decode()
+        }
+    )["text"],
+}
+"""Texts as a review may receive them, each sent back by a browser with its line breaks as a
+carriage return and a line feed."""
+
+
+@pytest.mark.parametrize("text", list(ROUND_TRIPS.values()), ids=list(ROUND_TRIPS))
+def test_a_text_sent_back_as_it_came_never_reads_as_changed(
+    text: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every page that carries the text sends back the same text: the review, the page asking
+    about the name, the check, and the retry page, each to Check and to Save."""
+
+    def refused(*args: object, **kwargs: object) -> None:
+        said = "refused"
+        raise GradeReportNotSaved(said)
+
+    def sent(page: str) -> dict[str, str]:
+        return as_a_browser_sends(sent_from(page))
+
+    with at(open_household(tmp_path)) as browser:
+        review = review_page(browser, text)
+        asked = browser.post(CHECK, data=sent(review), headers=PAGE)
+        checked = browser.post(CHECK, data=as_a_browser_sends(answered(asked.text)), headers=PAGE)
+        monkeypatch.setattr(store_of(browser), "save_grade_report", refused)
+        retry = browser.post(SAVE, data=sent(checked.text), headers=PAGE)
+        monkeypatch.undo()
+        rechecked = browser.post(CHECK, data=sent(retry.text), headers=PAGE)
+        saved = browser.post(SAVE, data=sent(retry.text), headers=PAGE)
+
+    assert (asked.status_code, checked.status_code, retry.status_code) == (422, 200, 500)
+    assert (rechecked.status_code, saved.status_code) == (200, 303), rechecked.text[:300]
+    for answer in (asked, checked, retry, rechecked):
+        assert escape(grade_routes.TEXT_CHANGED) not in answer.text
+        assert sent_from(answer.text)["report_text"].replace("\r\n", "\n") == text.replace(
+            "\r\n", "\n"
+        )
+
+
 def test_no_typed_answer_reaches_a_log_or_an_address(
     tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -2400,7 +2542,14 @@ def test_every_name_the_form_may_send_comes_from_the_table(tmp_path: pathlib.Pat
     positions = positions_on(reviewed(tmp_path))
 
     always = {name for name, field in grade_routes.FORM.items() if field.where == "always"}
-    assert always == {"report_text", "acceptance_id", "revision", "source_key", "identity_form"}
+    assert always == {
+        "report_text",
+        "acceptance_id",
+        "revision",
+        "source_key",
+        "text_key",
+        "identity_form",
+    }
     assert {name.split(".")[0] for name in positions.names} == set(grade_routes.FORM)
     assert "select.8" in positions.names
     assert "match.4" not in positions.names
@@ -2428,7 +2577,18 @@ def test_every_id_and_key_the_store_mints_fits_its_pattern(tmp_path: pathlib.Pat
     assert gradebook.ACCEPTANCE_ID.fullmatch(gradebook.new_acceptance_id())
     assert grade_drafts.HEX_KEY.fullmatch(capture_key(draft))
     assert grade_drafts.HEX_KEY.fullmatch(name_form(key, "Bramble, Wren"))
+    assert grade_drafts.HEX_KEY.fullmatch(grade_routes.text_key(REPORT))
     assert vars(grade_routes)["ACCEPTANCE_ID"] is gradebook.ACCEPTANCE_ID
+
+
+def test_the_text_key_reads_line_breaks_alike_and_every_other_character_as_sent() -> None:
+    keyed = grade_routes.text_key
+
+    assert keyed("a\r\nb\rc\n") == keyed("a\nb\nc\n") == keyed("a\r\nb\r\nc\r\n")
+    assert keyed("\na") != keyed("a") != keyed("a ") != keyed("a\t")
+    assert keyed("a\n\nb") != keyed("a\nb")
+    assert keyed("&lt;") != keyed("<")
+    assert keyed("a\x00b") == keyed("a\ufffdb")
 
 
 def malformed(field: str, value: str) -> list[str | None]:
