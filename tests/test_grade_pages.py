@@ -5841,6 +5841,100 @@ def test_a_page_from_before_the_school_year_turned_is_refused_and_writes_nothing
     assert rows == []
 
 
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "a new connection",
+        "another class",
+        "a parent's connection removed",
+        "a name matched by name removed",
+        "the same answer sent again",
+        "two pages",
+    ],
+)
+def test_a_school_year_that_turns_as_an_answer_arrives_refuses_it_and_writes_nothing(
+    kind: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The current school year changes after the answer arrives and before the record's write.
+    The write itself checks the year the page was for, so every kind of answer is refused and
+    each year's rows read the same."""
+    this_year, last_year = ("2026-2027", "T1"), ("2025-2026", "T3")
+    earlier = draft_of(REPORT.replace("**2026-2027**", "**2025-2026**").replace("**T1**", "**T3**"))
+    homework = ("08 Geometry", "Geometry")
+    settings = open_household(tmp_path)
+    with naming(settings, NAMES_BIOLOGY, NAMES_GEOMETRY, earlier, homework=homework) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        geometry = capture_class(store, NAMES_GEOMETRY)
+        assert store.grade_contexts().current == this_year
+        store.set_current_context(this_year, last_year, "parent")
+        store.connect_homework_class(
+            last_year[0], "English", shown=None, chosen=capture_class(store, earlier), role="parent"
+        )
+        store.set_current_context(last_year, this_year, "parent")
+        first = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+        if kind not in ("a new connection", "a name matched by name removed", "two pages"):
+            connected = browser.post(HOMEWORK_CLASSES, data=sent_by(first[3], **{"class": biology}))
+            assert connected.status_code == 303
+        second = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+        presses = {
+            "a new connection": [(first[3], biology)],
+            "another class": [(second[3], geometry)],
+            "a parent's connection removed": [(second[3], NOT_CONNECTED_OPTION)],
+            "a name matched by name removed": [(first[0], NOT_CONNECTED_OPTION)],
+            "the same answer sent again": [(first[3], biology)],
+            "two pages": [(first[3], biology), (second[4], geometry)],
+        }[kind]
+        before = as_stored(store, MAPPING)
+        write = store.connect_homework_class
+
+        def turned_first(
+            year: str, name: str, *, shown: str | None, chosen: str, role: gradebook.ConfirmedBy
+        ) -> gradebook.HomeworkClassOutcome:
+            store.set_current_context(this_year, last_year, "parent")
+            return write(year, name, shown=shown, chosen=chosen, role=role)
+
+        monkeypatch.setattr(store, "connect_homework_class", turned_first)
+        answers = [
+            browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": chosen}))
+            for block, chosen in presses
+        ]
+        after = as_stored(store, MAPPING)
+        current = store.grade_contexts().current
+
+    def of_year(rows: list[tuple[object, ...]], year: str) -> list[tuple[object, ...]]:
+        return [row for row in rows if row[1] == year.encode()]
+
+    assert [name_of(first[place]) for place in (0, 3, 4)] == ["08 Geometry", "Geometry", "Science"]
+    assert current == last_year
+    assert [answer.status_code for answer in answers] == [409] * len(presses)
+    assert [words(answer.text).count(NAME_CHANGED) for answer in answers] == [1] * len(presses)
+    assert len(of_year(before, last_year[0])) == 1
+    assert of_year(after, last_year[0]) == of_year(before, last_year[0])
+    assert of_year(after, this_year[0]) == of_year(before, this_year[0])
+    assert after == before
+
+
+def test_a_chooser_s_label_writes_its_name_as_its_heading_does(tmp_path: pathlib.Path) -> None:
+    """A name is authored text in both places, so a long word breaks inside the label as it
+    does inside the heading, and the label's words stay one line of text around it."""
+    long_word = "Interdisciplinaryhumanitieslab"
+    with naming(open_household(tmp_path), NAMES_BIOLOGY, homework=(long_word,)) as browser:
+        blocks = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+    written = []
+    for block in blocks:
+        heading = re.search(r'<h2 id="name-\d+" tabindex="-1">(.*?)</h2>', block, flags=re.DOTALL)
+        label = re.search(
+            r'<label for="class-\d+"><span>Class for (.*?)</span></label>', block, flags=re.DOTALL
+        )
+        assert heading is not None, block
+        assert label is not None, block
+        written.append((heading[1], label[1]))
+
+    assert f'<span class="authored-text">{long_word}</span>' in [name for name, _ in written]
+    assert [in_label for _, in_label in written] == [name for name, _ in written]
+
+
 def test_removing_a_connection_returns_the_name_to_waiting_and_writes_nothing_else(
     tmp_path: pathlib.Path,
 ) -> None:

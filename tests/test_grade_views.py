@@ -548,6 +548,90 @@ def test_connecting_refuses_a_class_year_or_name_that_isn_t_on_record(
     assert after[MAPPING] == []
 
 
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "a new connection",
+        "another class",
+        "a parent's connection removed",
+        "a name matched by name removed",
+        "the same answer sent again",
+    ],
+)
+def test_an_answer_for_a_year_on_record_that_isn_t_current_writes_nothing_whatever_its_kind(
+    kind: str, tmp_path: pathlib.Path
+) -> None:
+    """The write compares the year an answer is for with the current school year inside its
+    own transaction, before anything else about the answer."""
+    store = opened(tmp_path)
+    saved(store, WREN, GEOMETRY, EARLIER_YEAR)
+    with_homework(store, "Geometry", "08 Geometry", "Art")
+    biology, geometry = capture_class(store, WREN), capture_class(store, GEOMETRY)
+    connected = store.connect_homework_class(
+        YEAR, "Geometry", shown=None, chosen=biology, role="parent"
+    )
+    name, shown, chosen = {
+        "a new connection": ("Art", None, biology),
+        "another class": ("Geometry", biology, geometry),
+        "a parent's connection removed": ("Geometry", biology, gradebook.UNCONNECTED),
+        "a name matched by name removed": ("08 Geometry", None, gradebook.UNCONNECTED),
+        "the same answer sent again": ("Geometry", None, biology),
+    }[kind]
+    turned = store.set_current_context((YEAR, "T1"), ("2025-2026", "T3"), "parent")
+    before = grade_tables(store)
+    outcome = store.connect_homework_class(YEAR, name, shown=shown, chosen=chosen, role="parent")
+    after = grade_tables(store)
+    back = store.set_current_context(("2025-2026", "T3"), (YEAR, "T1"), "parent")
+    while_current = store.connect_homework_class(
+        YEAR, name, shown=shown, chosen=chosen, role="parent"
+    )
+    store.close()
+
+    assert connected == gradebook.HomeworkClassConnected(biology)
+    assert turned == ContextSet(("2025-2026", "T3"))
+    assert after == before
+    assert len(after[MAPPING]) == 1
+    assert outcome == gradebook.HomeworkYearNotCurrent("2025-2026")
+    assert back == ContextSet((YEAR, "T1"))
+    assert (
+        type(while_current)
+        is {
+            "a new connection": gradebook.HomeworkClassConnected,
+            "another class": gradebook.HomeworkClassConnected,
+            "a parent's connection removed": gradebook.HomeworkClassRemoved,
+            "a name matched by name removed": gradebook.HomeworkClassRemoved,
+            "the same answer sent again": gradebook.HomeworkClassStood,
+        }[kind]
+    )
+
+
+def test_an_answer_with_no_current_year_is_refused_as_its_year_is_or_isn_t_on_record(
+    tmp_path: pathlib.Path,
+) -> None:
+    """With no current year and term on record, an answer for a year with a term on record is
+    one for a year that isn't current, and any other year isn't on record."""
+    store = opened(tmp_path)
+    saved(store, WREN)
+    with_homework(store, "Biology")
+    biology = capture_class(store, WREN)
+    store._connection.execute("DELETE FROM grade_context")
+    store._connection.commit()
+    before = grade_tables(store)
+    outcome = store.connect_homework_class(
+        YEAR, "Biology", shown=None, chosen=biology, role="parent"
+    )
+    with pytest.raises(gradebook.HomeworkClassNotOnRecord):
+        store.connect_homework_class(
+            "2024-2025", "Biology", shown=None, chosen=biology, role="parent"
+        )
+    after = grade_tables(store)
+    store.close()
+
+    assert outcome == gradebook.HomeworkYearNotCurrent(None)
+    assert after == before
+    assert after[MAPPING] == []
+
+
 def test_g3a_i1_connecting_a_name_changes_only_the_mapping_table(tmp_path: pathlib.Path) -> None:
     """Every other table, the stored class names and assignment IDs included, reads byte for
     byte the same after a name is connected, sent again, changed and sent from a stale page."""

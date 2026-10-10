@@ -112,6 +112,7 @@ from blossom.stores.gradebook import (
     GradeTransactionLost,
     HomeworkClassChanged,
     HomeworkClassNotOnRecord,
+    HomeworkYearNotCurrent,
     NamedClass,
     Term,
     TermNotOnRecord,
@@ -2299,8 +2300,9 @@ def homework_class_names(request: Request, state: State) -> Response:
 @family_router.post("/homework-classes", response_class=HTMLResponse)
 async def connect_homework_class(request: Request, state: State) -> Response:
     """Route 11: a parent's answer that one homework class name is one class of the current
-    school year, or the removal of its connection, applied only while the answer the page
-    showed is the one on record. A save returns to its own name's heading; a refusal writes
+    school year, or the removal of its connection, applied only while the page's school year
+    is the current one and the answer the page showed is the one on record, both decided by
+    the record inside its write. A save returns to its own name's heading; a refusal writes
     nothing."""
     fields, whole = await fields_of(request, NAME_FIELDS)
     year, name = fields.get("year", ""), fields.get("name", "")
@@ -2314,11 +2316,6 @@ async def connect_homework_class(request: Request, state: State) -> Response:
     ):
         return refused(said=CHOOSE_A_CLASS, status_code=422)
     store = state.project_state
-    contexts = store.grade_contexts()
-    if contexts.current is None or contexts.current[0] != year:
-        if any(on_record == year for on_record, _ in contexts.terms):
-            return refused(said=NAME_CHANGED, status_code=409)
-        return refused(said=CHOOSE_A_CLASS, status_code=422)
     try:
         async with state.decision_lock:
             outcome = store.connect_homework_class(
@@ -2336,7 +2333,7 @@ async def connect_homework_class(request: Request, state: State) -> Response:
     except GradeReportNotSaved as error:
         logger.warning("A homework class name was not connected: %s", type(error).__name__)
         return refused(said=NOT_SAVED, status_code=500)
-    if isinstance(outcome, HomeworkClassChanged):
+    if isinstance(outcome, HomeworkClassChanged | HomeworkYearNotCurrent):
         return refused(said=NAME_CHANGED, status_code=409)
     listed = [key for key, _ in names_on_record(one.course for one in store.all_assignments())]
     key = name_key(name)

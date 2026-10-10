@@ -37,7 +37,7 @@
           <input type="hidden" name="name" value="{{ name.written }}">
           <input type="hidden" name="shown" value="{{ name.shown }}">
           <div class="field">
-            <label for="class-{{ loop.index }}">Class for {{ name.written }}</label>
+            <label for="class-{{ loop.index }}"><span>Class for <span class="authored-text">{{ name.written }}</span></span></label>
             <select id="class-{{ loop.index }}" name="class">
               {% if not name.class_id %}
                 <option value="" selected>Choose a class</option>

@@ -1384,8 +1384,9 @@ def class_for(label: str, mapping: HomeworkClasses) -> str | None:
 
 
 class HomeworkClassNotOnRecord(ValueError):
-    """A name connected to a class that isn't hers in that school year, a name no homework on
-    record carries, or a removal where the name has no class; nothing was written."""
+    """An answer for a school year that is neither current nor on record, a name connected to
+    a class that isn't hers in that school year, a name no homework on record carries, or a
+    removal where the name has no class; nothing was written."""
 
 
 @dataclass(frozen=True)
@@ -1416,8 +1417,21 @@ class HomeworkClassChanged:
     answer: str | None
 
 
+@dataclass(frozen=True)
+class HomeworkYearNotCurrent:
+    """The answer is for a school year on record that isn't the current one, as a page from
+    before the year turned sends it: ``current`` is the current school year, or None when
+    there is none. Nothing was written."""
+
+    current: str | None
+
+
 HomeworkClassOutcome = (
-    HomeworkClassConnected | HomeworkClassRemoved | HomeworkClassStood | HomeworkClassChanged
+    HomeworkClassConnected
+    | HomeworkClassRemoved
+    | HomeworkClassStood
+    | HomeworkClassChanged
+    | HomeworkYearNotCurrent
 )
 
 CorrectionKind = Literal["parent_assertion", "transcription"]
@@ -2345,16 +2359,26 @@ class GradebookRecords:
     ) -> HomeworkClassOutcome:
         """A parent's answer for the homework class name ``name`` in ``year``, one grade write
         that compares and sets the one row: her class ``chosen``, or ``UNCONNECTED``, which
-        removes the connection and leaves the name waiting until a parent connects it. It
-        applies only while the answer on record is ``shown``, the page's: None for no answer,
-        ``UNCONNECTED``, or a class. An answer already ``chosen`` stands, and any other is
-        ``HomeworkClassChanged``. The class must be hers in that year, a removal needs a class
-        to remove, and the name must fold to the class name of homework on record, read inside
-        the write's transaction, or it is ``HomeworkClassNotOnRecord``."""
+        removes the connection and leaves the name waiting until a parent connects it. Its
+        transaction reads the current school year first: for another year on record every
+        answer is ``HomeworkYearNotCurrent``. It applies only while the answer on record is
+        ``shown``, the page's: None for no answer, ``UNCONNECTED``, or a class. An answer
+        already ``chosen`` stands, and any other is ``HomeworkClassChanged``. The year must be
+        current or on record, the class hers in that year, a removal needs a class to remove,
+        and the name must fold to the class name of homework on record, read inside the same
+        transaction, or it is ``HomeworkClassNotOnRecord``."""
         by = _confirmer(role)
         key = name_key(name)
         with self._grade_write(_homework_class_refused):
             student_id = self._her_name_record()[0]
+            context = self._connection.execute(CURRENT_CONTEXT, (student_id,)).fetchone()
+            current = None if context is None else str(context[0])
+            if current != year:
+                terms = self._connection.execute(TERMS_ON_RECORD, (student_id,)).fetchall()
+                if all(str(on_record) != year for on_record, _, _ in terms):
+                    msg = "the school year is neither current nor on record"
+                    raise HomeworkClassNotOnRecord(msg)
+                return HomeworkYearNotCurrent(current)
             mapping = self._homework_classes(student_id, year)
             if chosen != UNCONNECTED and all(one.class_id != chosen for one in mapping.classes):
                 msg = "the class isn't hers in that school year"
