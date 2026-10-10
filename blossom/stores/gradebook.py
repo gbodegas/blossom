@@ -1367,9 +1367,9 @@ def name_key(label: str) -> str:
 def class_for(label: str, mapping: HomeworkClasses) -> str | None:
     """The class of ``mapping``'s year the homework class name ``label`` is. A parent's answer
     decides alone where there is one: its class when that is a class of the year, and none
-    where the connection was removed. With no answer it is the one class whose official name,
-    report code or report name equals the name but for capitalization and spaces. None when
-    it waits."""
+    where a parent took the connection away. With no answer it is the one class whose official
+    name, report code or report name equals the name but for capitalization and spaces. None
+    when it waits."""
     key = name_key(label)
     if key in mapping.answers:
         answered = mapping.answers[key]
