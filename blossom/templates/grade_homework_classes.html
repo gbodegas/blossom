@@ -1,0 +1,60 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% set page = "parent-grades" %}
+{% block title %}Blossom - Homework class names{% endblock %}
+{#
+  A parent's page: each class name the homework on record carries, once, with the class of the
+  current school year it is, by a parent's answer or by its own name, or that it waits, and a
+  chooser of its own. A name with a class has one more choice, which removes the connection:
+  the name then waits until a parent connects it again, whatever class it equals. How many
+  names wait is said here and on no other page. A save returns to
+  its own name's heading, which takes the focus, as a link to a card lands on its title. A
+  refusal is said at the name it is about, or first on the page when that name isn't listed.
+#}
+{% block content %}
+  <h1>Homework class names</h1>
+  {% if said and not said_at %}
+    <p class="problem" role="alert" id="problem">{{ said }}</p>
+  {% endif %}
+  {% if not options %}
+    <p>{{ no_reports }} {{ add_one }}</p>
+  {% else %}
+    <p>{{ introduction }}</p>
+    {% if waiting %}
+      <p>{{ waiting }}</p>
+      <p class="note">{{ classes_come }}</p>
+    {% endif %}
+    {% for name in names %}
+      <section class="panel grade-card" aria-labelledby="name-{{ loop.index }}">
+        <h2 id="name-{{ loop.index }}" tabindex="-1"><span class="authored-text">{{ name.written }}</span></h2>
+        <p>{% if name.class_id %}<span class="authored-text">{{ name.state }}</span>{% else %}{{ name.state }}{% endif %}</p>
+        {% if said and said_at == loop.index %}
+          <p class="problem" role="alert" id="problem">{{ said }}</p>
+        {% endif %}
+        <form method="post" action="{{ action }}">
+          <input type="hidden" name="year" value="{{ year }}">
+          <input type="hidden" name="name" value="{{ name.written }}">
+          <input type="hidden" name="shown" value="{{ name.shown }}">
+          <div class="field">
+            <label for="class-{{ loop.index }}">Class for {{ name.written }}</label>
+            <select id="class-{{ loop.index }}" name="class">
+              {% if not name.class_id %}
+                <option value="" selected>Choose a class</option>
+              {% endif %}
+              {% for class_id, label in options %}
+                <option value="{{ class_id }}"{% if class_id == name.class_id %} selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+              {% if name.class_id %}
+                <option value="{{ unconnected }}">{{ remove_connection }}</option>
+              {% endif %}
+            </select>
+          </div>
+          <div class="actions">
+            <button type="submit" class="secondary">Save</button>
+          </div>
+        </form>
+      </section>
+    {% endfor %}
+  {% endif %}
+{% endblock %}

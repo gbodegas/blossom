@@ -76,6 +76,7 @@ from tests.support import (
     PLAN_DATE,
     THEIRS,
     Chain,
+    answers_in,
     as_a_browser_sends,
     as_stored,
     capture_class,
@@ -87,6 +88,7 @@ from tests.support import (
     fixture_settings,
     form_values,
     grade_answers,
+    homework_named,
     rules_reaching,
     save_grade,
     signed_in,
@@ -114,6 +116,7 @@ HER_VIEW = "/student/grades/view"
 CURRENT_TERM = "/parent/grades/current-term"
 CLASS_AT = "/parent/grades/classes/{class_id}/terms/{n}"
 HER_CLASS_AT = "/student/grades/classes/{class_id}/terms/{n}"
+HOMEWORK_CLASSES = "/parent/grades/homework-classes"
 UNKNOWN = "acceptance-" + "0" * 32
 FAMILY_GRADE_ROUTES = {
     ("GET", ADD),
@@ -126,6 +129,8 @@ FAMILY_GRADE_ROUTES = {
     ("POST", VIEW),
     ("POST", CURRENT_TERM),
     ("GET", CLASS_AT),
+    ("GET", HOMEWORK_CLASSES),
+    ("POST", HOMEWORK_CLASSES),
 }
 """Every family grade route and method, named here so a route added without a row fails."""
 HER_GRADE_ROUTES = {("GET", HER_GRADES), ("POST", HER_VIEW), ("GET", HER_CLASS_AT)}
@@ -189,6 +194,15 @@ def every_family_request(browser: TestClient, **headers: str) -> dict[tuple[str,
     linked = re.search(r'href="(/parent/grades/classes/[^"]+/terms/1)"', grades.text)
     details = linked[1] if linked else CLASS_AT.format(class_id="class-unknown", n=1)
     statuses[("GET", CLASS_AT)] = browser.get(details, headers=asked).status_code
+    names = browser.get(HOMEWORK_CLASSES, headers=asked)
+    statuses[("GET", HOMEWORK_CLASSES)] = names.status_code
+    blocks = name_blocks(names.text) if names.status_code == 200 else []
+    answer = {"year": "2026-2027", "name": "Science", "shown": "unanswered"}
+    if blocks:
+        answer = sent_by(blocks[0], **{"class": chooser(blocks[0])[1][1][0]})
+    statuses[("POST", HOMEWORK_CLASSES)] = browser.post(
+        HOMEWORK_CLASSES, data={"class": NO_CLASS, **answer}, headers=asked
+    ).status_code
     return statuses
 
 
@@ -203,6 +217,8 @@ ALLOWED = {
     ("POST", VIEW): 303,
     ("POST", CURRENT_TERM): 303,
     ("GET", CLASS_AT): 200,
+    ("GET", HOMEWORK_CLASSES): 200,
+    ("POST", HOMEWORK_CLASSES): 303,
 }
 """What each route answers the household or a parent pressing it as a page would."""
 
@@ -1139,7 +1155,10 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
     assert css.count(CARD_RULES) == 1
     for shared in SHARED_CARD_RULES:
         assert css.count(shared) == 1, shared
-    assert carriers == ["grade_class.html", "grades.html"]
+    assert carriers == ["grade_class.html", "grade_homework_classes.html", "grades.html"]
+    names = (TEMPLATES / "grade_homework_classes.html").read_text(encoding="utf-8")
+    block = '<section class="panel grade-card" aria-labelledby="name-{{ loop.index }}">'
+    assert names.count(block) == names.count("<section") == 1
     grades = (TEMPLATES / "grades.html").read_text(encoding="utf-8")
     card = '<section class="panel grade-card" aria-labelledby="class-{{ loop.index }}">'
     assert grades.count(card) == 1
@@ -5142,3 +5161,487 @@ def test_the_reason_an_answer_doesn_t_fit_reads_every_check_the_save_makes_in_it
     assert composed == list(ASKED[:4])
     why = calls_in(inspect.getsource(grade_routes), "answers_why")
     assert [one for one in why if one in ASKED] == list(ASKED)
+
+
+# ------------------------------------------------------------- homework class names
+
+NAMES_BIOLOGY = draft_of(REPORT)
+NAMES_GEOMETRY = draft_of(
+    REPORT.replace("**07 BIO - C**", "**08 GEO - A**").replace("**Biology**", "**08 GEOMETRY**")
+)
+"""A second class of the year: 08 GEOMETRY, under the report code 08 GEO - A."""
+NAMES_BIOLOGY_D = draft_of(REPORT.replace("**07 BIO - C**", "**07 BIO - D**"))
+"""Another section's report: a second class with the official name Biology."""
+MAPPING = "grade_homework_classes"
+FIXTURE_NAMES = ["Algebra II", "English", "Science", "Spanish", "World History"]
+"""The class names the fixture week's homework carries, in the page's order."""
+INTRODUCTION = (
+    "Homework and grade reports sometimes name one class differently. Choose which of her "
+    "classes each homework name is. You choose once for each name. Homework pages still show "
+    "each class name as it was written."
+)
+WAITING_NOTE = (
+    "Classes come from grade reports. A name can wait until a report for its class is added."
+)
+NAME_CHANGED = "This class name changed while you were choosing. Nothing was saved. Check it again."
+CHOOSE_A_CLASS = "Choose a class. Nothing was saved."
+SAVE_UNKNOWN = "Blossom couldn't tell whether this was saved. Choosing again is safe."
+NOT_CONNECTED = "Not connected yet."
+NOT_CONNECTED_OPTION = "unconnected"
+"""What a chooser sends for the option that removes a connection, which reads "Not connected"."""
+NO_CLASS = "class-" + "0" * 32
+
+
+@contextmanager
+def naming(
+    settings: Settings, *drafts: GradeReportDraft, homework: tuple[str, ...] = ()
+) -> Iterator[TestClient]:
+    """The household's own computer with each of ``drafts`` saved as a class and homework on
+    record under each of ``homework``, beside the fixture week's."""
+    with at(settings) as browser:
+        store = store_of(browser)
+        for draft in drafts:
+            assert isinstance(save_grade(store, draft, key=SEED_KEY), GradeReportSaved)
+        store.put_on_record(
+            [homework_named(course, f"assignment-named-{n}") for n, course in enumerate(homework)],
+            {},
+        )
+        yield browser
+
+
+def name_blocks(page: str) -> list[str]:
+    """Each homework class name's block on the page, in the page's order."""
+    return re.findall(
+        r'<section class="panel grade-card" aria-labelledby="name-\d+">.*?</section>',
+        page,
+        flags=re.DOTALL,
+    )
+
+
+def name_of(block: str) -> str:
+    found = re.search(r'<h2 id="name-\d+" tabindex="-1">(.*?)</h2>', block, flags=re.DOTALL)
+    assert found is not None, block
+    return words(found[1])
+
+
+def state_of_name(block: str) -> str:
+    found = re.search(r"</h2>\s*<p>(.*?)</p>", block, flags=re.DOTALL)
+    assert found is not None, block
+    return words(found[1])
+
+
+def chooser(block: str) -> tuple[str, list[tuple[str, str, bool]]]:
+    """A block's label, and each option's value, words and whether it is the one selected."""
+    label = re.search(r"<label[^>]*>(.*?)</label>", block, flags=re.DOTALL)
+    assert label is not None, block
+    options = [
+        (value, unescape(text).strip(), bool(selected))
+        for value, selected, text in re.findall(
+            r'<option value="([^"]*)"( selected)?>([^<]*)</option>', block
+        )
+    ]
+    return words(label[1]), options
+
+
+def sent_by(block: str, **changed: str) -> dict[str, str]:
+    """What a block's form sends with its chooser as it stands, but for ``changed``."""
+    hidden = re.findall(r'<input type="hidden" name="([a-z]+)" value="([^"]*)">', block)
+    selected = [value for value, _, chosen in chooser(block)[1] if chosen]
+    fields = {name: unescape(value) for name, value in hidden}
+    return {**fields, "class": selected[0] if selected else "", **changed}
+
+
+def test_homework_class_names_lists_each_name_once_with_its_state_and_one_chooser(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Spellings that fold alike are one name, written as the spelling that sorts first."""
+    homework = ("08 Geometry", "Geometry", "biology", "Biology", "BIOLOGY")
+    with naming(
+        open_household(tmp_path), NAMES_BIOLOGY, NAMES_GEOMETRY, homework=homework
+    ) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        geometry = capture_class(store, NAMES_GEOMETRY)
+        page = browser.get(HOMEWORK_CLASSES, headers=PAGE)
+        asked = browser.get(HOMEWORK_CLASSES, params={"name": "Geometry"}, headers=PAGE)
+    blocks = name_blocks(page.text)
+    names = ["08 Geometry", "Algebra II", "BIOLOGY", "English", "Geometry", *FIXTURE_NAMES[2:]]
+    choices = [(geometry, "08 GEOMETRY"), (biology, "Biology")]
+    said = words(page.text)
+
+    assert page.status_code == 200
+    assert "<h1>Homework class names</h1>" in page.text
+    assert INTRODUCTION in said
+    assert "6 homework class names aren't connected to a class yet. " + WAITING_NOTE in said
+    assert [name_of(block) for block in blocks] == names
+    assert [state_of_name(block) for block in blocks] == [
+        "Matched by name to 08 GEOMETRY.",
+        NOT_CONNECTED,
+        "Matched by name to Biology.",
+        *[NOT_CONNECTED] * 5,
+    ]
+    for place, (name, block) in enumerate(zip(names, blocks, strict=True), start=1):
+        label, options = chooser(block)
+        matched = {"08 Geometry": geometry, "BIOLOGY": biology}.get(name)
+        first = [] if matched else [("", "Choose a class", True)]
+        last = [(NOT_CONNECTED_OPTION, "Not connected", False)] if matched else []
+        assert f'<h2 id="name-{place}" tabindex="-1">' in block
+        assert label == f"Class for {name}"
+        assert options == [
+            *first,
+            *[(value, text, value == matched) for value, text in choices],
+            *last,
+        ]
+        assert block.count("<form ") == block.count("<select ") == 1
+        assert re.findall(r"<button[^>]*>([^<]*)</button>", block) == ["Save"]
+        assert sent_by(block) == {
+            "year": "2026-2027",
+            "name": name,
+            "shown": "unanswered",
+            "class": matched or "",
+        }
+    assert asked.text == page.text
+
+
+def test_with_no_class_on_record_the_page_says_no_grade_reports_yet(
+    tmp_path: pathlib.Path,
+) -> None:
+    with naming(open_household(tmp_path), homework=("Geometry",)) as browser:
+        page = browser.get(HOMEWORK_CLASSES, headers=PAGE)
+
+    assert page.status_code == 200
+    assert "<h1>Homework class names</h1>" in page.text
+    assert "No grade reports yet. Add one to start." in words(page.text)
+    assert name_blocks(page.text) == []
+    assert "<form " not in page.text.split("<main", 1)[1]
+    assert "connected" not in words(page.text)
+
+
+def test_a_parent_s_grades_gains_the_link_and_no_count(tmp_path: pathlib.Path) -> None:
+    with naming(open_household(tmp_path), NAMES_BIOLOGY, homework=("Geometry",)) as browser:
+        family = browser.get(GRADES, headers=PAGE).text
+        hers = browser.get(HER_GRADES, headers=PAGE).text
+        names = browser.get(HOMEWORK_CLASSES, headers=PAGE).text
+
+    assert family.count(f'<a href="{HOMEWORK_CLASSES}">Homework class names</a>') == 1
+    assert "connected" not in words(family)
+    assert HOMEWORK_CLASSES not in hers
+    assert "6 homework class names aren't connected to a class yet." in words(names)
+
+
+def test_one_name_waiting_is_counted_in_the_singular_and_none_says_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = open_household(tmp_path)
+    with naming(settings, NAMES_BIOLOGY) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        for block in name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[1:]:
+            answer = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+            assert answer.status_code == 303
+        one = words(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+        block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[0]
+        browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+        none = words(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+
+    assert "1 homework class name isn't connected to a class yet. " + WAITING_NOTE in one
+    assert "connected to a class yet" not in none
+    assert WAITING_NOTE not in none
+
+
+def test_a_save_returns_to_its_own_row_which_then_reads_connected(
+    tmp_path: pathlib.Path,
+) -> None:
+    """G3a-I1 through the page: the save writes the mapping's one row and nothing else, so each
+    assignment's ID, class name as stored and history read byte for byte the same."""
+    settings = open_household(tmp_path)
+    with naming(settings, NAMES_BIOLOGY, NAMES_GEOMETRY, homework=("Geometry",)) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        before = closed_world([database(settings)], leaving_out=(MAPPING,))
+        block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[2]
+        saved = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+        again = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+        after = closed_world([database(settings)], leaving_out=(MAPPING,))
+        rows = as_stored(store, MAPPING)
+        page = browser.get(HOMEWORK_CLASSES, headers=PAGE).text
+    now = name_blocks(page)[2]
+
+    assert name_of(block) == "Geometry"
+    assert (saved.status_code, saved.headers["location"]) == (303, f"{HOMEWORK_CLASSES}#name-3")
+    assert (again.status_code, again.headers["location"]) == (303, f"{HOMEWORK_CLASSES}#name-3")
+    assert answers_in(rows) == [("2026-2027", "geometry", biology, "household")]
+    assert after == before
+    assert any(name.endswith("rows of assignments") for name in before)
+    assert state_of_name(now) == "Connected to Biology."
+    assert sent_by(now) == {
+        "year": "2026-2027",
+        "name": "Geometry",
+        "shown": biology,
+        "class": biology,
+    }
+    assert chooser(now)[1][0][1] != "Choose a class"
+    assert "5 homework class names aren't connected to a class yet." in words(page)
+
+
+def test_with_sign_in_on_a_parent_s_save_records_a_parent(tmp_path: pathlib.Path) -> None:
+    with at(signed_in_household(tmp_path), client="192.0.2.10", host="testserver") as browser:
+        signed_in(browser, THEIRS)
+        store = store_of(browser)
+        assert isinstance(save_grade(store, NAMES_BIOLOGY, key=SEED_KEY), GradeReportSaved)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[0]
+        saved = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+        rows = as_stored(store, MAPPING)
+
+    assert saved.status_code == 303
+    assert answers_in(rows) == [("2026-2027", "algebra ii", biology, "parent")]
+
+
+def test_classes_that_share_an_official_name_say_their_class_code(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = open_household(tmp_path)
+    drafts = (NAMES_BIOLOGY, NAMES_BIOLOGY_D, NAMES_GEOMETRY)
+    with naming(settings, *drafts, homework=("Biology", "07 bio - d")) as browser:
+        store = store_of(browser)
+        section_d = capture_class(store, NAMES_BIOLOGY_D)
+        blocks = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+        saved = browser.post(HOMEWORK_CLASSES, data=sent_by(blocks[2], **{"class": section_d}))
+        after = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+
+    assert [name_of(block) for block in blocks[:3]] == ["07 bio - d", "Algebra II", "Biology"]
+    assert state_of_name(blocks[0]) == "Matched by name to Biology (07 BIO - D)."
+    assert state_of_name(blocks[2]) == NOT_CONNECTED
+    assert [text for _, text, _ in chooser(blocks[2])[1]] == [
+        "Choose a class",
+        "08 GEOMETRY",
+        "Biology (07 BIO - C)",
+        "Biology (07 BIO - D)",
+    ]
+    assert saved.status_code == 303
+    assert state_of_name(after[2]) == "Connected to Biology (07 BIO - D)."
+
+
+def test_a_stale_page_is_refused_at_its_row_both_ways_and_writes_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = open_household(tmp_path)
+    with naming(settings, NAMES_BIOLOGY, NAMES_GEOMETRY, homework=("Geometry",)) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        geometry = capture_class(store, NAMES_GEOMETRY)
+        blocks = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+        first = browser.post(HOMEWORK_CLASSES, data=sent_by(blocks[2], **{"class": biology}))
+        rows = as_stored(store, MAPPING)
+        answered = browser.post(HOMEWORK_CLASSES, data=sent_by(blocks[2], **{"class": geometry}))
+        never = browser.post(
+            HOMEWORK_CLASSES, data=sent_by(blocks[4], shown=biology, **{"class": geometry})
+        )
+        after = as_stored(store, MAPPING)
+
+    assert first.status_code == 303
+    assert (answered.status_code, never.status_code) == (409, 409)
+    assert NAME_CHANGED in words(name_blocks(answered.text)[2])
+    assert state_of_name(name_blocks(answered.text)[2]) == "Connected to Biology."
+    assert NAME_CHANGED in words(name_blocks(never.text)[4])
+    assert words(answered.text).count(NAME_CHANGED) == words(never.text).count(NAME_CHANGED) == 1
+    assert after == rows
+
+
+@pytest.mark.parametrize(
+    ("changed", "at_its_row"),
+    [
+        ({"class": ""}, True),
+        ({"class": NO_CLASS}, True),
+        ({"class": "Biology"}, True),
+        ({"class": NOT_CONNECTED_OPTION}, True),
+        ({"shown": "none"}, True),
+        ({"shown": ""}, True),
+        ({"year": "2024-2025"}, True),
+        ({"year": "this year"}, True),
+        ({"name": "Latin"}, False),
+        ({"name": ""}, False),
+        ({"more": "1"}, True),
+    ],
+)
+def test_no_class_chosen_or_an_unknown_class_year_or_name_is_refused_and_writes_nothing(
+    changed: dict[str, str], at_its_row: bool, tmp_path: pathlib.Path
+) -> None:
+    """A name on the page hears the sentence at its row; one that isn't, at the top."""
+    settings = open_household(tmp_path)
+    with naming(settings, NAMES_BIOLOGY, homework=("Geometry",)) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[2]
+        answer = browser.post(
+            HOMEWORK_CLASSES, data={**sent_by(block, **{"class": biology}), **changed}
+        )
+        rows = as_stored(store, MAPPING)
+    blocks = name_blocks(answer.text)
+
+    assert answer.status_code == 422
+    assert words(answer.text).count(CHOOSE_A_CLASS) == 1
+    assert [CHOOSE_A_CLASS in words(one) for one in blocks] == [
+        at_its_row and place == 2 for place in range(len(blocks))
+    ]
+    assert rows == []
+
+
+def test_a_form_with_a_field_left_out_is_refused(tmp_path: pathlib.Path) -> None:
+    settings = open_household(tmp_path)
+    with naming(settings, NAMES_BIOLOGY) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[0]
+        whole = sent_by(block, **{"class": biology})
+        answers = [
+            browser.post(HOMEWORK_CLASSES, data={k: v for k, v in whole.items() if k != left_out})
+            for left_out in whole
+        ]
+        rows = as_stored(store, MAPPING)
+
+    assert [answer.status_code for answer in answers] == [422] * 4
+    assert rows == []
+
+
+@pytest.mark.parametrize(
+    ("error", "said"),
+    [
+        (
+            GradeReportNotSaved("refused"),
+            "Blossom couldn't save this. Nothing was saved. Try again.",
+        ),
+        (GradeTransactionLost("lost"), SAVE_UNKNOWN),
+    ],
+)
+def test_a_save_the_record_can_t_make_says_so_at_its_row(
+    error: Exception, said: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise error
+
+    settings = open_household(tmp_path)
+    with naming(settings, NAMES_BIOLOGY) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[1]
+        monkeypatch.setattr(store, "connect_homework_class", refuse)
+        answer = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+        rows = as_stored(store, MAPPING)
+
+    assert answer.status_code == 500
+    assert said in words(name_blocks(answer.text)[1])
+    assert words(answer.text).count(said) == 1
+    assert rows == []
+
+
+def test_an_answer_outlives_the_homework_that_carried_its_name(tmp_path: pathlib.Path) -> None:
+    """The page lists a name only while homework carries it, and the answer applies again when
+    the name returns, in another spelling too."""
+    settings = open_household(tmp_path)
+    with naming(settings, NAMES_BIOLOGY, homework=("Geometry",)) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[2]
+        browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+        rows = as_stored(store, MAPPING)
+        store._connection.execute("DELETE FROM assignments WHERE course = 'Geometry'")
+        store._connection.commit()
+        gone = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+        kept = as_stored(store, MAPPING)
+        store.put_on_record([homework_named("geometry", "assignment-back")], {})
+        back = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+
+    assert [name_of(one) for one in gone] == FIXTURE_NAMES
+    assert kept == rows != []
+    assert name_of(back[2]) == "geometry"
+    assert state_of_name(back[2]) == "Connected to Biology."
+
+
+def test_the_homework_class_page_reads_no_query_and_sends_no_text_in_an_address() -> None:
+    """G3a-I11: neither endpoint takes a value from the address, and the answer to a save
+    names a row by its place alone."""
+    for endpoint in (grade_routes.homework_class_names, grade_routes.connect_homework_class):
+        assert list(inspect.signature(endpoint).parameters) == ["request", "state"]
+    assert grade_routes.NAME_AT == "/parent/grades/homework-classes#name-{n}"
+
+
+def test_a_page_from_before_the_school_year_turned_is_refused_and_writes_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The page decides for the current school year alone."""
+    earlier = draft_of(REPORT.replace("**2026-2027**", "**2025-2026**").replace("**T1**", "**T3**"))
+    with naming(open_household(tmp_path), NAMES_BIOLOGY, earlier) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[0]
+        current = store.grade_contexts().current
+        assert current == ("2026-2027", "T1")
+        store.set_current_context(current, ("2025-2026", "T3"), "parent")
+        answer = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+        rows = as_stored(store, MAPPING)
+
+    assert answer.status_code == 409
+    assert NAME_CHANGED in words(name_blocks(answer.text)[0])
+    assert rows == []
+
+
+def test_removing_a_connection_returns_the_name_to_waiting_and_writes_nothing_else(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A name with a class, by a parent's answer or by its own name, offers one more option.
+    Choosing it leaves the name waiting, though it still equals a class's official name, until
+    a parent connects it again; homework, grades and history read byte for byte the same."""
+    settings = open_household(tmp_path)
+    homework = ("08 Geometry", "Geometry")
+    with naming(settings, NAMES_BIOLOGY, NAMES_GEOMETRY, homework=homework) as browser:
+        store = store_of(browser)
+        biology = capture_class(store, NAMES_BIOLOGY)
+        geometry = capture_class(store, NAMES_GEOMETRY)
+
+        def blocks() -> list[str]:
+            return name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+
+        def press(block: str, chosen: str) -> tuple[int, str | None]:
+            answer = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": chosen}))
+            return answer.status_code, answer.headers.get("location")
+
+        connected = press(blocks()[3], biology)
+        before = closed_world([database(settings)], leaving_out=(MAPPING,))
+        start = blocks()
+        counted_before = words(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+        removed = press(start[3], NOT_CONNECTED_OPTION)
+        resent = press(start[3], NOT_CONNECTED_OPTION)
+        stale = press(start[3], geometry)
+        by_name = press(start[0], NOT_CONNECTED_OPTION)
+        waiting = blocks()
+        counted_after = words(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+        again = press(waiting[0], geometry)
+        after = closed_world([database(settings)], leaving_out=(MAPPING,))
+        end = blocks()
+
+    offered = [(geometry, "08 GEOMETRY"), (biology, "Biology"), ("unconnected", "Not connected")]
+    assert [name_of(start[place]) for place in (0, 3)] == ["08 Geometry", "Geometry"]
+    assert connected == (303, f"{HOMEWORK_CLASSES}#name-4")
+    assert [text for _, text, _ in chooser(start[0])[1]] == [text for _, text in offered]
+    assert chooser(start[3])[1] == [(value, text, value == biology) for value, text in offered]
+    assert "Not connected" not in [text for _, text, _ in chooser(start[1])[1]]
+    assert "5 homework class names aren't connected to a class yet." in counted_before
+    assert removed == resent == (303, f"{HOMEWORK_CLASSES}#name-4")
+    assert stale[0] == 409
+    assert by_name == (303, f"{HOMEWORK_CLASSES}#name-1")
+    assert [state_of_name(waiting[place]) for place in (0, 3)] == [NOT_CONNECTED] * 2
+    for place in (0, 3):
+        assert chooser(waiting[place])[1] == [
+            ("", "Choose a class", True),
+            (geometry, "08 GEOMETRY", False),
+            (biology, "Biology", False),
+        ]
+        assert sent_by(waiting[place])["shown"] == "unconnected"
+    assert "7 homework class names aren't connected to a class yet." in counted_after
+    assert again == (303, f"{HOMEWORK_CLASSES}#name-1")
+    assert state_of_name(end[0]) == "Connected to 08 GEOMETRY."
+    assert state_of_name(end[3]) == NOT_CONNECTED
+    assert after == before
+    assert any(name.endswith("rows of assignments") for name in before)
