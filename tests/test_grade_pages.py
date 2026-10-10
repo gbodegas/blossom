@@ -584,7 +584,11 @@ def test_edit_this_text_is_its_own_form_holding_one_copy_of_the_text(
 
     assert form.count('name="') == 1
     assert 'name="report_text"' in form
-    assert "Edit this text" in form
+    assert form.startswith(' id="edit-text">')
+    assert "<button" not in form
+    assert page.count('id="edit-text"') == 1
+    assert page.count(' form="edit-text">Edit this text</button>') == 1
+    assert page.count("Edit this text") == 1
 
 
 def test_the_review_carries_the_text_whole_with_its_leading_line_break(
@@ -1101,12 +1105,62 @@ def test_the_grade_review_s_own_rule_is_pinned_and_only_its_form_carries_its_cla
         if "grade-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("grade-review") == 8
+    assert css.count("grade-review") == 9
     assert css.count(GRADE_REVIEW_RULE) == 1
     assert css.count(IDENTITY_RULES) == 1
     assert css.count(CARD_RULES) == 1
     assert css.count(SHARED_CHOICE_RULE) == 1
     assert carriers == ["grade_review.html"]
+
+
+RECORD_LINES_RULE = ".record-lines {\n  margin-top: 0;\n}\n"
+"""The list in a school record's fold, pinned whole: on the review and on class details it
+starts under its summary as far as its items sit apart."""
+WAY_BACK_RULE = ".grade-review + .return {\n  margin-top: 1rem;\n}\n"
+"""The way back under the review's closing buttons, pinned whole: its press area stays clear
+of the buttons."""
+
+
+def test_the_record_lines_rule_is_pinned_and_only_the_school_record_s_folds_carry_it() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "record-lines" in page.read_text(encoding="utf-8")
+    )
+    fold = re.compile(
+        r'<details class="steps">\s*<summary>(School record|Category) details[^\n]*</summary>'
+        r'\s*<ul class="record-lines">'
+    )
+    review = (TEMPLATES / "grade_review.html").read_text(encoding="utf-8")
+    details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+
+    assert css.count("record-lines") == 1
+    assert css.count(RECORD_LINES_RULE) == 1
+    assert carriers == ["grade_class.html", "grade_review.html"]
+    assert fold.findall(review) == ["School record"]
+    assert review.count("record-lines") == 1
+    assert fold.findall(details) == ["School record", "Category"]
+    assert details.count("record-lines") == 2
+
+
+def test_the_review_s_closing_buttons_are_one_group_with_the_way_back_under_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    page = reviewed(tmp_path)
+    form, after = page.split('class="review-form grade-review">', 1)[1].split("</form>", 1)
+    group = form.rsplit('<div class="actions">', 1)[1].split("</div>", 1)[0]
+
+    assert css.count(WAY_BACK_RULE) == 1
+    assert page.count('<div class="actions">') == 1
+    assert re.findall(r"<button ([^>]*)>([^<]*)</button>", group) == [
+        ('type="submit" class="primary"', "Save selected results"),
+        (f'type="submit" class="secondary" formaction="{CHECK}"', "Check these answers"),
+        ('type="submit" class="secondary" form="edit-text"', "Edit this text"),
+    ]
+    way_back = f'<p class="return"><a href="{ADD}">Paste a different report</a></p>'
+    assert after.lstrip().startswith(way_back)
 
 
 def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_page_carries_its_class() -> None:

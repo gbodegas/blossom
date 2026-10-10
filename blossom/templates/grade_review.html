@@ -160,7 +160,7 @@
               {% set record = school_record(shown.category, shown.row) %}
               <details class="steps">
                 <summary>School record details{% if record.cues %}: {{ record.cues|join(", ") }}{% endif %}</summary>
-                <ul>
+                <ul class="record-lines">
                   {% for line in record.lines %}
                     <li><span class="authored-text">{{ line }}</span></li>
                   {% endfor %}
@@ -221,17 +221,18 @@
       <div class="actions">
         <button type="submit" class="primary">Save selected results</button>
         <button type="submit" class="secondary" formaction="{{ check }}">Check these answers</button>
+        <button type="submit" class="secondary" form="edit-text">Edit this text</button>
       </div>
     </div>
   </form>
+  <p class="return"><a href="{{ add }}">Paste a different report</a></p>
 
-  {# A form of its own, holding one copy of the text and nothing else. #}
-  <form method="post" action="{{ edit }}" class="decision">
+  {#
+    A form of its own, holding one copy of the text and nothing else. Edit this text, among
+    the review's buttons, sends it.
+  #}
+  <form method="post" action="{{ edit }}" id="edit-text">
     <textarea name="report_text" hidden>
 {{ text }}</textarea>
-    <div class="actions">
-      <button type="submit" class="secondary">Edit this text</button>
-    </div>
   </form>
-  <p class="return"><a href="{{ add }}">Paste a different report</a></p>
 {% endblock %}
