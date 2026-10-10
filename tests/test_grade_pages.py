@@ -3749,6 +3749,16 @@ def test_the_text_and_its_key_each_come_once_whether_or_not_the_text_changed(
     assert after == before
 
 
+def class_question(page: str) -> str:
+    """The class question as the review's page writes it."""
+    return page.split('id="class-question"', 1)[1].split("</fieldset>", 1)[0]
+
+
+def classes_checked(page: str) -> list[str]:
+    """Each class choice the review's page shows checked."""
+    return re.findall(r'name="class" value="([^"]*)" checked', class_question(page))
+
+
 def checked_in_her_class(browser: TestClient) -> dict[str, str]:
     """The other section's review checked with "It's the same class as" her saved class, the
     name answered and nothing ticked: the page it returns asks its rows' questions in that
@@ -3759,6 +3769,7 @@ def checked_in_her_class(browser: TestClient) -> dict[str, str]:
     form = {**unticked(sent_from(page)), "identity": "confirmed", "class": offered[-1]}
     checked = browser.post(CHECK, data=form, headers=PAGE)
     assert checked.status_code == 200, checked.text[:300]
+    assert classes_checked(checked.text) == [offered[-1]]
     again = sent_from(checked.text)
     assert again["class"] == offered[-1]
     assert {"candidates.5", "choices.6"} <= again.keys()
@@ -4889,8 +4900,80 @@ def test_a_page_returned_for_the_name_drops_a_class_another_tab_saved_into(
     now = [value for _, name, value in form_values(answer.text, SAVE) if name == "class"]
     assert offered[-1] not in now
     assert "class" not in sent_from(answer.text)
+    assert classes_checked(answer.text) == []
     assert problem_said(answer.text).endswith(grade_routes.TEXT_KEPT_ANSWER_AGAIN)
     assert not kept_as_said(form, answer.text)
+    assert after == before
+
+
+# ------------------------------------------------------------- the class a fresh review checks
+
+SECOND_CLASS = OTHER_CLASS.replace("| **Biology** |", "| **Chemistry** |")
+"""Wren's report as a second class's, under its own code and name."""
+
+
+@pytest.mark.parametrize("saved", [True, False], ids=["saved classes offered", "no saved class"])
+def test_a_fresh_review_checks_name_for_this_class_holding_the_report_s_class_name(
+    saved: bool, tmp_path: pathlib.Path
+) -> None:
+    """A fresh review that asks the class checks "Name for this class" alone, the report's
+    class name in its field, and the page sent as shown saves a class by that name."""
+    with at(open_household(tmp_path)) as browser:
+        if saved:
+            first_saved(browser)
+        page = review_page(browser, SECOND_CLASS)
+        _, said = outcome_of(browser, as_sent(page))
+        grades = words(browser.get(GRADES, headers=PAGE).text)
+
+    asked = class_question(page)
+    assert ("It's the same class as" in asked) == saved
+    assert classes_checked(page) == ["new"]
+    assert asked.count(" checked") == 1
+    assert 'name="class_name" maxlength="60" size="12" value="Chemistry"' in asked
+    assert "Chemistry" in said
+    assert "Chemistry" in grades
+    assert ("Biology" in grades) == saved
+
+
+def test_a_fresh_review_offering_saved_classes_preselects_no_answer_about_the_name(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser)
+        page = review_page(browser, OTHER_SECTION)
+    about = page.split('id="about-this-report"', 1)[1].split("</fieldset>", 1)[0]
+
+    assert 'name="identity" value="confirmed"' in about
+    assert "checked" not in about
+    assert "identity" not in sent_from(page)
+    assert classes_checked(page) == ["new"]
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("sent", ["the same class", "no class"])
+def test_a_returned_review_checks_the_class_choice_as_sent_and_never_the_fresh_one(
+    route: str, sent: str, tmp_path: pathlib.Path
+) -> None:
+    """A returned review shows the class choice the page sent: the same class stays checked,
+    and a page that sent none comes back with none checked and the class marked to choose."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        page = review_page(browser, OTHER_SECTION)
+        same = [value for _, name, value in form_values(page, SAVE) if name == "class"][-1]
+        form = {**unticked(sent_from(page)), "class": same}
+        if sent == "no class":
+            del form["class"]
+            form["identity"] = "confirmed"
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422, answer.text[:300]
+    assert classes_checked(answer.text) == ([same] if sent == "the same class" else [])
+    if sent == "no class":
+        assert problem_said(answer.text).startswith(grade_routes.CHOOSE_CLASS)
+    assert answers_sent(sent_from(answer.text)) == answers_sent(form)
     assert after == before
 
 

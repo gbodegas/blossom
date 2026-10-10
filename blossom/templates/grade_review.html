@@ -104,7 +104,7 @@
         {% else %}
           <fieldset class="choice" id="class-question">
             <legend>Class</legend>
-            <label><input type="radio" name="class" value="new"{% if (fresh and not question.existing) or p.get("class") == "new" %} checked{% endif %}> <span>Name for this class</span></label>
+            <label><input type="radio" name="class" value="new"{% if fresh or p.get("class") == "new" %} checked{% endif %}> <span>Name for this class</span></label>
             <div class="field">
               <input id="class-name" type="text" name="class_name" maxlength="{{ class_name_limit }}" size="12" value="{{ p['class_name'] if 'class_name' in p else question.offered_name }}" aria-label="Name for this class">
             </div>
