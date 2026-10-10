@@ -2143,12 +2143,13 @@ async def current_term(request: Request, state: State) -> Response:
 
 @dataclass(frozen=True)
 class ResultShown:
-    """A result on class details: its title and category, its score as reported, its due date,
-    the school's status for it or the words for its presence, where it was last shown, and its
-    school record details."""
+    """A result on class details: its title and category, whether the category is one the
+    school reported, its score as reported, its due date, the school's status for it or the
+    words for its presence, where it was last shown, and its school record details."""
 
     title: str
     category: str
+    category_reported: bool
     score: str
     due: str
     status: str
@@ -2220,6 +2221,7 @@ def result_shown(
     return resolved, ResultShown(
         title=cell_text(cells["assignment"], "Title"),
         category=cell_text(cells["category"], "Category"),
+        category_reported=cells["category"][0] is Presence.REPORTED,
         score=score,
         due=due_of(value, resolved, names),
         status=(

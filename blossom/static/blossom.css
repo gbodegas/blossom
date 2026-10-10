@@ -273,6 +273,14 @@ article h2 {
   color: var(--text-strong);
 }
 
+/* A grade card's title is a heading under its section's heading. It keeps that level and
+   takes the size and spacing of a week card's title; its weight and color are a week card's
+   as they stand. */
+.card-title {
+  font-size: 1.3rem;
+  margin: 0 0 0.6rem;
+}
+
 .course {
   margin: 0 0 0.1rem;
   font-family: var(--font-display);

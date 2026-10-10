@@ -145,8 +145,8 @@
               <h3><span class="authored-text">{{ cell(category.name, "Category name") }}</span>: {{ cell(category.weight, "weight", named=true) }}, {{ cell(category.average, "average", named=true) }}</h3>
             {% elif shown.kind == "row" %}
               {% set row = shown.row %}
-              <p class="course-name">{{ cell(shown.category.name, "Category name") }}</p>
-              <h3><span class="authored-text">{{ cell(row.assignment, "Assignment") }}</span></h3>
+              <p class="{{ 'course' if shown.category.name.presence.name == 'REPORTED' else 'source' }}">{{ cell(shown.category.name, "Category name") }}</p>
+              <h3 class="card-title"><span class="authored-text">{{ cell(row.assignment, "Assignment") }}</span></h3>
               <p class="effect">School score: {{ cell(row.points) }} / {{ cell(row.max_points, "maximum") }} · {{ cell(row.status, "Status") }} · Due date shown: {{ cell(row.due) }}</p>
             {% endif %}
             <p class="status">
