@@ -514,6 +514,7 @@ def test_a_delete_leaves_every_other_class_and_term_and_her_identity(
         "grade_terms",
         "grade_classes",
         "grade_class_aliases",
+        "grade_homework_classes",
     )
     before = {table: as_stored(store, table) for table in kept}
     second = held_in(store, class_id, "T2")

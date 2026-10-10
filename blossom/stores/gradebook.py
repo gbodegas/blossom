@@ -49,7 +49,7 @@ import secrets
 import sqlite3
 import threading
 import uuid
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC
@@ -142,6 +142,7 @@ GRADEBOOK_TABLES: Final = (
     "grade_acceptances",
     "grade_current_actions",
     "grade_corrections",
+    "grade_homework_classes",
 )
 """Every table a grade write may change. Every other table of the file, and the checkpoint and
 trace files, are a closed world no grade write touches."""
@@ -466,6 +467,43 @@ ACCEPTANCES_TABLE: Final = next(
 )
 """The acceptance table's one definition, which the rebuild of a file without its class and
 term makes again."""
+CREATE_HOMEWORK_CLASSES: Final = f"""
+CREATE TABLE IF NOT EXISTS grade_homework_classes (
+    student_id TEXT NOT NULL,
+    year_label TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    class_id TEXT,
+    answered_by TEXT NOT NULL CHECK (answered_by {WHO}),
+    answered_at TEXT NOT NULL,
+    PRIMARY KEY (student_id, year_label, name_key)
+)
+"""
+"""A parent's answers about homework class names: this name, folded, is this class in this
+school year, or, with no class, a name whose connection a parent removed, which waits
+until a parent connects it. A name with no row joins by its own name or waits."""
+ALIASES_OF_YEAR: Final = (
+    "SELECT class_id, code, name, added_at FROM grade_class_aliases "
+    "WHERE student_id = ? AND year_label = ? ORDER BY added_at, rowid"
+)
+HOMEWORK_ANSWERS: Final = (
+    "SELECT name_key, class_id FROM grade_homework_classes WHERE student_id = ? AND year_label = ?"
+)
+HOMEWORK_ANSWER: Final = (
+    "SELECT class_id FROM grade_homework_classes "
+    "WHERE student_id = ? AND year_label = ? AND name_key = ?"
+)
+ANSWER_HOMEWORK_CLASS: Final = (
+    "INSERT INTO grade_homework_classes "
+    "(student_id, year_label, name_key, class_id, answered_by, answered_at) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
+)
+CHANGE_HOMEWORK_CLASS: Final = (
+    "UPDATE grade_homework_classes SET class_id = ?, answered_by = ?, answered_at = ? "
+    "WHERE student_id = ? AND year_label = ? AND name_key = ?"
+)
+HOMEWORK_COURSES: Final = "SELECT DISTINCT course FROM assignments"
+"""The class names homework on record carries, as written: the one homework table the
+gradebook reads, and it only reads it."""
 CONTEXT_ON_RECORD: Final = "SELECT 1 FROM grade_context WHERE student_id = ?"
 YEAR_ON_RECORD: Final = "SELECT 1 FROM grade_years WHERE student_id = ? AND label = ?"
 FIRST_MONTH_OF: Final = "SELECT first_month FROM grade_years WHERE student_id = ? AND label = ?"
@@ -1080,6 +1118,10 @@ def _context_refused(error: BaseException) -> Exception:
     return GradeReportNotSaved(f"the current term could not be set: {type(error).__name__}")
 
 
+def _homework_class_refused(error: BaseException) -> Exception:
+    return GradeReportNotSaved(f"the class name could not be connected: {type(error).__name__}")
+
+
 def _correction_refused(error: BaseException) -> Exception:
     return GradeReportNotSaved(f"the value could not be corrected: {type(error).__name__}")
 
@@ -1280,6 +1322,118 @@ class ContextNotOnRecord:
 
 ContextOutcome = ContextSet | ContextStood | ContextChanged | ContextNotOnRecord
 
+
+@dataclass(frozen=True)
+class ClassAlias:
+    """A report's code and name for a class, as written, and when the alias was added."""
+
+    code: str
+    name: str | None
+    added_at: str
+
+
+@dataclass(frozen=True)
+class NamedClass:
+    """A class of a school year with its official name and its aliases, earliest first; two
+    added in one moment keep the order the table holds them in."""
+
+    class_id: str
+    name: str
+    aliases: tuple[ClassAlias, ...]
+
+
+@dataclass(frozen=True)
+class HomeworkClasses:
+    """A school year's classes, by name, then ID, and a parent's answers for the year: each
+    homework class name's folded key and the class it is, None where a parent removed the
+    connection."""
+
+    year: str
+    classes: tuple[NamedClass, ...]
+    answers: Mapping[str, str | None]
+
+
+UNCONNECTED: Final = "unconnected"
+"""A parent's answer that a name is no class for now: what removing a connection chooses, and
+what stands on record until a parent connects the name again."""
+
+
+def name_key(label: str) -> str:
+    """A homework class name with its spaces and capitalization folded, as the mapping keys
+    and compares names."""
+    return folded(label).casefold()
+
+
+def class_for(label: str, mapping: HomeworkClasses) -> str | None:
+    """The class of ``mapping``'s year the homework class name ``label`` is. A parent's answer
+    decides alone where there is one: its class when that is a class of the year, and none
+    where a parent took the connection away. With no answer it is the one class whose official
+    name, report code or report name equals the name but for capitalization and spaces. None
+    when it waits."""
+    key = name_key(label)
+    if key in mapping.answers:
+        answered = mapping.answers[key]
+        return answered if any(one.class_id == answered for one in mapping.classes) else None
+    equal = [
+        one.class_id
+        for one in mapping.classes
+        if key == name_key(one.name)
+        or any(key in (name_key(alias.code), name_key(alias.name or "")) for alias in one.aliases)
+    ]
+    return equal[0] if len(equal) == 1 else None
+
+
+class HomeworkClassNotOnRecord(ValueError):
+    """An answer for a school year that is neither current nor on record, a name connected to
+    a class that isn't hers in that school year, a name no homework on record carries, or a
+    removal where the name has no class; nothing was written."""
+
+
+@dataclass(frozen=True)
+class HomeworkClassConnected:
+    """The name is ``class_id`` now, by this answer."""
+
+    class_id: str
+
+
+@dataclass(frozen=True)
+class HomeworkClassRemoved:
+    """The name's connection is removed by this answer: it waits until a parent connects it."""
+
+
+@dataclass(frozen=True)
+class HomeworkClassStood:
+    """The answer on record was ``answer`` already, a class or ``UNCONNECTED``, as a page sent
+    again finds it; nothing was written."""
+
+    answer: str
+
+
+@dataclass(frozen=True)
+class HomeworkClassChanged:
+    """The answer on record isn't the one the page showed: ``answer`` is on record, a class,
+    ``UNCONNECTED``, or None when there is no answer. Nothing was written."""
+
+    answer: str | None
+
+
+@dataclass(frozen=True)
+class HomeworkYearNotCurrent:
+    """The answer is for a school year on record that isn't the current one, as a page from
+    before the year turned sends it: ``current`` is the current school year, or None when
+    there is none. Nothing was written."""
+
+    current: str | None
+
+
+HomeworkClassOutcome = (
+    HomeworkClassConnected
+    | HomeworkClassRemoved
+    | HomeworkClassStood
+    | HomeworkClassChanged
+    | HomeworkYearNotCurrent
+)
+
 CorrectionKind = Literal["parent_assertion", "transcription"]
 
 
@@ -1442,6 +1596,7 @@ class GradebookRecords:
         for statement in CREATE_REPORT_TABLES:
             self._connection.execute(statement)
         self._connection.execute(CREATE_VIEW_CHOICES)
+        self._connection.execute(CREATE_HOMEWORK_CLASSES)
         self._tie_acceptances()
         if self._connection.execute(STUDENT_ON_RECORD).fetchone() is None:
             self._connection.execute(MAKE_STUDENT, (new_student_id(), self._stamp()))
@@ -2166,6 +2321,89 @@ class GradebookRecords:
                 CHANGE_CONTEXT, (*chosen, by, self._stamp(), student_id, *stored)
             )
             return ContextSet(chosen)
+
+    def homework_classes(self, year: str) -> HomeworkClasses:
+        """Her classes of ``year``, each with its aliases, and a parent's answers for the year's
+        homework class names. It serves any school year; one not on record has neither. A read
+        alone."""
+        with self._lock:
+            return self._homework_classes(self._her_name_record()[0], year)
+
+    def _homework_classes(self, student_id: str, year: str) -> HomeworkClasses:
+        """Her classes and a parent's answers for ``year``, under the caller's lock."""
+        classes = self._connection.execute(CLASSES_OF_YEAR, (student_id, year)).fetchall()
+        aliases = self._connection.execute(ALIASES_OF_YEAR, (student_id, year)).fetchall()
+        answers = self._connection.execute(HOMEWORK_ANSWERS, (student_id, year)).fetchall()
+        ordered = sorted(classes, key=lambda row: (folded(str(row[1])), str(row[0])))
+        return HomeworkClasses(
+            year=year,
+            classes=tuple(
+                NamedClass(
+                    str(class_id),
+                    str(name),
+                    tuple(
+                        ClassAlias(str(code), None if said is None else str(said), str(added))
+                        for of, code, said, added in aliases
+                        if of == class_id
+                    ),
+                )
+                for class_id, name in ordered
+            ),
+            answers={
+                str(key): None if class_id is None else str(class_id) for key, class_id in answers
+            },
+        )
+
+    def connect_homework_class(
+        self, year: str, name: str, *, shown: str | None, chosen: str, role: ConfirmedBy
+    ) -> HomeworkClassOutcome:
+        """A parent's answer for the homework class name ``name`` in ``year``, one grade write
+        that compares and sets the one row: her class ``chosen``, or ``UNCONNECTED``, which
+        removes the connection and leaves the name waiting until a parent connects it. Its
+        transaction reads the current school year first: for another year on record every
+        answer is ``HomeworkYearNotCurrent``. It applies only while the answer on record is
+        ``shown``, the page's: None for no answer, ``UNCONNECTED``, or a class. An answer
+        already ``chosen`` stands, and any other is ``HomeworkClassChanged``. The year must be
+        current or on record, the class hers in that year, a removal needs a class to remove,
+        and the name must fold to the class name of homework on record, read inside the same
+        transaction, or it is ``HomeworkClassNotOnRecord``."""
+        by = _confirmer(role)
+        key = name_key(name)
+        with self._grade_write(_homework_class_refused):
+            student_id = self._her_name_record()[0]
+            context = self._connection.execute(CURRENT_CONTEXT, (student_id,)).fetchone()
+            current = None if context is None else str(context[0])
+            if current != year:
+                terms = self._connection.execute(TERMS_ON_RECORD, (student_id,)).fetchall()
+                if all(str(on_record) != year for on_record, _, _ in terms):
+                    msg = "the school year is neither current nor on record"
+                    raise HomeworkClassNotOnRecord(msg)
+                return HomeworkYearNotCurrent(current)
+            mapping = self._homework_classes(student_id, year)
+            if chosen != UNCONNECTED and all(one.class_id != chosen for one in mapping.classes):
+                msg = "the class isn't hers in that school year"
+                raise HomeworkClassNotOnRecord(msg)
+            courses = self._connection.execute(HOMEWORK_COURSES).fetchall()
+            if not key or all(name_key(str(course)) != key for (course,) in courses):
+                msg = "no homework on record carries that class name"
+                raise HomeworkClassNotOnRecord(msg)
+            answered = key in mapping.answers
+            stored = (mapping.answers[key] or UNCONNECTED) if answered else None
+            if stored == chosen:
+                return HomeworkClassStood(chosen)
+            if stored != shown:
+                return HomeworkClassChanged(stored)
+            if chosen == UNCONNECTED and class_for(name, mapping) is None:
+                msg = "the name has no connection to remove"
+                raise HomeworkClassNotOnRecord(msg)
+            values = (None if chosen == UNCONNECTED else chosen, by, self._stamp())
+            if answered:
+                self._connection.execute(CHANGE_HOMEWORK_CLASS, (*values, student_id, year, key))
+            else:
+                self._connection.execute(ANSWER_HOMEWORK_CLASS, (student_id, year, key, *values))
+            if chosen == UNCONNECTED:
+                return HomeworkClassRemoved()
+            return HomeworkClassConnected(chosen)
 
     def correct_value(
         self,

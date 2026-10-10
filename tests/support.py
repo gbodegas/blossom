@@ -28,7 +28,7 @@ from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import unescape
 from html.parser import HTMLParser
 from time import monotonic
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, Protocol, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -3543,3 +3543,21 @@ def rules_reaching(css: str, *chains: Chain) -> list[str]:
 
 def property_of(declaration: str) -> str:
     return declaration.split(":", 1)[0].strip()
+
+
+def homework_named(course: str, assignment_id: str, title: str = "Chapter review") -> Assignment:
+    """Homework whose class is written ``course``, due in the fixture week."""
+    return Assignment(
+        assignment_id=assignment_id,
+        course=course,
+        title=title,
+        due_date=date(2026, 9, 18),
+        dependencies=[],
+        reported_submission_status="not_started",
+        kind=AssignmentKind.HOMEWORK,
+    )
+
+
+def answers_in(rows: list[tuple[object, ...]]) -> list[tuple[str, ...]]:
+    """Each stored homework class answer's school year, folded name, class and who answered."""
+    return [tuple(cast(bytes, cell).decode() for cell in row[1:5]) for row in rows]

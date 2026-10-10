@@ -21,6 +21,10 @@ family's, under ``/parent/grades``, are a parent's, with the controls a parent r
 keeps one remembered term, which steers only the term Grades opens on; class details names its
 term by its place in the class's year in its address. A parent's choice of the current term
 changes the household's context alone, compared and set, and leaves every remembered term.
+
+Homework class names is a parent's page on the family routes: each class name homework
+carries, with the class of the current school year it is. A parent's answer for a name is
+compared and set alone, and it rewrites no homework.
 """
 
 import asyncio
@@ -99,16 +103,23 @@ from blossom.stores.gradebook import (
     CLASS_ID,
     RESULT_ID,
     REVISION_MAX,
+    UNCONNECTED,
     ConfirmedBy,
     ContextChanged,
     ContextNotOnRecord,
     GradebookRecords,
     GradeReportNotSaved,
     GradeTransactionLost,
+    HomeworkClassChanged,
+    HomeworkClassNotOnRecord,
+    HomeworkYearNotCurrent,
+    NamedClass,
     Term,
     TermNotOnRecord,
     Viewer,
     ViewNotOnRecord,
+    class_for,
+    name_key,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
 
@@ -1770,6 +1781,33 @@ CONTEXT_FIELDS: Final = frozenset({"shown", "term"})
 POSITION: Final = re.compile(r"[1-9][0-9]{0,3}")
 """A term's place in its class's year, from 1, as an address writes it."""
 
+HOMEWORK_CLASSES: Final = "/parent/grades/homework-classes"
+NAME_AT: Final = "/parent/grades/homework-classes#name-{n}"
+"""Where a save lands: its own name's heading, named by its place on the page alone."""
+NAME_FIELDS: Final = frozenset({"year", "name", "shown", "class"})
+UNANSWERED: Final = "unanswered"
+"""What a name's form sends as the answer shown when none is on record for it."""
+REMOVE_CONNECTION: Final = "Not connected"
+"""The chooser's one more option on a name that has a class: it removes the connection."""
+HOMEWORK_NAMES_INTRODUCTION: Final = (
+    "Homework and grade reports sometimes name one class differently. Choose which of her "
+    "classes each homework name is. You choose once for each name. Homework pages still show "
+    "each class name as it was written."
+)
+ONE_NAME_WAITS: Final = "1 homework class name isn't connected to a class yet."
+NAMES_WAIT: Final = "{n} homework class names aren't connected to a class yet."
+CLASSES_COME_FROM_REPORTS: Final = (
+    "Classes come from grade reports. A name can wait until a report for its class is added."
+)
+MATCHED_BY_NAME: Final = "Matched by name to {name}."
+CONNECTED_TO: Final = "Connected to {name}."
+NOT_CONNECTED: Final = "Not connected yet."
+NAME_CHANGED: Final = (
+    "This class name changed while you were choosing. Nothing was saved. Check it again."
+)
+CHOOSE_A_CLASS: Final = "Choose a class. Nothing was saved."
+SAVE_UNKNOWN: Final = "Blossom couldn't tell whether this was saved. Choosing again is safe."
+
 NO_REPORTS_YET: Final = "No grade reports yet."
 ADD_ONE: Final = "Add one to start."
 TERM_NOT_ON_RECORD: Final = (
@@ -2063,6 +2101,7 @@ def grades_page(
             "current_term": term_named(contexts.current) if contexts.current else None,
             "make_current": make_current,
             "add": ADD,
+            "homework_classes": HOMEWORK_CLASSES,
             "current_action": CURRENT_TERM,
             "follow": FOLLOW_CURRENT,
             "no_reports": NO_REPORTS_YET,
@@ -2139,6 +2178,167 @@ async def current_term(request: Request, state: State) -> Response:
     if isinstance(outcome, ContextNotOnRecord):
         return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
     return RedirectResponse(GRADES, status_code=303)
+
+
+@dataclass(frozen=True)
+class HomeworkName:
+    """A homework class name on the page: its folded key, the name as written, the answer on
+    record as its form sends it back, the class it is, None while it waits, by a parent's
+    removal too, and its state."""
+
+    key: str
+    written: str
+    shown: str
+    class_id: str | None
+    state: str
+
+
+def class_labels(classes: tuple[NamedClass, ...]) -> dict[str, str]:
+    """Each class's name as the page writes it: its official name, and, where two classes of
+    the year share one but for capitalization and spaces, its earliest alias's class code after
+    it, with that alias's class name too where those classes share the code as well."""
+    labels = {}
+    for one in classes:
+        same = [other for other in classes if name_key(other.name) == name_key(one.name)]
+        if len(same) == 1 or not one.aliases:
+            labels[one.class_id] = one.name
+            continue
+        first = one.aliases[0]
+        shared = any(
+            other is not one
+            and other.aliases
+            and name_key(other.aliases[0].code) == name_key(first.code)
+            for other in same
+        )
+        code = f"{first.code}, {first.name}" if shared and first.name else first.code
+        labels[one.class_id] = f"{one.name} ({code})"
+    return labels
+
+
+def names_on_record(courses: Iterable[str]) -> list[tuple[str, str]]:
+    """Each class name homework carries, once per folded form and in the order of that form,
+    written as the spelling that sorts first among the ones on record."""
+    spellings: dict[str, str] = {}
+    for course in courses:
+        key = name_key(course)
+        if key and (key not in spellings or course < spellings[key]):
+            spellings[key] = course
+    return sorted(spellings.items())
+
+
+def homework_classes_page(
+    request: Request,
+    state: ApplicationState,
+    *,
+    said: str | None = None,
+    at: str | None = None,
+    status_code: int = 200,
+) -> Response:
+    """Homework class names for a parent: each name the homework on record carries, with the
+    class of the current school year it is and one chooser, which on a name with a class also
+    offers to remove the connection, and how many names wait. ``said``
+    is shown at the name whose key is ``at``, or first on the page when no name listed has it.
+    A read alone."""
+    store = state.project_state
+    current = store.grade_contexts().current
+    names: list[HomeworkName] = []
+    options: list[tuple[str, str]] = []
+    if current is not None:
+        mapping = store.homework_classes(current[0])
+        labels = class_labels(mapping.classes)
+        options = sorted(
+            ((class_id, label) for class_id, label in labels.items()),
+            key=lambda option: (name_key(option[1]), option[0]),
+        )
+        courses = [assignment.course for assignment in store.all_assignments()] if options else []
+        for key, written in names_on_record(courses):
+            answered = mapping.answers.get(key)
+            shown = (answered or UNCONNECTED) if key in mapping.answers else UNANSWERED
+            class_id = class_for(written, mapping)
+            if class_id is None:
+                words = NOT_CONNECTED
+            elif class_id == answered:
+                words = CONNECTED_TO.format(name=labels[class_id])
+            else:
+                words = MATCHED_BY_NAME.format(name=labels[class_id])
+            names.append(HomeworkName(key, written, shown, class_id, words))
+    waiting = sum(1 for name in names if name.class_id is None)
+    places = [place for place, name in enumerate(names, start=1) if name.key == at]
+    return templates.TemplateResponse(
+        request,
+        "grade_homework_classes.html",
+        {
+            "said": said,
+            "said_at": places[0] if said is not None and places else None,
+            "year": current[0] if current is not None else "",
+            "names": names,
+            "options": options,
+            "waiting": None
+            if not waiting
+            else ONE_NAME_WAITS
+            if waiting == 1
+            else NAMES_WAIT.format(n=waiting),
+            "introduction": HOMEWORK_NAMES_INTRODUCTION,
+            "classes_come": CLASSES_COME_FROM_REPORTS,
+            "action": HOMEWORK_CLASSES,
+            "unconnected": UNCONNECTED,
+            "remove_connection": REMOVE_CONNECTION,
+            "no_reports": NO_REPORTS_YET,
+            "add_one": ADD_ONE,
+            "marks": state.settings.page_marks,
+        },
+        status_code=status_code,
+    )
+
+
+@family_router.get("/homework-classes", response_class=HTMLResponse)
+def homework_class_names(request: Request, state: State) -> Response:
+    """Route 10: Homework class names, a parent's page, which reads nothing from its address."""
+    return homework_classes_page(request, state)
+
+
+@family_router.post("/homework-classes", response_class=HTMLResponse)
+async def connect_homework_class(request: Request, state: State) -> Response:
+    """Route 11: a parent's answer that one homework class name is one class of the current
+    school year, or the removal of its connection, applied only while the page's school year
+    is the current one and the answer the page showed is the one on record, both decided by
+    the record inside its write. A save returns to its own name's heading; a refusal writes
+    nothing."""
+    fields, whole = await fields_of(request, NAME_FIELDS)
+    year, name = fields.get("year", ""), fields.get("name", "")
+    shown, chosen = fields.get("shown", ""), fields.get("class", "")
+    refused = partial(homework_classes_page, request, state, at=name_key(name))
+    if (
+        not whole
+        or not is_school_year(year)
+        or (chosen != UNCONNECTED and CLASS_ID.fullmatch(chosen) is None)
+        or (shown not in (UNANSWERED, UNCONNECTED) and CLASS_ID.fullmatch(shown) is None)
+    ):
+        return refused(said=CHOOSE_A_CLASS, status_code=422)
+    store = state.project_state
+    try:
+        async with state.decision_lock:
+            outcome = store.connect_homework_class(
+                year,
+                name,
+                shown=None if shown == UNANSWERED else shown,
+                chosen=chosen,
+                role=role_of(state),
+            )
+    except HomeworkClassNotOnRecord:
+        return refused(said=CHOOSE_A_CLASS, status_code=422)
+    except GradeTransactionLost as error:
+        logger.warning("A homework class name may not be connected: %s", type(error).__name__)
+        return refused(said=SAVE_UNKNOWN, status_code=500)
+    except GradeReportNotSaved as error:
+        logger.warning("A homework class name was not connected: %s", type(error).__name__)
+        return refused(said=NOT_SAVED, status_code=500)
+    if isinstance(outcome, HomeworkClassChanged | HomeworkYearNotCurrent):
+        return refused(said=NAME_CHANGED, status_code=409)
+    listed = [key for key, _ in names_on_record(one.course for one in store.all_assignments())]
+    key = name_key(name)
+    address = NAME_AT.format(n=listed.index(key) + 1) if key in listed else HOMEWORK_CLASSES
+    return RedirectResponse(address, status_code=303)
 
 
 @dataclass(frozen=True)
