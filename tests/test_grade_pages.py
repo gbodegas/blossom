@@ -1129,8 +1129,8 @@ def test_the_record_lines_rule_is_pinned_and_only_the_school_record_s_folds_carr
         if "record-lines" in page.read_text(encoding="utf-8")
     )
     fold = re.compile(
-        r'<details class="steps">\s*<summary>(School record|Category) details[^\n]*</summary>'
-        r'\s*<ul class="record-lines">'
+        r'<details class="steps(?: update)?">\s*<summary>(School record|Category) details'
+        r'[^\n]*</summary>\s*<ul class="record-lines">'
     )
     review = (TEMPLATES / "grade_review.html").read_text(encoding="utf-8")
     details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
