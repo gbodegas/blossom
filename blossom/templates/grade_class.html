@@ -8,18 +8,23 @@
   by anyone's remembered term: the term grade and the report that supplied it, each result with
   its score as the school wrote it, by due date, newest first, and the dates not confirmed
   apart; then the categories and the term's reports. A class or place not on record says so.
+
+  A result's card is drawn with the parts of a card on her week, in that card's order: the
+  category as the kicker, the title, the due line with the gradebook status as its quieter
+  phrase, the score, where it was last shown, and the school record details under the card's
+  rule. A category the school reported is the kicker; one it left blank, or that wasn't read or
+  copied, says so in the same place as a quiet line.
 #}
 {% macro result(item) %}
   <section class="panel grade-card">
-    <h3><span class="authored-text">{{ item.title }}</span></h3>
-    <p class="note"><span class="authored-text">{{ item.category }}</span></p>
-    <p>{{ item.score }}</p>
-    <p>{{ item.due }}</p>
-    <p>{{ item.status }}</p>
+    <p class="{{ 'course' if item.category_reported else 'source' }}"><span class="authored-text">{{ item.category }}</span></p>
+    <h3 class="card-title"><span class="authored-text">{{ item.title }}</span></h3>
+    <p class="due">{{ item.due }} <span class="source">{{ item.status }}</span></p>
+    <p class="effect">{{ item.score }}</p>
     {% for line in item.showing %}
-      <p class="note">{{ line }}</p>
+      <p class="source">{{ line }}</p>
     {% endfor %}
-    <details class="steps">
+    <details class="steps update">
       <summary>School record details{% if item.cues %}: {{ item.cues|join(", ") }}{% endif %}</summary>
       <ul class="record-lines">
         {% for line in item.record %}

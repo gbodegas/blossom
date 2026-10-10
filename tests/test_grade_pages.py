@@ -812,7 +812,7 @@ def record_details(page: str, title: str) -> tuple[str, str, list[str]]:
     (card,) = [
         card
         for card in result_cards(page)
-        if words(re.findall(r"<h3>.*?</h3>", card, flags=re.DOTALL)[0]) == title
+        if words(re.findall(r"<h3\b[^>]*>.*?</h3>", card, flags=re.DOTALL)[0]) == title
     ]
     (details,) = re.findall(r"<details[^>]*>.*?</details>", card, flags=re.DOTALL)
     summary = re.search(r"<summary>(.*?)</summary>", details, flags=re.DOTALL)
@@ -1129,8 +1129,8 @@ def test_the_record_lines_rule_is_pinned_and_only_the_school_record_s_folds_carr
         if "record-lines" in page.read_text(encoding="utf-8")
     )
     fold = re.compile(
-        r'<details class="steps">\s*<summary>(School record|Category) details[^\n]*</summary>'
-        r'\s*<ul class="record-lines">'
+        r'<details class="steps(?: update)?">\s*<summary>(School record|Category) details'
+        r'[^\n]*</summary>\s*<ul class="record-lines">'
     )
     review = (TEMPLATES / "grade_review.html").read_text(encoding="utf-8")
     details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
@@ -1201,6 +1201,81 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
     details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
     assert details.count('<section class="panel grade-card">') == 1
     assert details.count("<section") == 1
+
+
+CARD_TITLE_RULE = ".card-title {\n  font-size: 1.3rem;\n  margin: 0 0 0.6rem;\n}\n"
+"""A grade card's title, pinned whole: a heading under a section's heading keeps its level and
+takes the size and spacing a week card's title has."""
+WEEK_CARD_RULES = (
+    "h2 {\n  font-size: 1.3rem;\n  font-weight: 600;\n  color: var(--blue-action);\n"
+    "  margin: 0 0 0.6rem;\n}\n",
+    "h3 {\n  font-size: 1.15rem;\n  font-weight: 600;\n  color: var(--text-strong);\n"
+    "  margin: 0.25rem 0 0.35rem;\n}\n",
+    "article h2 {\n  margin-top: 0;\n  color: var(--text-strong);\n}\n",
+    ".course {\n  margin: 0 0 0.1rem;\n  font-family: var(--font-display);\n"
+    "  font-size: 0.78rem;\n  font-weight: 700;\n  letter-spacing: 0.1em;\n"
+    "  text-transform: uppercase;\n  color: var(--rose-ink);\n}\n",
+    ".due {\n  margin: 0.15rem 0 0.35rem;\n  color: var(--text-strong);\n  font-weight: 600;\n}\n",
+    ".due .source {\n  display: inline;\n  margin: 0 0 0 0.75rem;\n  font-weight: 400;\n}\n",
+    ".source {\n  margin: 0.35rem 0 0;\n  color: var(--text-soft);\n  font-size: 0.92rem;\n}\n",
+    ".effect {\n  margin: 0.5rem 0;\n}\n",
+    ".update {\n  margin-top: 0.6rem;\n  padding-top: 0.6rem;\n"
+    "  border-top: 1px solid var(--edge);\n}\n",
+)
+"""The week card's rules a grade card is drawn with, pinned as they stand: its title's size,
+weight and color, its kicker, its due line and the quieter phrase beside it, its ordinary and
+quiet lines, and the rule above its last section."""
+RESULT_CARD = """  <section class="panel grade-card">
+    <p class="{{ 'course' if item.category_reported else 'source' }}"><span class="authored-text">{{ item.category }}</span></p>
+    <h3 class="card-title"><span class="authored-text">{{ item.title }}</span></h3>
+    <p class="due">{{ item.due }} <span class="source">{{ item.status }}</span></p>
+    <p class="effect">{{ item.score }}</p>
+    {% for line in item.showing %}
+      <p class="source">{{ line }}</p>
+    {% endfor %}
+    <details class="steps update">
+"""  # noqa: E501
+"""A result's card on class details, pinned as written, in the week card's order: the category
+as the kicker when the school reported it and as a quiet line when it didn't, the title, the
+due line with the gradebook status as its quieter phrase, the score, where it was last shown,
+and the school record details under the card's rule."""
+REVIEW_ROW = (
+    "              <p class=\"{{ 'course' if shown.category.name.presence.name == 'REPORTED' "
+    'else \'source\' }}">{{ cell(shown.category.name, "Category name") }}</p>\n'
+    '              <h3 class="card-title"><span class="authored-text">'
+    '{{ cell(row.assignment, "Assignment") }}</span></h3>\n'
+)
+"""A result row of the review, pinned as written: its category as the week card's kicker when
+the school reported it and as a quiet line when it didn't, and its title in the week card's
+size."""
+
+
+def test_a_grade_card_is_drawn_with_the_week_card_s_parts_and_one_rule_for_its_title() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "card-title" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("card-title") == 1
+    assert css.count(CARD_TITLE_RULE) == 1
+    for shared in WEEK_CARD_RULES:
+        assert css.count(shared) == 1, shared
+    assert carriers == ["grade_class.html", "grade_review.html"]
+    details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+    assert details.count(RESULT_CARD) == 1
+    assert details.count("card-title") == 1
+    review = (TEMPLATES / "grade_review.html").read_text(encoding="utf-8")
+    assert review.count(REVIEW_ROW) == 1
+    assert review.count("card-title") == 1
+    week = (TEMPLATES / "student_card.html").read_text(encoding="utf-8")
+    assert week.count('<p class="course">{{ assignment.course }}</p>') == 1
+    facts = (TEMPLATES / "student_card_facts.html").read_text(encoding="utf-8")
+    assert facts.count('<p class="due">') == 1
+    assert facts.count('<span class="source">{{ assignment.source_label }}</span>') == 1
+    update = (TEMPLATES / "student_update.html").read_text(encoding="utf-8")
+    assert update.count('<div class="update">') == 1
 
 
 HEADING_RULE = ".grade-heading {\n  margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);\n}\n"
@@ -2402,6 +2477,44 @@ def test_a_category_name_not_reported_reads_as_the_review_says_it(name: Cell, sa
     assert grade_routes.category_line(value) == f"{said}: weight 25.0, average 83.8"
 
 
+NO_LABS_NAME = REPORT.replace("| **Labs** |", "|          |")
+"""Wren's report with the name of its Labs category left blank."""
+
+
+def test_a_reported_category_is_the_kicker_and_one_not_reported_a_quiet_line(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A reported category is the card's kicker. One left blank says so in the same place and
+    the same words, in the quiet line's class, on class details for either reader and on the
+    review's rows."""
+    with at(open_household(tmp_path)) as browser:
+        review = review_page(browser, NO_LABS_NAME)
+        class_id = seeded(browser, draft_of(NO_LABS_NAME))
+        pages = [
+            browser.get(address.format(class_id=class_id, n=1), headers=PAGE).text
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    first_line = re.compile(r'\s*<p class="([^"]*)"><span class="authored-text">([^<]*)</span></p>')
+    for page in pages:
+        cards = page.split('<section class="panel grade-card">')[1:]
+        found = [first_line.match(card) for card in cards]
+        assert [one and one.groups() for one in found] == [
+            ("source", "Category left blank"),
+            ("course", "Homework / Practice"),
+            ("source", "Category left blank"),
+            ("course", "Homework / Practice"),
+        ]
+    above_title = re.compile(r'<p class="([^"]*)">([^<]*)</p>\s*<h3 class="card-title">')
+    rows = [above_title.search(card) for card in result_cards(review) if "<details" in card]
+    assert [one and one.groups() for one in rows] == [
+        ("course", "Homework / Practice"),
+        ("course", "Homework / Practice"),
+        ("source", "Category name left blank"),
+        ("source", "Category name left blank"),
+    ]
+
+
 def test_class_details_say_category_name_left_blank(tmp_path: pathlib.Path) -> None:
     labs = FIRST_TERM.categories[1].model_copy(update={"name": GradeValue.read("")})
     draft = FIRST_TERM.model_copy(
@@ -2600,7 +2713,11 @@ def test_class_details_show_each_score_cell_the_save_kept(tmp_path: pathlib.Path
     for said in pages:
         for n, (points, most, average) in enumerate(states, start=1):
             line = score_said(points, most, average)
-            assert f"Log {n:02} Homework / Practice {line} Due September 22" in said, (n, said)
+            card = (
+                f"Homework / Practice Log {n:02} Due September 22 Gradebook status: Valid"
+                f" {line} School record details"
+            )
+            assert card in said, (n, said)
 
 
 STATUS_CELLS: Final[dict[Presence, tuple[Cell, str]]] = {
@@ -2643,14 +2760,14 @@ def test_class_details_say_a_status_left_blank_or_not_in_the_copy(tmp_path: path
         ]
 
     cards = [
-        "Osmosis with Potato Slices Labs School score: 31.0 / 40.0 · 77.5% Due October 2"
-        " Gradebook status not in the copy",
-        "Cell Diagram Homework / Practice School score: 7.0 / 10.0 · 70.0% Due September 26"
-        " Gradebook status: Missing",
-        "Microscope Practice Labs School score: 27.0 / 30.0 · 90.0% Due September 24"
-        " Gradebook status not in the copy",
-        "Seed Germination Log Homework / Practice School score: 18.0 / 20.0 · 90.0%"
-        " Due September 22 Gradebook status left blank",
+        "Labs Osmosis with Potato Slices Due October 2 Gradebook status not in the copy"
+        " School score: 31.0 / 40.0 · 77.5%",
+        "Homework / Practice Cell Diagram Due September 26 Gradebook status: Missing"
+        " School score: 7.0 / 10.0 · 70.0%",
+        "Labs Microscope Practice Due September 24 Gradebook status not in the copy"
+        " School score: 27.0 / 30.0 · 90.0%",
+        "Homework / Practice Seed Germination Log Due September 22 Gradebook status left blank"
+        " School score: 18.0 / 20.0 · 90.0%",
     ]
     for said in pages:
         for card in cards:
