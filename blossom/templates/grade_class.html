@@ -21,7 +21,7 @@
     {% endfor %}
     <details class="steps">
       <summary>School record details{% if item.cues %}: {{ item.cues|join(", ") }}{% endif %}</summary>
-      <ul>
+      <ul class="record-lines">
         {% for line in item.record %}
           <li><span class="authored-text">{{ line }}</span></li>
         {% endfor %}
@@ -54,7 +54,7 @@
     {% if categories %}
       <details class="steps">
         <summary>Category details</summary>
-        <ul>
+        <ul class="record-lines">
           {% for line in categories %}
             <li><span class="authored-text">{{ line }}</span></li>
           {% endfor %}
