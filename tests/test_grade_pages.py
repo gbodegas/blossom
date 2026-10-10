@@ -600,7 +600,11 @@ def test_edit_this_text_is_its_own_form_holding_one_copy_of_the_text(
 
     assert form.count('name="') == 1
     assert 'name="report_text"' in form
-    assert "Edit this text" in form
+    assert form.startswith(' id="edit-text">')
+    assert "<button" not in form
+    assert page.count('id="edit-text"') == 1
+    assert page.count(' form="edit-text">Edit this text</button>') == 1
+    assert page.count("Edit this text") == 1
 
 
 def test_the_review_carries_the_text_whole_with_its_leading_line_break(
@@ -824,7 +828,7 @@ def record_details(page: str, title: str) -> tuple[str, str, list[str]]:
     (card,) = [
         card
         for card in result_cards(page)
-        if words(re.findall(r"<h3>.*?</h3>", card, flags=re.DOTALL)[0]) == title
+        if words(re.findall(r"<h3\b[^>]*>.*?</h3>", card, flags=re.DOTALL)[0]) == title
     ]
     (details,) = re.findall(r"<details[^>]*>.*?</details>", card, flags=re.DOTALL)
     summary = re.search(r"<summary>(.*?)</summary>", details, flags=re.DOTALL)
@@ -1117,12 +1121,62 @@ def test_the_grade_review_s_own_rule_is_pinned_and_only_its_form_carries_its_cla
         if "grade-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("grade-review") == 8
+    assert css.count("grade-review") == 9
     assert css.count(GRADE_REVIEW_RULE) == 1
     assert css.count(IDENTITY_RULES) == 1
     assert css.count(CARD_RULES) == 1
     assert css.count(SHARED_CHOICE_RULE) == 1
     assert carriers == ["grade_review.html"]
+
+
+RECORD_LINES_RULE = ".record-lines {\n  margin-top: 0;\n}\n"
+"""The list in a school record's fold, pinned whole: on the review and on class details it
+starts under its summary as far as its items sit apart."""
+WAY_BACK_RULE = ".grade-review + .return {\n  margin-top: 1rem;\n}\n"
+"""The way back under the review's closing buttons, pinned whole: its press area stays clear
+of the buttons."""
+
+
+def test_the_record_lines_rule_is_pinned_and_only_the_school_record_s_folds_carry_it() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "record-lines" in page.read_text(encoding="utf-8")
+    )
+    fold = re.compile(
+        r'<details class="steps(?: update)?">\s*<summary>(School record|Category) details'
+        r'[^\n]*</summary>\s*<ul class="record-lines">'
+    )
+    review = (TEMPLATES / "grade_review.html").read_text(encoding="utf-8")
+    details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+
+    assert css.count("record-lines") == 1
+    assert css.count(RECORD_LINES_RULE) == 1
+    assert carriers == ["grade_class.html", "grade_review.html"]
+    assert fold.findall(review) == ["School record"]
+    assert review.count("record-lines") == 1
+    assert fold.findall(details) == ["School record", "Category"]
+    assert details.count("record-lines") == 2
+
+
+def test_the_review_s_closing_buttons_are_one_group_with_the_way_back_under_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    page = reviewed(tmp_path)
+    form, after = page.split('class="review-form grade-review">', 1)[1].split("</form>", 1)
+    group = form.rsplit('<div class="actions">', 1)[1].split("</div>", 1)[0]
+
+    assert css.count(WAY_BACK_RULE) == 1
+    assert page.count('<div class="actions">') == 1
+    assert re.findall(r"<button ([^>]*)>([^<]*)</button>", group) == [
+        ('type="submit" class="primary"', "Save selected results"),
+        (f'type="submit" class="secondary" formaction="{CHECK}"', "Check these answers"),
+        ('type="submit" class="secondary" form="edit-text"', "Edit this text"),
+    ]
+    way_back = f'<p class="return"><a href="{ADD}">Paste a different report</a></p>'
+    assert after.lstrip().startswith(way_back)
 
 
 def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_page_carries_its_class() -> None:
@@ -1166,6 +1220,81 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
     details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
     assert details.count('<section class="panel grade-card">') == 1
     assert details.count("<section") == 1
+
+
+CARD_TITLE_RULE = ".card-title {\n  font-size: 1.3rem;\n  margin: 0 0 0.6rem;\n}\n"
+"""A grade card's title, pinned whole: a heading under a section's heading keeps its level and
+takes the size and spacing a week card's title has."""
+WEEK_CARD_RULES = (
+    "h2 {\n  font-size: 1.3rem;\n  font-weight: 600;\n  color: var(--blue-action);\n"
+    "  margin: 0 0 0.6rem;\n}\n",
+    "h3 {\n  font-size: 1.15rem;\n  font-weight: 600;\n  color: var(--text-strong);\n"
+    "  margin: 0.25rem 0 0.35rem;\n}\n",
+    "article h2 {\n  margin-top: 0;\n  color: var(--text-strong);\n}\n",
+    ".course {\n  margin: 0 0 0.1rem;\n  font-family: var(--font-display);\n"
+    "  font-size: 0.78rem;\n  font-weight: 700;\n  letter-spacing: 0.1em;\n"
+    "  text-transform: uppercase;\n  color: var(--rose-ink);\n}\n",
+    ".due {\n  margin: 0.15rem 0 0.35rem;\n  color: var(--text-strong);\n  font-weight: 600;\n}\n",
+    ".due .source {\n  display: inline;\n  margin: 0 0 0 0.75rem;\n  font-weight: 400;\n}\n",
+    ".source {\n  margin: 0.35rem 0 0;\n  color: var(--text-soft);\n  font-size: 0.92rem;\n}\n",
+    ".effect {\n  margin: 0.5rem 0;\n}\n",
+    ".update {\n  margin-top: 0.6rem;\n  padding-top: 0.6rem;\n"
+    "  border-top: 1px solid var(--edge);\n}\n",
+)
+"""The week card's rules a grade card is drawn with, pinned as they stand: its title's size,
+weight and color, its kicker, its due line and the quieter phrase beside it, its ordinary and
+quiet lines, and the rule above its last section."""
+RESULT_CARD = """  <section class="panel grade-card">
+    <p class="{{ 'course' if item.category_reported else 'source' }}"><span class="authored-text">{{ item.category }}</span></p>
+    <h3 class="card-title"><span class="authored-text">{{ item.title }}</span></h3>
+    <p class="due">{{ item.due }} <span class="source">{{ item.status }}</span></p>
+    <p class="effect">{{ item.score }}</p>
+    {% for line in item.showing %}
+      <p class="source">{{ line }}</p>
+    {% endfor %}
+    <details class="steps update">
+"""  # noqa: E501
+"""A result's card on class details, pinned as written, in the week card's order: the category
+as the kicker when the school reported it and as a quiet line when it didn't, the title, the
+due line with the gradebook status as its quieter phrase, the score, where it was last shown,
+and the school record details under the card's rule."""
+REVIEW_ROW = (
+    "              <p class=\"{{ 'course' if shown.category.name.presence.name == 'REPORTED' "
+    'else \'source\' }}">{{ cell(shown.category.name, "Category name") }}</p>\n'
+    '              <h3 class="card-title"><span class="authored-text">'
+    '{{ cell(row.assignment, "Assignment") }}</span></h3>\n'
+)
+"""A result row of the review, pinned as written: its category as the week card's kicker when
+the school reported it and as a quiet line when it didn't, and its title in the week card's
+size."""
+
+
+def test_a_grade_card_is_drawn_with_the_week_card_s_parts_and_one_rule_for_its_title() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "card-title" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("card-title") == 1
+    assert css.count(CARD_TITLE_RULE) == 1
+    for shared in WEEK_CARD_RULES:
+        assert css.count(shared) == 1, shared
+    assert carriers == ["grade_class.html", "grade_review.html"]
+    details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+    assert details.count(RESULT_CARD) == 1
+    assert details.count("card-title") == 1
+    review = (TEMPLATES / "grade_review.html").read_text(encoding="utf-8")
+    assert review.count(REVIEW_ROW) == 1
+    assert review.count("card-title") == 1
+    week = (TEMPLATES / "student_card.html").read_text(encoding="utf-8")
+    assert week.count('<p class="course">{{ assignment.course }}</p>') == 1
+    facts = (TEMPLATES / "student_card_facts.html").read_text(encoding="utf-8")
+    assert facts.count('<p class="due">') == 1
+    assert facts.count('<span class="source">{{ assignment.source_label }}</span>') == 1
+    update = (TEMPLATES / "student_update.html").read_text(encoding="utf-8")
+    assert update.count('<div class="update">') == 1
 
 
 HEADING_RULE = ".grade-heading {\n  margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);\n}\n"
@@ -2367,6 +2496,44 @@ def test_a_category_name_not_reported_reads_as_the_review_says_it(name: Cell, sa
     assert grade_routes.category_line(value) == f"{said}: weight 25.0, average 83.8"
 
 
+NO_LABS_NAME = REPORT.replace("| **Labs** |", "|          |")
+"""Wren's report with the name of its Labs category left blank."""
+
+
+def test_a_reported_category_is_the_kicker_and_one_not_reported_a_quiet_line(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A reported category is the card's kicker. One left blank says so in the same place and
+    the same words, in the quiet line's class, on class details for either reader and on the
+    review's rows."""
+    with at(open_household(tmp_path)) as browser:
+        review = review_page(browser, NO_LABS_NAME)
+        class_id = seeded(browser, draft_of(NO_LABS_NAME))
+        pages = [
+            browser.get(address.format(class_id=class_id, n=1), headers=PAGE).text
+            for address in (HER_CLASS_AT, CLASS_AT)
+        ]
+
+    first_line = re.compile(r'\s*<p class="([^"]*)"><span class="authored-text">([^<]*)</span></p>')
+    for page in pages:
+        cards = page.split('<section class="panel grade-card">')[1:]
+        found = [first_line.match(card) for card in cards]
+        assert [one and one.groups() for one in found] == [
+            ("source", "Category left blank"),
+            ("course", "Homework / Practice"),
+            ("source", "Category left blank"),
+            ("course", "Homework / Practice"),
+        ]
+    above_title = re.compile(r'<p class="([^"]*)">([^<]*)</p>\s*<h3 class="card-title">')
+    rows = [above_title.search(card) for card in result_cards(review) if "<details" in card]
+    assert [one and one.groups() for one in rows] == [
+        ("course", "Homework / Practice"),
+        ("course", "Homework / Practice"),
+        ("source", "Category name left blank"),
+        ("source", "Category name left blank"),
+    ]
+
+
 def test_class_details_say_category_name_left_blank(tmp_path: pathlib.Path) -> None:
     labs = FIRST_TERM.categories[1].model_copy(update={"name": GradeValue.read("")})
     draft = FIRST_TERM.model_copy(
@@ -2565,7 +2732,11 @@ def test_class_details_show_each_score_cell_the_save_kept(tmp_path: pathlib.Path
     for said in pages:
         for n, (points, most, average) in enumerate(states, start=1):
             line = score_said(points, most, average)
-            assert f"Log {n:02} Homework / Practice {line} Due September 22" in said, (n, said)
+            card = (
+                f"Homework / Practice Log {n:02} Due September 22 Gradebook status: Valid"
+                f" {line} School record details"
+            )
+            assert card in said, (n, said)
 
 
 STATUS_CELLS: Final[dict[Presence, tuple[Cell, str]]] = {
@@ -2608,14 +2779,14 @@ def test_class_details_say_a_status_left_blank_or_not_in_the_copy(tmp_path: path
         ]
 
     cards = [
-        "Osmosis with Potato Slices Labs School score: 31.0 / 40.0 · 77.5% Due October 2"
-        " Gradebook status not in the copy",
-        "Cell Diagram Homework / Practice School score: 7.0 / 10.0 · 70.0% Due September 26"
-        " Gradebook status: Missing",
-        "Microscope Practice Labs School score: 27.0 / 30.0 · 90.0% Due September 24"
-        " Gradebook status not in the copy",
-        "Seed Germination Log Homework / Practice School score: 18.0 / 20.0 · 90.0%"
-        " Due September 22 Gradebook status left blank",
+        "Labs Osmosis with Potato Slices Due October 2 Gradebook status not in the copy"
+        " School score: 31.0 / 40.0 · 77.5%",
+        "Homework / Practice Cell Diagram Due September 26 Gradebook status: Missing"
+        " School score: 7.0 / 10.0 · 70.0%",
+        "Labs Microscope Practice Due September 24 Gradebook status not in the copy"
+        " School score: 27.0 / 30.0 · 90.0%",
+        "Homework / Practice Seed Germination Log Due September 22 Gradebook status left blank"
+        " School score: 18.0 / 20.0 · 90.0%",
     ]
     for said in pages:
         for card in cards:
@@ -3768,6 +3939,16 @@ def test_the_text_and_its_key_each_come_once_whether_or_not_the_text_changed(
     assert after == before
 
 
+def class_question(page: str) -> str:
+    """The class question as the review's page writes it."""
+    return page.split('id="class-question"', 1)[1].split("</fieldset>", 1)[0]
+
+
+def classes_checked(page: str) -> list[str]:
+    """Each class choice the review's page shows checked."""
+    return re.findall(r'name="class" value="([^"]*)" checked', class_question(page))
+
+
 def checked_in_her_class(browser: TestClient) -> dict[str, str]:
     """The other section's review checked with "It's the same class as" her saved class, the
     name answered and nothing ticked: the page it returns asks its rows' questions in that
@@ -3778,6 +3959,7 @@ def checked_in_her_class(browser: TestClient) -> dict[str, str]:
     form = {**unticked(sent_from(page)), "identity": "confirmed", "class": offered[-1]}
     checked = browser.post(CHECK, data=form, headers=PAGE)
     assert checked.status_code == 200, checked.text[:300]
+    assert classes_checked(checked.text) == [offered[-1]]
     again = sent_from(checked.text)
     assert again["class"] == offered[-1]
     assert {"candidates.5", "choices.6"} <= again.keys()
@@ -4908,8 +5090,80 @@ def test_a_page_returned_for_the_name_drops_a_class_another_tab_saved_into(
     now = [value for _, name, value in form_values(answer.text, SAVE) if name == "class"]
     assert offered[-1] not in now
     assert "class" not in sent_from(answer.text)
+    assert classes_checked(answer.text) == []
     assert problem_said(answer.text).endswith(grade_routes.TEXT_KEPT_ANSWER_AGAIN)
     assert not kept_as_said(form, answer.text)
+    assert after == before
+
+
+# ------------------------------------------------------------- the class a fresh review checks
+
+SECOND_CLASS = OTHER_CLASS.replace("| **Biology** |", "| **Chemistry** |")
+"""Wren's report as a second class's, under its own code and name."""
+
+
+@pytest.mark.parametrize("saved", [True, False], ids=["saved classes offered", "no saved class"])
+def test_a_fresh_review_checks_name_for_this_class_holding_the_report_s_class_name(
+    saved: bool, tmp_path: pathlib.Path
+) -> None:
+    """A fresh review that asks the class checks "Name for this class" alone, the report's
+    class name in its field, and the page sent as shown saves a class by that name."""
+    with at(open_household(tmp_path)) as browser:
+        if saved:
+            first_saved(browser)
+        page = review_page(browser, SECOND_CLASS)
+        _, said = outcome_of(browser, as_sent(page))
+        grades = words(browser.get(GRADES, headers=PAGE).text)
+
+    asked = class_question(page)
+    assert ("It's the same class as" in asked) == saved
+    assert classes_checked(page) == ["new"]
+    assert asked.count(" checked") == 1
+    assert 'name="class_name" maxlength="60" size="12" value="Chemistry"' in asked
+    assert "Chemistry" in said
+    assert "Chemistry" in grades
+    assert ("Biology" in grades) == saved
+
+
+def test_a_fresh_review_offering_saved_classes_preselects_no_answer_about_the_name(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        first_saved(browser)
+        page = review_page(browser, OTHER_SECTION)
+    about = page.split('id="about-this-report"', 1)[1].split("</fieldset>", 1)[0]
+
+    assert 'name="identity" value="confirmed"' in about
+    assert "checked" not in about
+    assert "identity" not in sent_from(page)
+    assert classes_checked(page) == ["new"]
+
+
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+@pytest.mark.parametrize("sent", ["the same class", "no class"])
+def test_a_returned_review_checks_the_class_choice_as_sent_and_never_the_fresh_one(
+    route: str, sent: str, tmp_path: pathlib.Path
+) -> None:
+    """A returned review shows the class choice the page sent: the same class stays checked,
+    and a page that sent none comes back with none checked and the class marked to choose."""
+    settings = open_household(tmp_path)
+    with at(settings) as browser:
+        first_saved(browser)
+        page = review_page(browser, OTHER_SECTION)
+        same = [value for _, name, value in form_values(page, SAVE) if name == "class"][-1]
+        form = {**unticked(sent_from(page)), "class": same}
+        if sent == "no class":
+            del form["class"]
+            form["identity"] = "confirmed"
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = closed_world([database(settings)], leaving_out=())
+
+    assert answer.status_code == 422, answer.text[:300]
+    assert classes_checked(answer.text) == ([same] if sent == "the same class" else [])
+    if sent == "no class":
+        assert problem_said(answer.text).startswith(grade_routes.CHOOSE_CLASS)
+    assert answers_sent(sent_from(answer.text)) == answers_sent(form)
     assert after == before
 
 

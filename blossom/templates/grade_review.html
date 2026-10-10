@@ -104,7 +104,7 @@
         {% else %}
           <fieldset class="choice" id="class-question">
             <legend>Class</legend>
-            <label><input type="radio" name="class" value="new"{% if (fresh and not question.existing) or p.get("class") == "new" %} checked{% endif %}> <span>Name for this class</span></label>
+            <label><input type="radio" name="class" value="new"{% if fresh or p.get("class") == "new" %} checked{% endif %}> <span>Name for this class</span></label>
             <div class="field">
               <input id="class-name" type="text" name="class_name" maxlength="{{ class_name_limit }}" size="12" value="{{ p['class_name'] if 'class_name' in p else question.offered_name }}" aria-label="Name for this class">
             </div>
@@ -145,8 +145,8 @@
               <h3><span class="authored-text">{{ cell(category.name, "Category name") }}</span>: {{ cell(category.weight, "weight", named=true) }}, {{ cell(category.average, "average", named=true) }}</h3>
             {% elif shown.kind == "row" %}
               {% set row = shown.row %}
-              <p class="course-name">{{ cell(shown.category.name, "Category name") }}</p>
-              <h3><span class="authored-text">{{ cell(row.assignment, "Assignment") }}</span></h3>
+              <p class="{{ 'course' if shown.category.name.presence.name == 'REPORTED' else 'source' }}">{{ cell(shown.category.name, "Category name") }}</p>
+              <h3 class="card-title"><span class="authored-text">{{ cell(row.assignment, "Assignment") }}</span></h3>
               <p class="effect">School score: {{ cell(row.points) }} / {{ cell(row.max_points, "maximum") }} · {{ cell(row.status, "Status") }} · Due date shown: {{ cell(row.due) }}</p>
             {% endif %}
             <p class="status">
@@ -160,7 +160,7 @@
               {% set record = school_record(shown.category, shown.row) %}
               <details class="steps">
                 <summary>School record details{% if record.cues %}: {{ record.cues|join(", ") }}{% endif %}</summary>
-                <ul>
+                <ul class="record-lines">
                   {% for line in record.lines %}
                     <li><span class="authored-text">{{ line }}</span></li>
                   {% endfor %}
@@ -221,17 +221,18 @@
       <div class="actions">
         <button type="submit" class="primary">Save selected results</button>
         <button type="submit" class="secondary" formaction="{{ check }}">Check these answers</button>
+        <button type="submit" class="secondary" form="edit-text">Edit this text</button>
       </div>
     </div>
   </form>
+  <p class="return"><a href="{{ add }}">Paste a different report</a></p>
 
-  {# A form of its own, holding one copy of the text and nothing else. #}
-  <form method="post" action="{{ edit }}" class="decision">
+  {#
+    A form of its own, holding one copy of the text and nothing else. Edit this text, among
+    the review's buttons, sends it.
+  #}
+  <form method="post" action="{{ edit }}" id="edit-text">
     <textarea name="report_text" hidden>
 {{ text }}</textarea>
-    <div class="actions">
-      <button type="submit" class="secondary">Edit this text</button>
-    </div>
   </form>
-  <p class="return"><a href="{{ add }}">Paste a different report</a></p>
 {% endblock %}
