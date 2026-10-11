@@ -69,6 +69,7 @@ from blossom.stores.gradebook import (
     GradeTransactionLost,
 )
 from blossom.stores.paths import SECRET_NAME, UnsafeCheckpointPath
+from blossom.stores.project_state import AssignmentKind
 from tests.support import (
     FIXTURE_TIMEZONE,
     FIXTURES,
@@ -89,6 +90,7 @@ from tests.support import (
     form_values,
     grade_answers,
     homework_named,
+    main_of,
     rules_reaching,
     save_grade,
     signed_in,
@@ -5557,18 +5559,232 @@ def test_homework_class_names_lists_each_name_once_with_its_state_and_one_choose
     assert asked.text == page.text
 
 
-def test_with_no_class_on_record_the_page_says_no_grade_reports_yet(
-    tmp_path: pathlib.Path,
+ADD_A_REPORT = "Add a grade report to connect these homework names to her classes."
+NEXT_YEAR = "2027-2028"
+"""A school year typed at the first save, which holds no class: the report's class is in its
+own year."""
+WITHOUT_A_CLASS = ["no school year", "a school year with no class"]
+CONTROLS = ("<form", "<input", "<label", "<select", "<option", "<button", "<a ")
+
+
+def no_fixture_week(tmp_path: pathlib.Path) -> Settings:
+    """The pinned day with sign-in off and no fixture week, so no homework is on record."""
+    return fixture_settings(
+        BLOSSOM_TODAY=PLAN_DATE.isoformat(), BLOSSOM_FIXTURE_PATH="", **files_in(tmp_path)
+    )
+
+
+@contextmanager
+def nothing_to_choose(
+    settings: Settings, kind: str, *, homework: tuple[str, ...] = (), tasks: tuple[str, ...] = ()
+) -> Iterator[TestClient]:
+    """The household's own computer with homework on record under each of ``homework``, a task
+    under each of ``tasks``, and no class a name could be: no school year at all, or a current
+    school year that holds none."""
+    with at(settings) as browser:
+        store = store_of(browser)
+        if kind == "a school year with no class":
+            review = store.review_grade_report(
+                NAMES_BIOLOGY, capture_key(NAMES_BIOLOGY), key=SEED_KEY
+            )
+            typed = replace(grade_answers(review), setup=(NEXT_YEAR, "T1"))
+            saved = save_grade(store, NAMES_BIOLOGY, key=SEED_KEY, review=review, answers=typed)
+            assert isinstance(saved, GradeReportSaved), saved
+        current = store.grade_contexts().current
+        assert current == (None if kind == "no school year" else (NEXT_YEAR, "T1"))
+        assert current is None or store.homework_classes(current[0]).classes == ()
+        work = [homework_named(course, f"homework-named-{n}") for n, course in enumerate(homework)]
+        work += [
+            homework_named(course, f"task-named-{n}").model_copy(
+                update={"kind": AssignmentKind.TASK}
+            )
+            for n, course in enumerate(tasks)
+        ]
+        store.put_on_record(work, {})
+        yield browser
+
+
+def said_from_the_heading(page: str) -> str:
+    """Homework class names as the words it reads, from its heading to the end of its main
+    part."""
+    return words("<h1>" + main_of(page).split("<h1>", 1)[1])
+
+
+@pytest.mark.parametrize("kind", WITHOUT_A_CLASS)
+def test_with_no_class_to_choose_one_name_waits_under_the_count_and_one_sentence(
+    kind: str, tmp_path: pathlib.Path
 ) -> None:
-    with naming(open_household(tmp_path), homework=("Geometry",)) as browser:
+    """The whole page: the count in the singular, the sentence about grade reports once, and
+    the name's block, with nothing to choose or send."""
+    with nothing_to_choose(no_fixture_week(tmp_path), kind, homework=("Geometry",)) as browser:
+        page = browser.get(HOMEWORK_CLASSES, headers=PAGE)
+    blocks = name_blocks(page.text)
+
+    assert page.status_code == 200
+    assert said_from_the_heading(page.text) == (
+        "Homework class names 1 homework class name isn't connected to a class yet. "
+        f"{ADD_A_REPORT} Geometry {NOT_CONNECTED}"
+    )
+    assert page.text.count(f'<p class="note">{ADD_A_REPORT}</p>') == 1
+    heading = '<h2 id="name-1" tabindex="-1"><span class="authored-text">Geometry</span></h2>'
+    assert len(blocks) == 1
+    assert heading in blocks[0]
+    assert state_of_name(blocks[0]) == NOT_CONNECTED
+    assert [control for control in CONTROLS if control in main_of(page.text)] == []
+
+
+@pytest.mark.parametrize("kind", WITHOUT_A_CLASS)
+def test_with_no_class_to_choose_every_name_on_record_waits_in_the_page_s_order(
+    kind: str, tmp_path: pathlib.Path
+) -> None:
+    """Spellings that fold alike are one block, a task's class name is listed, and a name that
+    holds markup is written as text."""
+    markup = "<b>Art</b> & Design"
+    homework = ("geometry", "Geometry", "GEOMETRY", "Biology", markup)
+    settings = no_fixture_week(tmp_path)
+    with nothing_to_choose(settings, kind, homework=homework, tasks=("Chorus",)) as browser:
+        courses = [one.course for one in store_of(browser).all_assignments()]
+        page = browser.get(HOMEWORK_CLASSES, headers=PAGE)
+    blocks = name_blocks(page.text)
+    names = [markup, "Biology", "Chorus", "GEOMETRY"]
+
+    assert page.status_code == 200
+    assert [written for _, written in grade_routes.names_on_record(courses)] == names
+    assert said_from_the_heading(page.text) == " ".join(
+        [
+            "Homework class names",
+            "4 homework class names aren't connected to a class yet.",
+            ADD_A_REPORT,
+            *[f"{name} {NOT_CONNECTED}" for name in names],
+        ]
+    )
+    assert page.text.count(f'<p class="note">{ADD_A_REPORT}</p>') == 1
+    assert [name_of(block) for block in blocks] == names
+    assert [state_of_name(block) for block in blocks] == [NOT_CONNECTED] * 4
+    for place, (name, block) in enumerate(zip(names, blocks, strict=True), start=1):
+        heading = f'<h2 id="name-{place}" tabindex="-1"><span class="authored-text">'
+        assert f"{heading}{escape(name)}</span></h2>" in block
+    assert "<b>" not in page.text
+    assert [control for control in CONTROLS if control in main_of(page.text)] == []
+
+
+@pytest.mark.parametrize("kind", WITHOUT_A_CLASS)
+def test_with_no_class_and_no_homework_on_record_the_page_says_no_grade_reports_yet(
+    kind: str, tmp_path: pathlib.Path
+) -> None:
+    with nothing_to_choose(no_fixture_week(tmp_path), kind) as browser:
         page = browser.get(HOMEWORK_CLASSES, headers=PAGE)
 
     assert page.status_code == 200
     assert "<h1>Homework class names</h1>" in page.text
-    assert "No grade reports yet. Add one to start." in words(page.text)
+    assert said_from_the_heading(page.text) == (
+        "Homework class names No grade reports yet. Add one to start."
+    )
     assert name_blocks(page.text) == []
     assert "<form " not in page.text.split("<main", 1)[1]
     assert "connected" not in words(page.text)
+
+
+def test_with_a_class_and_no_homework_on_record_the_page_is_its_heading_and_introduction(
+    tmp_path: pathlib.Path,
+) -> None:
+    with naming(no_fixture_week(tmp_path), NAMES_BIOLOGY) as browser:
+        page = browser.get(HOMEWORK_CLASSES, headers=PAGE)
+
+    assert page.status_code == 200
+    assert said_from_the_heading(page.text) == f"Homework class names {INTRODUCTION}"
+    assert name_blocks(page.text) == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "changed", "status", "place"),
+    [
+        ("no school year", {}, 422, 2),
+        ("no school year", {"class": ""}, 422, 2),
+        ("no school year", {"name": "Latin"}, 422, None),
+        ("a school year with no class", {}, 422, 2),
+        ("a school year with no class", {"year": "2026-2027"}, 409, 2),
+        ("a school year with no class", {"name": "Latin"}, 422, None),
+    ],
+)
+def test_with_no_class_to_choose_a_post_is_refused_at_its_name_and_writes_nothing(
+    kind: str, changed: dict[str, str], status: int, place: int | None, tmp_path: pathlib.Path
+) -> None:
+    """A name on the page hears the sentence in its block; one that isn't, first on the page.
+    The whole file reads byte for byte the same."""
+    settings = no_fixture_week(tmp_path)
+    year = "2026-2027" if kind == "no school year" else NEXT_YEAR
+    sent = {"year": year, "name": "Geometry", "shown": "unanswered", "class": NO_CLASS}
+    said = NAME_CHANGED if status == 409 else CHOOSE_A_CLASS
+    with nothing_to_choose(settings, kind, homework=("Biology", "Geometry")) as browser:
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(HOMEWORK_CLASSES, data={**sent, **changed})
+        after = closed_world([database(settings)], leaving_out=())
+    blocks = name_blocks(answer.text)
+    first = "" if place else f"{said} "
+
+    assert answer.status_code == status
+    assert after == before
+    assert any(name.endswith("rows of assignments") for name in before)
+    assert any(name.endswith(f"rows of {MAPPING}") for name in before)
+    assert said_from_the_heading(answer.text).startswith(
+        f"Homework class names {first}2 homework class names aren't connected to a class yet. "
+        f"{ADD_A_REPORT} Biology {NOT_CONNECTED}"
+    )
+    assert words(answer.text).count(said) == 1
+    assert answer.text.count('<p class="problem" role="alert" id="problem">') == 1
+    assert [said in words(one) for one in blocks] == [n == place for n in (1, 2)]
+    assert [control for control in CONTROLS if control in main_of(answer.text)] == []
+
+
+@pytest.mark.parametrize(
+    ("year", "status", "said"),
+    [("2026-2027", 409, NAME_CHANGED), (NEXT_YEAR, 422, CHOOSE_A_CLASS)],
+)
+def test_an_answer_naming_a_class_of_another_school_year_is_refused_at_its_name(
+    year: str, status: int, said: str, tmp_path: pathlib.Path
+) -> None:
+    """The current school year holds no class. The answer names a class on record, in the
+    school year a page of its own year sends or in the current one, and writes nothing."""
+    settings = no_fixture_week(tmp_path)
+    kind, homework = "a school year with no class", ("Geometry", "Latin")
+    with nothing_to_choose(settings, kind, homework=homework) as browser:
+        biology = capture_class(store_of(browser), NAMES_BIOLOGY)
+        sent = {"year": year, "name": "Latin", "shown": "unanswered", "class": biology}
+        before = closed_world([database(settings)], leaving_out=())
+        answer = browser.post(HOMEWORK_CLASSES, data=sent)
+        after = closed_world([database(settings)], leaving_out=())
+    blocks = name_blocks(answer.text)
+
+    assert answer.status_code == status
+    assert after == before
+    assert before[f"{database(settings).name} rows of {MAPPING}"] == []
+    assert [name_of(one) for one in blocks] == ["Geometry", "Latin"]
+    assert [said in words(one) for one in blocks] == [False, True]
+    assert words(answer.text).count(said) == 1
+    assert [state_of_name(one) for one in blocks] == [NOT_CONNECTED] * 2
+    assert [control for control in CONTROLS if control in main_of(answer.text)] == []
+
+
+@pytest.mark.parametrize("homework", [(), ("Geometry",)])
+@pytest.mark.parametrize("kind", [*WITHOUT_A_CLASS, "a class"])
+def test_a_parent_s_grades_shows_the_link_and_no_count_whatever_is_on_record(
+    kind: str, homework: tuple[str, ...], tmp_path: pathlib.Path
+) -> None:
+    settings = no_fixture_week(tmp_path)
+    household = (
+        naming(settings, NAMES_BIOLOGY, homework=homework)
+        if kind == "a class"
+        else nothing_to_choose(settings, kind, homework=homework)
+    )
+    with household as browser:
+        family = browser.get(GRADES, headers=PAGE).text
+        hers = browser.get(HER_GRADES, headers=PAGE).text
+
+    assert family.count(f'<a href="{HOMEWORK_CLASSES}">Homework class names</a>') == 1
+    assert "connected" not in words(family)
+    assert "homework names" not in words(family)
+    assert HOMEWORK_CLASSES not in hers
 
 
 def test_a_parent_s_grades_gains_the_link_and_no_count(tmp_path: pathlib.Path) -> None:

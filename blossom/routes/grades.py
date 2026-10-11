@@ -1799,6 +1799,10 @@ NAMES_WAIT: Final = "{n} homework class names aren't connected to a class yet."
 CLASSES_COME_FROM_REPORTS: Final = (
     "Classes come from grade reports. A name can wait until a report for its class is added."
 )
+ADD_A_REPORT_TO_CONNECT: Final = (
+    "Add a grade report to connect these homework names to her classes."
+)
+"""Said once, after the count, where there is no class to choose."""
 MATCHED_BY_NAME: Final = "Matched by name to {name}."
 CONNECTED_TO: Final = "Connected to {name}."
 NOT_CONNECTED: Final = "Not connected yet."
@@ -2236,32 +2240,30 @@ def homework_classes_page(
 ) -> Response:
     """Homework class names for a parent: each name the homework on record carries, with the
     class of the current school year it is and one chooser, which on a name with a class also
-    offers to remove the connection, and how many names wait. ``said``
-    is shown at the name whose key is ``at``, or first on the page when no name listed has it.
-    A read alone."""
+    offers to remove the connection, and how many names wait. With no class to choose, every
+    name waits and none has a chooser. ``said`` is shown at the name whose key is ``at``, or
+    first on the page when no name listed has it. A read alone."""
     store = state.project_state
     current = store.grade_contexts().current
+    mapping = None if current is None else store.homework_classes(current[0])
+    labels = {} if mapping is None else class_labels(mapping.classes)
+    answers = {} if mapping is None else mapping.answers
+    options = sorted(
+        ((class_id, label) for class_id, label in labels.items()),
+        key=lambda option: (name_key(option[1]), option[0]),
+    )
     names: list[HomeworkName] = []
-    options: list[tuple[str, str]] = []
-    if current is not None:
-        mapping = store.homework_classes(current[0])
-        labels = class_labels(mapping.classes)
-        options = sorted(
-            ((class_id, label) for class_id, label in labels.items()),
-            key=lambda option: (name_key(option[1]), option[0]),
-        )
-        courses = [assignment.course for assignment in store.all_assignments()] if options else []
-        for key, written in names_on_record(courses):
-            answered = mapping.answers.get(key)
-            shown = (answered or UNCONNECTED) if key in mapping.answers else UNANSWERED
-            class_id = class_for(written, mapping)
-            if class_id is None:
-                words = NOT_CONNECTED
-            elif class_id == answered:
-                words = CONNECTED_TO.format(name=labels[class_id])
-            else:
-                words = MATCHED_BY_NAME.format(name=labels[class_id])
-            names.append(HomeworkName(key, written, shown, class_id, words))
+    for key, written in names_on_record(one.course for one in store.all_assignments()):
+        answered = answers.get(key)
+        shown = (answered or UNCONNECTED) if key in answers else UNANSWERED
+        class_id = None if mapping is None else class_for(written, mapping)
+        if class_id is None:
+            words = NOT_CONNECTED
+        elif class_id == answered:
+            words = CONNECTED_TO.format(name=labels[class_id])
+        else:
+            words = MATCHED_BY_NAME.format(name=labels[class_id])
+        names.append(HomeworkName(key, written, shown, class_id, words))
     waiting = sum(1 for name in names if name.class_id is None)
     places = [place for place, name in enumerate(names, start=1) if name.key == at]
     return templates.TemplateResponse(
@@ -2280,6 +2282,7 @@ def homework_classes_page(
             else NAMES_WAIT.format(n=waiting),
             "introduction": HOMEWORK_NAMES_INTRODUCTION,
             "classes_come": CLASSES_COME_FROM_REPORTS,
+            "add_a_report": ADD_A_REPORT_TO_CONNECT,
             "action": HOMEWORK_CLASSES,
             "unconnected": UNCONNECTED,
             "remove_connection": REMOVE_CONNECTION,
