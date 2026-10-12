@@ -34,7 +34,7 @@ import logging
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
-from datetime import date, datetime, tzinfo
+from datetime import date, tzinfo
 from functools import partial
 from typing import Annotated, Final, Literal, cast, get_args
 
@@ -94,6 +94,15 @@ from blossom.grades.review import (
     use_asked,
 )
 from blossom.grades.text_reader import NotRead, read_grade_report, reading_complete
+from blossom.grades.wording import (
+    absent_alike,
+    as_said,
+    described,
+    presence_words,
+    report_names,
+    score_line,
+    spoken_date,
+)
 from blossom.household import UnreadableHouseholdSecret, read_authority, secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes.forms import fields_of
@@ -512,20 +521,6 @@ SAVED_LABELS: Final = {
 """The fields a changed value's saved line shows, in its order, each by its own name."""
 
 
-def described(presence: Presence, text: str, label: str | None, *, named: bool = False) -> str:
-    """A cell's text and presence as the review reads them out: as written, or what the presence
-    says, short after a label the page writes and under ``label`` where no label introduces it.
-    ``named`` puts the label before a reported value too."""
-    if presence is Presence.REPORTED:
-        return f"{label} {text}" if named and label else text
-    said = {
-        Presence.BLANK: ("blank", "left blank"),
-        Presence.UNREADABLE: (f"couldn't be read: {text}", f"couldn't be read: {text}"),
-        Presence.NOT_CAPTURED: ("not in the copy", "not in the copy"),
-    }[presence]
-    return said[0] if label is None else f"{label} {said[1]}"
-
-
 def cell(value: GradeValue, label: str | None = None, *, named: bool = False) -> str:
     """A draft's cell as the review reads it out, short after the page's own label for it, and
     under ``label`` where it stands alone."""
@@ -555,16 +550,6 @@ RECORD_FIELDS: Final = (
 REVIEW_RECORD_FIELDS: Final = (("average", "Average"), *RECORD_FIELDS)
 """A review row's school record details: its average as the report wrote it, then the
 record cells, since the row shows its score, maximum, status and due date already."""
-
-
-def presence_words(what: str, cell: Cell) -> str:
-    """A cell that wasn't reported, in the words for its presence."""
-    presence, text = cell
-    if presence is Presence.BLANK:
-        return f"{what} left blank"
-    if presence is Presence.UNREADABLE:
-        return f"{what} couldn't be read: {text}"
-    return f"{what} not in the copy"
 
 
 def record_text(cell: Cell) -> str:
@@ -1826,78 +1811,6 @@ CONTEXT_UNKNOWN: Final = (
 )
 CLASS_NOT_ON_RECORD: Final = "Blossom has no record for this class and term."
 NO_REPORT_ADDED: Final = "No grade report added"
-UNITS: Final = (
-    "",
-    "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
-    "eight",
-    "nine",
-    "ten",
-    "eleven",
-    "twelve",
-    "thirteen",
-    "fourteen",
-    "fifteen",
-    "sixteen",
-    "seventeen",
-    "eighteen",
-    "nineteen",
-)
-"""The counts below twenty, spelled."""
-TENS: Final = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
-"""Each ten from twenty up, spelled."""
-SCALES: Final = (
-    (10**12, "trillion"),
-    (10**9, "billion"),
-    (10**6, "million"),
-    (1000, "thousand"),
-    (100, "hundred"),
-)
-"""The words for counts of a hundred and more, largest first."""
-PLACE_WORDS: Final = {
-    "one": "first",
-    "two": "second",
-    "three": "third",
-    "five": "fifth",
-    "eight": "eighth",
-    "nine": "ninth",
-    "twelve": "twelfth",
-}
-"""The spelled counts whose place word isn't the count with "th" after it."""
-
-
-def spelled(count: int) -> str:
-    """A positive count in words, as "twenty-one" or "one hundred one"."""
-    for size, word in SCALES:
-        if count >= size:
-            rest = count % size
-            return f"{spelled(count // size)} {word}" + (f" {spelled(rest)}" if rest else "")
-    if count < len(UNITS):
-        return UNITS[count]
-    rest = count % 10
-    return TENS[count // 10] + (f"-{UNITS[rest]}" if rest else "")
-
-
-def ordinal(count: int) -> str:
-    """A positive count's place in words, as "eleventh", "twenty-first" or "one hundredth"."""
-    if count < 1:
-        msg = "a place is a positive count"
-        raise ValueError(msg)
-    words = spelled(count)
-    cut = max(words.rfind(" "), words.rfind("-")) + 1
-    last = words[cut:]
-    if last in PLACE_WORDS:
-        place = PLACE_WORDS[last]
-    elif last.endswith("y"):
-        place = f"{last[:-1]}ieth"
-    else:
-        place = f"{last}th"
-    return words[:cut] + place
 
 
 student_router = APIRouter(prefix="/student/grades")
@@ -1919,41 +1832,6 @@ def term_posted(value: str) -> Term | None:
     return (year, term) if is_school_year(year) and term else None
 
 
-def spoken_date(day: date) -> str:
-    """A day as a page says it: ``September 30``."""
-    return f"{day.strftime('%B')} {day.day}"
-
-
-def spoken_day(moment: str, zone: tzinfo) -> str:
-    """A stored moment's day where the household is: ``September 30``."""
-    return spoken_date(datetime.fromisoformat(moment).astimezone(zone).date())
-
-
-def report_names(reports: tuple[ClassReport, ...], zone: tzinfo) -> dict[str, str]:
-    """Each report as a sentence names it: "report added September 30", with its place among
-    the reports added that day when it shares one, by acceptance order. A report an action made
-    carries its capture's name and the day it was made current."""
-    imported = [report for report in reports if report.acted_at is None]
-    days = {report.report_id: spoken_day(report.imported_at, zone) for report in imported}
-    names: dict[str, str] = {}
-    of_capture: dict[str, str] = {}
-    for report in imported:
-        day = days[report.report_id]
-        same_day = [other.report_id for other in imported if days[other.report_id] == day]
-        place = same_day.index(report.report_id)
-        named = f"{ordinal(place + 1)} " if place else ""
-        names[report.report_id] = f"{named}report added {day}"
-        of_capture[report.latest_of_capture] = names[report.report_id]
-    for report in reports:
-        if report.acted_at is not None:
-            source = of_capture.get(
-                report.latest_of_capture, f"report added {spoken_day(report.imported_at, zone)}"
-            )
-            made = spoken_day(report.acted_at, zone)
-            names[report.report_id] = f"{source}, made current {made}"
-    return names
-
-
 def as_line(name: str) -> str:
     """A report's name as a line of its own: "Report added September 30 · Made current
     October 8"."""
@@ -1961,35 +1839,9 @@ def as_line(name: str) -> str:
     return line[:1].upper() + line[1:]
 
 
-def as_percent(text: str) -> str:
-    """A percent the school reported, as written, with its sign."""
-    return text if text.endswith("%") else f"{text}%"
-
-
 def cell_text(cell: Cell, what: str) -> str:
     """A cell as written, or the words for its presence."""
     return cell[1] if cell[0] is Presence.REPORTED else presence_words(what, cell)
-
-
-ABSENT_ALIKE: Final = frozenset({Presence.BLANK, Presence.NOT_CAPTURED})
-"""The presences a line names once when every cell of it holds the same one."""
-
-
-def absent_alike(*cells: Cell) -> Cell | None:
-    """The first of ``cells`` when all were left blank, or all are not in the copy; None when a
-    line has to say each of them."""
-    first = cells[0][0]
-    if first in ABSENT_ALIKE and all(cell[0] is first for cell in cells):
-        return cells[0]
-    return None
-
-
-def as_said(cell: Cell, label: str) -> str:
-    """A percent cell of a line: as written, with its sign, or the review's words for a cell
-    under ``label`` that wasn't reported."""
-    if cell[0] is Presence.REPORTED:
-        return as_percent(cell[1])
-    return described(*cell, label)
 
 
 def term_grade(value: CurrentValue) -> str:
@@ -2361,21 +2213,6 @@ class ResultShown:
     cues: list[str]
 
 
-def score_of(value: CurrentValue) -> str:
-    """The school score: points out of the maximum, then the percent the school reported, each
-    as written or in the review's words for its presence; one presence for the line when all
-    three share a blank or uncaptured one."""
-    points, most = value.cells["points"], value.cells["max_points"]
-    average = value.cells["average"]
-    alike = absent_alike(points, most, average)
-    if alike is not None:
-        return presence_words("Score", alike)
-    return (
-        f"School score: {described(*points, None)} / {described(*most, 'maximum')}"
-        f" · {as_said(average, 'average')}"
-    )
-
-
 def due_of(value: CurrentValue, resolved: date | None, names: dict[str, str]) -> str:
     """A result's due date: the day, resolved under the month on record, or as written."""
     if resolved is not None:
@@ -2403,9 +2240,6 @@ def result_shown(
     on record."""
     cells = value.cells
     resolved = None if value.due is None else due_date_of(value.due.cell, year, first_month)
-    score = score_of(value)
-    if value.last_shown is not None and value.last_shown.report_id != value.report_id:
-        score += f", from the {names.get(value.report_id, 'report')}"
     showing = []
     last = value.last_shown
     if last is not None and newest is not None and last.report_id != newest.report_id:
@@ -2425,7 +2259,7 @@ def result_shown(
         title=cell_text(cells["assignment"], "Title"),
         category=cell_text(cells["category"], "Category"),
         category_reported=cells["category"][0] is Presence.REPORTED,
-        score=score,
+        score=score_line(value, names),
         due=due_of(value, resolved, names),
         status=(
             f"Gradebook status: {status[1]}"
