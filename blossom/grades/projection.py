@@ -33,6 +33,7 @@ from blossom.grades.review import (
     CurrentValue,
     CurrentValues,
     DueFrom,
+    GradeValueUndecodable,
     ReportAt,
     compared,
 )
@@ -61,9 +62,14 @@ Marks = Mapping[tuple[str, str, str], Mapping[str, Cell]]
 
 def original_of(kind: str, target: str, report: str, copies: Copies) -> str:
     """The report of the reading ``report`` holds for ``kind`` and ``target``: while an action
-    made the report and copied that observation, its source; the first report that didn't."""
+    made the report and copied that observation, its source; the first report that didn't.
+    A chain of sources that comes back to a report already on it is ``GradeValueUndecodable``."""
+    followed = {report}
     while report in copies and (kind, target) in copies[report][1]:
         report = copies[report][0]
+        if report in followed:
+            raise GradeValueUndecodable
+        followed.add(report)
     return report
 
 

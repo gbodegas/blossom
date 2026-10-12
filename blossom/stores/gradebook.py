@@ -53,7 +53,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC
-from typing import Final, Literal, SupportsInt, cast, get_args
+from typing import Final, Literal, cast, get_args
 
 from blossom.clock import Clock
 from blossom.grades.draft import (
@@ -695,6 +695,11 @@ TERM_ON_RECORD: Final = (
 )
 CLASSES_REPORTED: Final = (
     "SELECT DISTINCT class_id FROM grade_reports WHERE student_id = ? AND term_label = ?"
+)
+TERMS_REPORTED: Final = (
+    "SELECT DISTINCT c.year_label, r.class_id, r.term_label FROM grade_reports AS r "
+    "JOIN grade_classes AS c ON c.class_id = r.class_id AND c.student_id = r.student_id "
+    "JOIN grade_student AS s ON s.student_id = r.student_id"
 )
 CLASS_REPORTS: Final = (
     "SELECT r.report_id, r.acceptance_order, r.use, r.imported_at, a.acted_at, ("
@@ -1976,7 +1981,7 @@ class GradebookRecords:
         stored, and the parent's assertions standing on each observation."""
         scope = (student_id, class_id, term)
         reports = {
-            str(report_id): (_whole(order), str(use), _whole(rows))
+            str(report_id): (_whole(order, 1), str(use), _whole(rows, 0))
             for report_id, order, use, rows in self._connection.execute(SCOPE_REPORTS, scope)
         }
         named = {"student": student_id, "class": class_id, "term": term}
@@ -2167,11 +2172,12 @@ class GradebookRecords:
 
     def first_month_of(self, year: str) -> int | None:
         """The first month on record for her school year ``year``, None when the year isn't on
-        record or its month is unconfirmed: what ``due_date_of`` resolves under. A read alone."""
+        record or its month is unconfirmed: what ``due_date_of`` resolves under. A stored month
+        that is no whole number from 1 to 12 is ``GradeValueUndecodable``. A read alone."""
         with self._lock:
             student_id = self._her_name_record()[0]
             row = self._connection.execute(FIRST_MONTH_OF, (student_id, year)).fetchone()
-        return None if row is None or row[0] is None else int(row[0])
+        return None if row is None or row[0] is None else _month(row[0])
 
     def correct_first_month(
         self, year: str, *, shown: int | None, month: int, role: ConfirmedBy
@@ -2208,6 +2214,26 @@ class GradebookRecords:
             current=None if current is None else (str(current[0]), str(current[1])),
             terms=tuple((str(year), str(label)) for year, label, _ in ordered),
         )
+
+    def terms_reported(self) -> tuple[tuple[str, str, str], ...]:
+        """The school year, class and term of each of her reports on record, the term as a
+        report keeps it, in one statement. A read alone."""
+        with self._lock:
+            rows = self._connection.execute(TERMS_REPORTED).fetchall()
+        return tuple((str(year), str(class_id), str(term)) for year, class_id, term in rows)
+
+    @contextmanager
+    def strict_text(self) -> Iterator[None]:
+        """The store's lock, with each text column read inside it decoded as UTF-8 alone:
+        bytes that aren't UTF-8 are ``GradeValueUndecodable`` at the read. The connection's
+        own decoding is in force again once the block ends, however it ends."""
+        with self._lock:
+            kept = self._connection.text_factory
+            self._connection.text_factory = _utf8
+            try:
+                yield
+            finally:
+                self._connection.text_factory = kept
 
     def terms_of_year(self, year: str) -> tuple[str, ...]:
         """Her terms of ``year`` on record, by when each was made, then its label: a term's
@@ -2255,7 +2281,7 @@ class GradebookRecords:
         return tuple(
             ClassReport(
                 report_id=str(report_id),
-                order=_whole(order),
+                order=_whole(order, 1),
                 use=cast(ReportUse, str(use)),
                 imported_at=str(imported_at),
                 acted_at=None if acted_at is None else str(acted_at),
@@ -2993,23 +3019,27 @@ def _cell(value: GradeValue) -> tuple[str, str]:
 
 def _cells(fields: tuple[str, ...], row: tuple[object, ...]) -> dict[str, Cell]:
     """An observation's cells by field, from its text and presence columns in turn. A stored
-    presence that is none of the four is ``GradeValueUndecodable``."""
-    try:
-        return {
-            field: (Presence(str(row[2 * at + 1])), str(row[2 * at]))
-            for at, field in enumerate(fields)
-        }
-    except ValueError as error:
-        raise GradeValueUndecodable from error
+    text that is not text, or a presence that is none of the four, is
+    ``GradeValueUndecodable``."""
+    cells: dict[str, Cell] = {}
+    for at, field in enumerate(fields):
+        text, presence = row[2 * at], row[2 * at + 1]
+        if not isinstance(text, str):
+            raise GradeValueUndecodable
+        try:
+            cells[field] = (Presence(str(presence)), text)
+        except ValueError as error:
+            raise GradeValueUndecodable from error
+    return cells
 
 
 def _copied(stored: str) -> frozenset[tuple[str, str]]:
     """The kind and target of each observation an action's record lists as copied. Text that is
     no JSON object whose ``observations`` is a list of pairs, each a kind an action copies and
-    a target, both texts, is ``GradeValueUndecodable``."""
+    a target, both texts, or that nests too deeply to read, is ``GradeValueUndecodable``."""
     try:
         listed = json.loads(stored)
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, RecursionError) as error:
         raise GradeValueUndecodable from error
     observations = listed.get("observations") if isinstance(listed, dict) else None
     if not isinstance(observations, list):
@@ -3025,12 +3055,38 @@ def _copied(stored: str) -> frozenset[tuple[str, str]]:
     return frozenset(pairs)
 
 
-def _whole(stored: str | bytes | SupportsInt) -> int:
-    """A report's stored acceptance order or number of result rows; one that is no whole
-    number is ``GradeValueUndecodable``."""
+def _whole(stored: object, least: int) -> int:
+    """A report's stored acceptance order or number of result rows: an integer, or text of
+    ASCII digits alone, at or above its column's bound ``least``. Any other stored value, a
+    float, bytes or text with a sign among them, is ``GradeValueUndecodable``."""
+    if isinstance(stored, int):
+        number = stored
+    elif isinstance(stored, str) and stored.isascii() and stored.isdigit():
+        try:
+            number = int(stored)
+        except ValueError as error:
+            raise GradeValueUndecodable from error
+    else:
+        raise GradeValueUndecodable
+    if number < least:
+        raise GradeValueUndecodable
+    return number
+
+
+def _month(stored: object) -> int:
+    """A school year's stored first month: an integer from 1 to 12. Any other stored value, a
+    float, text or bytes among them, is ``GradeValueUndecodable``."""
+    if not isinstance(stored, int) or stored not in range(1, 13):
+        raise GradeValueUndecodable
+    return stored
+
+
+def _utf8(stored: bytes) -> str:
+    """A text column as its UTF-8, for the connection's ``text_factory`` while ``strict_text``
+    holds. Bytes that aren't UTF-8 are ``GradeValueUndecodable``."""
     try:
-        return int(stored)
-    except ValueError as error:
+        return stored.decode("utf-8")
+    except UnicodeDecodeError as error:
         raise GradeValueUndecodable from error
 
 

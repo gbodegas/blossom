@@ -127,9 +127,9 @@ Compared = tuple[tuple[str, str, str], ...]
 
 
 class GradeValueUndecodable(ValueError):
-    """A stored grade value can't be decoded: a cell's presence, a report's order or number of
-    rows, a report's moment, or the list of what an action copied. Its message holds nothing
-    stored, and an error the decoding raised is its cause."""
+    """A stored grade value can't be decoded: a cell, a report's order, rows, moment or term, an
+    action's copied list or chain of sources, a year's first month, or text that is no UTF-8.
+    Its message holds nothing stored, and an error the decoding raised is its cause."""
 
     def __init__(self) -> None:
         super().__init__("a stored grade value can't be decoded")

@@ -128,13 +128,13 @@ def test_a_record_that_holds_nothing_costs_fewer_reads_and_never_more(
     assert not any("FROM date_claims" in statement for statement in one_named)
 
 
-@pytest.mark.parametrize(("page", "cost"), [("/student/due-this-week", 14), ("/parent", 11)])
+@pytest.mark.parametrize(("page", "cost"), [("/student/due-this-week", 15), ("/parent", 11)])
 def test_a_page_costs_the_same_statements_whatever_the_record_holds(page: str, cost: int) -> None:
     """Her page with a card for each, and the family page: no read is made once per card.
     Both read her homework notes beside the record, in the same snapshot, which is the one
     statement more than a reading of the record costs, and is one however many notes. Her
-    page also asks the gradebook for the school years on record, three statements with none
-    on record, for the school scores its cards show."""
+    page also asks the gradebook for the school years on record and for the terms that hold
+    a report, four statements with none on record, for the school scores its cards show."""
     costs = []
     for count in (1, 20, 200):
         settings = fixture_settings(**{TODAY_VARIABLE: "2026-09-16", FIXTURE_PATH_VARIABLE: ""})

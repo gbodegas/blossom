@@ -10,24 +10,30 @@ result in its own term on the reader's tree, and showing it stores nothing and m
 
 import dataclasses
 import difflib
+import functools
 import html
 import json
 import logging
 import pathlib
 import re
 import sqlite3
+import sys
+import threading
+import types
 from collections.abc import Callable
 from datetime import date, time
+from time import monotonic
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key, folded
 from blossom.grades.identity import name_form_key
-from blossom.grades.projection import MadeCurrent
+from blossom.grades.projection import MadeCurrent, original_of
 from blossom.grades.review import GradeReportSaved, GradeValueUndecodable, MatchAnswer
 from blossom.grades.text_reader import read_grade_report
-from blossom.grades.wording import report_names, score_line
+from blossom.grades.wording import report_names, score_line, spoken_day
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
 from blossom.plans import PlanBlock
@@ -45,10 +51,16 @@ from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
     UNCONNECTED,
     DeletePreview,
+    _cells,
+    _copied,
+    _month,
+    _utf8,
+    _whole,
     class_for,
     name_key,
 )
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
+from blossom.unreadable import text_or_refusal
 from tests.support import (
     FIXTURES,
     HER_PAGE,
@@ -61,6 +73,7 @@ from tests.support import (
     card_for,
     confirm_current,
     correction_page,
+    current_preview,
     database_of,
     every_row,
     fixture_week_plan,
@@ -1582,6 +1595,10 @@ WRONG_SHAPES = {
     "a target that is a number": '{"observations":[["result",7]],"rows":[]}',
     "a kind no action copies": '{"observations":[["smudged","one"]],"rows":[]}',
     "a kind that is a list": '{"observations":[[["result"],"one"]],"rows":[]}',
+    "observations that are an empty text": '{"observations":"","rows":[]}',
+    "an entry that is an object of two keys": (
+        '{"observations":[{"result":1,"category":2}],"rows":[]}'
+    ),
 }
 """Copied lists that are JSON and not the object an action writes: its ``observations`` a list
 of pairs, each a kind the action copies and a target, both texts."""
@@ -1624,14 +1641,14 @@ DECODED = [
     pytest.param(
         "UPDATE grade_reports SET acceptance_order = ? WHERE acceptance_order = 1",
         SMUDGED,
-        ValueError,
+        type(None),
         "the read",
         id="a report's order",
     ),
     pytest.param(
         "UPDATE grade_reports SET result_rows = ?",
         SMUDGED,
-        ValueError,
+        type(None),
         "the read",
         id="a report's number of rows",
     ),
@@ -1896,3 +1913,642 @@ def test_no_other_error_is_taken_for_a_grade_value_that_can_t_be_decoded(
             client.get(address, headers=PAGE_HEADERS)
 
     assert type(raised.value) is ValueError
+
+
+ORDER = "UPDATE grade_reports SET acceptance_order = ? WHERE acceptance_order = 1"
+ROWS = "UPDATE grade_reports SET result_rows = ?"
+DEEP = "[" * 200_000
+"""A copied list nested past the depth the JSON reader follows."""
+NOT_UTF8 = b"\xff"
+BOUND = 20.0
+"""The seconds a read gets to return before its test fails."""
+WALK_BOUND = 5.0
+"""The seconds ``original_of`` alone gets to end its walk of a chain of sources."""
+UNDECODABLE = "a stored grade value can't be decoded"
+NO_CAUSE = type(None)
+"""What a named error's cause is when its decoding raised no error of its own."""
+
+
+@dataclasses.dataclass(frozen=True)
+class Edit:
+    """One stored value written as no save writes it: the statement, what it binds, which
+    reads raise the named error for it, the error its decoding raised, when one was, and
+    whether it makes a chain of sources come back to itself."""
+
+    statement: str
+    binds: tuple[object, ...] = ()
+    at: str = "the class"
+    cause: type = NO_CAUSE
+    loops: bool = False
+
+
+def not_utf8(table: str, column: str) -> Edit:
+    """Bytes that are no UTF-8, stored as the text of ``column`` in every row of ``table``."""
+    statement = f"UPDATE {table} SET {column} = CAST(? AS TEXT)"  # noqa: S608
+    return Edit(statement, (NOT_UTF8,), "the score read", UnicodeDecodeError)
+
+
+EDITS = {
+    "an order that is infinity": Edit(ORDER, (float("inf"),)),
+    "an order that is a fraction": Edit(ORDER, (3.5,)),
+    "an order stored as bytes": Edit(ORDER, (b"1",)),
+    "an order with an underscore": Edit(ORDER, ("0_0",)),
+    "an order with a sign and a digit of another script": Edit(ORDER, ("-٣",)),
+    "an order that is no number": Edit(ORDER, (SMUDGED,)),
+    "a number of rows that is infinity": Edit(ROWS, (float("inf"),)),
+    "a number of rows that is a fraction": Edit(ROWS, (3.5,)),
+    "a number of rows stored as bytes": Edit(ROWS, (b"4",)),
+    "a number of rows that is no number": Edit(ROWS, (SMUDGED,)),
+    "a copied list nested too deeply": Edit(COPIED, (DEEP,), cause=RecursionError),
+    "a result's title stored as bytes": Edit(
+        "UPDATE grade_result_observations SET assignment_text = ?", (LOG.encode(),)
+    ),
+    "a result's points stored as bytes": Edit(
+        "UPDATE grade_result_observations SET points_text = ?", (b"18.0",)
+    ),
+    "a category's name stored as bytes": Edit(
+        "UPDATE grade_category_observations SET name_text = ?", (b"Labs",)
+    ),
+    "the term's letter stored as bytes": Edit(
+        "UPDATE grade_term_observations SET letter_text = ?", (b"A",)
+    ),
+    "a first month that is a fraction": Edit(
+        "UPDATE grade_years SET first_month = ?", (8.5,), "the month"
+    ),
+    "a result's title that is not UTF-8": not_utf8("grade_result_observations", "assignment_text"),
+    "a result's presence that is not UTF-8": not_utf8(
+        "grade_result_observations", "points_presence"
+    ),
+    "a category's name that is not UTF-8": not_utf8("grade_category_observations", "name_text"),
+    "the term's percent that is not UTF-8": not_utf8("grade_term_observations", "percent_text"),
+    "a term's label that is not UTF-8": not_utf8("grade_terms", "label"),
+    "a class's name that is not UTF-8": not_utf8("grade_classes", "display_name"),
+    "an alias's code that is not UTF-8": not_utf8("grade_class_aliases", "code"),
+    "the moment a report was added that is not UTF-8": not_utf8("grade_reports", "imported_at"),
+    "a copied list that is not UTF-8": not_utf8("grade_current_actions", "copied"),
+    "an action whose source is the report it made": Edit(
+        "UPDATE grade_current_actions SET source_report = report_made", loops=True
+    ),
+    "a report in a term with no row among its year's terms": Edit(
+        "DELETE FROM grade_terms", at="the score read"
+    ),
+}
+"""Stored values no save writes, each with the file's own checks in force: a report's order
+or number of rows that is no whole number at or above its bound, a copied list nested too
+deeply, a cell's text that is not text, a first month that is no whole month, text that is
+not UTF-8, an action whose chain of sources comes back to itself, and a report whose term
+has no row among its year's terms."""
+EDITED = [pytest.param(edit, id=name) for name, edit in EDITS.items()]
+
+
+def within[Answer](seconds: float, read: Callable[[], Answer]) -> Answer:
+    """What ``read`` answers or raises, from a thread of its own that gets ``seconds``: a read
+    that never returns fails its test."""
+    answers: list[Answer] = []
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            answers.append(read())
+        except BaseException as error:
+            failures.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    assert not worker.is_alive(), "the read did not return"
+    if failures:
+        raise failures[0]
+    return answers[0]
+
+
+def walk_within[Answer](seconds: float, walk: Callable[[], Answer]) -> Answer:
+    """What the pure ``walk`` answers or raises, watched line by line in the caller's own
+    thread: one still going after ``seconds`` is stopped where it stands with a
+    ``TimeoutError``, so no thread is left running it."""
+    deadline = monotonic() + seconds
+
+    def watch(
+        _frame: types.FrameType, _event: str, _arg: object
+    ) -> Callable[[types.FrameType, str, Any], Any] | None:
+        if monotonic() > deadline:
+            msg = "the walk did not end"
+            raise TimeoutError(msg)
+        return watch
+
+    kept = sys.gettrace()
+    sys.settrace(watch)
+    try:
+        return walk()
+    finally:
+        sys.settrace(kept)
+
+
+def the_stored_chains_are_refused(client: TestClient) -> None:
+    """The stored chains of sources, read through a connection of its own and walked by
+    ``original_of`` alone, are each refused in time. Made before a read of the store, a walk
+    that never ends fails the test here, with the store's lock never held."""
+    connection = sqlite3.connect(database_of(client))
+    try:
+        rows = connection.execute(
+            "SELECT report_made, source_report, copied FROM grade_current_actions"
+        ).fetchall()
+    finally:
+        connection.close()
+    copies = {
+        str(made): (
+            str(source),
+            frozenset(
+                (str(kind), str(target)) for kind, target in json.loads(copied)["observations"]
+            ),
+        )
+        for made, source, copied in rows
+    }
+    walks = [
+        (kind, target, made)
+        for made, (_, copied) in copies.items()
+        for kind, target in sorted(copied)
+    ]
+    assert walks
+    for kind, target, made in walks:
+        with pytest.raises(GradeValueUndecodable):
+            walk_within(WALK_BOUND, functools.partial(original_of, kind, target, made, copies))
+
+
+@pytest.mark.parametrize("edit", EDITED)
+def test_a_hand_edited_grade_value_leaves_her_pages_as_with_no_class_on_record(
+    edit: Edit, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Her week, and the details of two assignments with a result and of one with none: each
+    answers in time, shows no score at all, and reads as it does with no class on record.
+    Each read records the failure's type alone, the gradebook's rows stay as they were, and
+    the connection keeps its own decoding of text."""
+    notes_id = "assignment-reading-notes"
+    addresses = [
+        HER_PAGE,
+        *(f"/student/assignments/{one}" for one in (LOG_ID, DIAGRAM_ID, notes_id)),
+    ]
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [
+                homework(),
+                homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27), assigned=MONDAY),
+                homework(notes_id, "Reading Notes", date(2026, 8, 19)),
+            ],
+            {},
+            {LOG_ID: [school_said("missing", SourceChannel.LMS, date(2026, 8, 18))]},
+        )
+        reported(store, "done", DIAGRAM_ID)
+
+        def read() -> list[str]:
+            answers = [client.get(address, headers=PAGE_HEADERS) for address in addresses]
+            assert [answer.status_code for answer in answers] == [200, 200, 200, 200]
+            return [without_minted_fields(answer.text) for answer in answers]
+
+        bare = read()
+        made_current_again(client)
+        whole = read()
+        stored(store, edit.statement, *edit.binds)
+        if edit.loops:
+            the_stored_chains_are_refused(client)
+        before = {table: as_stored(store, table) for table in GRADEBOOK_TABLES}
+        said, logged = [], []
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            for address in addresses:
+                caplog.clear()
+                answer = within(BOUND, functools.partial(client.get, address, headers=PAGE_HEADERS))
+                said.append((answer.status_code, without_minted_fields(answer.text)))
+                logged.append((recorded(caplog), caplog.text))
+        after = {table: as_stored(store, table) for table in GRADEBOOK_TABLES}
+        decoding = store._connection.text_factory
+
+    private = [LOG, DIAGRAM, BIOLOGY, "18.0", *(one for one in edit.binds if isinstance(one, str))]
+    assert [[line for line, _, _ in scores(page)] for page in whole] == [
+        [LINE, DIAGRAM_LINE],
+        [LINE],
+        [DIAGRAM_LINE],
+        [],
+    ]
+    assert [status for status, _ in said] == [200, 200, 200, 200]
+    for (_, page), with_no_class in zip(said, bare, strict=True):
+        assert "School score" not in page
+        assert "Grade details" not in page
+        assert HEADING not in page
+        assert not [said for said in ("no grades", "not grade") if said in page.lower()]
+        assert without_scores(page) == without_scores(with_no_class)
+    assert [records for records, _ in logged] == [[LEFT_OUT]] * 4
+    for _, text in logged:
+        assert not [word for word in private if word in text]
+    assert after == before
+    assert decoding is text_or_refusal
+
+
+@pytest.mark.parametrize("edit", EDITED)
+def test_each_hand_edited_grade_value_raises_the_one_named_error_where_it_is_read(
+    edit: Edit,
+) -> None:
+    """A report's order or rows, a cell's text, a copied list and a chain of sources raise it
+    from each read of the class and term; a first month from its own read; text that is not
+    UTF-8 and a report outside its year's terms from a homework page's grade read. Each read
+    returns in time, its cause is the decoding's own error, when one was raised, and its
+    message holds nothing stored."""
+    draft = draft_of(IN_WEEK)
+    with browser() as client:
+        store = store_of(client)
+        class_id = made_current_again(client)
+        sound = read_grade_facts(store, [BIOLOGY])
+        stored(store, edit.statement, *edit.binds)
+        if edit.loops:
+            the_stored_chains_are_refused(client)
+        reads: dict[str, tuple[Callable[[], object], ...]] = {
+            "the class": (
+                lambda: store.class_term(class_id, "T1"),
+                lambda: store.current_values(class_id, "T1"),
+                lambda: store.review_grade_report(draft, capture_key(draft), key=KEY),
+                lambda: store.preview_current(class_id, "T1", capture_key(draft)),
+                lambda: read_grade_facts(store, [BIOLOGY]),
+            ),
+            "the month": (
+                lambda: store.first_month_of(YEAR),
+                lambda: read_grade_facts(store, [BIOLOGY]),
+            ),
+            "the score read": (lambda: read_grade_facts(store, [BIOLOGY]),),
+        }
+        raised = []
+        for read in reads[edit.at]:
+            with pytest.raises(GradeValueUndecodable) as caught:
+                within(BOUND, read)
+            raised.append(caught.value)
+        decoding = store._connection.text_factory
+
+    assert [list(year.reads) for year in sound] == [[(class_id, "T1")]]
+    assert [type(error) for error in raised] == [GradeValueUndecodable] * len(raised)
+    assert [type(error.__cause__) for error in raised] == [edit.cause] * len(raised)
+    assert {str(error) for error in raised} == {UNDECODABLE}
+    assert decoding is text_or_refusal
+
+
+@pytest.mark.parametrize("address", ["/student/grades", "/student/grades/classes/{}/terms/1"])
+@pytest.mark.parametrize(
+    "edit", [pytest.param(edit, id=name) for name, edit in EDITS.items() if edit.at == "the class"]
+)
+def test_grades_and_class_details_answer_a_hand_edited_value_with_the_named_error(
+    edit: Edit, address: str
+) -> None:
+    """Neither page leaves anything out: each fails in time with the named error, a
+    ``ValueError``, with nothing stored in its message."""
+    with browser() as client:
+        class_id = made_current_again(client)
+        sound = client.get(address.format(class_id), headers=PAGE_HEADERS)
+        stored(store_of(client), edit.statement, *edit.binds)
+        if edit.loops:
+            the_stored_chains_are_refused(client)
+        with pytest.raises(GradeValueUndecodable) as raised:
+            within(BOUND, lambda: client.get(address.format(class_id), headers=PAGE_HEADERS))
+
+    assert sound.status_code == 200
+    assert isinstance(raised.value, ValueError)
+    assert str(raised.value) == UNDECODABLE
+
+
+def test_class_details_answers_a_first_month_that_is_no_whole_month_with_the_named_error() -> None:
+    """Class details resolves each due date under the year's first month and fails on one
+    that is a fraction; Grades, which reads no first month, still answers."""
+    edit = EDITS["a first month that is a fraction"]
+    with browser() as client:
+        class_id = with_report(client)
+        stored(store_of(client), edit.statement, *edit.binds)
+        grades = client.get("/student/grades", headers=PAGE_HEADERS)
+        with pytest.raises(GradeValueUndecodable) as raised:
+            class_details(client, class_id)
+
+    assert grades.status_code == 200
+    assert str(raised.value) == UNDECODABLE
+
+
+def twin_terms(client: TestClient) -> None:
+    """Two terms of one class, each with a result of the log's title and day."""
+    with_report(client)
+    with_report(client, IN_WEEK.replace("**T1**", "**T2**"))
+
+
+def twin_years(client: TestClient) -> None:
+    """Two school years with a class of one name and a result due 08/20, the earlier year
+    starting in September and the later in August, so both fall on the log's day."""
+    earlier = draft_of(IN_WEEK.replace(f"**{YEAR}**", "**2025-2026**"))
+    store = store_of(client)
+    review = store.review_grade_report(earlier, capture_key(earlier), key=KEY)
+    saved = save_grade(
+        store, earlier, key=KEY, review=review, answers=grade_answers(review, month=9)
+    )
+    assert isinstance(saved, GradeReportSaved)
+    with_report(client)
+
+
+COMPETITORS = [
+    pytest.param(
+        twin_terms,
+        "UPDATE grade_result_observations SET assignment_text = CAST(assignment_text AS BLOB) "
+        "WHERE report_id IN (SELECT report_id FROM grade_reports WHERE term_label = 'T2')",
+        id="a twin's title stored as bytes",
+    ),
+    pytest.param(
+        twin_years,
+        "UPDATE grade_years SET first_month = 8.5 WHERE label = '2025-2026'",
+        id="a twin year's first month a fraction",
+    ),
+    pytest.param(
+        twin_terms,
+        "DELETE FROM grade_terms WHERE label = 'T2'",
+        id="a twin's term with no row among its year's terms",
+    ),
+]
+
+
+@pytest.mark.parametrize(("arrange", "statement"), COMPETITORS)
+def test_a_hand_edited_competitor_is_never_read_past_to_let_the_other_show(
+    arrange: Callable[[TestClient], None], statement: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two results could each be the log's, so the log shows no score. With one of them
+    stored so it would drop out of the count, the log still shows none, on her week and on
+    its details, and each read records the failure."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        arrange(client)
+        twins = [scores(page_of(client)), scores(details_of(client))]
+        stored(store, statement)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            left = [page_of(client), details_of(client)]
+
+    assert twins == [[], []]
+    assert card_for(left[0], LOG_ID)
+    assert not [page for page in left if "School score" in page or "Grade details" in page]
+    assert recorded(caplog) == [LEFT_OUT] * 2
+
+
+def test_a_report_outside_its_year_s_terms_of_a_class_no_homework_names_changes_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only a class one of the homework names connects to is read for the scores: a report of
+    another class in a term with no row leaves the page's line as it is."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        with_report(client)
+        with_report(client, GEOMETRY.replace("**T1**", "**T2**"))
+        stored(store, "DELETE FROM grade_terms WHERE label = 'T2'")
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            shown = [on_card(client), scores(details_of(client))]
+
+    assert [[line for line, _, _ in one] for one in shown] == [[LINE], [LINE]]
+    assert recorded(caplog) == []
+
+
+def test_a_score_read_asks_once_for_the_terms_that_hold_a_report() -> None:
+    """One statement names every report's year, class and term, however many years, classes
+    and terms are on record, and a record a save wrote holds none outside its year's terms."""
+    with browser() as client:
+        store = store_of(client)
+        biology = with_report(client)
+        geometry = with_report(client, GEOMETRY.replace("**T1**", "**T2**"))
+        seen: list[str] = []
+        store._connection.set_trace_callback(seen.append)
+        try:
+            read = read_grade_facts(store, [BIOLOGY, "08 GEOMETRY"])
+        finally:
+            store._connection.set_trace_callback(None)
+        held = store.terms_reported()
+
+    asked = [statement for statement in seen if "r.term_label FROM grade_reports AS r" in statement]
+    assert len(asked) == 1
+    assert sorted(held) == sorted([(YEAR, biology, "T1"), (YEAR, geometry, "T2")])
+    assert [sorted(year.reads) for year in read] == [sorted([(biology, "T1"), (geometry, "T2")])]
+
+
+WHOLE = [(1, 1, 1), (7, 1, 7), (0, 0, 0), ("7", 1, 7), ("007", 1, 7), ("0", 0, 0)]
+"""A stored order or number of rows, its column's bound, and the number it reads as."""
+NOT_WHOLE = [
+    float("inf"),
+    3.5,
+    2.0,
+    b"2",
+    "+2",
+    "-2",
+    "2_0",
+    " 2",
+    "2 ",
+    "٣",
+    "²",
+    "",
+    "two",
+    None,
+    "9" * 5000,
+    -1,
+]
+"""Stored values that are no integer and no text of ASCII digits alone, or read below 0."""
+
+
+def test_a_stored_order_or_row_count_reads_only_as_a_whole_number_at_or_above_its_bound() -> None:
+    read = [_whole(stored, least) for stored, least, _ in WHOLE]
+    refused = []
+    for least, values in ((1, [*NOT_WHOLE, 0, "0"]), (0, NOT_WHOLE)):
+        for value in values:
+            with pytest.raises(GradeValueUndecodable) as raised:
+                _whole(value, least)
+            refused.append(str(raised.value))
+
+    assert read == [number for *_, number in WHOLE]
+    assert set(refused) == {UNDECODABLE}
+
+
+def test_a_cell_s_stored_text_reads_as_written_and_a_value_that_is_no_text_is_refused() -> None:
+    reported_as, blank = Presence.REPORTED.value, Presence.BLANK.value
+    read = _cells(("points", "note"), ("b'18.0'", reported_as, "", blank))
+    refused = []
+    for value in (b"18.0", 18, 18.0, None):
+        with pytest.raises(GradeValueUndecodable) as raised:
+            _cells(("points",), (value, reported_as))
+        refused.append(str(raised.value))
+
+    assert read == {"points": (Presence.REPORTED, "b'18.0'"), "note": (Presence.BLANK, "")}
+    assert set(refused) == {UNDECODABLE}
+
+
+def test_a_stored_first_month_reads_only_as_a_whole_number_from_1_to_12() -> None:
+    read = [_month(stored) for stored in range(1, 13)]
+    refused = []
+    for value in (8.5, 8.0, float("inf"), "8", b"8", SMUDGED, 0, 13, -1):
+        with pytest.raises(GradeValueUndecodable) as raised:
+            _month(value)
+        refused.append(str(raised.value))
+    with browser() as client:
+        store = store_of(client)
+        with_report(client)
+        on_record = [store.first_month_of(year) for year in (YEAR, "1999-2000")]
+
+    assert read == list(range(1, 13))
+    assert set(refused) == {UNDECODABLE}
+    assert on_record == [8, None]
+
+
+def test_a_chain_of_sources_reads_to_its_first_report_and_one_that_comes_back_is_refused() -> None:
+    """A chain that ends reads to the report that copied nothing of the observation. One that
+    returns to a report already on it, the report itself or one further back, is refused in
+    time; a report whose action copied none of the observation is followed nowhere."""
+    copied = frozenset({("result", "one")})
+    ends = {"third": ("second", copied), "second": ("first", copied)}
+    loops = [
+        {"first": ("first", copied)},
+        {"first": ("second", copied), "second": ("first", copied)},
+        {"third": ("second", copied), "second": ("first", copied), "first": ("second", copied)},
+    ]
+    refused = []
+    for loop in loops:
+        with pytest.raises(GradeValueUndecodable) as raised:
+            walk_within(
+                WALK_BOUND, functools.partial(original_of, "result", "one", next(iter(loop)), loop)
+            )
+        refused.append(str(raised.value))
+
+    assert original_of("result", "one", "third", ends) == "first"
+    assert original_of("result", "other", "third", ends) == "third"
+    assert original_of("result", "other", "first", loops[0]) == "first"
+    assert set(refused) == {UNDECODABLE}
+
+
+def test_each_decoder_turns_only_its_own_error_into_the_named_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An error of another kind, raised where a decoder reads its stored value, is raised as
+    itself: a presence, a copied list's JSON, an order's digits, a moment and a text column."""
+
+    def failed(*_: object, **__: object) -> None:
+        msg = "another failure"
+        raise RuntimeError(msg)
+
+    class Digits(str):
+        __slots__ = ()
+        __int__ = failed
+
+    class Stored(bytes):
+        __slots__ = ()
+
+        def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:
+            failed(encoding, errors)
+            return ""
+
+    reading = types.SimpleNamespace(loads=failed, JSONDecodeError=json.JSONDecodeError)
+    monkeypatch.setattr("blossom.stores.gradebook.Presence", failed)
+    monkeypatch.setattr("blossom.stores.gradebook.json", reading)
+    monkeypatch.setattr(
+        "blossom.grades.wording.datetime", types.SimpleNamespace(fromisoformat=failed)
+    )
+    decodings: list[Callable[[], object]] = [
+        lambda: _cells(("points",), ("18.0", "reported")),
+        lambda: _copied("{}"),
+        lambda: _whole(Digits("7"), 1),
+        lambda: spoken_day("2026-08-20T10:00:00+00:00", ZONE),
+        lambda: _utf8(Stored(b"text")),
+    ]
+    raised = []
+    for decoding in decodings:
+        with pytest.raises(RuntimeError, match="another failure") as caught:
+            decoding()
+        raised.append(type(caught.value))
+
+    assert raised == [RuntimeError] * 5
+
+
+def test_text_is_decoded_strictly_for_a_score_read_alone_and_the_connection_keeps_its_own() -> None:
+    """A homework page's grade read refuses text that is not UTF-8 with the named error and
+    leaves the connection its own decoding. The same read made for another page gets the
+    database's own error, as do Grades and class details."""
+    edit = EDITS["a result's title that is not UTF-8"]
+    with browser() as client:
+        store = store_of(client)
+        class_id = with_report(client)
+        sound = read_grade_facts(store, [BIOLOGY])
+        stored(store, edit.statement, *edit.binds)
+        with pytest.raises(GradeValueUndecodable) as refused:
+            read_grade_facts(store, [BIOLOGY])
+        decoding = store._connection.text_factory
+        others = []
+        for read in (
+            lambda: store.class_term(class_id, "T1"),
+            lambda: client.get("/student/grades", headers=PAGE_HEADERS),
+            lambda: class_details(client, class_id),
+        ):
+            with pytest.raises(sqlite3.OperationalError) as plain:
+                read()
+            others.append(type(plain.value))
+
+    assert [list(year.reads) for year in sound] == [[(class_id, "T1")]]
+    assert type(refused.value.__cause__) is UnicodeDecodeError
+    assert decoding is text_or_refusal
+    assert others == [sqlite3.OperationalError] * 3
+
+
+@pytest.mark.parametrize("address", ADDRESSES)
+def test_a_database_error_inside_the_score_read_gets_the_page_s_own_answer(
+    address: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A file SQLite can't read just then, met while text is decoded strictly, is raised as
+    itself: the page answers as it answers any record it can't read, and the connection
+    keeps its own decoding of text."""
+
+    def locked(*_: object, **__: object) -> None:
+        msg = "database is locked"
+        raise sqlite3.OperationalError(msg)
+
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        with_report(client)
+        monkeypatch.setattr(store, "_class_reports", locked)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            answer = client.get(address, headers=PAGE_HEADERS)
+        decoding = store._connection.text_factory
+
+    assert answer.status_code == 503
+    assert "School score" not in answer.text
+    assert LEFT_OUT not in recorded(caplog)
+    assert [said for said in recorded(caplog) if said.endswith(": OperationalError")]
+    assert decoding is text_or_refusal
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["observations that are an empty text", "an entry that is an object of two keys"],
+)
+def test_a_copied_list_that_is_refused_stops_the_action_and_a_correction_and_writes_nothing(
+    shape: str,
+) -> None:
+    """With an action's copied list on record in a shape no action writes, "Use saved values
+    from this report as current" and a parent's correction each fail with the named error,
+    and the file's rows stay as they were."""
+    draft = draft_of(IN_WEEK)
+    with browser() as client:
+        store = store_of(client)
+        class_id = made_current_again(client)
+        preview = current_preview(store, draft)
+        page = correction_page(store, class_id, "result", result_named(client, class_id, LOG))
+        stored(store, COPIED, WRONG_SHAPES[shape])
+        before = every_row(database_of(client))
+        with pytest.raises(GradeValueUndecodable) as acted:
+            confirm_current(store, draft, preview)
+        with pytest.raises(GradeValueUndecodable) as corrected:
+            store.correct_value(
+                class_id,
+                "T1",
+                page=page,
+                field="points",
+                how="parent_assertion",
+                value=GradeValue(text="20.0", presence=Presence.REPORTED),
+                role="parent",
+            )
+        after = every_row(database_of(client))
+
+    assert {str(acted.value), str(corrected.value)} == {UNDECODABLE}
+    assert after == before

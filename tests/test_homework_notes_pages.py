@@ -197,8 +197,9 @@ def test_a_page_costs_the_same_statements_however_many_notes_and_requests_there_
 
     assert costs[0] == costs[1] == costs[2]
     # One of them is the one read of the school's instructions, however many there are. Her
-    # week also asks the gradebook for the school years on record: three statements with none.
-    assert costs[0] <= (15 if where == HER_PAGE else 12)
+    # week also asks the gradebook for the school years on record and for the terms that hold
+    # a report: four statements with none.
+    assert costs[0] <= (16 if where == HER_PAGE else 12)
 
 
 # -------------------------------------------------------------- the family page

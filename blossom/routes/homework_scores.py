@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import tzinfo
 
 from blossom.grades.dates import due_date_of
+from blossom.grades.draft import folded
 from blossom.grades.review import CurrentValue, GradeValueUndecodable
 from blossom.grades.school_scores import Homework, Result, result_of, school_scores
 from blossom.grades.wording import report_names, score_line
@@ -68,20 +69,34 @@ def read_grade_facts(store: GradebookRecords, courses: Iterable[str]) -> tuple[Y
     names = set(courses)
     if not names:
         return ()
-    by_year: dict[str, list[str]] = {}
-    for year, term in store.grade_contexts().terms:
-        by_year.setdefault(year, []).append(term)
-    years = []
-    for year, terms in by_year.items():
-        mapping = store.homework_classes(year)
-        connected = {class_for(name, mapping) for name in names} - {None}
-        reads: dict[tuple[str, str], ClassTermRead] = {}
-        first_month = store.first_month_of(year) if connected else None
-        for term in terms if connected else ():
-            for one in store.classes_in(year, term):
-                if one.reported and one.class_id in connected:
-                    reads[(one.class_id, term)] = store.class_term(one.class_id, term)
-        years.append(YearRead(mapping, first_month, tuple(terms), reads))
+    # Text is decoded strictly for these reads. A report of a connected class in a term with
+    # no row among its year's terms is refused: that term is never read, so its results
+    # would drop out of the count unseen.
+    with store.strict_text():
+        by_year: dict[str, list[str]] = {}
+        for year, term in store.grade_contexts().terms:
+            by_year.setdefault(year, []).append(term)
+        reported: dict[str, set[tuple[str, str]]] = {}
+        for year, class_id, term in store.terms_reported():
+            reported.setdefault(year, set()).add((class_id, term))
+            by_year.setdefault(year, [])
+        years = []
+        for year, terms in by_year.items():
+            mapping = store.homework_classes(year)
+            connected = {class_for(name, mapping) for name in names} - {None}
+            held = {folded(term) for term in terms}
+            if any(
+                class_id in connected and term not in held
+                for class_id, term in reported.get(year, ())
+            ):
+                raise GradeValueUndecodable
+            reads: dict[tuple[str, str], ClassTermRead] = {}
+            first_month = store.first_month_of(year) if connected else None
+            for term in terms if connected else ():
+                for one in store.classes_in(year, term):
+                    if one.reported and one.class_id in connected:
+                        reads[(one.class_id, term)] = store.class_term(one.class_id, term)
+            years.append(YearRead(mapping, first_month, tuple(terms), reads))
     return tuple(years)
 
 
