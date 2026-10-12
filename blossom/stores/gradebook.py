@@ -1631,8 +1631,12 @@ class GradebookRecords:
         if not rows:
             msg = "the file has no student record"
             raise NoStudentRecord(msg)
-        student_id, check = rows[0][0], rows[0][1]
-        return student_id, check, [row[2] for row in rows if row[2] is not None]
+        held = [
+            (_text(student_id), _text_or_none(check), _text_or_none(form))
+            for student_id, check, form in rows
+        ]
+        student_id, check, _ = held[0]
+        return student_id, check, [form for _, _, form in held if form is not None]
 
     def student_id(self) -> str:
         """Her stable student ID, which every gradebook record carries."""
@@ -1981,37 +1985,47 @@ class GradebookRecords:
         stored, and the parent's assertions standing on each observation."""
         scope = (student_id, class_id, term)
         reports = {
-            str(report_id): (_whole(order, 1), str(use), _whole(rows, 0))
+            _text(report_id): (_whole(order, 1), _text(use), _whole(rows, 0))
             for report_id, order, use, rows in self._connection.execute(SCOPE_REPORTS, scope)
         }
         named = {"student": student_id, "class": class_id, "term": term}
         complete = {
-            str(report_id): bool(read_complete)
+            _text(report_id): bool(read_complete)
             for report_id, read_complete in self._connection.execute(SCOPE_COMPLETE, named)
         }
         observed: list[Observed] = []
         for row in self._connection.execute(TERMS_OBSERVED, scope):
-            observed.append(("term", TERM_KEY, str(row[0]), _cells(TERM_FIELDS, row[1:])))
+            observed.append(("term", TERM_KEY, _text(row[0]), _cells(TERM_FIELDS, row[1:])))
         for row in self._connection.execute(CATEGORIES_OBSERVED, scope):
             observed.append(
-                ("category", str(row[1]), str(row[0]), _cells(CATEGORY_FIELDS, row[2:]))
+                ("category", _text(row[1]), _text(row[0]), _cells(CATEGORY_FIELDS, row[2:]))
             )
         for row in self._connection.execute(RESULTS_OBSERVED, scope):
-            observed.append(("result", str(row[1]), str(row[0]), _cells(RESULT_FIELDS, row[2:])))
+            observed.append(
+                ("result", _text(row[1]), _text(row[0]), _cells(RESULT_FIELDS, row[2:]))
+            )
         decided: list[Decided] = [
             (
-                str(report_id),
-                str(evidence),
-                None if result is None else str(result),
-                str(how),
-                None if rejected is None else str(rejected),
+                _text(report_id),
+                _text(evidence),
+                _text_or_none(result),
+                _text(how),
+                _text_or_none(rejected),
             )
             for report_id, evidence, result, how, rejected in self._connection.execute(
                 DECIDED, scope
             )
         ]
         corrections = tuple(
-            (str(report_id), str(kind), str(target), str(named), str(text), str(presence), str(how))
+            (
+                _text(report_id),
+                _text(kind),
+                _text(target),
+                _text(named),
+                _text(text),
+                _text(presence),
+                _text(how),
+            )
             for report_id, kind, target, named, text, presence, how in self._connection.execute(
                 SCOPE_CORRECTIONS, scope
             )
@@ -2209,10 +2223,11 @@ class GradebookRecords:
             student_id = self._her_name_record()[0]
             current = self._connection.execute(CURRENT_CONTEXT, (student_id,)).fetchone()
             rows = self._connection.execute(TERMS_ON_RECORD, (student_id,)).fetchall()
-        ordered = sorted(rows, key=lambda row: (str(row[0]), str(row[2]), folded(str(row[1]))))
+        in_use = None if current is None else (_text(current[0]), _text(current[1]))
+        terms = [(_text(year), _text(label), _text(made)) for year, label, made in rows]
+        ordered = sorted(terms, key=lambda row: (row[0], row[2], folded(row[1])))
         return GradeContexts(
-            current=None if current is None else (str(current[0]), str(current[1])),
-            terms=tuple((str(year), str(label)) for year, label, _ in ordered),
+            current=in_use, terms=tuple((year, label) for year, label, _ in ordered)
         )
 
     def terms_reported(self) -> tuple[tuple[str, str, str], ...]:
@@ -2220,7 +2235,7 @@ class GradebookRecords:
         report keeps it, in one statement. A read alone."""
         with self._lock:
             rows = self._connection.execute(TERMS_REPORTED).fetchall()
-        return tuple((str(year), str(class_id), str(term)) for year, class_id, term in rows)
+        return tuple((_text(year), _text(class_id), _text(term)) for year, class_id, term in rows)
 
     @contextmanager
     def strict_text(self) -> Iterator[None]:
@@ -2245,15 +2260,17 @@ class GradebookRecords:
         for it. A read alone."""
         with self._lock:
             student_id = self._her_name_record()[0]
-            classes = self._connection.execute(CLASSES_OF_YEAR, (student_id, year)).fetchall()
+            classes = [
+                (_text(class_id), _text(name))
+                for class_id, name in self._connection.execute(CLASSES_OF_YEAR, (student_id, year))
+            ]
             reported = {
-                str(row[0])
+                _text(row[0])
                 for row in self._connection.execute(CLASSES_REPORTED, (student_id, folded(term)))
             }
-        ordered = sorted(classes, key=lambda row: (folded(str(row[1])), str(row[0])))
+        ordered = sorted(classes, key=lambda row: (folded(row[1]), row[0]))
         return tuple(
-            ClassInTerm(str(class_id), str(name), str(class_id) in reported)
-            for class_id, name in ordered
+            ClassInTerm(class_id, name, class_id in reported) for class_id, name in ordered
         )
 
     def class_named(self, class_id: str) -> ClassOfYear | None:
@@ -2280,12 +2297,12 @@ class GradebookRecords:
         rows = self._connection.execute(CLASS_REPORTS, (student_id, class_id, term)).fetchall()
         return tuple(
             ClassReport(
-                report_id=str(report_id),
+                report_id=_text(report_id),
                 order=_whole(order, 1),
-                use=cast(ReportUse, str(use)),
-                imported_at=str(imported_at),
-                acted_at=None if acted_at is None else str(acted_at),
-                latest_of_capture=str(latest),
+                use=cast(ReportUse, _text(use)),
+                imported_at=_text(imported_at),
+                acted_at=_text_or_none(acted_at),
+                latest_of_capture=_text(latest),
             )
             for report_id, order, use, imported_at, acted_at, latest in rows
         )
@@ -2360,27 +2377,28 @@ class GradebookRecords:
 
     def _homework_classes(self, student_id: str, year: str) -> HomeworkClasses:
         """Her classes and a parent's answers for ``year``, under the caller's lock."""
-        classes = self._connection.execute(CLASSES_OF_YEAR, (student_id, year)).fetchall()
-        aliases = self._connection.execute(ALIASES_OF_YEAR, (student_id, year)).fetchall()
-        answers = self._connection.execute(HOMEWORK_ANSWERS, (student_id, year)).fetchall()
-        ordered = sorted(classes, key=lambda row: (folded(str(row[1])), str(row[0])))
+        classes = [
+            (_text(class_id), _text(name))
+            for class_id, name in self._connection.execute(CLASSES_OF_YEAR, (student_id, year))
+        ]
+        aliases = [
+            (_text(of), ClassAlias(_text(code), _text_or_none(said), _text(added)))
+            for of, code, said, added in self._connection.execute(
+                ALIASES_OF_YEAR, (student_id, year)
+            )
+        ]
+        answers = {
+            _text(key): _text_or_none(class_id)
+            for key, class_id in self._connection.execute(HOMEWORK_ANSWERS, (student_id, year))
+        }
+        ordered = sorted(classes, key=lambda row: (folded(row[1]), row[0]))
         return HomeworkClasses(
             year=year,
             classes=tuple(
-                NamedClass(
-                    str(class_id),
-                    str(name),
-                    tuple(
-                        ClassAlias(str(code), None if said is None else str(said), str(added))
-                        for of, code, said, added in aliases
-                        if of == class_id
-                    ),
-                )
+                NamedClass(class_id, name, tuple(alias for of, alias in aliases if of == class_id))
                 for class_id, name in ordered
             ),
-            answers={
-                str(key): None if class_id is None else str(class_id) for key, class_id in answers
-            },
+            answers=answers,
         )
 
     def connect_homework_class(
@@ -2553,7 +2571,7 @@ class GradebookRecords:
         copied."""
         copies: dict[str, tuple[str, frozenset[tuple[str, str]]]] = {}
         for made, source, copied in self._connection.execute(SCOPE_COPIES, scope):
-            copies[str(made)] = (str(source), _copied(str(copied)))
+            copies[_text(made)] = (_text(source), _copied(_text(copied)))
         return copies
 
     def correction_history(
@@ -3017,6 +3035,20 @@ def _cell(value: GradeValue) -> tuple[str, str]:
     return value.text, value.presence.value
 
 
+def _text(stored: object) -> str:
+    """A fetched text column's value, checked as its row is read and before any use of it.
+    A stored value that is not text, a missing one among them, is ``GradeValueUndecodable``."""
+    if not isinstance(stored, str):
+        raise GradeValueUndecodable
+    return stored
+
+
+def _text_or_none(stored: object) -> str | None:
+    """A fetched text column that may hold nothing: None as None, and any other value as
+    ``_text`` reads it."""
+    return None if stored is None else _text(stored)
+
+
 def _cells(fields: tuple[str, ...], row: tuple[object, ...]) -> dict[str, Cell]:
     """An observation's cells by field, from its text and presence columns in turn. A stored
     text that is not text, or a presence that is none of the four, is
@@ -3034,12 +3066,12 @@ def _cells(fields: tuple[str, ...], row: tuple[object, ...]) -> dict[str, Cell]:
 
 
 def _copied(stored: str) -> frozenset[tuple[str, str]]:
-    """The kind and target of each observation an action's record lists as copied. Text that is
-    no JSON object whose ``observations`` is a list of pairs, each a kind an action copies and
-    a target, both texts, or that nests too deeply to read, is ``GradeValueUndecodable``."""
+    """The kind and target of each observation an action's record lists as copied. Text the JSON
+    reader refuses, deep nesting included, or that is no object whose ``observations`` is a list of
+    pairs, each a kind an action copies and a target, both texts, is ``GradeValueUndecodable``."""
     try:
         listed = json.loads(stored)
-    except (json.JSONDecodeError, RecursionError) as error:
+    except (ValueError, RecursionError) as error:
         raise GradeValueUndecodable from error
     observations = listed.get("observations") if isinstance(listed, dict) else None
     if not isinstance(observations, list):

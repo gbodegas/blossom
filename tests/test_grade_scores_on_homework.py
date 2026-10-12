@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from blossom.grades.dates import due_date_of
 from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key, folded
 from blossom.grades.identity import name_form_key
 from blossom.grades.projection import MadeCurrent, original_of
@@ -47,6 +48,7 @@ from blossom.routes.navigation import (
     note_add_href,
 )
 from blossom.routes.runs import plan_graphs
+from blossom.stores import gradebook
 from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
     UNCONNECTED,
@@ -1891,15 +1893,16 @@ ADDRESSES = [HER_PAGE, f"/student/assignments/{LOG_ID}"]
 
 @pytest.mark.parametrize("address", ADDRESSES)
 @pytest.mark.parametrize("where", ["the read", "the lines"])
+@pytest.mark.parametrize("kind", [ValueError, RecursionError, MemoryError])
 def test_no_other_error_is_taken_for_a_grade_value_that_can_t_be_decoded(
-    where: str, address: str, monkeypatch: pytest.MonkeyPatch
+    kind: type[Exception], where: str, address: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A ``ValueError`` of any other kind, from the grade read or from making the lines, fails
-    the page as it does with no score to leave out."""
+    """A ``ValueError`` of any other kind, a ``RecursionError`` or a ``MemoryError``, from the
+    grade read or from making the lines, fails the page as it does with no score to leave out."""
 
     def failed(*_: object, **__: object) -> None:
         msg = "another failure"
-        raise ValueError(msg)
+        raise kind(msg)
 
     with browser() as client:
         store = store_of(client)
@@ -1909,10 +1912,10 @@ def test_no_other_error_is_taken_for_a_grade_value_that_can_t_be_decoded(
             monkeypatch.setattr(store, "class_term", failed)
         else:
             monkeypatch.setattr("blossom.routes.homework_scores.school_scores", failed)
-        with pytest.raises(ValueError, match="another failure") as raised:
+        with pytest.raises(kind, match="another failure") as raised:
             client.get(address, headers=PAGE_HEADERS)
 
-    assert type(raised.value) is ValueError
+    assert type(raised.value) is kind
 
 
 ORDER = "UPDATE grade_reports SET acceptance_order = ? WHERE acceptance_order = 1"
@@ -1932,14 +1935,16 @@ NO_CAUSE = type(None)
 @dataclasses.dataclass(frozen=True)
 class Edit:
     """One stored value written as no save writes it: the statement, what it binds, which
-    reads raise the named error for it, the error its decoding raised, when one was, and
-    whether it makes a chain of sources come back to itself."""
+    reads raise the named error for it, the error its decoding raised, when one was, whether
+    it makes a chain of sources come back to itself, and whether it changes a parent's
+    assertion, which the record then holds."""
 
     statement: str
     binds: tuple[object, ...] = ()
     at: str = "the class"
     cause: type = NO_CAUSE
     loops: bool = False
+    asserted: bool = False
 
 
 def not_utf8(table: str, column: str) -> Edit:
@@ -1947,6 +1952,15 @@ def not_utf8(table: str, column: str) -> Edit:
     statement = f"UPDATE {table} SET {column} = CAST(? AS TEXT)"  # noqa: S608
     return Edit(statement, (NOT_UTF8,), "the score read", UnicodeDecodeError)
 
+
+def as_bytes(table: str, column: str, at: str = "the class", *, asserted: bool = False) -> Edit:
+    """The text of ``column`` stored as bytes in every row of ``table`` that holds one."""
+    statement = f"UPDATE {table} SET {column} = CAST({column} AS BLOB)"  # noqa: S608
+    return Edit(statement, at=at, asserted=asserted)
+
+
+DIGITS = "9" * 5000
+"""A whole number of more digits than Python reads into an integer."""
 
 EDITS = {
     "an order that is infinity": Edit(ORDER, (float("inf"),)),
@@ -1992,13 +2006,88 @@ EDITS = {
     "a report in a term with no row among its year's terms": Edit(
         "DELETE FROM grade_terms", at="the score read"
     ),
+    "a report whose term only folds to its term's label": Edit(
+        "UPDATE grade_reports SET term_label = ' T1'", at="the score read"
+    ),
+    "a copied list whose target is a number of 5,000 digits": Edit(
+        COPIED, (f'{{"observations":[["result",{DIGITS}]],"rows":[]}}',), cause=ValueError
+    ),
+    "a copied list with a number of 5,000 digits under a key of its own": Edit(
+        COPIED, (f'{{"observations":[],"rows":[],"n":{DIGITS}}}',), cause=ValueError
+    ),
+    "a copied list that is a number of 5,000 digits alone": Edit(
+        COPIED, (DIGITS,), cause=ValueError
+    ),
+    "her student ID stored as bytes": as_bytes("grade_student", "student_id"),
+    "her key check stored as bytes": Edit("UPDATE grade_student SET key_check = ?", (b"check",)),
+    "a name form stored as bytes": as_bytes("grade_name_forms", "name_form"),
+    "the term in use stored as bytes": as_bytes("grade_context", "term_label", "the score read"),
+    "the school year in use stored as bytes": as_bytes(
+        "grade_context", "year_label", "the score read"
+    ),
+    "a term's school year stored as bytes": as_bytes("grade_terms", "year_label", "the score read"),
+    "a term's label stored as bytes": as_bytes("grade_terms", "label", "the score read"),
+    "the moment a term was made stored as bytes": as_bytes(
+        "grade_terms", "made_at", "the score read"
+    ),
+    "a class's school year stored as bytes": as_bytes(
+        "grade_classes", "year_label", "the score read"
+    ),
+    "a class's ID stored as bytes": as_bytes("grade_classes", "class_id", "the score read"),
+    "a class's name stored as bytes": as_bytes("grade_classes", "display_name", "the score read"),
+    "an alias's name stored as bytes": as_bytes("grade_class_aliases", "name", "the score read"),
+    "an alias's class stored as bytes": as_bytes(
+        "grade_class_aliases", "class_id", "the score read"
+    ),
+    "an alias's code stored as bytes": as_bytes("grade_class_aliases", "code", "the score read"),
+    "the moment an alias was added stored as bytes": as_bytes(
+        "grade_class_aliases", "added_at", "the score read"
+    ),
+    "a report's class stored as bytes": as_bytes("grade_reports", "class_id", "the score read"),
+    "a report's ID stored as bytes": as_bytes("grade_reports", "report_id"),
+    "the moment a report was added stored as bytes": as_bytes(
+        "grade_reports", "imported_at", "the score read"
+    ),
+    "the moment an action made a report stored as bytes": as_bytes(
+        "grade_current_actions", "acted_at", "the score read"
+    ),
+    "a category's key stored as bytes": as_bytes("grade_category_observations", "category_key"),
+    "a result's ID stored as bytes": as_bytes("grade_result_observations", "result_id"),
+    "a match's evidence stored as bytes": as_bytes("grade_match_decisions", "evidence"),
+    "a match's result stored as bytes": as_bytes("grade_match_decisions", "result_id"),
+    "an assertion's target stored as bytes": as_bytes("grade_corrections", "target", asserted=True),
+    "an assertion's text stored as bytes": as_bytes(
+        "grade_corrections", "corrected_text", asserted=True
+    ),
+    "the report an action made stored as bytes": as_bytes("grade_current_actions", "report_made"),
+    "an action's source stored as bytes": as_bytes("grade_current_actions", "source_report"),
+    "a copied list stored as bytes": as_bytes("grade_current_actions", "copied"),
 }
 """Stored values no save writes, each with the file's own checks in force: a report's order
 or number of rows that is no whole number at or above its bound, a copied list nested too
-deeply, a cell's text that is not text, a first month that is no whole month, text that is
-not UTF-8, an action whose chain of sources comes back to itself, and a report whose term
-has no row among its year's terms."""
+deeply or holding a number of more digits than an integer reads, a cell's text that is not
+text, a first month that is no whole month, text that is not UTF-8, an action whose chain of
+sources comes back to itself, a report whose term has no row among its year's terms or only
+folds to one, and a fetched text column stored as bytes."""
 EDITED = [pytest.param(edit, id=name) for name, edit in EDITS.items()]
+
+
+def on_record_for(client: TestClient, edit: Edit) -> str:
+    """What ``made_current_again`` leaves on record, with a parent's assertion on the log's
+    points when ``edit`` changes one. The class."""
+    class_id = made_current_again(client)
+    if edit.asserted:
+        store = store_of(client)
+        store.correct_value(
+            class_id,
+            "T1",
+            page=correction_page(store, class_id, "result", result_named(client, class_id, LOG)),
+            field="points",
+            how="parent_assertion",
+            value=GradeValue(text="20.0", presence=Presence.REPORTED),
+            role="parent",
+        )
+    return class_id
 
 
 def within[Answer](seconds: float, read: Callable[[], Answer]) -> Answer:
@@ -2107,7 +2196,7 @@ def test_a_hand_edited_grade_value_leaves_her_pages_as_with_no_class_on_record(
             return [without_minted_fields(answer.text) for answer in answers]
 
         bare = read()
-        made_current_again(client)
+        on_record_for(client, edit)
         whole = read()
         stored(store, edit.statement, *edit.binds)
         if edit.loops:
@@ -2156,7 +2245,7 @@ def test_each_hand_edited_grade_value_raises_the_one_named_error_where_it_is_rea
     draft = draft_of(IN_WEEK)
     with browser() as client:
         store = store_of(client)
-        class_id = made_current_again(client)
+        class_id = on_record_for(client, edit)
         sound = read_grade_facts(store, [BIOLOGY])
         stored(store, edit.statement, *edit.binds)
         if edit.loops:
@@ -2199,7 +2288,7 @@ def test_grades_and_class_details_answer_a_hand_edited_value_with_the_named_erro
     """Neither page leaves anything out: each fails in time with the named error, a
     ``ValueError``, with nothing stored in its message."""
     with browser() as client:
-        class_id = made_current_again(client)
+        class_id = on_record_for(client, edit)
         sound = client.get(address.format(class_id), headers=PAGE_HEADERS)
         stored(store_of(client), edit.statement, *edit.binds)
         if edit.loops:
@@ -2262,6 +2351,11 @@ COMPETITORS = [
         twin_terms,
         "DELETE FROM grade_terms WHERE label = 'T2'",
         id="a twin's term with no row among its year's terms",
+    ),
+    pytest.param(
+        twin_terms,
+        "UPDATE grade_reports SET term_label = ' T2' WHERE term_label = 'T2'",
+        id="a twin's report whose term only folds to its term's label",
     ),
 ]
 
@@ -2552,3 +2646,612 @@ def test_a_copied_list_that_is_refused_stops_the_action_and_a_correction_and_wri
 
     assert {str(acted.value), str(corrected.value)} == {UNDECODABLE}
     assert after == before
+
+
+BY_CODE = "07 BIO - C"
+"""The report's code for Biology, which a homework class name may be."""
+
+
+def earlier_as_bytes(table: str, column: str) -> str:
+    """The statement that stores ``column`` as bytes in the earlier year's rows of ``table``."""
+    return (
+        f"UPDATE {table} SET {column} = CAST({column} AS BLOB) "  # noqa: S608
+        "WHERE year_label = '2025-2026'"
+    )
+
+
+DROPPED = [
+    pytest.param(
+        twin_years,
+        BY_CODE,
+        (earlier_as_bytes("grade_class_aliases", "class_id"),),
+        id="an alias's class, the homework named by the alias's code",
+    ),
+    pytest.param(
+        twin_years,
+        BIOLOGY,
+        (
+            earlier_as_bytes("grade_classes", "display_name"),
+            earlier_as_bytes("grade_class_aliases", "name"),
+        ),
+        id="a class's name and its alias's name",
+    ),
+    pytest.param(
+        twin_years,
+        BY_CODE,
+        (earlier_as_bytes("grade_class_aliases", "code"),),
+        id="an alias's code, the homework named by that code",
+    ),
+    pytest.param(
+        twin_terms,
+        BIOLOGY,
+        ("UPDATE grade_reports SET report_id = CAST(report_id AS BLOB) WHERE term_label = 'T2'",),
+        id="a report's ID",
+    ),
+    pytest.param(
+        twin_years,
+        BIOLOGY,
+        (earlier_as_bytes("grade_classes", "year_label"),),
+        id="a class's school year",
+    ),
+    pytest.param(
+        twin_years,
+        BIOLOGY,
+        (earlier_as_bytes("grade_classes", "class_id"),),
+        id="a class's ID",
+    ),
+    pytest.param(
+        twin_terms,
+        BIOLOGY,
+        ("UPDATE grade_reports SET class_id = CAST(class_id AS BLOB) WHERE term_label = 'T2'",),
+        id="a report's class",
+    ),
+]
+"""Two results that could each be the log's, the homework's class name, and the statements
+that store an identifier of one of the two as bytes, which equal no text."""
+
+
+@pytest.mark.parametrize(("arrange", "course", "statements"), DROPPED)
+def test_a_fetched_identifier_stored_as_bytes_is_refused_where_its_row_is_read(
+    arrange: Callable[[TestClient], None],
+    course: str,
+    statements: tuple[str, ...],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two results could each be the log's, so the log shows no score. With an identifier of
+    one stored as bytes, the log still shows none, on her week and on its details, and each
+    read records the failure."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(course=course)], {})
+        arrange(client)
+        twins = [scores(page_of(client)), scores(details_of(client))]
+        for statement in statements:
+            stored(store, statement)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            left = [page_of(client), details_of(client)]
+
+    assert twins == [[], []]
+    assert card_for(left[0], LOG_ID)
+    assert not [page for page in left if "School score" in page or "Grade details" in page]
+    assert recorded(caplog) == [LEFT_OUT] * 2
+
+
+def test_a_removed_connection_whose_name_is_stored_as_bytes_does_not_connect_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A parent removed the connection of "Biology": the answer holds no class, and its
+    homework shows no score. With the answer's name stored as bytes, her week and details
+    still show none, and each read records the failure."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        with_report(client)
+        connected = [scores(page_of(client)), scores(details_of(client))]
+        store.connect_homework_class(YEAR, BIOLOGY, shown=None, chosen=UNCONNECTED, role="parent")
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            removed = [scores(page_of(client)), scores(details_of(client))]
+        answers = dict(store.homework_classes(YEAR).answers)
+        quiet = recorded(caplog)
+        caplog.clear()
+        stored(store, "UPDATE grade_homework_classes SET name_key = CAST(name_key AS BLOB)")
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            left = [page_of(client), details_of(client)]
+
+    assert [[line for line, _, _ in one] for one in connected] == [[LINE], [LINE]]
+    assert removed == [[], []]
+    assert answers == {name_key(BIOLOGY): None}
+    assert quiet == []
+    assert not [page for page in left if "School score" in page or "Grade details" in page]
+    assert recorded(caplog) == [LEFT_OUT] * 2
+
+
+def test_a_chosen_answer_whose_class_is_stored_as_bytes_leaves_her_pages_without_scores(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A parent connected "Geometry" to the class a report made, and its homework shows the
+    score. With the answer's class stored as bytes, her week and details show none, and each
+    read records the failure."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(course="Geometry")], {})
+        class_id = with_report(client, GEOMETRY)
+        store.connect_homework_class(YEAR, "Geometry", shown=None, chosen=class_id, role="parent")
+        connected = lines_shown(client)
+        stored(store, "UPDATE grade_homework_classes SET class_id = CAST(class_id AS BLOB)")
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            left = [page_of(client), details_of(client)]
+
+    assert connected == [[LINE], [LINE]]
+    assert card_for(left[0], LOG_ID)
+    assert not [page for page in left if "School score" in page or "Grade details" in page]
+    assert recorded(caplog) == [LEFT_OUT] * 2
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "mapped"),
+    [
+        ("grade_classes", "class_id", True),
+        ("grade_classes", "display_name", True),
+        ("grade_reports", "class_id", False),
+    ],
+)
+def test_each_read_of_a_year_s_classes_refuses_an_id_or_a_name_stored_as_bytes(
+    table: str, column: str, mapped: bool
+) -> None:
+    """The classes of a term, which Grades lists, and the year's mapping of homework class
+    names each raise the named error for a value they fetch: a score read makes both, and
+    either meets a class's ID or name first."""
+    with browser() as client:
+        store = store_of(client)
+        class_id = with_report(client)
+        sound = store.classes_in(YEAR, "T1")
+        named = [one.class_id for one in store.homework_classes(YEAR).classes]
+        stored(store, as_bytes(table, column).statement)
+        reads: list[Callable[[], object]] = [lambda: store.classes_in(YEAR, "T1")]
+        if mapped:
+            reads.append(lambda: store.homework_classes(YEAR))
+        refused = []
+        for read in reads:
+            with pytest.raises(GradeValueUndecodable) as raised:
+                read()
+            refused.append(str(raised.value))
+
+    assert [(one.class_id, one.name, one.reported) for one in sound] == [(class_id, BIOLOGY, True)]
+    assert named == [class_id]
+    assert set(refused) == {UNDECODABLE}
+
+
+FETCHED = [
+    ("grade_context", "year_label", "the terms on record"),
+    ("grade_context", "term_label", "the terms on record"),
+    ("grade_terms", "year_label", "the terms on record"),
+    ("grade_terms", "label", "the terms on record"),
+    ("grade_terms", "made_at", "the terms on record"),
+    ("grade_classes", "year_label", "the terms reported"),
+    ("grade_reports", "term_label", "the terms reported"),
+    ("grade_reports", "report_id", "the class's reports"),
+]
+"""A text column, and the read that fetches it before any other read of a score read does."""
+
+
+@pytest.mark.parametrize(("table", "column", "read"), FETCHED)
+def test_each_read_of_the_terms_and_reports_refuses_a_value_it_fetches_stored_as_bytes(
+    table: str, column: str, read: str
+) -> None:
+    """The terms on record, the terms that hold a report and a class's reports each raise the
+    named error for a text column they fetch, whatever a later read would make of it."""
+    with browser() as client:
+        store = store_of(client)
+        class_id = with_report(client)
+        reads: dict[str, Callable[[], object]] = {
+            "the terms on record": store.grade_contexts,
+            "the terms reported": store.terms_reported,
+            "the class's reports": lambda: store._class_reports(store.student_id(), class_id, "T1"),
+        }
+        contexts, reported_in = store.grade_contexts(), store.terms_reported()
+        kept = store._class_reports(store.student_id(), class_id, "T1")
+        stored(store, as_bytes(table, column).statement)
+        with pytest.raises(GradeValueUndecodable) as raised:
+            reads[read]()
+
+    assert (contexts.current, contexts.terms) == ((YEAR, "T1"), ((YEAR, "T1"),))
+    assert reported_in == ((YEAR, class_id, "T1"),)
+    assert [report.acted_at for report in kept] == [None]
+    assert str(raised.value) == UNDECODABLE
+
+
+def header_without(text: str, line: str) -> GradeReportDraft:
+    """The report ``text`` as read, with ``line`` of its header left out."""
+    draft = draft_of(text)
+    return draft.model_copy(update={"header": draft.header.model_copy(update={line: None})})
+
+
+def lines_shown(client: TestClient) -> list[list[str]]:
+    """The score lines on her week's card for the log and on the log's details."""
+    return [[line for line, _, _ in one] for one in (on_card(client), scores(details_of(client)))]
+
+
+def test_a_report_with_no_class_name_keeps_an_alias_with_no_name_and_connects_by_its_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    unnamed = header_without(IN_WEEK, "class_name")
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(course=BY_CODE)], {})
+        saved = save_grade(store, unnamed, key=KEY)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            shown = lines_shown(client)
+        aliases = [
+            (alias.code, alias.name)
+            for one in store.homework_classes(YEAR).classes
+            for alias in one.aliases
+        ]
+
+    assert isinstance(saved, GradeReportSaved)
+    assert aliases == [(BY_CODE, None)]
+    assert shown == [[LINE], [LINE]]
+    assert recorded(caplog) == []
+
+
+def test_a_student_with_no_key_check_and_no_name_form_reads_as_one_and_the_score_shows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    unsigned = header_without(IN_WEEK, "student_line")
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        saved = save_grade(store, unsigned, key=KEY)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            shown = lines_shown(client)
+        _, check, forms = store._her_name_record()
+
+    assert isinstance(saved, GradeReportSaved)
+    assert (check, forms) == (None, [])
+    assert shown == [[LINE], [LINE]]
+    assert recorded(caplog) == []
+
+
+def answered_different(client: TestClient) -> str:
+    """The report, then a newer one that asks whether a changed row is one on record, saved
+    with a parent's answer "A different assignment". The class."""
+    asking = draft_of(
+        IN_WEEK.replace(
+            "| Cell Diagram             | 7.0 ", "| Cell Diagram             | EX  "
+        ).replace("| Missing    | 08/27   |", "| Missing    | 08/28   |")
+    )
+    store = store_of(client)
+    class_id = with_report(client)
+    review = store.review_grade_report(asking, capture_key(asking), key=KEY)
+    ((row, question),) = [
+        (item.key, item.question) for item in review.rows if item.question is not None
+    ]
+    different = MatchAnswer(row, question.ids, None)
+    answers = dataclasses.replace(grade_answers(review), matches=(different,))
+    saved = save_grade(store, asking, key=KEY, review=review, answers=answers)
+    assert isinstance(saved, GradeReportSaved), saved
+    return class_id
+
+
+SOURCED = f"{LINE}, from the report added August 19"
+"""The log's line while a newer current report stands beside the one its score is from."""
+
+
+def test_a_report_no_action_made_has_no_moment_of_one_and_a_match_may_hold_no_result(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """After "A different assignment" the match holds no result, the other matches turned
+    nothing down, and neither report has an action's moment. Each reads as none, and the
+    log's score stands with its source."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = answered_different(client)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            shown = lines_shown(client)
+        read = store.class_term(class_id, "T1")
+        held = store._scope_held(store.student_id(), class_id, "T1")
+
+    assert [report.acted_at for report in read.reports] == [None, None]
+    assert [result for _, _, result, _, _ in held.decided].count(None) == 1
+    assert [rejected is None for _, _, _, _, rejected in held.decided].count(False) == 1
+    assert None in [rejected for _, _, _, _, rejected in held.decided]
+    assert shown == [[SOURCED]] * 2
+    assert recorded(caplog) == []
+
+
+def test_what_a_match_turned_down_stored_as_bytes_leaves_her_pages_without_scores(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The one match that turned a result down keeps it as text. Stored as bytes, her week
+    and details show no score, each read records the failure, and the class's own read
+    raises the named error."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = answered_different(client)
+        shown = lines_shown(client)
+        stored(store, "UPDATE grade_match_decisions SET rejected = CAST(rejected AS BLOB)")
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            left = [page_of(client), details_of(client)]
+        with pytest.raises(GradeValueUndecodable) as raised:
+            store.class_term(class_id, "T1")
+
+    assert shown == [[SOURCED]] * 2
+    assert card_for(left[0], LOG_ID)
+    assert not [page for page in left if "School score" in page or "Grade details" in page]
+    assert recorded(caplog) == [LEFT_OUT] * 2
+    assert str(raised.value) == UNDECODABLE
+
+
+def test_a_year_with_no_first_month_and_a_file_with_no_term_in_use_read_as_none(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A save that leaves a year's first month unconfirmed keeps none, and its results stay
+    in the count. A file whose term in use is gone has none, and the score still shows."""
+    earlier = draft_of(IN_WEEK.replace(f"**{YEAR}**", "**2025-2026**"))
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        fresh = store.grade_contexts().current
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            before = lines_shown(client)
+            with_report(client)
+            stored(store, "DELETE FROM grade_context")
+            alone = lines_shown(client)
+            in_use = store.grade_contexts().current
+            review = store.review_grade_report(earlier, capture_key(earlier), key=KEY)
+            saved = save_grade(
+                store, earlier, key=KEY, review=review, answers=grade_answers(review, month=None)
+            )
+            beside = lines_shown(client)
+        months = [store.first_month_of(year) for year in ("2025-2026", YEAR)]
+
+    assert isinstance(saved, GradeReportSaved)
+    assert (fresh, in_use) == (None, None)
+    assert months == [None, 8]
+    assert [before, alone, beside] == [[[], []], [[LINE], [LINE]], [[], []]]
+    assert recorded(caplog) == []
+
+
+PRESENCES = frozenset(presence.value for presence in Presence)
+SOUND_MOMENT = "2026-08-20T10:00:00+00:00"
+SOUND_COPIED = {
+    '{"observations":[["result","one"],["term","term"]],"rows":[]}': frozenset(
+        {("result", "one"), ("term", "term")}
+    ),
+    '{"observations":[],"rows":[]}': frozenset(),
+}
+"""Copied lists as an action writes them, each with what it lists."""
+CORPUS: tuple[object, ...] = (
+    None,
+    0,
+    1,
+    7,
+    8,
+    12,
+    13,
+    -1,
+    2**63 - 1,
+    0.0,
+    2.0,
+    3.5,
+    8.5,
+    1e300,
+    float("inf"),
+    float("-inf"),
+    float("nan"),
+    b"",
+    b"7",
+    b"reported",
+    NOT_UTF8,
+    "Biología".encode(),
+    b'{"observations":[],"rows":[]}',
+    "",
+    " ",
+    "7",
+    "007",
+    "0",
+    "+7",
+    "-7",
+    "7_0",
+    " 7",
+    "٣",
+    "²",
+    "0x10",
+    "1e3",
+    "9" * 4300,
+    "9" * 4301,
+    DIGITS,
+    *sorted(PRESENCES),
+    "Reported",
+    SOUND_MOMENT,
+    NO_DAY,
+    "9999-12-31T23:59:59+00:00",
+    "9999-12-31T23:59:59-14:00",
+    "2026-13-01T00:00:00+00:00",
+    SMUDGED,
+    "08/20",
+    "02/30",
+    YEAR,
+    "2026-2028",
+    DEEP,
+    '{"observations":' * 100_000,
+    f'{{"observations":[["result",{DIGITS}]],"rows":[]}}',
+    f'{{"observations":[],"rows":[],"n":{DIGITS}}}',
+    *WRONG_SHAPES.values(),
+    *SOUND_COPIED,
+    "NaN",
+)
+"""Stored values of every storage class, the hazards met so far among them: nothing, whole
+numbers, floats with both infinities and no number, bytes that are and aren't UTF-8, a JSON
+document as bytes, text that is empty, signed, underscored, in another script's digits or of
+4,300, 4,301 and 5,000 digits, moments at the calendar's edges, documents nested past
+reading or holding a number of 5,000 digits, each wrong shape of a copied list, and a
+well-formed value of each decoder's kind."""
+
+
+def is_anything(_: object) -> bool:
+    return True
+
+
+def is_text(value: object) -> bool:
+    return type(value) is str
+
+
+def is_bytes(value: object) -> bool:
+    return type(value) is bytes
+
+
+def is_utf8(value: object) -> bool:
+    try:
+        return isinstance(value, bytes) and value.decode("utf-8") is not None
+    except UnicodeDecodeError:
+        return False
+
+
+def whole_of(value: object) -> int | None:
+    """The number a stored order or row count is, as the test reads it: an integer, or ASCII
+    digits of no more than 4,300; None for any other value."""
+    if type(value) is int:
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,4300}", value):
+        return int(value)
+    return None
+
+
+def at_least(least: int) -> Callable[[object], bool]:
+    def sound(value: object) -> bool:
+        number = whole_of(value)
+        return number is not None and number >= least
+
+    return sound
+
+
+def is_month(value: object) -> bool:
+    return type(value) is int and 1 <= value <= 12
+
+
+def dates_of(text: str) -> list[date | None]:
+    """``text`` as a due cell under each first month a year may hold, and as a year's label."""
+    return [
+        *(due_date_of((Presence.REPORTED, text), YEAR, month) for month in (None, *range(1, 13))),
+        due_date_of((Presence.REPORTED, "08/20"), text, 8),
+    ]
+
+
+def first_of(report: str) -> str:
+    """``original_of`` from ``report`` along a chain of two sources that ends, in time."""
+    copied = frozenset({("result", "one")})
+    copies = {report: ("a source", copied), "a source": ("the first", copied)}
+    return walk_within(WALK_BOUND, functools.partial(original_of, "result", "one", report, copies))
+
+
+@dataclasses.dataclass(frozen=True)
+class Decoding:
+    """A decoder as the store calls it: which stored values it can be handed, the call, what
+    a value it returns for one must be, and which of them it must read."""
+
+    handed: Callable[[object], bool]
+    call: Callable[[Any], object]
+    reads_as: Callable[[Any, Any], bool]
+    sound: Callable[[object], bool]
+
+
+DECODINGS = {
+    "a text column": Decoding(
+        is_anything,
+        lambda value: gradebook._text(value),
+        lambda value, read: read is value and type(read) is str,
+        is_text,
+    ),
+    "a text column that may hold nothing": Decoding(
+        is_anything,
+        lambda value: gradebook._text_or_none(value),
+        lambda value, read: read is value and (read is None or type(read) is str),
+        lambda value: value is None or is_text(value),
+    ),
+    "a cell's text": Decoding(
+        is_anything,
+        lambda value: _cells(("points",), (value, Presence.REPORTED.value)),
+        lambda value, read: type(value) is str and read == {"points": (Presence.REPORTED, value)},
+        is_text,
+    ),
+    "a cell's presence": Decoding(
+        is_anything,
+        lambda value: _cells(("points",), ("18.0", value)),
+        lambda value, read: value in PRESENCES and read == {"points": (Presence(value), "18.0")},
+        lambda value: value in PRESENCES,
+    ),
+    "a report's order": Decoding(
+        is_anything,
+        lambda value: _whole(value, 1),
+        lambda value, read: type(read) is int and read >= 1 and read == whole_of(value),
+        at_least(1),
+    ),
+    "a report's number of rows": Decoding(
+        is_anything,
+        lambda value: _whole(value, 0),
+        lambda value, read: type(read) is int and read >= 0 and read == whole_of(value),
+        at_least(0),
+    ),
+    "a year's first month": Decoding(
+        is_anything, _month, lambda value, read: is_month(value) and read == value, is_month
+    ),
+    "text decoded strictly": Decoding(
+        is_bytes,
+        _utf8,
+        lambda value, read: type(read) is str and read.encode("utf-8") == value,
+        is_utf8,
+    ),
+    "a report's moment": Decoding(
+        is_text,
+        lambda value: spoken_day(value, ZONE),
+        lambda value, read: type(read) is str and (value != SOUND_MOMENT or read == "August 20"),
+        lambda value: value == SOUND_MOMENT,
+    ),
+    "an action's copied list": Decoding(
+        is_text,
+        _copied,
+        lambda value, read: value in SOUND_COPIED and read == SOUND_COPIED[value],
+        lambda value: value in SOUND_COPIED,
+    ),
+    "a due date": Decoding(
+        is_text,
+        dates_of,
+        lambda value, read: (
+            all(one is None or type(one) is date for one in read)
+            and (value != "08/20" or read[8] == THURSDAY)
+        ),
+        is_text,
+    ),
+    "a chain of sources": Decoding(is_text, first_of, lambda _, read: read == "the first", is_text),
+}
+"""Each decoder a score read runs, over the stored values it can be handed."""
+
+
+@pytest.mark.parametrize("name", DECODINGS)
+def test_each_decoder_reads_or_refuses_each_stored_value_of_one_fixed_set(name: str) -> None:
+    """One fixed set of stored values through a decoder as the store calls it: each call
+    returns a value of the decoder's kind or raises the named error, and each value the set
+    marks well-formed for the decoder is read. It shows how the decoders answer these values
+    and is no proof about any other."""
+    decoding = DECODINGS[name]
+    read, misread, refused, said = [], [], [], set()
+    for at, value in enumerate(CORPUS):
+        if not decoding.handed(value):
+            continue
+        try:
+            answer = decoding.call(value)
+        except GradeValueUndecodable as error:
+            said.add(str(error))
+            refused.append(at)
+            continue
+        read.append(at)
+        if not decoding.reads_as(value, answer):
+            misread.append(at)
+
+    assert read
+    assert misread == []
+    assert [at for at in refused if decoding.sound(CORPUS[at])] == []
+    assert said <= {UNDECODABLE}
