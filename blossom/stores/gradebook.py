@@ -53,7 +53,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC
-from typing import Final, Literal, cast, get_args
+from typing import Final, Literal, SupportsInt, cast, get_args
 
 from blossom.clock import Clock
 from blossom.grades.draft import (
@@ -101,6 +101,7 @@ from blossom.grades.review import (
     GradeAnswers,
     GradeReportSaved,
     GradeReview,
+    GradeValueUndecodable,
     IdentityAnswer,
     ItemStatus,
     MatchAnswer,
@@ -562,6 +563,8 @@ COPIED_OBSERVATIONS: Final = (
     "UNION ALL SELECT 'result', result_id FROM grade_result_observations "
     "WHERE student_id = ? AND report_id = ?"
 )
+COPIED_KINDS: Final = frozenset({"term", "category", "result"})
+"""The kinds of observation an action copies, as ``COPIED_OBSERVATIONS`` names each."""
 COPIED_ROWS: Final = (
     "SELECT row_key, result_id FROM grade_match_decisions "
     "WHERE student_id = ? AND report_id = ? AND result_id IS NOT NULL ORDER BY row_key"
@@ -1973,7 +1976,7 @@ class GradebookRecords:
         stored, and the parent's assertions standing on each observation."""
         scope = (student_id, class_id, term)
         reports = {
-            str(report_id): (int(order), str(use), int(rows))
+            str(report_id): (_whole(order), str(use), _whole(rows))
             for report_id, order, use, rows in self._connection.execute(SCOPE_REPORTS, scope)
         }
         named = {"student": student_id, "class": class_id, "term": term}
@@ -2252,7 +2255,7 @@ class GradebookRecords:
         return tuple(
             ClassReport(
                 report_id=str(report_id),
-                order=int(order),
+                order=_whole(order),
                 use=cast(ReportUse, str(use)),
                 imported_at=str(imported_at),
                 acted_at=None if acted_at is None else str(acted_at),
@@ -2524,11 +2527,7 @@ class GradebookRecords:
         copied."""
         copies: dict[str, tuple[str, frozenset[tuple[str, str]]]] = {}
         for made, source, copied in self._connection.execute(SCOPE_COPIES, scope):
-            listed = json.loads(str(copied))["observations"]
-            copies[str(made)] = (
-                str(source),
-                frozenset((str(kind), str(target)) for kind, target in listed),
-            )
+            copies[str(made)] = (str(source), _copied(str(copied)))
         return copies
 
     def correction_history(
@@ -2993,10 +2992,46 @@ def _cell(value: GradeValue) -> tuple[str, str]:
 
 
 def _cells(fields: tuple[str, ...], row: tuple[object, ...]) -> dict[str, Cell]:
-    """An observation's cells by field, from its text and presence columns in turn."""
-    return {
-        field: (Presence(str(row[2 * at + 1])), str(row[2 * at])) for at, field in enumerate(fields)
-    }
+    """An observation's cells by field, from its text and presence columns in turn. A stored
+    presence that is none of the four is ``GradeValueUndecodable``."""
+    try:
+        return {
+            field: (Presence(str(row[2 * at + 1])), str(row[2 * at]))
+            for at, field in enumerate(fields)
+        }
+    except ValueError as error:
+        raise GradeValueUndecodable from error
+
+
+def _copied(stored: str) -> frozenset[tuple[str, str]]:
+    """The kind and target of each observation an action's record lists as copied. Text that is
+    no JSON object whose ``observations`` is a list of pairs, each a kind an action copies and
+    a target, both texts, is ``GradeValueUndecodable``."""
+    try:
+        listed = json.loads(stored)
+    except json.JSONDecodeError as error:
+        raise GradeValueUndecodable from error
+    observations = listed.get("observations") if isinstance(listed, dict) else None
+    if not isinstance(observations, list):
+        raise GradeValueUndecodable
+    pairs: set[tuple[str, str]] = set()
+    for entry in observations:
+        if not isinstance(entry, list) or len(entry) != 2:
+            raise GradeValueUndecodable
+        kind, target = entry
+        if not (isinstance(kind, str) and isinstance(target, str) and kind in COPIED_KINDS):
+            raise GradeValueUndecodable
+        pairs.add((kind, target))
+    return frozenset(pairs)
+
+
+def _whole(stored: str | bytes | SupportsInt) -> int:
+    """A report's stored acceptance order or number of result rows; one that is no whole
+    number is ``GradeValueUndecodable``."""
+    try:
+        return int(stored)
+    except ValueError as error:
+        raise GradeValueUndecodable from error
 
 
 ALREADY: Final = frozenset({ItemStatus.SAVED, ItemStatus.MATCHES_EARLIER})

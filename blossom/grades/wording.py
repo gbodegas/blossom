@@ -13,7 +13,7 @@ from datetime import date, datetime, tzinfo
 from typing import Final
 
 from blossom.grades.draft import Presence
-from blossom.grades.review import Cell, ClassReport, CurrentValue
+from blossom.grades.review import Cell, ClassReport, CurrentValue, GradeValueUndecodable
 
 
 def described(presence: Presence, text: str, label: str | None, *, named: bool = False) -> str:
@@ -149,8 +149,13 @@ def spoken_date(day: date) -> str:
 
 
 def spoken_day(moment: str, zone: tzinfo) -> str:
-    """A stored moment's day where the household is: ``September 30``."""
-    return spoken_date(datetime.fromisoformat(moment).astimezone(zone).date())
+    """A stored moment's day where the household is: ``September 30``. Text that is no moment,
+    or a moment with no day there, is ``GradeValueUndecodable``."""
+    try:
+        day = datetime.fromisoformat(moment).astimezone(zone).date()
+    except (ValueError, OverflowError) as error:
+        raise GradeValueUndecodable from error
+    return spoken_date(day)
 
 
 def report_names(reports: tuple[ClassReport, ...], zone: tzinfo) -> dict[str, str]:

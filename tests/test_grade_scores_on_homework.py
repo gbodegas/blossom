@@ -11,24 +11,36 @@ result in its own term on the reader's tree, and showing it stores nothing and m
 import dataclasses
 import difflib
 import html
+import json
+import logging
 import pathlib
 import re
+import sqlite3
 from collections.abc import Callable
-from datetime import date
+from datetime import date, time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key
+from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key, folded
 from blossom.grades.identity import name_form_key
-from blossom.grades.review import GradeReportSaved, MatchAnswer
+from blossom.grades.projection import MadeCurrent
+from blossom.grades.review import GradeReportSaved, GradeValueUndecodable, MatchAnswer
 from blossom.grades.text_reader import read_grade_report
 from blossom.grades.wording import report_names, score_line
-from blossom.hand_in import TURNED_IN
+from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
+from blossom.plans import PlanBlock
 from blossom.reconciliation import SourceChannel
-from blossom.routes.homework_scores import homework_of, read_grade_facts
-from blossom.routes.navigation import NEW_NOTE_PAGE, NOTE_ACTIONS, note_add_action, note_add_href
+from blossom.routes.homework_scores import homework_of, read_grade_facts, scores_shown
+from blossom.routes.navigation import (
+    NEW_NOTE_PAGE,
+    NOTE_ACTIONS,
+    assignment_anchor,
+    note_add_action,
+    note_add_href,
+)
+from blossom.routes.runs import plan_graphs
 from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
     UNCONNECTED,
@@ -36,26 +48,33 @@ from blossom.stores.gradebook import (
     class_for,
     name_key,
 )
-from blossom.stores.project_state import Assignment, AssignmentKind
+from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from tests.support import (
     FIXTURES,
+    HER_PAGE,
     PAGE_HEADERS,
     ZONE,
+    accepting,
     as_stored,
     browser,
     capture_class,
     card_for,
+    confirm_current,
     correction_page,
     database_of,
     every_row,
+    fixture_week_plan,
     form_fields,
     grade_answers,
     household_client,
     page_of,
+    plan_on,
+    planned,
     record,
     reported,
     save_grade,
     school_said,
+    scripted_graphs,
     sign_in_as,
     store_of,
     unreadable_claim,
@@ -115,6 +134,7 @@ def homework(
     *,
     course: str = BIOLOGY,
     assigned: date | None = None,
+    kind: AssignmentKind = AssignmentKind.HOMEWORK,
 ) -> Assignment:
     return Assignment(
         assignment_id=assignment_id,
@@ -124,7 +144,7 @@ def homework(
         dependencies=[],
         reported_submission_status="not_started",
         assigned_on=assigned,
-        kind=AssignmentKind.HOMEWORK,
+        kind=kind,
     )
 
 
@@ -344,14 +364,46 @@ def test_a_row_writes_grade_details_in_a_paragraph_of_its_own_above_details() ->
 
 
 def test_the_to_turn_in_rows_and_the_plan_s_rows_keep_no_score() -> None:
-    with browser() as client:
+    """An assignment with a score to show, still to turn in by her own hand-in form and set
+    aside in today's plan: its card shows the line and the link, and neither the To turn in
+    section nor the plan's rows show either."""
+    action = f"/student/actions/assignments/{LOG_ID}/hand-in"
+    plan = fixture_week_plan()
+    block = PlanBlock(
+        assignment_id=LOG_ID,
+        starts_at=time(18, 30),
+        ends_at=time(19, 0),
+        rationale="the log while the seeds are fresh",
+    )
+    with browser(key=True) as client:
         store_of(client).put_on_record([homework()], {})
-        with_report(client)
-        reported(store_of(client), "done", LOG_ID)
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        opened = client.get(f"/student/assignments/{LOG_ID}", params={"hand_in": "change"}).text
+        still = {"state": NEEDS_HAND_IN, "next_action": "", "note": ""}
+        answer = client.post(
+            action, data={**form_fields(opened, action), **still}, headers=PAGE_HEADERS
+        )
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [plan.model_copy(update={"blocks": [*plan.blocks, block]})],
+            lambda: [accepting()],
+        )
+        made = planned(client)
         page = page_of(client)
 
-    assert len(scores(page)) == 1
-    assert scores(card_for(page, LOG_ID)) != []
+    assert answer.status_code == 303, answer.text
+    start = page.index('<section class="panel to-turn-in"')
+    to_turn_in = page[start : page.index("</section>", start)]
+    rows = plan_on(page, made)
+    assert LOG in to_turn_in
+    assert LOG in rows
+    for part in (to_turn_in, rows):
+        assert "School score" not in part
+        assert "Grade details" not in part
+    assert scores(page) == [
+        (LINE, link_to(class_id, result_id), f"Grade details: {LOG}, {BIOLOGY}")
+    ]
+    assert scores(card_for(page.replace(to_turn_in, ""), LOG_ID)) == scores(page)
 
 
 @pytest.mark.parametrize(
@@ -411,10 +463,10 @@ def test_g3a_i7_a_score_moves_nothing_and_changes_no_other_word_of_her_pages() -
 
 
 CELLS = [
-    pytest.param("| 18.0    | 20.0    |         |", "average left blank", id="S2 no average"),
-    pytest.param("|         | 20.0    | 90.0    |", None, id="S4 no points"),
-    pytest.param("| 18.0    |         | 90.0    |", "maximum left blank", id="S3 no maximum"),
-    pytest.param("| 0.0     | 10.0    | 0.0     |", "0.0 / 10.0 · 0.0%", id="S9 a zero"),
+    pytest.param("| 18.0    | 20.0    |         |", "average left blank", id="no average"),
+    pytest.param("|         | 20.0    | 90.0    |", None, id="no points"),
+    pytest.param("| 18.0    |         | 90.0    |", "maximum left blank", id="no maximum"),
+    pytest.param("| 0.0     | 10.0    | 0.0     |", "0.0 / 10.0 · 0.0%", id="a zero"),
 ]
 
 
@@ -445,9 +497,9 @@ def test_g3a_i6_her_pages_line_is_class_details_line_for_the_same_value(
 
 
 def test_a_result_a_complete_report_stops_showing_shows_no_score_until_one_shows_it_again() -> None:
-    """S7: class details keeps the score with its notice; an incomplete copy, or a report of
+    """Class details keeps the score with its notice; an incomplete copy, or a report of
     another term, withholds nothing; a later report that shows the result brings the line back,
-    naming the report that supplied the score as class details does (S6)."""
+    naming the report that supplied the score as class details does."""
     gone = "\n".join(line for line in IN_WEEK.split("\n") if LOG not in line)
     with browser() as client:
         store_of(client).put_on_record([homework()], {})
@@ -918,7 +970,7 @@ def test_a_report_kept_as_earlier_supplies_no_score_and_withholds_none() -> None
 
 
 def test_a_changed_score_left_unticked_keeps_the_standing_score_with_its_source() -> None:
-    """S6: a newer current report shows the result with another score, and a parent leaves
+    """A newer current report shows the result with another score, and a parent leaves
     that value unticked. Her card keeps the standing score and names the report it comes from,
     character for character as class details writes it."""
     newer = draft_of(
@@ -954,7 +1006,7 @@ def test_a_changed_score_left_unticked_keeps_the_standing_score_with_its_source(
 
 
 def test_a_report_without_the_result_withholds_no_score_while_a_row_s_question_waits() -> None:
-    """S7's limit: a complete newer report leaves the result out and asks about another row.
+    """A complete newer report leaves the result out and asks about another row.
     With that question unanswered the line stays; answered, the same report takes it away."""
     gone = "\n".join(line for line in IN_WEEK.split("\n") if LOG not in line)
     asking = draft_of(
@@ -1109,3 +1161,738 @@ def test_a_class_typed_as_a_report_writes_it_makes_a_twin_of_the_imported_row(
     assert [class_for(item.course, mapping) for item in twins] == [class_id, class_id]
     assert beside == []
     assert detailed == [[], []]
+
+
+def test_a_task_takes_part_like_any_assignment_on_record() -> None:
+    """A task is sized apart from homework and matched like it. Alone it shows its result's
+    line and link on its card and on its details; beside homework with its class, title and
+    day neither row shows a score."""
+    twin = "assignment-twin"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(kind=AssignmentKind.TASK)], {})
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        kinds = [item.kind for item in store.all_assignments() if item.title == LOG]
+        alone = [on_card(client), scores(details_of(client))]
+        store.put_on_record([homework(twin)], {})
+        beside = [
+            scores(page_of(client)),
+            *(scores(details_of(client, one)) for one in (LOG_ID, twin)),
+        ]
+
+    expected = [(LINE, link_to(class_id, result_id), f"Grade details: {LOG}, {BIOLOGY}")]
+    assert kinds == [AssignmentKind.TASK]
+    assert alone == [expected, expected]
+    assert beside == [[], [], []]
+
+
+TASK_DATES = [
+    pytest.param(None, [], False, id="no date"),
+    pytest.param(date(2026, 8, 21), ["2026-08-24"], False, id="a date in doubt"),
+    pytest.param(date(2026, 8, 21), [], True, id="a settled date that differs"),
+]
+
+
+@pytest.mark.parametrize(("on", "said", "shows"), TASK_DATES)
+def test_a_task_with_the_homework_s_title_competes_until_its_own_date_rules_it_out(
+    on: date | None, said: list[str], shows: bool
+) -> None:
+    """A task of the same class and title with no date, or a date a source disputes, takes
+    the homework row's score away and shows none itself. One whose settled date differs
+    leaves the count, and the homework row shows its score."""
+    task = "assignment-task"
+    claims = {task: [record(SourceChannel.LMS, value) for value in said]} if said else {}
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        with_report(client)
+        alone = on_card(client)
+        store.put_on_record([homework(task, on=on, kind=AssignmentKind.TASK)], claims)
+        kinds = {item.assignment_id: item.kind for item in store.all_assignments()}
+        beside = [on_card(client), scores(details_of(client)), scores(details_of(client, task))]
+
+    assert kinds[task] is AssignmentKind.TASK
+    assert [line for line, _, _ in alone] == [LINE]
+    assert [[line for line, _, _ in one] for one in beside] == [
+        [LINE] if shows else [],
+        [LINE] if shows else [],
+        [],
+    ]
+
+
+def not_captured_due(text: str) -> str:
+    """The report ``text`` with no Due column in any of its tables of results."""
+    lines = []
+    for line in text.split("\n"):
+        cells = line.split("|")
+        lines.append("|".join(cells[:6] + cells[7:]) if len(cells) == 13 else line)
+    return "\n".join(lines)
+
+
+def test_the_grade_date_is_the_due_date_shown_when_the_newest_report_captured_none() -> None:
+    """A newer current report changes the score and holds no Due column, and a parent answers
+    that each of its rows is the result on record. The result's own Due cell is then not
+    captured, class details shows the date an earlier report gave, and her card shows the
+    newer score under that date."""
+    newer = draft_of(
+        not_captured_due(
+            IN_WEEK.replace(LOG_ROW, "| Seed Germination Log | 19.0    | 20.0    | 95.0    |")
+        )
+    )
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        asked = store.review_grade_report(newer, capture_key(newer), key=KEY)
+        same = tuple(
+            MatchAnswer(item.key, item.question.ids, item.question.ids[0])
+            for item in asked.rows
+            if item.question is not None
+        )
+        review = store.review_grade_report(newer, capture_key(newer), key=KEY, matches=same)
+        answers = dataclasses.replace(grade_answers(review), matches=same)
+        saved = save_grade(store, newer, key=KEY, review=review, answers=answers)
+        value = store.class_term(class_id, "T1").current.results[result_id]
+        shown = on_card(client)
+        detailed = scores(details_of(client))
+        class_line = line_on_class_details(class_details(client, class_id), result_id)
+
+    assert len(same) == 4
+    assert isinstance(saved, GradeReportSaved)
+    assert value.report_id == saved.report_id
+    assert value.cells["due"][0] is Presence.NOT_CAPTURED
+    assert value.due is not None
+    assert value.due.cell == (Presence.REPORTED, "08/20")
+    assert [line for line, _, _ in shown] == ["School score: 19.0 / 20.0 · 95.0%"]
+    assert class_line == shown[0][0]
+    assert detailed == shown
+
+
+def test_the_link_names_a_term_by_its_place_in_the_year_not_among_the_class_s_reports() -> None:
+    """A class whose only report is in the year's second term: the link goes to place 2,
+    where class details holds the result."""
+    geometry = "08 Geometry"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(course=geometry)], {})
+        with_report(client)
+        class_id = with_report(client, GEOMETRY.replace("**T1**", "**T2**"))
+        result_id = result_named(client, class_id, LOG, "T2")
+        terms = store.terms_of_year(YEAR)
+        reported_in = [
+            term
+            for term in terms
+            for one in store.classes_in(YEAR, term)
+            if one.class_id == class_id and one.reported
+        ]
+        shown = on_card(client)
+        detailed = scores(details_of(client))
+        landed = class_details(client, class_id, n=2)
+
+    assert terms == ("T1", "T2")
+    assert reported_in == ["T2"]
+    assert shown == [(LINE, link_to(class_id, result_id, n=2), f"Grade details: {LOG}, {geometry}")]
+    assert detailed == shown
+    assert line_on_class_details(landed, result_id) == LINE
+
+
+def test_each_school_year_s_results_resolve_under_that_year_s_own_first_month() -> None:
+    """Two school years hold a class of one name and a result due 08/20. With the earlier
+    year starting in September and the later one in August both fall on the same day, so the
+    homework due that day shows no score. With both starting in August the earlier year's
+    falls a year before, and the later year's score shows."""
+    past = "2025-2026"
+    earlier = draft_of(IN_WEEK.replace(f"**{YEAR}**", f"**{past}**"))
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        review = store.review_grade_report(earlier, capture_key(earlier), key=KEY)
+        saved = save_grade(
+            store, earlier, key=KEY, review=review, answers=grade_answers(review, month=9)
+        )
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        months = [store.first_month_of(year) for year in (past, YEAR)]
+        apart = [on_card(client), scores(details_of(client))]
+        store.correct_first_month(past, shown=9, month=8, role="parent")
+        alike = [on_card(client), scores(details_of(client))]
+
+    expected = [(LINE, link_to(class_id, result_id), f"Grade details: {LOG}, {BIOLOGY}")]
+    assert isinstance(saved, GradeReportSaved)
+    assert months == [9, 8]
+    assert apart == [[], []]
+    assert alike == [expected, expected]
+
+
+TWIN_DATES = [
+    pytest.param(["2026-09-11"], False, id="its date in doubt"),
+    pytest.param([], True, id="its date settled"),
+]
+
+
+@pytest.mark.parametrize(("said", "shows"), TWIN_DATES)
+def test_a_twin_her_week_doesn_t_list_still_takes_the_line_away(
+    said: list[str], shows: bool
+) -> None:
+    """Homework of the same class and title due three weeks later is on no part of her week.
+    While a source disputes its date it competes, and the card her week shows has no score,
+    there or on its details; with its date settled it leaves the count."""
+    twin = "assignment-twin"
+    claims = {twin: [record(SourceChannel.LMS, value) for value in said]} if said else {}
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(), homework(twin, on=date(2026, 9, 10))], claims)
+        with_report(client)
+        week = page_of(client)
+        detailed = [scores(details_of(client, one)) for one in (LOG_ID, twin)]
+
+    assert f'id="{assignment_anchor(twin)}"' not in week
+    assert week.count(f">{LOG}<") == 1
+    assert [line for line, _, _ in scores(week)] == ([LINE] if shows else [])
+    assert [[line for line, _, _ in one] for one in detailed] == [[LINE] if shows else [], []]
+
+
+SMUDGED = "smudged"
+"""Text that is no presence, no whole number, no moment and no JSON, which no save writes."""
+LEFT_OUT = "a homework page shows no school score: GradeValueUndecodable"
+"""The one record a page read makes when it leaves its school scores out."""
+
+
+def stored(store: ProjectStateStore, statement: str, *values: object) -> None:
+    """One statement written straight into the household's file, as no save writes it."""
+    with store._lock, store._connection:
+        store._connection.execute(statement, values)
+
+
+def points_presence(client: TestClient, result_id: str, presence: str) -> None:
+    """The stored presence of a result's points, set in every report that holds the result."""
+    stored(
+        store_of(client),
+        "UPDATE grade_result_observations SET points_presence = ? WHERE result_id = ?",
+        presence,
+        result_id,
+    )
+
+
+def recorded(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Each message the application logged, warnings and above."""
+    return [
+        one.getMessage()
+        for one in caplog.records
+        if one.name.startswith("blossom") and one.levelno >= logging.WARNING
+    ]
+
+
+def test_a_grade_cell_that_can_t_be_decoded_leaves_her_pages_as_with_no_class_on_record(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Her week, and the details of the assignment whose result holds the cell, of one whose
+    own result decodes and of one with no result: each answers, shows no score at all, and
+    reads as it does with no class on record. Each read records the failure's type alone, the
+    file stays as it was, and once the cell decodes the lines are back."""
+    notes_id = "assignment-reading-notes"
+    addresses = [
+        HER_PAGE,
+        *(f"/student/assignments/{one}" for one in (LOG_ID, DIAGRAM_ID, notes_id)),
+    ]
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [
+                homework(),
+                homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27), assigned=MONDAY),
+                homework(notes_id, "Reading Notes", date(2026, 8, 19)),
+            ],
+            {},
+            {LOG_ID: [school_said("missing", SourceChannel.LMS, date(2026, 8, 18))]},
+        )
+        reported(store, "done", DIAGRAM_ID)
+
+        def read() -> list[str]:
+            answers = [client.get(address, headers=PAGE_HEADERS) for address in addresses]
+            assert [answer.status_code for answer in answers] == [200, 200, 200, 200]
+            return [without_minted_fields(answer.text) for answer in answers]
+
+        bare = read()
+        class_id = with_report(client)
+        whole = read()
+        result_id = result_named(client, class_id, LOG)
+        points_presence(client, result_id, SMUDGED)
+        before = every_row(database_of(client))
+        said, logged = [], []
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            for address in addresses:
+                caplog.clear()
+                answer = client.get(address, headers=PAGE_HEADERS)
+                said.append((answer.status_code, without_minted_fields(answer.text)))
+                logged.append((recorded(caplog), caplog.text))
+        after = every_row(database_of(client))
+        points_presence(client, result_id, Presence.REPORTED.value)
+        again = read()
+
+    assert [len(scores(page)) for page in whole] == [2, 1, 1, 0]
+    assert [status for status, _ in said] == [200, 200, 200, 200]
+    for (_, page), with_no_class in zip(said, bare, strict=True):
+        assert "School score" not in page
+        assert "Grade details" not in page
+        assert HEADING not in page
+        assert not [said for said in ("no grades", "not grade") if said in page.lower()]
+        assert without_scores(page) == without_scores(with_no_class)
+    assert [records for records, _ in logged] == [[LEFT_OUT]] * 4
+    for _, text in logged:
+        assert not [word for word in (LOG, DIAGRAM, BIOLOGY, "18.0", SMUDGED) if word in text]
+    assert after == before
+    assert [len(scores(page)) for page in again] == [2, 1, 1, 0]
+
+
+def test_an_undecodable_cell_in_a_result_no_card_shows_leaves_the_whole_page_without_scores(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The cell is in a result of the connected class whose homework is due weeks later, off
+    her week. Her week and each assignment's details show no score, though the result of the
+    one card her week shows decodes."""
+    later = REPORT.replace("09/22", "08/20")
+    with browser() as client:
+        store_of(client).put_on_record(
+            [homework(), homework(OSMOSIS_ID, OSMOSIS, date(2026, 10, 2))], {}
+        )
+        class_id = with_report(client, later)
+
+        def read() -> list[str]:
+            return [page_of(client), details_of(client), details_of(client, OSMOSIS_ID)]
+
+        whole = read()
+        points_presence(client, result_named(client, class_id, OSMOSIS), SMUDGED)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            left = read()
+
+    assert OSMOSIS not in whole[0]
+    assert [[line for line, _, _ in scores(page)] for page in whole] == [
+        [LINE],
+        [LINE],
+        ["School score: 31.0 / 40.0 · 77.5%"],
+    ]
+    assert card_for(left[0], LOG_ID)
+    assert not [page for page in left if "School score" in page or "Grade details" in page]
+    assert recorded(caplog) == [LEFT_OUT] * 3
+
+
+def test_an_undecodable_twin_is_never_left_out_of_the_count_to_let_the_other_show(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two terms hold a result with the log's title and day, so the log shows no score. With
+    one of the two undecodable it still shows none: a count without that one would make the
+    other look like the log's only result."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        with_report(client, IN_WEEK.replace("**T1**", "**T2**"))
+        twins = scores(page_of(client))
+        points_presence(client, result_named(client, class_id, LOG, "T2"), SMUDGED)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            left = [page_of(client), details_of(client)]
+
+    assert twins == []
+    assert not [page for page in left if "School score" in page or "Grade details" in page]
+    assert recorded(caplog) == [LEFT_OUT] * 2
+
+
+def test_a_cell_the_school_left_unreadable_withholds_its_own_score_and_no_other(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stored presence of unreadable is one of the four: its result shows no score, as one
+    with no points reported shows none, the page's other score shows, and no failure is
+    recorded."""
+    with browser() as client:
+        store_of(client).put_on_record(
+            [homework(), homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27), assigned=MONDAY)], {}
+        )
+        class_id = with_report(client)
+        points_presence(client, result_named(client, class_id, DIAGRAM), Presence.UNREADABLE.value)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            week = page_of(client)
+            detailed = [scores(details_of(client, one)) for one in (LOG_ID, DIAGRAM_ID)]
+
+    assert [line for line, _, _ in scores(week)] == [LINE]
+    assert [line for line, _, _ in scores(card_for(week, LOG_ID))] == [LINE]
+    assert [[line for line, _, _ in one] for one in detailed] == [[LINE], []]
+    assert recorded(caplog) == []
+
+
+@pytest.mark.parametrize("address", [HER_PAGE, f"/student/assignments/{LOG_ID}"])
+def test_a_database_error_from_the_grade_read_gets_the_page_s_own_answer(
+    address: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Only a stored value that can't be decoded leaves the scores out: a file that can't be
+    read is answered as her page answers any record it can't read."""
+
+    def refused(class_id: str, term: str) -> None:
+        msg = "database disk image is malformed"
+        raise sqlite3.DatabaseError(msg)
+
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        with_report(client)
+        monkeypatch.setattr(store, "class_term", refused)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            answer = client.get(address, headers=PAGE_HEADERS)
+
+    assert answer.status_code == 503
+    assert "School score" not in answer.text
+    assert LEFT_OUT not in recorded(caplog)
+    assert [said for said in recorded(caplog) if said.endswith(": DatabaseError")]
+
+
+@pytest.mark.parametrize("address", ["/student/grades", "/student/grades/classes/{}/terms/1"])
+def test_grades_and_class_details_answer_an_undecodable_cell_with_the_store_s_own_error(
+    address: str,
+) -> None:
+    """Neither page leaves anything out: each fails with the error the read raises, a
+    ``ValueError`` as the decoding's own error is, with that error as its cause and nothing
+    stored in its message."""
+    with browser() as client:
+        class_id = with_report(client)
+        points_presence(client, result_named(client, class_id, LOG), SMUDGED)
+        with pytest.raises(GradeValueUndecodable) as raised:
+            client.get(address.format(class_id), headers=PAGE_HEADERS)
+
+    assert isinstance(raised.value, ValueError)
+    assert type(raised.value.__cause__) is ValueError
+    assert SMUDGED in str(raised.value.__cause__)
+    assert str(raised.value) == "a stored grade value can't be decoded"
+
+
+NO_DAY = "0001-01-01T00:00:00+00:00"
+"""A stored moment that falls before the calendar's first day where the household is."""
+ADDED_AT = "UPDATE grade_reports SET imported_at = ?"
+ACTED_AT = "UPDATE grade_current_actions SET acted_at = ?"
+COPIED = "UPDATE grade_current_actions SET copied = ?"
+WRONG_SHAPES = {
+    "a list": '[["result","one"]]',
+    "nothing": "null",
+    "an object with no observations": '{"rows":[]}',
+    "observations that are an object": '{"observations":{},"rows":[]}',
+    "observations that are a text": '{"observations":"result","rows":[]}',
+    "an entry of one text": '{"observations":[["result"]],"rows":[]}',
+    "an entry of three texts": '{"observations":[["result","one","two"]],"rows":[]}',
+    "an entry that is a text of two letters": '{"observations":["ab"],"rows":[]}',
+    "a target that is a number": '{"observations":[["result",7]],"rows":[]}',
+    "a kind no action copies": '{"observations":[["smudged","one"]],"rows":[]}',
+    "a kind that is a list": '{"observations":[[["result"],"one"]],"rows":[]}',
+}
+"""Copied lists that are JSON and not the object an action writes: its ``observations`` a list
+of pairs, each a kind the action copies and a target, both texts."""
+MALFORMED = [
+    pytest.param(ADDED_AT, SMUDGED, id="the moment a report was added"),
+    pytest.param(ACTED_AT, SMUDGED, id="the moment an action made a report"),
+    pytest.param(ADDED_AT, NO_DAY, id="a report added on no day of the calendar"),
+    pytest.param(ACTED_AT, NO_DAY, id="a report made on no day of the calendar"),
+    pytest.param(COPIED, SMUDGED, id="a copied list that is no JSON"),
+    *(
+        pytest.param(COPIED, shape, id=f"a copied list that is {name}")
+        for name, shape in WRONG_SHAPES.items()
+    ),
+]
+"""A report's stored moment that is no moment or has no day where the household is, and an
+action's stored list of what it copied that is not the list an action writes: each statement
+with the value it stores."""
+DECODED = [
+    pytest.param(
+        "UPDATE grade_result_observations SET due_presence = ?",
+        SMUDGED,
+        ValueError,
+        "the read",
+        id="a result's cell",
+    ),
+    pytest.param(
+        "UPDATE grade_category_observations SET weight_presence = ?",
+        SMUDGED,
+        ValueError,
+        "the read",
+        id="a category's cell",
+    ),
+    pytest.param(
+        "UPDATE grade_term_observations SET letter_presence = ?",
+        SMUDGED,
+        ValueError,
+        "the read",
+        id="the term's cell",
+    ),
+    pytest.param(
+        "UPDATE grade_reports SET acceptance_order = ? WHERE acceptance_order = 1",
+        SMUDGED,
+        ValueError,
+        "the read",
+        id="a report's order",
+    ),
+    pytest.param(
+        "UPDATE grade_reports SET result_rows = ?",
+        SMUDGED,
+        ValueError,
+        "the read",
+        id="a report's number of rows",
+    ),
+    pytest.param(ADDED_AT, SMUDGED, ValueError, "the names", id="the moment a report was added"),
+    pytest.param(
+        ACTED_AT, SMUDGED, ValueError, "the names", id="the moment an action made a report"
+    ),
+    pytest.param(
+        ADDED_AT, NO_DAY, OverflowError, "the names", id="a report added on no day of the calendar"
+    ),
+    pytest.param(
+        ACTED_AT, NO_DAY, OverflowError, "the names", id="a report made on no day of the calendar"
+    ),
+    pytest.param(
+        COPIED, SMUDGED, json.JSONDecodeError, "the read", id="a copied list that is no JSON"
+    ),
+    *(
+        pytest.param(COPIED, shape, type(None), "the read", id=f"a copied list that is {name}")
+        for name, shape in WRONG_SHAPES.items()
+    ),
+]
+
+
+def made_current_again(client: TestClient, text: str = IN_WEEK) -> str:
+    """The report ``text`` saved, a newer one with the log's score changed, and the first made
+    current again by the class-details action, which keeps its moment and what it copied.
+    The class."""
+    class_id = with_report(client, text)
+    with_report(
+        client, text.replace(LOG_ROW, "| Seed Germination Log | 19.0    | 20.0    | 95.0    |")
+    )
+    made = confirm_current(store_of(client), draft_of(text))
+    assert isinstance(made, MadeCurrent), made
+    return class_id
+
+
+@pytest.mark.parametrize(("statement", "value", "cause", "at"), DECODED)
+def test_each_stored_grade_value_that_can_t_be_decoded_raises_the_one_named_error(
+    statement: str, value: str, cause: type, at: str
+) -> None:
+    """A value the gradebook decodes raises it from each read of the class and term, a homework
+    page's grade read included; a report's moment raises it where the report is named. Its
+    cause is the decoding's own error, when one was raised, and its message holds nothing stored."""
+    draft = draft_of(IN_WEEK)
+    with browser() as client:
+        store = store_of(client)
+        class_id = made_current_again(client)
+        sound = read_grade_facts(store, [BIOLOGY])
+        stored(store, statement, value)
+        reads: dict[str, tuple[Callable[[], object], ...]] = {
+            "the read": (
+                lambda: store.class_term(class_id, "T1"),
+                lambda: store.current_values(class_id, "T1"),
+                lambda: store.review_grade_report(draft, capture_key(draft), key=KEY),
+                lambda: store.preview_current(class_id, "T1", capture_key(draft)),
+                lambda: read_grade_facts(store, [BIOLOGY]),
+            ),
+            "the names": (
+                lambda: report_names(store.class_term(class_id, "T1").reports, ZONE),
+                lambda: report_names(
+                    store.review_grade_report(draft, capture_key(draft), key=KEY).reports, ZONE
+                ),
+                lambda: scores_shown(
+                    [homework()],
+                    {},
+                    (),
+                    read_grade_facts(store, [BIOLOGY]),
+                    zone=ZONE,
+                    base="/student/grades",
+                ),
+            ),
+        }
+        raised = []
+        for read in reads[at]:
+            with pytest.raises(GradeValueUndecodable) as caught:
+                read()
+            raised.append(caught.value)
+
+    assert [list(year.reads) for year in sound] == [[(class_id, "T1")]]
+    assert [type(error) for error in raised] == [GradeValueUndecodable] * len(raised)
+    assert [type(error.__cause__) for error in raised] == [cause] * len(raised)
+    assert {str(error) for error in raised} == {"a stored grade value can't be decoded"}
+
+
+@pytest.mark.parametrize(("statement", "value"), MALFORMED)
+def test_a_malformed_moment_or_copied_list_leaves_her_pages_as_with_no_class_on_record(
+    statement: str, value: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Her week, and the details of two assignments with a result and of one with none: each
+    answers, shows no score at all, and reads as it does with no class on record. Each read
+    records the failure's type alone, and the file stays as it was."""
+    notes_id = "assignment-reading-notes"
+    addresses = [
+        HER_PAGE,
+        *(f"/student/assignments/{one}" for one in (LOG_ID, DIAGRAM_ID, notes_id)),
+    ]
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [
+                homework(),
+                homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27), assigned=MONDAY),
+                homework(notes_id, "Reading Notes", date(2026, 8, 19)),
+            ],
+            {},
+            {LOG_ID: [school_said("missing", SourceChannel.LMS, date(2026, 8, 18))]},
+        )
+        reported(store, "done", DIAGRAM_ID)
+
+        def read() -> list[str]:
+            answers = [client.get(address, headers=PAGE_HEADERS) for address in addresses]
+            assert [answer.status_code for answer in answers] == [200, 200, 200, 200]
+            return [without_minted_fields(answer.text) for answer in answers]
+
+        bare = read()
+        made_current_again(client)
+        whole = read()
+        stored(store, statement, value)
+        before = every_row(database_of(client))
+        said, logged = [], []
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            for address in addresses:
+                caplog.clear()
+                answer = client.get(address, headers=PAGE_HEADERS)
+                said.append((answer.status_code, without_minted_fields(answer.text)))
+                logged.append((recorded(caplog), caplog.text))
+        after = every_row(database_of(client))
+
+    assert [[line for line, _, _ in scores(page)] for page in whole] == [
+        [LINE, DIAGRAM_LINE],
+        [LINE],
+        [DIAGRAM_LINE],
+        [],
+    ]
+    assert [status for status, _ in said] == [200, 200, 200, 200]
+    for (_, page), with_no_class in zip(said, bare, strict=True):
+        assert "School score" not in page
+        assert "Grade details" not in page
+        assert HEADING not in page
+        assert not [said for said in ("no grades", "not grade") if said in page.lower()]
+        assert without_scores(page) == without_scores(with_no_class)
+    assert [records for records, _ in logged] == [[LEFT_OUT]] * 4
+    for _, text in logged:
+        assert not [word for word in (LOG, DIAGRAM, BIOLOGY, "18.0", value) if word in text]
+    assert after == before
+
+
+OTHER_TERM = [
+    pytest.param(ADDED_AT, SMUDGED, id="the moment a report was added"),
+    pytest.param(ACTED_AT, SMUDGED, id="the moment an action made a report"),
+    pytest.param(ADDED_AT, NO_DAY, id="a report added on no day of the calendar"),
+    pytest.param(COPIED, SMUDGED, id="a copied list that is no JSON"),
+    pytest.param(
+        COPIED, WRONG_SHAPES["observations that are an object"], id="observations an object"
+    ),
+    pytest.param(COPIED, WRONG_SHAPES["an entry of one text"], id="an entry of one text"),
+]
+
+
+@pytest.mark.parametrize(("statement", "value"), OTHER_TERM)
+def test_a_malformed_value_in_a_term_no_card_shows_leaves_the_whole_page_without_scores(
+    statement: str, value: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The value is in the class's second term, whose results are no homework's on her week.
+    Her week and the details show no score, though the first term's own values decode and
+    its reports are named."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        made_current_again(client, REPORT.replace("**T1**", "**T2**"))
+
+        def read() -> list[str]:
+            return [page_of(client), details_of(client)]
+
+        whole = read()
+        stored(store, f"{statement} WHERE term_label = ?", value, folded("T2"))
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            left = read()
+        first_term = store.class_term(class_id, "T1")
+        named = report_names(first_term.reports, ZONE)
+
+    assert [[line for line, _, _ in scores(page)] for page in whole] == [[LINE], [LINE]]
+    assert card_for(left[0], LOG_ID)
+    assert not [page for page in left if "School score" in page or "Grade details" in page]
+    assert recorded(caplog) == [LEFT_OUT] * 2
+    assert len(named) == len(first_term.reports) == 1
+
+
+def test_what_the_class_details_action_writes_decodes_and_the_scores_show(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The action's record of what it copied is an object whose observations are pairs of a
+    kind and a target. With it on record her card and its details show the line of the report
+    the action made, and no failure is recorded."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        made_current_again(client)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            shown = [on_card(client), scores(details_of(client))]
+        with store._lock:
+            ((copied,),) = store._connection.execute(
+                "SELECT copied FROM grade_current_actions"
+            ).fetchall()
+
+    written = json.loads(copied)
+    assert sorted(written) == ["observations", "rows"]
+    assert all(
+        isinstance(entry, list) and len(entry) == 2 and all(isinstance(one, str) for one in entry)
+        for entry in written["observations"]
+    )
+    assert "result" in {kind for kind, _ in written["observations"]}
+    assert {kind for kind, _ in written["observations"]} <= {"term", "category", "result"}
+    assert [[line for line, _, _ in one] for one in shown] == [[LINE], [LINE]]
+    assert recorded(caplog) == []
+
+
+@pytest.mark.parametrize("address", ["/student/grades", "/student/grades/classes/{}/terms/1"])
+@pytest.mark.parametrize(("statement", "value"), MALFORMED)
+def test_grades_and_class_details_answer_a_malformed_moment_or_copied_list_with_the_named_error(
+    statement: str, value: str, address: str
+) -> None:
+    """Neither page leaves anything out: each fails with the named error, a ``ValueError``,
+    with nothing stored in its message."""
+    with browser() as client:
+        class_id = made_current_again(client)
+        sound = client.get(address.format(class_id), headers=PAGE_HEADERS)
+        stored(store_of(client), statement, value)
+        with pytest.raises(GradeValueUndecodable) as raised:
+            client.get(address.format(class_id), headers=PAGE_HEADERS)
+
+    assert sound.status_code == 200
+    assert isinstance(raised.value, ValueError)
+    assert str(raised.value) == "a stored grade value can't be decoded"
+
+
+ADDRESSES = [HER_PAGE, f"/student/assignments/{LOG_ID}"]
+
+
+@pytest.mark.parametrize("address", ADDRESSES)
+@pytest.mark.parametrize("where", ["the read", "the lines"])
+def test_no_other_error_is_taken_for_a_grade_value_that_can_t_be_decoded(
+    where: str, address: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``ValueError`` of any other kind, from the grade read or from making the lines, fails
+    the page as it does with no score to leave out."""
+
+    def failed(*_: object, **__: object) -> None:
+        msg = "another failure"
+        raise ValueError(msg)
+
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        with_report(client)
+        if where == "the read":
+            monkeypatch.setattr(store, "class_term", failed)
+        else:
+            monkeypatch.setattr("blossom.routes.homework_scores.school_scores", failed)
+        with pytest.raises(ValueError, match="another failure") as raised:
+            client.get(address, headers=PAGE_HEADERS)
+
+    assert type(raised.value) is ValueError

@@ -126,6 +126,15 @@ Compared = tuple[tuple[str, str, str], ...]
 """A value as statuses compare it."""
 
 
+class GradeValueUndecodable(ValueError):
+    """A stored grade value can't be decoded: a cell's presence, a report's order or number of
+    rows, a report's moment, or the list of what an action copied. Its message holds nothing
+    stored, and an error the decoding raised is its cause."""
+
+    def __init__(self) -> None:
+        super().__init__("a stored grade value can't be decoded")
+
+
 def cells_of(fields: Iterable[str], values: Iterable[GradeValue]) -> dict[str, Cell]:
     """Each value of a draft as a cell, by its field."""
     return {

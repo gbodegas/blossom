@@ -995,8 +995,14 @@ PLANNER_INPUT_MODULES = (
     "plan_reading.py",
     "agent/prompts.py",
     "agent/compose.py",
+    "agent/steps.py",
+    "agent/graph.py",
+    "agent/runs.py",
+    "agent/gates.py",
+    "routes/runs.py",
 )
-"""The modules a plan's input, its digest and what a plan keeps are built in."""
+"""The modules a plan's input, its digest and what a plan keeps are built in, with those that
+run a plan and carry it to its pages."""
 
 
 def test_g3a_i2_the_modules_that_build_the_planner_s_input_import_no_grade_module() -> None:

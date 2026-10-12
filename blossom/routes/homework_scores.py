@@ -9,22 +9,35 @@ Which result is an assignment's is decided each time by ``school_scores`` and st
 The term anyone has in use is never asked for: every term of a class's year that holds a
 report is read, and a link names the result's own term by its place in that year.
 
+A stored grade value whose decoding raises ``GradeValueUndecodable``, in the read or in the
+lines made from it, leaves a page without any school score: the page discards what it read
+and every line with it, since a result left out of the count could make another look like an
+assignment's only one.
+
 Nothing a plan is made from reads this module or holds what it returns.
 """
 
+import logging
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import tzinfo
 
 from blossom.grades.dates import due_date_of
-from blossom.grades.review import CurrentValue
+from blossom.grades.review import CurrentValue, GradeValueUndecodable
 from blossom.grades.school_scores import Homework, Result, result_of, school_scores
 from blossom.grades.wording import report_names, score_line
 from blossom.noticing import read_date
 from blossom.reconciliation import SourceRecord
 from blossom.routes.navigation import CLASS_AT, address
-from blossom.stores.gradebook import ClassTermRead, GradebookRecords, HomeworkClasses, class_for
+from blossom.stores.gradebook import (
+    ClassTermRead,
+    GradebookRecords,
+    HomeworkClasses,
+    class_for,
+)
 from blossom.stores.project_state import Assignment
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,6 +83,12 @@ def read_grade_facts(store: GradebookRecords, courses: Iterable[str]) -> tuple[Y
                     reads[(one.class_id, term)] = store.class_term(one.class_id, term)
         years.append(YearRead(mapping, first_month, tuple(terms), reads))
     return tuple(years)
+
+
+def scores_left_out(error: GradeValueUndecodable) -> None:
+    """Records that a homework page shows no school score, by the failure's type alone:
+    nothing the gradebook holds is written."""
+    logger.warning("a homework page shows no school score: %s", type(error).__name__)
 
 
 def results_read(years: Iterable[YearRead]) -> bool:
