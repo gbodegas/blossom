@@ -128,10 +128,13 @@ from blossom.reconciliation import (
     classify_confidence,
 )
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
+from blossom.routes.homework_scores import read_grade_facts, results_read, scores_shown
 from blossom.routes.navigation import (
     DETAILS,
     EVIDENCE,
     FAMILY_PAGE,
+    GRADES,
+    HER_GRADES,
     NEW_NOTE_PAGE,
     NOTES_PAGE,
     TO_TURN_IN,
@@ -2190,6 +2193,19 @@ def student_page(
         )
         notes = state.project_state.outstanding_captures()
         named = NamedCaptures({}, []) if groups is None else notes_named_by(state, groups.every())
+        # The gradebook's results for the classes her homework names, read beside the record
+        # and no part of it: nothing a plan, a digest, or a brief is made from holds one.
+        grade_facts = read_grade_facts(
+            state.project_state, (item.course for item in everything.assignments)
+        )
+    school_scores = scores_shown(
+        everything.assignments,
+        everything.records,
+        everything.claims_unavailable,
+        grade_facts,
+        zone=state.clock.zone,
+        base=GRADES if parent_reads(request) else HER_GRADES,
+    )
     todays = (
         None
         if record is None
@@ -2268,6 +2284,9 @@ def student_page(
         "student_due_this_week.html",
         {
             "view": view,
+            # Each assignment's school score, made once for the page: every card and row
+            # that lists the assignment reads this one mapping.
+            "school_scores": school_scores,
             "report_contexts": {
                 item.assignment_id: week_context(
                     item.assignment_id,
@@ -3030,6 +3049,15 @@ def detail_page(
         except UnreadableClaim:
             history = []
             history_unavailable = True
+        # Which result is this assignment's depends on every assignment on record and the
+        # claims about each one's date, so they are read here too, in the same hold.
+        everyone = [] if item is None else on_record.all_assignments()
+        grade_facts = read_grade_facts(on_record, (one.course for one in everyone))
+        every_claim = (
+            on_record.read_claims([one.assignment_id for one in everyone])
+            if results_read(grade_facts)
+            else None
+        )
     if item is None or found is None or turned_in is None or notes is None:
         return gone_page(
             request, state, back, assignment_id, card=card, hand_in=hand_in, today=today
@@ -3058,6 +3086,14 @@ def detail_page(
         "student_assignment.html",
         {
             "assignment": view,
+            "school_scores": scores_shown(
+                everyone,
+                {} if every_claim is None else every_claim.records,
+                () if every_claim is None else every_claim.unreadable,
+                grade_facts,
+                zone=state.clock.zone,
+                base=GRADES if parent_reads(request) else HER_GRADES,
+            ),
             "from_notes": [
                 (note, derived_assignment_id(note.capture_id) == assignment_id)
                 for note in notes.notes

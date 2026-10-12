@@ -1250,7 +1250,7 @@ weight and color, its kicker, its due line and the quieter phrase beside it, its
 quiet lines, and the rule above its last section."""
 RESULT_CARD = """  <section class="panel grade-card">
     <p class="{{ 'course' if item.category_reported else 'source' }}"><span class="authored-text">{{ item.category }}</span></p>
-    <h3 class="card-title"><span class="authored-text">{{ item.title }}</span></h3>
+    <h3 class="card-title" id="{{ result_id }}" tabindex="-1"><span class="authored-text">{{ item.title }}</span></h3>
     <p class="due">{{ item.due }} <span class="source">{{ item.status }}</span></p>
     <p class="effect">{{ item.score }}</p>
     {% for line in item.showing %}
@@ -1259,7 +1259,8 @@ RESULT_CARD = """  <section class="panel grade-card">
     <details class="steps update">
 """  # noqa: E501
 """A result's card on class details, pinned as written, in the week card's order: the category
-as the kicker when the school reported it and as a quiet line when it didn't, the title, the
+as the kicker when the school reported it and as a quiet line when it didn't, the title, which
+carries the result's ID and takes the focus so a link can land on it, the
 due line with the gradebook status as its quieter phrase, the score, where it was last shown,
 and the school record details under the card's rule."""
 REVIEW_ROW = (

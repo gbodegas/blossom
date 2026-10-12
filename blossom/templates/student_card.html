@@ -3,6 +3,8 @@
 {#
   One assignment as she sees it: the record's date and where it came from,
   what the school reports, the teacher's words, and her own update last.
+  A school score the gradebook holds for it shows after its facts, with the
+  way to that result on class details.
   Included by her page for every card in the week, the active ones and
   the ones she has reported done alike, so the two groups read the same.
   Beside Details, a link to the instructions on the details, while any of the
@@ -19,7 +21,9 @@
         date is in a year the range does not cover: an item a source puts in
         this week while the record puts it in another year.
       #}
-      {% with due_with_year = assignment.due_date and assignment.due_date.year not in (view.week.start.year, view.week.end.year), facts_level = 3, today_is = view.today %}{% include "student_card_facts.html" %}{% endwith %}
+      {% with due_with_year = assignment.due_date and assignment.due_date.year not in (view.week.start.year, view.week.end.year), facts_level = 3, today_is = view.today %}{% include "student_card_facts.html" %}{% endwith %}{% with score = school_scores.get(assignment.assignment_id) %}{% if score %}
+      <p class="effect">{{ score.line }}</p>
+      <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ assignment.title }}, {{ assignment.course }}">Grade details</a></p>{% endif %}{% endwith %}
       <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a></p>{% if assignment.words.to_read %}
       <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, fragment=instructions_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Read instructions: {{ assignment.title }}, {{ assignment.course }}">Read instructions</a></p>{% endif %}
       {% include "student_hand_in_line.html" %}

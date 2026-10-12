@@ -106,6 +106,7 @@ from blossom.grades.wording import (
 from blossom.household import UnreadableHouseholdSecret, read_authority, secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes.forms import fields_of
+from blossom.routes.navigation import CLASS_AT, GRADES, HER_GRADES
 from blossom.routes.student import parent_reads, templates, viewer_of
 from blossom.stores.gradebook import (
     ACCEPTANCE_ID,
@@ -1755,10 +1756,7 @@ def class_link(state: ApplicationState, recorded: RecordedSave) -> str | None:
 
 # ------------------------------------------------------------- Grades and class details
 
-GRADES: Final = "/parent/grades"
-HER_GRADES: Final = "/student/grades"
 CURRENT_TERM: Final = "/parent/grades/current-term"
-CLASS_AT: Final = "{base}/classes/{class_id}/terms/{n}"
 FOLLOW_CURRENT: Final = "current"
 """The chooser's value for following the current term."""
 VIEW_FIELDS: Final = frozenset({"view"})
@@ -2309,18 +2307,18 @@ def class_page(request: Request, state: ApplicationState, class_id: str, n: str)
     names = report_names(reports, state.clock.zone)
     newest = newest_current(reports)
     first_month = store.first_month_of(named.year)
-    dated: list[tuple[date, str, ResultShown]] = []
-    undated: list[ResultShown] = []
-    for value in values.results.values():
+    dated: list[tuple[date, str, str, ResultShown]] = []
+    undated: list[tuple[str, ResultShown]] = []
+    for result_id, value in values.results.items():
         resolved, shown = result_shown(
             value, year=named.year, first_month=first_month, newest=newest, names=names
         )
         if resolved is None:
-            undated.append(shown)
+            undated.append((result_id, shown))
         else:
-            dated.append((resolved, folded(shown.title).casefold(), shown))
+            dated.append((resolved, folded(shown.title).casefold(), result_id, shown))
     dated.sort(key=lambda item: (-item[0].toordinal(), item[1]))
-    undated.sort(key=lambda shown: folded(shown.title).casefold())
+    undated.sort(key=lambda item: folded(item[1].title).casefold())
     uses = {report.report_id: report.use for report in reports}
     captures: dict[str, ClassReport] = {}
     for report in reports:
@@ -2336,7 +2334,8 @@ def class_page(request: Request, state: ApplicationState, class_id: str, n: str)
             "reported": bool(reports),
             "summary": term_summary(values, names),
             "no_report_added": NO_REPORT_ADDED,
-            "dated": [shown for _, _, shown in dated],
+            # Each result with its ID, which its title carries so a link can land on it.
+            "dated": [(result_id, shown) for _, _, result_id, shown in dated],
             "undated": undated,
             "categories": [category_line(value) for value in values.categories.values()],
             "reports": [
