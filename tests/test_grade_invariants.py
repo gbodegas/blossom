@@ -56,6 +56,7 @@ from blossom.noticing import canonical_active_input, planning_digest, read_every
 from blossom.settings import PACKAGE_ROOT
 from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
+    UNCONNECTED,
     VIEW_TABLES,
     AlreadyDeleted,
     AnswerNotAsked,
@@ -69,6 +70,10 @@ from blossom.stores.gradebook import (
     DeletePreview,
     FirstMonthCorrected,
     FirstMonthStood,
+    HomeworkClassConnected,
+    HomeworkClassNotOnRecord,
+    HomeworkClassRemoved,
+    HomeworkClassStood,
     NameFormAdded,
     ValueCorrected,
 )
@@ -85,8 +90,10 @@ from tests.support import (
     database_of,
     fixture_clock,
     grade_answers,
+    homework_named,
     household_client,
     practice_store,
+    reported,
     save_grade,
     state_of,
 )
@@ -331,6 +338,25 @@ def assertions(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]
     ]
 
 
+def homework_class_connected(store: ProjectStateStore, *, removed: bool = False) -> object:
+    """A parent's answer for the first homework class name on record, or the removal of that
+    connection, each of which stands when it is sent again. With no homework on record the
+    write is refused, and that is what it does."""
+    class_id = capture_class(store, WREN_REPORT)
+    names = [assignment.course for assignment in store.all_assignments()]
+    shown, chosen = (class_id, UNCONNECTED) if removed else (None, class_id)
+    if not names:
+        with pytest.raises(HomeworkClassNotOnRecord):
+            store.connect_homework_class(YEAR, "Biology", shown=shown, chosen=chosen, role="parent")
+        return None
+    outcome = store.connect_homework_class(
+        YEAR, names[0], shown=shown, chosen=chosen, role="parent"
+    )
+    kinds = HomeworkClassConnected | HomeworkClassRemoved | HomeworkClassStood
+    assert isinstance(outcome, kinds), outcome
+    return outcome
+
+
 def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
     """Each kind of grade write, and each that writes nothing, in an order that reaches them
     all."""
@@ -358,6 +384,10 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
             ),
         ),
         ("the rest", lambda: expect(GradeReportSaved, save_grade(store, WREN_REPORT, key=KEY))),
+        ("a homework class name connected", lambda: homework_class_connected(store)),
+        ("its resend", lambda: homework_class_connected(store)),
+        ("the connection removed", lambda: homework_class_connected(store, removed=True)),
+        ("the removal sent again", lambda: homework_class_connected(store, removed=True)),
         (
             "a stale page",
             lambda: expect(
@@ -539,6 +569,7 @@ def test_g_i13_no_gradebook_table_or_log_line_holds_a_name(
 
 def test_g_i15_every_gradebook_row_carries_her_one_student_id(tmp_path: pathlib.Path) -> None:
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    store.put_on_record([homework_named("Biology", "assignment-named")], {})
     for _, write in every_name_write(store):
         write()
     for _, write in every_grade_write(store):
@@ -1167,6 +1198,7 @@ KEPT_BY_A_DELETE = (
     "grade_terms",
     "grade_classes",
     "grade_class_aliases",
+    "grade_homework_classes",
 )
 SCOPED_BY_REPORT = (
     "grade_corrections",
@@ -1315,3 +1347,66 @@ def test_only_gradebook_names_the_corrections_table() -> None:
     )
 
     assert naming == ["stores/gradebook.py"]
+
+
+def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.Path) -> None:
+    """The reverse boundary, the mapping included: homework put on record, the school's status,
+    her update and its undo, and the homework that carried a connected name leaving the record
+    each leave every gradebook table byte for byte, so an answer outlives its homework."""
+    with household_client("open", tmp_path) as client:
+        store = state_of(client).project_state
+        path = database_of(client)
+        expect(GradeReportSaved, save_grade(store, WREN_REPORT, key=KEY))
+        class_id = capture_class(store, WREN_REPORT)
+        first = store.all_assignments()[0]
+        expect(
+            HomeworkClassConnected,
+            store.connect_homework_class(
+                YEAR, first.course, shown=None, chosen=class_id, role="parent"
+            ),
+        )
+
+        def gradebook_tables() -> dict[str, object]:
+            world = closed_world([path], leaving_out=())
+            return {
+                name: value
+                for name, value in world.items()
+                if name.rsplit(" ", 1)[-1] in GRADEBOOK_TABLES
+            }
+
+        def left_the_record() -> None:
+            store._connection.execute("DELETE FROM assignments WHERE course = ?", (first.course,))
+            store._connection.commit()
+
+        before = gradebook_tables()
+        writes: list[tuple[str, Callable[[], object]]] = [
+            (
+                "homework put on record",
+                lambda: store.put_on_record([homework_named("Art", "assignment-art")], {}),
+            ),
+            (
+                "the same name in another spelling",
+                lambda: store.put_on_record(
+                    [homework_named(first.course.upper(), "assignment-again")], {}
+                ),
+            ),
+            ("her update", lambda: reported(store, "done", first.assignment_id)),
+            (
+                "its undo",
+                lambda: store.undo_report(
+                    first.assignment_id,
+                    store.student_reports(first.assignment_id)[-1].report_id,
+                    now=OBSERVED_AT,
+                    today=MONDAY,
+                ),
+            ),
+            ("the homework that carried the name leaving", left_the_record),
+        ]
+        seen = []
+        for label, write in writes:
+            write()
+            seen.append((label, gradebook_tables() == before))
+
+    assert any(name.endswith("rows of grade_homework_classes") for name in before)
+    assert before[f"{path.name} rows of grade_homework_classes"] != []
+    assert seen == [(label, True) for label, _ in seen]

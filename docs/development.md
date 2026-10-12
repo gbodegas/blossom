@@ -245,10 +245,20 @@ Three files under `.local/` outlive a restart:
   original reading with the cell as read, the report the parent acted on,
   who and when, never changing the value as written. An assertion takes a
   closed form only: a number, a letter grade A to F with + or -, or a status
-  the class and term already hold. A delete of one class's grades for one
+  the class and term already hold. One more, `grade_homework_classes`,
+  keeps a parent's answers on the Homework class names page: for a school
+  year, a homework class name with its capitalization and spaces folded,
+  the class it is, and who answered and when. A row with no class is a
+  connection a parent removed: that name waits until a parent connects
+  it again, whatever class it equals. A name with no row joins the one
+  class of the year whose official name, report code or report name
+  equals it, or waits for a parent. An answer
+  rewrites no homework, so class names aren't yet consistent across the
+  app: homework pages still show each class name as it was written. A
+  delete of one class's grades for one
   term removes that class and term's reports, values, results, assertions
   and their history, acceptances and actions, and keeps her record, years,
-  terms, classes and aliases.
+  terms, classes, aliases and the answers about homework class names.
   A file from before any of them gains the tables on the first start, and
   a file whose acceptances have no class and term gains them once: each is
   tied to its report's, or its capture's, or the start stops with every
