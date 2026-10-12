@@ -6,8 +6,10 @@ assignment's score line with the way to its result on class details.
 A page reads the grade facts once, inside its own hold of the record, and makes one mapping
 from them, so every place on the page that lists an assignment shows the same line or none.
 Which result is an assignment's is decided each time by ``school_scores`` and stored nowhere.
-The term anyone has in use is never asked for: every term of a class's year that holds a
-report is read, and a link names the result's own term by its place in that year.
+The current year and term are fetched and validated. Their valid values do not select results,
+terms or links. Failure of that validation omits all school scores and Grade details links for
+that page read. For each class a homework name connects to, every term of its year that holds
+a report is read, and a link names the result's own term by its place in that year.
 
 A page read validates the stored grade values it fetches: a cell's text and presence, a
 report's order, row count and moments, an action's copied list and chain of sources, a school
