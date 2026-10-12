@@ -2834,8 +2834,8 @@ def test_each_read_of_a_year_s_classes_refuses_an_id_or_a_name_stored_as_bytes(
     table: str, column: str, mapped: bool
 ) -> None:
     """The classes of a term, which Grades lists, and the year's mapping of homework class names
-    each raise the named error for each of these columns: a score read makes both, and either meets
-    a class's ID or name first."""
+    each raise the named error for each of these columns it fetches: a score read makes both, and
+    either meets a class's ID or name first."""
     with browser() as client:
         store = store_of(client)
         class_id = with_report(client)
@@ -2874,7 +2874,7 @@ def test_each_read_of_the_terms_and_reports_refuses_each_of_these_columns_stored
     table: str, column: str, read: str
 ) -> None:
     """The terms on record, the terms that hold a report and a class's reports each raise the named
-    error for each of these columns stored as bytes, before a later read meets the value."""
+    error for each of these columns it fetches, stored as bytes, before a later read meets it."""
     with browser() as client:
         store = store_of(client)
         class_id = with_report(client)
