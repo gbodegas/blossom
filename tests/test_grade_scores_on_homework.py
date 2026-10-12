@@ -13,6 +13,7 @@ import difflib
 import html
 import pathlib
 import re
+from collections.abc import Callable
 from datetime import date
 
 import pytest
@@ -20,13 +21,21 @@ from fastapi.testclient import TestClient
 
 from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key
 from blossom.grades.identity import name_form_key
-from blossom.grades.review import GradeReportSaved
+from blossom.grades.review import GradeReportSaved, MatchAnswer
 from blossom.grades.text_reader import read_grade_report
 from blossom.grades.wording import report_names, score_line
+from blossom.hand_in import TURNED_IN
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
 from blossom.reconciliation import SourceChannel
 from blossom.routes.homework_scores import homework_of, read_grade_facts
-from blossom.stores.gradebook import GRADEBOOK_TABLES, UNCONNECTED, DeletePreview
+from blossom.routes.navigation import NEW_NOTE_PAGE, NOTE_ACTIONS, note_add_action, note_add_href
+from blossom.stores.gradebook import (
+    GRADEBOOK_TABLES,
+    UNCONNECTED,
+    DeletePreview,
+    class_for,
+    name_key,
+)
 from blossom.stores.project_state import Assignment, AssignmentKind
 from tests.support import (
     FIXTURES,
@@ -39,6 +48,7 @@ from tests.support import (
     correction_page,
     database_of,
     every_row,
+    form_fields,
     grade_answers,
     household_client,
     page_of,
@@ -48,6 +58,8 @@ from tests.support import (
     school_said,
     sign_in_as,
     store_of,
+    unreadable_claim,
+    whole_form,
     without_minted_fields,
 )
 
@@ -840,3 +852,197 @@ def test_a_report_kept_as_earlier_supplies_no_score_and_withholds_none() -> None
     assert only_earlier == []
     assert [line for line, _, _ in current] == [LINE]
     assert absent_in_an_earlier_one == current
+
+
+def test_a_changed_score_left_unticked_keeps_the_standing_score_with_its_source() -> None:
+    """S6: a newer current report shows the result with another score, and a parent leaves
+    that value unticked. Her card keeps the standing score and names the report it comes from,
+    character for character as class details writes it."""
+    newer = draft_of(
+        IN_WEEK.replace(LOG_ROW, "| Seed Germination Log | 19.0    | 20.0    | 95.0    |")
+    )
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        review = store.review_grade_report(newer, capture_key(newer), key=KEY)
+        (changed,) = [item.key for item in review.rows if item.result_id == result_id]
+        saved = save_grade(store, newer, key=KEY, review=review, selection=review.ready - {changed})
+        shown = on_card(client)
+        detailed = scores(details_of(client))
+        value = store.class_term(class_id, "T1").current.results[result_id]
+        class_line = line_on_class_details(class_details(client, class_id), result_id)
+
+    assert changed in review.ready
+    assert isinstance(saved, GradeReportSaved)
+    assert value.last_shown is not None
+    assert value.last_shown.report_id == saved.report_id
+    assert value.report_id != saved.report_id
+    assert shown == [
+        (
+            f"{LINE}, from the report added August 19",
+            link_to(class_id, result_id),
+            f"Grade details: {LOG}, {BIOLOGY}",
+        )
+    ]
+    assert class_line == shown[0][0]
+    assert detailed == shown
+
+
+def test_a_report_without_the_result_withholds_no_score_while_a_row_s_question_waits() -> None:
+    """S7's limit: a complete newer report leaves the result out and asks about another row.
+    With that question unanswered the line stays; answered, the same report takes it away."""
+    gone = "\n".join(line for line in IN_WEEK.split("\n") if LOG not in line)
+    asking = draft_of(
+        gone.replace(
+            "| Cell Diagram             | 7.0 ", "| Cell Diagram             | EX  "
+        ).replace("| Missing    | 08/27   |", "| Missing    | 08/28   |")
+    )
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        review = store.review_grade_report(asking, capture_key(asking), key=KEY)
+        asked = [item.key for item in review.rows if item.question is not None]
+        first = save_grade(store, asking, key=KEY, review=review, complete=True)
+        unanswered = on_card(client)
+        unanswered_page = class_details(client, class_id)
+        later = store.review_grade_report(asking, capture_key(asking), key=KEY)
+        ((row, question),) = [
+            (item.key, item.question) for item in later.rows if item.question is not None
+        ]
+        same = MatchAnswer(row, question.ids, question.ids[0])
+        answers = dataclasses.replace(grade_answers(later), matches=(same,))
+        second = save_grade(
+            store, asking, key=KEY, review=later, answers=answers, selection=(), complete=True
+        )
+        answered = on_card(client)
+        answered_page = class_details(client, class_id)
+
+    assert len(asked) == 1
+    assert isinstance(first, GradeReportSaved)
+    assert isinstance(second, GradeReportSaved)
+    assert [line for line, _, _ in unanswered] == [LINE]
+    assert "Not shown in the" not in unanswered_page
+    assert answered == []
+    assert "Not shown in the" in answered_page
+
+
+def test_claims_the_record_can_t_read_show_no_score_and_still_count_against_a_twin() -> None:
+    """A stored claim that can't be read leaves the homework date in doubt, whatever it says:
+    the card and the details show no score, and the row stays in the count, so a twin with a
+    settled date shows none either."""
+    said = "A claim about this date cannot be read right now."
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        with_report(client)
+        readable = on_card(client)
+        unreadable_claim(store, LOG_ID, THURSDAY.isoformat())
+        unread = store.read_claims([LOG_ID]).unreadable
+        card = card_for(page_of(client), LOG_ID)
+        details = details_of(client)
+        store.put_on_record([homework("assignment-twin")], {})
+        beside = scores(page_of(client))
+        twin = scores(details_of(client, "assignment-twin"))
+
+    assert [line for line, _, _ in readable] == [LINE]
+    assert unread == frozenset({LOG_ID})
+    assert said in card
+    assert said in details
+    assert scores(card) == []
+    assert scores(details) == []
+    assert beside == []
+    assert twin == []
+
+
+def test_a_twin_she_turned_in_still_counts_so_neither_row_shows_a_score() -> None:
+    """Her hand-in update, saved from the details' own form, takes no row out of the count."""
+    twin = "assignment-twin"
+    action = f"/student/actions/assignments/{twin}/hand-in"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(), homework(twin)], {})
+        with_report(client)
+        opened = client.get(f"/student/assignments/{twin}", params={"hand_in": "change"}).text
+        sent = {**form_fields(opened, action), "state": TURNED_IN, "next_action": "", "note": ""}
+        answer = client.post(action, data=sent, headers=PAGE_HEADERS)
+        said = [event.state for event in store.hand_in_chains([twin]).get(twin, [])]
+        page = page_of(client)
+        detailed = [scores(details_of(client, one)) for one in (LOG_ID, twin)]
+
+    assert answer.status_code == 303, answer.text
+    assert said == [TURNED_IN]
+    assert card_for(page, LOG_ID)
+    assert card_for(page, twin)
+    assert scores(page) == []
+    assert detailed == [[], []]
+
+
+IMPORTED = f"Homework for Wren\n- 08/20/2026 - Thursday\n08 Geometry - Due: {LOG}:\n"
+"""The school's list as a parent pastes it: the log, in "08 Geometry", due on the pinned
+Thursday."""
+TYPED = "08 GEOMETRY"
+KEEP = "/parent/inbox/keep"
+
+
+def entered_by_a_parent(client: TestClient) -> None:
+    """The parent's entry form with the class typed as a report writes it, reviewed and then
+    saved from the review page's own form."""
+    entry = {
+        "course": TYPED,
+        "title": LOG,
+        "due_date": THURSDAY.isoformat(),
+        "assigned_on": "",
+        "kind": "HOMEWORK",
+        "note": "",
+    }
+    review = client.post("/parent/inbox/enter", data=entry)
+    assert review.status_code == 200, review.text
+    kept = client.post(KEEP, data=whole_form(review.text, KEEP))
+    assert kept.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
+
+
+def added_from_a_note(client: TestClient) -> None:
+    """A homework note of hers with the class typed as a report writes it, then added to
+    homework under the title from the note's own form."""
+    fields = form_fields(client.get(NEW_NOTE_PAGE).text, NOTE_ACTIONS)
+    words = {"text": "Seed log, from the board", "course": TYPED, "due_date": THURSDAY.isoformat()}
+    noted = client.post(NOTE_ACTIONS, data={**fields, **words}, headers=PAGE_HEADERS)
+    assert noted.status_code == 303, noted.text
+    action = note_add_action(fields["capture_id"])
+    form = whole_form(client.get(note_add_href(fields["capture_id"])).text, action)
+    assert (form["course_other"], form["due_date"]) == (TYPED, THURSDAY.isoformat())
+    added = client.post(action, data={**form, "title": LOG}, headers=PAGE_HEADERS)
+    assert added.status_code == 303, added.text
+
+
+@pytest.mark.parametrize("typed", [entered_by_a_parent, added_from_a_note])
+def test_a_class_typed_as_a_report_writes_it_makes_a_twin_of_the_imported_row(
+    typed: Callable[[TestClient], None],
+) -> None:
+    """The row a parent's paste imports shows the score alone. The typed one is a row with an
+    ID of its own under the same folded name, so the two are twins and neither shows a score."""
+    with browser() as client:
+        store = store_of(client)
+        review = client.post("/parent/inbox/read", data={"text": IMPORTED})
+        pasted = client.post(KEEP, data=whole_form(review.text, KEEP))
+        class_id = with_report(client, GEOMETRY)
+        alone = scores(page_of(client))
+        typed(client)
+        twins = [item for item in store.all_assignments() if item.title == LOG]
+        mapping = store.homework_classes(YEAR)
+        beside = scores(page_of(client))
+        detailed = [scores(details_of(client, item.assignment_id)) for item in twins]
+
+    assert pasted.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
+    assert [(line, name) for line, _, name in alone] == [
+        (LINE, f"Grade details: {LOG}, 08 Geometry")
+    ]
+    assert sorted(item.course for item in twins) == [TYPED, "08 Geometry"]
+    assert len({item.assignment_id for item in twins}) == 2
+    assert {name_key(item.course) for item in twins} == {name_key(TYPED)}
+    assert [class_for(item.course, mapping) for item in twins] == [class_id, class_id]
+    assert beside == []
+    assert detailed == [[], []]

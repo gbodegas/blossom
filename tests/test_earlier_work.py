@@ -79,6 +79,7 @@ from tests.support import (
     spoil,
     state_of,
     store_of,
+    unreadable_claim,
     unwrapped,
     week_card,
     with_clock,
@@ -1371,17 +1372,6 @@ def test_earlier_work_whose_updates_cannot_be_read_says_so_and_stays_on_the_list
     assert "or whose updates can't be read right now" in words(section(shown))
     assert "can't be read" not in words(section(healthy))
     assert OCT_2.assignment_id in planned
-
-
-def unreadable_claim(store: ProjectStateStore, assignment_id: str) -> None:
-    """One more date claim about the assignment, which then cannot be read."""
-    store.record_claims(assignment_id, [record(SourceChannel.LMS, "2026-10-06")])
-    with store._lock, store._connection:
-        store._connection.execute(
-            "UPDATE date_claims SET active = 7 WHERE rowid = "
-            "(SELECT MAX(rowid) FROM date_claims WHERE assignment_id = ?)",
-            (assignment_id,),
-        )
 
 
 def test_earlier_work_with_a_date_claim_that_cannot_be_read_is_not_listed_chosen_or_planned() -> (

@@ -2114,6 +2114,20 @@ def refusing(
     return refused
 
 
+def unreadable_claim(
+    store: ProjectStateStore, assignment_id: str, value: str = "2026-10-06"
+) -> None:
+    """One more date claim about the assignment, the school portal's ``value``, which then
+    cannot be read."""
+    store.record_claims(assignment_id, [record(SourceChannel.LMS, value)])
+    with store._lock, store._connection:
+        store._connection.execute(
+            "UPDATE date_claims SET active = 7 WHERE rowid = "
+            "(SELECT MAX(rowid) FROM date_claims WHERE assignment_id = ?)",
+            (assignment_id,),
+        )
+
+
 def connections_of(state: ApplicationState) -> list[sqlite3.Connection]:
     """The four connections a page reads the household's file through: the record, the
     drafts, her signals, and her requests for help."""
