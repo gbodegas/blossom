@@ -3559,5 +3559,9 @@ def homework_named(course: str, assignment_id: str, title: str = "Chapter review
 
 
 def answers_in(rows: list[tuple[object, ...]]) -> list[tuple[str, ...]]:
-    """Each stored homework class answer's school year, folded name, class and who answered."""
-    return [tuple(cast(bytes, cell).decode() for cell in row[1:5]) for row in rows]
+    """Each stored homework class answer's school year, folded name, class and who answered.
+    A removal stores no class, which reads as the empty string."""
+    return [
+        tuple("" if cell is None else cast(bytes, cell).decode() for cell in row[1:5])
+        for row in rows
+    ]

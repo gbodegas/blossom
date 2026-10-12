@@ -717,7 +717,7 @@ def test_a_name_matched_by_name_stays_waiting_once_removed_though_it_equals_the_
     removed = store.connect_homework_class(
         YEAR, "08 Geometry", shown=None, chosen=gradebook.UNCONNECTED, role="household"
     )
-    rows = answers_in([(*row[:3], b"", *row[4:]) for row in as_stored(store, MAPPING)])
+    rows = answers_in(as_stored(store, MAPPING))
     waiting = store.homework_classes(YEAR)
     back = store.connect_homework_class(
         YEAR, "08 geometry", shown=gradebook.UNCONNECTED, chosen=geometry, role="parent"
