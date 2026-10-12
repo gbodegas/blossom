@@ -1246,10 +1246,9 @@ def not_captured_due(text: str) -> str:
 
 
 def test_the_grade_date_is_the_due_date_shown_when_the_newest_report_captured_none() -> None:
-    """A newer current report changes the score and holds no Due column, and a parent answers
-    that each of its rows is the result on record. The result's own Due cell is then not
-    captured, class details shows the date an earlier report gave, and her card shows the
-    newer score under that date."""
+    """A newer current report changes the score and holds no Due column, and a parent answers that
+    each of its rows is the result on record. The result's own Due cell is then not captured, class
+    details shows an earlier report's date, and her card shows the newer score under it."""
     newer = draft_of(
         not_captured_due(
             IN_WEEK.replace(LOG_ROW, "| Seed Germination Log | 19.0    | 20.0    | 95.0    |")
@@ -1314,10 +1313,9 @@ def test_the_link_names_a_term_by_its_place_in_the_year_not_among_the_class_s_re
 
 
 def test_each_school_year_s_results_resolve_under_that_year_s_own_first_month() -> None:
-    """Two school years hold a class of one name and a result due 08/20. With the earlier
-    year starting in September and the later one in August both fall on the same day, so the
-    homework due that day shows no score. With both starting in August the earlier year's
-    falls a year before, and the later year's score shows."""
+    """Two years hold a class of one name and a result due 08/20. The earlier starting in September
+    and the later in August, both fall on one day and the homework due then shows no score. Both
+    starting in August, the earlier year's falls a year before and the later's score shows."""
     past = "2025-2026"
     earlier = draft_of(IN_WEEK.replace(f"**{YEAR}**", f"**{past}**"))
     with browser() as client:
@@ -1403,10 +1401,9 @@ def recorded(caplog: pytest.LogCaptureFixture) -> list[str]:
 def test_a_grade_cell_that_can_t_be_decoded_leaves_her_pages_as_with_no_class_on_record(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Her week, and the details of the assignment whose result holds the cell, of one whose
-    own result decodes and of one with no result: each answers, shows no score at all, and
-    reads as it does with no class on record. Each read records the failure's type alone, the
-    file stays as it was, and once the cell decodes the lines are back."""
+    """Her week and the details of the cell's assignment, of one whose result decodes and of one
+    with none answer, show no score and read as with no class on record. Each read records the
+    failure's type alone, the file stays as it was, and the lines return once the cell decodes."""
     notes_id = "assignment-reading-notes"
     addresses = [
         HER_PAGE,
@@ -1494,7 +1491,7 @@ def test_an_undecodable_cell_in_a_result_no_card_shows_leaves_the_whole_page_wit
     assert recorded(caplog) == [LEFT_OUT] * 3
 
 
-def test_an_undecodable_twin_is_never_left_out_of_the_count_to_let_the_other_show(
+def test_a_twin_with_an_undecodable_cell_is_refused_and_the_other_does_not_show(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Two terms hold a result with the log's title and day, so the log shows no score. With
@@ -1688,12 +1685,12 @@ def made_current_again(client: TestClient, text: str = IN_WEEK) -> str:
 
 
 @pytest.mark.parametrize(("statement", "value", "cause", "at"), DECODED)
-def test_each_stored_grade_value_that_can_t_be_decoded_raises_the_one_named_error(
+def test_each_of_these_stored_grade_values_raises_the_one_named_error(
     statement: str, value: str, cause: type, at: str
 ) -> None:
-    """A value the gradebook decodes raises it from each read of the class and term, a homework
-    page's grade read included; a report's moment raises it where the report is named. Its
-    cause is the decoding's own error, when one was raised, and its message holds nothing stored."""
+    """Each of these values raises it from each read of the class and term, a homework page's grade
+    read included; a report's moment raises it where the report is named. Its cause is the
+    decoding's own error, when one was raised, and its message holds nothing stored."""
     draft = draft_of(IN_WEEK)
     with browser() as client:
         store = store_of(client)
@@ -1736,12 +1733,12 @@ def test_each_stored_grade_value_that_can_t_be_decoded_raises_the_one_named_erro
 
 
 @pytest.mark.parametrize(("statement", "value"), MALFORMED)
-def test_a_malformed_moment_or_copied_list_leaves_her_pages_as_with_no_class_on_record(
+def test_each_of_these_moments_and_copied_lists_leaves_her_pages_as_with_no_class_on_record(
     statement: str, value: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Her week, and the details of two assignments with a result and of one with none: each
-    answers, shows no score at all, and reads as it does with no class on record. Each read
-    records the failure's type alone, and the file stays as it was."""
+    """With one of these moments or copied lists stored, her week and the details of two assignments
+    with a result and of one with none each answer, show no score at all, and read as with no class
+    on record. Each read records the failure's type alone, and the file stays as it was."""
     notes_id = "assignment-reading-notes"
     addresses = [
         HER_PAGE,
@@ -1811,7 +1808,7 @@ OTHER_TERM = [
 
 
 @pytest.mark.parametrize(("statement", "value"), OTHER_TERM)
-def test_a_malformed_value_in_a_term_no_card_shows_leaves_the_whole_page_without_scores(
+def test_each_of_these_values_in_a_term_no_card_shows_leaves_the_whole_page_without_scores(
     statement: str, value: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The value is in the class's second term, whose results are no homework's on her week.
@@ -1871,11 +1868,11 @@ def test_what_the_class_details_action_writes_decodes_and_the_scores_show(
 
 @pytest.mark.parametrize("address", ["/student/grades", "/student/grades/classes/{}/terms/1"])
 @pytest.mark.parametrize(("statement", "value"), MALFORMED)
-def test_grades_and_class_details_answer_a_malformed_moment_or_copied_list_with_the_named_error(
+def test_grades_and_class_details_answer_these_moments_and_copied_lists_with_the_named_error(
     statement: str, value: str, address: str
 ) -> None:
-    """Neither page leaves anything out: each fails with the named error, a ``ValueError``,
-    with nothing stored in its message."""
+    """With one of these moments or copied lists stored, neither page leaves anything out: each
+    fails with the named error, a ``ValueError``, with nothing stored in its message."""
     with browser() as client:
         class_id = made_current_again(client)
         sound = client.get(address.format(class_id), headers=PAGE_HEADERS)
@@ -1918,6 +1915,35 @@ def test_no_other_error_is_taken_for_a_grade_value_that_can_t_be_decoded(
     assert type(raised.value) is kind
 
 
+@pytest.mark.parametrize("address", ADDRESSES)
+def test_a_memory_error_where_a_copied_list_is_read_fails_the_page_as_itself(
+    address: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``MemoryError`` from the JSON reader, raised for an action's copied list alone, is no
+    stored value that can't be decoded: the page fails with it, where it showed the score."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        made_current_again(client)
+        sound = client.get(address, headers=PAGE_HEADERS)
+        with store._lock:
+            ((copied,),) = store._connection.execute("SELECT copied FROM grade_current_actions")
+
+        def loads(text: str) -> object:
+            if text == copied:
+                msg = "another failure"
+                raise MemoryError(msg)
+            return json.loads(text)
+
+        reading = types.SimpleNamespace(loads=loads, dumps=json.dumps)
+        monkeypatch.setattr("blossom.stores.gradebook.json", reading)
+        with pytest.raises(MemoryError, match="another failure"):
+            client.get(address, headers=PAGE_HEADERS)
+
+    assert sound.status_code == 200
+    assert LINE in html.unescape(sound.text)
+
+
 ORDER = "UPDATE grade_reports SET acceptance_order = ? WHERE acceptance_order = 1"
 ROWS = "UPDATE grade_reports SET result_rows = ?"
 DEEP = "[" * 200_000
@@ -1934,10 +1960,9 @@ NO_CAUSE = type(None)
 
 @dataclasses.dataclass(frozen=True)
 class Edit:
-    """One stored value written as no save writes it: the statement, what it binds, which
-    reads raise the named error for it, the error its decoding raised, when one was, whether
-    it makes a chain of sources come back to itself, and whether it changes a parent's
-    assertion, which the record then holds."""
+    """One stored value written as no save writes it: the statement, what it binds, which reads
+    raise the named error for it, its decoding's own error, when one was raised, whether it loops a
+    chain of sources, and whether a parent's assertion is on record for it."""
 
     statement: str
     binds: tuple[object, ...] = ()
@@ -2165,13 +2190,12 @@ def the_stored_chains_are_refused(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize("edit", EDITED)
-def test_a_hand_edited_grade_value_leaves_her_pages_as_with_no_class_on_record(
+def test_each_of_these_hand_edited_grade_values_leaves_her_pages_as_with_no_class_on_record(
     edit: Edit, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Her week, and the details of two assignments with a result and of one with none: each
-    answers in time, shows no score at all, and reads as it does with no class on record.
-    Each read records the failure's type alone, the gradebook's rows stay as they were, and
-    the connection keeps its own decoding of text."""
+    """With one of these values stored, her week and the details of three assignments answer in
+    time, show no score and read as with no class on record. Each read records the failure's type
+    alone; the gradebook's rows and the connection's decoding stay as they were."""
     notes_id = "assignment-reading-notes"
     addresses = [
         HER_PAGE,
@@ -2234,14 +2258,12 @@ def test_a_hand_edited_grade_value_leaves_her_pages_as_with_no_class_on_record(
 
 
 @pytest.mark.parametrize("edit", EDITED)
-def test_each_hand_edited_grade_value_raises_the_one_named_error_where_it_is_read(
+def test_each_of_these_hand_edited_grade_values_raises_the_one_named_error_where_it_is_read(
     edit: Edit,
 ) -> None:
-    """A report's order or rows, a cell's text, a copied list and a chain of sources raise it
-    from each read of the class and term; a first month from its own read; text that is not
-    UTF-8 and a report outside its year's terms from a homework page's grade read. Each read
-    returns in time, its cause is the decoding's own error, when one was raised, and its
-    message holds nothing stored."""
+    """Each of these values raises it from the reads its entry names: each read of the class and
+    term, the first month's own, or a homework page's grade read. Each returns in time, with the
+    decoding's own error as its cause, when one was raised, and nothing stored in its message."""
     draft = draft_of(IN_WEEK)
     with browser() as client:
         store = store_of(client)
@@ -2282,7 +2304,7 @@ def test_each_hand_edited_grade_value_raises_the_one_named_error_where_it_is_rea
 @pytest.mark.parametrize(
     "edit", [pytest.param(edit, id=name) for name, edit in EDITS.items() if edit.at == "the class"]
 )
-def test_grades_and_class_details_answer_a_hand_edited_value_with_the_named_error(
+def test_grades_and_class_details_answer_each_of_these_hand_edited_values_with_the_named_error(
     edit: Edit, address: str
 ) -> None:
     """Neither page leaves anything out: each fails in time with the named error, a
@@ -2361,12 +2383,12 @@ COMPETITORS = [
 
 
 @pytest.mark.parametrize(("arrange", "statement"), COMPETITORS)
-def test_a_hand_edited_competitor_is_never_read_past_to_let_the_other_show(
+def test_these_hand_edited_competitors_are_refused_and_the_other_does_not_show(
     arrange: Callable[[TestClient], None], statement: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Two results could each be the log's, so the log shows no score. With one of them
-    stored so it would drop out of the count, the log still shows none, on her week and on
-    its details, and each read records the failure."""
+    """Two results could each be the log's, so the log shows no score. With one of them stored in
+    one of these ways, which would drop it out of the count, the log still shows none, on her week
+    and on its details, and each read records the failure."""
     with browser() as client:
         store = store_of(client)
         store.put_on_record([homework()], {})
@@ -2706,21 +2728,33 @@ DROPPED = [
         ("UPDATE grade_reports SET class_id = CAST(class_id AS BLOB) WHERE term_label = 'T2'",),
         id="a report's class",
     ),
+    pytest.param(
+        twin_years,
+        BIOLOGY,
+        ("UPDATE grade_classes SET class_id = NULL WHERE year_label = '2025-2026'",),
+        id="a class's ID set to null",
+    ),
+    pytest.param(
+        twin_terms,
+        BIOLOGY,
+        ("UPDATE grade_reports SET report_id = NULL WHERE term_label = 'T2'",),
+        id="a report's ID set to null",
+    ),
 ]
 """Two results that could each be the log's, the homework's class name, and the statements
-that store an identifier of one of the two as bytes, which equal no text."""
+that store an identifier of one of the two as bytes, which equal no text, or as a null."""
 
 
 @pytest.mark.parametrize(("arrange", "course", "statements"), DROPPED)
-def test_a_fetched_identifier_stored_as_bytes_is_refused_where_its_row_is_read(
+def test_each_of_these_identifiers_as_bytes_or_null_is_refused_and_the_other_does_not_show(
     arrange: Callable[[TestClient], None],
     course: str,
     statements: tuple[str, ...],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Two results could each be the log's, so the log shows no score. With an identifier of
-    one stored as bytes, the log still shows none, on her week and on its details, and each
-    read records the failure."""
+    """Two results could each be the log's, so the log shows no score. With one of these identifiers
+    of one stored as bytes, or as a null in a key SQLite lets be null, the log still shows none, on
+    her week and on its details, and each read records the failure."""
     with browser() as client:
         store = store_of(client)
         store.put_on_record([homework(course=course)], {})
@@ -2799,9 +2833,9 @@ def test_a_chosen_answer_whose_class_is_stored_as_bytes_leaves_her_pages_without
 def test_each_read_of_a_year_s_classes_refuses_an_id_or_a_name_stored_as_bytes(
     table: str, column: str, mapped: bool
 ) -> None:
-    """The classes of a term, which Grades lists, and the year's mapping of homework class
-    names each raise the named error for a value they fetch: a score read makes both, and
-    either meets a class's ID or name first."""
+    """The classes of a term, which Grades lists, and the year's mapping of homework class names
+    each raise the named error for each of these columns: a score read makes both, and either meets
+    a class's ID or name first."""
     with browser() as client:
         store = store_of(client)
         class_id = with_report(client)
@@ -2836,11 +2870,11 @@ FETCHED = [
 
 
 @pytest.mark.parametrize(("table", "column", "read"), FETCHED)
-def test_each_read_of_the_terms_and_reports_refuses_a_value_it_fetches_stored_as_bytes(
+def test_each_read_of_the_terms_and_reports_refuses_each_of_these_columns_stored_as_bytes(
     table: str, column: str, read: str
 ) -> None:
-    """The terms on record, the terms that hold a report and a class's reports each raise the
-    named error for a text column they fetch, whatever a later read would make of it."""
+    """The terms on record, the terms that hold a report and a class's reports each raise the named
+    error for each of these columns stored as bytes, before a later read meets the value."""
     with browser() as client:
         store = store_of(client)
         class_id = with_report(client)
@@ -2858,6 +2892,64 @@ def test_each_read_of_the_terms_and_reports_refuses_a_value_it_fetches_stored_as
     assert (contexts.current, contexts.terms) == ((YEAR, "T1"), ((YEAR, "T1"),))
     assert reported_in == ((YEAR, class_id, "T1"),)
     assert [report.acted_at for report in kept] == [None]
+    assert str(raised.value) == UNDECODABLE
+
+
+EARLIER_REPORT = "WHERE acceptance_order = 1"
+"""The first report of ``made_current_again``, whose capture's newest report is the one the
+action made."""
+
+
+def test_a_class_s_reports_refuse_the_id_of_a_capture_s_earlier_report_stored_as_bytes() -> None:
+    """The report's capture has a newer report, so the check of the report's own ID alone meets the
+    bytes: the newest report of its capture is another, and that ID is text."""
+    with browser() as client:
+        store = store_of(client)
+        class_id = made_current_again(client)
+        student_id = store.student_id()
+        sound = store._class_reports(student_id, class_id, "T1")
+        stored(
+            store,
+            f"UPDATE grade_reports SET report_id = CAST(report_id AS BLOB) {EARLIER_REPORT}",  # noqa: S608
+        )
+        with pytest.raises(GradeValueUndecodable) as raised:
+            store._class_reports(student_id, class_id, "T1")
+
+    assert [report.latest_of_capture == report.report_id for report in sound] == [False, True, True]
+    assert str(raised.value) == UNDECODABLE
+
+
+NULLED = [
+    ("UPDATE grade_classes SET class_id = NULL", "the classes of a term"),
+    ("UPDATE grade_classes SET class_id = NULL", "the homework class names"),
+    (f"UPDATE grade_reports SET report_id = NULL {EARLIER_REPORT}", "the class's reports"),  # noqa: S608
+    (f"UPDATE grade_reports SET report_id = NULL {EARLIER_REPORT}", "the current values"),  # noqa: S608
+]
+"""A key SQLite lets be null, set to null, and a read that fetches it."""
+
+
+@pytest.mark.parametrize(("statement", "read"), NULLED)
+def test_a_null_in_a_class_s_id_or_a_report_s_id_is_refused_by_each_of_these_reads(
+    statement: str, read: str
+) -> None:
+    """No save writes a null in a class's ID or a report's ID, and each of these reads refuses one
+    where it would keep a null in a column that may hold nothing. The report is its capture's
+    earlier one, so the check of its own ID alone meets the null."""
+    with browser() as client:
+        store = store_of(client)
+        class_id = made_current_again(client)
+        student_id = store.student_id()
+        reads: dict[str, Callable[[], object]] = {
+            "the classes of a term": lambda: store.classes_in(YEAR, "T1"),
+            "the homework class names": lambda: store.homework_classes(YEAR),
+            "the class's reports": lambda: store._class_reports(student_id, class_id, "T1"),
+            "the current values": lambda: store.current_values(class_id, "T1"),
+        }
+        reads[read]()
+        stored(store, statement)
+        with pytest.raises(GradeValueUndecodable) as raised:
+            reads[read]()
+
     assert str(raised.value) == UNDECODABLE
 
 
@@ -3232,10 +3324,9 @@ DECODINGS = {
 
 @pytest.mark.parametrize("name", DECODINGS)
 def test_each_decoder_reads_or_refuses_each_stored_value_of_one_fixed_set(name: str) -> None:
-    """One fixed set of stored values through a decoder as the store calls it: each call
-    returns a value of the decoder's kind or raises the named error, and each value the set
-    marks well-formed for the decoder is read. It shows how the decoders answer these values
-    and is no proof about any other."""
+    """One fixed set of stored values through a decoder as the store calls it: each call returns a
+    value of the decoder's kind or raises the named error, and each value marked well-formed is
+    read. It shows these values alone and proves nothing of any other."""
     decoding = DECODINGS[name]
     read, misread, refused, said = [], [], [], set()
     for at, value in enumerate(CORPUS):

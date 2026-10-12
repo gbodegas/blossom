@@ -12,10 +12,11 @@ report is read, and a link names the result's own term by its place in that year
 A page read validates the stored grade values it fetches: a cell's text and presence, a
 report's order, row count and moments, an action's copied list and chain of sources, a school
 year's first month, a report's term against the terms of its class's year, and every text
-column a statement returns, which must be stored as text and as UTF-8. A value that fails
-raises ``GradeValueUndecodable``, in the read or in the lines made from it, and leaves the
-page without any school score: the page discards what it read and every line with it, since a
-result left out of the count could make another look like an assignment's only one.
+column a statement returns, which must be stored as text and as UTF-8. A column that may hold
+nothing keeps holding nothing: a null there is read as a null and is not refused. A value that
+fails raises ``GradeValueUndecodable``, in the read or in the lines made from it, and leaves
+the page without any school score: the page discards what it read and every line with it,
+since a result left out of the count could make another look like an assignment's only one.
 
 A value a statement compares in its own WHERE or JOIN is filtered before any row is read, and
 so is not validated: a school year label on an alias or on a parent's answer, a student ID,
