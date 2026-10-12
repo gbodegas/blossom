@@ -11,19 +11,19 @@ report is read, and a link names the result's own term by its place in that year
 
 A page read validates the stored grade values it fetches: a cell's text and presence, a
 report's order, row count and moments, an action's copied list and chain of sources, a school
-year's first month, a report's term against the terms of its class's year, and every text
-column a statement returns, which must be stored as text and as UTF-8. A column that may hold
+year's first month, the term of each report of a class a homework name connects to against the
+terms of that class's year, and every covered text column in rows actually returned by the
+school-score reads, which must be stored as text and as UTF-8. A column that may hold
 nothing keeps holding nothing: a null there is read as a null and is not refused. A value that
 fails raises ``GradeValueUndecodable``, in the read or in the lines made from it, and leaves
 the page without any school score: the page discards what it read and every line with it,
 since a result left out of the count could make another look like an assignment's only one.
 
-A value a statement compares in its own WHERE or JOIN is filtered before any row is read, and
-so is not validated: a school year label on an alias or on a parent's answer, a student ID,
-and the report ID that observations, matches and corrections are joined on. A row whose
-compared value is stored as something other than text is never returned. The consequence
-remains: a withheld score can appear, or a removed connection can apply again, without a
-diagnostic.
+A malformed key can cause SQL WHERE or JOIN to exclude a row before validation: a school year
+label on an alias or on a parent's answer, a student ID, or the report ID that observations,
+matches and corrections are joined on. Such excluded rows are not checked. Covered values
+actually returned are validated. The consequence remains: a withheld score can appear, or a
+removed connection can apply again, without a diagnostic.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """
