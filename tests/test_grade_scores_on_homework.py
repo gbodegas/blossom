@@ -94,11 +94,11 @@ LINE = "School score: 18.0 / 20.0 · 90.0%"
 DIAGRAM_LINE = "School score: 7.0 / 10.0 · 70.0%"
 HEADING = "From the school's gradebook"
 SCORE = re.compile(
-    r'<p class="effect">(School score[^<]*)</p>\s*(?:<p class="details-link">)?'
-    r'<a class="(?:details-link )?assignment-link" href="([^"]*)" aria-label="([^"]*)">'
-    r"Grade details</a>(?:</p>)?"
+    r'<p class="effect">(School score[^<]*)</p>\s*<p class="details-link">'
+    r'<a class="assignment-link" href="([^"]*)" aria-label="([^"]*)">'
+    r"Grade details</a></p>"
 )
-"""A score line with the link under it, as each place writes them."""
+"""A score line with the link under it in a paragraph of its own, as each place writes them."""
 Shown = list[tuple[str, str, str]]
 
 
@@ -185,6 +185,16 @@ def earlier_row(page: str, title: str) -> str:
     )
     assert found is not None, title
     return found.group(0)
+
+
+def above_details(row: str, title: str) -> list[str]:
+    """The name of each score link in a row that sits in a paragraph of its own with the
+    row's Details link next."""
+    details = (
+        r'\s*<a class="details-link assignment-link" href="[^"]*" '
+        rf'aria-label="Details: {re.escape(title)}, {BIOLOGY}">Details</a>'
+    )
+    return [html.unescape(name) for _, _, name in re.findall(SCORE.pattern + details, row)]
 
 
 def without_scores(page: str) -> str:
@@ -278,6 +288,59 @@ def test_each_place_that_lists_an_assignment_shows_the_same_line_and_link() -> N
     )
     assert details.index(heading) < details.index('id="update-or-turn-in"')
     assert len(scores(week)) == 4
+
+
+def test_a_row_writes_grade_details_in_a_paragraph_of_its_own_above_details() -> None:
+    """The rows due later, active and done, and the earlier-work rows, shown and folded, write
+    the link as a card does, in a paragraph of its own, with the row's Details link next. A
+    row with no score is written as it is with no class on record."""
+    poster_id, poster = "assignment-safety-poster", "Lab Safety Poster"
+    notes = "Reading Notes"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [
+                homework(),
+                homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27), assigned=date(2026, 8, 18)),
+                homework(poster_id, poster, date(2026, 8, 26), assigned=date(2026, 8, 18)),
+                homework(PRACTICE_ID, PRACTICE, date(2026, 8, 12)),
+                homework("assignment-reading-notes", notes, date(2026, 8, 11)),
+                homework(OSMOSIS_ID, OSMOSIS, date(2026, 8, 1)),
+            ],
+            {},
+        )
+        bare = without_minted_fields(page_of(client))
+        with_report(client)
+        week = without_minted_fields(page_of(client))
+        reported(store, "done", DIAGRAM_ID)
+        done_week = page_of(client)
+
+    section = '<section class="panel assigned">'
+    bare_later, later, done_later = (
+        page[page.index(section) :] for page in (bare, week, done_week)
+    )
+    fold = week[week.index('<details class="steps earlier-more"') :]
+    assert above_details(card_for(later, DIAGRAM_ID), DIAGRAM) == [
+        f"Grade details: {DIAGRAM}, {BIOLOGY}"
+    ]
+    assert DIAGRAM_ID in done_later.split('<details class="steps reported-done"')[1]
+    assert above_details(card_for(done_later, DIAGRAM_ID), DIAGRAM) == [
+        f"Grade details: {DIAGRAM}, {BIOLOGY}"
+    ]
+    assert above_details(earlier_row(week, PRACTICE), PRACTICE) == [
+        f"Grade details: {PRACTICE}, {BIOLOGY}"
+    ]
+    assert above_details(earlier_row(fold, OSMOSIS), OSMOSIS) == [
+        f"Grade details: {OSMOSIS}, {BIOLOGY}"
+    ]
+    for row, with_no_class in (
+        (card_for(later, poster_id), card_for(bare_later, poster_id)),
+        (earlier_row(week, notes), earlier_row(bare, notes)),
+    ):
+        assert row == with_no_class
+        assert "School score" not in row
+        assert '<p class="details-link">' not in row
+        assert row.count('<a class="details-link assignment-link" href="') == 1
 
 
 def test_the_to_turn_in_rows_and_the_plan_s_rows_keep_no_score() -> None:

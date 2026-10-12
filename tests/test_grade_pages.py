@@ -1229,6 +1229,13 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
 CARD_TITLE_RULE = ".card-title {\n  font-size: 1.3rem;\n  margin: 0 0 0.6rem;\n}\n"
 """A grade card's title, pinned whole: a heading under a section's heading keeps its level and
 takes the size and spacing a week card's title has."""
+CARD_TITLE_LANDING = (
+    '.assignment h2[tabindex="-1"]:focus,\n.card-title[tabindex="-1"]:focus,\n',
+    '.assignment h2[tabindex="-1"],\n.card-title[tabindex="-1"] {\n'
+    "  scroll-margin-top: 3.25rem;\n}\n",
+)
+"""A result's title that takes the focus, pinned beside a week card's title in the two rules
+they share: the selectors of the arrival cue, and the room a link leaves above the title."""
 WEEK_CARD_RULES = (
     "h2 {\n  font-size: 1.3rem;\n  font-weight: 600;\n  color: var(--blue-action);\n"
     "  margin: 0 0 0.6rem;\n}\n",
@@ -1282,8 +1289,10 @@ def test_a_grade_card_is_drawn_with_the_week_card_s_parts_and_one_rule_for_its_t
         if "card-title" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("card-title") == 1
+    assert css.count("card-title") == 3
     assert css.count(CARD_TITLE_RULE) == 1
+    for shared in CARD_TITLE_LANDING:
+        assert css.count(shared) == 1, shared
     for shared in WEEK_CARD_RULES:
         assert css.count(shared) == 1, shared
     assert carriers == ["grade_class.html", "grade_review.html"]
