@@ -19,6 +19,8 @@ from fastapi.testclient import TestClient
 
 from blossom import noticing
 from blossom.app import create_app
+from blossom.grades.identity import name_form_key
+from blossom.grades.text_reader import read_grade_report
 from blossom.noticing import read_everything
 from blossom.reconciliation import SourceChannel
 from blossom.settings import FIXTURE_PATH_VARIABLE, TODAY_VARIABLE
@@ -31,6 +33,7 @@ from tests.support import (
     fixture_clock,
     fixture_settings,
     record,
+    save_grade,
     state_of,
 )
 
@@ -125,11 +128,13 @@ def test_a_record_that_holds_nothing_costs_fewer_reads_and_never_more(
     assert not any("FROM date_claims" in statement for statement in one_named)
 
 
-@pytest.mark.parametrize("page", ["/student/due-this-week", "/parent"])
-def test_a_page_costs_the_same_statements_whatever_the_record_holds(page: str) -> None:
+@pytest.mark.parametrize(("page", "cost"), [("/student/due-this-week", 15), ("/parent", 11)])
+def test_a_page_costs_the_same_statements_whatever_the_record_holds(page: str, cost: int) -> None:
     """Her page with a card for each, and the family page: no read is made once per card.
     Both read her homework notes beside the record, in the same snapshot, which is the one
-    statement more than a reading of the record costs, and is one however many notes."""
+    statement more than a reading of the record costs, and is one however many notes. Her
+    page also asks the gradebook for the school years on record and for the terms that hold
+    a report, four statements with none on record, for the school scores its cards show."""
     costs = []
     for count in (1, 20, 200):
         settings = fixture_settings(**{TODAY_VARIABLE: "2026-09-16", FIXTURE_PATH_VARIABLE: ""})
@@ -149,7 +154,42 @@ def test_a_page_costs_the_same_statements_whatever_the_record_holds(page: str) -
         assert sum("FROM school_instructions" in statement for statement in seen) == 1
         costs.append(len(seen))
 
-    assert costs == [11, 11, 11]
+    assert costs == [cost, cost, cost]
+
+
+@pytest.mark.parametrize("page", ["/student/due-this-week", "/student/assignments/math-000"])
+def test_a_homework_page_reads_the_gradebook_inside_its_one_hold_of_the_record(page: str) -> None:
+    """The school score a page shows is made from grade facts of the same snapshot as its
+    homework: every statement that reads the gradebook runs between the BEGIN and the COMMIT
+    of the one reading that reads the assignments too."""
+    text = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
+    in_math = {"**Biology**": "**Math**", "Seed Germination Log": "Set math-000", "09/22": "09/18"}
+    for written, wanted in in_math.items():
+        text = text.replace(written, wanted)
+    reading = read_grade_report(text)
+    assert reading.draft is not None
+    settings = fixture_settings(**{TODAY_VARIABLE: "2026-09-16", FIXTURE_PATH_VARIABLE: ""})
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
+        store = state_of(client).project_state
+        store.put_on_record([a_row("math-000", "Set math-000")], {})
+        save_grade(store, reading.draft, key=name_form_key(b"5" * 64))
+        with statements_of(store) as seen:
+            shown = client.get(page)
+
+    assert shown.status_code == 200
+    assert "School score: 18.0 / 20.0" in shown.text
+    holds, begun = [], 0
+    for at, statement in enumerate(seen):
+        if statement.startswith("BEGIN"):
+            begun = at
+        elif statement.startswith("COMMIT"):
+            holds.append((begun, at))
+    grade = [at for at, statement in enumerate(seen) if "FROM grade_" in statement]
+    around = [(start, end) for start, end in holds if start < grade[0] < end]
+    assert len(grade) > 1
+    assert len(around) == 1
+    assert [at for at in grade if not around[0][0] < at < around[0][1]] == []
+    assert any("FROM assignments" in statement for statement in seen[slice(*around[0])])
 
 
 def test_the_reading_is_made_of_plain_lists_and_holds_nothing_open(

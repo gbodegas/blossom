@@ -83,7 +83,12 @@
           {% endif %}
         {% endif %}
       </div>
-    {% endif %}
+    {% endif %}{% with score = school_scores.get(assignment.assignment_id) %}{% if score %}
+    <section>
+      <h2 class="update-heading">From the school's gradebook</h2>
+      <p class="effect">{{ score.line }}</p>
+      <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ assignment.title }}, {{ assignment.course }}">Grade details</a></p>
+    </section>{% endif %}{% endwith %}
     {#
       Help is hers to ask for on her week, and a parent answers it on the
       family page. The link carries nothing of this assignment, and the line

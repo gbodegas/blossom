@@ -888,7 +888,8 @@ a.assignment-link:focus-visible {
    what a save did, the choices of the form Change opens, and the line that says where
    her request for a shorter plan stands. On an assignment's
    details, the evidence and the headings a jump or a section's link lands on, Turning
-   it in's among them. Each takes the same calm cue, whether a click, a key or a
+   it in's among them. On class details, the title of a result a link lands on. Each
+   takes the same calm cue, whether a click, a key or a
    redirect brought the focus: a pale wash around the place and a bar of the action
    color at its left, both drawn outside its box so nothing moves, and no outline
    around it. The outline is there and transparent, so forced colors, which draws no
@@ -902,6 +903,7 @@ a.assignment-link:focus-visible {
 #turning-it-in:focus,
 .list-heading:focus,
 .assignment h2[tabindex="-1"]:focus,
+.card-title[tabindex="-1"]:focus,
 .assigned .row-title:focus,
 .card-gone:focus,
 .update .choice:focus,
@@ -913,10 +915,12 @@ a.assignment-link:focus-visible {
 }
 
 /* A link to a card lands on its title with the course above it and the card's edge in
-   view; a row's name keeps its cue on the screen. What a save did, and the choices
+   view, and a link to a result on class details lands on its title with the category
+   above it; a row's name keeps its cue on the screen. What a save did, and the choices
    Change opens, land a third of the way down the screen, so the card they belong to is
    still around them. */
-.assignment h2[tabindex="-1"] {
+.assignment h2[tabindex="-1"],
+.card-title[tabindex="-1"] {
   scroll-margin-top: 3.25rem;
 }
 

@@ -988,6 +988,43 @@ def test_g_i2_the_planner_input_is_byte_identical_across_every_grade_write(
     assert seen == [(label, True) for label, _ in seen]
 
 
+PLANNER_INPUT_MODULES = (
+    "noticing.py",
+    "evening.py",
+    "plan_snapshot.py",
+    "plan_reading.py",
+    "agent/prompts.py",
+    "agent/compose.py",
+    "agent/steps.py",
+    "agent/graph.py",
+    "agent/runs.py",
+    "agent/gates.py",
+    "routes/runs.py",
+)
+"""The modules a plan's input, its digest and what a plan keeps are built in, with those that
+run a plan and carry it to its pages."""
+
+
+def test_g3a_i2_the_modules_that_build_the_planner_s_input_import_no_grade_module() -> None:
+    """Neither the grade modules, nor the gradebook, nor the routes that read a school score."""
+    imported: dict[str, set[str]] = {}
+    for name in PLANNER_INPUT_MODULES:
+        tree = ast.parse((PACKAGE_ROOT / name).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.setdefault(name, set()).update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.setdefault(name, set()).add(node.module or "")
+
+    assert set(imported) == set(PLANNER_INPUT_MODULES)
+    assert {
+        (name, module)
+        for name, modules in imported.items()
+        for module in modules
+        if module.startswith(("blossom.grades", "blossom.stores.gradebook", "blossom.routes"))
+    } == set()
+
+
 LINE_MISSING = draft_of(REPORT.replace("**Bramble, Wren**", ""))
 IdentityCase = tuple[str, bool, GradeReportDraft, GradeReportDraft, bytes, IdentityAnswer]
 IDENTITY_CASES: list[IdentityCase] = [

@@ -13,12 +13,13 @@
   category as the kicker, the title, the due line with the gradebook status as its quieter
   phrase, the score, where it was last shown, and the school record details under the card's
   rule. A category the school reported is the kicker; one it left blank, or that wasn't read or
-  copied, says so in the same place as a quiet line.
+  copied, says so in the same place as a quiet line. The title carries the result's ID and
+  takes the focus, so a link to one result lands on it.
 #}
-{% macro result(item) %}
+{% macro result(item, result_id) %}
   <section class="panel grade-card">
     <p class="{{ 'course' if item.category_reported else 'source' }}"><span class="authored-text">{{ item.category }}</span></p>
-    <h3 class="card-title"><span class="authored-text">{{ item.title }}</span></h3>
+    <h3 class="card-title" id="{{ result_id }}" tabindex="-1"><span class="authored-text">{{ item.title }}</span></h3>
     <p class="due">{{ item.due }} <span class="source">{{ item.status }}</span></p>
     <p class="effect">{{ item.score }}</p>
     {% for line in item.showing %}
@@ -50,11 +51,11 @@
     {% endif %}
     {% if dated %}
       <h2 class="grade-heading">Assignments</h2>
-      {% for item in dated %}{{ result(item) }}{% endfor %}
+      {% for result_id, item in dated %}{{ result(item, result_id) }}{% endfor %}
     {% endif %}
     {% if undated %}
       <h2 class="grade-heading">Date not confirmed</h2>
-      {% for item in undated %}{{ result(item) }}{% endfor %}
+      {% for result_id, item in undated %}{{ result(item, result_id) }}{% endfor %}
     {% endif %}
     {% if categories %}
       <details class="steps">

@@ -54,9 +54,11 @@ from blossom.grades.review import (
     CurrentValue,
     GradeReportSaved,
     ItemStatus,
+    ReportAt,
     ReviewItem,
 )
 from blossom.grades.text_reader import read_grade_report
+from blossom.grades.wording import ordinal, report_names, score_line, score_of
 from blossom.household import secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes import grades as grade_routes
@@ -1227,6 +1229,13 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
 CARD_TITLE_RULE = ".card-title {\n  font-size: 1.3rem;\n  margin: 0 0 0.6rem;\n}\n"
 """A grade card's title, pinned whole: a heading under a section's heading keeps its level and
 takes the size and spacing a week card's title has."""
+CARD_TITLE_LANDING = (
+    '.assignment h2[tabindex="-1"]:focus,\n.card-title[tabindex="-1"]:focus,\n',
+    '.assignment h2[tabindex="-1"],\n.card-title[tabindex="-1"] {\n'
+    "  scroll-margin-top: 3.25rem;\n}\n",
+)
+"""A result's title that takes the focus, pinned beside a week card's title in the two rules
+they share: the selectors of the arrival cue, and the room a link leaves above the title."""
 WEEK_CARD_RULES = (
     "h2 {\n  font-size: 1.3rem;\n  font-weight: 600;\n  color: var(--blue-action);\n"
     "  margin: 0 0 0.6rem;\n}\n",
@@ -1248,7 +1257,7 @@ weight and color, its kicker, its due line and the quieter phrase beside it, its
 quiet lines, and the rule above its last section."""
 RESULT_CARD = """  <section class="panel grade-card">
     <p class="{{ 'course' if item.category_reported else 'source' }}"><span class="authored-text">{{ item.category }}</span></p>
-    <h3 class="card-title"><span class="authored-text">{{ item.title }}</span></h3>
+    <h3 class="card-title" id="{{ result_id }}" tabindex="-1"><span class="authored-text">{{ item.title }}</span></h3>
     <p class="due">{{ item.due }} <span class="source">{{ item.status }}</span></p>
     <p class="effect">{{ item.score }}</p>
     {% for line in item.showing %}
@@ -1257,7 +1266,8 @@ RESULT_CARD = """  <section class="panel grade-card">
     <details class="steps update">
 """  # noqa: E501
 """A result's card on class details, pinned as written, in the week card's order: the category
-as the kicker when the school reported it and as a quiet line when it didn't, the title, the
+as the kicker when the school reported it and as a quiet line when it didn't, the title, which
+carries the result's ID and takes the focus so a link can land on it, the
 due line with the gradebook status as its quieter phrase, the score, where it was last shown,
 and the school record details under the card's rule."""
 REVIEW_ROW = (
@@ -1279,8 +1289,10 @@ def test_a_grade_card_is_drawn_with_the_week_card_s_parts_and_one_rule_for_its_t
         if "card-title" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("card-title") == 1
+    assert css.count("card-title") == 3
     assert css.count(CARD_TITLE_RULE) == 1
+    for shared in CARD_TITLE_LANDING:
+        assert css.count(shared) == 1, shared
     for shared in WEEK_CARD_RULES:
         assert css.count(shared) == 1, shared
     assert carriers == ["grade_class.html", "grade_review.html"]
@@ -2660,7 +2672,101 @@ def test_a_score_line_says_each_cell_as_written_or_by_its_presence(
         order=1,
     )
 
-    assert grade_routes.score_of(value) == score_said(points, most, average)
+    assert score_of(value) == score_said(points, most, average)
+
+
+ADDED_SEPTEMBER_30: Final = "report-1"
+SHOWN_AGAIN_BY: Final = "report-2"
+TWO_REPORTS: Final = tuple(
+    ClassReport(
+        report_id=report_id,
+        order=order,
+        use="current",
+        imported_at=f"2026-{added}T16:00:00+00:00",
+        acted_at=None,
+        latest_of_capture=report_id,
+    )
+    for order, (report_id, added) in enumerate(
+        ((ADDED_SEPTEMBER_30, "09-30"), (SHOWN_AGAIN_BY, "10-07")), start=1
+    )
+)
+"""A report added September 30 and a newer one, each its own capture."""
+LEFT_BLANK: Final[Cell] = (Presence.BLANK, "")
+NOT_IN_THE_COPY: Final[Cell] = (Presence.NOT_CAPTURED, "")
+SCORE_LINES: Final[dict[str, tuple[tuple[str | Cell, str | Cell, str | Cell], str]]] = {
+    "points, maximum and average reported": (
+        ("25.0", "30.0", "83.3"),
+        "School score: 25.0 / 30.0 · 83.3%",
+    ),
+    "average left blank": (
+        ("25.0", "30.0", LEFT_BLANK),
+        "School score: 25.0 / 30.0 · average left blank",
+    ),
+    "average not in the copy": (
+        ("25.0", "30.0", NOT_IN_THE_COPY),
+        "School score: 25.0 / 30.0 · average not in the copy",
+    ),
+    "maximum left blank": (
+        ("25.0", LEFT_BLANK, "83.3"),
+        "School score: 25.0 / maximum left blank · 83.3%",
+    ),
+    "maximum not in the copy": (
+        ("25.0", NOT_IN_THE_COPY, "83.3"),
+        "School score: 25.0 / maximum not in the copy · 83.3%",
+    ),
+    "a reported zero": (("0.0", "10.0", "0.0"), "School score: 0.0 / 10.0 · 0.0%"),
+    "points left blank": (
+        (LEFT_BLANK, "30.0", "83.3"),
+        "School score: blank / 30.0 · 83.3%",
+    ),
+    "points not in the copy": (
+        (NOT_IN_THE_COPY, "30.0", "83.3"),
+        "School score: not in the copy / 30.0 · 83.3%",
+    ),
+    "all three left blank": ((LEFT_BLANK, LEFT_BLANK, LEFT_BLANK), "Score left blank"),
+    "none of the three in the copy": (
+        (NOT_IN_THE_COPY, NOT_IN_THE_COPY, NOT_IN_THE_COPY),
+        "Score not in the copy",
+    ),
+}
+"""A score's points, maximum and average, each as written or the cell it holds, and the line
+class details write for them."""
+
+
+@pytest.mark.parametrize("case", list(SCORE_LINES))
+@pytest.mark.parametrize(
+    ("last_shown", "source"),
+    [
+        pytest.param(None, "", id="no showing on record"),
+        pytest.param(ADDED_SEPTEMBER_30, "", id="last shown by its source"),
+        pytest.param(SHOWN_AGAIN_BY, ", from the report added September 30", id="shown again"),
+    ],
+)
+def test_the_whole_score_line_is_the_line_class_details_write_for_the_value(
+    case: str, last_shown: str | None, source: str
+) -> None:
+    """One function writes a value's whole score line, character for character as class details
+    show it: the score, then its source when a newer report last showed the result."""
+    written, line = SCORE_LINES[case]
+    cells: dict[str, Cell] = dict.fromkeys(grade_review.RESULT_FIELDS, LEFT_BLANK)
+    cells["assignment"] = (Presence.REPORTED, "Cell Diagram")
+    for field, cell in zip(("points", "max_points", "average"), written, strict=True):
+        cells[field] = (Presence.REPORTED, cell) if isinstance(cell, str) else cell
+    value = CurrentValue(
+        cells=cells,
+        report_id=ADDED_SEPTEMBER_30,
+        order=1,
+        last_shown=None if last_shown is None else ReportAt(last_shown, 2),
+    )
+    names = report_names(TWO_REPORTS, ZoneInfo(FIXTURE_TIMEZONE))
+
+    _, shown = grade_routes.result_shown(
+        value, year="2026-2027", first_month=8, newest=None, names=names
+    )
+
+    assert score_line(value, names) == line + source
+    assert shown.score == line + source
+    assert score_line(value, {}) == line + (", from the report" if source else "")
 
 
 @pytest.mark.parametrize(
@@ -2850,7 +2956,7 @@ def supplier_line(grade: str, saved: list[str]) -> str:
     """The line naming the report that supplied ``grade``: the seeded report, or the save that
     wrote it, by its place among the reports added that day."""
     place = 0 if grade == "81.9" else saved.index(grade) + 1
-    return f"{grade_routes.ordinal(place + 1) + ' ' if place else ''}report added".capitalize()
+    return f"{ordinal(place + 1) + ' ' if place else ''}report added".capitalize()
 
 
 @pytest.mark.parametrize(("grades", "details"), [(HER_GRADES, HER_CLASS_AT), (GRADES, CLASS_AT)])
@@ -2903,12 +3009,12 @@ def test_a_save_between_a_page_s_reads_leaves_each_value_named_by_its_supplier(
     ],
 )
 def test_an_ordinal_is_spelled_for_any_positive_count(count: int, said: str) -> None:
-    assert grade_routes.ordinal(count) == said
+    assert ordinal(count) == said
 
 
 def test_an_ordinal_has_no_place_below_one() -> None:
     with pytest.raises(ValueError, match="positive"):
-        grade_routes.ordinal(0)
+        ordinal(0)
 
 
 SAME_DAY: Final = {10: "tenth", 11: "eleventh", 12: "twelfth", 21: "twenty-first"}
@@ -2946,7 +3052,7 @@ def same_day_reports(count: int, *, acted_from: int | None = None) -> tuple[Clas
 
 @pytest.mark.parametrize("count", list(SAME_DAY))
 def test_each_report_added_the_same_day_is_named_by_its_spelled_place(count: int) -> None:
-    names = grade_routes.report_names(same_day_reports(count), ZoneInfo(FIXTURE_TIMEZONE))
+    names = report_names(same_day_reports(count), ZoneInfo(FIXTURE_TIMEZONE))
 
     assert names["report-1"] == "report added October 9"
     assert names["report-2"] == "second report added October 9"
@@ -2955,9 +3061,7 @@ def test_each_report_added_the_same_day_is_named_by_its_spelled_place(count: int
 
 
 def test_a_report_made_current_from_the_eleventh_capture_keeps_its_place_word() -> None:
-    names = grade_routes.report_names(
-        same_day_reports(12, acted_from=11), ZoneInfo(FIXTURE_TIMEZONE)
-    )
+    names = report_names(same_day_reports(12, acted_from=11), ZoneInfo(FIXTURE_TIMEZONE))
 
     assert names["report-11"] == "eleventh report added October 9"
     assert names["report-made"] == "eleventh report added October 9, made current October 10"
@@ -4716,7 +4820,7 @@ def test_report_text_that_repeats_a_later_tier_still_gives_distinct_labels() -> 
 def test_a_choice_names_its_report_by_the_words_class_details_give_it() -> None:
     """The place word comes from the reports' acceptance order, never the order choices are
     given in."""
-    names = grade_routes.report_names(same_day_reports(11), ZoneInfo(FIXTURE_TIMEZONE))
+    names = report_names(same_day_reports(11), ZoneInfo(FIXTURE_TIMEZONE))
     offered = {
         "result-k": facts(report="report-11", order=11),
         "result-b": facts(report="report-2", order=2),

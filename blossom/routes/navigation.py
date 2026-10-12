@@ -26,6 +26,10 @@ from starlette.datastructures import URL
 DETAILS: Final = "/student/assignments"
 WEEK_PAGE: Final = "/student/due-this-week"
 FAMILY_PAGE: Final = "/parent"
+GRADES: Final = "/parent/grades"
+HER_GRADES: Final = "/student/grades"
+CLASS_AT: Final = "{base}/classes/{class_id}/terms/{n}"
+"""Class details of a class in the term at place ``n`` of its year, under either grade tree."""
 UNRESERVED: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 """The characters a path segment may carry as they are; every other one is escaped."""
 QUERY_KEPT: Final = frozenset({ord(kept) for kept in UNRESERVED | set("!$%&()*+,/:;=?@[\\]^`{|}")})
