@@ -33,6 +33,7 @@ from blossom.stores.gradebook import (
     VIEW_TABLES,
     ClassTermDeleted,
     DeletePreview,
+    HomeworkClassConnected,
     HomeworkClassRemoved,
     HomeworkLink,
     HomeworkLinkChanged,
@@ -1383,6 +1384,112 @@ def test_a_grade_value_that_cannot_be_decoded_stops_the_write_with_nothing_writt
 
     assert raised == [(GradeValueUndecodable, None, None)] * 4
     assert not open_transaction
+    assert whole_file(path) == before
+
+
+SPELLED = "assignment-spelled"
+"""Homework whose class name is the text ``b'Biology'``, quotes and all."""
+AS_BYTES = "assignment-bytes"
+"""Homework whose class name a test rewrites by hand as the bytes ``b"Biology"``."""
+
+
+def with_a_name_spelled_like_bytes(path: pathlib.Path) -> tuple[ProjectStateStore, list[str]]:
+    """An open store with Wren's report saved and two more homework rows put on record: one
+    under the class name ``b'Biology'``, as text, which a parent's answer connects to her
+    Biology class, and one under Biology. The store and her result IDs."""
+    store, results = linking(path)
+    spelled = "b'Biology'"
+    store.put_on_record([homework_named(spelled, SPELLED), homework_named("Biology", AS_BYTES)], {})
+    connected = store.connect_homework_class(
+        YEAR, spelled, shown=None, chosen=capture_class(store, WREN), role="parent"
+    )
+    assert isinstance(connected, HomeworkClassConnected), connected
+    return store, results
+
+
+def class_name_as_bytes(store: ProjectStateStore) -> None:
+    """The second row's class name rewritten through SQL as the bytes of Biology, as no write
+    of Blossom's stores one: the file then holds a blob where it held text."""
+    with store._lock, store._connection:
+        store._connection.execute(
+            "UPDATE assignments SET course = CAST(course AS BLOB) WHERE assignment_id = ?",
+            (AS_BYTES,),
+        )
+    held = store._connection.execute(
+        "SELECT typeof(course), course FROM assignments WHERE assignment_id = ?", (AS_BYTES,)
+    ).fetchall()
+    assert held == [("blob", b"Biology")]
+
+
+def test_a_class_name_stored_as_bytes_is_not_linked_though_its_text_form_would_connect(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A parent connected the name ``b'Biology'`` to her Biology class, and a homework row's
+    class name is rewritten by hand as the bytes ``b"Biology"``. A link to that row is answered
+    that the class name changed; it raises nothing, and the whole file is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, results = with_a_name_spelled_like_bytes(path)
+    class_name_as_bytes(store)
+    before = whole_file(path)
+
+    outcome = decide(store, results[0], AS_BYTES, "link")
+    written = states(store)
+    open_transaction = store._connection.in_transaction
+    store.close()
+
+    assert outcome == HomeworkLinkClassNameChanged()
+    assert written == {}
+    assert not open_transaction
+    assert whole_file(path) == before
+
+
+def test_the_name_spelled_like_bytes_links_and_the_row_stored_as_bytes_is_kept_apart(
+    tmp_path: pathlib.Path,
+) -> None:
+    """With one row's class name rewritten by hand as bytes: homework whose class name is the
+    connected text ``b'Biology'`` is linked, and the row stored as bytes is kept apart as before.
+    That decision's statements read the homework row once and no class name's answers."""
+    path = tmp_path / "blossom.sqlite3"
+    store, results = with_a_name_spelled_like_bytes(path)
+    class_name_as_bytes(store)
+    asked: list[str] = []
+
+    linked = decide(store, results[0], SPELLED, "link")
+    revision = revision_of(store, results[1])
+    store._connection.set_trace_callback(asked.append)
+    apart = store.decide_homework_link(
+        results[1], AS_BYTES, decision="apart", revision=revision, role="parent"
+    )
+    store._connection.set_trace_callback(None)
+    written = states(store)
+    store.close()
+
+    assert (linked, apart) == (HomeworkLinkWritten(), HomeworkLinkWritten())
+    assert written == {(results[0], SPELLED): "confirmed", (results[1], AS_BYTES): "rejected"}
+    assert len([one for one in asked if one.startswith("SELECT course FROM assignments")]) == 1
+    assert not [one for one in asked if "grade_homework_classes" in one]
+
+
+def test_a_link_on_record_stands_and_a_stale_link_is_stale_once_the_name_is_stored_as_bytes(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A row is linked while its class name is text, and the name is then rewritten by hand as
+    bytes. The same link sent again stands, at the revision and one behind it; a link of
+    another result to that row a revision behind is answered as changed. The file is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, results = with_a_name_spelled_like_bytes(path)
+    assert decide(store, results[0], AS_BYTES, "link") == HomeworkLinkWritten()
+    class_name_as_bytes(store)
+    before = whole_file(path)
+
+    outcomes = [
+        decide(store, results[0], AS_BYTES, "link"),
+        decide(store, results[0], AS_BYTES, "link", behind=1),
+        decide(store, results[1], AS_BYTES, "link", behind=1),
+    ]
+    store.close()
+
+    assert outcomes == [HomeworkLinkStood(), HomeworkLinkStood(), HomeworkLinkChanged()]
     assert whole_file(path) == before
 
 

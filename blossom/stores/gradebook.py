@@ -2623,7 +2623,9 @@ class GradebookRecords:
                 course = self._connection.execute(HOMEWORK_COURSE, (assignment_id,)).fetchone()
                 if course is None and (decision == "link" or now is None):
                     return HomeworkLinkHomeworkNotOnRecord()
-                if decision == "link" and not self._connects(student_id, str(course[0]), class_id):
+                if decision == "link" and not (
+                    isinstance(course[0], str) and self._connects(student_id, course[0], class_id)
+                ):
                     return HomeworkLinkClassNameChanged()
                 at = self._stamp()
                 if decision == "link":
