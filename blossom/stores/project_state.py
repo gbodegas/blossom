@@ -866,13 +866,17 @@ class ProjectStateStore(
         # The index that holds a result to one confirmed homework link, in a step of its
         # own, so a file that refuses it keeps every table made above. One refusal lets the
         # start go on without the index: an integrity error from this statement, on a file
-        # found to hold two confirmed links for one result. The rows stay as they are.
+        # found to hold two confirmed links for one result. The rows stay as they are, and
+        # the record is written once the refusal is behind, with no error being handled.
+        made = True
         try:
             with self._writing():
                 self._create_homework_links_index()
         except sqlite3.IntegrityError:
             if not self._links_twice_confirmed():
                 raise
+            made = False
+        if not made:
             logger.warning(LINKS_INDEX_NOT_MADE)
 
     def _upgrade_date_claims(self) -> None:

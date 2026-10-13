@@ -55,7 +55,18 @@ from blossom.grades.review import (
 )
 from blossom.grades.text_reader import read_grade_report
 from blossom.hand_in import TURNED_IN, HandInSaved
-from blossom.intake import UPDATE, Kept, Pick, Reading, by_hand, keep, read_text
+from blossom.intake import (
+    NEW_WORK,
+    UPDATE,
+    Kept,
+    Pick,
+    Reading,
+    by_hand,
+    changes_for,
+    keep,
+    read_text,
+)
+from blossom.intake import IdentityAnswer as WhichHomework
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
 from blossom.reconciliation import SourceChannel
 from blossom.settings import PACKAGE_ROOT
@@ -1588,6 +1599,12 @@ LAB_REPORT = "Homework for Wren\n- 09/07/2026 - Monday\nBiology - Due: Lab repor
 """A school page's card for Biology homework due on a Monday."""
 LAB_REPORT_A_WEEK_ON = "Homework for Wren\n- 09/14/2026 - Monday\nBiology - Due: Lab report:\n"
 """The same class and title, due a week after the first card's day."""
+LAB_REPORT_TWO_DAYS_ON = "Homework for Wren\n- 09/09/2026 - Wednesday\nBiology - Due: Lab report:\n"
+"""The same class and title, due under a week after the first card's day."""
+LAB_REPORT_ON_NO_ROW_S_DAY = (
+    "Homework for Wren\n- 09/22/2026 - Tuesday\nBiology - Due: Lab report:\n"
+)
+"""The same class and title, due a day that is neither the first card's nor a week after it."""
 CELL_MODEL = "Homework for Wren\n- 09/16/2026 - Wednesday\nBiology - Due: Cell model:\n"
 LAB_WRITE_UP = (
     "Homework for Wren\n- 09/02/2026 - Wednesday\n"
@@ -1725,16 +1742,26 @@ def test_a_card_chosen_as_linked_homework_under_another_name_changes_no_gradeboo
     assert after == before
 
 
-def test_linked_homework_moved_to_a_pasted_date_changes_no_gradebook_table(
-    tmp_path: pathlib.Path,
+def typed_lab_report(due: date) -> tuple[Reading, ...]:
+    """The lab report as a parent types it, due ``due``."""
+    return (by_hand("Biology", "Lab report", due, None, AssignmentKind.HOMEWORK, now=PASTED_AT),)
+
+
+@pytest.mark.parametrize("given", ["a paste", "a parent's typed entry"])
+def test_linked_homework_moved_to_a_later_date_changes_no_gradebook_table(
+    given: str, tmp_path: pathlib.Path
 ) -> None:
-    """A paste gives the linked lab report a day a week on, and a parent answers that the saved
-    work moved: the same row is due the pasted day. Every gradebook table is as it was."""
+    """A paste, or a parent's typed entry, gives the linked lab report a day a week on, and a
+    parent answers that the saved work moved: the same row is due that day. Every gradebook
+    table is as it was."""
     path = tmp_path / "blossom.sqlite3"
     store, lab = two_links_on_record(path)
     before, rows = gradebook_snapshot(path), homework_rows(store)
+    a_week_on = (
+        pasted(LAB_REPORT_A_WEEK_ON) if given == "a paste" else typed_lab_report(date(2026, 9, 14))
+    )
 
-    kept = keep(pasted(LAB_REPORT_A_WEEK_ON), store, occurrences={0: UPDATE})
+    kept = keep(a_week_on, store, occurrences={0: UPDATE})
     moved = homework_rows(store)
     after = gradebook_snapshot(path)
     store.close()
@@ -1808,3 +1835,93 @@ def test_a_result_answered_the_same_assignment_keeps_its_id_and_its_link(
     assert asked in results
     assert links == (HomeworkLink(asked, "assignment-named", "confirmed"),)
     assert after == rows
+
+
+def dates_said(store: ProjectStateStore, assignment_id: str) -> list[str]:
+    """Each day a claim on record gives for the homework's due date, in the order made."""
+    return [claim.asserted_value for claim in store.deadline_records(assignment_id)]
+
+
+def test_a_pasted_date_under_a_week_from_linked_homework_s_changes_no_gradebook_table(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A paste gives the linked lab report a day two days on. It is kept with no question
+    answered: the row keeps its ID and saved day, and the pasted day is a claim beside it.
+    Every gradebook table is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, lab = two_links_on_record(path)
+    before, rows = gradebook_snapshot(path), homework_rows(store)
+    said = dates_said(store, lab)
+
+    kept = keep(pasted(LAB_REPORT_TWO_DAYS_ON), store)
+    now_said = dates_said(store, lab)
+    now_rows = homework_rows(store)
+    after = gradebook_snapshot(path)
+    store.close()
+
+    assert isinstance(kept, Kept), kept
+    assert kept.added == 0
+    assert (said, now_said) == (["2026-09-07"], ["2026-09-07", "2026-09-09"])
+    assert now_rows == rows
+    assert len(link_rows_in(before)) == 2
+    assert after == before
+
+
+def test_later_work_kept_as_new_homework_has_its_own_id_and_changes_no_gradebook_table(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A paste gives the linked lab report's class and title a day a week on, and a parent
+    answers that it is new work: a second row with its own ID is on record, the linked row is
+    as it was, and every gradebook table is as it was, so no link row names the new work."""
+    path = tmp_path / "blossom.sqlite3"
+    store, lab = two_links_on_record(path)
+    before, rows = gradebook_snapshot(path), homework_rows(store)
+
+    kept = keep(pasted(LAB_REPORT_A_WEEK_ON), store, occurrences={0: NEW_WORK})
+    now_rows = homework_rows(store)
+    added = [row for name, row in now_rows.items() if name not in rows]
+    after = gradebook_snapshot(path)
+    store.close()
+
+    assert kept == Kept(added=1, updated=0, unchanged=0)
+    assert added == [("Biology", "Lab report", date(2026, 9, 14))]
+    assert now_rows[lab] == rows[lab]
+    assert len(link_rows_in(before)) == 2
+    assert after == before
+
+
+def test_a_card_answered_as_the_linked_one_of_two_rows_changes_no_gradebook_table(
+    tmp_path: pathlib.Path,
+) -> None:
+    """With a second lab report on record as new work, a paste gives a day that is neither
+    row's. The card asks which homework, a parent answers the linked row, and the pasted day
+    is a claim on that row; no row is added, and every gradebook table is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, lab = two_links_on_record(path)
+    assert keep(pasted(LAB_REPORT_A_WEEK_ON), store, occurrences={0: NEW_WORK}) == Kept(
+        added=1, updated=0, unchanged=0
+    )
+    before, rows = gradebook_snapshot(path), homework_rows(store)
+    card = pasted(LAB_REPORT_ON_NO_ROW_S_DAY)
+    (asked,) = changes_for(card, store)
+
+    kept = keep(
+        card,
+        store,
+        identities={0: WhichHomework(lab, asked.identity_shown, asked.identity_basis)},
+    )
+    now_said = dates_said(store, lab)
+    now_rows = homework_rows(store)
+    after = gradebook_snapshot(path)
+    store.close()
+
+    assert asked.identity_asked
+    assert sorted(asked.identity_shown) == sorted(
+        name for name, row in rows.items() if row[1] == "Lab report"
+    )
+    assert lab in asked.identity_shown
+    assert isinstance(kept, Kept), kept
+    assert now_said == ["2026-09-07", "2026-09-22"]
+    assert now_rows == rows
+    assert len(link_rows_in(before)) == 2
+    assert after == before

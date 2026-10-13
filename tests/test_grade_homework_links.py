@@ -9,11 +9,13 @@ does not show that a write of Blossom's leaves a file that way. The files are sy
 fixture report, saved through the gradebook's own save, and homework rows made for the test.
 """
 
+import dataclasses
 import itertools
 import logging
 import pathlib
 import random
 import sqlite3
+import sys
 from collections.abc import Callable
 from datetime import UTC
 
@@ -246,7 +248,7 @@ def test_a_file_holding_link_rows_keeps_the_definition_when_opened_again(
     assert start_records(caplog) == []
 
 
-def test_a_file_from_before_the_link_table_gains_the_table_and_the_index(
+def test_a_file_with_no_link_table_gains_the_table_and_the_index(
     tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The link table is dropped by hand, its index going with it; the next open makes both
@@ -308,9 +310,37 @@ def test_a_start_goes_on_without_the_index_when_two_confirmed_rows_name_one_resu
     assert index_stored(path) == []
 
 
+def test_the_start_s_record_is_written_while_no_error_is_being_handled(
+    tmp_path: pathlib.Path,
+) -> None:
+    """On the file changed by hand (the index dropped, two confirmed rows stored for one
+    result), a handler on the store's logger notes the error being handled when the record
+    reaches it: none, so a handler that failed would have no refusal of the file to print."""
+    path = tmp_path / "blossom.sqlite3"
+    damaged(path)
+    handled: list[tuple[str, type[BaseException] | None]] = []
+
+    class Noting(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            handled.append((record.getMessage(), sys.exc_info()[0]))
+
+    noting = Noting(logging.DEBUG)
+    logger = logging.getLogger(STARTS)
+    logger.addHandler(noting)
+    try:
+        by_open(path)
+    finally:
+        logger.removeHandler(noting)
+
+    assert handled == [(NOT_MADE, None)]
+
+
 def test_each_start_on_that_file_writes_the_record_once_and_changes_nothing(
     tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """On the file changed by hand (the index dropped, two confirmed rows stored for one
+    result), each of two starts writes the one record, leaves the link rows as stored and
+    leaves the file without the index."""
     path = tmp_path / "blossom.sqlite3"
     damaged(path)
     rows = link_rows(path)
@@ -348,8 +378,9 @@ def test_the_gradebook_s_tables_are_made_and_kept_though_the_index_is_refused(
 def test_the_store_reads_and_writes_after_a_start_without_the_index(
     tmp_path: pathlib.Path,
 ) -> None:
-    """After that start homework is put on record, her update is stored and undone, and a
-    second report is saved; the read of her links raises the conflict the two rows hold."""
+    """On the file changed by hand (the index dropped, two confirmed rows stored for one
+    result), after the start: homework is put on record, her update is stored and undone, a
+    second report is saved, and the read of her links raises the conflict those rows hold."""
     path = tmp_path / "blossom.sqlite3"
     damaged(path)
     rows = link_rows(path)
@@ -444,11 +475,17 @@ def test_a_start_goes_on_when_the_two_rows_are_under_another_student_id(
 def test_a_refusal_of_the_index_with_no_such_rows_stops_the_start(
     tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The step that runs the index statement is replaced by one that raises an integrity
-    error, on a file whose link rows hold no result confirmed twice: the open raises it."""
+    """Three rows are stored by hand for one result: hers confirmed, hers kept apart, and one
+    confirmed under another student ID, so no student ID has it confirmed twice. With the step
+    that runs the index statement replaced by one raising an integrity error, the open raises it."""
     path = tmp_path / "blossom.sqlite3"
     student, results = with_a_report(path)
-    by_hand(path, confirmed(student, results[0], "assignment-one"))
+    by_hand(
+        path,
+        confirmed(student, results[0], "assignment-one"),
+        kept_apart(student, results[0], "assignment-two"),
+        confirmed(SOMEONE_ELSE, results[0], "assignment-three"),
+    )
     refusal = sqlite3.IntegrityError("a refusal made by the test")
 
     def refused(_: ProjectStateStore) -> None:
@@ -645,8 +682,9 @@ def test_the_read_refuses_confirmed_rows_that_name_one_result(
 def test_a_link_id_stored_as_bytes_stops_the_read_before_any_count(
     column: str, conflict: bool, tmp_path: pathlib.Path
 ) -> None:
-    """One ID of one row is rewritten by hand as bytes, alone and beside two confirmed rows
-    for one result: the read raises the decoding error itself, never the conflict error."""
+    """The index is dropped by hand and three rows are stored, one with an ID rewritten as
+    bytes, alone and beside two confirmed rows for one result: the read raises the decoding
+    error itself, never the conflict error."""
     path = tmp_path / "blossom.sqlite3"
     student, results = with_a_report(path)
     by_hand(
@@ -815,12 +853,14 @@ def test_a_decision_that_changes_the_record_is_written_and_raises_the_revision(
     ("earlier", "decision"),
     [("confirmed", "link"), ("kept apart", "apart"), ("no decision", "automatic")],
 )
-@pytest.mark.parametrize("behind", [0, 1], ids=["the revision", "a revision behind"])
-def test_a_decision_already_on_record_stands_whatever_revision_it_carries(
+@pytest.mark.parametrize(
+    "behind", [0, 1, -1], ids=["the revision", "a revision behind", "a revision ahead"]
+)
+def test_a_decision_already_on_record_stands_at_the_revision_one_behind_and_one_ahead(
     earlier: str, decision: LinkDecision, behind: int, tmp_path: pathlib.Path
 ) -> None:
-    """A decision the record already holds, sent again with the revision or one behind it,
-    stands: nothing in the file changes, the revision included."""
+    """A decision the record already holds, sent again with the revision, one behind it or
+    one ahead of it, stands: nothing in the file changes, the revision included."""
     path = tmp_path / "blossom.sqlite3"
     store, results = linking(path)
     pair = (results[0], BIOLOGY[0])
@@ -967,8 +1007,9 @@ def link_rows_of(store: ProjectStateStore) -> list[tuple[object, ...]]:
 def test_a_link_needs_the_homework_s_class_name_connected_to_the_result_s_class(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Homework of a class name that is no class of hers can't be linked and can be kept apart.
-    Once a parent removes the Biology name's connection, Biology homework can't be linked."""
+    """Homework of a class name that is no class of hers can't be linked, can be kept apart,
+    and still can't be linked once it is kept apart. Once a parent removes the Biology name's
+    connection, Biology homework can't be linked."""
     path = tmp_path / "blossom.sqlite3"
     store, results = linking(path)
     before = whole_file(path)
@@ -976,6 +1017,9 @@ def test_a_link_needs_the_homework_s_class_name_connected_to_the_result_s_class(
     unconnected = decide(store, results[0], ART, "link")
     untouched = whole_file(path) == before
     apart = decide(store, results[0], ART, "apart")
+    kept_apart_file = whole_file(path)
+    still_unconnected = decide(store, results[0], ART, "link")
+    still_apart = (states(store), whole_file(path) == kept_apart_file)
     removed = store.connect_homework_class(
         YEAR, "Biology", shown=None, chosen=UNCONNECTED, role="parent"
     )
@@ -985,6 +1029,8 @@ def test_a_link_needs_the_homework_s_class_name_connected_to_the_result_s_class(
 
     assert (unconnected, untouched) == (HomeworkLinkClassNameChanged(), True)
     assert apart == HomeworkLinkWritten()
+    assert still_unconnected == HomeworkLinkClassNameChanged()
+    assert still_apart == ({(results[0], ART): "rejected"}, True)
     assert removed == HomeworkClassRemoved()
     assert after_removal == HomeworkLinkClassNameChanged()
     assert written == {(results[0], ART): "rejected"}
@@ -1173,7 +1219,7 @@ def test_two_changes_leave_one_link_and_two_pairs_kept_apart_which_the_read_retu
     }
 
 
-def test_no_sequence_of_decisions_is_refused_by_the_file_or_confirms_a_result_twice(
+def test_one_sequence_of_300_decisions_is_never_refused_by_the_file_or_confirms_twice(
     tmp_path: pathlib.Path,
 ) -> None:
     """Three hundred decisions drawn from a fixed seed, over two results and three homework
@@ -1256,13 +1302,97 @@ def test_the_same_report_saved_again_keeps_each_result_s_id_and_its_link(
     assert after == rows
 
 
+def test_a_change_is_stale_a_revision_ahead_and_before_its_homework_is_looked_at(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A link sent one revision ahead of the record is answered as changed. So is a link or a
+    pair kept apart sent a revision behind that names homework on no record, or homework whose
+    class name doesn't connect: the revision is compared first. The file is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, results = linking(path)
+    assert decide(store, results[0], BIOLOGY[0], "link") == HomeworkLinkWritten()
+    before = whole_file(path)
+
+    ahead = decide(store, results[0], BIOLOGY[1], "link", behind=-1)
+    behind = [
+        decide(store, results[0], "assignment-on-no-record", "link", behind=1),
+        decide(store, results[0], "assignment-on-no-record", "apart", behind=1),
+        decide(store, results[0], ART, "link", behind=1),
+    ]
+    store.close()
+
+    assert ahead == HomeworkLinkChanged()
+    assert behind == [HomeworkLinkChanged()] * 3
+    assert whole_file(path) == before
+
+
+def test_removing_a_link_from_a_page_from_before_it_moved_stands_and_writes_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A result is linked to one homework and then to another, which sets the first pair
+    apart. "Remove link" for the first pair, sent with the first page's revision, stands: the
+    file is as it was, and the result is still linked to the second."""
+    path = tmp_path / "blossom.sqlite3"
+    store, results = linking(path)
+    page = revision_of(store, results[0])
+    assert decide(store, results[0], BIOLOGY[0], "link") == HomeworkLinkWritten()
+    assert decide(store, results[0], BIOLOGY[1], "link") == HomeworkLinkWritten()
+    before = whole_file(path)
+
+    outcome = store.decide_homework_link(
+        results[0], BIOLOGY[0], decision="apart", revision=page, role="parent"
+    )
+    after = (states(store), whole_file(path) == before)
+    store.close()
+
+    assert outcome == HomeworkLinkStood()
+    assert after == (
+        {(results[0], BIOLOGY[0]): "rejected", (results[0], BIOLOGY[1]): "confirmed"},
+        True,
+    )
+
+
+def test_a_grade_value_that_cannot_be_decoded_stops_the_write_with_nothing_written(
+    tmp_path: pathlib.Path,
+) -> None:
+    """With a link on record, a report's order is rewritten by hand as bytes. Each decision on
+    that class and term, the link that would stand included, then raises the decoding error
+    itself, nothing chained, and the file is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, results = linking(path)
+    assert decide(store, results[0], BIOLOGY[0], "link") == HomeworkLinkWritten()
+    with store._lock, store._connection:
+        store._connection.execute("UPDATE grade_reports SET acceptance_order = ?", (b"1",))
+    before = whole_file(path)
+    presses: list[tuple[str, str, LinkDecision]] = [
+        (results[0], BIOLOGY[0], "link"),
+        (results[0], BIOLOGY[1], "link"),
+        (results[0], BIOLOGY[0], "apart"),
+        (results[1], BIOLOGY[2], "automatic"),
+    ]
+    raised = []
+
+    for result, assignment, decision in presses:
+        with pytest.raises(GradeValueUndecodable) as refusal:
+            store.decide_homework_link(
+                result, assignment, decision=decision, revision=1, role="parent"
+            )
+        raised.append((type(refusal.value), refusal.value.__cause__, refusal.value.__context__))
+    open_transaction = store._connection.in_transaction
+    store.close()
+
+    assert raised == [(GradeValueUndecodable, None, None)] * 4
+    assert not open_transaction
+    assert whole_file(path) == before
+
+
 # ------------------------------------------------------------- the write and the index
 
 
 def test_with_the_index_a_start_made_a_write_is_decided_by_its_other_checks(
     tmp_path: pathlib.Path,
 ) -> None:
-    """On a file the application made, whose catalog holds the definition whole: a link is
+    """On a file the store's open made, whose catalog holds the definition whole: a link is
     written, the same link sent a revision behind stands, and a change sent a revision behind
     is answered as changed."""
     path = tmp_path / "blossom.sqlite3"
@@ -1335,6 +1465,16 @@ WRONG_INDEXES = {
         "CREATE UNIQUE INDEX grade_homework_links_one_homework\n"
         "ON grade_homework_links (student_id, result_id)"
     ),
+    "its line breaks written as spaces": (
+        "CREATE UNIQUE INDEX grade_homework_links_one_homework "
+        "ON grade_homework_links (student_id, result_id) "
+        "WHERE state = 'confirmed'"
+    ),
+    "one keyword in lower case": (
+        "CREATE UNIQUE INDEX grade_homework_links_one_homework\n"
+        "ON grade_homework_links (student_id, result_id)\n"
+        "where state = 'confirmed'"
+    ),
     "the same meaning in another spelling": (
         "create unique index grade_homework_links_one_homework "
         "on grade_homework_links(student_id,result_id) where state='confirmed'"
@@ -1352,19 +1492,24 @@ def with_decisions(path: pathlib.Path) -> tuple[ProjectStateStore, list[str]]:
     return store, results
 
 
-def test_no_decision_is_written_while_the_index_is_missing(tmp_path: pathlib.Path) -> None:
+def test_no_decision_is_written_while_the_index_is_missing(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """The index is dropped through the test's SQL while the store is open. Every decision is
     then answered that the required index is unavailable, one that would stand and one for a
-    result on no record included, and the file stays as the test left it, with no index."""
+    result on no record included; no record is logged, and the file stays as the test left it."""
     path = tmp_path / "blossom.sqlite3"
     store, results = with_decisions(path)
     by_hand(path, (DROP_INDEX, ()))
     before = whole_file(path)
 
-    outcomes = answers(store, results)
+    with caplog.at_level(logging.DEBUG):
+        outcomes = answers(store, results)
     store.close()
 
     assert outcomes == {RequiredIndexUnavailable()}
+    assert dataclasses.fields(RequiredIndexUnavailable) == ()
+    assert caplog.records == []
     assert whole_file(path) == before
     assert index_stored(path) == []
 
@@ -1404,7 +1549,9 @@ def test_no_decision_is_written_while_an_index_of_that_name_is_defined_otherwise
     assert written == HomeworkLinkWritten()
 
 
-def test_only_the_catalog_decides_whether_a_link_is_written(tmp_path: pathlib.Path) -> None:
+def test_the_index_check_reads_the_catalog_at_each_write_and_remembers_no_start(
+    tmp_path: pathlib.Path,
+) -> None:
     """The test's SQL drops the index while the store is open, and a link is refused. The
     test's SQL then makes the index again with the start's statement, with no restart, and the
     same press is written. The file gains no table for it."""
@@ -1539,7 +1686,7 @@ def test_the_write_refuses_two_confirmed_rows_for_one_result_once_its_index_chec
     assert whole_file(path) == before
 
 
-def test_a_link_to_other_homework_sets_the_first_pair_apart_first_on_a_file_with_no_index(
+def test_a_change_sets_the_first_pair_apart_first_once_its_index_check_is_replaced(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The index is dropped by hand and the store's check of it is replaced by the test with

@@ -6,9 +6,8 @@ acceptance carries so the delete finds exactly its own.
 The delete is one revision-checked grade write: it removes the class and term's reports,
 observations, row records, results, the homework links that name those results, acceptances and
 class-details actions, one statement per table, keeps her identity, years, terms, classes and
-aliases, and raises the revision. Its retry
-reads the class and term as they are: already deleted when they hold nothing, or a fresh
-preview, deleting nothing, after a newer import.
+aliases, and raises the revision. Its retry reads the class and term as they are: already
+deleted when they hold nothing, or a fresh preview, deleting nothing, after a newer import.
 
 A file whose acceptance table has no class and term gets them at its first start: each row is
 tied exactly to its report's class and term, or its capture's when it names no report, and a
