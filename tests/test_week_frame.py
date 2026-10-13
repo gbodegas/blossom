@@ -278,3 +278,39 @@ def test_the_homework_card_s_narrow_rule_is_pinned_and_names_every_date_confiden
     assert (
         'class="assignment detail confidence-{{ assignment.deadline_confidence|lower }}"' in details
     )
+
+
+PANELS_GIVE_WAY = (
+    ".panel.apart,\n.panel.assigned {\n"
+    "  margin-inline: min(0px, 13vw - 2.25rem);\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
+    "@media (max-width: 30rem) {\n"
+    "  .panel.apart,\n  .panel.assigned {\n"
+    "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
+)
+"""The rule that lets the panels of her week that hold homework give up side padding on a
+narrow screen with large text, pinned whole. Check her week in a browser at 320 px with text
+at 200% and at 1280 px, with a card outside the week shown, before changing it."""
+CARD_KEEPS_TO_ITS_PANEL = ".panel.apart .assignment {\n  margin-inline: 0;\n}\n"
+"""The rule that keeps the card outside the week shown on its panel's own line, pinned whole."""
+
+
+def test_the_narrow_rule_of_her_week_s_homework_panels_is_pinned_and_reaches_only_them() -> None:
+    """The panel around the card outside the week shown and the two lists of rows carry the
+    classes the rule names, and no other template writes a panel with either class."""
+    styles = (STATIC / "blossom.css").read_text(encoding="utf-8")
+    writers = {
+        page.name: text
+        for page in sorted(TEMPLATES.glob("*.html"))
+        if 'class="panel apart' in (text := page.read_text(encoding="utf-8"))
+        or 'class="panel assigned' in text
+    }
+
+    assert styles.count(PANELS_GIVE_WAY) == 1
+    assert styles.count(CARD_KEEPS_TO_ITS_PANEL) == 1
+    assert styles.count(".panel.assigned") == 2
+    assert styles.count(".panel.apart") == 4
+    assert sorted(writers) == ["student_due_this_week.html", "student_earlier_work.html"]
+    assert writers["student_due_this_week.html"].count('<section class="panel apart">') == 1
+    assert writers["student_due_this_week.html"].count('<section class="panel assigned">') == 1
+    assert writers["student_earlier_work.html"].count('class="panel assigned earlier-work"') == 1
