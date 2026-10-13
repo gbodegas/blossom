@@ -20,7 +20,7 @@ import sqlite3
 import sys
 import threading
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from datetime import date, time
 from time import monotonic
 from typing import Any
@@ -33,13 +33,21 @@ from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture
 from blossom.grades.identity import name_form_key
 from blossom.grades.projection import MadeCurrent, original_of
 from blossom.grades.review import GradeReportSaved, GradeValueUndecodable, MatchAnswer
+from blossom.grades.school_scores import Homework, Link, Result, ScoreAt, school_scores
 from blossom.grades.text_reader import read_grade_report
 from blossom.grades.wording import report_names, score_line, spoken_day
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
 from blossom.plans import PlanBlock
 from blossom.reconciliation import SourceChannel
-from blossom.routes.homework_scores import homework_of, read_grade_facts, scores_shown
+from blossom.routes.homework_scores import (
+    ScoreShown,
+    homework_of,
+    read_grade_facts,
+    read_score_facts,
+    results_read,
+    scores_shown,
+)
 from blossom.routes.navigation import (
     NEW_NOTE_PAGE,
     NOTE_ACTIONS,
@@ -53,6 +61,8 @@ from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
     UNCONNECTED,
     DeletePreview,
+    HomeworkLinkWritten,
+    LinkDecision,
     _cells,
     _copied,
     _month,
@@ -3346,3 +3356,739 @@ def test_each_decoder_reads_or_refuses_each_stored_value_of_one_fixed_set(name: 
     assert misread == []
     assert [at for at in refused if decoding.sound(CORPUS[at])] == []
     assert said <= {UNDECODABLE}
+
+
+RESULTS_ID = "school-results"
+"""The id of the details' gradebook heading when it lists several results, where a row's See
+the results link lands."""
+CONFLICT = "a homework page shows no school score: HomeworkLinksConflict"
+"""The one record a page read makes when two confirmed links name one result."""
+SEVERAL = re.compile(
+    r'<p class="effect">School results \((\d+)\)</p>\s*<p class="details-link">'
+    r'<a class="assignment-link" href="([^"]*)" aria-label="([^"]*)">See the results</a></p>'
+)
+"""The count of an assignment's results with the link under it, as each place writes them."""
+EACH_RESULT = re.compile(
+    r'<h3 class="update-heading"><span class="authored-text">([^<]*)</span></h3>\s*'
+    r'<p class="effect">(School score[^<]*)</p>\s*<p class="details-link">'
+    r'<a class="assignment-link" href="([^"]*)" aria-label="([^"]*)">Grade details</a></p>'
+)
+"""One of several results on the details: its title, its line, and its own link."""
+NOTEBOOK = "Lab Notebook"
+"""A homework title no result has, so only a link can show a score on it."""
+SECOND_TERM = IN_WEEK.replace("**T1**", "**T2**")
+NEWER_LOG = "| Seed Germination Log | 19.0    | 20.0    | 95.0    |"
+NEWER_LINE = "School score: 19.0 / 20.0 · 95.0%"
+LINK_ROW = "INSERT INTO grade_homework_links VALUES (?, ?, ?, 'confirmed', 'parent', ?)"
+LINKED_AT = "2026-08-19T12:00:00+00:00"
+DROP_LINKS_INDEX = "DROP INDEX grade_homework_links_one_homework"
+HER_PAGES = [HER_PAGE, f"/student/assignments/{LOG_ID}"]
+
+
+def parent_links(
+    client: TestClient,
+    class_id: str,
+    result_id: str,
+    assignment_id: str = LOG_ID,
+    *,
+    term: str = "T1",
+    decision: LinkDecision = "link",
+) -> None:
+    """A parent's decision about a result and a homework, made by the store's own write."""
+    store = store_of(client)
+    preview = store.delete_preview(class_id, term)
+    assert isinstance(preview, DeletePreview)
+    assert preview.revision is not None
+    outcome = store.decide_homework_link(
+        result_id, assignment_id, decision=decision, revision=preview.revision, role="parent"
+    )
+    assert isinstance(outcome, HomeworkLinkWritten), outcome
+
+
+def several(fragment: str) -> Shown:
+    """Each count of results in a piece of a page, with its link's address and name."""
+    return [
+        (count, html.unescape(href), html.unescape(name))
+        for count, href, name in SEVERAL.findall(fragment)
+    ]
+
+
+def details_address(fragment: str) -> str:
+    """The address of the Details link in a card or a row."""
+    found = re.search(r'href="([^"]*)" aria-label="Details: ', fragment)
+    assert found is not None
+    return html.unescape(found.group(1))
+
+
+def as_rendered(client: TestClient, address: str) -> str:
+    """A page with the fields each render mints left blank, so two renders compare equal."""
+    answer = client.get(address, headers=PAGE_HEADERS)
+    assert answer.status_code == 200
+    page = without_minted_fields(answer.text)
+    return re.sub(r'(name="request_id" value=")[0-9a-f]{32}', r"\1", page)
+
+
+def conflicting(client: TestClient, result_id: str) -> None:
+    """The file changed by hand: the links index dropped, and two confirmed rows stored that
+    name ``result_id``, one for the log's homework and one for homework not on record."""
+    store = store_of(client)
+    stored(store, DROP_LINKS_INDEX)
+    for assignment_id in (LOG_ID, "assignment-not-on-record"):
+        stored(store, LINK_ROW, store.student_id(), result_id, assignment_id, LINKED_AT)
+
+
+def test_with_no_link_on_record_each_place_writes_its_line_and_link_in_these_exact_bytes() -> None:
+    """A card, the card outside the week shown, the rows due later, active and done, the
+    earlier-work rows and the details: each writes the text below, spaces and line breaks
+    included, and the page without it is the page with no class on record."""
+    rows = {LOG_ID: LOG, DIAGRAM_ID: DIAGRAM, PRACTICE_ID: PRACTICE, OSMOSIS_ID: OSMOSIS}
+    lines = {
+        LOG: LINE,
+        DIAGRAM: DIAGRAM_LINE,
+        PRACTICE: "School score: 27.0 / 30.0 · 90.0%",
+        OSMOSIS: "School score: 31.0 / 40.0 · 77.5%",
+    }
+    apart = f"{HER_PAGE}?week=2026-09-07&change={LOG_ID}"
+    addresses = [HER_PAGE, apart, f"/student/assignments/{LOG_ID}"]
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [
+                homework(),
+                homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27), assigned=date(2026, 8, 18)),
+                homework(PRACTICE_ID, PRACTICE, date(2026, 8, 12)),
+                homework(OSMOSIS_ID, OSMOSIS, date(2026, 8, 1)),
+            ],
+            {},
+        )
+        bare = [as_rendered(client, address) for address in addresses]
+        class_id = with_report(client)
+        whole = [as_rendered(client, address) for address in addresses]
+        ids = {title: result_named(client, class_id, title) for title in rows.values()}
+        reported(store, "done", LOG_ID)
+        reported(store, "done", DIAGRAM_ID)
+        whole_done = as_rendered(client, HER_PAGE)
+        links = as_stored(store, "grade_homework_links")
+        preview = store.delete_preview(class_id, "T1")
+        assert isinstance(preview, DeletePreview)
+        store.delete_class_term(class_id, "T1", revision=preview.revision, role="parent")
+        bare_done = as_rendered(client, HER_PAGE)
+
+    def written(title: str, indent: int) -> str:
+        pad = " " * indent
+        return (
+            f'\n{pad}<p class="effect">{lines[title]}</p>'
+            f'\n{pad}<p class="details-link"><a class="assignment-link" '
+            f'href="{link_to(class_id, ids[title])}" '
+            f'aria-label="Grade details: {title}, {BIOLOGY}">Grade details</a></p>'
+        )
+
+    week = [written(LOG, 6), written(DIAGRAM, 12), written(PRACTICE, 2), written(OSMOSIS, 2)]
+    done = [written(LOG, 6), written(DIAGRAM, 16), written(PRACTICE, 2), written(OSMOSIS, 2)]
+    section = (
+        f'\n    <section>\n      <h2 class="update-heading">{HEADING}</h2>{written(LOG, 6)}'
+        "\n    </section>"
+    )
+    assert links == []
+    for page, without, pieces in (
+        (whole[0], bare[0], week),
+        (whole[1], bare[1], [written(LOG, 6), written(PRACTICE, 2), written(OSMOSIS, 2)]),
+        (whole[2], bare[2], [section]),
+        (whole_done, bare_done, done),
+    ):
+        for piece in pieces:
+            assert page.count(piece) == 1, piece
+            page = page.replace(piece, "")
+        assert page == without
+
+
+def test_a_link_of_the_pair_the_rules_already_show_changes_no_byte_of_her_pages() -> None:
+    """Her week and the details read the same with the one result standing by the rules and
+    standing by a parent's link."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        by_the_rules = [as_rendered(client, address) for address in HER_PAGES]
+        parent_links(client, class_id, result_named(client, class_id, LOG))
+        rows = as_stored(store_of(client), "grade_homework_links")
+        by_a_link = [as_rendered(client, address) for address in HER_PAGES]
+
+    assert len(rows) == 1
+    assert [len(scores(page)) for page in by_the_rules] == [1, 1]
+    assert by_a_link == by_the_rules
+
+
+def test_each_place_shows_the_count_of_an_assignment_s_results_and_one_way_to_them() -> None:
+    """An active card, a Done card, the card outside the week shown, the rows due later, active
+    and done, and the earlier-work rows, shown and folded, each for an assignment linked to a
+    result in each of two terms. The link goes to the row's own details, at the results."""
+    rows = {LOG_ID: LOG, DIAGRAM_ID: DIAGRAM, PRACTICE_ID: PRACTICE, OSMOSIS_ID: OSMOSIS}
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [
+                homework(),
+                homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27), assigned=date(2026, 8, 18)),
+                homework(PRACTICE_ID, PRACTICE, date(2026, 8, 12)),
+                homework(OSMOSIS_ID, OSMOSIS, date(2026, 8, 1)),
+            ],
+            {},
+        )
+        class_id = with_report(client)
+        with_report(client, SECOND_TERM)
+        unlinked = scores(page_of(client)) + several(page_of(client))
+        for assignment_id, title in rows.items():
+            for term in ("T1", "T2"):
+                result_id = result_named(client, class_id, title, term)
+                parent_links(client, class_id, result_id, assignment_id, term=term)
+        week = page_of(client)
+        apart = page_of(client, week="2026-09-07", change=LOG_ID)
+        reported(store, "done", LOG_ID)
+        reported(store, "done", DIAGRAM_ID)
+        done_week = page_of(client)
+
+    later, done_later = (
+        page[page.index('<section class="panel assigned">') :] for page in (week, done_week)
+    )
+    outside = apart[apart.index("<h2>Outside the week shown</h2>") :]
+    fold = week[week.index('<details class="steps earlier-more"') :]
+    places = {
+        "an active card": (card_for(week, LOG_ID), LOG),
+        "the card outside the week shown": (card_for(outside, LOG_ID), LOG),
+        "a Done card": (card_for(done_week, LOG_ID), LOG),
+        "a row due later": (card_for(later, DIAGRAM_ID), DIAGRAM),
+        "a done row due later": (card_for(done_later, DIAGRAM_ID), DIAGRAM),
+        "an earlier-work row": (earlier_row(week, PRACTICE), PRACTICE),
+        "a folded earlier-work row": (earlier_row(fold, OSMOSIS), OSMOSIS),
+    }
+    assert unlinked == []
+    for place, (fragment, title) in places.items():
+        landing = f"{details_address(fragment)}#{RESULTS_ID}"
+        assert several(fragment) == [("2", landing, f"See the results: {title}, {BIOLOGY}")], place
+        assert "School score" not in fragment, place
+        assert "Grade details" not in fragment, place
+    assert len(several(week)) == 4
+    assert scores(week) == []
+
+
+@pytest.mark.parametrize(
+    ("reader", "tree"), [("her", "student"), ("parent", "parent"), ("open", "student")]
+)
+def test_the_details_list_each_result_with_its_title_its_line_and_its_own_link(
+    reader: str, tree: str, tmp_path: pathlib.Path
+) -> None:
+    """Three results linked to one assignment, two in one term and one in the next: they come
+    by the term's place and then in class details' order, each line is class details' line,
+    each link goes to its own term on the reader's tree, no word says who chose them, and the
+    section holds no form and no button."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store_of(client).put_on_record([homework(title=NOTEBOOK)], {})
+        class_id = with_report(client)
+        with_report(client, SECOND_TERM.replace(LOG_ROW, NEWER_LOG))
+        first, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        second = result_named(client, class_id, LOG, "T2")
+        for result_id, term in ((second, "T2"), (first, "T1"), (diagram, "T1")):
+            parent_links(client, class_id, result_id, term=term)
+        details = details_of(client)
+        card = card_for(page_of(client), LOG_ID)
+        pages = [class_details(client, class_id, n, tree) for n in (1, 2)]
+
+    heading = f'<h2 class="update-heading" id="{RESULTS_ID}" tabindex="-1">{HEADING}</h2>'
+    section = details[details.index(heading) :]
+    section = section[: section.index("</section>")]
+    listed = [
+        tuple(html.unescape(part) for part in found) for found in EACH_RESULT.findall(section)
+    ]
+    assert details.count(heading) == 1
+    assert listed == [
+        (
+            DIAGRAM,
+            DIAGRAM_LINE,
+            link_to(class_id, diagram, 1, tree),
+            f"Grade details: {DIAGRAM}, {BIOLOGY}",
+        ),
+        (LOG, LINE, link_to(class_id, first, 1, tree), f"Grade details: {LOG}, {BIOLOGY}"),
+        (LOG, NEWER_LINE, link_to(class_id, second, 2, tree), f"Grade details: {LOG}, {BIOLOGY}"),
+    ]
+    assert pages[0].index(f'id="{diagram}"') < pages[0].index(f'id="{first}"')
+    assert [line for _, line, _, _ in listed] == [
+        line_on_class_details(pages[0], diagram),
+        line_on_class_details(pages[0], first),
+        line_on_class_details(pages[1], second),
+    ]
+    assert len(scores(section)) == 3
+    assert [count for count, _, _ in several(card)] == ["3"]
+    said = re.sub(r"<[^>]*>", " ", section).lower()
+    assert not [word for word in ("link", "match", "parent", "chose") if word in said]
+    assert "<form" not in section
+    assert "<button" not in section
+
+
+def test_the_count_is_of_results_whose_line_shows_and_one_shows_as_one_result_does() -> None:
+    """Two results linked to one assignment. While a newer report gives one of them no points
+    her pages read as for the one result, and the link row stays as stored; points reported
+    again bring the count back."""
+    no_points = IN_WEEK.replace(LOG_ROW, "| Seed Germination Log |         | 20.0    | 90.0    |")
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(title=NOTEBOOK)], {})
+        class_id = with_report(client)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        parent_links(client, class_id, log)
+        parent_links(client, class_id, diagram)
+        rows = as_stored(store, "grade_homework_links")
+        both = several(card_for(page_of(client), LOG_ID))
+        with_report(client, no_points)
+        one = [on_card(client), scores(details_of(client))]
+        counted = several(page_of(client)) + several(details_of(client))
+        titled = EACH_RESULT.findall(details_of(client))
+        rows_then = as_stored(store, "grade_homework_links")
+        class_page = class_details(client, class_id)
+        with_report(client, IN_WEEK.replace(LOG_ROW, NEWER_LOG))
+        again = several(card_for(page_of(client), LOG_ID))
+
+    line = line_on_class_details(class_page, diagram)
+    expected = [(line, link_to(class_id, diagram), f"Grade details: {NOTEBOOK}, {BIOLOGY}")]
+    assert [count for count, _, _ in both] == ["2"]
+    assert line.startswith(DIAGRAM_LINE)
+    assert one == [expected, expected]
+    assert counted == []
+    assert titled == []
+    assert rows_then == rows
+    assert line_on_class_details(class_page, log).startswith("School score: blank / 20.0")
+    assert [count for count, _, _ in again] == ["2"]
+
+
+def test_a_linked_result_shows_whatever_the_title_and_dates_say_and_follows_its_school_value() -> (
+    None
+):
+    """Homework with another title and no due date, linked to the log's result: the card and the
+    details show class details' line for it, a newer report's changed score included. A
+    complete report that stops showing the result takes the line away, and one that shows it
+    again brings it back. The link row is as stored throughout."""
+    gone = "\n".join(line for line in IN_WEEK.split("\n") if LOG not in line)
+    newer = IN_WEEK.replace(LOG_ROW, NEWER_LOG)
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(title=NOTEBOOK, on=None)], {})
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        unlinked = on_card(client)
+        parent_links(client, class_id, result_id)
+        rows = as_stored(store, "grade_homework_links")
+        linked = [on_card(client), scores(details_of(client))]
+        with_report(client, newer)
+        changed = on_card(client)
+        newer_class_line = line_on_class_details(class_details(client, class_id), result_id)
+        with_report(client, gone, complete=True)
+        not_shown = [on_card(client), scores(details_of(client))]
+        still_on_class_details = class_details(client, class_id)
+        with_report(client, newer.replace("| 7.0 ", "| 6.0 "), complete=True)
+        shown_again = on_card(client)
+        again_class_line = line_on_class_details(class_details(client, class_id), result_id)
+        rows_after = as_stored(store, "grade_homework_links")
+
+    expected = [(LINE, link_to(class_id, result_id), f"Grade details: {NOTEBOOK}, {BIOLOGY}")]
+    assert unlinked == []
+    assert linked == [expected, expected]
+    assert [line for line, _, _ in changed] == [newer_class_line]
+    assert newer_class_line.startswith(NEWER_LINE)
+    assert not_shown == [[], []]
+    assert f'id="{result_id}"' in still_on_class_details
+    assert [line for line, _, _ in shown_again] == [again_class_line]
+    assert rows_after == rows
+
+
+def test_a_link_shows_only_while_the_homework_s_class_name_connects_to_the_result_s_class() -> None:
+    """Homework under a name a parent connected to the class, linked to the log's result. The
+    connection removed, her pages show no score and the link row is as stored; connected
+    again, the line is back."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(title=NOTEBOOK, course="Life Science")], {})
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        store.connect_homework_class(
+            YEAR, "Life Science", shown=None, chosen=class_id, role="parent"
+        )
+        parent_links(client, class_id, result_id)
+        rows = as_stored(store, "grade_homework_links")
+        connected = on_card(client)
+        store.connect_homework_class(
+            YEAR, "Life Science", shown=class_id, chosen=UNCONNECTED, role="parent"
+        )
+        removed = [on_card(client), scores(details_of(client))]
+        rows_then = as_stored(store, "grade_homework_links")
+        store.connect_homework_class(
+            YEAR, "Life Science", shown=UNCONNECTED, chosen=class_id, role="parent"
+        )
+        again = on_card(client)
+
+    expected = [(LINE, link_to(class_id, result_id), f"Grade details: {NOTEBOOK}, Life Science")]
+    assert connected == expected
+    assert removed == [[], []]
+    assert rows_then == rows
+    assert again == expected
+
+
+def test_a_pair_kept_apart_shows_nothing_and_shows_again_once_no_decision_is_on_record() -> None:
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        ruled = on_card(client)
+        parent_links(client, class_id, result_id, decision="apart")
+        apart = [on_card(client), scores(details_of(client))]
+        parent_links(client, class_id, result_id, decision="automatic")
+        rows = as_stored(store_of(client), "grade_homework_links")
+        again = on_card(client)
+
+    assert [line for line, _, _ in ruled] == [LINE]
+    assert apart == [[], []]
+    assert rows == []
+    assert again == ruled
+
+
+def test_a_parent_s_assertion_on_a_linked_result_s_points_never_reaches_her_pages() -> None:
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(title=NOTEBOOK)], {})
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        parent_links(client, class_id, result_id)
+        store.correct_value(
+            class_id,
+            "T1",
+            page=correction_page(store, class_id, "result", result_id),
+            field="points",
+            how="parent_assertion",
+            value=GradeValue(text="20.0", presence=Presence.REPORTED),
+            role="parent",
+        )
+        asserted = store.class_term(class_id, "T1").current.results[result_id].asserted
+        pages = [as_rendered(client, address) for address in HER_PAGES]
+
+    assert "points" in asserted
+    assert [[line for line, _, _ in scores(page)] for page in pages] == [[LINE], [LINE]]
+    assert not [page for page in pages if "20.0 / 20.0" in page]
+
+
+def test_a_task_competes_with_its_twin_until_a_parent_links_it_and_then_shows_its_line() -> None:
+    """A task and homework with the log's class, title and day: neither shows a score. Linked
+    to the result, the task shows the line on its card and its details, and the homework none."""
+    twin = "assignment-twin"
+    with browser() as client:
+        store_of(client).put_on_record([homework(kind=AssignmentKind.TASK), homework(twin)], {})
+        class_id = with_report(client)
+        result_id = result_named(client, class_id, LOG)
+        competing = scores(page_of(client))
+        parent_links(client, class_id, result_id)
+        page = page_of(client)
+        shown = [scores(card_for(page, LOG_ID)), scores(details_of(client))]
+        beside = [scores(page), scores(details_of(client, twin))]
+
+    expected = [(LINE, link_to(class_id, result_id), f"Grade details: {LOG}, {BIOLOGY}")]
+    assert competing == []
+    assert shown == [expected, expected]
+    assert beside == [expected, []]
+
+
+def test_homework_whose_one_linked_result_has_no_points_shows_no_score_at_all() -> None:
+    """Homework the rules alone match to the diagram's result, linked to the log's result: it
+    shows the log's line, and once a newer report gives the log no points it shows nothing on
+    her week or its details, the diagram's line included."""
+    no_points = IN_WEEK.replace(LOG_ROW, "| Seed Germination Log |         | 20.0    | 90.0    |")
+    with browser() as client:
+        store_of(client).put_on_record(
+            [homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27), assigned=MONDAY)], {}
+        )
+        class_id = with_report(client)
+        ruled = scores(page_of(client))
+        parent_links(client, class_id, result_named(client, class_id, LOG), DIAGRAM_ID)
+        linked = scores(page_of(client))
+        with_report(client, no_points)
+        withheld = [scores(page_of(client)), scores(details_of(client, DIAGRAM_ID))]
+
+    assert [line for line, _, _ in ruled] == [DIAGRAM_LINE]
+    assert [line for line, _, _ in linked] == [LINE]
+    assert withheld == [[], []]
+
+
+def test_one_page_read_runs_the_score_rules_once_and_every_place_reads_that_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The card outside the week shown and the earlier-work row of one assignment linked to two
+    results, on one page: the same count and the same link, from one run of the rules. A read
+    of the details runs them once too."""
+    runs: list[int] = []
+
+    def counted(
+        read: Iterable[Homework],
+        results: Iterable[Result],
+        classes: Mapping[str, Collection[str]],
+        *,
+        decided: Collection[Link] = (),
+    ) -> dict[str, tuple[ScoreAt, ...]]:
+        runs.append(1)
+        return school_scores(read, results, classes, decided=decided)
+
+    with browser() as client:
+        store_of(client).put_on_record([homework(PRACTICE_ID, PRACTICE, date(2026, 8, 12))], {})
+        class_id = with_report(client)
+        with_report(client, SECOND_TERM)
+        for term in ("T1", "T2"):
+            result_id = result_named(client, class_id, PRACTICE, term)
+            parent_links(client, class_id, result_id, PRACTICE_ID, term=term)
+        monkeypatch.setattr("blossom.routes.homework_scores.school_scores", counted)
+        page = page_of(client, change=PRACTICE_ID)
+        on_her_week = len(runs)
+        details = details_of(client, PRACTICE_ID)
+
+    row = several(earlier_row(page, PRACTICE))
+    assert len(row) == 1
+    assert several(page) == row * 2
+    assert on_her_week == 1
+    assert len(runs) == 2
+    assert len(scores(details)) == 2
+
+
+def test_a_result_with_no_reported_title_is_listed_by_its_line_with_no_title_above_it() -> None:
+    """Two results linked to one assignment, then the stored presence of one result's title
+    changed by hand to blank. The details list both lines and links in class details' order;
+    the one with no reported title has no title above it and its link carries the homework's."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(title=NOTEBOOK)], {})
+        class_id = with_report(client)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        parent_links(client, class_id, log)
+        parent_links(client, class_id, diagram)
+        stored(
+            store,
+            "UPDATE grade_result_observations SET assignment_presence = ? WHERE result_id = ?",
+            Presence.BLANK.value,
+            diagram,
+        )
+        details = details_of(client)
+
+    assert scores(details) == [
+        (DIAGRAM_LINE, link_to(class_id, diagram), f"Grade details: {NOTEBOOK}, {BIOLOGY}"),
+        (LINE, link_to(class_id, log), f"Grade details: {LOG}, {BIOLOGY}"),
+    ]
+    assert [title for title, _, _, _ in EACH_RESULT.findall(details)] == [LOG]
+    assert details.count('<h3 class="update-heading"><span class="authored-text">') == 1
+
+
+def test_her_links_are_asked_for_once_and_only_when_a_class_and_term_was_read() -> None:
+    """With no report on record, and with one for a class no homework name connects to, a
+    page read asks no statement that names the link table; with a connected class's report it
+    asks one, for her week and for the details alike."""
+
+    def asked(client: TestClient, address: str) -> int:
+        seen: list[str] = []
+        connection = store_of(client)._connection
+        connection.set_trace_callback(seen.append)
+        try:
+            assert client.get(address, headers=PAGE_HEADERS).status_code == 200
+        finally:
+            connection.set_trace_callback(None)
+        return len([statement for statement in seen if "grade_homework_links" in statement])
+
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        with_none = [asked(client, address) for address in HER_PAGES]
+        with_report(client, GEOMETRY)
+        unconnected = [asked(client, address) for address in HER_PAGES]
+        with_report(client)
+        connected = [asked(client, address) for address in HER_PAGES]
+
+    assert with_none == [0, 0]
+    assert unconnected == [0, 0]
+    assert connected == [1, 1]
+
+
+def test_the_read_gives_the_grade_facts_and_her_links_and_the_mapping_says_how_each_stands() -> (
+    None
+):
+    """One pair linked and one kept apart, by the store's own write. The read gives the facts
+    ``read_grade_facts`` gives with both links as plain values. The mapping made from them
+    holds the linked result with its title, marked as linked, and nothing for the pair kept
+    apart; made with no link it holds both results as the rules stand them."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(), homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27))], {})
+        nothing = read_score_facts(store, [BIOLOGY])
+        class_id = with_report(client)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        parent_links(client, class_id, log)
+        parent_links(client, class_id, diagram, DIAGRAM_ID, decision="apart")
+        years, links = read_score_facts(store, [BIOLOGY])
+        alone = read_grade_facts(store, [BIOLOGY])
+        everyone = store.all_assignments()
+        base = "/student/grades"
+        with_links = scores_shown(everyone, {}, (), years, links=links, zone=ZONE, base=base)
+        by_the_rules = scores_shown(everyone, {}, (), years, zone=ZONE, base=base)
+
+    assert not results_read(nothing[0])
+    assert nothing[1] == ()
+    assert years == alone
+    assert sorted(links, key=lambda one: one.assignment_id) == [
+        Link(DIAGRAM_ID, diagram, confirmed=False),
+        Link(LOG_ID, log, confirmed=True),
+    ]
+    assert with_links == {
+        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), title=LOG, linked=True),)
+    }
+    assert by_the_rules == {
+        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), title=LOG, linked=False),),
+        DIAGRAM_ID: (
+            ScoreShown(DIAGRAM_LINE, link_to(class_id, diagram), title=DIAGRAM, linked=False),
+        ),
+    }
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_two_confirmed_links_naming_one_result_leave_her_pages_as_with_no_class_on_record(
+    reader: str, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The file is changed by hand: the links index dropped and two confirmed rows stored for
+    the log's result. Her week, the details of the homework a row names and of homework no row
+    names each answer 200 with no score and no way to one, and record the conflict's type alone."""
+    addresses = [HER_PAGE, *(f"/student/assignments/{one}" for one in (LOG_ID, DIAGRAM_ID))]
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record(
+            [homework(), homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27), assigned=MONDAY)], {}
+        )
+        bare = [as_rendered(client, address) for address in addresses]
+        class_id = with_report(client)
+        whole = [as_rendered(client, address) for address in addresses]
+        conflicting(client, result_named(client, class_id, LOG))
+        before = every_row(database_of(client))
+        said, logged = [], []
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            for address in addresses * 2:
+                caplog.clear()
+                said.append(as_rendered(client, address))
+                logged.append((recorded(caplog), caplog.text))
+        after = every_row(database_of(client))
+
+    assert [len(scores(page)) for page in whole] == [2, 1, 1]
+    assert said == bare * 2
+    for page in said:
+        assert not [
+            word
+            for word in ("School score", "School results", "Grade details", "See the results")
+            if word in page
+        ]
+        assert HEADING not in page
+    assert [records for records, _ in logged] == [[CONFLICT]] * 6
+    for _, text in logged:
+        assert not [word for word in (LOG, DIAGRAM, BIOLOGY, "18.0", LOG_ID) if word in text]
+    assert after == before
+
+
+def test_a_conflict_is_met_only_when_her_links_are_read_and_whatever_result_it_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The file is changed by hand as above, the two rows naming a result of a class no homework
+    name connects to. With only that class's report on record her week reads no link, shows no
+    score and records nothing; with a connected class's report too it records the conflict."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        geometry = with_report(client, GEOMETRY)
+        conflicting(client, result_named(client, geometry, LOG))
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            unread = as_rendered(client, HER_PAGE)
+            first = recorded(caplog)
+            with_report(client)
+            caplog.clear()
+            read = as_rendered(client, HER_PAGE)
+            second = recorded(caplog)
+
+    assert scores(unread) == []
+    assert first == []
+    assert scores(read) == []
+    assert second == [CONFLICT]
+
+
+LINK_BYTES = [
+    pytest.param(
+        "UPDATE grade_homework_links SET result_id = CAST(result_id AS BLOB)",
+        id="the result's ID",
+    ),
+    pytest.param(
+        "UPDATE grade_homework_links SET assignment_id = CAST(assignment_id AS BLOB)",
+        id="the homework's ID",
+    ),
+]
+
+
+@pytest.mark.parametrize("as_bytes_edit", LINK_BYTES)
+def test_a_link_value_stored_as_bytes_leaves_her_pages_as_with_no_class_on_record(
+    as_bytes_edit: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A link made by the store's own write, then one of its values changed by hand to bytes.
+    Her week and the details answer 200 with no score, the linked one included, and each read
+    records the failure's type alone. The same with two confirmed rows for one result beside
+    it: the record names the value that can't be decoded."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [homework(), homework(DIAGRAM_ID, NOTEBOOK, date(2026, 8, 27), assigned=MONDAY)], {}
+        )
+        bare = [as_rendered(client, address) for address in HER_PAGES]
+        class_id = with_report(client)
+        diagram = result_named(client, class_id, DIAGRAM)
+        parent_links(client, class_id, diagram, DIAGRAM_ID)
+        whole = [as_rendered(client, address) for address in HER_PAGES]
+        stored(store, as_bytes_edit)
+        said, logged = [], []
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            for with_a_conflict in (False, True):
+                if with_a_conflict:
+                    conflicting(client, result_named(client, class_id, LOG))
+                for address in HER_PAGES:
+                    caplog.clear()
+                    said.append(as_rendered(client, address))
+                    logged.append((recorded(caplog), caplog.text))
+
+    assert [len(scores(page)) for page in whole] == [2, 1]
+    assert said == bare * 2
+    assert [records for records, _ in logged] == [[LEFT_OUT]] * 4
+    for _, text in logged:
+        assert not [word for word in (LOG, DIAGRAM, NOTEBOOK, BIOLOGY, DIAGRAM_ID) if word in text]
+
+
+def test_an_undecodable_cell_beside_a_link_or_a_conflict_leaves_no_score_and_names_the_cell(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A link is on record for the diagram's homework, and the stored presence of another
+    result's points is changed by hand to no presence. Her week shows no score, the linked one
+    included, and records the cell's failure; so it does with two confirmed rows for one
+    result stored by hand as well, since the grade facts are read first."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [homework(), homework(DIAGRAM_ID, NOTEBOOK, date(2026, 8, 27), assigned=MONDAY)], {}
+        )
+        class_id = with_report(client)
+        parent_links(client, class_id, result_named(client, class_id, DIAGRAM), DIAGRAM_ID)
+        whole = scores(page_of(client))
+        log = result_named(client, class_id, LOG)
+        points_presence(client, result_named(client, class_id, OSMOSIS), SMUDGED)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            damaged = scores(page_of(client))
+            first = recorded(caplog)
+            caplog.clear()
+            conflicting(client, log)
+            both = scores(page_of(client))
+            second = recorded(caplog)
+
+    assert len(whole) == 2
+    assert damaged == []
+    assert first == [LEFT_OUT]
+    assert both == []
+    assert second == [LEFT_OUT]

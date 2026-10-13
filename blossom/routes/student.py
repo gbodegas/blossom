@@ -97,6 +97,7 @@ from blossom.evening import (
     staleness,
 )
 from blossom.grades.review import GradeValueUndecodable
+from blossom.grades.school_scores import Link
 from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEXT_ACTION_MAX_LENGTH
 from blossom.noticing import (
     Everything,
@@ -132,7 +133,7 @@ from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.homework_scores import (
     ScoreShown,
     YearRead,
-    read_grade_facts,
+    read_score_facts,
     results_read,
     scores_left_out,
     scores_shown,
@@ -2201,24 +2202,27 @@ def student_page(
         )
         notes = state.project_state.outstanding_captures()
         named = NamedCaptures({}, []) if groups is None else notes_named_by(state, groups.every())
-        # The gradebook's results for the classes her homework names, read beside the record
-        # and no part of it: nothing a plan, a digest, or a brief is made from holds one. A
-        # decoding that raises ``GradeValueUndecodable``, here or while the lines are made,
-        # leaves the page without any school score.
+        # The gradebook's results for the classes her homework names, with a parent's links
+        # between a result and homework, read beside the record and no part of it: nothing a
+        # plan, a digest, or a brief is made from holds one. A decoding that raises
+        # ``GradeValueUndecodable``, here or while the lines are made, or two confirmed links
+        # that name one result, leaves the page without any school score.
         grade_facts: tuple[YearRead, ...] = ()
+        links: tuple[Link, ...] = ()
         try:
-            grade_facts = read_grade_facts(
+            grade_facts, links = read_score_facts(
                 state.project_state, (item.course for item in everything.assignments)
             )
         except GradeValueUndecodable as error:
             scores_left_out(error)
-    school_scores: dict[str, ScoreShown] = {}
+    school_scores: dict[str, tuple[ScoreShown, ...]] = {}
     try:
         school_scores = scores_shown(
             everything.assignments,
             everything.records,
             everything.claims_unavailable,
             grade_facts,
+            links=links,
             zone=state.clock.zone,
             base=GRADES if parent_reads(request) else HER_GRADES,
         )
@@ -3070,11 +3074,13 @@ def detail_page(
         # Which result is this assignment's depends on every assignment on record and the
         # claims about each one's date, so they are read here too, in the same hold.
         # A decoding that raises ``GradeValueUndecodable``, here or while the lines are made,
-        # leaves the page without any school score.
+        # or two confirmed links that name one result, leaves the page without any school
+        # score.
         everyone = [] if item is None else on_record.all_assignments()
         grade_facts: tuple[YearRead, ...] = ()
+        links: tuple[Link, ...] = ()
         try:
-            grade_facts = read_grade_facts(on_record, (one.course for one in everyone))
+            grade_facts, links = read_score_facts(on_record, (one.course for one in everyone))
         except GradeValueUndecodable as error:
             scores_left_out(error)
         every_claim = (
@@ -3105,13 +3111,14 @@ def detail_page(
     # Which of the school's instructions apply is the family's to choose: a parent's, or the
     # household's with the sign-in off when it came from the family's pages. She reads them.
     family_chooses = viewer == "parent" or (viewer == "anyone" and back.target == "family")
-    school_scores: dict[str, ScoreShown] = {}
+    school_scores: dict[str, tuple[ScoreShown, ...]] = {}
     try:
         school_scores = scores_shown(
             everyone,
             {} if every_claim is None else every_claim.records,
             () if every_claim is None else every_claim.unreadable,
             grade_facts,
+            links=links,
             zone=state.clock.zone,
             base=GRADES if parent_reads(request) else HER_GRADES,
         )
