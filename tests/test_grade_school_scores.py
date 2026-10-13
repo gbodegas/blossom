@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """Which school result's score shows beside a homework assignment: who competes for it, exactly
-one both ways, then whether the one pair shows.
+one both ways, then whether the one pair shows; what a parent's links change before that count;
+and which results wait for a parent's choice.
 
 Every case states plain values. No store, clock or page is read here.
 """
@@ -10,15 +11,31 @@ import ast
 import dataclasses
 import inspect
 import pathlib
+from collections.abc import Callable
 from datetime import date, timedelta
-from typing import cast
 
 import pytest
 
 from blossom.grades import school_scores as rules
 from blossom.grades.draft import Presence
-from blossom.grades.review import Cell, CurrentValue, DueFrom, ReportAt
-from blossom.grades.school_scores import Homework, Result, ScoreAt, result_of, school_scores
+from blossom.grades.review import (
+    Cell,
+    CurrentValue,
+    DueFrom,
+    GradeValueUndecodable,
+    HomeworkLinksConflict,
+    ReportAt,
+)
+from blossom.grades.school_scores import (
+    Homework,
+    Link,
+    Result,
+    ScoreAt,
+    Waiting,
+    result_of,
+    school_scores,
+    waiting_results,
+)
 
 DAY = date(2026, 9, 22)
 NEXT_DAY = DAY + timedelta(days=1)
@@ -75,12 +92,45 @@ def connected(
     return {one.assignment_id: to for one in assignments}
 
 
+def link(assignment_id: str, result_id: str) -> Link:
+    """A parent's link of an assignment and a result."""
+    return Link(assignment_id, result_id, confirmed=True)
+
+
+def apart(assignment_id: str, result_id: str) -> Link:
+    """A parent's decision that keeps an assignment and a result apart."""
+    return Link(assignment_id, result_id, confirmed=False)
+
+
+def score_at(
+    result_id: str = "result-1", *, linked: bool, class_id: str = GEOMETRY, term: str = "T1"
+) -> ScoreAt:
+    """A result as an answer names it, standing by a link or by the rules."""
+    return ScoreAt(class_id, term, result_id, linked=linked)
+
+
+def waits(
+    result_id: str = "result-1",
+    *,
+    class_id: str = GEOMETRY,
+    term: str = "T1",
+    assignments: int = 0,
+    results: int = 0,
+    linked_elsewhere: bool = False,
+    unsettled: bool = False,
+) -> Waiting:
+    """A waiting result as an answer names it, with the reasons that hold for it."""
+    return Waiting(class_id, term, result_id, assignments, results, linked_elsewhere, unsettled)
+
+
 def test_one_assignment_and_one_result_show_the_result_in_its_own_term() -> None:
     one = homework()
 
     shown = school_scores([one], [result(term="T2")], connected(one))
 
-    assert shown == {"homework-1": ScoreAt(class_id=GEOMETRY, term="T2", result_id="result-1")}
+    assert shown == {
+        "homework-1": (ScoreAt(class_id=GEOMETRY, term="T2", result_id="result-1", linked=False),)
+    }
 
 
 @pytest.mark.parametrize(
@@ -129,7 +179,7 @@ def test_a_second_assignment_that_cannot_be_ruled_out_leaves_nothing_on_either(
 def test_a_competitor_leaves_the_count_only_with_a_resolved_different_date() -> None:
     one, later = homework(), homework("homework-2", day=NEXT_DAY)
     mine, other = result(), result("result-2", day=NEXT_DAY - timedelta(days=2))
-    at = ScoreAt(GEOMETRY, "T1", "result-1")
+    at = (ScoreAt(GEOMETRY, "T1", "result-1", linked=False),)
 
     assert school_scores([one], [mine, other], connected(one)) == {"homework-1": at}
     assert school_scores([one, later], [mine], connected(one, later)) == {"homework-1": at}
@@ -141,8 +191,8 @@ def test_two_pairs_each_show_their_own_result() -> None:
     results = [result(), result("result-2", day=NEXT_DAY)]
 
     assert school_scores([one, later], results, connected(one, later)) == {
-        "homework-1": ScoreAt(GEOMETRY, "T1", "result-1"),
-        "homework-2": ScoreAt(GEOMETRY, "T1", "result-2"),
+        "homework-1": (ScoreAt(GEOMETRY, "T1", "result-1", linked=False),),
+        "homework-2": (ScoreAt(GEOMETRY, "T1", "result-2", linked=False),),
     }
 
 
@@ -177,10 +227,10 @@ def test_two_classes_with_one_title_and_date_show_only_the_connected_class_s_res
     results = [result("result-b", class_id=BIOLOGY), result("result-g")]
 
     assert school_scores([one], results, connected(one)) == {
-        "homework-1": ScoreAt(GEOMETRY, "T1", "result-g")
+        "homework-1": (ScoreAt(GEOMETRY, "T1", "result-g", linked=False),)
     }
     assert school_scores([one], results, connected(one, to=(BIOLOGY,))) == {
-        "homework-1": ScoreAt(BIOLOGY, "T1", "result-b")
+        "homework-1": (ScoreAt(BIOLOGY, "T1", "result-b", linked=False),)
     }
 
 
@@ -189,7 +239,7 @@ def test_a_class_given_twice_counts_once_and_two_connected_classes_compete() -> 
     results = [result("result-b", class_id=BIOLOGY), result("result-g")]
 
     assert school_scores([one], results, connected(one, to=(GEOMETRY, GEOMETRY))) == {
-        "homework-1": ScoreAt(GEOMETRY, "T1", "result-g")
+        "homework-1": (ScoreAt(GEOMETRY, "T1", "result-g", linked=False),)
     }
     assert school_scores([one], results, connected(one, to=(BIOLOGY, GEOMETRY))) == {}
 
@@ -212,7 +262,7 @@ def test_a_name_connected_in_two_years_shows_the_result_whose_date_is_equal() ->
     ]
 
     assert school_scores([one], results, connected(one, to=(LAST_YEAR, GEOMETRY))) == {
-        "homework-1": ScoreAt(GEOMETRY, "T1", "result-now")
+        "homework-1": (ScoreAt(GEOMETRY, "T1", "result-now", linked=False),)
     }
 
 
@@ -222,7 +272,7 @@ def test_another_year_s_result_with_an_unresolved_date_leaves_nothing_to_show() 
 
     assert school_scores([one], results, connected(one, to=(LAST_YEAR, GEOMETRY))) == {}
     assert school_scores([one], results, connected(one)) == {
-        "homework-1": ScoreAt(GEOMETRY, "T1", "result-1")
+        "homework-1": (ScoreAt(GEOMETRY, "T1", "result-1", linked=False),)
     }
 
 
@@ -261,20 +311,449 @@ def test_no_explicit_link_decided_gives_what_the_rules_give_and_stores_nothing()
     ruled = school_scores(homework_read, results, classes)
 
     assert ruled == {
-        "homework-1": ScoreAt(GEOMETRY, "T1", "result-1"),
-        "homework-2": ScoreAt(GEOMETRY, "T1", "result-2"),
+        "homework-1": (ScoreAt(GEOMETRY, "T1", "result-1", linked=False),),
+        "homework-2": (ScoreAt(GEOMETRY, "T1", "result-2", linked=False),),
     }
     assert school_scores(homework_read, results, classes, decided=()) == ruled
     assert (homework_read, results, classes) == before
 
 
-def test_an_explicit_link_is_refused_since_none_is_read() -> None:
-    one = homework()
+def test_a_parent_s_links_are_read_and_the_values_given_are_left_as_they_were() -> None:
+    one, other = homework(), homework("homework-2", day=NEXT_DAY)
+    homework_read, results = [one, other], [result(), result("result-2", day=NEXT_DAY)]
+    classes = connected(one, other)
+    links = [apart("homework-1", "result-1"), link("homework-2", "result-2")]
+    before = (list(homework_read), list(results), dict(classes), list(links))
 
-    with pytest.raises(ValueError, match="explicit link"):
-        school_scores(
-            [one], [result()], connected(one), decided=cast("tuple[()]", (("homework-1",),))
-        )
+    shown = school_scores(homework_read, results, classes, decided=links)
+
+    assert shown == {"homework-2": (score_at("result-2", linked=True),)}
+    assert (homework_read, results, classes, links) == before
+
+
+ONE, TWIN = homework(), homework("homework-2")
+RENAMED = homework("homework-2", title="Proof Set")
+FIRST, SECOND = result(), result("result-2")
+OTHER_TITLE = result("result-2", title="Proof Set")
+
+
+@pytest.mark.parametrize(
+    ("homework_read", "results", "links", "shown"),
+    [
+        pytest.param([ONE], [FIRST], [], {"homework-1": (score_at(linked=False),)}, id="no link"),
+        pytest.param([ONE], [FIRST], [apart("homework-1", "result-1")], {}, id="kept apart"),
+        pytest.param([ONE, TWIN], [FIRST], [], {}, id="two assignments, one result"),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST],
+            [apart("homework-1", "result-1")],
+            {"homework-2": (score_at(linked=False),)},
+            id="two assignments, one kept apart: the other shows by the rule",
+        ),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST],
+            [link("homework-1", "result-1")],
+            {"homework-1": (score_at(linked=True),)},
+            id="two assignments, one linked: the other shows nothing",
+        ),
+        pytest.param([ONE], [FIRST, SECOND], [], {}, id="one assignment, two results"),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND],
+            [apart("homework-1", "result-1")],
+            {"homework-1": (score_at("result-2", linked=False),)},
+            id="two results, one kept apart: the other shows by the rule",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND],
+            [link("homework-1", "result-1")],
+            {"homework-1": (score_at(linked=True),)},
+            id="two results, one linked: the other shows nowhere",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND],
+            [link("homework-1", "result-2"), link("homework-1", "result-1")],
+            {"homework-1": (score_at(linked=True), score_at("result-2", linked=True))},
+            id="two results, both linked: both show, in the order the results came",
+        ),
+        pytest.param(
+            [ONE],
+            [SECOND, FIRST],
+            [link("homework-1", "result-2"), link("homework-1", "result-1")],
+            {"homework-1": (score_at("result-2", linked=True), score_at(linked=True))},
+            id="the same two results given in the other order",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, result("result-2", term="T2")],
+            [link("homework-1", "result-1"), link("homework-1", "result-2")],
+            {"homework-1": (score_at(linked=True), score_at("result-2", term="T2", linked=True))},
+            id="two linked results in two terms: each keeps its own term",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, result("result-2", scored=False)],
+            [link("homework-1", "result-1"), link("homework-1", "result-2")],
+            {"homework-1": (score_at(linked=True),)},
+            id="two linked results, one without points: one shows",
+        ),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST, SECOND],
+            [link("homework-1", "result-1")],
+            {
+                "homework-1": (score_at(linked=True),),
+                "homework-2": (score_at("result-2", linked=False),),
+            },
+            id="two assignments and two results, one pair linked: the others pair by the rule",
+        ),
+        pytest.param(
+            [ONE, RENAMED],
+            [FIRST],
+            [link("homework-2", "result-1")],
+            {"homework-2": (score_at(linked=True),)},
+            id="a result linked to other homework leaves the rule's assignment with nothing",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, OTHER_TITLE],
+            [link("homework-1", "result-2")],
+            {"homework-1": (score_at("result-2", linked=True),)},
+            id="a linked assignment shows no other result by the rule",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, dataclasses.replace(OTHER_TITLE, scored=False)],
+            [link("homework-1", "result-2")],
+            {},
+            id="a linked result with nothing to show leaves its assignment with nothing",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST],
+            [link("homework-1", "result-gone")],
+            {},
+            id="a link to a result not given still takes its assignment out of the rule",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST],
+            [link("homework-gone", "result-1")],
+            {},
+            id="a link to homework not given still takes its result out of the rule",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST],
+            [apart("homework-gone", "result-1"), apart("homework-1", "result-gone")],
+            {"homework-1": (score_at(linked=False),)},
+            id="a pair kept apart takes neither of its sides out of the rule",
+        ),
+    ],
+)
+def test_a_parent_s_links_apply_before_the_count(
+    homework_read: list[Homework],
+    results: list[Result],
+    links: list[Link],
+    shown: dict[str, tuple[ScoreAt, ...]],
+) -> None:
+    """A pair kept apart leaves the candidates before the count, and a linked pair takes both
+    of its sides out. Every assignment's name is connected to the one class."""
+    classes = connected(*homework_read)
+
+    assert school_scores(homework_read, results, classes, decided=links) == shown
+
+
+def test_a_twin_result_in_another_term_or_another_year_s_class_is_settled_by_a_link() -> None:
+    one = homework()
+    terms = [result(), result("result-2", term="T2")]
+    years = [result("result-then", class_id=LAST_YEAR, term="T4", day=None), result()]
+    both = connected(one, to=(LAST_YEAR, GEOMETRY))
+
+    assert school_scores([one], terms, connected(one)) == {}
+    assert school_scores(
+        [one], terms, connected(one), decided=[link("homework-1", "result-2")]
+    ) == {"homework-1": (score_at("result-2", term="T2", linked=True),)}
+    assert school_scores([one], years, both) == {}
+    assert school_scores([one], years, both, decided=[link("homework-1", "result-then")]) == {
+        "homework-1": (ScoreAt(LAST_YEAR, "T4", "result-then", linked=True),)
+    }
+
+
+@pytest.mark.parametrize(
+    ("homework_read", "results"),
+    [
+        pytest.param([RENAMED], [FIRST], id="titles differ"),
+        pytest.param([homework(resolved=False)], [FIRST], id="homework date in doubt"),
+        pytest.param([homework(day=None)], [FIRST], id="homework undated"),
+        pytest.param(
+            [homework(day=NEXT_DAY, resolved=False)], [FIRST], id="a claim not read as a date"
+        ),
+        pytest.param([ONE], [result(day=None)], id="result date not resolved"),
+        pytest.param([ONE], [result(day=NEXT_DAY)], id="both dates resolved and different"),
+        pytest.param([ONE, TWIN], [FIRST], id="a second assignment that could be the result's"),
+        pytest.param([ONE], [FIRST, SECOND], id="a second result that could be the assignment's"),
+    ],
+)
+def test_a_link_shows_its_result_whatever_the_titles_the_dates_and_the_count_say(
+    homework_read: list[Homework], results: list[Result]
+) -> None:
+    """Each case shows nothing on the linked assignment by the rules alone, and its linked
+    result with the link."""
+    mine = homework_read[0].assignment_id
+    classes = connected(*homework_read)
+    made = link(mine, "result-1")
+
+    assert mine not in school_scores(homework_read, results, classes)
+    assert school_scores(homework_read, results, classes, decided=[made])[mine] == (
+        score_at(linked=True),
+    )
+
+
+@pytest.mark.parametrize(
+    ("results", "to"),
+    [
+        pytest.param([result(class_id=BIOLOGY)], (GEOMETRY,), id="class not connected"),
+        pytest.param([FIRST], (), id="name connected to no class"),
+        pytest.param([result(scored=False)], (GEOMETRY,), id="points not reported"),
+        pytest.param([result(shown=False)], (GEOMETRY,), id="not shown in the newest report"),
+        pytest.param([SECOND], (GEOMETRY,), id="the result is not among those read"),
+    ],
+)
+def test_a_link_shows_nothing_without_the_class_reported_points_and_a_result_still_shown(
+    results: list[Result], to: tuple[str, ...]
+) -> None:
+    """Each case differs in one thing from a linked pair that shows, whose titles differ so the
+    rules alone show nothing."""
+    links = [link("homework-2", "result-1")]
+
+    assert school_scores([RENAMED], [FIRST], connected(RENAMED), decided=links) == {
+        "homework-2": (score_at(linked=True),)
+    }
+    assert school_scores([RENAMED], results, connected(RENAMED, to=to), decided=links) == {}
+
+
+@pytest.mark.parametrize("reads", [school_scores, waiting_results])
+@pytest.mark.parametrize(
+    "links",
+    [
+        pytest.param([link("homework-1", "result-1"), link("homework-2", "result-1")], id="two"),
+        pytest.param(
+            [
+                link("homework-1", "result-1"),
+                apart("homework-1", "result-2"),
+                link("homework-2", "result-1"),
+                link("homework-3", "result-1"),
+            ],
+            id="three",
+        ),
+        pytest.param(
+            [link("homework-1", "result-gone"), link("homework-2", "result-gone")],
+            id="two that name a result not given",
+        ),
+    ],
+)
+def test_two_or_more_confirmed_links_naming_one_result_are_refused_whole(
+    reads: Callable[..., object], links: list[Link]
+) -> None:
+    """Each function raises the conflict error itself, with its own message and with no cause
+    and no context, and returns nothing."""
+    with pytest.raises(GradeValueUndecodable) as refused:
+        reads([ONE, TWIN], [FIRST, SECOND], connected(ONE, TWIN), decided=links)
+
+    assert type(refused.value) is HomeworkLinksConflict
+    assert str(refused.value) == "two confirmed homework links name one result"
+    assert refused.value.__cause__ is None
+    assert refused.value.__context__ is None
+
+
+def test_one_assignment_linked_to_two_results_and_pairs_kept_apart_are_no_conflict() -> None:
+    links = [
+        link("homework-1", "result-1"),
+        link("homework-1", "result-2"),
+        apart("homework-2", "result-1"),
+        apart("homework-2", "result-2"),
+    ]
+    classes = connected(ONE, TWIN)
+
+    assert school_scores([ONE, TWIN], [FIRST, SECOND], classes, decided=links) == {
+        "homework-1": (score_at(linked=True), score_at("result-2", linked=True))
+    }
+    assert waiting_results([ONE, TWIN], [FIRST, SECOND], classes, decided=links) == ()
+
+
+THIRD = result("result-3")
+IN_DOUBT = homework(resolved=False)
+
+
+@pytest.mark.parametrize(
+    ("homework_read", "results", "links", "waiting"),
+    [
+        pytest.param([ONE, TWIN], [FIRST], [], (waits(assignments=2),), id="two assignments"),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND],
+            [],
+            (waits(results=2), waits("result-2", results=2)),
+            id="two results",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, result("result-2", term="T2")],
+            [],
+            (waits(results=2), waits("result-2", term="T2", results=2)),
+            id="two results, one in another term",
+        ),
+        pytest.param([IN_DOUBT], [FIRST], [], (waits(unsettled=True),), id="homework in doubt"),
+        pytest.param(
+            [ONE], [result(day=None)], [], (waits(unsettled=True),), id="result date not resolved"
+        ),
+        pytest.param([ONE], [FIRST], [], (), id="one each way, both dates resolved and equal"),
+        pytest.param([ONE], [FIRST], [apart("homework-1", "result-1")], (), id="kept apart"),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST],
+            [apart("homework-1", "result-1")],
+            (),
+            id="two assignments, one kept apart: the rule stands the other",
+        ),
+        pytest.param(
+            [ONE, homework("homework-2", resolved=False)],
+            [FIRST],
+            [apart("homework-1", "result-1")],
+            (waits(unsettled=True),),
+            id="two assignments, one kept apart, the other in doubt",
+        ),
+        pytest.param(
+            [ONE, TWIN, homework("homework-3")],
+            [FIRST],
+            [apart("homework-1", "result-1")],
+            (waits(assignments=2),),
+            id="three assignments, one kept apart",
+        ),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST],
+            [link("homework-1", "result-1")],
+            (),
+            id="a linked result",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND],
+            [link("homework-1", "result-1")],
+            (waits("result-2", linked_elsewhere=True),),
+            id="two results, one linked: the other waits",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND],
+            [link("homework-1", "result-1"), apart("homework-1", "result-2")],
+            (),
+            id="two results, one linked and the other kept apart",
+        ),
+        pytest.param(
+            [IN_DOUBT],
+            [FIRST, SECOND],
+            [link("homework-1", "result-1")],
+            (waits("result-2", linked_elsewhere=True),),
+            id="two results, one linked, the homework in doubt: the link is the one reason",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND, THIRD],
+            [link("homework-1", "result-1")],
+            (
+                waits("result-2", results=2, linked_elsewhere=True),
+                waits("result-3", results=2, linked_elsewhere=True),
+            ),
+            id="three results, one linked: two reasons hold for each of the others",
+        ),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST, SECOND],
+            [link("homework-1", "result-1")],
+            (),
+            id="the rule stands the result on other homework",
+        ),
+        pytest.param(
+            [ONE, homework("homework-2", day=None)],
+            [FIRST, SECOND, result("result-3", day=NEXT_DAY)],
+            [link("homework-1", "result-1")],
+            (waits("result-2", assignments=2), waits("result-3", results=2)),
+            id="linked homework alone with a result never stands it by the rule",
+        ),
+        pytest.param([RENAMED], [FIRST], [], (), id="no assignment has the title"),
+    ],
+)
+def test_a_result_waits_when_a_pair_is_open_and_the_rule_stands_none_of_its_pairs(
+    homework_read: list[Homework],
+    results: list[Result],
+    links: list[Link],
+    waiting: tuple[Waiting, ...],
+) -> None:
+    """Each waiting result comes with every reason that holds, in the order the results came.
+    The answer is the same with no points reported and with no result still shown, and no
+    result both waits and shows by the rule."""
+    classes = connected(*homework_read)
+    unscored = [dataclasses.replace(one, scored=False) for one in results]
+    gone = [dataclasses.replace(one, shown=False) for one in results]
+
+    found = waiting_results(homework_read, results, classes, decided=links)
+
+    assert found == waiting
+    assert waiting_results(homework_read, unscored, classes, decided=links) == waiting
+    assert waiting_results(homework_read, gone, classes, decided=links) == waiting
+    ruled = {
+        (one.class_id, one.term, one.result_id)
+        for shown in school_scores(homework_read, results, classes, decided=links).values()
+        for one in shown
+        if not one.linked
+    }
+    assert ruled.isdisjoint((one.class_id, one.term, one.result_id) for one in found)
+
+
+def test_a_result_of_another_connected_class_counts_and_an_unconnected_class_s_never_waits() -> (
+    None
+):
+    one = homework()
+    results = [result(), result("result-b", class_id=BIOLOGY)]
+
+    assert waiting_results([one], results, connected(one, to=(GEOMETRY, BIOLOGY))) == (
+        waits(results=2),
+        waits("result-b", class_id=BIOLOGY, results=2),
+    )
+    assert waiting_results([one], results, connected(one, to=())) == ()
+    assert waiting_results([IN_DOUBT], results, connected(IN_DOUBT)) == (waits(unsettled=True),)
+
+
+def test_a_link_and_an_answer_hold_closed_fields_and_both_functions_take_the_same_inputs() -> None:
+    assert [field.name for field in dataclasses.fields(Link)] == [
+        "assignment_id",
+        "result_id",
+        "confirmed",
+    ]
+    assert [field.name for field in dataclasses.fields(ScoreAt)] == [
+        "class_id",
+        "term",
+        "result_id",
+        "linked",
+    ]
+    assert [field.name for field in dataclasses.fields(Waiting)] == [
+        "class_id",
+        "term",
+        "result_id",
+        "assignments",
+        "results",
+        "linked_elsewhere",
+        "unsettled",
+    ]
+    assert inspect.signature(waiting_results).parameters.keys() == (
+        inspect.signature(school_scores).parameters.keys()
+    )
 
 
 def test_the_rules_read_no_state_about_an_assignment_and_no_term_in_use() -> None:

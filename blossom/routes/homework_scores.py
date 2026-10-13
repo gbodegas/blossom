@@ -174,7 +174,8 @@ def scores_shown(
                 results.append(result_of(class_id, term, result_id, value, day))
                 found[(class_id, term, result_id)] = (value, names, place)
     shown: dict[str, ScoreShown] = {}
-    for assignment_id, at in school_scores(homework, results, classes).items():
+    # No link is passed, so each assignment that shows has the one result the rules stand.
+    for assignment_id, (at,) in school_scores(homework, results, classes).items():
         value, names, place = found[(at.class_id, at.term, at.result_id)]
         shown[assignment_id] = ScoreShown(
             line=score_line(value, names),
