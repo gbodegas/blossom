@@ -254,9 +254,19 @@ Three files under `.local/` outlive a restart:
   class of the year whose official name, report code or report name
   equals it, or waits for a parent. An answer
   rewrites no homework, so class names aren't yet consistent across the
-  app: homework pages still show each class name as it was written. A
+  app: homework pages still show each class name as it was written. One
+  more, `grade_homework_links`, is for a parent's decisions about which
+  homework a school result belongs to: a result, a homework's ID,
+  `confirmed` or `rejected`, and who answered and when. No route reads
+  or writes it. Its one index, `grade_homework_links_one_homework`, holds
+  a result to one confirmed link, and a start makes it in a step of its
+  own, after the gradebook's tables. On a file that already holds two
+  confirmed links for one result, that start goes on without the index,
+  leaves the rows as they are and logs one warning; the first start after
+  the rows are corrected by hand makes the index. A
   delete of one class's grades for one
-  term removes that class and term's reports, values, results, assertions
+  term removes that class and term's reports, values, results, the
+  homework links that name those results, assertions
   and their history, acceptances and actions, and keeps her record, years,
   terms, classes, aliases and the answers about homework class names.
   A file from before any of them gains the tables on the first start, and

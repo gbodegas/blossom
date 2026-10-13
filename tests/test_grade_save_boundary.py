@@ -1013,6 +1013,7 @@ DELETE: tuple[Site, ...] = (
     (sqlite3.SQLITE_DELETE, "grade_acceptances"),
     (sqlite3.SQLITE_DELETE, "grade_current_actions"),
     (sqlite3.SQLITE_DELETE, "grade_reports"),
+    (sqlite3.SQLITE_DELETE, "grade_homework_links"),
     (sqlite3.SQLITE_DELETE, "grade_results"),
     (sqlite3.SQLITE_INSERT, "grade_scope_revisions"),
     UPSERT_ARM,

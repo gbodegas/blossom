@@ -135,6 +135,14 @@ class GradeValueUndecodable(ValueError):
         super().__init__("a stored grade value can't be decoded")
 
 
+class HomeworkLinksConflict(GradeValueUndecodable):
+    """Two or more confirmed homework links name one result. Its message is its own, fixed,
+    and holds nothing stored."""
+
+    def __init__(self) -> None:
+        ValueError.__init__(self, "two confirmed homework links name one result")
+
+
 def cells_of(fields: Iterable[str], values: Iterable[GradeValue]) -> dict[str, Cell]:
     """Each value of a draft as a cell, by its field."""
     return {

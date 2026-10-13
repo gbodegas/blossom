@@ -587,7 +587,11 @@ def test_g_i15_every_gradebook_row_carries_her_one_student_id(tmp_path: pathlib.
         for table in tables
     }
 
-    assert carried == {table: {store.student_id()} for table in tables}
+    # No write above makes a homework link, so that table holds no row to carry an ID.
+    assert carried == {
+        **{table: {store.student_id()} for table in tables},
+        "grade_homework_links": set(),
+    }
 
 
 def test_g_i15_a_form_kept_under_another_student_id_matches_nothing() -> None:
@@ -1250,7 +1254,13 @@ SCOPED_BY_CLASS_AND_TERM = (
     "grade_acceptances",
     "grade_current_actions",
 )
+SCOPED_BY_RESULT = ("grade_homework_links",)
 RAISED_BY_A_DELETE = ("grade_scope_revisions",)
+LINK_EVERY_RESULT = (
+    "INSERT INTO grade_homework_links SELECT student_id, result_id, 'assignment-named', "
+    "'confirmed', 'parent', made_at FROM grade_results"
+)
+"""One confirmed link row for each result on record, stored by a test's own SQL."""
 
 
 def revised(store: ProjectStateStore) -> list[tuple[tuple[str, str], int]]:
@@ -1265,13 +1275,14 @@ def revised(store: ProjectStateStore) -> list[tuple[tuple[str, str], int]]:
 def test_g_i11_a_delete_removes_exactly_its_class_and_term_and_keeps_the_revision(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Every gradebook table is classified kept, scoped or raised, and an unclassified one fails;
-    after every kind of grade write, a delete of the first term removes exactly that scope's
-    rows, leaves every other row as stored, raises its revision by one, and a page from before
-    saves nothing."""
+    """Each gradebook table is classified kept, scoped or raised, and one left out fails. After
+    every grade write, and a link row stored here through SQL for each result, a first-term
+    delete removes only that scope's rows and raises its revision; an earlier page saves nothing."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     for _, write in every_grade_write(store):
         write()
+    with store._lock, store._connection:
+        store._connection.execute(LINK_EVERY_RESULT)
     class_id = capture_class(store, WREN_REPORT)
     scope = (store.student_id(), class_id, "T1")
     page = store.review_grade_report(MOVED, capture_key(MOVED), key=KEY)
@@ -1281,9 +1292,15 @@ def test_g_i11_a_delete_removes_exactly_its_class_and_term_and_keeps_the_revisio
         (scope[0], *scope),
     )
     by_scope = ("student_id = ? AND class_id = ? AND term_label = ?", scope)
+    by_result = (
+        "student_id = ? AND result_id IN (SELECT result_id FROM grade_results "
+        "WHERE student_id = ? AND class_id = ? AND term_label = ?)",
+        (scope[0], *scope),
+    )
     where = {
         **dict.fromkeys(SCOPED_BY_REPORT, by_report),
         **dict.fromkeys(SCOPED_BY_CLASS_AND_TERM, by_scope),
+        **dict.fromkeys(SCOPED_BY_RESULT, by_result),
     }
 
     def rows(table: str, sql: str = "1", values: tuple[str, ...] = ()) -> list[str]:
@@ -1307,6 +1324,7 @@ def test_g_i11_a_delete_removes_exactly_its_class_and_term_and_keeps_the_revisio
         *KEPT_BY_A_DELETE,
         *SCOPED_BY_REPORT,
         *SCOPED_BY_CLASS_AND_TERM,
+        *SCOPED_BY_RESULT,
         *RAISED_BY_A_DELETE,
     )
     assert sorted(classified) == sorted(GRADEBOOK_TABLES)
@@ -1386,10 +1404,24 @@ def test_only_gradebook_names_the_corrections_table() -> None:
     assert naming == ["stores/gradebook.py"]
 
 
+def test_only_gradebook_names_the_homework_links_table() -> None:
+    """Every file of the package that names the homework links table is the gradebook's store,
+    so no statement in any other module names it."""
+    naming = sorted(
+        path.relative_to(PACKAGE_ROOT).as_posix()
+        for path in PACKAGE_ROOT.rglob("*")
+        if path.is_file()
+        and path.suffix in {".py", ".html", ".js", ".sql"}
+        and "grade_homework_links" in path.read_text(encoding="utf-8")
+    )
+
+    assert naming == ["stores/gradebook.py"]
+
+
 def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.Path) -> None:
-    """The reverse boundary, the mapping included: homework put on record, the school's status,
-    her update and its undo, and the homework that carried a connected name leaving the record
-    each leave every gradebook table byte for byte, so an answer outlives its homework."""
+    """The reverse boundary, the mapping and link rows stored here through SQL included: homework
+    put on record, the school's status, her update and its undo, and the homework the connected
+    name and the link rows name leaving the record each leave every gradebook table as stored."""
     with household_client("open", tmp_path) as client:
         store = state_of(client).project_state
         path = database_of(client)
@@ -1415,6 +1447,10 @@ def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.P
             store._connection.execute("DELETE FROM assignments WHERE course = ?", (first.course,))
             store._connection.commit()
 
+        with store._lock, store._connection:
+            store._connection.execute(
+                LINK_EVERY_RESULT.replace("assignment-named", first.assignment_id)
+            )
         before = gradebook_tables()
         writes: list[tuple[str, Callable[[], object]]] = [
             (
@@ -1446,4 +1482,5 @@ def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.P
 
     assert any(name.endswith("rows of grade_homework_classes") for name in before)
     assert before[f"{path.name} rows of grade_homework_classes"] != []
+    assert before[f"{path.name} rows of grade_homework_links"] != []
     assert seen == [(label, True) for label, _ in seen]

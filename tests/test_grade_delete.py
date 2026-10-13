@@ -4,8 +4,9 @@
 acceptance carries so the delete finds exactly its own.
 
 The delete is one revision-checked grade write: it removes the class and term's reports,
-observations, row records, results, acceptances and class-details actions, one statement per
-table, keeps her identity, years, terms, classes and aliases, and raises the revision. Its retry
+observations, row records, results, the homework links that name those results, acceptances and
+class-details actions, one statement per table, keeps her identity, years, terms, classes and
+aliases, and raises the revision. Its retry
 reads the class and term as they are: already deleted when they hold nothing, or a fresh
 preview, deleting nothing, after a newer import.
 
@@ -24,7 +25,12 @@ import pytest
 from blossom.grades.draft import GradeReportDraft, capture_key
 from blossom.grades.identity import name_form_key
 from blossom.grades.projection import CurrentPage, MadeCurrent, ReportNotSaved
-from blossom.grades.review import GradeReportSaved, ReturnReason, ReviewReturned
+from blossom.grades.review import (
+    GradeReportSaved,
+    HomeworkLinksConflict,
+    ReturnReason,
+    ReviewReturned,
+)
 from blossom.grades.text_reader import read_grade_report
 from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
@@ -530,6 +536,92 @@ def test_a_delete_leaves_every_other_class_and_term_and_her_identity(
     store.close()
 
 
+LINK = "INSERT INTO grade_homework_links VALUES (?, ?, ?, ?, 'parent', '2026-09-14T12:00:00+00:00')"
+
+
+def results_of(store: ProjectStateStore, class_id: str, term: str) -> list[str]:
+    """The IDs of the class and term's results, in the file's order."""
+    found = store._connection.execute(
+        "SELECT result_id FROM grade_results WHERE class_id = ? AND term_label = ? ORDER BY rowid",
+        (class_id, term),
+    )
+    return [str(result_id) for (result_id,) in found]
+
+
+def links_stored(store: ProjectStateStore, *rows: tuple[str, str, str, str]) -> None:
+    """Link rows stored through the test's own SQL, as no write of Blossom's stores them: each
+    a student ID, a result, an assignment and a state."""
+    with store._lock, store._connection:
+        store._connection.executemany(LINK, rows)
+
+
+def test_a_delete_counts_and_removes_the_link_rows_of_its_class_and_term_alone(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Link rows stored here through SQL: one confirmed and two kept apart in the first term,
+    one in the second, one under another student ID. The preview counts hers of the first term
+    by state, and the delete removes exactly those."""
+    store, class_id = two_terms(tmp_path / "blossom.sqlite3")
+    student = store.student_id()
+    first, second = results_of(store, class_id, "T1"), results_of(store, class_id, "T2")
+    links_stored(
+        store,
+        (student, first[0], "assignment-one", "confirmed"),
+        (student, first[0], "assignment-two", "rejected"),
+        (student, first[1], "assignment-one", "rejected"),
+        (student, second[0], "assignment-one", "confirmed"),
+        ("student-someone-else", first[0], "assignment-one", "confirmed"),
+    )
+    preview = previewed(store, class_id)
+    other = previewed(store, class_id, "T2")
+    outcome = deleted(store, class_id, preview.revision)
+    left = store._connection.execute(
+        "SELECT student_id, result_id, assignment_id, state FROM grade_homework_links "
+        "ORDER BY rowid"
+    ).fetchall()
+    links = store.homework_links()
+    store.close()
+
+    assert (preview.links, preview.kept_apart) == (1, 2)
+    assert (other.links, other.kept_apart) == (1, 0)
+    assert outcome == ClassTermDeleted(class_id, "T1", preview)
+    assert left == [
+        (student, second[0], "assignment-one", "confirmed"),
+        ("student-someone-else", first[0], "assignment-one", "confirmed"),
+    ]
+    assert [(link.result_id, link.assignment_id) for link in links] == [
+        (second[0], "assignment-one")
+    ]
+
+
+def test_a_delete_removes_two_confirmed_rows_that_name_one_of_its_results(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The index is dropped and two confirmed rows for one first-term result are stored here
+    through SQL. The preview counts two links and the delete removes both; the read of her
+    links raises the conflict error before the delete and returns none after it."""
+    store, class_id = two_terms(tmp_path / "blossom.sqlite3")
+    student = store.student_id()
+    first = results_of(store, class_id, "T1")
+    with store._lock, store._connection:
+        store._connection.execute("DROP INDEX grade_homework_links_one_homework")
+    links_stored(
+        store,
+        (student, first[0], "assignment-one", "confirmed"),
+        (student, first[0], "assignment-two", "confirmed"),
+    )
+    with pytest.raises(HomeworkLinksConflict):
+        store.homework_links()
+    preview = previewed(store, class_id)
+    outcome = deleted(store, class_id, preview.revision)
+    links = store.homework_links()
+    store.close()
+
+    assert (preview.links, preview.kept_apart) == (2, 0)
+    assert isinstance(outcome, ClassTermDeleted)
+    assert links == ()
+
+
 def test_a_save_page_and_its_retry_from_before_a_delete_save_nothing(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -625,7 +717,7 @@ def test_a_class_and_term_holding_only_submissions_that_saved_nothing_is_deleted
     stale = save_grade(store, WREN, key=KEY, review=page)
     store.close()
 
-    assert preview == DeletePreview(None, 0, 0, 0, 0, 1)
+    assert preview == DeletePreview(None, 0, 0, 0, 0, 0, 1)
     assert isinstance(outcome, ClassTermDeleted)
     assert revision == [(1,)]
     assert isinstance(stale, ReviewReturned)

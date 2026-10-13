@@ -27,10 +27,11 @@ SQLite itself ends a caller's transaction, everything in it is gone, and the cal
 its transaction was lost, never a refusal it might go on from.
 
 A parent deletes one class's grades for one term in one write checked against the revision the
-confirmation showed: its reports, observations, row records, results, acceptances and
-class-details actions go, one statement per table, and the revision is raised, so a page from
-before saves nothing. A retry is answered from the class and term as they are: already deleted
-when they hold nothing, or a fresh preview, deleting nothing, after a newer import.
+confirmation showed: its reports, observations, row records, results, the homework links that
+name those results, acceptances and class-details actions go, one statement per table, and the
+revision is raised, so a page from before saves nothing. A retry is answered from the class and
+term as they are: already deleted when they hold nothing, or a fresh preview, deleting nothing,
+after a newer import.
 
 A school year's first month is corrected by comparing and setting the month itself, the year's
 whole state. Nothing stored or compared depends on it, so no revision moves; due dates resolve
@@ -102,6 +103,7 @@ from blossom.grades.review import (
     GradeReportSaved,
     GradeReview,
     GradeValueUndecodable,
+    HomeworkLinksConflict,
     IdentityAnswer,
     ItemStatus,
     MatchAnswer,
@@ -144,6 +146,7 @@ GRADEBOOK_TABLES: Final = (
     "grade_current_actions",
     "grade_corrections",
     "grade_homework_classes",
+    "grade_homework_links",
 )
 """Every table a grade write may change. Every other table of the file, and the checkpoint and
 trace files, are a closed world no grade write touches."""
@@ -505,6 +508,44 @@ CHANGE_HOMEWORK_CLASS: Final = (
 HOMEWORK_COURSES: Final = "SELECT DISTINCT course FROM assignments"
 """The class names homework on record carries, as written: the one homework table the
 gradebook reads, and it only reads it."""
+CREATE_HOMEWORK_LINKS: Final = f"""
+CREATE TABLE IF NOT EXISTS grade_homework_links (
+    student_id TEXT NOT NULL,
+    result_id TEXT NOT NULL,
+    assignment_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('confirmed', 'rejected')),
+    answered_by TEXT NOT NULL CHECK (answered_by {WHO}),
+    answered_at TEXT NOT NULL,
+    PRIMARY KEY (student_id, result_id, assignment_id)
+)
+"""
+"""One row for each pair of a result and a homework a parent decided about, under her student
+ID: ``confirmed``, a link, or ``rejected``, kept apart. A pair with no row has no decision."""
+HOMEWORK_LINKS_INDEX_DEFINITION: Final = (
+    "CREATE UNIQUE INDEX grade_homework_links_one_homework\n"
+    "ON grade_homework_links (student_id, result_id)\n"
+    "WHERE state = 'confirmed'"
+)
+"""The index that holds a result to one confirmed link, in the text SQLite stores for it once
+a start has made it. Files hold this spelling character for character, line breaks included:
+it is never re-wrapped, re-spaced or reformatted."""
+CREATE_HOMEWORK_LINKS_INDEX: Final = HOMEWORK_LINKS_INDEX_DEFINITION.replace(
+    "CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS ", 1
+)
+"""The statement a start runs: the stored definition with ``IF NOT EXISTS`` put in, derived
+from it so the two can't differ anywhere else."""
+HOMEWORK_LINKS_TWICE_CONFIRMED: Final = (
+    "SELECT 1 FROM grade_homework_links WHERE state = 'confirmed' "
+    "GROUP BY student_id, result_id HAVING COUNT(*) > 1 LIMIT 1"
+)
+"""Whether any student ID and result have two or more confirmed links, which is exactly what
+the index forbids. It reads no link's values."""
+HOMEWORK_LINKS: Final = (
+    "SELECT result_id, assignment_id, state FROM grade_homework_links WHERE student_id = ?"
+)
+"""Every link under her student ID: the one statement that reads a link's values."""
+LINK_CONFIRMED: Final = "confirmed"
+"""The stored state of a pair a parent linked."""
 CONTEXT_ON_RECORD: Final = "SELECT 1 FROM grade_context WHERE student_id = ?"
 YEAR_ON_RECORD: Final = "SELECT 1 FROM grade_years WHERE student_id = ? AND label = ?"
 FIRST_MONTH_OF: Final = "SELECT first_month FROM grade_years WHERE student_id = ? AND label = ?"
@@ -876,10 +917,19 @@ SCOPE_HOLDS: Final = (
     "(SELECT COUNT(*) FROM grade_acceptances "
     "WHERE student_id = :student AND class_id = :class AND term_label = :term), "
     "(SELECT COUNT(*) FROM grade_current_actions "
-    "WHERE student_id = :student AND class_id = :class AND term_label = :term)"
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term), "
+    "(SELECT COUNT(*) FROM grade_homework_links "
+    "WHERE student_id = :student AND state = 'confirmed' AND result_id IN ("
+    "SELECT result_id FROM grade_results "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term)), "
+    "(SELECT COUNT(*) FROM grade_homework_links "
+    "WHERE student_id = :student AND state = 'rejected' AND result_id IN ("
+    "SELECT result_id FROM grade_results "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term))"
 )
 """What her class and term hold: reports imported, reports an action made, results,
-submissions that saved nothing, every acceptance, and every class-details action."""
+submissions that saved nothing, every acceptance, every class-details action, and the
+confirmed and the kept-apart homework links that name its results."""
 DELETE_SCOPE: Final = (
     "DELETE FROM grade_corrections WHERE student_id = :student AND report_id IN ("
     "SELECT report_id FROM grade_reports "
@@ -902,11 +952,15 @@ DELETE_SCOPE: Final = (
     "WHERE student_id = :student AND class_id = :class AND term_label = :term",
     "DELETE FROM grade_reports "
     "WHERE student_id = :student AND class_id = :class AND term_label = :term",
+    "DELETE FROM grade_homework_links WHERE student_id = :student AND result_id IN ("
+    "SELECT result_id FROM grade_results "
+    "WHERE student_id = :student AND class_id = :class AND term_label = :term)",
     "DELETE FROM grade_results "
     "WHERE student_id = :student AND class_id = :class AND term_label = :term",
 )
 """A class and term's delete, one statement per table, the reports' children before them: an
-acceptance and an action are found by their own class and term, report-less ones included."""
+acceptance and an action are found by their own class and term, report-less ones included,
+and a homework link by its result, before the results go."""
 SCOPE_COPIES: Final = (
     "SELECT report_made, source_report, copied FROM grade_current_actions "
     "WHERE student_id = ? AND class_id = ? AND term_label = ?"
@@ -1201,6 +1255,9 @@ class DeletePreview:
     made_current_reports: int
     results: int
     links: int
+    """Confirmed homework links that name one of the class and term's results."""
+    kept_apart: int
+    """Pairs of one of its results and a homework that a parent keeps apart."""
     submissions: int
     """Submissions that saved nothing: acceptances naming no report."""
 
@@ -1359,6 +1416,16 @@ class HomeworkClasses:
     year: str
     classes: tuple[NamedClass, ...]
     answers: Mapping[str, str | None]
+
+
+@dataclass(frozen=True)
+class HomeworkLink:
+    """One stored decision about a result and a homework, under her student ID: the result,
+    the homework's assignment ID, and the state as stored."""
+
+    result_id: str
+    assignment_id: str
+    state: str
 
 
 UNCONNECTED: Final = "unconnected"
@@ -1605,9 +1672,20 @@ class GradebookRecords:
             self._connection.execute(statement)
         self._connection.execute(CREATE_VIEW_CHOICES)
         self._connection.execute(CREATE_HOMEWORK_CLASSES)
+        self._connection.execute(CREATE_HOMEWORK_LINKS)
         self._tie_acceptances()
         if self._connection.execute(STUDENT_ON_RECORD).fetchone() is None:
             self._connection.execute(MAKE_STUDENT, (new_student_id(), self._stamp()))
+
+    def _create_homework_links_index(self) -> None:
+        """The index that holds a result to one confirmed homework link, in the caller's
+        transaction. A file that holds two confirmed links for one result refuses it."""
+        self._connection.execute(CREATE_HOMEWORK_LINKS_INDEX)
+
+    def _links_twice_confirmed(self) -> bool:
+        """Whether the file holds what that index forbids: a student ID and result with two or
+        more confirmed links. A read alone, of no link's values."""
+        return self._connection.execute(HOMEWORK_LINKS_TWICE_CONFIRMED).fetchone() is not None
 
     def _tie_acceptances(self) -> None:
         """Give a file's acceptances their class and term, once, in the caller's transaction:
@@ -2375,6 +2453,30 @@ class GradebookRecords:
         with self._lock:
             return self._homework_classes(self._her_name_record()[0], year)
 
+    def homework_links(self) -> tuple[HomeworkLink, ...]:
+        """Every homework link under her student ID, each value checked as text as its row is
+        read. Once all have passed, two or more confirmed links that name one result are
+        ``HomeworkLinksConflict``, and none is returned. A read alone."""
+        with self._lock:
+            return self._homework_links(self._her_name_record()[0])
+
+    def _homework_links(self, student_id: str) -> tuple[HomeworkLink, ...]:
+        """Her links, checked as ``homework_links`` says, under the caller's lock."""
+        links = tuple(
+            HomeworkLink(_text(result_id), _text(assignment_id), _text(state))
+            for result_id, assignment_id, state in self._connection.execute(
+                HOMEWORK_LINKS, (student_id,)
+            )
+        )
+        confirmed: set[str] = set()
+        for link in links:
+            if link.state != LINK_CONFIRMED:
+                continue
+            if link.result_id in confirmed:
+                raise HomeworkLinksConflict
+            confirmed.add(link.result_id)
+        return links
+
     def _homework_classes(self, student_id: str, year: str) -> HomeworkClasses:
         """Her classes and a parent's answers for ``year``, under the caller's lock."""
         classes = [
@@ -2652,14 +2754,14 @@ class GradebookRecords:
         """Her class and term's counts at its revision, or ``NothingToDelete`` when they hold
         no report, result, acceptance or action."""
         named = {"student": student_id, "class": class_id, "term": term}
-        imported, made, results, submissions, accepted, actions = (
+        imported, made, results, submissions, accepted, actions, links, kept_apart = (
             int(count) for count in self._connection.execute(SCOPE_HOLDS, named).fetchone()
         )
         if not (imported or made or results or accepted or actions):
             return NothingToDelete(class_id, term)
         stored = self._connection.execute(REVISION_OF, (student_id, class_id, term)).fetchone()
         current = None if stored is None else int(stored[0])
-        return DeletePreview(current, imported, made, results, 0, submissions)
+        return DeletePreview(current, imported, made, results, links, kept_apart, submissions)
 
     def _revision_of(self, student_id: str, class_id: str, draft: GradeReportDraft) -> int | None:
         """The scope revision of ``class_id`` in the report's term, None when it holds nothing."""
