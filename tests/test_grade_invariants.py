@@ -28,10 +28,12 @@ import pathlib
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
+from blossom.candidates import readings_for
+from blossom.captures import candidate_basis
 from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key
 from blossom.grades.identity import IdentityStatus, name_form, name_form_key
 from blossom.grades.projection import (
@@ -52,7 +54,10 @@ from blossom.grades.review import (
     ReviewReturned,
 )
 from blossom.grades.text_reader import read_grade_report
+from blossom.hand_in import TURNED_IN, HandInSaved
+from blossom.intake import UPDATE, Kept, Pick, Reading, by_hand, keep, read_text
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
+from blossom.reconciliation import SourceChannel
 from blossom.settings import PACKAGE_ROOT
 from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
@@ -83,7 +88,7 @@ from blossom.stores.gradebook import (
     NameFormAdded,
     ValueCorrected,
 )
-from blossom.stores.project_state import ProjectStateStore
+from blossom.stores.project_state import AssignmentKind, ProjectStateStore
 from tests.support import (
     FIXTURES,
     OBSERVED_AT,
@@ -1469,10 +1474,48 @@ def test_only_gradebook_names_the_homework_links_table() -> None:
     assert naming == ["stores/gradebook.py"]
 
 
+def gradebook_snapshot(path: pathlib.Path) -> dict[str, object]:
+    """Every gradebook table's schema and rows in the file at ``path``, the link rows among
+    them, read through a connection of its own."""
+    world = closed_world([path], leaving_out=())
+    return {
+        name: value for name, value in world.items() if name.rsplit(" ", 1)[-1] in GRADEBOOK_TABLES
+    }
+
+
+def link_rows_in(snapshot: dict[str, object]) -> list[object]:
+    """The link table's rows as a gradebook snapshot holds them."""
+    (rows,) = [
+        held for name, held in snapshot.items() if name.endswith("rows of grade_homework_links")
+    ]
+    assert isinstance(rows, list)
+    return rows
+
+
+def link_and_keep_apart(store: ProjectStateStore, linked: str, apart: str) -> None:
+    """Her first result linked to the homework ``linked`` and her second kept apart from the
+    homework ``apart``, both through the write, so the record holds a link row of each state."""
+    results = store._connection.execute(
+        "SELECT r.result_id FROM grade_results AS r ORDER BY r.rowid LIMIT 2"
+    ).fetchall()
+    decisions: tuple[tuple[str, LinkDecision], ...] = ((linked, "link"), (apart, "apart"))
+    for (result_id,), (homework, decision) in zip(results, decisions, strict=True):
+        (revision,) = store._connection.execute(
+            "SELECT s.revision FROM grade_results AS r JOIN grade_scope_revisions AS s "
+            "ON (s.class_id, s.term_label) = (r.class_id, r.term_label) WHERE r.result_id = ?",
+            (result_id,),
+        ).fetchone()
+        outcome = store.decide_homework_link(
+            str(result_id), homework, decision=decision, revision=int(revision), role="parent"
+        )
+        expect(HomeworkLinkWritten, outcome)
+    assert sorted(link.state for link in store.homework_links()) == ["confirmed", "rejected"]
+
+
 def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.Path) -> None:
-    """The reverse boundary, with a connected name and a link made through the write: homework
-    put on record, her update and its undo, notes added, joined and taken off, and the linked
-    homework's row deleted by the test each leave every gradebook table as stored."""
+    """The reverse boundary, with a connected name, a link and a pair kept apart made through the
+    write: homework put on record, her update and its undo, notes added, joined and taken off,
+    and the linked homework's row deleted by the test each leave every gradebook table as stored."""
     with household_client("open", tmp_path) as client:
         store = state_of(client).project_state
         path = database_of(client)
@@ -1487,31 +1530,13 @@ def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.P
         )
 
         def gradebook_tables() -> dict[str, object]:
-            world = closed_world([path], leaving_out=())
-            return {
-                name: value
-                for name, value in world.items()
-                if name.rsplit(" ", 1)[-1] in GRADEBOOK_TABLES
-            }
+            return gradebook_snapshot(path)
 
         def left_the_record() -> None:
             store._connection.execute("DELETE FROM assignments WHERE course = ?", (first.course,))
             store._connection.commit()
 
-        (result_id, revision) = store._connection.execute(
-            "SELECT r.result_id, s.revision FROM grade_results AS r JOIN grade_scope_revisions "
-            "AS s ON (s.class_id, s.term_label) = (r.class_id, r.term_label) ORDER BY r.rowid"
-        ).fetchone()
-        expect(
-            HomeworkLinkWritten,
-            store.decide_homework_link(
-                str(result_id),
-                first.assignment_id,
-                decision="link",
-                revision=int(revision),
-                role="parent",
-            ),
-        )
+        link_and_keep_apart(store, first.assignment_id, first.assignment_id)
 
         def note_that_waits() -> str:
             return waiting_note(
@@ -1553,8 +1578,173 @@ def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.P
 
     assert any(name.endswith("rows of grade_homework_classes") for name in before)
     assert before[f"{path.name} rows of grade_homework_classes"] != []
-    assert before[f"{path.name} rows of grade_homework_links"] != []
+    assert len(link_rows_in(before)) == 2
     assert seen == [(label, True) for label, _ in seen]
+
+
+PASTED_AT = datetime(2026, 9, 12, 20, 0, tzinfo=UTC)
+PASTED_ON = date(2026, 9, 12)
+LAB_REPORT = "Homework for Wren\n- 09/07/2026 - Monday\nBiology - Due: Lab report:\n"
+"""A school page's card for Biology homework due on a Monday."""
+LAB_REPORT_A_WEEK_ON = "Homework for Wren\n- 09/14/2026 - Monday\nBiology - Due: Lab report:\n"
+"""The same class and title, due a week after the first card's day."""
+CELL_MODEL = "Homework for Wren\n- 09/16/2026 - Wednesday\nBiology - Due: Cell model:\n"
+LAB_WRITE_UP = (
+    "Homework for Wren\n- 09/02/2026 - Wednesday\n"
+    "Biology - Assigned: Lab write-up: (Due:09/07/2026)\n"
+)
+"""A card under a name no homework on record has, due the lab report's day."""
+
+
+def pasted(text: str) -> tuple[Reading, ...]:
+    return read_text(text, now=PASTED_AT, today=PASTED_ON).items
+
+
+def two_links_on_record(path: pathlib.Path) -> tuple[ProjectStateStore, str]:
+    """An open store with Wren's report saved, a Biology lab report pasted and kept, and one
+    more Biology row: her first result linked to the lab report and her second kept apart from
+    the other row, both through the write. The store and the lab report's ID."""
+    store = ProjectStateStore.open(path, fixture_clock())
+    expect(GradeReportSaved, save_grade(store, WREN_REPORT, key=KEY))
+    assert keep(pasted(LAB_REPORT), store) == Kept(added=1, updated=0, unchanged=0)
+    (lab,) = [assignment.assignment_id for assignment in store.all_assignments()]
+    store.put_on_record([homework_named("Biology", "assignment-apart")], {})
+    link_and_keep_apart(store, lab, "assignment-apart")
+    return store, lab
+
+
+def homework_rows(store: ProjectStateStore) -> dict[str, tuple[str, str, date | None]]:
+    """Each homework on record by its ID: its class name, title and due date."""
+    return {
+        one.assignment_id: (one.course, one.title, one.due_date) for one in store.all_assignments()
+    }
+
+
+def test_a_paste_kept_as_new_homework_changes_no_gradebook_table(tmp_path: pathlib.Path) -> None:
+    """A pasted card is kept as new homework and is on record with its class, title and day.
+    Every gradebook table, a link and a pair kept apart among its rows, is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, _ = two_links_on_record(path)
+    before, rows = gradebook_snapshot(path), homework_rows(store)
+
+    kept = keep(pasted(CELL_MODEL), store)
+    added = [row for name, row in homework_rows(store).items() if name not in rows]
+    after = gradebook_snapshot(path)
+    store.close()
+
+    assert kept == Kept(added=1, updated=0, unchanged=0)
+    assert added == [("Biology", "Cell model", date(2026, 9, 16))]
+    assert len(link_rows_in(before)) == 2
+    assert after == before
+
+
+def test_a_parent_s_typed_homework_changes_no_gradebook_table(tmp_path: pathlib.Path) -> None:
+    """Homework a parent typed is kept and is on record as the family's own, with its class,
+    title and day. Every gradebook table, both link rows among them, is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, _ = two_links_on_record(path)
+    before, rows = gradebook_snapshot(path), homework_rows(store)
+    typed = by_hand(
+        "Biology", "Field notes", date(2026, 9, 18), None, AssignmentKind.HOMEWORK, now=PASTED_AT
+    )
+
+    kept = keep((typed,), store)
+    added = [
+        (one.course, one.title, one.due_date, one.origins["record"])
+        for one in store.all_assignments()
+        if one.assignment_id not in rows
+    ]
+    after = gradebook_snapshot(path)
+    store.close()
+
+    assert kept == Kept(added=1, updated=0, unchanged=0)
+    assert added == [("Biology", "Field notes", date(2026, 9, 18), SourceChannel.PARENT_ENTRY)]
+    assert len(link_rows_in(before)) == 2
+    assert after == before
+
+
+def test_a_hand_in_on_linked_homework_changes_no_gradebook_table(tmp_path: pathlib.Path) -> None:
+    """She says the linked lab report is turned in, and that is the one event its hand-in
+    record holds. Every gradebook table, both link rows among them, is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, lab = two_links_on_record(path)
+    before = gradebook_snapshot(path)
+    nothing_said = store.hand_in_chains([lab]).get(lab, [])
+
+    outcome = store.record_hand_in(
+        lab,
+        TURNED_IN,
+        None,
+        None,
+        expected_head=None,
+        now=PASTED_AT,
+        today=PASTED_ON,
+    )
+    said = [event.state for event in store.hand_in_chains([lab]).get(lab, [])]
+    after = gradebook_snapshot(path)
+    store.close()
+
+    assert nothing_said == []
+    assert isinstance(outcome, HandInSaved)
+    assert said == [TURNED_IN]
+    assert len(link_rows_in(before)) == 2
+    assert after == before
+
+
+def test_a_card_chosen_as_linked_homework_under_another_name_changes_no_gradebook_table(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A card under another name is kept as the linked lab report: the answer on record says
+    it lands there, and no homework row is added. Every gradebook table is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, lab = two_links_on_record(path)
+    before, rows = gradebook_snapshot(path), homework_rows(store)
+    saved = store.one_assignment(lab)
+    assert saved is not None
+    basis = candidate_basis(readings_for(store, [saved]))
+
+    kept = keep(
+        pasted(LAB_WRITE_UP),
+        store,
+        picks={0: Pick(lab, basis, "new")},
+        offered={0: "new"},
+        now=PASTED_AT,
+        today=PASTED_ON,
+    )
+    landed = store._connection.execute(
+        "SELECT kind, course, title, lands_on FROM intake_decisions ORDER BY sequence"
+    ).fetchall()
+    on_record = sorted(homework_rows(store))
+    after = gradebook_snapshot(path)
+    store.close()
+
+    assert isinstance(kept, Kept), kept
+    assert landed == [("renamed", "Biology", "Lab write-up", lab)]
+    assert on_record == sorted(rows)
+    assert len(link_rows_in(before)) == 2
+    assert after == before
+
+
+def test_linked_homework_moved_to_a_pasted_date_changes_no_gradebook_table(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A paste gives the linked lab report a day a week on, and a parent answers that the saved
+    work moved: the same row is due the pasted day. Every gradebook table is as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store, lab = two_links_on_record(path)
+    before, rows = gradebook_snapshot(path), homework_rows(store)
+
+    kept = keep(pasted(LAB_REPORT_A_WEEK_ON), store, occurrences={0: UPDATE})
+    moved = homework_rows(store)
+    after = gradebook_snapshot(path)
+    store.close()
+
+    assert rows[lab] == ("Biology", "Lab report", date(2026, 9, 7))
+    assert kept == Kept(added=0, updated=1, unchanged=0)
+    assert moved[lab] == ("Biology", "Lab report", date(2026, 9, 14))
+    assert sorted(moved) == sorted(rows)
+    assert len(link_rows_in(before)) == 2
+    assert after == before
 
 
 def test_only_a_link_s_own_steps_change_a_link_row_among_every_grade_write(

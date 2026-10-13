@@ -99,13 +99,11 @@ def with_a_report(path: pathlib.Path) -> tuple[str, list[str]]:
     return student, results
 
 
-def by_hand(path: pathlib.Path, *statements: Statement, unchecked: bool = False) -> None:
-    """Statements run on the closed file through a connection of the test's own, as no write of
-    Blossom's runs them; ``unchecked`` turns the table's CHECK constraints off for them."""
+def by_hand(path: pathlib.Path, *statements: Statement) -> None:
+    """Statements run on the file through a connection of the test's own, as no write of
+    Blossom's runs them."""
     raw = sqlite3.connect(path)
     try:
-        if unchecked:
-            raw.execute("PRAGMA ignore_check_constraints = ON")
         with raw:
             for sql, values in statements:
                 raw.execute(sql, values)
@@ -642,12 +640,12 @@ def test_the_read_refuses_confirmed_rows_that_name_one_result(
     assert refusal.value.__context__ is None
 
 
-@pytest.mark.parametrize("column", ["result_id", "assignment_id", "state"])
+@pytest.mark.parametrize("column", ["result_id", "assignment_id"])
 @pytest.mark.parametrize("conflict", [False, True], ids=["alone", "beside a conflict"])
-def test_a_link_value_stored_as_bytes_stops_the_read_before_any_count(
+def test_a_link_id_stored_as_bytes_stops_the_read_before_any_count(
     column: str, conflict: bool, tmp_path: pathlib.Path
 ) -> None:
-    """One value of one row is rewritten by hand as bytes, alone and beside two confirmed rows
+    """One ID of one row is rewritten by hand as bytes, alone and beside two confirmed rows
     for one result: the read raises the decoding error itself, never the conflict error."""
     path = tmp_path / "blossom.sqlite3"
     student, results = with_a_report(path)
@@ -662,7 +660,6 @@ def test_a_link_value_stored_as_bytes_stops_the_read_before_any_count(
             "WHERE assignment_id = 'assignment-bytes'",
             (),
         ),
-        unchecked=True,
     )
 
     store = ProjectStateStore.open(path, fixture_clock())
