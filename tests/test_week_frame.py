@@ -240,6 +240,7 @@ def test_the_week_starts_on_monday_whatever_the_day() -> None:
 
 
 CARD_GIVES_WAY = (
+    "   text at 200%, keeps the ordinary padding and margin. */\n"
     ".assignment.confidence-corroborated,\n"
     ".assignment.confidence-single_source,\n"
     ".assignment.confidence-sources_disagree,\n"
@@ -254,13 +255,14 @@ CARD_GIVES_WAY = (
     "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
 )
 """The rule that lets a homework card and an assignment's details give up side padding on a
-narrow screen with large text, pinned whole. Check her week and an assignment's details in a
-browser at 320 px with text at 200% and at 1280 px before changing it."""
+narrow screen with large text, pinned from the last line of its comment through its narrow
+block. Check her week and the details in a browser at 320 px and 1280 px before changing it."""
 
 
 def test_the_homework_card_s_narrow_rule_is_pinned_and_names_every_date_confidence() -> None:
-    """A card and the details carry the class of their date's confidence, so the rule lists
-    one selector for each confidence a date can have, in both of its blocks, and no other."""
+    """The pinned text occurs once, so no selector stands before, between or after the ones it
+    lists: one for each confidence a date can have, in both blocks. No other rule names such a
+    class, and the card's and the details' templates still write it."""
     styles = (STATIC / "blossom.css").read_text(encoding="utf-8")
     card = (TEMPLATES / "student_card.html").read_text(encoding="utf-8")
     details = (TEMPLATES / "student_assignment.html").read_text(encoding="utf-8")
@@ -281,6 +283,7 @@ def test_the_homework_card_s_narrow_rule_is_pinned_and_names_every_date_confiden
 
 
 PANELS_GIVE_WAY = (
+    "   and margin. */\n"
     ".panel.apart,\n.panel.assigned {\n"
     "  margin-inline: min(0px, 13vw - 2.25rem);\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
@@ -289,15 +292,19 @@ PANELS_GIVE_WAY = (
     "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
 )
 """The rule that lets the panels of her week that hold homework give up side padding on a
-narrow screen with large text, pinned whole. Check her week in a browser at 320 px with text
-at 200% and at 1280 px, with a card outside the week shown, before changing it."""
-CARD_KEEPS_TO_ITS_PANEL = ".panel.apart .assignment {\n  margin-inline: 0;\n}\n"
-"""The rule that keeps the card outside the week shown on its panel's own line, pinned whole."""
+narrow screen with large text, pinned from the last line of its comment through its narrow
+block. Check her week in a browser at 320 px and 1280 px, with a card outside the week shown."""
+CARD_KEEPS_TO_ITS_PANEL = (
+    "   side margin for it, so the card keeps to the panel's own line. */\n"
+    ".panel.apart .assignment {\n  margin-inline: 0;\n}\n"
+)
+"""The rule that keeps the card outside the week shown on its panel's own line, pinned from the
+last line of its comment."""
 
 
-def test_the_narrow_rule_of_her_week_s_homework_panels_is_pinned_and_reaches_only_them() -> None:
-    """The panel around the card outside the week shown and the two lists of rows carry the
-    classes the rule names, and no other template writes a panel with either class."""
+def test_her_week_s_homework_panels_narrow_rule_is_pinned_and_only_her_week_writes_them() -> None:
+    """Each pinned text occurs once, so no selector stands before, between or after the two
+    panel classes the rule lists; and only her week's two templates write a panel with either."""
     styles = (STATIC / "blossom.css").read_text(encoding="utf-8")
     writers = {
         page.name: text

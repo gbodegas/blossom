@@ -87,13 +87,12 @@ class YearRead:
 @dataclass(frozen=True)
 class ScoreShown:
     """A result's school score as a page shows it: the line, the address of the result on
-    class details, its title as class details words it with whether the school reported
-    one, and whether it stands by a parent's link or else by the rules."""
+    class details, its title as class details words it, and whether it stands by a parent's
+    link or else by the rules."""
 
     line: str
     details: str
     title: str
-    title_reported: bool
     linked: bool
 
 
@@ -152,12 +151,11 @@ def read_score_facts(
     )
 
 
-def title_of(value: CurrentValue) -> tuple[str, bool]:
-    """A result's title as class details words it, and whether the school reported one: the
-    title as written, or the words for a title left blank, unreadable or not in the copy."""
+def title_of(value: CurrentValue) -> str:
+    """A result's title as class details words it: the title as written, or the words for a
+    title left blank, unreadable or not in the copy."""
     cell = value.cells["assignment"]
-    reported = cell[0] is Presence.REPORTED
-    return (cell[1] if reported else presence_words("Title", cell)), reported
+    return cell[1] if cell[0] is Presence.REPORTED else presence_words("Title", cell)
 
 
 def scores_left_out(error: GradeValueUndecodable) -> None:
@@ -226,7 +224,7 @@ def scores_shown(
                     place,
                     class_id,
                     *within,
-                    folded(title_of(value)[0]).casefold(),
+                    folded(title_of(value)).casefold(),
                     order,
                 )
                 ordered.append((key, result_of(class_id, term, result_id, value, day)))
@@ -237,7 +235,6 @@ def scores_shown(
         scores = []
         for at in several:
             value, names, place = found[(at.class_id, at.term, at.result_id)]
-            title, reported = title_of(value)
             scores.append(
                 ScoreShown(
                     line=score_line(value, names),
@@ -245,8 +242,7 @@ def scores_shown(
                         CLASS_AT.format(base=base, class_id=at.class_id, n=place),
                         fragment=at.result_id,
                     ),
-                    title=title,
-                    title_reported=reported,
+                    title=title_of(value),
                     linked=at.linked,
                 )
             )

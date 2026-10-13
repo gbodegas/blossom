@@ -91,7 +91,7 @@
     </section>{% endwith %}{% elif scores %}
     <section>
       <h2 class="update-heading" id="school-results" tabindex="-1">From the school's gradebook</h2>{% for score in scores %}
-      <h3 class="result-title">{% if score.title_reported %}<span class="authored-text">{{ score.title }}</span>{% else %}{{ score.title }}{% endif %}</h3>
+      <h3 class="result-title"><span class="authored-text">{{ score.title }}</span></h3>
       <p class="effect">{{ score.line }}</p>
       <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ score.title }}, {{ assignment.course }}">Grade details</a></p>{% endfor %}
     </section>{% endif %}{% endwith %}
