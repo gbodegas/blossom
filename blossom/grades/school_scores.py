@@ -134,9 +134,9 @@ def settled(side: Homework | Result) -> date | None:
 
 
 class Pairs(NamedTuple):
-    """The pairs left once a parent's links are read: the results in a list; per assignment,
-    the places of the results in its pairs with no link (``unjudged``) and of the one the rules
-    stand it with, if any (``stood``); and the result IDs each assignment's confirmed links name."""
+    """What a parent's links leave: the results in a list; per assignment, its candidates'
+    places less each pair with a link and each result a confirmed link names (``unjudged``),
+    and the one the rules stand it with (``stood``); and each assignment's linked result IDs."""
 
     school: list[Result]
     unjudged: list[list[int]]
