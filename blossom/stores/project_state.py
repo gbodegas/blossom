@@ -120,6 +120,10 @@ from blossom.unreadable import refusal_in_names, text_or_refusal
 
 DUE_THIS_WEEK_KEY = "due_this_week"
 logger = logging.getLogger(__name__)
+LINKS_INDEX_NOT_MADE: Final = (
+    "the homework links index was not made: two confirmed links name one result"
+)
+"""What a start logs when it goes on without that index: fixed, with nothing stored in it."""
 
 DUE_THIS_WEEK_SPAN = timedelta(days=6)
 EVERY_STUDENT_REPORT: Final = """
@@ -859,6 +863,21 @@ class ProjectStateStore(
         # record is made by the first start that opens the file with them, and kept after.
         with self._writing():
             self._create_gradebook_tables()
+        # The index that holds a result to one confirmed homework link, in a step of its
+        # own, so a file that refuses it keeps every table made above. One refusal lets the
+        # start go on without the index: an integrity error from this statement, on a file
+        # found to hold two confirmed links for one result. The rows stay as they are, and
+        # the record is written once the refusal is behind, with no error being handled.
+        made = True
+        try:
+            with self._writing():
+                self._create_homework_links_index()
+        except sqlite3.IntegrityError:
+            if not self._links_twice_confirmed():
+                raise
+            made = False
+        if not made:
+            logger.warning(LINKS_INDEX_NOT_MADE)
 
     def _upgrade_date_claims(self) -> None:
         """Give the claims table the note a claim came from, the note's revision, whether
