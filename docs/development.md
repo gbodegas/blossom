@@ -257,9 +257,10 @@ Three files under `.local/` outlive a restart:
   app: homework pages still show each class name as it was written. One
   more, `grade_homework_links`, is for a parent's decisions about which
   homework a school result belongs to: a result, a homework's ID,
-  `confirmed` or `rejected`, and who answered and when. No route reads
-  or writes it. The index `grade_homework_links_one_homework` holds a
-  result to one confirmed link, and a start makes it in a step of its
+  `confirmed` or `rejected`, and who answered and when. Her week and an
+  assignment's details read it, and no route writes it. The index
+  `grade_homework_links_one_homework` holds a result to one confirmed
+  link, and a start makes it in a step of its
   own, after the gradebook's tables. On a file that already holds two
   confirmed links for one result, that start goes on without the index,
   leaves the rows as they are and logs one warning; the first start after

@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """The school score beside homework: what a homework page reads from the gradebook, and each
-assignment's score line with the way to its result on class details.
+assignment's score lines with the way to each result on class details.
 
 A page reads the grade facts once, inside its own hold of the record, and makes one mapping
-from them, so every place on the page that lists an assignment shows the same line or none.
-Which result is an assignment's is decided each time by ``school_scores`` and stored nowhere.
+from them, so every place on the page that lists an assignment shows the same results or none.
+Which result is an assignment's by the rules is decided each time by ``school_scores`` and
+stored nowhere. A parent's homework links are read in the same hold, after the facts and only
+when a class and term was read, and handed to those rules as plain values.
 The current year and term are fetched and validated. Their valid values do not select results,
 terms or links. Failure of that validation omits all school scores and Grade details links for
 that page read. For each class a homework name connects to, every term of its year that holds
@@ -20,12 +22,27 @@ nothing keeps holding nothing: a null there is read as a null and is not refused
 fails raises ``GradeValueUndecodable``, in the read or in the lines made from it, and leaves
 the page without any school score: the page discards what it read and every line with it,
 since a result left out of the count could make another look like an assignment's only one.
+A link value that is not text fails the same way, and two confirmed links that name one result
+raise ``HomeworkLinksConflict``, a kind of that error: the page shows no school score either.
 
 A malformed key can cause SQL WHERE or JOIN to exclude a row before validation: a school year
 label on an alias or on a parent's answer, a student ID, or the report ID that observations,
 matches and corrections are joined on. Such excluded rows are not checked. Covered values
 actually returned are validated. The consequence remains: a withheld score can appear, or a
 removed connection can apply again, without a diagnostic.
+
+A parent's stored link decisions are trusted to be the parent's. Returned link values are checked
+as text and as UTF-8, and two confirmed links naming one result are refused. These checks do not
+verify that referenced records exist or authenticate who made a decision. Additional checks could
+detect missing references and some inconsistent relationships. A valid-looking state or ID change
+can be indistinguishable from a parent's decision without an independent trusted record, which
+Blossom does not keep. Such edits can make school scores appear or disappear without a diagnostic.
+
+A confirmed link to a missing result, or one with no current value, contributes no score and keeps
+its assignment out of automatic matching. If a hand edit replaced the original result ID, the
+original result can return to automatic matching and appear on other homework. No page repairs that
+dangling decision. A link row whose student ID does not match the read is excluded and stops
+applying without a diagnostic. Nothing here detects every edit.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """
@@ -36,14 +53,15 @@ from dataclasses import dataclass
 from datetime import tzinfo
 
 from blossom.grades.dates import due_date_of
-from blossom.grades.draft import folded
+from blossom.grades.draft import Presence, folded
 from blossom.grades.review import CurrentValue, GradeValueUndecodable
-from blossom.grades.school_scores import Homework, Result, result_of, school_scores
-from blossom.grades.wording import report_names, score_line
+from blossom.grades.school_scores import Homework, Link, Result, result_of, school_scores
+from blossom.grades.wording import presence_words, report_names, score_line
 from blossom.noticing import read_date
 from blossom.reconciliation import SourceRecord
 from blossom.routes.navigation import CLASS_AT, address
 from blossom.stores.gradebook import (
+    LINK_CONFIRMED,
     ClassTermRead,
     GradebookRecords,
     HomeworkClasses,
@@ -68,11 +86,14 @@ class YearRead:
 
 @dataclass(frozen=True)
 class ScoreShown:
-    """An assignment's school score as a page shows it: the line, and the address of its
-    result on class details."""
+    """A result's school score as a page shows it: the line, the address of the result on
+    class details, its title as class details words it, and whether it stands by a parent's
+    link or else by the rules."""
 
     line: str
     details: str
+    title: str
+    linked: bool
 
 
 def read_grade_facts(store: GradebookRecords, courses: Iterable[str]) -> tuple[YearRead, ...]:
@@ -113,6 +134,30 @@ def read_grade_facts(store: GradebookRecords, courses: Iterable[str]) -> tuple[Y
     return tuple(years)
 
 
+def read_score_facts(
+    store: GradebookRecords, courses: Iterable[str]
+) -> tuple[tuple[YearRead, ...], tuple[Link, ...]]:
+    """The grade facts ``read_grade_facts`` gives, and her homework links as the score rules
+    read them: both, or an error and neither. Her links are asked for after the facts, only
+    when a class and term was read, with text decoded strictly. A read alone."""
+    years = read_grade_facts(store, courses)
+    if not results_read(years):
+        return years, ()
+    with store.strict_text():
+        stored = store.homework_links()
+    return years, tuple(
+        Link(one.assignment_id, one.result_id, confirmed=one.state == LINK_CONFIRMED)
+        for one in stored
+    )
+
+
+def title_of(value: CurrentValue) -> str:
+    """A result's title as class details words it: the title as written, or the words for a
+    title left blank, unreadable or not in the copy."""
+    cell = value.cells["assignment"]
+    return cell[1] if cell[0] is Presence.REPORTED else presence_words("Title", cell)
+
+
 def scores_left_out(error: GradeValueUndecodable) -> None:
     """Records that a homework page shows no school score, by the failure's type alone:
     nothing the gradebook holds is written."""
@@ -142,20 +187,20 @@ def scores_shown(
     unreadable: Collection[str],
     years: Iterable[YearRead],
     *,
+    links: Collection[Link] = (),
     zone: tzinfo,
     base: str,
-) -> dict[str, ScoreShown]:
-    """Each assignment's school score, by assignment ID, for a page under the grade tree
-    ``base``; an assignment that shows none is left out. ``assignments`` is every assignment on
-    record, ``claims`` each one's claims about its date, and ``unreadable`` the assignments
-    with a claim that can't be read."""
+) -> dict[str, tuple[ScoreShown, ...]]:
+    """Each assignment's school scores by assignment ID, for a page under the grade tree
+    ``base``, in the order of school year, term place, then class details' own. Given every
+    assignment, each one's date claims, those with one unreadable, and a parent's links."""
     listed = list(assignments)
     homework = [
         homework_of(item, claims.get(item.assignment_id, ()), item.assignment_id in unreadable)
         for item in listed
     ]
     classes: dict[str, list[str]] = {}
-    results: list[Result] = []
+    ordered: list[tuple[tuple[str, int, str, bool, int, str, int], Result]] = []
     found: dict[tuple[str, str, str], tuple[CurrentValue, dict[str, str], int]] = {}
     for year in years:
         for item in listed:
@@ -165,21 +210,41 @@ def scores_shown(
         for (class_id, term), read in year.reads.items():
             names = report_names(read.reports, zone)
             place = year.terms.index(term) + 1
-            for result_id, value in read.current.results.items():
+            for order, (result_id, value) in enumerate(read.current.results.items()):
                 day = (
                     None
                     if value.due is None
                     else due_date_of(value.due.cell, year.mapping.year, year.first_month)
                 )
-                results.append(result_of(class_id, term, result_id, value, day))
+                # Class details lists a term's dated results newest first, then the undated,
+                # each by title as it words the cell, and keeps the record's order after that.
+                within = (day is None, 0 if day is None else -day.toordinal())
+                key = (
+                    year.mapping.year,
+                    place,
+                    class_id,
+                    *within,
+                    folded(title_of(value)).casefold(),
+                    order,
+                )
+                ordered.append((key, result_of(class_id, term, result_id, value, day)))
                 found[(class_id, term, result_id)] = (value, names, place)
-    shown: dict[str, ScoreShown] = {}
-    for assignment_id, at in school_scores(homework, results, classes).items():
-        value, names, place = found[(at.class_id, at.term, at.result_id)]
-        shown[assignment_id] = ScoreShown(
-            line=score_line(value, names),
-            details=address(
-                CLASS_AT.format(base=base, class_id=at.class_id, n=place), fragment=at.result_id
-            ),
-        )
+    results = [result for _, result in sorted(ordered, key=lambda one: one[0])]
+    shown: dict[str, tuple[ScoreShown, ...]] = {}
+    for assignment_id, several in school_scores(homework, results, classes, decided=links).items():
+        scores = []
+        for at in several:
+            value, names, place = found[(at.class_id, at.term, at.result_id)]
+            scores.append(
+                ScoreShown(
+                    line=score_line(value, names),
+                    details=address(
+                        CLASS_AT.format(base=base, class_id=at.class_id, n=place),
+                        fragment=at.result_id,
+                    ),
+                    title=title_of(value),
+                    linked=at.linked,
+                )
+            )
+        shown[assignment_id] = tuple(scores)
     return shown

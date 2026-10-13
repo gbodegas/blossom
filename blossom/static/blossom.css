@@ -1048,6 +1048,16 @@ a.assignment-link:focus-visible {
   font-size: 1.05rem;
 }
 
+/* A school result's title on an assignment's details is a heading under "From the school's
+   gradebook". It keeps that level and reads below the section's heading: a heading's face
+   at the body's size, in a lighter weight and the soft text color. */
+.result-title {
+  margin: 1rem 0 0;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-soft);
+}
+
 .details-link {
   margin: 0.25rem 0 0;
   font-size: 0.92rem;
@@ -1946,6 +1956,57 @@ pre.example {
   .grade-card {
     padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
   }
+}
+
+/* A homework card on her week and an assignment's details give way the same way. On a phone
+   with text at 200% a card leaves a line too short for a word of a title or of the
+   gradebook's heading, so its side padding goes to 13vw - 1rem where that is narrower, and
+   the card reaches into the page's side margin until it is 13vw - 1rem from the screen's
+   edge. A card carries the class of its date's confidence, one of four, and no other card
+   does. Every screen 277 pixels or wider with ordinary text, and 640 pixels or wider with
+   text at 200%, keeps the ordinary padding and margin. */
+.assignment.confidence-corroborated,
+.assignment.confidence-single_source,
+.assignment.confidence-sources_disagree,
+.assignment.confidence-unverified {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+@media (max-width: 30rem) {
+  .assignment.confidence-corroborated,
+  .assignment.confidence-single_source,
+  .assignment.confidence-sources_disagree,
+  .assignment.confidence-unverified {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
+}
+
+/* The panels of her week that hold homework give way as a card does: the panel around the
+   card outside the week shown, and the lists of work assigned this week and due later and of
+   earlier homework to check. On a phone with text at 200% a panel's side padding goes to
+   13vw - 1rem where that is narrower, and the panel reaches into the page's side margin
+   until it is 13vw - 1rem from the screen's edge, so a word of a row's title or of the
+   card's breaks only where the whole line can't hold it. Every screen 277 pixels or wider
+   with ordinary text, and 640 pixels or wider with text at 200%, keeps the ordinary padding
+   and margin. */
+.panel.apart,
+.panel.assigned {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+@media (max-width: 30rem) {
+  .panel.apart,
+  .panel.assigned {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
+}
+
+/* The card outside the week shown stays inside its panel: the panel reaches into the page's
+   side margin for it, so the card keeps to the panel's own line. */
+.panel.apart .assignment {
+  margin-inline: 0;
 }
 
 /* On a phone with text at 200%, class details' headings, a class's name among them, leave a

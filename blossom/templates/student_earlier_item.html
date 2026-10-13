@@ -43,9 +43,9 @@ still has it until she plans again.
     {% else %}
       {% if item.in_plan == "scheduled" %}Today's plan still includes it{% else %}Today's plan was made with it{% endif %}{% if for_her %}. Plan again to leave it out.{% else %}; her next plan leaves it out.{% endif %}
     {% endif %}
-  {% endif %}{% with score = school_scores.get(item.assignment_id) %}{% if score %}
+  {% endif %}{% with scores = school_scores.get(item.assignment_id) %}{% if scores and scores|length == 1 %}{% with score = scores[0] %}
   <p class="effect">{{ score.line }}</p>
-  <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ item.title }}, {{ item.course }}">Grade details</a></p>{% endif %}{% endwith %}
+  <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ item.title }}, {{ item.course }}">Grade details</a></p>{% endwith %}{% elif scores %}{% with about = item %}{% include "student_school_results.html" %}{% endwith %}{% endif %}{% endwith %}
   <a class="details-link assignment-link" href="{{ details_href(item.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ item.title }}, {{ item.course }}">Details</a>
   {% if noted and noted.said %}
     <p class="note update-result" role="status" id="earlier-result" tabindex="-1">{{ noted.said }}</p>

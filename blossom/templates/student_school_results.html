@@ -1,0 +1,10 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#
+  The count of an assignment's school results when two or more show, and one
+  link to them on its details, where the gradebook's heading takes the focus.
+  Included by every kind of row on her week in place of the one score line.
+  ``about`` is the row's assignment and ``scores`` its results that show.
+#}
+<p class="effect">School results ({{ scores|length }})</p>
+<p class="details-link"><a class="assignment-link" href="{{ details_href(about.assignment_id, fragment="school-results", return_to="week", week=view.week.start.isoformat()) }}" aria-label="See the results: {{ about.title }}, {{ about.course }}">See the results</a></p>
