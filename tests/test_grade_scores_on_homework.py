@@ -3369,7 +3369,7 @@ SEVERAL = re.compile(
 )
 """The count of an assignment's results with the link under it, as each place writes them."""
 EACH_RESULT = re.compile(
-    r'<h3 class="update-heading"><span class="authored-text">([^<]*)</span></h3>\s*'
+    r'<h3 class="result-title"><span class="authored-text">([^<]*)</span></h3>\s*'
     r'<p class="effect">(School score[^<]*)</p>\s*<p class="details-link">'
     r'<a class="assignment-link" href="([^"]*)" aria-label="([^"]*)">Grade details</a></p>'
 )
@@ -3853,10 +3853,20 @@ def test_one_page_read_runs_the_score_rules_once_and_every_place_reads_that_answ
     assert len(scores(details)) == 2
 
 
-def test_a_result_with_no_reported_title_is_listed_by_its_line_with_no_title_above_it() -> None:
+TITLE_WORDS = {
+    Presence.BLANK: "Title left blank",
+    Presence.UNREADABLE: f"Title couldn't be read: {DIAGRAM}",
+    Presence.NOT_CAPTURED: "Title not in the copy",
+}
+
+
+@pytest.mark.parametrize("presence", list(TITLE_WORDS))
+def test_a_result_with_no_reported_title_is_listed_under_class_details_words_for_it(
+    presence: Presence,
+) -> None:
     """Two results linked to one assignment, then the stored presence of one result's title
-    changed by hand to blank. The details list both lines and links in class details' order;
-    the one with no reported title has no title above it and its link carries the homework's."""
+    changed by hand. The details give that result a title line in the words class details
+    titles it with, not marked as the school's text, and name its link by the same words."""
     with browser() as client:
         store = store_of(client)
         store.put_on_record([homework(title=NOTEBOOK)], {})
@@ -3867,17 +3877,27 @@ def test_a_result_with_no_reported_title_is_listed_by_its_line_with_no_title_abo
         stored(
             store,
             "UPDATE grade_result_observations SET assignment_presence = ? WHERE result_id = ?",
-            Presence.BLANK.value,
+            presence.value,
             diagram,
         )
         details = details_of(client)
+        class_page = class_details(client, class_id)
 
+    card = class_page[class_page.index(f'<h3 class="card-title" id="{diagram}" tabindex="-1">') :]
+    on_class_details = re.search(r'<span class="authored-text">(.*?)</span>', card, re.S)
+    assert on_class_details is not None
+    words = html.unescape(on_class_details.group(1))
+    titles = re.findall(r'<h3 class="result-title">(.*?)</h3>', details, re.S)
+    assert words == TITLE_WORDS[presence]
+    assert [html.unescape(title) for title in titles] == [
+        words,
+        f'<span class="authored-text">{LOG}</span>',
+    ]
     assert scores(details) == [
-        (DIAGRAM_LINE, link_to(class_id, diagram), f"Grade details: {NOTEBOOK}, {BIOLOGY}"),
+        (DIAGRAM_LINE, link_to(class_id, diagram), f"Grade details: {words}, {BIOLOGY}"),
         (LINE, link_to(class_id, log), f"Grade details: {LOG}, {BIOLOGY}"),
     ]
-    assert [title for title, _, _, _ in EACH_RESULT.findall(details)] == [LOG]
-    assert details.count('<h3 class="update-heading"><span class="authored-text">') == 1
+    assert f"Grade details: {NOTEBOOK}" not in html.unescape(details)
 
 
 def test_her_links_are_asked_for_once_and_only_when_a_class_and_term_was_read() -> None:
@@ -3938,12 +3958,22 @@ def test_the_read_gives_the_grade_facts_and_her_links_and_the_mapping_says_how_e
         Link(LOG_ID, log, confirmed=True),
     ]
     assert with_links == {
-        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), title=LOG, linked=True),)
+        LOG_ID: (
+            ScoreShown(LINE, link_to(class_id, log), title=LOG, title_reported=True, linked=True),
+        )
     }
     assert by_the_rules == {
-        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), title=LOG, linked=False),),
+        LOG_ID: (
+            ScoreShown(LINE, link_to(class_id, log), title=LOG, title_reported=True, linked=False),
+        ),
         DIAGRAM_ID: (
-            ScoreShown(DIAGRAM_LINE, link_to(class_id, diagram), title=DIAGRAM, linked=False),
+            ScoreShown(
+                DIAGRAM_LINE,
+                link_to(class_id, diagram),
+                title=DIAGRAM,
+                title_reported=True,
+                linked=False,
+            ),
         ),
     }
 

@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from blossom.agent.prompts import PLANNER_SYSTEM
 from blossom.app import create_app
 from blossom.noticing import monday_of
+from blossom.reconciliation import SourceConfidence
 from blossom.settings import STATIC_PATH as STATIC
 from blossom.settings import TEMPLATE_PATH as TEMPLATES
 from tests.support import SAME_ORIGIN, fixture_settings, outside_earlier_work
@@ -236,3 +237,44 @@ def test_the_week_starts_on_monday_whatever_the_day() -> None:
     assert monday_of(date(2026, 8, 19)) == date(2026, 8, 17)
     assert monday_of(date(2026, 8, 23)) == date(2026, 8, 17)
     assert monday_of(date(2026, 8, 24)) == date(2026, 8, 24)
+
+
+CARD_GIVES_WAY = (
+    ".assignment.confidence-corroborated,\n"
+    ".assignment.confidence-single_source,\n"
+    ".assignment.confidence-sources_disagree,\n"
+    ".assignment.confidence-unverified {\n"
+    "  margin-inline: min(0px, 13vw - 2.25rem);\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
+    "@media (max-width: 30rem) {\n"
+    "  .assignment.confidence-corroborated,\n"
+    "  .assignment.confidence-single_source,\n"
+    "  .assignment.confidence-sources_disagree,\n"
+    "  .assignment.confidence-unverified {\n"
+    "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
+)
+"""The rule that lets a homework card and an assignment's details give up side padding on a
+narrow screen with large text, pinned whole. Check her week and an assignment's details in a
+browser at 320 px with text at 200% and at 1280 px before changing it."""
+
+
+def test_the_homework_card_s_narrow_rule_is_pinned_and_names_every_date_confidence() -> None:
+    """A card and the details carry the class of their date's confidence, so the rule lists
+    one selector for each confidence a date can have, in both of its blocks, and no other."""
+    styles = (STATIC / "blossom.css").read_text(encoding="utf-8")
+    card = (TEMPLATES / "student_card.html").read_text(encoding="utf-8")
+    details = (TEMPLATES / "student_assignment.html").read_text(encoding="utf-8")
+    named = [f".assignment.confidence-{one.value.lower()}" for one in SourceConfidence]
+
+    assert styles.count(CARD_GIVES_WAY) == 1
+    assert styles.count(".assignment.confidence-") == CARD_GIVES_WAY.count(
+        ".assignment.confidence-"
+    )
+    assert [
+        CARD_GIVES_WAY.count(f"{one},") + CARD_GIVES_WAY.count(f"{one} {{") for one in named
+    ] == [2] * len(SourceConfidence)
+    assert CARD_GIVES_WAY.count(".assignment.confidence-") == 2 * len(SourceConfidence)
+    assert 'class="assignment confidence-{{ assignment.deadline_confidence|lower }}"' in card
+    assert (
+        'class="assignment detail confidence-{{ assignment.deadline_confidence|lower }}"' in details
+    )
