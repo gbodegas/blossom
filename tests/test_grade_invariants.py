@@ -74,6 +74,12 @@ from blossom.stores.gradebook import (
     HomeworkClassNotOnRecord,
     HomeworkClassRemoved,
     HomeworkClassStood,
+    HomeworkLink,
+    HomeworkLinkChanged,
+    HomeworkLinkHomeworkNotOnRecord,
+    HomeworkLinkStood,
+    HomeworkLinkWritten,
+    LinkDecision,
     NameFormAdded,
     ValueCorrected,
 )
@@ -90,12 +96,16 @@ from tests.support import (
     database_of,
     fixture_clock,
     grade_answers,
+    homework_from_a_note,
     homework_named,
     household_client,
+    link_note,
     practice_store,
     reported,
     save_grade,
     state_of,
+    unlink_note,
+    waiting_note,
 )
 
 WREN = "Bramble, Wren"
@@ -357,6 +367,56 @@ def homework_class_connected(store: ProjectStateStore, *, removed: bool = False)
     return outcome
 
 
+def homework_link(store: ProjectStateStore, decision: LinkDecision, *, behind: int = 0) -> object:
+    """A parent's decision about the first result of her first term and the first homework on
+    record, sent with that term's revision or one ``behind`` it. With no homework on record
+    it names homework on no record, and its answer is what it does."""
+    class_id = capture_class(store, WREN_REPORT)
+    (result_id,) = store._connection.execute(
+        "SELECT result_id FROM grade_results WHERE class_id = ? AND term_label = 'T1' "
+        "ORDER BY rowid",
+        (class_id,),
+    ).fetchone()
+    (revision,) = store._connection.execute(
+        "SELECT revision FROM grade_scope_revisions WHERE class_id = ? AND term_label = 'T1'",
+        (class_id,),
+    ).fetchone()
+    homework = [assignment.assignment_id for assignment in store.all_assignments()]
+    return store.decide_homework_link(
+        str(result_id),
+        homework[0] if homework else "assignment-on-no-record",
+        decision=decision,
+        revision=int(revision) - behind,
+        role="parent",
+    )
+
+
+def homework_links_decided(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
+    """A link while the homework's class name is connected, its resend, the pair kept apart,
+    left with no decision, a link from a page behind, and the link again. Each is held to its
+    one answer with homework on record, and to its one answer with none."""
+    none = HomeworkLinkHomeworkNotOnRecord
+
+    def step(decision: LinkDecision, held: type, without: type, behind: int = 0) -> object:
+        expected = held if store.all_assignments() else without
+        return expect(expected, homework_link(store, decision, behind=behind))
+
+    return [
+        ("a homework link", lambda: step("link", HomeworkLinkWritten, none)),
+        ("its resend", lambda: step("link", HomeworkLinkStood, none)),
+        ("the pair kept apart", lambda: step("apart", HomeworkLinkWritten, none)),
+        (
+            "the pair left with no decision",
+            lambda: step("automatic", HomeworkLinkWritten, HomeworkLinkStood),
+        ),
+        (
+            "a link from a page behind",
+            lambda: step("link", HomeworkLinkChanged, HomeworkLinkChanged, behind=1),
+        ),
+        ("the link again", lambda: step("link", HomeworkLinkWritten, none)),
+    ]
+
+
 def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], object]]]:
     """Each kind of grade write, and each that writes nothing, in an order that reaches them
     all."""
@@ -386,6 +446,7 @@ def every_grade_write(store: ProjectStateStore) -> list[tuple[str, Callable[[], 
         ("the rest", lambda: expect(GradeReportSaved, save_grade(store, WREN_REPORT, key=KEY))),
         ("a homework class name connected", lambda: homework_class_connected(store)),
         ("its resend", lambda: homework_class_connected(store)),
+        *homework_links_decided(store),
         ("the connection removed", lambda: homework_class_connected(store, removed=True)),
         ("the removal sent again", lambda: homework_class_connected(store, removed=True)),
         (
@@ -587,11 +648,7 @@ def test_g_i15_every_gradebook_row_carries_her_one_student_id(tmp_path: pathlib.
         for table in tables
     }
 
-    # No write above makes a homework link, so that table holds no row to carry an ID.
-    assert carried == {
-        **{table: {store.student_id()} for table in tables},
-        "grade_homework_links": set(),
-    }
+    assert carried == {table: {store.student_id()} for table in tables}
 
 
 def test_g_i15_a_form_kept_under_another_student_id_matches_nothing() -> None:
@@ -1256,11 +1313,6 @@ SCOPED_BY_CLASS_AND_TERM = (
 )
 SCOPED_BY_RESULT = ("grade_homework_links",)
 RAISED_BY_A_DELETE = ("grade_scope_revisions",)
-LINK_EVERY_RESULT = (
-    "INSERT INTO grade_homework_links SELECT student_id, result_id, 'assignment-named', "
-    "'confirmed', 'parent', made_at FROM grade_results"
-)
-"""One confirmed link row for each result on record, stored by a test's own SQL."""
 
 
 def revised(store: ProjectStateStore) -> list[tuple[tuple[str, str], int]]:
@@ -1276,13 +1328,12 @@ def test_g_i11_a_delete_removes_exactly_its_class_and_term_and_keeps_the_revisio
     tmp_path: pathlib.Path,
 ) -> None:
     """Each gradebook table is classified kept, scoped or raised, and one left out fails. After
-    every grade write, and a link row stored here through SQL for each result, a first-term
-    delete removes only that scope's rows and raises its revision; an earlier page saves nothing."""
+    every grade write, a homework link's among them, a first-term delete removes only that
+    scope's rows and raises its revision; an earlier page saves nothing."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    store.put_on_record([homework_named("Biology", "assignment-named")], {})
     for _, write in every_grade_write(store):
         write()
-    with store._lock, store._connection:
-        store._connection.execute(LINK_EVERY_RESULT)
     class_id = capture_class(store, WREN_REPORT)
     scope = (store.student_id(), class_id, "T1")
     page = store.review_grade_report(MOVED, capture_key(MOVED), key=KEY)
@@ -1419,9 +1470,9 @@ def test_only_gradebook_names_the_homework_links_table() -> None:
 
 
 def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.Path) -> None:
-    """The reverse boundary, the mapping and link rows stored here through SQL included: homework
-    put on record, the school's status, her update and its undo, and the homework the connected
-    name and the link rows name leaving the record each leave every gradebook table as stored."""
+    """The reverse boundary, with a connected name and a link made through the write: homework
+    put on record, her update and its undo, notes added, joined and taken off, and the linked
+    homework's row deleted by the test each leave every gradebook table as stored."""
     with household_client("open", tmp_path) as client:
         store = state_of(client).project_state
         path = database_of(client)
@@ -1447,10 +1498,26 @@ def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.P
             store._connection.execute("DELETE FROM assignments WHERE course = ?", (first.course,))
             store._connection.commit()
 
-        with store._lock, store._connection:
-            store._connection.execute(
-                LINK_EVERY_RESULT.replace("assignment-named", first.assignment_id)
+        (result_id, revision) = store._connection.execute(
+            "SELECT r.result_id, s.revision FROM grade_results AS r JOIN grade_scope_revisions "
+            "AS s ON (s.class_id, s.term_label) = (r.class_id, r.term_label) ORDER BY r.rowid"
+        ).fetchone()
+        expect(
+            HomeworkLinkWritten,
+            store.decide_homework_link(
+                str(result_id),
+                first.assignment_id,
+                decision="link",
+                revision=int(revision),
+                role="parent",
+            ),
+        )
+
+        def note_that_waits() -> str:
+            return waiting_note(
+                store, course="Humanities", title="Summer reading log", text="Pages 10 to 20"
             )
+
         before = gradebook_tables()
         writes: list[tuple[str, Callable[[], object]]] = [
             (
@@ -1473,6 +1540,10 @@ def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.P
                     today=MONDAY,
                 ),
             ),
+            ("a note added as new homework", lambda: homework_from_a_note(store)),
+            ("a note that waits", note_that_waits),
+            ("a note joined to homework", lambda: link_note(store, note_that_waits(), 2)),
+            ("a note joined and taken off", lambda: unlink_note(store, note_that_waits(), 2)),
             ("the homework that carried the name leaving", left_the_record),
         ]
         seen = []
@@ -1484,3 +1555,66 @@ def test_g3a_i13_no_homework_write_changes_a_gradebook_table(tmp_path: pathlib.P
     assert before[f"{path.name} rows of grade_homework_classes"] != []
     assert before[f"{path.name} rows of grade_homework_links"] != []
     assert seen == [(label, True) for label, _ in seen]
+
+
+def test_only_a_link_s_own_steps_change_a_link_row_among_every_grade_write(
+    tmp_path: pathlib.Path,
+) -> None:
+    """With homework on record, the link table is read around each step of every grade write.
+    It changes at the four steps that write a link and at no other: no save, correction,
+    class-details action, class name's answer or delete of another term changes it."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    store.put_on_record([homework_named("Biology", "assignment-named")], {})
+    steps, changed = [], []
+    for label, write in every_grade_write(store):
+        before = as_stored(store, "grade_homework_links")
+        write()
+        steps.append(label)
+        if as_stored(store, "grade_homework_links") != before:
+            changed.append(label)
+    held = as_stored(store, "grade_homework_links")
+    store.close()
+
+    assert changed == [
+        "a homework link",
+        "the pair kept apart",
+        "the pair left with no decision",
+        "the link again",
+    ]
+    assert len(held) == 1
+    assert {
+        "the rest",
+        "the connection removed",
+        "a first-month correction",
+        "a delete of her second term",
+    } <= set(steps)
+
+
+def test_a_result_answered_the_same_assignment_keeps_its_id_and_its_link(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A linked result's row comes back with its due date moved, and a parent answers that it is
+    the same assignment: the result keeps its ID, and the link row is as it was stored."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    store.put_on_record([homework_named("Biology", "assignment-named")], {})
+    expect(GradeReportSaved, save_grade(store, WREN_REPORT, key=KEY))
+    review = store.review_grade_report(MOVED, capture_key(MOVED), key=KEY)
+    (asked,) = [item.question.ids[0] for item in review.rows if item.question is not None]
+    (revision,) = store._connection.execute("SELECT revision FROM grade_scope_revisions").fetchone()
+    linked = store.decide_homework_link(
+        asked, "assignment-named", decision="link", revision=int(revision), role="parent"
+    )
+    rows = as_stored(store, "grade_homework_links")
+
+    expect(GradeReportSaved, answered_matches(store, MOVED, same=True))
+    results = {
+        str(row[0]) for row in store._connection.execute("SELECT result_id FROM grade_results")
+    }
+    links = store.homework_links()
+    after = as_stored(store, "grade_homework_links")
+    store.close()
+
+    assert linked == HomeworkLinkWritten()
+    assert asked in results
+    assert links == (HomeworkLink(asked, "assignment-named", "confirmed"),)
+    assert after == rows

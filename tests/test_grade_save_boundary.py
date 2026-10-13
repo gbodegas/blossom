@@ -42,6 +42,7 @@ from blossom.stores.gradebook import (
     FirstMonthCorrected,
     FirstMonthStood,
     GradeReportNotSaved,
+    HomeworkLinkWritten,
     ValueCorrected,
 )
 from blossom.stores.project_state import ProjectStateStore
@@ -55,6 +56,7 @@ from tests.support import (
     current_preview,
     fixture_clock,
     grade_answers,
+    homework_named,
     save_grade,
 )
 
@@ -1201,6 +1203,84 @@ def first_month_correction(store: ProjectStateStore) -> Callable[[], object]:
     return lambda: store.correct_first_month(YEAR, shown=8, month=9, role="parent")
 
 
+LINK_CHANGED: tuple[Site, ...] = (
+    (sqlite3.SQLITE_UPDATE, "grade_homework_links"),
+    (sqlite3.SQLITE_INSERT, "grade_homework_links"),
+    (sqlite3.SQLITE_INSERT, "grade_scope_revisions"),
+    UPSERT_ARM,
+)
+"""Every write statement of a link to other homework: the first pair set apart, the new pair
+confirmed, and the revision's upsert, both arms."""
+LINK_LEFT: tuple[Site, ...] = (
+    (sqlite3.SQLITE_DELETE, "grade_homework_links"),
+    (sqlite3.SQLITE_INSERT, "grade_scope_revisions"),
+    UPSERT_ARM,
+)
+"""Every write statement of a pair kept apart being left with no decision."""
+
+
+def link_decided(store: ProjectStateStore, homework: str, decision: str) -> Callable[[], object]:
+    """A parent's decision about Wren's first result and ``homework``, at the class and
+    term's revision when the step is made, ready to send."""
+    (result_id, revision) = store._connection.execute(
+        "SELECT r.result_id, s.revision FROM grade_results AS r JOIN grade_scope_revisions AS s "
+        "ON (s.class_id, s.term_label) = (r.class_id, r.term_label) ORDER BY r.rowid"
+    ).fetchone()
+    return lambda: store.decide_homework_link(
+        str(result_id),
+        homework,
+        decision=decision,  # type: ignore[arg-type]
+        revision=int(revision),
+        role="parent",
+    )
+
+
+def link_to_other_homework(store: ProjectStateStore) -> Callable[[], object]:
+    """Wren's first result linked to one homework: its link to another, ready to send."""
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    store.put_on_record(
+        [homework_named("Biology", "assignment-one"), homework_named("Biology", "assignment-two")],
+        {},
+    )
+    assert link_decided(store, "assignment-one", "link")() == HomeworkLinkWritten()
+    return link_decided(store, "assignment-two", "link")
+
+
+def pair_left_with_no_decision(store: ProjectStateStore) -> Callable[[], object]:
+    """A pair kept apart: leaving it with no decision, ready to send."""
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    store.put_on_record([homework_named("Biology", "assignment-one")], {})
+    assert link_decided(store, "assignment-one", "apart")() == HomeworkLinkWritten()
+    return link_decided(store, "assignment-one", "automatic")
+
+
+@pytest.mark.parametrize(
+    ("setup", "sites"),
+    [(link_to_other_homework, LINK_CHANGED), (pair_left_with_no_decision, LINK_LEFT)],
+    ids=["a link to other homework", "a pair left with no decision"],
+)
+def test_a_homework_link_writes_exactly_the_named_statements(
+    opened: Callable[[str], ProjectStateStore],
+    setup: Callable[[ProjectStateStore], Callable[[], object]],
+    sites: tuple[Site, ...],
+) -> None:
+    store = opened("first use")
+    write = setup(store)
+    seen: set[Site] = set()
+
+    def note(action: int, table: str | None, *_: object) -> int:
+        if action in WRITES and table is not None:
+            seen.add((action, table))
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(note)
+    outcome = write()
+    store._connection.set_authorizer(None)
+
+    assert outcome == HomeworkLinkWritten()
+    assert seen == set(sites)
+
+
 EVERY_WRITE: dict[str, tuple[Write, tuple[Site, ...], type]] = {
     "a first save": (first_save, FIRST_USE, GradeReportSaved),
     "confirmed again": (confirmed_again, (CONFIRM_AGAIN,), GradeReportSaved),
@@ -1214,6 +1294,8 @@ EVERY_WRITE: dict[str, tuple[Write, tuple[Site, ...], type]] = {
     "the class-details action": (class_details_action, ACTION, MadeCurrent),
     "a first-month correction": (first_month_correction, FIRST_MONTH, FirstMonthCorrected),
     "a class and term's delete": (class_and_term_delete, DELETE, ClassTermDeleted),
+    "a link to other homework": (link_to_other_homework, LINK_CHANGED, HomeworkLinkWritten),
+    "a pair left with no decision": (pair_left_with_no_decision, LINK_LEFT, HomeworkLinkWritten),
     "a parent's assertion": (parent_assertion, CORRECTION, ValueCorrected),
 }
 """Every kind of grade write, with each write statement it makes and what it returns lifted."""

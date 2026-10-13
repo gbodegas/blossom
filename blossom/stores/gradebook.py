@@ -42,6 +42,12 @@ added record on the original reading, never a change to it: the observation keep
 value as read, and the record keeps that cell, who and when. The assertion shows beside the
 original and every copy, never in the review or any comparison, and the class and term's delete
 removes its history with the rest.
+
+A parent's homework link is one write that compares and sets: a decision already on record
+stands, and any other applies only at the revision of the result's class and term that the page
+showed, raising it. A link to other homework sets the first pair apart before it confirms the
+new one, in the same write. No link is written unless the file's catalog holds the links index
+with the definition a start stores for it, compared whole; only a start makes that index.
 """
 
 import json
@@ -546,6 +552,31 @@ HOMEWORK_LINKS: Final = (
 """Every link under her student ID: the one statement that reads a link's values."""
 LINK_CONFIRMED: Final = "confirmed"
 """The stored state of a pair a parent linked."""
+LINK_APART: Final = "rejected"
+"""The stored state of a pair a parent keeps apart."""
+HOMEWORK_LINKS_INDEX_STORED: Final = (
+    "SELECT sql FROM sqlite_master "
+    "WHERE type = 'index' AND name = 'grade_homework_links_one_homework'"
+)
+"""The definition the file's own catalog stores for the index of that name, if it holds one."""
+RESULT_SCOPE: Final = (
+    "SELECT class_id, term_label FROM grade_results WHERE student_id = ? AND result_id = ?"
+)
+"""The class and term of one of her results."""
+HOMEWORK_COURSE: Final = "SELECT course FROM assignments WHERE assignment_id = ?"
+"""The class name of one homework on record, as written: a read of the homework table, alone."""
+ADD_HOMEWORK_LINK: Final = (
+    "INSERT INTO grade_homework_links "
+    "(student_id, result_id, assignment_id, state, answered_by, answered_at) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
+)
+CHANGE_HOMEWORK_LINK: Final = (
+    "UPDATE grade_homework_links SET state = ?, answered_by = ?, answered_at = ? "
+    "WHERE student_id = ? AND result_id = ? AND assignment_id = ?"
+)
+REMOVE_HOMEWORK_LINK: Final = (
+    "DELETE FROM grade_homework_links WHERE student_id = ? AND result_id = ? AND assignment_id = ?"
+)
 CONTEXT_ON_RECORD: Final = "SELECT 1 FROM grade_context WHERE student_id = ?"
 YEAR_ON_RECORD: Final = "SELECT 1 FROM grade_years WHERE student_id = ? AND label = ?"
 FIRST_MONTH_OF: Final = "SELECT first_month FROM grade_years WHERE student_id = ? AND label = ?"
@@ -1184,6 +1215,10 @@ def _homework_class_refused(error: BaseException) -> Exception:
     return GradeReportNotSaved(f"the class name could not be connected: {type(error).__name__}")
 
 
+def _homework_link_refused(error: BaseException) -> Exception:
+    return GradeReportNotSaved(f"the homework link could not be written: {type(error).__name__}")
+
+
 def _correction_refused(error: BaseException) -> Exception:
     return GradeReportNotSaved(f"the value could not be corrected: {type(error).__name__}")
 
@@ -1427,6 +1462,61 @@ class HomeworkLink:
     assignment_id: str
     state: str
 
+
+LinkDecision = Literal["link", "apart", "automatic"]
+"""What a parent decides about a result and a homework: link them, keep them apart, or leave
+the pair with no decision."""
+
+
+@dataclass(frozen=True)
+class HomeworkLinkWritten:
+    """The decision is on record by this write, and the class and term's revision is raised."""
+
+
+@dataclass(frozen=True)
+class HomeworkLinkStood:
+    """The record held what the decision would leave already, as a press sent again finds it;
+    nothing was written."""
+
+
+@dataclass(frozen=True)
+class HomeworkLinkChanged:
+    """The result's class and term changed since the page was made, or the pair to leave with
+    no decision is a link; nothing was written."""
+
+
+@dataclass(frozen=True)
+class HomeworkLinkResultNotOnRecord:
+    """The result isn't hers on record, or it holds no current value; nothing was written."""
+
+
+@dataclass(frozen=True)
+class HomeworkLinkHomeworkNotOnRecord:
+    """The homework isn't on record, so it can't be linked, nor kept apart while no decision
+    about the pair is on record; nothing was written."""
+
+
+@dataclass(frozen=True)
+class HomeworkLinkClassNameChanged:
+    """The homework's class name doesn't connect to the result's class in that class's school
+    year; nothing was written."""
+
+
+@dataclass(frozen=True)
+class RequiredIndexUnavailable:
+    """The file's catalog doesn't hold the homework links index with its required definition:
+    there is none of that name, or its stored definition differs. Nothing was written."""
+
+
+HomeworkLinkOutcome = (
+    HomeworkLinkWritten
+    | HomeworkLinkStood
+    | HomeworkLinkChanged
+    | HomeworkLinkResultNotOnRecord
+    | HomeworkLinkHomeworkNotOnRecord
+    | HomeworkLinkClassNameChanged
+    | RequiredIndexUnavailable
+)
 
 UNCONNECTED: Final = "unconnected"
 """A parent's answer that a name is no class for now: what removing a connection chooses, and
@@ -2476,6 +2566,88 @@ class GradebookRecords:
                 raise HomeworkLinksConflict
             confirmed.add(link.result_id)
         return links
+
+    def _homework_links_index_available(self) -> bool:
+        """Whether the file's catalog holds the homework links index with its stored definition
+        equal to ``HOMEWORK_LINKS_INDEX_DEFINITION``, compared whole. A read alone."""
+        stored = self._connection.execute(HOMEWORK_LINKS_INDEX_STORED).fetchone()
+        return stored is not None and stored[0] == HOMEWORK_LINKS_INDEX_DEFINITION
+
+    def decide_homework_link(
+        self,
+        result_id: str,
+        assignment_id: str,
+        *,
+        decision: LinkDecision,
+        revision: int,
+        role: ConfirmedBy,
+    ) -> HomeworkLinkOutcome:
+        """A parent's decision about her result and a homework, as one grade write. Its checks,
+        in order: the role, the index in the file's catalog, the result, her links, whether the
+        decision stands already, ``revision``, then the homework and its class name."""
+        by = _confirmer(role)
+        if decision not in get_args(LinkDecision):
+            msg = "a homework link is decided as link, apart or automatic"
+            raise ValueError(msg)
+        with self._grade_write(_homework_link_refused):
+            if not self._homework_links_index_available():
+                return RequiredIndexUnavailable()
+            student_id = self._her_name_record()[0]
+            scope = self._connection.execute(RESULT_SCOPE, (student_id, result_id)).fetchone()
+            if scope is None:
+                return HomeworkLinkResultNotOnRecord()
+            class_id, term = _text(scope[0]), _text(scope[1])
+            if result_id not in self._class_record(student_id, class_id, term).current.results:
+                return HomeworkLinkResultNotOnRecord()
+            links = self._homework_links(student_id)
+            pair = (student_id, result_id, assignment_id)
+            now = next(
+                (
+                    link.state
+                    for link in links
+                    if (link.result_id, link.assignment_id) == (result_id, assignment_id)
+                ),
+                None,
+            )
+            leaves = {"link": LINK_CONFIRMED, "apart": LINK_APART, "automatic": None}[decision]
+            if now == leaves:
+                return HomeworkLinkStood()
+            stored = self._connection.execute(REVISION_OF, (student_id, class_id, term)).fetchone()
+            if stored is None or int(stored[0]) != revision:
+                return HomeworkLinkChanged()
+            if decision == "automatic":
+                if now != LINK_APART:
+                    return HomeworkLinkChanged()
+                self._connection.execute(REMOVE_HOMEWORK_LINK, pair)
+            else:
+                course = self._connection.execute(HOMEWORK_COURSE, (assignment_id,)).fetchone()
+                if course is None and (decision == "link" or now is None):
+                    return HomeworkLinkHomeworkNotOnRecord()
+                if decision == "link" and not self._connects(student_id, str(course[0]), class_id):
+                    return HomeworkLinkClassNameChanged()
+                at = self._stamp()
+                if decision == "link":
+                    for link in links:
+                        other = (link.result_id, link.state) == (result_id, LINK_CONFIRMED)
+                        if other and link.assignment_id != assignment_id:
+                            self._connection.execute(
+                                CHANGE_HOMEWORK_LINK,
+                                (LINK_APART, by, at, student_id, result_id, link.assignment_id),
+                            )
+                if now is None:
+                    self._connection.execute(ADD_HOMEWORK_LINK, (*pair, leaves, by, at))
+                else:
+                    self._connection.execute(CHANGE_HOMEWORK_LINK, (leaves, by, at, *pair))
+            self._connection.execute(RAISE_REVISION, (student_id, class_id, term))
+            return HomeworkLinkWritten()
+
+    def _connects(self, student_id: str, course: str, class_id: str) -> bool:
+        """Whether the homework class name ``course`` is her class ``class_id`` in that class's
+        school year, under the caller's lock."""
+        named = self._connection.execute(CLASS_NAMED, (student_id, class_id)).fetchone()
+        if named is None:
+            return False
+        return class_for(course, self._homework_classes(student_id, _text(named[0]))) == class_id
 
     def _homework_classes(self, student_id: str, year: str) -> HomeworkClasses:
         """Her classes and a parent's answers for ``year``, under the caller's lock."""
