@@ -31,16 +31,18 @@ matches and corrections are joined on. Such excluded rows are not checked. Cover
 actually returned are validated. The consequence remains: a withheld score can appear, or a
 removed connection can apply again, without a diagnostic.
 
-A parent's stored link decisions are trusted to be the parent's. A page read checks that each
-link value it fetches is text, and refuses two confirmed links that name one result. It checks
-nothing else about a link, and no check here could: a decision changed by hand to another valid
-state, or to another valid ID, reads exactly as a parent's own decision would. So after a hand
-edit of the link table, a school score can appear on homework, or leave it, and nothing is
-logged. A link whose result is not on record, or holds no current value, shows nothing, keeps
-its assignment out of automatic matching, and can let other homework show that result's score.
-No page can remove such a link: the file has to be repaired. A link row whose student ID was
-changed is not returned by the read and stops applying, without a diagnostic. Nothing here
-authenticates who made a decision, and nothing here detects every edit.
+A parent's stored link decisions are trusted to be the parent's. Returned link values are checked
+as text and as UTF-8, and two confirmed links naming one result are refused. These checks do not
+verify that referenced records exist or authenticate who made a decision. Additional checks could
+detect missing references and some inconsistent relationships. A valid-looking state or ID change
+can be indistinguishable from a parent's decision without an independent trusted record, which
+Blossom does not keep. Such edits can make school scores appear or disappear without a diagnostic.
+
+A confirmed link to a missing result, or one with no current value, contributes no score and keeps
+its assignment out of automatic matching. If a hand edit replaced the original result ID, the
+original result can return to automatic matching and appear on other homework. No page repairs that
+dangling decision. A link row whose student ID does not match the read is excluded and stops
+applying without a diagnostic. Nothing here detects every edit.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """

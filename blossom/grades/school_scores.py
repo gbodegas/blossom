@@ -12,6 +12,8 @@ whether the pair shows: both dates fully resolved and equal, points the school r
 result its class and term still show.
 
 A parent's links are read before that count. Each link confirms one pair or keeps it apart.
+Each assignment/result pair is supplied at most once; its ``Link`` represents the standing
+decision for that pair.
 A pair with a link of either kind is no candidate, and neither is any other pair of an
 assignment or of a result that a confirmed link names, whether or not that link's other side
 is among the values given. A linked assignment shows the results its confirmed links name and
