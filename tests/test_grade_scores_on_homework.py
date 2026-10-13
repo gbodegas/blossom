@@ -4014,26 +4014,27 @@ def test_a_conflict_is_met_only_when_her_links_are_read_and_whatever_result_it_n
     assert second == [CONFLICT]
 
 
-LINK_BYTES = [
+LINK_EDITS = [
+    pytest.param(as_bytes("grade_homework_links", "result_id"), id="the result's ID as bytes"),
     pytest.param(
-        "UPDATE grade_homework_links SET result_id = CAST(result_id AS BLOB)",
-        id="the result's ID",
+        as_bytes("grade_homework_links", "assignment_id"), id="the homework's ID as bytes"
     ),
+    pytest.param(not_utf8("grade_homework_links", "result_id"), id="the result's ID not UTF-8"),
     pytest.param(
-        "UPDATE grade_homework_links SET assignment_id = CAST(assignment_id AS BLOB)",
-        id="the homework's ID",
+        not_utf8("grade_homework_links", "assignment_id"), id="the homework's ID not UTF-8"
     ),
 ]
+"""A link's result ID and homework ID, each stored as bytes and each stored as text that is
+not UTF-8."""
 
 
-@pytest.mark.parametrize("as_bytes_edit", LINK_BYTES)
-def test_a_link_value_stored_as_bytes_leaves_her_pages_as_with_no_class_on_record(
-    as_bytes_edit: str, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize("edit", LINK_EDITS)
+def test_a_link_value_that_can_t_be_decoded_leaves_her_pages_as_with_no_class_on_record(
+    edit: Edit, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A link made by the store's own write, then one of its values changed by hand to bytes.
-    Her week and the details answer 200 with no score, the linked one included, and each read
-    records the failure's type alone. The same with two confirmed rows for one result beside
-    it: the record names the value that can't be decoded."""
+    """A link made by the store's own write, then one of its IDs changed by hand through SQL.
+    Her week and the details read as with no class on record and log the failure's type alone,
+    also with two confirmed rows for one result stored by hand beside it."""
     with browser() as client:
         store = store_of(client)
         store.put_on_record(
@@ -4044,7 +4045,7 @@ def test_a_link_value_stored_as_bytes_leaves_her_pages_as_with_no_class_on_recor
         diagram = result_named(client, class_id, DIAGRAM)
         parent_links(client, class_id, diagram, DIAGRAM_ID)
         whole = [as_rendered(client, address) for address in HER_PAGES]
-        stored(store, as_bytes_edit)
+        stored(store, edit.statement, *edit.binds)
         said, logged = [], []
         with caplog.at_level(logging.WARNING, logger="blossom"):
             for with_a_conflict in (False, True):
@@ -4054,12 +4055,18 @@ def test_a_link_value_stored_as_bytes_leaves_her_pages_as_with_no_class_on_recor
                     caplog.clear()
                     said.append(as_rendered(client, address))
                     logged.append((recorded(caplog), caplog.text))
+        decoding = store._connection.text_factory
 
+    private = (LOG, DIAGRAM, NOTEBOOK, BIOLOGY, DIAGRAM_ID, "xff", "\ufffd")
     assert [len(scores(page)) for page in whole] == [2, 1]
     assert said == bare * 2
+    for page in said:
+        assert "School score" not in page
+        assert "Grade details" not in page
     assert [records for records, _ in logged] == [[LEFT_OUT]] * 4
     for _, text in logged:
-        assert not [word for word in (LOG, DIAGRAM, NOTEBOOK, BIOLOGY, DIAGRAM_ID) if word in text]
+        assert not [word for word in private if word in text]
+    assert decoding is text_or_refusal
 
 
 def test_an_undecodable_cell_beside_a_link_or_a_conflict_leaves_no_score_and_names_the_cell(
