@@ -128,6 +128,8 @@ from blossom.stores.gradebook import (
     RESULT_ID,
     REVISION_MAX,
     UNCONNECTED,
+    ClassOfYear,
+    ClassTermRead,
     ConfirmedBy,
     ContextChanged,
     ContextNotOnRecord,
@@ -144,6 +146,7 @@ from blossom.stores.gradebook import (
     LinkDecision,
     NamedClass,
     RequiredIndexUnavailable,
+    ResultPlace,
     Term,
     TermNotOnRecord,
     Viewer,
@@ -2613,6 +2616,35 @@ def result_said(view: ResultHomework) -> tuple[Said, list[Said], list[Said]]:
     return state, withheld, waiting
 
 
+class ResultOwn(NamedTuple):
+    """A result's own class and term as its page reads them first: its place, its class, the
+    class and term's read, its current value, and its year's terms by place, folded."""
+
+    place: ResultPlace
+    named: ClassOfYear
+    read: ClassTermRead
+    value: CurrentValue
+    terms: list[str]
+
+
+def result_own(store: ProjectStateStore, result_id: str) -> ResultOwn | None:
+    """A result's own class and term; None when no result of hers has that ID or it holds no
+    current value. A term not among its year's terms is ``GradeValueUndecodable``. A read."""
+    place = store.result_place(result_id)
+    named = None if place is None else store.class_named(place.class_id)
+    if place is None or named is None:
+        return None
+    read = store.class_term(place.class_id, place.term)
+    value = read.current.results.get(result_id)
+    if value is None:
+        return None
+    terms = [folded(one) for one in store.terms_of_year(named.year)]
+    if folded(place.term) not in terms:
+        # Its class's page can't be named: a term outside its year is a damaged record.
+        raise GradeValueUndecodable
+    return ResultOwn(place, named, read, value, terms)
+
+
 def result_page_read(state: ApplicationState, result_id: str) -> dict[str, object] | None:
     """What a result's page shows, read in one hold in class details' order: the result's own
     class and term with its lines, her links, then the rest of the score read. None when the ID
@@ -2621,18 +2653,10 @@ def result_page_read(state: ApplicationState, result_id: str) -> dict[str, objec
     if not RESULT_ID.fullmatch(result_id):
         return None
     with store.reading():
-        place = store.result_place(result_id)
-        named = None if place is None else store.class_named(place.class_id)
-        if place is None or named is None:
+        own = result_own(store, result_id)
+        if own is None:
             return None
-        read = store.class_term(place.class_id, place.term)
-        value = read.current.results.get(result_id)
-        if value is None:
-            return None
-        terms = [folded(one) for one in store.terms_of_year(named.year)]
-        if folded(place.term) not in terms:
-            # Its class's page can't be named: a term outside its year is a damaged record.
-            raise GradeValueUndecodable
+        place, named, read, value, terms = own
         names = report_names(read.reports, state.clock.zone)
         _, shown = result_shown(
             value,
@@ -2763,6 +2787,10 @@ async def decide_homework(result_id: str, request: Request, state: State) -> Res
             or int(revision) > REVISION_MAX
         ):
             return answer(said=CHOOSE_HOMEWORK, status_code=422)
+        # A read of its own, before the write and outside its transaction: a term not among
+        # its year's terms stops the press as it stops the page; no result is the write's 404.
+        with state.project_state.reading():
+            result_own(state.project_state, result_id)
         try:
             async with state.decision_lock:
                 outcome = state.project_state.decide_homework_link(

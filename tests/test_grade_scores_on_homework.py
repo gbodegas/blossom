@@ -6595,3 +6595,29 @@ def test_a_result_whose_term_is_not_among_its_year_s_terms_answers_the_generic_5
 
     assert (answer.status_code, answer.text) == (500, "Internal Server Error")
     assert records == ["a grade page wasn't shown: GradeValueUndecodable"]
+
+
+@pytest.mark.parametrize("decision", ["link", "apart", "automatic"])
+def test_a_press_for_a_result_whose_term_is_not_among_its_year_s_terms_writes_nothing(
+    decision: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The page read, then the year's term row deleted from the file by hand, as no save does:
+    each decision, one that would stand included, answers the plain generic 500 with one record
+    of the failure's type alone, and the file is as it was."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        revision = forms_on(result_page(client, log))[0][3]
+        stored(store, "DELETE FROM grade_terms WHERE label = 'T1'")
+        before = every_row(database_of(client))
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            answer = pressed(client, log, decision=decision, revision=revision)
+            records = [one.getMessage() for one in caplog.records if one.name.startswith("blossom")]
+        after = every_row(database_of(client))
+
+    assert (answer.status_code, answer.text) == (500, "Internal Server Error")
+    assert records == ["a homework link wasn't written: GradeValueUndecodable"]
+    assert after == before
