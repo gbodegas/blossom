@@ -13,6 +13,7 @@ import dataclasses
 import difflib
 import functools
 import html
+import inspect
 import json
 import logging
 import pathlib
@@ -56,19 +57,30 @@ from blossom.grades.school_scores import (
 from blossom.grades.text_reader import read_grade_report
 from blossom.grades.wording import report_names, score_line, spoken_day
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
+from blossom.homework_search import PAGE_SIZE, QUERY_MAX_LENGTH, ResultsPage
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
 from blossom.plans import PlanBlock
 from blossom.reconciliation import SourceChannel
-from blossom.routes.grades import result_said, row_shown
+from blossom.routes import grades
+from blossom.routes.grades import OtherShown, other_shown, result_page_read, result_said, row_shown
 from blossom.routes.homework_scores import (
+    FoundRow,
+    FoundState,
+    HomeworkFound,
     HomeworkRow,
+    NoList,
+    OtherResult,
     PairStanding,
     ResultHomework,
     RuleValues,
     ScoreShown,
     Withheld,
+    YearRead,
+    homework_found,
     homework_of,
+    other_results,
     read_grade_facts,
+    read_links,
     read_score_facts,
     result_homework,
     results_read,
@@ -92,8 +104,10 @@ from blossom.stores.gradebook import (
     DeletePreview,
     GradeReportNotSaved,
     GradeTransactionLost,
+    HomeworkClasses,
     HomeworkLinkWritten,
     LinkDecision,
+    NamedClass,
     _cells,
     _copied,
     _month,
@@ -109,6 +123,7 @@ from tests.support import (
     HER_PAGE,
     PAGE_HEADERS,
     ZONE,
+    Statements,
     accepting,
     as_stored,
     browser,
@@ -133,6 +148,7 @@ from tests.support import (
     school_said,
     scripted_graphs,
     sign_in_as,
+    state_of,
     store_of,
     unreadable_claim,
     whole_form,
@@ -252,6 +268,22 @@ def line_on_class_details(page: str, result_id: str) -> str:
 
 def link_to(class_id: str, result_id: str, n: int = 1, tree: str = "student") -> str:
     return f"/{tree}/grades/classes/{class_id}/terms/{n}#{result_id}"
+
+
+def way_in_to(result_id: str) -> str:
+    """The address of a result's homework page, a parent's, landing on its heading."""
+    return f"/parent/grades/results/{result_id}/homework#homework"
+
+
+def ways_in_on(page: str) -> list[tuple[str, str, str]]:
+    """Each link on a page to a result's homework page: its address, its words, and its
+    accessible name when it has one of its own."""
+    found = re.findall(
+        r'<a class="assignment-link" href="(/parent/grades/results/[^"]*)"'
+        r'(?: aria-label="([^"]*)")?>([^<]*)</a>',
+        page,
+    )
+    return [(html.unescape(href), words, html.unescape(name)) for href, name, words in found]
 
 
 def earlier_row(page: str, title: str) -> str:
@@ -483,6 +515,62 @@ def test_the_link_is_on_the_reader_s_own_tree(
     assert shown == expected
     assert detailed == expected
     assert line_on_class_details(landed, result_id) == LINE
+
+
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_a_signed_in_parent_finds_beside_each_result_on_assignment_details_its_page(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """The log matched by the rules, a notebook linked to the diagram's result and to the
+    osmosis lab's, and a sketch linked to the practice's alone. On assignment details a
+    signed-in parent finds, after each result's Grade details, "Confirm or reject this match"
+    for the match and "Change or remove link" for each link, one or several, each to that
+    result's page; she, and anyone with the sign-in off, finds none."""
+    sketch = "assignment-sketch"
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store_of(client).put_on_record(
+            [homework(), homework(NOTEBOOK_ID, NOTEBOOK, None), homework(sketch, "Field sketch")],
+            {},
+        )
+        class_id = with_report(client)
+        log, diagram, osmosis, practice = (
+            result_named(client, class_id, title) for title in (LOG, DIAGRAM, OSMOSIS, PRACTICE)
+        )
+        parent_links(client, class_id, diagram, NOTEBOOK_ID)
+        parent_links(client, class_id, osmosis, NOTEBOOK_ID)
+        parent_links(client, class_id, practice, sketch)
+        matched = details_of(client)
+        linked = details_of(client, NOTEBOOK_ID)
+        linked_once = details_of(client, sketch)
+
+    assert [len(scores(matched)), len(EACH_RESULT.findall(linked))] == [1, 2]
+    assert len(scores(linked_once)) == 1
+    if reader != "parent":
+        assert ways_in_on(matched) == ways_in_on(linked) == ways_in_on(linked_once) == []
+        return
+    match_way, link_way = "Confirm or reject this match", "Change or remove link"
+    assert ways_in_on(matched) == [(way_in_to(log), match_way, f"{match_way}: {LOG}, {BIOLOGY}")]
+    assert ways_in_on(linked) == [
+        (way_in_to(diagram), link_way, f"{link_way}: {DIAGRAM}, {BIOLOGY}"),
+        (way_in_to(osmosis), link_way, f"{link_way}: {OSMOSIS}, {BIOLOGY}"),
+    ]
+    beside = (
+        'Grade details</a></p>\n      <p class="details-link"><a class="assignment-link" '
+        f'href="{way_in_to(log)}" aria-label="{match_way}: {LOG}, {BIOLOGY}">{match_way}</a></p>'
+        "\n    </section>"
+    )
+    assert matched.count(beside) == 1
+    assert linked.count('Grade details</a></p>\n      <p class="details-link">') == 2
+    assert ways_in_on(linked_once) == [
+        (way_in_to(practice), link_way, f"{link_way}: Field sketch, {BIOLOGY}")
+    ]
+    assert (
+        linked_once.count(
+            f'aria-label="{link_way}: Field sketch, {BIOLOGY}">{link_way}</a></p>\n    </section>'
+        )
+        == 1
+    )
 
 
 def test_g3a_i3_with_no_class_on_record_her_week_and_details_show_no_score() -> None:
@@ -3659,7 +3747,8 @@ def test_the_details_list_each_result_with_its_title_its_line_and_its_own_link(
 ) -> None:
     """Three results linked to one assignment, two in one term and one in the next: each has its
     title, class details' line and a link to its own term on the reader's tree. No word says who
-    chose them, the section holds no form or button, and the newer of one term's two is first."""
+    chose them, but for a signed-in parent's way to each result's page; the section holds no
+    form or button, and the newer of one term's two is first."""
     with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         store_of(client).put_on_record([homework(title=NOTEBOOK)], {})
@@ -3698,6 +3787,18 @@ def test_the_details_list_each_result_with_its_title_its_line_and_its_own_link(
     ]
     assert len(scores(section)) == 3
     assert [count for count, _, _ in several(card)] == ["3"]
+    link_way = "Change or remove link"
+    ways = [
+        (way_in_to(one), link_way, f"{link_way}: {title}, {BIOLOGY}")
+        for one, title in ((diagram, DIAGRAM), (first, LOG), (second, LOG))
+    ]
+    assert ways_in_on(section) == (ways if reader == "parent" else [])
+    for address, words, name in ways:
+        section = section.replace(
+            f'<p class="details-link"><a class="assignment-link" href="{address}" '
+            f'aria-label="{name}">{words}</a></p>',
+            "",
+        )
     said = re.sub(r"<[^>]*>", " ", section).lower()
     assert not [word for word in ("link", "match", "parent", "chose") if word in said]
     assert "<form" not in section
@@ -4152,13 +4253,12 @@ def test_the_read_gives_the_grade_facts_and_her_links_and_the_mapping_says_how_e
         Link(DIAGRAM_ID, diagram, confirmed=False),
         Link(LOG_ID, log, confirmed=True),
     ]
-    assert with_links == {
-        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), title=LOG, linked=True),)
-    }
+    log_page, diagram_page = (way_in_to(one) for one in (log, diagram))
+    assert with_links == {LOG_ID: (ScoreShown(LINE, link_to(class_id, log), LOG, True, log_page),)}
     assert by_the_rules == {
-        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), title=LOG, linked=False),),
+        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), LOG, False, log_page),),
         DIAGRAM_ID: (
-            ScoreShown(DIAGRAM_LINE, link_to(class_id, diagram), title=DIAGRAM, linked=False),
+            ScoreShown(DIAGRAM_LINE, link_to(class_id, diagram), DIAGRAM, False, diagram_page),
         ),
     }
 
@@ -4191,6 +4291,9 @@ def test_two_confirmed_links_naming_one_result_leave_her_pages_as_with_no_class_
         after = every_row(database_of(client))
 
     assert [len(scores(page)) for page in whole] == [2, 1, 1]
+    assert [len(ways_in_on(page)) for page in whole[1:]] == (
+        [1, 1] if reader == "parent" else [0, 0]
+    )
     assert said == bare * 2
     for page in said:
         assert not [
@@ -4198,6 +4301,7 @@ def test_two_confirmed_links_naming_one_result_leave_her_pages_as_with_no_class_
             for word in ("School score", "School results", "Grade details", "See the results")
             if word in page
         ]
+        assert ways_in_on(page) == []
         assert HEADING not in page
     assert [records for records, _ in logged] == [[CONFLICT]] * 6
     for _, text in logged:
@@ -5207,6 +5311,538 @@ def test_a_result_s_view_holds_closed_fields_and_closed_sets_of_values() -> None
     ]
 
 
+SET = "Practice set"
+"""A homework title no result has, shared by the rows a search pages through."""
+TWENTY_ONE = [homework(f"assignment-set-{n:02}", SET, None) for n in range(21, 0, -1)]
+"""Twenty-one undated assignments of one class name and one title, which no word tells apart,
+in the reverse of the search's order."""
+CODE = "07 BIO - C"
+"""The Biology class's report code, a second name homework connects to it by."""
+
+
+def searched(
+    words: str,
+    read: RuleValues,
+    links: Collection[Link] = (),
+    *,
+    page: str = "",
+    result_id: str = "result-log",
+) -> HomeworkFound | NoList:
+    """A search of the one class's result ``result_id`` for ``words`` with the page field
+    ``page``, from plain values."""
+    return homework_found(words, page, THE_CLASS.class_id, result_id, read, links=links)
+
+
+def found_ids(answer: HomeworkFound | NoList) -> list[str]:
+    """The assignment ID of each row a search lists, in its order."""
+    assert isinstance(answer, HomeworkFound), answer
+    return [row.item.assignment_id for row in answer.rows]
+
+
+def test_a_search_lists_only_the_class_s_homework_each_word_finds_in_its_name_or_title() -> None:
+    """Plain values: homework of the class under its name and under its report code, a task
+    among it, and homework of the log's title under a name of another class or of none. Every
+    word must be in the class name or the title, and rows come in the search's one order."""
+    log, notebook = homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)
+    task = homework("assignment-task", "Germination reading", None, kind=AssignmentKind.TASK)
+    coded = homework("assignment-coded", "Germination photos", course=CODE)
+    other = homework("assignment-other", LOG, course="08 GEOMETRY")
+    waits = homework("assignment-waits", LOG, course="Life Science")
+    plain = as_read(
+        [other, log, waits, notebook, task, coded],
+        [school_result("result-log")],
+        unconnected=["assignment-waits"],
+    )
+    read = plain._replace(classes={**plain.classes, "assignment-other": ["class-geometry"]})
+
+    answer = searched("germination", read)
+
+    assert answer == HomeworkFound(
+        ResultsPage(1, 1, 3, (coded, task, log)),
+        (
+            FoundRow(coded, FoundState.NONE),
+            FoundRow(task, FoundState.NONE),
+            FoundRow(log, FoundState.NONE),
+        ),
+    )
+    assert found_ids(searched("seed", read)) == [LOG_ID]
+    assert found_ids(searched("  GERMINATION   Log ", read)) == ["assignment-task", LOG_ID]
+    assert found_ids(searched("notebook", read)) == [NOTEBOOK_ID]
+    assert found_ids(searched("07", read)) == ["assignment-coded"]
+    assert found_ids(searched("biology", read)) == ["assignment-task", NOTEBOOK_ID, LOG_ID]
+    for words in ("geometry", "life science", "germination notebook"):
+        assert searched(words, read) == HomeworkFound(ResultsPage(1, 1, 0, ()), ())
+
+
+def test_each_found_row_s_state_is_the_first_of_linked_here_kept_apart_or_linked_elsewhere() -> (
+    None
+):
+    """Plain values: homework linked to the result and to another, kept apart from it, linked
+    to another result, kept apart from it and linked to another, kept apart from another result
+    only, and with no decision. A row's state is the first that holds, as the page's rows say."""
+    names = ["here", "apart", "elsewhere", "apart-and-elsewhere", "apart-from-other", "none"]
+    items = [homework(f"assignment-{name}", SET, None) for name in names]
+    links = [
+        confirmed("assignment-here", "result-log"),
+        confirmed("assignment-here", "result-2"),
+        kept_apart("assignment-apart", "result-log"),
+        confirmed("assignment-elsewhere", "result-3"),
+        kept_apart("assignment-apart-and-elsewhere", "result-log"),
+        confirmed("assignment-apart-and-elsewhere", "result-4"),
+        kept_apart("assignment-apart-from-other", "result-2"),
+    ]
+    read = as_read(items, [school_result("result-log", SET)])
+
+    answer = searched("practice", read, links)
+    view = viewed("result-log", read, links)
+
+    assert isinstance(answer, HomeworkFound)
+    states = {row.item.assignment_id: row.state for row in answer.rows}
+    assert states == {
+        "assignment-here": FoundState.LINKED,
+        "assignment-apart": FoundState.APART,
+        "assignment-elsewhere": FoundState.ANOTHER_RESULT,
+        "assignment-apart-and-elsewhere": FoundState.APART,
+        "assignment-apart-from-other": FoundState.NONE,
+        "assignment-none": FoundState.NONE,
+    }
+    first = {LINKED: FoundState.LINKED, APART: FoundState.APART}
+    assert len(view.candidates) == len(items)
+    for one in view.candidates:
+        alone = FoundState.ANOTHER_RESULT if one.another_result else FoundState.NONE
+        assert states[one.assignment_id] == first.get(one.standing, alone)
+
+
+def test_a_search_comes_twenty_to_a_page_and_every_row_one_title_shares_can_be_reached() -> None:
+    """Plain values: twenty-one assignments that no word tells apart. The page field empty or
+    "1" gives the first twenty in the search's order with a next page; "2" gives the twenty-
+    first with a previous page; together they hold every one."""
+    read = as_read(TWENTY_ONE, [])
+    order = sorted(TWENTY_ONE, key=lambda item: item.assignment_id)
+
+    first, again, second = (searched("practice set", read, page=page) for page in ("", "1", "2"))
+
+    assert isinstance(first, HomeworkFound)
+    assert isinstance(second, HomeworkFound)
+    assert again == first
+    assert first.page == ResultsPage(1, 2, 21, tuple(order[:PAGE_SIZE]))
+    assert (first.page.previous, first.page.next) == (None, 2)
+    assert second.page == ResultsPage(2, 2, 21, tuple(order[PAGE_SIZE:]))
+    assert (second.page.previous, second.page.next) == (1, None)
+    assert [row.item for row in (*first.rows, *second.rows)] == order
+    assert {row.state for row in (*first.rows, *second.rows)} == {FoundState.NONE}
+
+
+@pytest.mark.parametrize(
+    ("words", "page", "nothing"),
+    [
+        pytest.param("", "", NoList.NO_WORDS, id="no words"),
+        pytest.param("   ", "", NoList.NO_WORDS, id="only spaces"),
+        pytest.param("", "two", NoList.NO_WORDS, id="no words and a page in words"),
+        pytest.param("  ", "3", NoList.NO_WORDS, id="only spaces and a page past the last"),
+        pytest.param("practice\nset", "", NoList.WORDS_REFUSED, id="two lines"),
+        pytest.param("s" * 201, "", NoList.WORDS_REFUSED, id="201 characters"),
+        pytest.param(" s" * 101, "", NoList.WORDS_REFUSED, id="201 once spaces collapse"),
+        pytest.param("practice\nset", "two", NoList.WORDS_REFUSED, id="two lines, a page in words"),
+        pytest.param(SET, "0", NoList.NO_SUCH_PAGE, id="page 0"),
+        pytest.param(SET, "3", NoList.NO_SUCH_PAGE, id="a page past the last"),
+        pytest.param(SET, "02", NoList.NO_SUCH_PAGE, id="a leading zero"),
+        pytest.param(SET, "two", NoList.NO_SUCH_PAGE, id="a page in words"),
+        pytest.param(SET, "1234567", NoList.NO_SUCH_PAGE, id="seven digits"),
+        pytest.param(SET, "+2", NoList.NO_SUCH_PAGE, id="a sign"),
+        pytest.param(SET, " 2", NoList.NO_SUCH_PAGE, id="a space"),
+        pytest.param(SET, "\uff12", NoList.NO_SUCH_PAGE, id="a digit that is not ASCII"),
+        pytest.param("geometry", "2", NoList.NO_SUCH_PAGE, id="a second page of nothing found"),
+    ],
+)
+def test_a_search_lists_nothing_for_no_words_refused_words_or_a_page_its_rows_lack(
+    words: str, page: str, nothing: NoList
+) -> None:
+    """Plain values: twenty-one rows of one title. With no words any page field is a search with
+    no words; refused words are refused whatever the page field; then a field that is no page
+    number, or a number no page of the rows found has, names no page."""
+    assert searched(words, as_read(TWENTY_ONE, []), page=page) is nothing
+
+
+def test_a_search_past_the_last_page_gives_the_first_page_again_with_the_page_field_empty() -> None:
+    """Plain values: "3" names no page of twenty-one rows; the same words with the page field
+    empty, as the search's own button sends it, give the first page of twenty."""
+    read = as_read(TWENTY_ONE, [])
+
+    past = searched(SET, read, page="3")
+    again = searched(SET, read, page="")
+
+    assert past is NoList.NO_SUCH_PAGE
+    assert isinstance(again, HomeworkFound)
+    assert (again.page.number, again.page.total, len(again.rows)) == (1, 21, PAGE_SIZE)
+
+
+def test_words_over_the_limit_as_typed_and_at_it_once_their_spaces_collapse_are_searched() -> None:
+    """Plain values: words of 248 characters as typed and 200 once their spaces collapse find
+    the rows that hold every one of them."""
+    words = "  ".join([*["set"] * 48, "practice"])
+
+    answer = searched(words, as_read(TWENTY_ONE, []))
+
+    assert (len(words), len(" ".join(words.split()))) == (248, QUERY_MAX_LENGTH)
+    assert isinstance(answer, HomeworkFound)
+    assert answer.page.total == 21
+
+
+@pytest.mark.parametrize(
+    "words", ["practice", "", "two\nlines"], ids=["words", "no words", "refused words"]
+)
+def test_a_search_is_refused_whole_on_two_confirmed_links_naming_one_result(words: str) -> None:
+    """Plain values. Two confirmed links that name one result raise the conflict error with no
+    cause and no context, whatever the words, and whether or not that result is the one
+    searched for."""
+    read = as_read(TWENTY_ONE, [])
+    links = [confirmed("assignment-set-01", "result-2"), confirmed("assignment-set-02", "result-2")]
+
+    for result_id in ("result-log", "result-2"):
+        with pytest.raises(GradeValueUndecodable) as refused:
+            searched(words, read, links, result_id=result_id)
+
+        assert type(refused.value) is HomeworkLinksConflict
+        assert refused.value.__cause__ is None
+        assert refused.value.__context__ is None
+
+
+def test_a_search_s_answer_holds_closed_fields_and_closed_sets_of_values() -> None:
+    assert [field.name for field in dataclasses.fields(HomeworkFound)] == ["page", "rows"]
+    assert [field.name for field in dataclasses.fields(FoundRow)] == ["item", "state"]
+    assert list(FoundState) == ["linked", "apart", "another_result", "none"]
+    assert list(NoList) == ["no_words", "words_refused", "no_such_page"]
+
+
+def found_now(
+    client: TestClient, result_id: str, words: str, page: str = ""
+) -> HomeworkFound | NoList:
+    """What a search finds from a result's page read, as the store stands."""
+    shown = result_page_read(state_of(client), result_id, search=(words, page))
+    assert shown is not None
+    answer = shown["found"]
+    assert isinstance(answer, HomeworkFound | NoList), answer
+    return answer
+
+
+def test_a_search_makes_the_result_s_page_read_and_asks_no_statement_and_writes_nothing() -> None:
+    """The log's page read with no search, then with a search that finds homework, with no
+    words, with refused words, and with a page past the last. Each asks the page's statements
+    in the page's order and no other, gives the page the same values, and writes nothing."""
+    searches = [("germination", ""), ("", ""), ("two\nlines", ""), ("germination", "2")]
+    with browser() as client:
+        store_of(client).put_on_record([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        state = state_of(client)
+        before = closed_world([database_of(client)], leaving_out=())
+        with Statements(state) as seen:
+            plain = result_page_read(state, log)
+        asked = list(seen)
+        answers: list[tuple[dict[str, object] | None, list[str]]] = []
+        for search in searches:
+            with Statements(state) as seen:
+                answers.append((result_page_read(state, log, search=search), list(seen)))
+        after = closed_world([database_of(client)], leaving_out=())
+
+    assert plain is not None
+    assert plain["found"] is None
+    assert asked
+    found = []
+    for shown, statements in answers:
+        assert statements == asked
+        assert shown is not None
+        assert {**shown, "found": None, "search": None} == plain
+        found.append(shown["found"])
+    assert found[1:] == [NoList.NO_WORDS, NoList.WORDS_REFUSED, NoList.NO_SUCH_PAGE]
+    assert isinstance(found[0], HomeworkFound)
+    assert found_ids(found[0]) == [LOG_ID]
+    assert after == before
+
+
+def test_a_search_through_the_store_finds_homework_whose_name_the_year_makes_the_class() -> None:
+    """Homework under the class's name and its report code, a task among it, and homework under
+    another class's name and under a name that waits, all with one word in the title. A search
+    on the log's page finds the homework whose name the year's answers make the log's class."""
+    on_record = [
+        homework(),
+        homework("assignment-task", "Germination reading", None, kind=AssignmentKind.TASK),
+        homework("assignment-coded", "Germination photos", course=CODE),
+        homework("assignment-other", "Germination angles", course="08 GEOMETRY"),
+        homework("assignment-waits", "Germination survey", course="Life Science"),
+    ]
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(on_record, {})
+        class_id = with_report(client)
+        geometry = with_report(client, GEOMETRY)
+        log = result_named(client, class_id, LOG)
+        every_word = found_now(client, log, "germination")
+        by_code = found_now(client, log, "07")
+        by_name = found_now(client, log, "biology")
+        mapping = store.homework_classes(YEAR)
+
+    classes = {item.assignment_id: class_for(item.course, mapping) for item in on_record}
+    assert classes == {
+        LOG_ID: class_id,
+        "assignment-task": class_id,
+        "assignment-coded": class_id,
+        "assignment-other": geometry,
+        "assignment-waits": None,
+    }
+    assert found_ids(every_word) == ["assignment-coded", "assignment-task", LOG_ID]
+    assert found_ids(by_code) == ["assignment-coded"]
+    assert found_ids(by_name) == ["assignment-task", LOG_ID]
+
+
+def test_a_search_through_the_store_reads_a_class_name_by_the_answers_of_the_class_s_year() -> None:
+    """Last school year's report and this year's, in two classes of one name, and this year's
+    answer that Biology is no class. Homework under Biology is found on last year's log page
+    alone; homework under the report code, on both."""
+    then = draft_of(IN_WEEK.replace(f"**{YEAR}**", "**2025-2026**"))
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [homework(), homework("assignment-coded", "Germination photos", course=CODE)], {}
+        )
+        review = store.review_grade_report(then, capture_key(then), key=KEY)
+        saved = save_grade(
+            store, then, key=KEY, review=review, answers=grade_answers(review, month=9)
+        )
+        assert isinstance(saved, GradeReportSaved)
+        last_year = capture_class(store, then)
+        this_year = with_report(client)
+        store.set_current_context(("2025-2026", "T1"), (YEAR, "T1"), role="parent")
+        store.connect_homework_class(YEAR, BIOLOGY, shown=None, chosen=UNCONNECTED, role="parent")
+        now = found_now(client, result_named(client, this_year, LOG), "germination")
+        earlier = found_now(client, result_named(client, last_year, LOG), "germination")
+        connected = [
+            class_for(BIOLOGY, store.homework_classes(year)) for year in (YEAR, "2025-2026")
+        ]
+
+    assert connected == [None, last_year]
+    assert found_ids(now) == ["assignment-coded"]
+    assert found_ids(earlier) == ["assignment-coded", LOG_ID]
+
+
+def states_now(client: TestClient, result_id: str) -> dict[str, FoundState]:
+    """Each Biology homework a search finds from a result's page read, with its state."""
+    answer = found_now(client, result_id, "biology")
+    assert isinstance(answer, HomeworkFound)
+    return {row.item.assignment_id: row.state for row in answer.rows}
+
+
+def test_each_found_row_s_state_follows_the_decisions_made_through_the_store() -> None:
+    """The log's and the diagram's results, and four homework rows of the class. By the store's
+    own write: a notebook linked to the log, the log's homework kept apart from it, practice
+    linked to the diagram; then practice kept apart from the log; then the notebook linked to
+    the diagram too. Each found row's state is the first that holds."""
+    spare = "assignment-spare"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [
+                homework(),
+                homework(NOTEBOOK_ID, NOTEBOOK, None),
+                homework(PRACTICE_ID, PRACTICE, date(2026, 8, 12)),
+                homework(spare, "Field sketch", None),
+            ],
+            {},
+        )
+        class_id = with_report(client)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        untouched = states_now(client, log)
+        parent_links(client, class_id, log, NOTEBOOK_ID)
+        parent_links(client, class_id, log, decision="apart")
+        parent_links(client, class_id, diagram, PRACTICE_ID)
+        first = states_now(client, log)
+        parent_links(client, class_id, log, PRACTICE_ID, decision="apart")
+        second = states_now(client, log)
+        links_second = read_links(store)
+        parent_links(client, class_id, diagram, NOTEBOOK_ID)
+        third = states_now(client, log)
+        links_third = read_links(store)
+
+    none, linked, apart = FoundState.NONE, FoundState.LINKED, FoundState.APART
+    assert list(untouched) == [spare, NOTEBOOK_ID, PRACTICE_ID, LOG_ID]
+    assert untouched == dict.fromkeys(untouched, none)
+    assert first == {
+        spare: none,
+        NOTEBOOK_ID: linked,
+        PRACTICE_ID: FoundState.ANOTHER_RESULT,
+        LOG_ID: apart,
+    }
+    assert second == {**first, PRACTICE_ID: apart}
+    assert third == second
+    assert confirmed(PRACTICE_ID, diagram) in links_second
+    assert confirmed(NOTEBOOK_ID, diagram) in links_third
+    assert confirmed(NOTEBOOK_ID, log) in links_third
+
+
+THEN_CLASS = ClassOfYear("class-biology-then", BIOLOGY, "2025-2026")
+"""Last school year's class of the same name, another class."""
+
+
+def year_of(year: str, *classes: ClassOfYear) -> YearRead:
+    """A school year as plain values: its classes by ID and name, and nothing read."""
+    named = tuple(NamedClass(one.class_id, one.name, ()) for one in classes)
+    return YearRead(HomeworkClasses(year, named, {}), None, (), {})
+
+
+def a_result(
+    result_id: str,
+    day: date | None,
+    *,
+    title: str = LOG,
+    term: str = "T1",
+    class_id: str = THE_CLASS.class_id,
+) -> Result:
+    """A result as the rules read it, its day resolved when it has one."""
+    return Result(class_id, term, result_id, title, day, day is not None, True, True)
+
+
+def with_values(read: RuleValues) -> RuleValues:
+    """The values with each result's current value, as a page's read holds them."""
+    found = {(one.class_id, one.term, one.result_id): (value_with(), 1) for one in read.results}
+    return read._replace(found=found)
+
+
+def others_of(read: RuleValues, result_id: str = "result-log", term: str = "T1") -> list[str]:
+    """The IDs of the other results listed beside one of the one class's results."""
+    years = (year_of("2025-2026", THEN_CLASS), year_of(YEAR, THE_CLASS))
+    return [
+        one.result_id for one in other_results(THE_CLASS.class_id, term, result_id, read, years)
+    ]
+
+
+def test_other_results_share_a_candidate_with_the_result_each_once_and_go_no_further() -> None:
+    """Plain values: the log's result and six more. One shares both its candidates, two agree
+    with each other in title, class, term and day and share both, one in another class shares
+    one, one has another title, and one shares a candidate only with a result that shares one
+    with the log's. The first four are listed, each once, in the order the results came; the
+    log's own result and the others are not."""
+    dated, twin = homework(), homework("assignment-twin")
+    later = homework("assignment-later", on=date(2026, 8, 27))
+    results = [
+        a_result("result-none", THURSDAY, title=DIAGRAM),
+        a_result("result-twice", None),
+        a_result("result-log", THURSDAY),
+        a_result("result-alike-1", THURSDAY),
+        a_result("result-alike-2", THURSDAY),
+        a_result("result-further", date(2026, 8, 27)),
+        a_result("result-once", THURSDAY, class_id=THEN_CLASS.class_id),
+    ]
+    plain = as_read([dated, twin, later], results)
+    classes = {**plain.classes, LOG_ID: [THE_CLASS.class_id, THEN_CLASS.class_id]}
+    read = with_values(plain._replace(classes=classes))
+
+    assert others_of(read) == ["result-twice", "result-alike-1", "result-alike-2", "result-once"]
+    assert others_of(read, "result-alike-1") == [
+        "result-twice",
+        "result-log",
+        "result-alike-2",
+        "result-once",
+    ]
+    assert others_of(read, "result-further") == ["result-twice"]
+    assert others_of(read, "result-none") == []
+
+
+def test_other_results_come_from_every_term_and_school_year_read_in_the_results_order() -> None:
+    """Plain values: the log's result, its twin in the next term, and last year's in a class of
+    the same name, which the log's homework name connects to as well. Each other result is
+    listed with its own class's name and year and its own term, in the order the results came."""
+    results = [
+        a_result("result-then", THURSDAY, class_id=THEN_CLASS.class_id),
+        a_result("result-log", THURSDAY),
+        a_result("result-next", THURSDAY, term="T2"),
+    ]
+    plain = as_read([homework()], results)
+    read = with_values(plain._replace(classes={LOG_ID: [THE_CLASS.class_id, THEN_CLASS.class_id]}))
+    years = (year_of("2025-2026", THEN_CLASS), year_of(YEAR, THE_CLASS))
+
+    listed = other_results(THE_CLASS.class_id, "T1", "result-log", read, years)
+    from_next = other_results(THE_CLASS.class_id, " T2 ", "result-next", read, years)
+
+    assert [(one.result_id, one.class_name, one.year, one.term) for one in listed] == [
+        ("result-then", BIOLOGY, "2025-2026", "T1"),
+        ("result-next", BIOLOGY, YEAR, "T2"),
+    ]
+    assert listed[0] == OtherResult(
+        class_id=THEN_CLASS.class_id,
+        class_name=BIOLOGY,
+        year="2025-2026",
+        term="T1",
+        result_id="result-then",
+        value=value_with(),
+        day=THURSDAY,
+    )
+    assert [one.result_id for one in from_next] == ["result-then", "result-log"]
+
+
+def test_other_results_are_read_before_any_decision_and_never_through_a_link_alone() -> None:
+    """Plain values: the log's result and its twin in the next term share the log's homework;
+    a notebook of another title is linked to the log's result. The list takes no decisions, so
+    the notebook adds nothing, and nothing a parent decides can change it."""
+    results = [a_result("result-log", THURSDAY), a_result("result-next", THURSDAY, term="T2")]
+    read = with_values(as_read([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)], results))
+
+    assert others_of(read) == ["result-next"]
+    assert "links" not in inspect.signature(other_results).parameters
+
+
+def test_identical_looking_twins_are_listed_apart_with_nothing_made_up_to_tell_them_apart() -> None:
+    """Plain values: two other results whose title, class, due line, term and year all agree.
+    Each is its own item, with the address of its own page and nothing else that differs."""
+    twins = [
+        OtherResult(THE_CLASS.class_id, BIOLOGY, YEAR, "T1", one, value_with(), THURSDAY)
+        for one in ("result-first", "result-second")
+    ]
+
+    shown = [other_shown(one, {}) for one in twins]
+
+    assert shown == [
+        OtherShown(
+            address=f"/parent/grades/results/{one}/homework#homework",
+            title=LOG,
+            class_name=BIOLOGY,
+            due="Due August 20",
+            term="T1",
+            year=YEAR,
+        )
+        for one in ("result-first", "result-second")
+    ]
+
+
+LOG_LINE = next(line for line in IN_WEEK.split("\n") if line.startswith(LOG_ROW))
+TWIN_LOGS = IN_WEEK.replace(
+    LOG_LINE,
+    LOG_LINE + "\n" + LOG_LINE.replace("18.0    | 20.0    | 90.0", "17.0    | 20.0    | 85.0"),
+)
+"""The report with a second row of the log's title and due date, scored apart: two results."""
+
+
+def test_identical_looking_twins_on_a_result_s_page_are_two_links_to_their_own_pages() -> None:
+    """Two results of the log's title and due date in the first term, and the log's in the
+    second. The second term's page lists both twins with the same words, in class details'
+    order, each a link to its own page."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client, TWIN_LOGS)
+        with_report(client, SECOND_TERM)
+        values = store_of(client).class_term(class_id, "T1").current.results
+        twins = [one for one, value in values.items() if value.cells["assignment"][1] == LOG]
+        page = result_page(client, result_named(client, class_id, LOG, "T2"))
+        order = order_on_class_details(class_details(client, class_id))
+
+    assert len(twins) == 2
+    assert others_on(page) == [
+        "Other results that could be the same homework:",
+        *[LOG, BIOLOGY, "Due August 20", "T1 · 2026-2027"] * 2,
+    ]
+    assert other_links(page) == [(way_in_to(one), LOG) for one in order if one in twins]
+
+
 RESULT_PAGE = "/parent/grades/results/{result_id}/homework"
 ON_THE_COMPUTER = "127.0.0.1:8781"
 
@@ -5233,6 +5869,10 @@ ANOTHER = (
     "keep them apart."
 )
 SYNTHETIC_CAUSE = "synthetic-cause-text-for-the-boundary"
+SEARCH_HEADING_AT = '<h2 id="search-heading">'
+"""Where a result's page's search begins, after its homework rows and any other results."""
+OTHERS_AT = '<h2 id="other-results">Other results that could be the same homework:</h2>'
+"""The heading over the other results that could be the same homework, before the search."""
 
 
 def result_page(client: TestClient, result_id: str) -> str:
@@ -5250,13 +5890,20 @@ def card_of(page: str, result_id: str) -> str:
 
 
 def said_on(page: str) -> list[str]:
-    """Each line a reader reads on a result's page after its result card, in order: the
-    paragraphs, list items, homework headings and buttons, each as its text alone."""
+    """Each line a reader reads on a result's page after its result card and before its other
+    results and its search, in order: the paragraphs, list items, homework headings and
+    buttons, each as its text."""
     start = page.index('<h1 id="homework"')
-    rest = page[page.index("</section>", start) + len("</section>") : page.index("</main>")]
+    end = page.index(OTHERS_AT, start) if OTHERS_AT in page else page.index(SEARCH_HEADING_AT)
+    return lines_of(page[page.index("</section>", start) + len("</section>") : end])
+
+
+def lines_of(part: str) -> list[str]:
+    """Each paragraph, list item, heading, label and button in a piece of a page, in order,
+    each as its text alone."""
     return [
         " ".join(html.unescape(re.sub(r"<[^>]+>", "", found[2])).split())
-        for found in re.finditer(r"<(p|li|h2|button)\b[^>]*>(.*?)</\1>", rest, re.S)
+        for found in re.finditer(r"<(p|li|h2|h3|label|button)\b[^>]*>(.*?)</\1>", part, re.S)
     ]
 
 
@@ -5327,7 +5974,11 @@ def test_a_matched_result_s_page_draws_its_card_and_a_form_for_each_decision_on_
     assert back + f'<span class="authored-text">{BIOLOGY}</span></a>' in page
     addresses = re.findall(r'(?:href|action)="([^"]*)"', page)
     assert LOG_ID not in " ".join(addresses)
-    assert [one for one in addresses if "/results/" in one] == [address, address]
+    assert [one for one in addresses if "/results/" in one] == [
+        address,
+        address,
+        f"{address}/search#found",
+    ]
 
 
 def test_a_result_s_page_says_what_each_decision_on_record_leaves() -> None:
@@ -6727,3 +7378,601 @@ def test_a_revision_below_its_column_s_bound_stops_a_result_s_page_and_every_pre
         * 3
     )
     assert after == before
+
+
+SEARCH_PAGE = RESULT_PAGE + "/search"
+FOUND_AT = '<h2 class="list-heading" id="found" tabindex="-1">Homework found</h2>'
+"""The heading over what a search found, which a search's answer lands on."""
+SEARCH_LINES = [
+    f"Homework in {BIOLOGY}",
+    "Search homework",
+    "Type a word or two from the title or the class name.",
+    "Search",
+]
+"""The search's heading, its field's label and hint, and its button, as a parent reads them."""
+WORDS_REFUSED = (
+    "Search words are one line of up to 200 characters. Nothing was searched, and nothing was "
+    "changed."
+)
+NO_PAGE = "There is no such page of results."
+REVIEW_WORDS = '<p class="jump"><a href="#search-words">Review your search words</a></p>'
+"""What follows the explanation of refused words: the way to the field that holds them."""
+LINK = "Link to this homework"
+SKETCH_ID = "assignment-sketch"
+Sent = Mapping[str, str | list[str]]
+
+
+def search_posted(client: TestClient, result_id: str, sent: Sent) -> Answered:
+    """A search's form posted from the computer the application runs on."""
+    return computer(client).post(
+        SEARCH_PAGE.format(result_id=result_id), data=sent, headers=PAGE_HEADERS
+    )
+
+
+def search(client: TestClient, result_id: str, words: str, page: str = "") -> Answered:
+    """A search posted as the page's own form sends it."""
+    return search_posted(client, result_id, {"words": words, "page": page})
+
+
+def search_said_on(page: str) -> list[str]:
+    """Each line a reader reads in a result's page's search, in order, each as its text."""
+    return lines_of(page[page.index(SEARCH_HEADING_AT) : page.index("</main>")])
+
+
+def found_on(page: str) -> str:
+    """What a search's answer shows from the heading over what it found."""
+    return page[page.index(FOUND_AT) :]
+
+
+def field_of(page: str) -> str:
+    """The words the search's field holds."""
+    found = re.search(r'<input id="search-words" type="text" name="words" value="([^"]*)"', page)
+    assert found is not None
+    return html.unescape(found[1])
+
+
+def page_presses(page: str) -> list[tuple[str, str, str, str]]:
+    """Each page control: its form's action, the words and the page number it carries, and its
+    button's words."""
+    found = re.findall(
+        r'<form method="post" action="([^"]*)">\s*'
+        r'<input type="hidden" name="words" value="([^"]*)">\s*'
+        r'<input type="hidden" name="page" value="([^"]*)">\s*'
+        r'<button type="submit" class="secondary">([^<]*)</button>',
+        page,
+    )
+    return [(html.unescape(a), html.unescape(b), c, d) for a, b, c, d in found]
+
+
+def link_names(page: str) -> list[str]:
+    """The accessible name of each found row's Link button."""
+    return [
+        html.unescape(one) for one in re.findall(rf'aria-label="([^"]*)">{LINK}</button>', page)
+    ]
+
+
+def addresses_on(page: str) -> list[str]:
+    """Every link's and every form's address on a page."""
+    return [html.unescape(one) for one in re.findall(r'(?:href|action)="([^"]*)"', page)]
+
+
+def test_a_result_s_page_offers_a_search_whose_words_and_page_travel_in_the_form_s_body() -> None:
+    """The page ends with the search under its heading: one empty field and one button, in a
+    form that posts the words and an empty page number to the search's address. The address
+    holds the result's ID and lands on the heading over what is found, which isn't there yet."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        page = result_page(client, log)
+
+    address = SEARCH_PAGE.format(result_id=log)
+    search_part = page[page.index(SEARCH_HEADING_AT) :]
+    assert search_said_on(page) == SEARCH_LINES
+    assert (
+        f'<h2 id="search-heading"><span class="authored-text">Homework in {BIOLOGY}</span>' in page
+    )
+    assert f'<form method="post" action="{address}#found" class="decision">' in search_part
+    assert (
+        '<input id="search-words" type="text" name="words" value="" autocomplete="off" '
+        'aria-describedby="search-hint">'
+    ) in search_part
+    assert search_part.count('<input type="hidden" name="page" value="">') == 1
+    assert search_part.count("<form") == 1
+    assert 'id="found"' not in page
+    assert "autofocus" not in page
+
+
+def test_a_search_answers_the_result_s_page_with_each_row_found_its_state_and_its_form() -> None:
+    """Four homework rows of the class, a task among them: one linked to the log's result, one
+    kept apart from it, one linked to the diagram's, and one with no decision. A search finds
+    all four, in one order, each with at most one line of state; every row the result isn't
+    linked to has a form that posts the one write, and a button named for its homework."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [
+                homework(),
+                homework(NOTEBOOK_ID, NOTEBOOK, None),
+                homework(PRACTICE_ID, PRACTICE, date(2026, 8, 12)),
+                homework(SKETCH_ID, "Field sketch", None, course=CODE, kind=AssignmentKind.TASK),
+            ],
+            {},
+        )
+        class_id = with_report(client)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        parent_links(client, class_id, log, NOTEBOOK_ID)
+        parent_links(client, class_id, log, decision="apart")
+        parent_links(client, class_id, diagram, PRACTICE_ID)
+        before = closed_world([database_of(client)], leaving_out=())
+        answer = search(client, log, "bio")
+        after = closed_world([database_of(client)], leaving_out=())
+        revision = revision_of(client, log)
+
+    page, address = answer.text, RESULT_PAGE.format(result_id=log)
+    assert answer.status_code == 200
+    assert search_said_on(page) == [
+        *SEARCH_LINES,
+        "Homework found",
+        "Showing 1 to 4 of 4.",
+        f"Linking moves this result's link from {NOTEBOOK}.",
+        *(CODE, "Field sketch", "Due date not recorded", LINK),
+        *(BIOLOGY, NOTEBOOK, "Due date not recorded", "Linked to this result."),
+        *(BIOLOGY, PRACTICE, "Due Wednesday, August 12", ANOTHER, LINK),
+        *(BIOLOGY, LOG, LOG_DUE, "Kept apart from this result.", LINK),
+    ]
+    assert forms_on(found_on(page)) == [
+        (address, SKETCH_ID, "link", revision),
+        (address, PRACTICE_ID, "link", revision),
+        (address, LOG_ID, "link", revision),
+    ]
+    assert link_names(page) == [
+        f"{LINK}: Field sketch, {CODE}, no due date",
+        f"{LINK}: {PRACTICE}, {BIOLOGY}, due Wednesday, August 12",
+        f"{LINK}: {LOG}, {BIOLOGY}, due Thursday, August 20",
+    ]
+    assert field_of(page) == "bio"
+    assert page.count(FOUND_AT) == 1
+    assert "autofocus" not in page
+    assert page_presses(page) == []
+    assert ties_hold(page)
+    assert not [one for one in addresses_on(page) if "bio" in one.casefold()]
+    assert after == before
+
+
+def test_a_found_row_s_link_press_is_the_one_write_whatever_stands_and_lands_on_the_heading() -> (
+    None
+):
+    """A found row's form posted as it stands: on homework with no decision, on homework linked
+    to nothing while the result is linked elsewhere, then on homework kept apart. Each is the
+    decision route's one write: 303 to the result's heading, and the link moves."""
+    with browser() as client:
+        store_of(client).put_on_record([homework(), homework(SKETCH_ID, "Field sketch", None)], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        presses, links = [], []
+        for words in ("sketch", "seed", "sketch"):
+            (form,) = forms_on(found_on(search(client, log, words).text))
+            action, homework_id, decision, revision = form
+            presses.append(
+                computer(client).post(
+                    action,
+                    data={"homework": homework_id, "decision": decision, "revision": revision},
+                    headers=PAGE_HEADERS,
+                )
+            )
+            links.append(stored_links(client))
+
+    landing = f"{RESULT_PAGE.format(result_id=log)}#homework"
+    assert [(one.status_code, one.headers["location"]) for one in presses] == [(303, landing)] * 3
+    confirmed_state, apart_state = gradebook.LINK_CONFIRMED, gradebook.LINK_APART
+    assert links == [
+        [(SKETCH_ID, confirmed_state)],
+        [(LOG_ID, confirmed_state), (SKETCH_ID, apart_state)],
+        [(LOG_ID, apart_state), (SKETCH_ID, confirmed_state)],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("stale", "said"),
+    [
+        pytest.param("another link", LINKS_CHANGED, id="another link in the class and term"),
+        pytest.param(
+            "name disconnected",
+            "That homework's class name is connected differently now. Nothing was saved. "
+            "Check this page again.",
+            id="the class name disconnected",
+        ),
+        pytest.param(
+            "homework removed",
+            "That homework is not on record now. Nothing was saved.",
+            id="the homework removed",
+        ),
+    ],
+)
+def test_a_link_press_from_an_earlier_search_is_checked_by_the_write_and_writes_nothing(
+    stale: str, said: str
+) -> None:
+    """A found row's form from a search made before another link in the class and term, before
+    the homework's class name is disconnected, or before the homework is removed by hand.
+    The write answers 409 with the page as it reads now, without the search's list."""
+    name = "Life Science"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None, course=name)], {})
+        class_id = with_report(client)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        store.connect_homework_class(YEAR, name, shown=None, chosen=class_id, role="parent")
+        (form,) = forms_on(found_on(search(client, log, "notebook").text))
+        if stale == "another link":
+            parent_links(client, class_id, diagram)
+        elif stale == "name disconnected":
+            store.connect_homework_class(
+                YEAR, name, shown=class_id, chosen=UNCONNECTED, role="parent"
+            )
+        else:
+            stored(store, "DELETE FROM assignments WHERE assignment_id = ?", NOTEBOOK_ID)
+        links = stored_links(client)
+        action, homework_id, decision, revision = form
+        answer = computer(client).post(
+            action,
+            data={"homework": homework_id, "decision": decision, "revision": revision},
+            headers=PAGE_HEADERS,
+        )
+        links_after = stored_links(client)
+
+    assert answer.status_code == 409
+    assert problem_on(answer.text) == said
+    assert focuses_its_answer(answer.text)
+    assert FOUND_AT not in answer.text
+    assert field_of(answer.text) == ""
+    assert links_after == links
+
+
+SET_ROWS = [homework(f"assignment-set-{n:02}", SET, None) for n in range(1, 22)]
+"""Twenty-one undated homework rows of the class, one title among them all."""
+
+
+def test_a_search_comes_twenty_to_a_page_and_its_page_controls_are_forms_that_reach_each_row() -> (
+    None
+):
+    """Twenty-one rows no word tells apart. The first page lists twenty with "Next page", a
+    form carrying the words and page 2; that page lists the last with "Previous page", whose
+    form gives the first page again. No address holds the words or a page number."""
+    with browser() as client:
+        store_of(client).put_on_record(SET_ROWS, {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        first = search(client, log, "practice set")
+        ((action, words, number, _),) = page_presses(first.text)
+        second = search_posted(client, log, {"words": words, "page": number})
+        ((back_action, back_words, back, _),) = page_presses(second.text)
+        again = search_posted(client, log, {"words": back_words, "page": back})
+        one = search(client, log, "practice set", "1")
+
+    searching = f"{SEARCH_PAGE.format(result_id=log)}#found"
+    assert [one.status_code for one in (first, second, again)] == [200] * 3
+    assert page_presses(first.text) == [(searching, "practice set", "2", "Next page")]
+    assert page_presses(second.text) == [(searching, "practice set", "1", "Previous page")]
+    assert (action, back_action) == (searching, searching)
+    assert search_said_on(first.text)[4:6] == ["Homework found", "Showing 1 to 20 of 21."]
+    assert search_said_on(second.text)[4:6] == ["Homework found", "Showing 21 to 21 of 21."]
+    assert search_said_on(again.text) == search_said_on(first.text) == search_said_on(one.text)
+    reached = [row for page in (first, second) for _, row, _, _ in forms_on(found_on(page.text))]
+    assert reached == [item.assignment_id for item in SET_ROWS]
+    for page in (first, second):
+        assert field_of(page.text) == "practice set"
+        assert page.text.count(FOUND_AT) == 1
+        assert not [one for one in addresses_on(page.text) if "practice" in one or "page=" in one]
+
+
+@pytest.mark.parametrize(
+    ("words", "said"),
+    [
+        pytest.param("", "Type a word or two to search. Nothing was searched.", id="no words"),
+        pytest.param("   ", "Type a word or two to search. Nothing was searched.", id="spaces"),
+        pytest.param(
+            "geometry",
+            f"No homework in {BIOLOGY} matches every word. Try fewer words, or other ones.",
+            id="nothing found",
+        ),
+    ],
+)
+def test_a_search_with_no_words_or_words_that_find_nothing_says_so_under_its_heading(
+    words: str, said: str
+) -> None:
+    """The answer is 200 and lands on the heading over what was found, which says why nothing
+    is listed; the words stay in the field, and nothing is listed."""
+    with browser() as client:
+        store_of(client).put_on_record(SET_ROWS, {})
+        class_id = with_report(client)
+        answer = search(client, result_named(client, class_id, LOG), words)
+
+    assert answer.status_code == 200
+    assert search_said_on(answer.text) == [*SEARCH_LINES, "Homework found", said]
+    assert field_of(answer.text) == words
+    assert forms_on(found_on(answer.text)) == []
+    assert page_presses(answer.text) == []
+    assert "autofocus" not in answer.text
+
+
+REFUSED_SEARCHES: list[tuple[str, Sent, str]] = [
+    ("two lines", {"words": "practice\nset", "page": ""}, WORDS_REFUSED),
+    ("201 characters", {"words": "s" * 201, "page": ""}, WORDS_REFUSED),
+    ("201 once collapsed", {"words": " s" * 101, "page": ""}, WORDS_REFUSED),
+    ("words twice", {"words": ["practice", "set"], "page": ""}, WORDS_REFUSED),
+    ("another form's field", {"words": "practice", "page": "", "homework": LOG_ID}, WORDS_REFUSED),
+    ("words left out", {"page": ""}, WORDS_REFUSED),
+    ("page left out", {"words": "practice"}, WORDS_REFUSED),
+    ("page twice", {"words": "practice", "page": ["", "2"]}, WORDS_REFUSED),
+    ("page 0", {"words": "practice", "page": "0"}, NO_PAGE),
+    ("page 3 of 2", {"words": "practice", "page": "3"}, NO_PAGE),
+    ("a leading zero", {"words": "practice", "page": "02"}, NO_PAGE),
+    ("a page in words", {"words": "practice", "page": "two"}, NO_PAGE),
+    ("seven digits", {"words": "practice", "page": "1234567"}, NO_PAGE),
+]
+"""Each search answered 422, with the explanation it gets."""
+
+
+def test_a_search_refused_or_naming_no_page_answers_422_with_its_explanation_and_no_list() -> None:
+    """Each form of ``REFUSED_SEARCHES`` on a result with twenty-one rows to find: 422, its
+    explanation taking the focus, no heading over what was found, no list and no page controls,
+    the words posted kept in the field. Refused words alone mark the field and end the
+    explanation with a link to it. Nothing written."""
+    with browser() as client:
+        store_of(client).put_on_record(SET_ROWS, {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        before = closed_world([database_of(client)], leaving_out=())
+        answers = [search_posted(client, log, sent) for _, sent, _ in REFUSED_SEARCHES]
+        after = closed_world([database_of(client)], leaving_out=())
+
+    for (case, sent, said), answer in zip(REFUSED_SEARCHES, answers, strict=True):
+        words = sent.get("words", "")
+        kept = words[0] if isinstance(words, list) else words
+        assert answer.status_code == 422, case
+        assert problem_on(answer.text) == said, case
+        assert focuses_its_answer(answer.text), case
+        assert FOUND_AT not in answer.text, case
+        assert forms_on(answer.text[answer.text.index(SEARCH_HEADING_AT) :]) == [], case
+        assert page_presses(answer.text) == [], case
+        assert html.unescape(re.sub(r"\s", "", field_of(answer.text))) == re.sub(r"\s", "", kept)
+        refused = 'aria-describedby="search-hint problem" aria-invalid="true"' in answer.text
+        assert refused is (said == WORDS_REFUSED), case
+        explained = re.escape(f"{ANSWER_IN_FOCUS}{html.escape(said)}</p>")
+        assert re.search(explained, answer.text), case
+        followed = re.search(explained + r"\s*" + re.escape(REVIEW_WORDS), answer.text)
+        assert (followed is not None) is (said == WORDS_REFUSED), case
+        assert answer.text.count('href="#search-words"') == (1 if said == WORDS_REFUSED else 0)
+    assert after == before
+
+
+def test_a_search_s_words_are_kept_on_no_such_page_and_search_gives_the_first_page_again() -> None:
+    """Twenty-one rows found and page 3 asked: 422 with no list and no page controls, the
+    words in the field. The page's own search form, posted as it stands, gives the first page."""
+    with browser() as client:
+        store_of(client).put_on_record(SET_ROWS, {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        past = search(client, log, "practice set", "3")
+        again = search(client, log, field_of(past.text), "")
+
+    assert past.status_code == 422
+    assert problem_on(past.text) == NO_PAGE
+    assert field_of(past.text) == "practice set"
+    assert page_presses(past.text) == []
+    assert '<input type="hidden" name="page" value="">' in past.text
+    assert again.status_code == 200
+    assert search_said_on(again.text)[4:6] == ["Homework found", "Showing 1 to 20 of 21."]
+
+
+@pytest.mark.parametrize(
+    "asked", ["result-not-a-result", "result-" + "0" * 32], ids=["no such shape", "none"]
+)
+def test_a_search_for_no_current_result_answers_404_as_the_page_does(asked: str) -> None:
+    """A search, and a form that is not whole, for an ID of no such shape or of no result."""
+    with browser() as client:
+        answers = [
+            search(client, asked, "log"),
+            search_posted(client, asked, {"words": "log"}),
+        ]
+
+    for answer in answers:
+        assert answer.status_code == 404
+        assert focuses_its_answer(answer.text)
+        assert "Blossom has no current record of this result." in answer.text
+        assert "<form" not in answer.text
+
+
+@pytest.mark.parametrize("asked", [LOG, DIAGRAM])
+@pytest.mark.parametrize("failure", ["a stored value", "two links"])
+def test_a_search_stopped_by_a_grade_failure_answers_the_generic_500_and_one_record(
+    failure: str, asked: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A points presence of the log's result that is no presence, whose decoding error holds a
+    chosen text; or two confirmed links to the log's result in a file changed by hand. On the
+    log's page and on the diagram's, which the links don't name, a search, a page control's
+    press, refused words and a form that is not whole each answer the generic 500, raise
+    nothing, write nothing, and leave one record naming the error's type alone."""
+    sent: list[Sent] = [
+        {"words": "practice", "page": ""},
+        {"words": "practice", "page": "2"},
+        {"words": "two\nlines", "page": ""},
+        {"page": ""},
+    ]
+    with browser() as client:
+        store_of(client).put_on_record([homework(), *SET_ROWS], {})
+        class_id = with_report(client)
+        log, searched_on = (result_named(client, class_id, title) for title in (LOG, asked))
+        if failure == "a stored value":
+            points_presence(client, log, SYNTHETIC_CAUSE)
+        else:
+            conflicting(client, log)
+        before = closed_world([database_of(client)], leaving_out=())
+        answers, records = [], []
+        for one in sent:
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG):
+                answers.append(search_posted(client, searched_on, one))
+                records.append(list(caplog.records))
+        after = closed_world([database_of(client)], leaving_out=())
+
+    kind = "GradeValueUndecodable" if failure == "a stored value" else "HomeworkLinksConflict"
+    for answer, seen in zip(answers, records, strict=True):
+        assert (answer.status_code, answer.text) == (500, "Internal Server Error")
+        assert answer.headers["content-type"] == "text/plain; charset=utf-8"
+        application = [one for one in seen if one.name.startswith("blossom")]
+        assert [one.getMessage() for one in application] == [f"a grade page wasn't shown: {kind}"]
+        assert [(one.name, one.levelno) for one in application] == [
+            ("blossom.routes.grades", logging.WARNING)
+        ]
+        assert [one for one in seen if one.exc_info or SYNTHETIC_CAUSE in one.getMessage()] == []
+    assert after == before
+
+
+@pytest.mark.parametrize("unrelated", [sqlite3.DatabaseError, ValueError])
+def test_an_unrelated_error_inside_a_search_is_not_caught(
+    unrelated: type[Exception], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A database error from her links' read, or a value error that is not the named error
+    from the search's filtering, leaves the search's route as itself, with no record."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+
+        def refused(*_: object, **__: object) -> None:
+            msg = "synthetic"
+            raise unrelated(msg)
+
+        if unrelated is sqlite3.DatabaseError:
+            monkeypatch.setattr(store_of(client), "homework_links", refused)
+        else:
+            monkeypatch.setattr(grades, "homework_found", refused)
+        with caplog.at_level(logging.DEBUG), pytest.raises(unrelated):
+            search(client, log, "log")
+
+    assert not [one for one in caplog.records if "wasn't shown" in one.getMessage()]
+
+
+def test_no_record_holds_a_search_s_words(caplog: pytest.LogCaptureFixture) -> None:
+    """A search that finds homework, a page control's press, refused words and a page that
+    names no page: no record of any logger holds the words searched."""
+    words = "sketch-words-for-the-log-check"
+    with browser() as client:
+        store_of(client).put_on_record([homework(SKETCH_ID, f"Field {words}", None)], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        with caplog.at_level(logging.DEBUG):
+            answers = [
+                search(client, log, words),
+                search(client, log, words, "1"),
+                search(client, log, f"{words}\nmore"),
+                search(client, log, words, "2"),
+            ]
+            records = list(caplog.records)
+
+    assert [one.status_code for one in answers] == [200, 200, 422, 422]
+    assert [one for one in records if words in one.getMessage() or one.exc_info] == []
+
+
+def others_on(page: str) -> list[str]:
+    """Each line a reader reads in a result's page's other results, before its search: the
+    heading and each paragraph, each as its text."""
+    if OTHERS_AT not in page:
+        return []
+    part = page[page.index(OTHERS_AT) : page.index(SEARCH_HEADING_AT)]
+    return [
+        " ".join(html.unescape(re.sub(r"<[^>]+>", "", found[2])).split())
+        for found in re.finditer(r"<(p|h2)\b[^>]*>(.*?)</\1>", part, re.S)
+    ]
+
+
+def other_links(page: str) -> list[tuple[str, str]]:
+    """Each other result's link: its address and its words."""
+    if OTHERS_AT not in page:
+        return []
+    part = page[page.index(OTHERS_AT) : page.index(SEARCH_HEADING_AT)]
+    return [
+        (html.unescape(href), html.unescape(re.sub(r"<[^>]+>", "", words)))
+        for href, words in re.findall(r'<a href="([^"]*)">(.*?)</a>', part)
+    ]
+
+
+def three_logs(client: TestClient) -> tuple[str, str, str]:
+    """The log's homework, and a result of its title in this year's first and second terms
+    and in last year's first term, in a class of the same name whose first month waits. The
+    IDs of this year's first and second, then last year's."""
+    store = store_of(client)
+    store.put_on_record([homework(), *SET_ROWS], {})
+    then = draft_of(IN_WEEK.replace(f"**{YEAR}**", "**2025-2026**"))
+    review = store.review_grade_report(then, capture_key(then), key=KEY)
+    saved = save_grade(
+        store, then, key=KEY, review=review, answers=grade_answers(review, month=None)
+    )
+    assert isinstance(saved, GradeReportSaved)
+    last_year = capture_class(store, then)
+    class_id = with_report(client)
+    with_report(client, SECOND_TERM)
+    return (
+        result_named(client, class_id, LOG),
+        result_named(client, class_id, LOG, "T2"),
+        result_named(client, last_year, LOG),
+    )
+
+
+def test_a_result_s_page_lists_each_other_result_of_its_homework_before_the_search() -> None:
+    """The log's results in two terms of this year and in last year's class of the same name.
+    The first term's page lists the other two after its homework rows and before the search,
+    last year's first: each a link to its own page by its title, then its class name, its due
+    line, and its term and year. The diagram's page, which shares no homework, has no list."""
+    with browser() as client:
+        first, second, then = three_logs(client)
+        place = store_of(client).result_place(first)
+        assert place is not None
+        page = result_page(client, first)
+        diagram = result_page(client, result_named(client, place.class_id, DIAGRAM))
+
+    assert others_on(page) == [
+        "Other results that could be the same homework:",
+        LOG,
+        BIOLOGY,
+        "Due date shown: 08/20",
+        "T1 · 2025-2026",
+        LOG,
+        BIOLOGY,
+        "Due August 20",
+        "T2 · 2026-2027",
+    ]
+    assert other_links(page) == [(way_in_to(then), LOG), (way_in_to(second), LOG)]
+    for one in (then, second):
+        item = f'<p class="jump"><a href="{way_in_to(one)}"><span class="authored-text">{LOG}'
+        assert page.count(f"{item}</span></a></p>") == 1
+    assert page.index(OTHERS_AT) < page.index(SEARCH_HEADING_AT)
+    assert page.rindex("</section>", 0, page.index(OTHERS_AT)) > page.index('id="homework-1"')
+    assert OTHERS_AT not in diagram
+    assert "Other results" not in diagram
+
+
+def test_the_other_results_stay_the_same_after_decisions_and_on_every_page_of_a_search() -> None:
+    """The three logs' results: the first term's page before any decision, after its homework
+    is linked to it and kept apart from the second term's, on a decision's 409, and on each
+    page of a search that finds twenty-one rows, lists the same other results."""
+    with browser() as client:
+        first, second, then = three_logs(client)
+        place = store_of(client).result_place(first)
+        assert place is not None
+        before = others_on(result_page(client, first))
+        parent_links(client, place.class_id, first)
+        parent_links(client, place.class_id, second, term="T2", decision="apart")
+        after = others_on(result_page(client, first))
+        stale = pressed(client, first, decision="apart", revision="1")
+        pages = [search(client, first, "practice set", page) for page in ("", "2")]
+
+    assert len(before) == 9
+    assert after == before
+    assert stale.status_code == 409
+    assert others_on(stale.text) == before
+    assert [one.status_code for one in pages] == [200, 200]
+    assert [others_on(one.text) for one in pages] == [before, before]
+    assert other_links(pages[1].text) == [(way_in_to(then), LOG), (way_in_to(second), LOG)]

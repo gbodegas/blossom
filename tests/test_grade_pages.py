@@ -122,6 +122,7 @@ CLASS_AT = "/parent/grades/classes/{class_id}/terms/{n}"
 HER_CLASS_AT = "/student/grades/classes/{class_id}/terms/{n}"
 HOMEWORK_CLASSES = "/parent/grades/homework-classes"
 RESULT_HOMEWORK = "/parent/grades/results/{result_id}/homework"
+RESULT_SEARCH = "/parent/grades/results/{result_id}/homework/search"
 UNKNOWN = "acceptance-" + "0" * 32
 FAMILY_GRADE_ROUTES = {
     ("GET", ADD),
@@ -136,6 +137,7 @@ FAMILY_GRADE_ROUTES = {
     ("GET", CLASS_AT),
     ("GET", RESULT_HOMEWORK),
     ("POST", RESULT_HOMEWORK),
+    ("POST", RESULT_SEARCH),
     ("GET", HOMEWORK_CLASSES),
     ("POST", HOMEWORK_CLASSES),
 }
@@ -215,6 +217,11 @@ def every_family_request(browser: TestClient, **headers: str) -> dict[tuple[str,
         result_page.text,
     )
     homework, decision, revision = forms[0] if forms else ("assignment-none", "automatic", "1")
+    statuses[("POST", RESULT_SEARCH)] = browser.post(
+        RESULT_SEARCH.format(result_id=result_id),
+        data={"words": "log", "page": ""},
+        headers=asked,
+    ).status_code
     statuses[("POST", RESULT_HOMEWORK)] = browser.post(
         RESULT_HOMEWORK.format(result_id=result_id),
         data={"homework": homework, "decision": decision, "revision": revision},
@@ -245,6 +252,7 @@ ALLOWED = {
     ("GET", CLASS_AT): 200,
     ("GET", RESULT_HOMEWORK): 200,
     ("POST", RESULT_HOMEWORK): 303,
+    ("POST", RESULT_SEARCH): 200,
     ("GET", HOMEWORK_CLASSES): 200,
     ("POST", HOMEWORK_CLASSES): 303,
 }
@@ -1259,7 +1267,9 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
     assert "<section" not in (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
     homework = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
     row = '<section class="panel grade-card" aria-labelledby="{{ row.label }}">'
-    assert homework.count(row) == homework.count("<section") == 1
+    found = '<section class="panel grade-card" aria-labelledby="found-{{ row.number }}">'
+    assert homework.count(row) == homework.count(found) == 1
+    assert homework.count("<section") == 2
 
 
 HOMEWORK_HEADING_LANDING = (
@@ -1269,17 +1279,53 @@ HOMEWORK_HEADING_LANDING = (
 landing rule's selector list as written."""
 
 
-def test_the_result_s_homework_heading_takes_the_landing_rule() -> None:
+def test_the_result_s_homework_heading_and_its_search_s_found_heading_take_the_landing_rule() -> (
+    None
+):
     css = STYLESHEET.read_text(encoding="utf-8")
     page = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
 
     assert css.count(HOMEWORK_HEADING_LANDING) == 1
     assert css.count("h1#homework") == 1
     assert page.count('<h1 id="homework" tabindex="-1">Homework for this result</h1>') == 1
+    found = '<h2 class="list-heading" id="found" tabindex="-1">{{ found_heading }}</h2>'
+    assert page.count(found) == page.count("list-heading") == 1
 
 
 YEAR_RANGE_RULE = ".year-range {\n  display: inline-block;\n}\n"
 """A school-year range, pinned whole: one inline box, so a line takes it whole where it fits."""
+
+
+JUMP_RULE = (
+    "/* A link on a line of its own, as tall as a button: the jump at the top of an assignment's\n"
+    "   details, past the instructions to her update; and on a result's homework page, each other\n"
+    "   result's title and the way from refused search words to their field. */\n"
+    ".jump a {\n  display: inline-flex;\n  align-items: center;\n  min-height: 2.75rem;\n}\n"
+)
+"""The jump rule, pinned whole with what it covers: a link that stands alone as tall as a
+button, its words at the size they have."""
+
+
+def test_the_jump_rule_is_pinned_and_the_result_s_homework_page_takes_it_for_two_links() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if 'class="jump"' in page.read_text(encoding="utf-8")
+    )
+    page = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
+    other = (
+        '<p class="jump"><a href="{{ other.address }}"><span class="authored-text">'
+        "{{ other.title }}</span></a></p>"
+    )
+    review = '<p class="jump"><a href="#search-words">Review your search words</a></p>'
+
+    assert css.count(".jump") == 1
+    assert css.count(JUMP_RULE) == 1
+    assert carriers == ["grade_result_homework.html", "student_assignment.html"]
+    assert page.count(other) == page.count(review) == 1
+    assert page.count('class="jump"') == 2
+    assert page.count('href="#search-words"') == 1
 
 
 def test_the_year_range_rule_is_pinned_and_only_the_result_s_homework_page_carries_it() -> None:
@@ -1296,7 +1342,8 @@ def test_the_year_range_rule_is_pinned_and_only_the_result_s_homework_page_carri
     assert carriers == ["grade_result_homework.html"]
     assert page.count('<span class="year-range">{{ year }}</span>') == 1
     assert page.count('<span class="year-range">{{ line.keep }}</span>') == 1
-    assert page.count("year-range") == 2
+    assert page.count('<span class="year-range">{{ other.year }}</span>') == 1
+    assert page.count("year-range") == 3
 
 
 CARD_TITLE_RULE = ".card-title {\n  font-size: 1.3rem;\n  margin: 0 0 0.6rem;\n}\n"
@@ -1385,7 +1432,8 @@ def test_a_grade_card_is_drawn_with_the_week_card_s_parts_and_one_rule_for_its_t
     assert card.count("card-title") == 1
     homework = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
     assert homework.count('<h2 class="card-title" id="homework-{{ row.number }}">') == 1
-    assert homework.count("card-title") == 1
+    assert homework.count('<h3 class="card-title" id="found-{{ row.number }}">') == 1
+    assert homework.count("card-title") == 2
     review = (TEMPLATES / "grade_review.html").read_text(encoding="utf-8")
     assert review.count(REVIEW_ROW) == 1
     assert review.count("card-title") == 1

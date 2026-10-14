@@ -512,8 +512,9 @@ article h2 {
   pointer-events: auto;
 }
 
-/* The jump at the top of an assignment's details, past the instructions to her
-   update, as tall as a button. */
+/* A link on a line of its own, as tall as a button: the jump at the top of an assignment's
+   details, past the instructions to her update; and on a result's homework page, each other
+   result's title and the way from refused search words to their field. */
 .jump a {
   display: inline-flex;
   align-items: center;

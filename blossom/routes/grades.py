@@ -106,21 +106,35 @@ from blossom.grades.wording import (
     score_line,
     spoken_date,
 )
+from blossom.homework_search import PAGE_SIZE
 from blossom.household import UnreadableHouseholdSecret, read_authority, secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes.forms import fields_of
 from blossom.routes.homework_scores import (
+    FoundState,
+    HomeworkFound,
     HomeworkRow,
+    NoList,
+    OtherResult,
     PairStanding,
     ResultHomework,
     Withheld,
+    homework_found,
+    other_results,
     read_grade_facts,
     read_links,
     result_homework,
     results_read,
     rule_values,
+    title_of,
 )
-from blossom.routes.navigation import CLASS_AT, GRADES, HER_GRADES
+from blossom.routes.navigation import (
+    CLASS_AT,
+    GRADES,
+    HER_GRADES,
+    RESULT_HOMEWORK,
+    RESULT_HOMEWORK_AT,
+)
 from blossom.routes.student import parent_reads, templates, viewer_of
 from blossom.stores.gradebook import (
     ACCEPTANCE_ID,
@@ -2452,10 +2466,6 @@ def family_class(class_id: str, n: str, request: Request, state: State) -> Respo
     return class_page(request, state, class_id, n)
 
 
-RESULT_HOMEWORK: Final = "/parent/grades/results/{result_id}/homework"
-"""A result's homework page, a parent's: its address holds the result's ID alone."""
-RESULT_HOMEWORK_AT: Final = RESULT_HOMEWORK + "#homework"
-"""Where a decision lands: the result's page at its heading, which takes the focus."""
 STATE_LINE: Final = "state"
 """The ID of a result's page's line that says whether it is linked, matched or neither."""
 RESULT_NOT_ON_RECORD: Final = "Blossom has no current record of this result."
@@ -2517,6 +2527,39 @@ NOT_THIS_HOMEWORK: Final = ("apart", "Not this homework")
 REMOVE_LINK: Final = ("apart", "Remove link")
 MATCH_AGAIN: Final = ("automatic", "Let Blossom match again")
 """Each button of a homework row: the decision its form sends, and its words."""
+RESULT_SEARCH: Final = RESULT_HOMEWORK + "/search"
+"""A parent's search of a result's homework: its address holds the result's ID alone."""
+FOUND: Final = "found"
+"""The ID of the heading over what a search found, where each search's answer lands."""
+RESULT_SEARCH_AT: Final = f"{RESULT_SEARCH}#{FOUND}"
+SEARCH_FIELDS: Final = frozenset({"words", "page"})
+SEARCH_HEADING: Final = "Homework in {class_name}"
+SEARCH_LABEL: Final = "Search homework"
+SEARCH_HINT: Final = "Type a word or two from the title or the class name."
+SEARCH_BUTTON: Final = "Search"
+FOUND_HEADING: Final = "Homework found"
+NO_SEARCH_WORDS: Final = "Type a word or two to search. Nothing was searched."
+NOTHING_MATCHES: Final = (
+    "No homework in {class_name} matches every word. Try fewer words, or other ones."
+)
+SHOWING: Final = "Showing {first} to {last} of {total}."
+SEARCH_WORDS_REFUSED: Final = (
+    "Search words are one line of up to 200 characters. Nothing was searched, and nothing was "
+    "changed."
+)
+LINKED_TO_THIS: Final = "Linked to this result."
+KEPT_APART_FROM_THIS: Final = "Kept apart from this result."
+LINK_FOUND: Final = "Link to this homework: {title}, {course}, {due}"
+"""A found row's button's accessible name, its due date as ``due_part`` words it."""
+NO_SUCH_PAGE: Final = "There is no such page of results."
+PREVIOUS_PAGE: Final = "Previous page"
+NEXT_PAGE: Final = "Next page"
+OTHER_RESULTS: Final = "Other results that could be the same homework:"
+NOT_LISTED: Final = {
+    NoList.WORDS_REFUSED: SEARCH_WORDS_REFUSED,
+    NoList.NO_SUCH_PAGE: NO_SUCH_PAGE,
+}
+"""The explanation of each search answered 422, with no list."""
 
 
 @dataclass(frozen=True)
@@ -2578,6 +2621,121 @@ def row_shown(number: int, row: HomeworkRow, linked: HomeworkRow | None) -> Home
         due=due_line(row.due) if row.on_record else None,
         said=said,
         buttons=buttons,
+    )
+
+
+@dataclass(frozen=True)
+class FoundShown:
+    """One homework a search found, as its row shows it: its place among what was found, its
+    class name, title and due line as on record, its one line of state if any, and its button's
+    accessible name, none for the homework the result is linked to."""
+
+    number: int
+    assignment_id: str
+    course: str
+    title: str
+    due: str
+    said: Said | None
+    link: str | None
+
+
+@dataclass(frozen=True)
+class SearchShown:
+    """What a search's answer shows under its heading: the sentence for no list, or how much is
+    shown, the line a link would move from, the rows, and the pages before and after."""
+
+    nothing: Said | None
+    showing: str | None
+    moves: Said | None
+    rows: list[FoundShown]
+    previous: int | None
+    next: int | None
+
+
+FOUND_SAID: Final = {
+    FoundState.LINKED: Said(LINKED_TO_THIS, authored=False),
+    FoundState.APART: Said(KEPT_APART_FROM_THIS, authored=False),
+    FoundState.ANOTHER_RESULT: Said(ANOTHER_RESULT, authored=False),
+}
+"""A found row's one line of state; a row with no decision and no other link says none."""
+
+
+def due_part(day: date | None) -> str:
+    """A found row's due date as its button's accessible name words it."""
+    return "no due date" if day is None else f"due {day:%A, %B} {day.day}"
+
+
+def search_shown(
+    found: HomeworkFound | NoList, linked: HomeworkRow | None, class_name: str
+) -> SearchShown | None:
+    """What a search's answer shows under its heading, from what it found and the homework the
+    result is linked to; None for a search answered with an explanation and no list."""
+    if not isinstance(found, HomeworkFound):
+        if found is not NoList.NO_WORDS:
+            return None
+        return SearchShown(Said(NO_SEARCH_WORDS, authored=False), None, None, [], None, None)
+    page = found.page
+    if not page.total:
+        nothing = Said(NOTHING_MATCHES.format(class_name=class_name), authored=True)
+        return SearchShown(nothing, None, None, [], None, None)
+    start = (page.number - 1) * PAGE_SIZE
+    rows = [
+        FoundShown(
+            number=start + place,
+            assignment_id=row.item.assignment_id,
+            course=row.item.course,
+            title=row.item.title,
+            due=due_line(row.item.due_date),
+            said=FOUND_SAID.get(row.state),
+            link=None
+            if row.state is FoundState.LINKED
+            else LINK_FOUND.format(
+                title=row.item.title, course=row.item.course, due=due_part(row.item.due_date)
+            ),
+        )
+        for place, row in enumerate(found.rows, start=1)
+    ]
+    moves = None
+    # W19's first sentence, once above the rows, when a press on one of them would move a link.
+    if linked is not None and any(one.link is not None for one in rows):
+        moves = (
+            Said(MOVES_LINK_OFF_RECORD, authored=False)
+            if linked.title is None
+            else Said(MOVES_LINK_FROM.format(title=linked.title), authored=True)
+        )
+    return SearchShown(
+        nothing=None,
+        showing=SHOWING.format(first=start + 1, last=start + len(rows), total=page.total),
+        moves=moves,
+        rows=rows,
+        previous=page.previous,
+        next=page.next,
+    )
+
+
+@dataclass(frozen=True)
+class OtherShown:
+    """Another result that could be the same homework, as a result's page lists it: the address
+    of its page, its title and class name, its due line, and its term and year."""
+
+    address: str
+    title: str
+    class_name: str
+    due: str
+    term: str
+    year: str
+
+
+def other_shown(one: OtherResult, names: dict[str, str]) -> OtherShown:
+    """Another result as a result's page lists it, its due line as class details words it from
+    its class and term's report names ``names``."""
+    return OtherShown(
+        address=RESULT_HOMEWORK_AT.format(result_id=one.result_id),
+        title=title_of(one.value),
+        class_name=one.class_name,
+        due=due_of(one.value, one.day, names),
+        term=one.term,
+        year=one.year,
     )
 
 
@@ -2652,10 +2810,12 @@ def result_own(store: ProjectStateStore, result_id: str) -> ResultOwn | None:
     return ResultOwn(place, named, read, value, terms)
 
 
-def result_page_read(state: ApplicationState, result_id: str) -> dict[str, object] | None:
-    """What a result's page shows, read in one hold in class details' order: the result's own
-    class and term with its lines, her links, then the rest of the score read. None when the ID
-    has no such shape, or names no result of hers with a current value."""
+def result_page_read(
+    state: ApplicationState, result_id: str, *, search: tuple[str, str] | None = None
+) -> dict[str, object] | None:
+    """What a result's page shows, read in one hold in class details' order: its own class and
+    term with its lines, her links, then the rest of the score read; and what a ``search``, its
+    words and page field, finds there. None for an ID of no such shape or no current result."""
     store = state.project_state
     if not RESULT_ID.fullmatch(result_id):
         return None
@@ -2681,20 +2841,28 @@ def result_page_read(state: ApplicationState, result_id: str) -> dict[str, objec
             else None
         )
         current = store.grade_contexts().current
+        rules = rule_values(
+            everyone,
+            {} if claims is None else claims.records,
+            () if claims is None else claims.unreadable,
+            years,
+        )
         view = result_homework(
             named,
             place.term,
             result_id,
             value,
-            rule_values(
-                everyone,
-                {} if claims is None else claims.records,
-                () if claims is None else claims.unreadable,
-                years,
-            ),
+            rules,
             links=links,
             current_year=None if current is None else current[0],
         )
+    others = other_results(place.class_id, place.term, result_id, rules, years)
+    reads = {at: one for year in years for at, one in year.reads.items()}
+    found = (
+        None
+        if search is None
+        else homework_found(*search, place.class_id, result_id, rules, links=links)
+    )
     state_said, withheld, waiting = result_said(view)
     rows: dict[str, HomeworkRow] = {}
     for row in (view.linked, *view.candidates, *view.apart):
@@ -2721,6 +2889,24 @@ def result_page_read(state: ApplicationState, result_id: str) -> dict[str, objec
         ],
         "action": RESULT_HOMEWORK.format(result_id=result_id),
         "revision": "" if place.revision is None else str(place.revision),
+        "search_action": RESULT_SEARCH_AT.format(result_id=result_id),
+        "search_heading": Said(SEARCH_HEADING.format(class_name=named.name), authored=True),
+        "search_label": SEARCH_LABEL,
+        "search_hint": SEARCH_HINT,
+        "search_button": SEARCH_BUTTON,
+        "found_heading": FOUND_HEADING,
+        "link_label": LINK_HOMEWORK[1],
+        "previous_page": PREVIOUS_PAGE,
+        "next_page": NEXT_PAGE,
+        "others_heading": OTHER_RESULTS,
+        "others": [
+            other_shown(
+                one, report_names(reads[(one.class_id, one.term)].reports, state.clock.zone)
+            )
+            for one in others
+        ],
+        "found": found,
+        "search": None if found is None else search_shown(found, view.linked, named.name),
     }
 
 
@@ -2738,11 +2924,14 @@ def result_page(
     *,
     said: str | None = None,
     status_code: int = 200,
+    search: tuple[str, str] | None = None,
+    words: str = "",
 ) -> Response:
-    """A result's page as it reads now, with ``said`` first when an answer says something, or
+    """A result's page as it reads now, with ``said`` first when an answer says something, and
+    ``words`` in its search field; with ``search``, what it finds or why nothing is listed. Or
     the page saying no current record holds the result. A read alone."""
     context: dict[str, object] = {"grades": GRADES, "marks": state.settings.page_marks}
-    shown = result_page_read(state, result_id)
+    shown = result_page_read(state, result_id, search=search)
     if shown is None:
         return templates.TemplateResponse(
             request,
@@ -2750,10 +2939,19 @@ def result_page(
             {**context, "missing": RESULT_NOT_ON_RECORD},
             status_code=404,
         )
+    found = shown["found"]
+    if isinstance(found, NoList) and found in NOT_LISTED:
+        said, status_code = NOT_LISTED[found], 422
     return templates.TemplateResponse(
         request,
         "grade_result_homework.html",
-        {**context, **shown, "problem": said},
+        {
+            **context,
+            **shown,
+            "problem": said,
+            "search_words": words,
+            "words_refused": said == SEARCH_WORDS_REFUSED,
+        },
         status_code=status_code,
     )
 
@@ -2825,3 +3023,19 @@ async def decide_homework(result_id: str, request: Request, state: State) -> Res
     except GradeValueUndecodable as error:
         return link_not_written(error)
     return RedirectResponse(RESULT_HOMEWORK_AT.format(result_id=result_id), status_code=303)
+
+
+@family_router.post("/results/{result_id}/homework/search", response_class=HTMLResponse)
+async def search_homework(result_id: str, request: Request, state: State) -> Response:
+    """Route 14: a parent's search of the result's homework, its words and page number in the
+    form's body. The result's page answers with what they find, twenty to a page, or why
+    nothing is listed; nothing is written."""
+    fields, whole = await fields_of(request, SEARCH_FIELDS)
+    words = fields.get("words", "")
+    answer = partial(result_page, request, state, result_id, words=words)
+    try:
+        if not whole:
+            return answer(said=SEARCH_WORDS_REFUSED, status_code=422)
+        return answer(search=(words, fields["page"]))
+    except GradeValueUndecodable as error:
+        return grade_page_not_shown(error)

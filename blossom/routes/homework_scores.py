@@ -48,6 +48,11 @@ One result's homework is worked out from the same values: ``rule_values`` makes 
 rules take from one page read, the mapping of school scores is made from that, and
 ``result_homework`` gives one result's candidates, its link or the pair the rules stand, the
 pairs kept apart, and why a linked or matched result's score stays off her homework.
+``homework_found`` filters the same values by a parent's search words: the homework whose
+class name connects to the result's class, a page of twenty at a time, each row with its
+standing against the result. ``other_results`` names, from the same values, every other result
+that could be the same homework: each shares a candidate with the result, whatever decisions
+stand. Neither reads anything more or writes anything.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """
@@ -59,9 +64,10 @@ from datetime import date, tzinfo
 from enum import StrEnum
 from typing import Final, NamedTuple
 
+from blossom.authored_text import TextRefused
 from blossom.grades.dates import due_date_of
 from blossom.grades.draft import Presence, folded
-from blossom.grades.review import CurrentValue, GradeValueUndecodable
+from blossom.grades.review import CurrentValue, GradeValueUndecodable, HomeworkLinksConflict
 from blossom.grades.school_scores import (
     Candidates,
     Homework,
@@ -74,9 +80,10 @@ from blossom.grades.school_scores import (
     waiting_results,
 )
 from blossom.grades.wording import presence_words, report_names, score_line
+from blossom.homework_search import ResultsPage, found, page_number, page_of, terms_of
 from blossom.noticing import read_date
 from blossom.reconciliation import SourceRecord
-from blossom.routes.navigation import CLASS_AT, address
+from blossom.routes.navigation import CLASS_AT, RESULT_HOMEWORK_AT, address
 from blossom.stores.gradebook import (
     LINK_CONFIRMED,
     ClassOfYear,
@@ -105,13 +112,14 @@ class YearRead:
 @dataclass(frozen=True)
 class ScoreShown:
     """A result's school score as a page shows it: the line, the address of the result on
-    class details, its title as class details words it, and whether it stands by a parent's
-    link or else by the rules."""
+    class details, its title as class details words it, whether it stands by a parent's link
+    or else by the rules, and the address of its homework page, a parent's."""
 
     line: str
     details: str
     title: str
     linked: bool
+    homework: str
 
 
 class RuleValues(NamedTuple):
@@ -188,6 +196,56 @@ class ResultHomework:
     apart: tuple[HomeworkRow, ...]
     withheld: tuple[Withheld, ...]
     waiting: Waiting | None
+
+
+class FoundState(StrEnum):
+    """A found homework's standing against the result it is searched for, the first that holds:
+    linked to it, kept apart from it, linked to another result, or none of these."""
+
+    LINKED = "linked"
+    APART = "apart"
+    ANOTHER_RESULT = "another_result"
+    NONE = "none"
+
+
+class NoList(StrEnum):
+    """Why a search lists no homework: it holds no words, its words are refused, or its page
+    field names no page of what they find."""
+
+    NO_WORDS = "no_words"
+    WORDS_REFUSED = "words_refused"
+    NO_SUCH_PAGE = "no_such_page"
+
+
+@dataclass(frozen=True)
+class FoundRow:
+    """A homework a search found, as on record, with its standing against the result."""
+
+    item: Assignment
+    state: FoundState
+
+
+@dataclass(frozen=True)
+class OtherResult:
+    """Another result that could be the same homework as a result: its class's ID and name, its
+    school year, its own term and ID, its current value, and its due day when it resolves."""
+
+    class_id: str
+    class_name: str
+    year: str
+    term: str
+    result_id: str
+    value: CurrentValue
+    day: date | None
+
+
+@dataclass(frozen=True)
+class HomeworkFound:
+    """One page of the homework a search found for a result: the page as ``page_of`` gives it,
+    and each of its rows with its standing, in the page's order."""
+
+    page: ResultsPage
+    rows: tuple[FoundRow, ...]
 
 
 def read_grade_facts(store: GradebookRecords, courses: Iterable[str]) -> tuple[YearRead, ...]:
@@ -361,6 +419,7 @@ def scores_shown(
                     ),
                     title=title_of(value),
                     linked=at.linked,
+                    homework=RESULT_HOMEWORK_AT.format(result_id=at.result_id),
                 )
             )
         shown[assignment_id] = tuple(scores)
@@ -388,15 +447,8 @@ def result_homework(
         there = (one.class_id, one.result_id, folded(one.term))
         return there == (of.class_id, result_id, folded(term))
 
-    standing = {
-        link.assignment_id: PairStanding.LINKED if link.confirmed else PairStanding.APART
-        for link in links
-        if link.result_id == result_id
-    }
+    standing, shared = standings(result_id, links)
     holder = next((one for one, how in standing.items() if how is PairStanding.LINKED), None)
-    shared = {
-        link.assignment_id for link in links if link.confirmed and link.result_id != result_id
-    }
 
     def row(assignment_id: str) -> HomeworkRow:
         item = listed.get(assignment_id)
@@ -443,3 +495,97 @@ def result_homework(
         withheld=tuple(withheld),
         waiting=next((one for one in waits if this(one)), None),
     )
+
+
+def standings(result_id: str, links: Collection[Link]) -> tuple[dict[str, PairStanding], set[str]]:
+    """Each homework's standing decision with the result ``result_id``, by assignment ID, and
+    the homework a confirmed link names with another result. Two confirmed links that name one
+    result are refused whole with ``HomeworkLinksConflict``."""
+    held: set[str] = set()
+    for link in links:
+        if link.confirmed:
+            if link.result_id in held:
+                raise HomeworkLinksConflict
+            held.add(link.result_id)
+    standing = {
+        link.assignment_id: PairStanding.LINKED if link.confirmed else PairStanding.APART
+        for link in links
+        if link.result_id == result_id
+    }
+    shared = {
+        link.assignment_id for link in links if link.confirmed and link.result_id != result_id
+    }
+    return standing, shared
+
+
+def homework_found(
+    words: str,
+    page: str,
+    class_id: str,
+    result_id: str,
+    read: RuleValues,
+    *,
+    links: Collection[Link],
+) -> HomeworkFound | NoList:
+    """The page the field ``page`` names of what ``words`` find for the result ``result_id`` of
+    ``class_id``, from what ``rule_values`` made of one page read: assignments whose class name
+    connects to that class, a class of one school year. Words are read before the page field."""
+    standing, shared = standings(result_id, links)
+    try:
+        terms = terms_of(words)
+    except TextRefused:
+        return NoList.WORDS_REFUSED
+    if not terms:
+        return NoList.NO_WORDS
+    number = page_number(page)
+    if number is None:
+        return NoList.NO_SUCH_PAGE
+    eligible = (
+        item for item in read.assignments if class_id in read.classes.get(item.assignment_id, ())
+    )
+    shown = page_of(found(eligible, terms), number)
+    if shown is None:
+        return NoList.NO_SUCH_PAGE
+
+    # A found row has at most one line of state: the first of these that holds.
+    def state(assignment_id: str) -> FoundState:
+        held = standing.get(assignment_id)
+        if held is PairStanding.LINKED:
+            return FoundState.LINKED
+        if held is PairStanding.APART:
+            return FoundState.APART
+        return FoundState.ANOTHER_RESULT if assignment_id in shared else FoundState.NONE
+
+    return HomeworkFound(
+        shown, tuple(FoundRow(item, state(item.assignment_id)) for item in shown.items)
+    )
+
+
+def other_results(
+    class_id: str, term: str, result_id: str, read: RuleValues, years: Iterable[YearRead]
+) -> tuple[OtherResult, ...]:
+    """Every other result sharing a candidate homework with the result ``result_id`` of
+    ``class_id`` in ``term`` by the rules' candidate step, before any decision, each once, in
+    the order ``read`` gives the results. Terms compare with their spaces folded."""
+    here = (class_id, result_id, folded(term))
+    could = {
+        (one.class_id, one.result_id, folded(one.term)): set(one.assignments)
+        for one in candidate_homework(read.homework, read.results, read.classes)
+    }
+    mine = could.get(here, set())
+    named = {
+        one.class_id: (one.name, year.mapping.year)
+        for year in years
+        for one in year.mapping.classes
+    }
+    others = []
+    for one in read.results:
+        at = (one.class_id, one.result_id, folded(one.term))
+        if at == here or not mine & could.get(at, set()):
+            continue
+        name, year = named[one.class_id]
+        value = read.found[(one.class_id, one.term, one.result_id)][0]
+        others.append(
+            OtherResult(one.class_id, name, year, one.term, one.result_id, value, one.day)
+        )
+    return tuple(others)
