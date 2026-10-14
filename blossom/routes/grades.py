@@ -2856,7 +2856,7 @@ def result_page_read(
             links=links,
             current_year=None if current is None else current[0],
         )
-        others = other_results(place.class_id, place.term, result_id, rules, years)
+    others = other_results(place.class_id, place.term, result_id, rules, years)
     reads = {at: one for year in years for at, one in year.reads.items()}
     found = (
         None

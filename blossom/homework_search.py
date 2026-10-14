@@ -11,7 +11,9 @@ the search alone, which changes nothing stored and nothing about how the
 school's paste pairs work; it is split into terms, and every term must occur
 in the course or in the title. Results come in one order, twenty to a page.
 Finding homework joins nothing to it: the choice is made on the page, and the
-save holds that choice to the row as it was shown.
+save holds that choice to the row as it was shown. A parent's search for the
+homework of a school result uses the same terms, order and pages, over the
+assignments whose course connects to that result's class.
 """
 
 from collections.abc import Iterable, Sequence

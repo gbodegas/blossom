@@ -22,11 +22,11 @@
   Last, a search of the homework whose class name connects to the result's class: its words
   and its page number travel in a form's body, never an address, and the words stay in the
   field. A search's answer lands on the heading over what it found, where a search with no
-  words, or with words that find nothing, says so. Refused words, or a page number that names
-  no page, get an explanation and no list; for refused words a link to the field follows it.
-  Each found row has at most one line of state and, unless the result is linked to it, one
-  form that posts a row's own Link decision. The pages before and after are forms that carry
-  the words and the page number they lead to.
+  words, or with words that find nothing, says so. Refused words, a form that is not whole, or
+  a page number that names no page get an explanation and no list; for the first two, which
+  share an explanation, a link to the field follows it. Each found row has at most one line of
+  state and, unless the result is linked to it, one form that posts a row's own Link decision.
+  The pages before and after are forms that carry the words and the page number they lead to.
 #}
 {% macro words(line) %}{% if line.keep %}{{ line.text[:line.keep_at] }}<span class="year-range">{{ line.keep }}</span>{{ line.text[line.keep_at + line.keep|length:] }}{% else %}{{ line.text }}{% endif %}{% endmacro %}
 {% macro said(line) %}{% if line.authored %}<span class="authored-text">{{ words(line) }}</span>{% else %}{{ words(line) }}{% endif %}{% endmacro %}

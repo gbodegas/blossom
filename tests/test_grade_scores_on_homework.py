@@ -61,6 +61,7 @@ from blossom.homework_search import PAGE_SIZE, QUERY_MAX_LENGTH, ResultsPage
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
 from blossom.plans import PlanBlock
 from blossom.reconciliation import SourceChannel
+from blossom.routes import grades
 from blossom.routes.grades import OtherShown, other_shown, result_page_read, result_said, row_shown
 from blossom.routes.homework_scores import (
     FoundRow,
@@ -520,25 +521,33 @@ def test_the_link_is_on_the_reader_s_own_tree(
 def test_a_signed_in_parent_finds_beside_each_result_on_assignment_details_its_page(
     reader: str, tmp_path: pathlib.Path
 ) -> None:
-    """The log matched by the rules, and a notebook linked to the diagram's result and to the
-    osmosis lab's. On assignment details a signed-in parent finds, after each result's Grade
-    details, "Confirm or reject this match" for the match and "Change or remove link" for each
-    link, each to that result's page; she, and anyone with the sign-in off, finds none."""
+    """The log matched by the rules, a notebook linked to the diagram's result and to the
+    osmosis lab's, and a sketch linked to the practice's alone. On assignment details a
+    signed-in parent finds, after each result's Grade details, "Confirm or reject this match"
+    for the match and "Change or remove link" for each link, one or several, each to that
+    result's page; she, and anyone with the sign-in off, finds none."""
+    sketch = "assignment-sketch"
     with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
-        store_of(client).put_on_record([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)], {})
+        store_of(client).put_on_record(
+            [homework(), homework(NOTEBOOK_ID, NOTEBOOK, None), homework(sketch, "Field sketch")],
+            {},
+        )
         class_id = with_report(client)
-        log, diagram, osmosis = (
-            result_named(client, class_id, title) for title in (LOG, DIAGRAM, OSMOSIS)
+        log, diagram, osmosis, practice = (
+            result_named(client, class_id, title) for title in (LOG, DIAGRAM, OSMOSIS, PRACTICE)
         )
         parent_links(client, class_id, diagram, NOTEBOOK_ID)
         parent_links(client, class_id, osmosis, NOTEBOOK_ID)
+        parent_links(client, class_id, practice, sketch)
         matched = details_of(client)
         linked = details_of(client, NOTEBOOK_ID)
+        linked_once = details_of(client, sketch)
 
     assert [len(scores(matched)), len(EACH_RESULT.findall(linked))] == [1, 2]
+    assert len(scores(linked_once)) == 1
     if reader != "parent":
-        assert ways_in_on(matched) == ways_in_on(linked) == []
+        assert ways_in_on(matched) == ways_in_on(linked) == ways_in_on(linked_once) == []
         return
     match_way, link_way = "Confirm or reject this match", "Change or remove link"
     assert ways_in_on(matched) == [(way_in_to(log), match_way, f"{match_way}: {LOG}, {BIOLOGY}")]
@@ -553,6 +562,15 @@ def test_a_signed_in_parent_finds_beside_each_result_on_assignment_details_its_p
     )
     assert matched.count(beside) == 1
     assert linked.count('Grade details</a></p>\n      <p class="details-link">') == 2
+    assert ways_in_on(linked_once) == [
+        (way_in_to(practice), link_way, f"{link_way}: Field sketch, {BIOLOGY}")
+    ]
+    assert (
+        linked_once.count(
+            f'aria-label="{link_way}: Field sketch, {BIOLOGY}">{link_way}</a></p>\n    </section>'
+        )
+        == 1
+    )
 
 
 def test_g3a_i3_with_no_class_on_record_her_week_and_details_show_no_score() -> None:
@@ -5699,16 +5717,19 @@ def others_of(read: RuleValues, result_id: str = "result-log", term: str = "T1")
 
 
 def test_other_results_share_a_candidate_with_the_result_each_once_and_go_no_further() -> None:
-    """Plain values: the log's result and four more. One shares both its candidates, one in
-    another class shares one, one has another title, and one shares a candidate only with a
-    result that shares one with the log's. The first two are listed, each once, in the
-    order the results came; the log's own result and the others are not."""
+    """Plain values: the log's result and six more. One shares both its candidates, two agree
+    with each other in title, class, term and day and share both, one in another class shares
+    one, one has another title, and one shares a candidate only with a result that shares one
+    with the log's. The first four are listed, each once, in the order the results came; the
+    log's own result and the others are not."""
     dated, twin = homework(), homework("assignment-twin")
     later = homework("assignment-later", on=date(2026, 8, 27))
     results = [
         a_result("result-none", THURSDAY, title=DIAGRAM),
         a_result("result-twice", None),
         a_result("result-log", THURSDAY),
+        a_result("result-alike-1", THURSDAY),
+        a_result("result-alike-2", THURSDAY),
         a_result("result-further", date(2026, 8, 27)),
         a_result("result-once", THURSDAY, class_id=THEN_CLASS.class_id),
     ]
@@ -5716,7 +5737,13 @@ def test_other_results_share_a_candidate_with_the_result_each_once_and_go_no_fur
     classes = {**plain.classes, LOG_ID: [THE_CLASS.class_id, THEN_CLASS.class_id]}
     read = with_values(plain._replace(classes=classes))
 
-    assert others_of(read) == ["result-twice", "result-once"]
+    assert others_of(read) == ["result-twice", "result-alike-1", "result-alike-2", "result-once"]
+    assert others_of(read, "result-alike-1") == [
+        "result-twice",
+        "result-log",
+        "result-alike-2",
+        "result-once",
+    ]
     assert others_of(read, "result-further") == ["result-twice"]
     assert others_of(read, "result-none") == []
 
@@ -5787,6 +5814,35 @@ def test_identical_looking_twins_are_listed_apart_with_nothing_made_up_to_tell_t
     ]
 
 
+LOG_LINE = next(line for line in IN_WEEK.split("\n") if line.startswith(LOG_ROW))
+TWIN_LOGS = IN_WEEK.replace(
+    LOG_LINE,
+    LOG_LINE + "\n" + LOG_LINE.replace("18.0    | 20.0    | 90.0", "17.0    | 20.0    | 85.0"),
+)
+"""The report with a second row of the log's title and due date, scored apart: two results."""
+
+
+def test_identical_looking_twins_on_a_result_s_page_are_two_links_to_their_own_pages() -> None:
+    """Two results of the log's title and due date in the first term, and the log's in the
+    second. The second term's page lists both twins with the same words, in class details'
+    order, each a link to its own page."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client, TWIN_LOGS)
+        with_report(client, SECOND_TERM)
+        values = store_of(client).class_term(class_id, "T1").current.results
+        twins = [one for one, value in values.items() if value.cells["assignment"][1] == LOG]
+        page = result_page(client, result_named(client, class_id, LOG, "T2"))
+        order = order_on_class_details(class_details(client, class_id))
+
+    assert len(twins) == 2
+    assert others_on(page) == [
+        "Other results that could be the same homework:",
+        *[LOG, BIOLOGY, "Due August 20", "T1 · 2026-2027"] * 2,
+    ]
+    assert other_links(page) == [(way_in_to(one), LOG) for one in order if one in twins]
+
+
 RESULT_PAGE = "/parent/grades/results/{result_id}/homework"
 ON_THE_COMPUTER = "127.0.0.1:8781"
 
@@ -5814,9 +5870,9 @@ ANOTHER = (
 )
 SYNTHETIC_CAUSE = "synthetic-cause-text-for-the-boundary"
 SEARCH_HEADING_AT = '<h2 id="search-heading">'
+"""Where a result's page's search begins, after its homework rows and any other results."""
 OTHERS_AT = '<h2 id="other-results">Other results that could be the same homework:</h2>'
 """The heading over the other results that could be the same homework, before the search."""
-"""Where a result's page's search begins, after every row of its own homework."""
 
 
 def result_page(client: TestClient, result_id: str) -> str:
@@ -7439,7 +7495,7 @@ def test_a_search_answers_the_result_s_page_with_each_row_found_its_state_and_it
                 homework(),
                 homework(NOTEBOOK_ID, NOTEBOOK, None),
                 homework(PRACTICE_ID, PRACTICE, date(2026, 8, 12)),
-                homework(SKETCH_ID, "Field sketch", None, kind=AssignmentKind.TASK),
+                homework(SKETCH_ID, "Field sketch", None, course=CODE, kind=AssignmentKind.TASK),
             ],
             {},
         )
@@ -7449,7 +7505,7 @@ def test_a_search_answers_the_result_s_page_with_each_row_found_its_state_and_it
         parent_links(client, class_id, log, decision="apart")
         parent_links(client, class_id, diagram, PRACTICE_ID)
         before = closed_world([database_of(client)], leaving_out=())
-        answer = search(client, log, "biology")
+        answer = search(client, log, "bio")
         after = closed_world([database_of(client)], leaving_out=())
         revision = revision_of(client, log)
 
@@ -7460,7 +7516,7 @@ def test_a_search_answers_the_result_s_page_with_each_row_found_its_state_and_it
         "Homework found",
         "Showing 1 to 4 of 4.",
         f"Linking moves this result's link from {NOTEBOOK}.",
-        *(BIOLOGY, "Field sketch", "Due date not recorded", LINK),
+        *(CODE, "Field sketch", "Due date not recorded", LINK),
         *(BIOLOGY, NOTEBOOK, "Due date not recorded", "Linked to this result."),
         *(BIOLOGY, PRACTICE, "Due Wednesday, August 12", ANOTHER, LINK),
         *(BIOLOGY, LOG, LOG_DUE, "Kept apart from this result.", LINK),
@@ -7471,16 +7527,16 @@ def test_a_search_answers_the_result_s_page_with_each_row_found_its_state_and_it
         (address, LOG_ID, "link", revision),
     ]
     assert link_names(page) == [
-        f"{LINK}: Field sketch, {BIOLOGY}, no due date",
+        f"{LINK}: Field sketch, {CODE}, no due date",
         f"{LINK}: {PRACTICE}, {BIOLOGY}, due Wednesday, August 12",
         f"{LINK}: {LOG}, {BIOLOGY}, due Thursday, August 20",
     ]
-    assert field_of(page) == "biology"
+    assert field_of(page) == "bio"
     assert page.count(FOUND_AT) == 1
     assert "autofocus" not in page
     assert page_presses(page) == []
     assert ties_hold(page)
-    assert not [one for one in addresses_on(page) if "biology" in one.casefold()]
+    assert not [one for one in addresses_on(page) if "bio" in one.casefold()]
     assert after == before
 
 
@@ -7728,12 +7784,14 @@ def test_a_search_for_no_current_result_answers_404_as_the_page_does(asked: str)
         assert "<form" not in answer.text
 
 
+@pytest.mark.parametrize("asked", [LOG, DIAGRAM])
 @pytest.mark.parametrize("failure", ["a stored value", "two links"])
 def test_a_search_stopped_by_a_grade_failure_answers_the_generic_500_and_one_record(
-    failure: str, caplog: pytest.LogCaptureFixture
+    failure: str, asked: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A points presence that is no presence, whose decoding error holds a chosen text; or two
-    confirmed links to the log's result in a file changed by hand. A search, a page control's
+    """A points presence of the log's result that is no presence, whose decoding error holds a
+    chosen text; or two confirmed links to the log's result in a file changed by hand. On the
+    log's page and on the diagram's, which the links don't name, a search, a page control's
     press, refused words and a form that is not whole each answer the generic 500, raise
     nothing, write nothing, and leave one record naming the error's type alone."""
     sent: list[Sent] = [
@@ -7745,7 +7803,7 @@ def test_a_search_stopped_by_a_grade_failure_answers_the_generic_500_and_one_rec
     with browser() as client:
         store_of(client).put_on_record([homework(), *SET_ROWS], {})
         class_id = with_report(client)
-        log = result_named(client, class_id, LOG)
+        log, searched_on = (result_named(client, class_id, title) for title in (LOG, asked))
         if failure == "a stored value":
             points_presence(client, log, SYNTHETIC_CAUSE)
         else:
@@ -7755,7 +7813,7 @@ def test_a_search_stopped_by_a_grade_failure_answers_the_generic_500_and_one_rec
         for one in sent:
             caplog.clear()
             with caplog.at_level(logging.DEBUG):
-                answers.append(search_posted(client, log, one))
+                answers.append(search_posted(client, searched_on, one))
                 records.append(list(caplog.records))
         after = closed_world([database_of(client)], leaving_out=())
 
@@ -7772,21 +7830,26 @@ def test_a_search_stopped_by_a_grade_failure_answers_the_generic_500_and_one_rec
     assert after == before
 
 
+@pytest.mark.parametrize("unrelated", [sqlite3.DatabaseError, ValueError])
 def test_an_unrelated_error_inside_a_search_is_not_caught(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    unrelated: type[Exception], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A database error from her links' read leaves the search's route as itself, no record."""
+    """A database error from her links' read, or a value error that is not the named error
+    from the search's filtering, leaves the search's route as itself, with no record."""
     with browser() as client:
         store_of(client).put_on_record([homework()], {})
         class_id = with_report(client)
         log = result_named(client, class_id, LOG)
 
-        def refused() -> None:
+        def refused(*_: object, **__: object) -> None:
             msg = "synthetic"
-            raise sqlite3.DatabaseError(msg)
+            raise unrelated(msg)
 
-        monkeypatch.setattr(store_of(client), "homework_links", refused)
-        with caplog.at_level(logging.DEBUG), pytest.raises(sqlite3.DatabaseError):
+        if unrelated is sqlite3.DatabaseError:
+            monkeypatch.setattr(store_of(client), "homework_links", refused)
+        else:
+            monkeypatch.setattr(grades, "homework_found", refused)
+        with caplog.at_level(logging.DEBUG), pytest.raises(unrelated):
             search(client, log, "log")
 
     assert not [one for one in caplog.records if "wasn't shown" in one.getMessage()]
