@@ -13,9 +13,9 @@
   The heading takes the focus, so a press, and the way in from class details, land on it. The
   buttons of a row are one group, each its own form; a link to homework not on record is named
   by the page's state line, said once. A school-year range stays whole where a line can hold
-  it. A press that is refused gets the page as it reads now with its answer first, which takes
-  the focus when the page opens, and nothing else does; a press that stands lands as a written
-  one does; a press the index, a stored value or her links stop gets the plain generic 500.
+  it. When a response renders this page with an explanation, the explanation takes focus when
+  the page opens, and nothing else does. A press that stands lands as a written one does. A
+  press the index, a stored value or her links stop gets the plain generic 500.
 #}
 {% macro words(line) %}{% if line.keep %}{{ line.text[:line.keep_at] }}<span class="year-range">{{ line.keep }}</span>{{ line.text[line.keep_at + line.keep|length:] }}{% else %}{{ line.text }}{% endif %}{% endmacro %}
 {% macro said(line) %}{% if line.authored %}<span class="authored-text">{{ words(line) }}</span>{% else %}{{ words(line) }}{% endif %}{% endmacro %}

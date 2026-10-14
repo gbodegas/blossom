@@ -6458,10 +6458,11 @@ def ties_hold(page: str) -> bool:
     return bool(named) and all(f'id="{one}"' in page for each in named for one in each.split())
 
 
-def test_a_school_year_range_on_a_result_s_page_is_marked_as_one_piece() -> None:
-    """Homework of Biology linked to last year's log, the current year made this one, then the
-    homework put on record under another class name, each by the store's own write: the page
-    names last year's class and its year, each range in its own mark, and offers no link."""
+@pytest.mark.parametrize("name", ["Earth Science", "Earth Science 2025-2026"])
+def test_a_school_year_range_on_a_result_s_page_is_marked_as_one_piece(name: str) -> None:
+    """Homework linked to last year's log, then put on record under another class name, by the
+    store's writes: the page names last year's class and its year, only the sentence's year slot
+    and the term's range marked, a name's own copy of the range not, and offers no link."""
     then = draft_of(IN_WEEK.replace(f"**{YEAR}**", "**2025-2026**"))
     with browser() as client:
         store = store_of(client)
@@ -6476,16 +6477,20 @@ def test_a_school_year_range_on_a_result_s_page_is_marked_as_one_piece() -> None
         store.set_current_context(("2025-2026", "T1"), (YEAR, "T1"), role="parent")
         log = result_named(client, last_year, LOG)
         parent_links(client, last_year, log, NOTEBOOK_ID)
-        store.put_on_record([homework(NOTEBOOK_ID, NOTEBOOK, None, course="Earth Science")], {})
+        store.put_on_record([homework(NOTEBOOK_ID, NOTEBOOK, None, course=name)], {})
         page = result_page(client, log)
 
     reason = (
-        f"Earth Science isn't connected to {BIOLOGY}, a class of 2025-2026. Homework class names "
+        f"{name} isn't connected to {BIOLOGY}, a class of 2025-2026. Homework class names "
         "changes the current school year only."
     )
     assert reason in said_on(page)
+    (item,) = [one for one in re.findall(r"<li>(.*?)</li>", page, re.S) if "a class of" in one]
+    assert re.findall(r'<span class="year-range">([^<]*)</span>', item) == ["2025-2026"]
+    before = item.split('<span class="year-range">')[0]
+    assert html.unescape(re.sub(r"<[^>]+>", "", before)).endswith("a class of ")
     assert (
-        f'<li><span class="authored-text">Earth Science isn&#39;t connected to {BIOLOGY}, a class '
+        f'<li><span class="authored-text">{name} isn&#39;t connected to {BIOLOGY}, a class '
         'of <span class="year-range">2025-2026</span>. Homework class names changes the current '
         "school year only.</span></li>"
     ) in page

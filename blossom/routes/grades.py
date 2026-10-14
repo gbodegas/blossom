@@ -2746,8 +2746,8 @@ def homework_for_result(result_id: str, request: Request, state: State) -> Respo
 @family_router.post("/results/{result_id}/homework", response_class=HTMLResponse)
 async def decide_homework(result_id: str, request: Request, state: State) -> Response:
     """Route 13: a parent's decision about the result and one homework, by the store's one
-    write. A decision written now or standing already lands on the result's heading; any other
-    answer writes nothing: the page with its answer, or the plain generic 500."""
+    write. A decision written now or standing already lands on the result's heading. Other
+    handled outcomes return a page with an explanation or the plain generic 500."""
     fields, whole = await fields_of(request, DECISION_FIELDS)
     homework, decision = fields.get("homework", "").strip(), fields.get("decision", "")
     revision = fields.get("revision", "")
