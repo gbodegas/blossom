@@ -7393,6 +7393,38 @@ def test_a_conflict_the_store_s_check_misses_stops_the_page_though_who_waits_can
     assert [one for one in caplog.records if one.exc_info] == []
 
 
+BEFORE_THE_RESULTS = (
+    '<p class="note">Report added August 19</p>\n    \n    \n'
+    '      <h2 class="grade-heading">Assignments</h2>'
+)
+"""The bytes between the term's summary and the first results heading of class details, as the
+page writes them with no sentence to say: two lines of spaces, nothing else."""
+
+
+def test_class_details_writes_nothing_before_its_results_when_who_waits_is_not_in_doubt() -> None:
+    """Her class details, a parent's of the class with a result that waits, and a parent's of
+    the second class, where none waits, write exactly the same bytes between the term's summary
+    and the first results heading; only the page that couldn't work out who waits has its
+    sentence there."""
+    with browser() as client:
+        class_id, other = two_classes(client)
+        hers = class_details(client, class_id)
+        parents_waiting = parent_class_page(client, class_id)
+        parents_none_waiting = parent_class_page(client, other)
+        damaged(client, "a cell", other)
+        unchecked = parent_class_page(client, class_id)
+
+    assert cued_on(parents_waiting) != frozenset()
+    assert cued_on(parents_none_waiting) == frozenset()
+    for page in (hers, parents_waiting, parents_none_waiting):
+        assert page.count(BEFORE_THE_RESULTS) == 1
+    assert (
+        '<p class="note">Report added August 19</p>\n    \n'
+        f"      {NOT_CHECKED_LINE}\n    \n"
+        '      <h2 class="grade-heading">Assignments</h2>'
+    ) in unchecked
+
+
 OWN_FAILURES = {
     "a cell in this class and term": (
         "UPDATE grade_result_observations SET points_presence = ?",

@@ -30,9 +30,9 @@
     {% elif not reported %}
       <p class="note">{{ no_report_added }}</p>
     {% endif %}
-    {% if unchecked %}
+    {%- if unchecked %}
       <p class="problem">{{ unchecked }}</p>
-    {% endif %}
+    {%- endif %}
     {% if dated %}
       <h2 class="grade-heading">Assignments</h2>
       {% for result_id, item in dated %}{{ result(item, result_id, 3, ways.get(result_id)) }}{% endfor %}
