@@ -121,6 +121,7 @@ CURRENT_TERM = "/parent/grades/current-term"
 CLASS_AT = "/parent/grades/classes/{class_id}/terms/{n}"
 HER_CLASS_AT = "/student/grades/classes/{class_id}/terms/{n}"
 HOMEWORK_CLASSES = "/parent/grades/homework-classes"
+RESULT_HOMEWORK = "/parent/grades/results/{result_id}/homework"
 UNKNOWN = "acceptance-" + "0" * 32
 FAMILY_GRADE_ROUTES = {
     ("GET", ADD),
@@ -133,6 +134,7 @@ FAMILY_GRADE_ROUTES = {
     ("POST", VIEW),
     ("POST", CURRENT_TERM),
     ("GET", CLASS_AT),
+    ("GET", RESULT_HOMEWORK),
     ("GET", HOMEWORK_CLASSES),
     ("POST", HOMEWORK_CLASSES),
 }
@@ -197,7 +199,13 @@ def every_family_request(browser: TestClient, **headers: str) -> dict[tuple[str,
     ).status_code
     linked = re.search(r'href="(/parent/grades/classes/[^"]+/terms/1)"', grades.text)
     details = linked[1] if linked else CLASS_AT.format(class_id="class-unknown", n=1)
-    statuses[("GET", CLASS_AT)] = browser.get(details, headers=asked).status_code
+    class_page = browser.get(details, headers=asked)
+    statuses[("GET", CLASS_AT)] = class_page.status_code
+    result = re.search(r'id="(result-[0-9a-f]{32})"', class_page.text)
+    result_id = result[1] if result else "result-" + "0" * 32
+    statuses[("GET", RESULT_HOMEWORK)] = browser.get(
+        RESULT_HOMEWORK.format(result_id=result_id), headers=asked
+    ).status_code
     names = browser.get(HOMEWORK_CLASSES, headers=asked)
     statuses[("GET", HOMEWORK_CLASSES)] = names.status_code
     blocks = name_blocks(names.text) if names.status_code == 200 else []
@@ -221,6 +229,7 @@ ALLOWED = {
     ("POST", VIEW): 303,
     ("POST", CURRENT_TERM): 303,
     ("GET", CLASS_AT): 200,
+    ("GET", RESULT_HOMEWORK): 200,
     ("GET", HOMEWORK_CLASSES): 200,
     ("POST", HOMEWORK_CLASSES): 303,
 }
@@ -1154,14 +1163,17 @@ def test_the_record_lines_rule_is_pinned_and_only_the_school_record_s_folds_carr
     )
     review = (TEMPLATES / "grade_review.html").read_text(encoding="utf-8")
     details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+    card = (TEMPLATES / "grade_result_card.html").read_text(encoding="utf-8")
 
     assert css.count("record-lines") == 1
     assert css.count(RECORD_LINES_RULE) == 1
-    assert carriers == ["grade_class.html", "grade_review.html"]
+    assert carriers == ["grade_class.html", "grade_result_card.html", "grade_review.html"]
     assert fold.findall(review) == ["School record"]
     assert review.count("record-lines") == 1
-    assert fold.findall(details) == ["School record", "Category"]
-    assert details.count("record-lines") == 2
+    assert fold.findall(card) == ["School record"]
+    assert card.count("record-lines") == 1
+    assert fold.findall(details) == ["Category"]
+    assert details.count("record-lines") == 1
 
 
 def test_the_review_s_closing_buttons_are_one_group_with_the_way_back_under_it(
@@ -1213,7 +1225,12 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
     assert css.count(CARD_RULES) == 1
     for shared in SHARED_CARD_RULES:
         assert css.count(shared) == 1, shared
-    assert carriers == ["grade_class.html", "grade_homework_classes.html", "grades.html"]
+    assert carriers == [
+        "grade_homework_classes.html",
+        "grade_result_card.html",
+        "grade_result_homework.html",
+        "grades.html",
+    ]
     names = (TEMPLATES / "grade_homework_classes.html").read_text(encoding="utf-8")
     block = '<section class="panel grade-card" aria-labelledby="name-{{ loop.index }}">'
     assert names.count(block) == names.count("<section") == 1
@@ -1221,9 +1238,13 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
     card = '<section class="panel grade-card" aria-labelledby="class-{{ loop.index }}">'
     assert grades.count(card) == 1
     assert grades.count("<section") == 1
-    details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
-    assert details.count('<section class="panel grade-card">') == 1
-    assert details.count("<section") == 1
+    card = (TEMPLATES / "grade_result_card.html").read_text(encoding="utf-8")
+    assert card.count('<section class="panel grade-card">') == 1
+    assert card.count("<section") == 1
+    assert "<section" not in (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
+    homework = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
+    row = '<section class="panel grade-card" aria-labelledby="homework-{{ row.number }}">'
+    assert homework.count(row) == homework.count("<section") == 1
 
 
 CARD_TITLE_RULE = ".card-title {\n  font-size: 1.3rem;\n  margin: 0 0 0.6rem;\n}\n"
@@ -1257,19 +1278,26 @@ weight and color, its kicker, its due line and the quieter phrase beside it, its
 quiet lines, and the rule above its last section."""
 RESULT_CARD = """  <section class="panel grade-card">
     <p class="{{ 'course' if item.category_reported else 'source' }}"><span class="authored-text">{{ item.category }}</span></p>
-    <h3 class="card-title" id="{{ result_id }}" tabindex="-1"><span class="authored-text">{{ item.title }}</span></h3>
+    <h{{ level }} class="card-title" id="{{ result_id }}" tabindex="-1"><span class="authored-text">{{ item.title }}</span></h{{ level }}>
     <p class="due">{{ item.due }} <span class="source">{{ item.status }}</span></p>
     <p class="effect">{{ item.score }}</p>
     {% for line in item.showing %}
       <p class="source">{{ line }}</p>
     {% endfor %}
+    {%- if way %}
+      {%- if way.linked %}
+    <p>{% if way.linked.authored %}<span class="authored-text">{{ way.linked.text }}</span>{% else %}{{ way.linked.text }}{% endif %}</p>
+      {%- endif %}
+    <p class="details-link"><a class="assignment-link" href="{{ way.address }}" aria-label="{{ way.label }}">Homework for this result</a></p>
+    {%- endif %}
     <details class="steps update">
 """  # noqa: E501
-"""A result's card on class details, pinned as written, in the week card's order: the category
-as the kicker when the school reported it and as a quiet line when it didn't, the title, which
-carries the result's ID and takes the focus so a link can land on it, the
-due line with the gradebook status as its quieter phrase, the score, where it was last shown,
-and the school record details under the card's rule."""
+"""A result's card on class details and a result's homework page, pinned as written, in the
+week card's order: the category as the kicker when the school reported it and as a quiet line
+when it didn't, the title, a heading of the level the page gives, which carries the result's
+ID and takes the focus so a link can land on it, the due line with the gradebook status as its
+quieter phrase, the score, where it was last shown, and the school record details under the
+card's rule."""
 REVIEW_ROW = (
     "              <p class=\"{{ 'course' if shown.category.name.presence.name == 'REPORTED' "
     'else \'source\' }}">{{ cell(shown.category.name, "Category name") }}</p>\n'
@@ -1295,10 +1323,17 @@ def test_a_grade_card_is_drawn_with_the_week_card_s_parts_and_one_rule_for_its_t
         assert css.count(shared) == 1, shared
     for shared in WEEK_CARD_RULES:
         assert css.count(shared) == 1, shared
-    assert carriers == ["grade_class.html", "grade_review.html"]
-    details = (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
-    assert details.count(RESULT_CARD) == 1
-    assert details.count("card-title") == 1
+    assert carriers == [
+        "grade_result_card.html",
+        "grade_result_homework.html",
+        "grade_review.html",
+    ]
+    card = (TEMPLATES / "grade_result_card.html").read_text(encoding="utf-8")
+    assert card.count(RESULT_CARD) == 1
+    assert card.count("card-title") == 1
+    homework = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
+    assert homework.count('<h2 class="card-title" id="homework-{{ row.number }}">') == 1
+    assert homework.count("card-title") == 1
     review = (TEMPLATES / "grade_review.html").read_text(encoding="utf-8")
     assert review.count(REVIEW_ROW) == 1
     assert review.count("card-title") == 1
@@ -2837,12 +2872,12 @@ def test_class_details_show_each_score_cell_the_save_kept(tmp_path: pathlib.Path
             for address in (HER_CLASS_AT, CLASS_AT)
         ]
 
-    for said in pages:
+    for said, way in zip(pages, ("", " Homework for this result"), strict=True):
         for n, (points, most, average) in enumerate(states, start=1):
             line = score_said(points, most, average)
             card = (
                 f"Homework / Practice Log {n:02} Due September 22 Gradebook status: Valid"
-                f" {line} School record details"
+                f" {line}{way} School record details"
             )
             assert card in said, (n, said)
 

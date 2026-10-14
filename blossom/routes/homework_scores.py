@@ -47,7 +47,7 @@ applying without a diagnostic. Nothing here detects every edit.
 One result's homework is worked out from the same values: ``rule_values`` makes what the
 rules take from one page read, the mapping of school scores is made from that, and
 ``result_homework`` gives one result's candidates, its link or the pair the rules stand, the
-pairs kept apart, and why a linked result's score stays off her homework.
+pairs kept apart, and why a linked or matched result's score stays off her homework.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """
@@ -115,10 +115,11 @@ class ScoreShown:
 
 
 class RuleValues(NamedTuple):
-    """One page read as the score rules take it: each assignment, every result read in the
-    page's order, each assignment's connected classes, and each result's value with its
-    term's place in its year, by class, term and result ID."""
+    """One page read as the score rules take it: each assignment's record and the rules' value
+    made from it, every result read in the page's order, each assignment's connected classes,
+    and each result's value with its term's place in its year, by class, term and result ID."""
 
+    assignments: list[Assignment]
     homework: list[Homework]
     results: list[Result]
     classes: dict[str, list[str]]
@@ -134,9 +135,9 @@ class PairStanding(StrEnum):
 
 
 class Withheld(StrEnum):
-    """Why a linked result's score stays off her homework: its points cell by presence, a
-    class and term that doesn't show it, or the homework's class name not connected to its
-    class, a class of the current school year or of another."""
+    """Why a linked or matched result's score stays off her homework: its points cell by
+    presence, a class and term that doesn't show it, or, for a link, the homework's class name
+    not connected to its class, a class of the current school year or of another."""
 
     POINTS_BLANK = "points_blank"
     POINTS_UNREADABLE = "points_unreadable"
@@ -173,8 +174,8 @@ class HomeworkRow:
 @dataclass(frozen=True)
 class ResultHomework:
     """One result's homework: the homework a link names, or else the one the rules stand it
-    with; its candidates whatever links stand; the pairs kept apart; each reason a linked
-    result's score stays off her homework; and the rules' answer when it waits."""
+    with; its candidates whatever links stand; the pairs kept apart; each reason a linked or
+    matched result's score stays off her homework; and the rules' answer when it waits."""
 
     class_id: str
     term: str
@@ -236,9 +237,15 @@ def read_score_facts(
     years = read_grade_facts(store, courses)
     if not results_read(years):
         return years, ()
+    return years, read_links(store)
+
+
+def read_links(store: GradebookRecords) -> tuple[Link, ...]:
+    """Her homework links as the score rules read them, with text decoded strictly: the
+    store's link read and its checks. A read alone."""
     with store.strict_text():
         stored = store.homework_links()
-    return years, tuple(
+    return tuple(
         Link(one.assignment_id, one.result_id, confirmed=one.state == LINK_CONFIRMED)
         for one in stored
     )
@@ -318,7 +325,7 @@ def rule_values(
                 ordered.append((key, result_of(class_id, term, result_id, value, day)))
                 found[(class_id, term, result_id)] = (value, place)
     results = [result for _, result in sorted(ordered, key=lambda one: one[0])]
-    return RuleValues(homework, results, classes, found)
+    return RuleValues(listed, homework, results, classes, found)
 
 
 def scores_shown(
@@ -365,16 +372,15 @@ def result_homework(
     term: str,
     result_id: str,
     value: CurrentValue,
-    assignments: Iterable[Assignment],
     read: RuleValues,
     *,
     links: Collection[Link],
     current_year: str | None,
 ) -> ResultHomework:
     """The homework of the result ``result_id`` of the class ``of`` in ``term``, whose current
-    value is ``value``: from every assignment, what ``rule_values`` made of the same page read,
+    value is ``value``: from what ``rule_values`` made of one page read, its records included,
     a parent's links and the current school year. Terms compare with their spaces folded."""
-    listed = {item.assignment_id: item for item in assignments}
+    listed = {item.assignment_id: item for item in read.assignments}
     could = candidate_homework(read.homework, read.results, read.classes, decided=links)
     waits = waiting_results(read.homework, read.results, read.classes, decided=links)
 
@@ -405,20 +411,22 @@ def result_homework(
             another_result=assignment_id in shared,
         )
 
+    found = next((one for one in could if this(one)), None)
+    linked_here = holder is not None and holder in listed
     withheld: list[Withheld] = []
-    if holder is not None and holder in listed:
+    # A pair the rules stand connects by its class already, so only a link can lack it.
+    if linked_here or (found is not None and found.stood is not None):
         points = value.cells["points"][0]
         if points is not Presence.REPORTED:
             withheld.append(POINTS_WITHHELD[points])
         if value.not_shown is not None:
             withheld.append(Withheld.NOT_SHOWN)
-        if of.class_id not in read.classes.get(holder, ()):
-            withheld.append(
-                Withheld.NAME_NOT_CONNECTED
-                if of.year == current_year
-                else Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR
-            )
-    found = next((one for one in could if this(one)), None)
+    if holder is not None and linked_here and of.class_id not in read.classes.get(holder, ()):
+        withheld.append(
+            Withheld.NAME_NOT_CONNECTED
+            if of.year == current_year
+            else Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR
+        )
     kept = {one for one, how in standing.items() if how is PairStanding.APART}
     # Homework on record first, in the order the assignments came, then the rest by ID.
     apart = [one for one in listed if one in kept] + sorted(kept - set(listed))
