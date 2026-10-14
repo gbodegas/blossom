@@ -342,6 +342,9 @@ def test_a_charset_a_part_cannot_be_decoded_in_is_a_form_that_cannot_be_read(
     only on the typed words, gets the 400 page, through a handler and through a form of
     parameters alike: no cookie, no store call, no statement, no row changed, and nothing
     typed in a page or a log line, which names the failure's kind alone."""
+    with pytest.raises(UnicodeError) as raised:
+        TYPED.encode().decode(charset)
+    assert type(raised.value) is UnicodeError
     caplog.set_level(logging.DEBUG)
     answers = {}
     for reader, paths, fields in (
@@ -436,7 +439,12 @@ def test_a_charset_whose_codec_refuses_a_part_reads_that_part_as_latin_1(
 
     for path, (plain, named) in answers.items():
         assert as_met(named) == as_met(plain), path
-    assert answers[SIGN_IN][1].status_code == 303
+    assert {path: named.status_code for path, (_, named) in answers.items()} == {
+        SIGN_IN: 303,
+        ASK: 422,
+        PASTE: 422,
+        DECIDE: 422,
+    }
     plain, named = answers[ASK]
     assert note_kept(named) == note_kept(plain) == "caf\u00c3\u00a9"
 
@@ -456,7 +464,12 @@ def test_a_charset_that_decodes_every_part_reads_the_form_as_decoded_names_inclu
 
     for path, (plain, named) in answers.items():
         assert as_met(named) == as_met(plain), path
-    assert answers[SIGN_IN][1].status_code == door
+    assert {path: named.status_code for path, (_, named) in answers.items()} == {
+        SIGN_IN: door,
+        ASK: 422,
+        PASTE: 422,
+        DECIDE: 422,
+    }
     plain, named = answers[ASK]
     assert note_kept(named) == note_kept(plain) == kept
 
