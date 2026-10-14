@@ -76,7 +76,9 @@ from tests.support import (
     FIXTURE_TIMEZONE,
     OBSERVED_AT,
     SAME_ORIGIN,
+    Awaited,
     FakeTime,
+    Gated,
     Scripted,
     Spending,
     accepting,
@@ -2470,42 +2472,60 @@ def test_a_run_canceled_after_its_plan_is_published_keeps_it_even_when_the_draft
 def test_a_run_canceled_while_it_ends_out_of_time_keeps_one_account_of_how_it_ended(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, times: int
 ) -> None:
-    """A run canceled while it ends after its time ran out still keeps its record as timed
-    out, with the step that says so, and its time under the same category."""
-    state = file_backed_application(tmp_path)
+    """A run canceled while its planner is still awaited past its deadline, and again while
+    its ending waits for the store, still keeps its record as timed out, with the step that
+    says so, and its time under the same category. Each cancel reaches the request before it
+    has stopped: one waits for the ending, and a second stops the request while it is held."""
+    time_now = FakeTime()
+    state = file_backed_application(tmp_path, monotonic=time_now)
     try:
 
-        async def scenario() -> list[RunRecord]:
+        async def scenario() -> tuple[list[bool], bool, bool, bool, int, list[RunRecord]]:
             await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
-            loop = asyncio.get_running_loop()
-            held = HeldStoreCall(state.drafts.end_run, tmp_path / "blossom.sqlite3", 0.6, loop)
-            monkeypatch.setattr(state.drafts, "end_run", held)
-            try:
-                late = asyncio.create_task(
-                    plan_evening(
-                        plan_graph_for(
-                            state, planner=HeldUntil(), critic=Scripted(ok(accepting()))
-                        ),
-                        PLAN_DATE,
-                        state,
-                        budget=RunBudget(seconds=0.2),
-                    )
+            ending = Gated(state.drafts.end_run, asyncio.get_running_loop())
+            monkeypatch.setattr(state.drafts, "end_run", ending)
+            planner = Awaited()
+            late = asyncio.ensure_future(
+                plan_evening(
+                    plan_graph_for(state, planner=planner, critic=Scripted(ok(accepting()))),
+                    PLAN_DATE,
+                    state,
+                    budget=time_now.budget(0.2),
                 )
-                await asyncio.wait_for(asyncio.shield(held.late_by), timeout=STORE_WAIT)
-                for _ in range(times):
-                    late.cancel()
-                    await asyncio.sleep(0)
-                await asyncio.gather(late, return_exceptions=True)
-            finally:
-                held.close()
+            )
+            await asyncio.wait_for(planner.asked.wait(), timeout=STORE_WAIT)
+            # Past the deadline with nothing run on the loop since: the plan is still awaited.
+            time_now.advance(1.0)
+            reached = [not late.done() and late.cancel()]
+            await asyncio.wait_for(ending.began.wait(), timeout=STORE_WAIT)
+            if times == 2:
+                reached.append(not late.done() and not ending.returned.is_set() and late.cancel())
+                await asyncio.wait({late})
+            stopped_while_held = late.done() and not ending.returned.is_set()
+            ending.go.set()
+            (outcome,) = await asyncio.gather(late, return_exceptions=True)
+            stopped = isinstance(outcome, BaseException) and not isinstance(outcome, Exception)
+            await asyncio.wait_for(ending.returned.wait(), timeout=STORE_WAIT)
             await detached_done(state)
             monkeypatch.undo()
-            return state.drafts.runs_without_a_draft()
+            return (
+                reached,
+                stopped_while_held,
+                stopped,
+                planner.canceled,
+                ending.calls,
+                state.drafts.runs_without_a_draft(),
+            )
 
-        (run,) = asyncio.run(scenario())
+        reached, stopped_while_held, stopped, canceled, endings, (run,) = time_now.run(scenario())
     finally:
         state.close()
 
+    assert reached == [True] * times
+    assert stopped_while_held == (times == 2)
+    assert stopped
+    assert canceled
+    assert endings == 1
     assert run.outcome == "timed_out"
     assert run.steps[-1].found == "No plan came back: the run's time ran out while it waited."
     assert run.timing is not None

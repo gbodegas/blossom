@@ -45,10 +45,15 @@ from blossom.agent.runs import (
 from blossom.agent.steps import (
     DATE_PROBLEM,
     PAST_DUE_WORK,
+    SERVICE,
+    SERVICE_FAILED,
+    TIMED_OUT,
+    TIMEOUT,
     PastDueWork,
     RunTiming,
     StepRecord,
     describe_failure,
+    failure_category,
     past_due_work,
 )
 from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
@@ -193,36 +198,6 @@ def refuse_an_empty_run(run: PlanRunView) -> None:
     """
     if run.draft_id is None and run.outcome == NOTHING_TO_SCHEDULE_OUTCOME:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=NOTHING_TO_SCHEDULE)
-
-
-TIMED_OUT: Final = "timed_out"
-"""The outcome recorded on a run whose time ran out before it ended or paused."""
-
-SERVICE_FAILED: Final = "service_failed"
-"""The outcome recorded on a run a model request failed in, retries spent."""
-
-INVALID_OUTPUT: Final = "invalid_output"
-TIMEOUT: Final = "timeout"
-SERVICE: Final = "service"
-CATEGORIES: Final[dict[str, str]] = {
-    "checks_failed": INVALID_OUTPUT,
-    "model_truncated": INVALID_OUTPUT,
-    "model_refused": INVALID_OUTPUT,
-    "model_unparseable": INVALID_OUTPUT,
-    TIMED_OUT: TIMEOUT,
-    SERVICE_FAILED: SERVICE,
-    DATE_PROBLEM: DATE_PROBLEM,
-    INTERRUPTED: INTERRUPTED,
-}
-"""How each way of ending without a plan is told apart: the service at fault, an answer
-that couldn't be used, time running out, or a date on record no plan can keep to; a run
-that failed on the way for a reason of its own is interrupted. A run that made a plan, had
-nothing to plan, or was overtaken by a newer one has no category."""
-
-
-def failure_category(outcome: str) -> str | None:
-    """The category of a run that ended with ``outcome``, or ``None`` when it did not fail."""
-    return CATEGORIES.get(outcome)
 
 
 Sentences = tuple[str, ...]
@@ -972,11 +947,13 @@ class Planning:
         """The step a run cut off by its time or its service ends with."""
         node, round_number = self.budget.waiting_on or ("time_limit", 0)
         self.budget.lap(node, round_number)
-        found = (
-            describe_failure(outcome, WAITED_FOR[node])
-            if node in WAITED_FOR
-            else f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out."
-        )
+        if node in WAITED_FOR:
+            return self.step(node, round_number, describe_failure(outcome, WAITED_FOR[node]))
+        return self.time_limit_step()
+
+    def step(self, node: str, round_number: int, found: str) -> StepRecord:
+        """A step expecting an answer inside the run's time, recorded now. Reads only the
+        clock, so building it can't fail in the middle of an ending."""
         return StepRecord(
             node=node,
             round=round_number,
@@ -985,9 +962,30 @@ class Planning:
             recorded_at=self.state.clock.now(),
         )
 
-    async def end(self, reason: str, terminal: StepRecord | None = None) -> None:
+    def time_limit_step(self) -> StepRecord:
+        """The step an ending recorded out of time takes when no model request was still
+        awaited past the deadline: the run's time limit, with no lap."""
+        return self.step("time_limit", 0, f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out.")
+
+    def canceled_step(self) -> StepRecord:
+        """The step a canceled run's ending takes if it is recorded out of time: the model
+        request still awaited when the deadline had passed, or else the time limit."""
+        in_flight = self.budget.in_flight
+        if in_flight is None or in_flight[0] not in WAITED_FOR or self.budget.remaining() > 0:
+            return self.time_limit_step()
+        node, round_number = in_flight
+        return self.step(node, round_number, describe_failure(TIMED_OUT, WAITED_FOR[node]))
+
+    async def end(self, reason: str, terminal: StepRecord | None = None) -> PlanMade | None:
         """End the run without a plan. Before its deadline the ending is waited for, so an
-        immediate press is admitted; at or after it, it goes on without a wait."""
+        immediate press is admitted; at or after it, it goes on without a wait.
+
+        Past the deadline the store records the run ``timed_out``, with the time-limit
+        step in place of ``terminal``. When the ending is seen recorded that way in place
+        of ``reason``, the answer follows the record: the out-of-time answer, which is
+        returned. Otherwise ``None``, and the caller answers for ``reason``.
+        """
+        out_of_time = self.time_limit_step()
         ending = partial(
             self.state.drafts.end_run,
             self.run_id,
@@ -995,18 +993,24 @@ class Planning:
             steps=list(self.budget.steps),
             terminal=terminal,
             timing=self.timing(reason),
+            out_of_time=out_of_time,
         )
         left = self.budget.remaining()
         if left <= 0:
             in_the_background(self.state, ending, f"ending run {self.run_id}")
-            return
+            return None
         try:
-            await bounded(ending, min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS))
+            ended = await bounded(ending, min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS))
         except Unfinished as unfinished:
             detach(self.state, unfinished.work, f"ending run {self.run_id}")
             logger.warning("run %s not seen ended in time; its deadline ends it", self.run_id)
+            return None
         except Exception:
             logger.exception("run %s could not be ended; its deadline ends it", self.run_id)
+            return None
+        if reason == TIMED_OUT or ended is None or ended.reason != TIMED_OUT:
+            return None
+        return self.ended_view(TIMED_OUT, [*self.budget.steps, out_of_time])
 
     def ended_view(
         self, reason: str, steps: Sequence[StepRecord], past_due: Sequence[PastDueView] = ()
@@ -1029,9 +1033,9 @@ class Planning:
         """End a run its time or its service cut off, with the step it ended on."""
         terminal = self.terminal_step(outcome)
         steps = [*self.budget.steps, terminal]
-        await self.end(outcome, terminal)
+        made = await self.end(outcome, terminal)
         tidy_later(self.run_id, self.state)
-        return self.ended_view(outcome, steps)
+        return self.ended_view(outcome, steps) if made is None else made
 
     def timed_out(self) -> PlanMade:
         """Answer at once for a run whose time ran out before it settled; the ending goes on
@@ -1063,6 +1067,7 @@ class Planning:
                 self.run_id,
                 reason=INTERRUPTED,
                 timing=self.timing(INTERRUPTED),
+                out_of_time=self.time_limit_step(),
             ),
             f"ending run {self.run_id}",
         )
@@ -1152,8 +1157,11 @@ class Planning:
             # A held review that can't be read is a failure like any other: the run ends
             # interrupted before the answer, so the next press is admitted. The decision
             # lock is already free, so no decision waits on that ending.
-            await self.end(INTERRUPTED)
+            made = await self.end(INTERRUPTED)
             tidy_later(self.run_id, self.state)
+            if made is not None:
+                logger.exception("the plan for %s failed on the way", self.plan_date)
+                return made
             self.keep_timing(INTERRUPTED)
             raise
         try:
@@ -1222,8 +1230,10 @@ class Planning:
                 error.run.reason, self.budget.steps, past_due_views(error.run.past_due or ())
             )
         except ModelUnavailable as error:
-            await self.end(INTERRUPTED)
+            made = await self.end(INTERRUPTED)
             tidy_later(self.run_id, self.state)
+            if made is not None:
+                return made
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
         except RunTimedOut:
             return await self.cut_off(TIMED_OUT)
@@ -1231,8 +1241,11 @@ class Planning:
             return await self.cut_off(SERVICE_FAILED)
         except Exception:
             # A store's or a request's own TimeoutError is a failure like any other.
-            await self.end(INTERRUPTED)
+            made = await self.end(INTERRUPTED)
             tidy_later(self.run_id, self.state)
+            if made is not None:
+                logger.exception("the plan for %s failed on the way", self.plan_date)
+                return made
             self.keep_timing(INTERRUPTED)
             raise
         if result is None:
@@ -1251,9 +1264,9 @@ class Planning:
             )
         view = run_view(self.run_id, self.plan_date, result)
         if not view.waiting:
-            await self.end(INTERRUPTED)
+            made = await self.end(INTERRUPTED)
             tidy_later(self.run_id, self.state)
-            return self.ended_view(INTERRUPTED, view.steps)
+            return self.ended_view(INTERRUPTED, view.steps) if made is None else made
         made = await self.publish(view)
         if made.record is not None:
             return PlanMade(made.view.model_copy(update={"past_due": view.past_due}), made.record)
@@ -1305,6 +1318,7 @@ async def make_plan(
             reason=INTERRUPTED,
             timing=planning.timing(INTERRUPTED),
             wait=SETTLE_GRACE_SECONDS,
+            out_of_time=planning.canceled_step(),
         )
         try:
             ended = await bounded(ending, SETTLE_GRACE_SECONDS)

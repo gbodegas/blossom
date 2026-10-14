@@ -110,6 +110,9 @@ class RunBudget:
     outputs: list[int] = field(default_factory=list)
     waiting_on: tuple[str, int] | None = None
     """The node and round of the request in progress, kept when one ends the run."""
+    in_flight: tuple[str, int] | None = None
+    """The node and round of a model request awaited at this moment; ``None`` once it has
+    answered, failed or been canceled, and between requests."""
     _lap: float = field(init=False)
 
     def __post_init__(self) -> None:
@@ -152,6 +155,7 @@ class RunBudget:
             if attempt:
                 self.retries += 1
             limit = asyncio.timeout(left)
+            self.in_flight = (stage, round_number)
             try:
                 async with limit:
                     answer = await call()
@@ -170,6 +174,8 @@ class RunBudget:
                     raise RunTimedOut
                 self.waiting_on = None
                 return answer
+            finally:
+                self.in_flight = None
             await self.sleep(min(RETRY_PAUSE_SECONDS * 2**attempt, self.remaining()))
             attempt += 1
 

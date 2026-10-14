@@ -22,6 +22,7 @@ import pathlib
 import re
 import sqlite3
 import sys
+import threading
 from collections.abc import Callable, Collection, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
@@ -105,7 +106,14 @@ from blossom.settings import (
     TIMEZONE_VARIABLE,
     Settings,
 )
-from blossom.stores.drafts import DraftRecord, DraftsStore, Outcome, RunState, Settled
+from blossom.stores.drafts import (
+    STORE_WAIT_SECONDS,
+    DraftRecord,
+    DraftsStore,
+    Outcome,
+    RunState,
+    Settled,
+)
 from blossom.stores.gradebook import CorrectionPage, new_correction_id
 from blossom.stores.project_state import (
     Assignment,
@@ -702,6 +710,55 @@ class Spending[T: BaseModel]:
     def calls(self) -> int:
         """How many requests the run made."""
         return len(self.briefs)
+
+
+class Awaited:
+    """A planner whose one request is awaited until it is canceled. It says when it is
+    asked, and whether a cancel reached it."""
+
+    def __init__(self) -> None:
+        self.asked = asyncio.Event()
+        self.canceled = False
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[DailyPlan]:
+        self.asked.set()
+        try:
+            await asyncio.Event().wait()
+        except Exception:
+            raise
+        except BaseException:
+            self.canceled = True
+            raise
+        msg = "a request that never answers answered"
+        raise AssertionError(msg)
+
+
+class Gated:
+    """Wraps one store method: each call says it began, then waits on its worker thread
+    until the test lets it go, and says when it returned.
+
+    It stands for a write waiting for the store, so a test orders the write against the
+    clock and a cancel with events, never by sleeping. Only one event loop's thread calls
+    ``began`` and ``returned``; a call never let go fails after ``STORE_WAIT_SECONDS``."""
+
+    def __init__(self, call: Callable[..., Any], loop: asyncio.AbstractEventLoop) -> None:
+        self.call = call
+        self.loop = loop
+        self.began = asyncio.Event()
+        self.returned = asyncio.Event()
+        self.go = threading.Event()
+        self.calls = 0
+
+    def __call__(self, *args: object, **kwargs: object) -> Any:  # noqa: ANN401
+        self.calls += 1
+        self.loop.call_soon_threadsafe(self.began.set)
+        try:
+            if not self.go.wait(STORE_WAIT_SECONDS):
+                msg = "the test never let the call go"
+                raise AssertionError(msg)
+            return self.call(*args, **kwargs)
+        finally:
+            self.loop.call_soon_threadsafe(self.returned.set)
 
 
 def work_listed(brief: Sequence[BaseMessage]) -> str:

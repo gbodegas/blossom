@@ -170,6 +170,40 @@ DATE_PROBLEM: Final = "date_problem"
 """The outcome of a run whose window held work due before the evening it plans, which no
 plan can schedule or put off in time: it ends before any model is asked, with a record."""
 
+TIMED_OUT: Final = "timed_out"
+"""The outcome recorded on a run whose time ran out before it ended or paused."""
+
+SERVICE_FAILED: Final = "service_failed"
+"""The outcome recorded on a run a model request failed in, retries spent."""
+
+INTERRUPTED: Final = "interrupted"
+"""The outcome recorded on a run cut off before it settled: canceled, stopped by a
+restart, or left without a draft it could publish. Its draft is deleted; its steps stay."""
+
+INVALID_OUTPUT: Final = "invalid_output"
+TIMEOUT: Final = "timeout"
+SERVICE: Final = "service"
+CATEGORIES: Final[dict[str, str]] = {
+    "checks_failed": INVALID_OUTPUT,
+    "model_truncated": INVALID_OUTPUT,
+    "model_refused": INVALID_OUTPUT,
+    "model_unparseable": INVALID_OUTPUT,
+    TIMED_OUT: TIMEOUT,
+    SERVICE_FAILED: SERVICE,
+    DATE_PROBLEM: DATE_PROBLEM,
+    INTERRUPTED: INTERRUPTED,
+}
+"""How each way of ending without a plan is told apart: the service at fault, an answer
+that couldn't be used, time running out, or a date on record no plan can keep to; a run
+that failed on the way for a reason of its own is interrupted. A run that made a plan, had
+nothing to plan, or was overtaken by a newer one has no category."""
+
+
+def failure_category(outcome: str) -> str | None:
+    """The category of a run that ended with ``outcome``, or ``None`` when it did not fail."""
+    return CATEGORIES.get(outcome)
+
+
 CRITERION_NAMES: Final = {
     Criterion.ORDER: "the order",
     Criterion.SIZING: "the block lengths",

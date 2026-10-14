@@ -38,7 +38,20 @@ from typing import Final, Literal, NamedTuple, cast
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from blossom.agent.runs import RUN_DEADLINE_SECONDS
-from blossom.agent.steps import DATE_PROBLEM, PAST_DUE_WORK, PastDueWork, RunTiming, StepRecord
+from blossom.agent.steps import (
+    DATE_PROBLEM,
+    PAST_DUE_WORK,
+    PastDueWork,
+    RunTiming,
+    StepRecord,
+    failure_category,
+)
+from blossom.agent.steps import (
+    INTERRUPTED as INTERRUPTED,
+)
+from blossom.agent.steps import (
+    TIMED_OUT as TIMED_OUT,
+)
 from blossom.clock import Clock
 from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.plan_snapshot import PlanSnapshot
@@ -65,13 +78,6 @@ SETTLE_GRACE_SECONDS: Final = 1.0
 
 RUNNING: Final = "running"
 """The outcome a run holds from admission until its draft is composed. Never shown."""
-
-TIMED_OUT: Final = "timed_out"
-"""The reason recorded on a run whose deadline passed before it settled."""
-
-INTERRUPTED: Final = "interrupted"
-"""The reason recorded on a run cut off before it settled: canceled, stopped by a
-restart, or left without a draft it could publish. Its draft is deleted; its steps stay."""
 
 OVERTAKEN: Final = "overtaken"
 """The reason recorded on a run whose evening gained a newer plan while it worked. Its
@@ -938,13 +944,17 @@ class DraftsStore:
         timing: RunTiming | None = None,
         past_due: Sequence[PastDueWork] = (),
         wait: float = STORE_WAIT_SECONDS,
+        out_of_time: StepRecord | None = None,
     ) -> RunState | None:
         """End a running run without a plan, and return the run as it stands.
 
-        Past the deadline the run ends ``timed_out``, whatever ``reason`` says. Its
-        unpublished, undecided draft is deleted in the same transaction. Steps saved
-        with its draft are kept and ``terminal`` is added after them; a run that saved
-        none keeps ``steps`` and then ``terminal``. A run that ends on the date problem
+        Past the deadline the run ends ``timed_out``, whatever ``reason`` says, and its
+        time is kept under that outcome's category. Its unpublished, undecided draft is
+        deleted in the same transaction. Steps saved with its draft are kept and the
+        ending's step is added after them; a run that saved none keeps ``steps`` and then
+        that step. The ending's step is ``terminal``, or, for a run ended ``timed_out`` in
+        place of ``reason``, ``out_of_time`` or none: never ``terminal``, which explains
+        another ending. A run that ends on the date problem
         keeps ``past_due``, the work its answer names, in the same transaction. A run that
         is not running is returned unchanged, and ``None`` is returned for a run the store
         never admitted.
@@ -963,7 +973,8 @@ class DraftsStore:
                     "UPDATE runs SET past_due=? WHERE thread_id=?",
                     (PAST_DUE_WORK.dump_json(tuple(past_due)).decode(), run_id),
                 )
-            ending = [] if terminal is None else [terminal]
+            step = out_of_time if ended == TIMED_OUT and reason != TIMED_OUT else terminal
+            ending = [] if step is None else [step]
             if stored:
                 self._add_steps(run_id, ending)
             else:
@@ -1067,19 +1078,26 @@ class DraftsStore:
     def _end(self, run_id: str, reason: str, timing: RunTiming | None = None) -> None:
         """End a running run with ``reason`` and delete its undecided, unpublished draft.
 
-        Inside the caller's transaction. A run that is not running is left as it is.
+        Inside the caller's transaction. A run that is not running is left as it is. Its
+        time, ``timing`` or the time it has, is kept under the category ``reason`` gives,
+        whatever category it was sent with; time that isn't JSON is kept as it is, so an
+        ending never fails over how a time was written.
         """
         self._connection.execute(
             """
-            UPDATE runs SET status='ended', outcome=?, ended_at=?, timing=COALESCE(?, timing)
-            WHERE thread_id=? AND status='running'
+            UPDATE runs SET status='ended', outcome=:reason, ended_at=:ended_at,
+                timing=CASE WHEN json_valid(COALESCE(:timing, timing))
+                            THEN json_set(COALESCE(:timing, timing), '$.category', :category)
+                            ELSE COALESCE(:timing, timing) END
+            WHERE thread_id=:run_id AND status='running'
             """,
-            (
-                reason,
-                self._clock.now().isoformat(),
-                None if timing is None else timing.model_dump_json(),
-                run_id,
-            ),
+            {
+                "reason": reason,
+                "ended_at": self._clock.now().isoformat(),
+                "timing": None if timing is None else timing.model_dump_json(),
+                "category": failure_category(reason),
+                "run_id": run_id,
+            },
         )
         self._connection.execute(
             "DELETE FROM drafts WHERE thread_id=? AND published=0 AND decision IS NULL",
@@ -1159,12 +1177,34 @@ class DraftsStore:
     ) -> None:
         """Keep how long a saved run took and what it asked for. Its status is never touched.
 
-        A thread never saved has no row, and nothing is written for it.
+        A thread never saved has no row, and nothing is written for it. A run that has
+        settled keeps its time under the category its outcome gives, whatever category
+        the time was sent with.
         """
         with self._session(wait, write=True):
+            row = self._connection.execute(
+                "SELECT status, outcome FROM runs WHERE thread_id=?", (thread_id,)
+            ).fetchone()
+            if row is None:
+                return
+            kept = timing.model_dump_json()
+            if row["status"] == "running":
+                self._connection.execute(
+                    "UPDATE runs SET timing=? WHERE thread_id=?", (kept, thread_id)
+                )
+                return
             self._connection.execute(
-                "UPDATE runs SET timing=? WHERE thread_id=?",
-                (timing.model_dump_json(), thread_id),
+                """
+                UPDATE runs SET timing=CASE WHEN json_valid(:timing)
+                                            THEN json_set(:timing, '$.category', :category)
+                                            ELSE :timing END
+                WHERE thread_id=:thread_id
+                """,
+                {
+                    "timing": kept,
+                    "category": failure_category(str(row["outcome"])),
+                    "thread_id": thread_id,
+                },
             )
 
     def _replace_steps(self, thread_id: str, steps: Sequence[StepRecord]) -> None:
@@ -1218,7 +1258,7 @@ class DraftsStore:
         A run still running within its deadline is in neither the listing nor the
         comparison, so a run in progress neither shows as ended nor makes another
         old. One past its deadline has no draft that could still publish, and is
-        listed ``timed_out``.
+        listed ``timed_out``, its time under that outcome's category.
         """
         with self._session():
             now = self._monotonic()
@@ -1227,7 +1267,10 @@ class DraftsStore:
                 SELECT runs.thread_id, runs.plan_date,
                        CASE WHEN runs.status = 'running' THEN ? ELSE runs.outcome END
                            AS outcome,
-                       runs.recorded_at, runs.timing,
+                       runs.recorded_at,
+                       CASE WHEN runs.status = 'running' AND json_valid(runs.timing)
+                            THEN json_set(runs.timing, '$.category', ?) ELSE runs.timing END
+                           AS timing,
                        NOT EXISTS (
                            SELECT 1 FROM runs AS later
                            WHERE later.plan_date = runs.plan_date
@@ -1243,7 +1286,7 @@ class DraftsStore:
                   AND NOT (runs.status = 'running' AND runs.deadline_mono > ?)
                 ORDER BY runs.recorded_at DESC, runs.rowid DESC, steps.position
                 """,
-                (TIMED_OUT, now, now),
+                (TIMED_OUT, failure_category(TIMED_OUT), now, now),
             ).fetchall()
         grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
         for row in rows:
