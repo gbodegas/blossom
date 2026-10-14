@@ -23,7 +23,7 @@ import types
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, time
 from time import monotonic
-from typing import Any
+from typing import Any, Protocol
 
 import pytest
 from fastapi.testclient import TestClient
@@ -86,6 +86,8 @@ from blossom.stores.gradebook import (
     UNCONNECTED,
     ClassOfYear,
     DeletePreview,
+    GradeReportNotSaved,
+    GradeTransactionLost,
     HomeworkLinkWritten,
     LinkDecision,
     _cells,
@@ -108,6 +110,7 @@ from tests.support import (
     browser,
     capture_class,
     card_for,
+    closed_world,
     confirm_current,
     correction_page,
     current_preview,
@@ -5831,3 +5834,551 @@ def test_a_pair_kept_apart_from_homework_not_on_record_is_said_with_no_title() -
         "Let Blossom match again",
     ]
     assert [decision for _, _, decision, _ in forms_on(page)] == ["automatic"]
+
+
+LINKS = "grade_homework_links"
+REVISIONS = "grade_scope_revisions"
+LINKS_CHANGED = (
+    "Grades or links for this class changed while you were choosing. Nothing was saved. "
+    "Check this page again."
+)
+INDEX_UNAVAILABLE = (
+    "a homework link wasn't written: the required homework-links index is unavailable"
+)
+WRONG_INDEXES = {
+    "not unique": gradebook.HOMEWORK_LINKS_INDEX_DEFINITION.replace("UNIQUE ", ""),
+    "other columns": gradebook.HOMEWORK_LINKS_INDEX_DEFINITION.replace(
+        "(student_id, result_id)", "(student_id, assignment_id)"
+    ),
+    "another predicate": gradebook.HOMEWORK_LINKS_INDEX_DEFINITION.replace(
+        "'confirmed'", "'rejected'"
+    ),
+    "no predicate": gradebook.HOMEWORK_LINKS_INDEX_DEFINITION.split("\nWHERE")[0],
+    "the same meaning spelled apart": " ".join(
+        gradebook.HOMEWORK_LINKS_INDEX_DEFINITION.lower().split()
+    ),
+}
+"""Each index of the required name with a definition other than the one the application makes."""
+
+
+class Answered(Protocol):
+    """What a test reads of an answer: its status, its body and its headers."""
+
+    @property
+    def status_code(self) -> int: ...
+
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def headers(self) -> Mapping[str, str]: ...
+
+
+def pressed(
+    client: TestClient,
+    result_id: str,
+    homework_id: str = LOG_ID,
+    decision: str = "link",
+    *,
+    revision: str | None = None,
+) -> Answered:
+    """A decision posted from the computer the application runs on, as the page's form sends
+    it, at the revision of the result's class and term unless ``revision`` says otherwise."""
+    sent = {
+        "homework": homework_id,
+        "decision": decision,
+        "revision": revision_of(client, result_id) if revision is None else revision,
+    }
+    return computer(client).post(
+        RESULT_PAGE.format(result_id=result_id), data=sent, headers=PAGE_HEADERS
+    )
+
+
+def stored_links(client: TestClient) -> list[tuple[str, str]]:
+    """Each of her links as its homework and its stored state, by the store's own read."""
+    return sorted((one.assignment_id, one.state) for one in store_of(client).homework_links())
+
+
+def everything_else(client: TestClient) -> dict[str, object]:
+    """Every table of the household's file but the link table and the revisions."""
+    return closed_world([database_of(client)], leaving_out={LINKS, REVISIONS})
+
+
+def problem_on(page: str) -> str:
+    found = re.search(r'<p class="problem" role="alert" id="problem">([^<]*)</p>', page)
+    assert found is not None
+    return html.unescape(found[1])
+
+
+def test_each_decision_from_each_prior_state_writes_its_row_and_lands_on_the_heading() -> None:
+    """Link, remove the link, link again, let the rules match again, then not this homework:
+    each answers 303 to the result's heading, changes only the link row and raises the class
+    and term's revision by one, and the page it lands on focuses the heading."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        others = everything_else(client)
+        steps = []
+        for decision in ("link", "apart", "link", "apart", "automatic", "apart"):
+            before = int(revision_of(client, log))
+            answer = pressed(client, log, decision=decision)
+            steps.append((answer.status_code, answer.headers["location"], stored_links(client)))
+            assert int(revision_of(client, log)) == before + 1
+        landed = computer(client).get(steps[0][1], headers=PAGE_HEADERS)
+        unchanged = everything_else(client)
+
+    at = f"/parent/grades/results/{log}/homework#homework"
+    assert steps == [
+        (303, at, [(LOG_ID, "confirmed")]),
+        (303, at, [(LOG_ID, "rejected")]),
+        (303, at, [(LOG_ID, "confirmed")]),
+        (303, at, [(LOG_ID, "rejected")]),
+        (303, at, []),
+        (303, at, [(LOG_ID, "rejected")]),
+    ]
+    assert unchanged == others
+    assert '<h1 id="homework" tabindex="-1">Homework for this result</h1>' in landed.text
+
+
+@pytest.mark.parametrize(
+    ("setup", "decision"),
+    [
+        pytest.param("link", "link", id="linked, linked again"),
+        pytest.param("apart", "apart", id="kept apart, kept apart again"),
+        pytest.param(None, "automatic", id="no decision, left to the rules"),
+    ],
+)
+def test_a_decision_already_on_record_answers_303_and_writes_nothing(
+    setup: LinkDecision | None, decision: str
+) -> None:
+    """Pressed again, at the revision of its page or at an earlier one, the decision stands: 303
+    to the heading, and the file is as it was."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        if setup is not None:
+            parent_links(client, class_id, log, decision=setup)
+        before = every_row(database_of(client))
+        again = pressed(client, log, decision=decision)
+        old = pressed(client, log, decision=decision, revision="1")
+        after = every_row(database_of(client))
+
+    at = f"/parent/grades/results/{log}/homework#homework"
+    assert [(one.status_code, one.headers["location"]) for one in (again, old)] == [(303, at)] * 2
+    assert after == before
+
+
+def test_a_link_to_other_homework_moves_the_link_and_an_old_remove_link_stands() -> None:
+    """Linked to homework A, then linked to homework B: A's pair is kept apart and B's linked
+    in one write. An old page's "Remove link" for A then stands, writes nothing, and the
+    page it lands on says the result is linked to B."""
+    name = "Life Science"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None, course=name)], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        store.connect_homework_class(YEAR, name, shown=None, chosen=class_id, role="parent")
+        old_revision = revision_of(client, log)
+        first = pressed(client, log)
+        moved = pressed(client, log, NOTEBOOK_ID)
+        rows = stored_links(client)
+        before = every_row(database_of(client))
+        old_remove = pressed(client, log, decision="apart", revision=old_revision)
+        after = every_row(database_of(client))
+        page = said_on(result_page(client, log))
+
+    assert [first.status_code, moved.status_code, old_remove.status_code] == [303, 303, 303]
+    assert rows == [(NOTEBOOK_ID, "confirmed"), (LOG_ID, "rejected")]
+    assert after == before
+    assert page[0] == f"Linked to {NOTEBOOK}."
+
+
+@pytest.mark.parametrize(
+    "stale",
+    [
+        "another link in the class and term",
+        "a save of the class and term",
+        "a link left to the rules again",
+    ],
+)
+def test_a_form_from_an_old_page_answers_409_and_writes_nothing(stale: str) -> None:
+    """A form read before something else was recorded in the class and term, or a current form
+    that leaves a link to the rules: 409 with the page as it reads now, the file as it was."""
+    with browser() as client:
+        store_of(client).put_on_record(
+            [homework(), homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27))], {}
+        )
+        class_id = with_report(client)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        revision = revision_of(client, log)
+        if stale == "another link in the class and term":
+            parent_links(client, class_id, diagram, DIAGRAM_ID)
+        elif stale == "a save of the class and term":
+            with_report(client, NO_POINTS)
+        else:
+            parent_links(client, class_id, log)
+            revision = revision_of(client, log)
+        before = every_row(database_of(client))
+        decision = "automatic" if stale == "a link left to the rules again" else "link"
+        answer = pressed(client, log, decision=decision, revision=revision)
+        after = every_row(database_of(client))
+
+    assert answer.status_code == 409
+    assert problem_on(answer.text) == LINKS_CHANGED
+    assert '<h1 id="homework" tabindex="-1">' in answer.text
+    assert after == before
+
+
+def test_a_link_to_homework_whose_name_is_connected_differently_answers_409() -> None:
+    """The notebook's name connected to the class, the page read, then the connection removed:
+    the link answers 409, writes nothing, and the page it answers with offers no notebook."""
+    name = "Life Science"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(NOTEBOOK_ID, LOG, THURSDAY, course=name)], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        store.connect_homework_class(YEAR, name, shown=None, chosen=class_id, role="parent")
+        offered = [one[1] for one in forms_on(result_page(client, log))]
+        revision = revision_of(client, log)
+        store.connect_homework_class(YEAR, name, shown=class_id, chosen=UNCONNECTED, role="parent")
+        before = every_row(database_of(client))
+        answer = pressed(client, log, NOTEBOOK_ID, revision=revision)
+        after = every_row(database_of(client))
+
+    assert NOTEBOOK_ID in offered
+    assert answer.status_code == 409
+    assert problem_on(answer.text) == (
+        "That homework's class name is connected differently now. Nothing was saved. "
+        "Check this page again."
+    )
+    assert NOTEBOOK_ID not in [one[1] for one in forms_on(answer.text)]
+    assert after == before
+
+
+@pytest.mark.parametrize("decision", ["link", "apart"])
+def test_a_decision_on_homework_not_on_record_answers_409_and_writes_nothing(
+    decision: str,
+) -> None:
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        before = every_row(database_of(client))
+        answer = pressed(client, log, "assignment-not-on-record", decision)
+        after = every_row(database_of(client))
+
+    assert answer.status_code == 409
+    assert problem_on(answer.text) == "That homework is not on record now. Nothing was saved."
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    "cause", ["no such shape", "not on record", "no current value", "deleted with its class"]
+)
+def test_a_decision_on_a_result_with_no_current_record_answers_404_and_writes_nothing(
+    cause: str,
+) -> None:
+    """A result with no current value is made by marking its report kept as earlier in the
+    file by hand, as no save does; a delete is the store's own."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        revision = revision_of(client, log)
+        if cause == "no current value":
+            stored(store, "UPDATE grade_reports SET use = 'earlier'")
+        elif cause == "deleted with its class":
+            preview = store.delete_preview(class_id, "T1")
+            assert isinstance(preview, DeletePreview)
+            store.delete_class_term(class_id, "T1", revision=preview.revision, role="parent")
+        asked = {"no such shape": "result-not-a-result", "not on record": "result-" + "0" * 32}
+        before = every_row(database_of(client))
+        answer = pressed(client, asked.get(cause, log), revision=revision)
+        after = every_row(database_of(client))
+
+    assert answer.status_code == 404
+    assert problem_on(answer.text) == "Blossom has no current record of this result."
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [
+        pytest.param([("homework", LOG_ID), ("decision", "link")], id="no revision"),
+        pytest.param(
+            [("homework", LOG_ID), ("homework", LOG_ID), ("decision", "link"), ("revision", "1")],
+            id="a field twice",
+        ),
+        pytest.param(
+            [("homework", LOG_ID), ("decision", "choose"), ("revision", "1")],
+            id="an unknown decision",
+        ),
+        pytest.param([("homework", ""), ("decision", "link"), ("revision", "1")], id="no homework"),
+        pytest.param(
+            [("homework", LOG_ID), ("decision", "link"), ("revision", "one")],
+            id="a revision that is no number",
+        ),
+        pytest.param(
+            [("homework", LOG_ID), ("decision", "link"), ("revision", "1"), ("class", "x")],
+            id="a field of another form",
+        ),
+    ],
+)
+@pytest.mark.parametrize("index", ["present", "absent"])
+def test_a_form_that_is_not_whole_answers_422_with_the_page_and_writes_nothing(
+    sent: list[tuple[str, str]], index: str
+) -> None:
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        if index == "absent":
+            stored(store_of(client), DROP_LINKS_INDEX)
+        before = every_row(database_of(client))
+        answer = computer(client).post(
+            RESULT_PAGE.format(result_id=log),
+            content="&".join(f"{key}={value}" for key, value in sent),
+            headers={**PAGE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        after = every_row(database_of(client))
+
+    assert answer.status_code == 422
+    assert problem_on(answer.text) == "Choose homework. Nothing was saved."
+    assert '<h1 id="homework" tabindex="-1">' in answer.text
+    assert after == before
+
+
+@pytest.mark.parametrize("decision", ["link", "apart", "automatic"])
+def test_a_decision_meeting_a_stored_value_it_can_t_decode_answers_500_and_one_record(
+    decision: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A points presence that is no presence in the result's class and term, its decoding error
+    holding a chosen text: the generic answer, one record of the type alone, nothing written."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        revision = revision_of(client, log)
+        points_presence(client, log, SYNTHETIC_CAUSE)
+        before = every_row(database_of(client))
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            answer = pressed(client, log, decision=decision, revision=revision)
+            records = list(caplog.records)
+        after = every_row(database_of(client))
+
+    assert (answer.status_code, answer.text) == (500, "Internal Server Error")
+    assert answer.headers["content-type"] == "text/plain; charset=utf-8"
+    application = [one for one in records if one.name.startswith("blossom")]
+    assert [(one.name, one.levelno, one.getMessage()) for one in application] == [
+        (
+            "blossom.routes.grades",
+            logging.WARNING,
+            "a homework link wasn't written: GradeValueUndecodable",
+        )
+    ]
+    assert [one for one in records if one.exc_info or SYNTHETIC_CAUSE in one.getMessage()] == []
+    assert SYNTHETIC_CAUSE not in answer.text
+    assert after == before
+
+
+def test_a_decision_meeting_two_links_to_one_result_answers_500_and_one_record(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two confirmed links to the log's result in a file changed by hand, with the index check
+    made to pass so the write reads them: the generic answer, one record naming the conflict,
+    and nothing written."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        conflicting(client, log)
+        monkeypatch.setattr(store_of(client), "_homework_links_index_available", lambda: True)
+        before = every_row(database_of(client))
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            answers = [pressed(client, one, decision="apart") for one in (log, diagram)]
+            records = list(caplog.records)
+        after = every_row(database_of(client))
+
+    assert [(one.status_code, one.text) for one in answers] == [(500, "Internal Server Error")] * 2
+    assert [one.getMessage() for one in records if one.name.startswith("blossom")] == [
+        "a homework link wasn't written: HomeworkLinksConflict"
+    ] * 2
+    assert after == before
+
+
+@pytest.mark.parametrize("wrong", ["missing", *WRONG_INDEXES])
+def test_while_the_required_index_is_unavailable_every_decision_answers_500_and_one_record(
+    wrong: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The index dropped, or made again by hand with another definition: every decision, one
+    that would stand and one for a result not on record included, gets the generic answer and
+    the one fixed record, and nothing is written."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        parent_links(client, class_id, log, decision="apart")
+        revision = revision_of(client, log)
+        stored(store, DROP_LINKS_INDEX)
+        if wrong != "missing":
+            stored(store, WRONG_INDEXES[wrong])
+        before = every_row(database_of(client))
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            answers = [
+                pressed(client, log, decision=decision, revision=revision)
+                for decision in ("link", "apart", "automatic")
+            ]
+            answers.append(pressed(client, "result-" + "0" * 32, revision=revision))
+            records = list(caplog.records)
+        after = every_row(database_of(client))
+
+    assert [(one.status_code, one.text) for one in answers] == [(500, "Internal Server Error")] * 4
+    application = [one.getMessage() for one in records if one.name.startswith("blossom")]
+    assert application == [INDEX_UNAVAILABLE] * 4
+    assert not [one for one in records if "conflict" in one.getMessage().lower()]
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("refusal", "said"),
+    [
+        (GradeReportNotSaved, "Blossom couldn't save this. Nothing was saved. Try again."),
+        (
+            GradeTransactionLost,
+            "Blossom couldn't tell whether this was saved. Pressing the button again is safe.",
+        ),
+    ],
+)
+def test_a_write_the_file_refuses_or_loses_answers_500_with_its_sentence(
+    refusal: type[Exception], said: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store's write made to raise in the test, as it does when the file refuses the write
+    or the transaction is lost: 500 with the page and its sentence, nothing written."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        revision = revision_of(client, log)
+
+        def refused(*_: object, **__: object) -> None:
+            msg = "synthetic"
+            raise refusal(msg)
+
+        monkeypatch.setattr(store_of(client), "decide_homework_link", refused)
+        before = every_row(database_of(client))
+        answer = pressed(client, log, revision=revision)
+        after = every_row(database_of(client))
+        points_presence(client, log, SYNTHETIC_CAUSE)
+        stopped = pressed(client, log, revision=revision)
+
+    assert answer.status_code == 500
+    assert problem_on(answer.text) == said
+    assert '<h1 id="homework" tabindex="-1">' in answer.text
+    assert after == before
+    assert (stopped.status_code, stopped.text) == (500, "Internal Server Error")
+
+
+def test_two_parents_deciding_at_once_one_lands_and_the_other_reads_again() -> None:
+    """Both pages read at one revision: the same decision twice stands; a different decision
+    on the same pair, or on another result of the class and term, meets the changed revision.
+    Results in two terms linked to one homework both apply."""
+    with browser() as client:
+        store_of(client).put_on_record(
+            [homework(), homework(DIAGRAM_ID, DIAGRAM, date(2026, 8, 27))], {}
+        )
+        class_id = with_report(client)
+        with_report(client, SECOND_TERM)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        later = result_named(client, class_id, LOG, "T2")
+        shown = revision_of(client, log)
+        same = [pressed(client, log, revision=shown) for _ in range(2)]
+        other = pressed(client, log, decision="apart", revision=shown)
+        another_result = pressed(client, diagram, DIAGRAM_ID, revision=shown)
+        both_terms = pressed(client, later, LOG_ID)
+        rows = stored_links(client)
+
+    assert [one.status_code for one in same] == [303, 303]
+    assert other.status_code == 409
+    assert another_result.status_code == 409
+    assert both_terms.status_code == 303
+    assert rows == [(LOG_ID, "confirmed"), (LOG_ID, "confirmed")]
+
+
+def test_a_pair_kept_apart_returns_to_the_rules_only_when_left_to_them_again() -> None:
+    """Kept apart by a press: her week shows no score for it, and none after the same report is
+    saved again; left to the rules by a press, the score is back."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        ruled = on_card(client)
+        pressed(client, log, decision="apart")
+        apart = on_card(client)
+        with_report(client)
+        saved_again = on_card(client)
+        pressed(client, log, decision="automatic")
+        again = on_card(client)
+
+    assert [line for line, _, _ in ruled] == [LINE]
+    assert apart == saved_again == []
+    assert again == ruled
+
+
+def test_a_form_that_is_not_whole_on_a_file_with_two_links_to_one_result_is_stopped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two confirmed links to the log's result in a file changed by hand: a press whose form is
+    not whole renders no page, gets the generic answer and one record, and writes nothing."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        conflicting(client, log)
+        before = every_row(database_of(client))
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            answer = pressed(client, log, "")
+            records = list(caplog.records)
+        after = every_row(database_of(client))
+
+    assert (answer.status_code, answer.text) == (500, "Internal Server Error")
+    assert [one.getMessage() for one in records if one.name.startswith("blossom")] == [
+        "a homework link wasn't written: HomeworkLinksConflict"
+    ]
+    assert after == before
+
+
+def test_only_the_index_in_the_file_when_pressed_decides_and_a_shapeless_id_is_404() -> None:
+    """The index dropped by the test's own connection after the page was read: the press is
+    refused, and the page still opens; made again by the test's own statement, the same press
+    goes through. A result ID of no such shape answers 404 while the index is missing."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        revision = revision_of(client, log)
+        stored(store, DROP_LINKS_INDEX)
+        refused = pressed(client, log, revision=revision)
+        shapeless = pressed(client, "result-not-a-result", revision=revision)
+        refused_rows = stored_links(client)
+        opened = computer(client).get(RESULT_PAGE.format(result_id=log), headers=PAGE_HEADERS)
+        stored(store, gradebook.CREATE_HOMEWORK_LINKS_INDEX)
+        landed = pressed(client, log, revision=revision)
+        rows = stored_links(client)
+
+    assert (refused.status_code, refused.text) == (500, "Internal Server Error")
+    assert shapeless.status_code == 404
+    assert refused_rows == []
+    assert opened.status_code == 200
+    assert landed.status_code == 303
+    assert rows == [(LOG_ID, "confirmed")]

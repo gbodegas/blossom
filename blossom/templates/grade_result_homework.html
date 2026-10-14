@@ -10,7 +10,8 @@
   rules leave it waiting, and a row for each homework that could be it, is linked to it or is
   kept apart from it, with one form for each decision. Each form sends the homework, the
   decision and the revision the page was read at; the address holds the result's ID alone.
-  The heading takes the focus, so a press can land on it.
+  The heading takes the focus, so a press lands on it. A press that writes nothing gets the
+  page as it reads now, with why first.
 #}
 {% macro said(line) %}{% if line.authored %}<span class="authored-text">{{ line.text }}</span>{% else %}{{ line.text }}{% endif %}{% endmacro %}
 {% block content %}
@@ -21,6 +22,9 @@
   {% else %}
     <p class="return"><a href="{{ back }}">Back to <span class="authored-text">{{ class_name }}</span></a></p>
     <h1 id="homework" tabindex="-1">Homework for this result</h1>
+    {% if problem %}
+      <p class="problem" role="alert" id="problem">{{ problem }}</p>
+    {% endif %}
     <p>{{ term }}</p>
     {{ result(item, result_id, 2) }}
     <p>{{ said(state) }}</p>

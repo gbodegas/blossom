@@ -136,8 +136,14 @@ from blossom.stores.gradebook import (
     GradeTransactionLost,
     HomeworkClassChanged,
     HomeworkClassNotOnRecord,
+    HomeworkLinkChanged,
+    HomeworkLinkClassNameChanged,
+    HomeworkLinkHomeworkNotOnRecord,
+    HomeworkLinkResultNotOnRecord,
     HomeworkYearNotCurrent,
+    LinkDecision,
     NamedClass,
+    RequiredIndexUnavailable,
     Term,
     TermNotOnRecord,
     Viewer,
@@ -2435,7 +2441,29 @@ def family_class(class_id: str, n: str, request: Request, state: State) -> Respo
 
 RESULT_HOMEWORK: Final = "/parent/grades/results/{result_id}/homework"
 """A result's homework page, a parent's: its address holds the result's ID alone."""
+RESULT_HOMEWORK_AT: Final = RESULT_HOMEWORK + "#homework"
+"""Where a decision lands: the result's page at its heading, which takes the focus."""
 RESULT_NOT_ON_RECORD: Final = "Blossom has no current record of this result."
+LINKS_CHANGED: Final = (
+    "Grades or links for this class changed while you were choosing. Nothing was saved. "
+    "Check this page again."
+)
+NAME_CONNECTED_DIFFERENTLY: Final = (
+    "That homework's class name is connected differently now. Nothing was saved. "
+    "Check this page again."
+)
+HOMEWORK_NOT_ON_RECORD: Final = "That homework is not on record now. Nothing was saved."
+CHOOSE_HOMEWORK: Final = "Choose homework. Nothing was saved."
+PRESS_UNKNOWN: Final = (
+    "Blossom couldn't tell whether this was saved. Pressing the button again is safe."
+)
+INDEX_UNAVAILABLE: Final = (
+    "a homework link wasn't written: the required homework-links index is unavailable"
+)
+"""The one record of a link write refused while the required index is unavailable."""
+DECISION_FIELDS: Final = frozenset({"homework", "decision", "revision"})
+A_REVISION: Final = re.compile(r"[0-9]{1,19}")
+"""A revision as a decision's form sends it: digits alone."""
 HOMEWORK_FOR_RESULT: Final = "Homework for this result"
 LINKED_TO_HOMEWORK: Final = "Linked to homework: {title}."
 LINKED_TO: Final = "Linked to {title}."
@@ -2654,14 +2682,18 @@ def grade_page_not_shown(error: GradeValueUndecodable) -> Response:
     return Response("Internal Server Error", status_code=500, media_type="text/plain")
 
 
-@family_router.get("/results/{result_id}/homework", response_class=HTMLResponse)
-def homework_for_result(result_id: str, request: Request, state: State) -> Response:
-    """Route 12: the homework of one result, a parent's page, with a form for each decision."""
+def result_page(
+    request: Request,
+    state: ApplicationState,
+    result_id: str,
+    *,
+    said: str | None = None,
+    status_code: int = 200,
+) -> Response:
+    """A result's page as it reads now, with ``said`` first when an answer says something, or
+    the page saying no current record holds the result. A read alone."""
     context: dict[str, object] = {"grades": GRADES, "marks": state.settings.page_marks}
-    try:
-        shown = result_page_read(state, result_id)
-    except GradeValueUndecodable as error:
-        return grade_page_not_shown(error)
+    shown = result_page_read(state, result_id)
     if shown is None:
         return templates.TemplateResponse(
             request,
@@ -2669,4 +2701,74 @@ def homework_for_result(result_id: str, request: Request, state: State) -> Respo
             {**context, "missing": RESULT_NOT_ON_RECORD},
             status_code=404,
         )
-    return templates.TemplateResponse(request, "grade_result_homework.html", {**context, **shown})
+    return templates.TemplateResponse(
+        request,
+        "grade_result_homework.html",
+        {**context, **shown, "problem": said},
+        status_code=status_code,
+    )
+
+
+def link_not_written(error: GradeValueUndecodable) -> Response:
+    """The generic answer of a decision a stored value or her links stop, with one record of
+    the failure's type alone: nothing the gradebook holds is written."""
+    logger.warning("a homework link wasn't written: %s", type(error).__name__)
+    return Response("Internal Server Error", status_code=500, media_type="text/plain")
+
+
+@family_router.get("/results/{result_id}/homework", response_class=HTMLResponse)
+def homework_for_result(result_id: str, request: Request, state: State) -> Response:
+    """Route 12: the homework of one result, a parent's page, with a form for each decision."""
+    try:
+        return result_page(request, state, result_id)
+    except GradeValueUndecodable as error:
+        return grade_page_not_shown(error)
+
+
+@family_router.post("/results/{result_id}/homework", response_class=HTMLResponse)
+async def decide_homework(result_id: str, request: Request, state: State) -> Response:
+    """Route 13: a parent's decision about the result and one homework, by the store's one
+    write. A decision on record, written now or standing already, lands on the result's
+    heading; any other answer writes nothing and says why."""
+    fields, whole = await fields_of(request, DECISION_FIELDS)
+    homework, decision = fields.get("homework", "").strip(), fields.get("decision", "")
+    revision = fields.get("revision", "")
+    answer = partial(result_page, request, state, result_id)
+    try:
+        if not RESULT_ID.fullmatch(result_id):
+            return answer()
+        if (
+            not whole
+            or not homework
+            or decision not in get_args(LinkDecision)
+            or not A_REVISION.fullmatch(revision)
+            or int(revision) > REVISION_MAX
+        ):
+            return answer(said=CHOOSE_HOMEWORK, status_code=422)
+        try:
+            async with state.decision_lock:
+                outcome = state.project_state.decide_homework_link(
+                    result_id,
+                    homework,
+                    decision=cast(LinkDecision, decision),
+                    revision=int(revision),
+                    role=role_of(state),
+                )
+        except GradeTransactionLost:
+            return answer(said=PRESS_UNKNOWN, status_code=500)
+        except GradeReportNotSaved:
+            return answer(said=NOT_SAVED, status_code=500)
+        if isinstance(outcome, RequiredIndexUnavailable):
+            logger.warning(INDEX_UNAVAILABLE)
+            return Response("Internal Server Error", status_code=500, media_type="text/plain")
+        if isinstance(outcome, HomeworkLinkResultNotOnRecord):
+            return answer()
+        if isinstance(outcome, HomeworkLinkChanged):
+            return answer(said=LINKS_CHANGED, status_code=409)
+        if isinstance(outcome, HomeworkLinkClassNameChanged):
+            return answer(said=NAME_CONNECTED_DIFFERENTLY, status_code=409)
+        if isinstance(outcome, HomeworkLinkHomeworkNotOnRecord):
+            return answer(said=HOMEWORK_NOT_ON_RECORD, status_code=409)
+    except GradeValueUndecodable as error:
+        return link_not_written(error)
+    return RedirectResponse(RESULT_HOMEWORK_AT.format(result_id=result_id), status_code=303)

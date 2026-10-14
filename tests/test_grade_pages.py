@@ -135,6 +135,7 @@ FAMILY_GRADE_ROUTES = {
     ("POST", CURRENT_TERM),
     ("GET", CLASS_AT),
     ("GET", RESULT_HOMEWORK),
+    ("POST", RESULT_HOMEWORK),
     ("GET", HOMEWORK_CLASSES),
     ("POST", HOMEWORK_CLASSES),
 }
@@ -203,8 +204,21 @@ def every_family_request(browser: TestClient, **headers: str) -> dict[tuple[str,
     statuses[("GET", CLASS_AT)] = class_page.status_code
     result = re.search(r'id="(result-[0-9a-f]{32})"', class_page.text)
     result_id = result[1] if result else "result-" + "0" * 32
-    statuses[("GET", RESULT_HOMEWORK)] = browser.get(
-        RESULT_HOMEWORK.format(result_id=result_id), headers=asked
+    result_page = browser.get(RESULT_HOMEWORK.format(result_id=result_id), headers=asked)
+    statuses[("GET", RESULT_HOMEWORK)] = result_page.status_code
+    # A page's first form, or with no homework to offer, leaving a pair with no decision as it
+    # is, which stands whatever homework and revision it names.
+    forms = re.findall(
+        r'<input type="hidden" name="homework" value="([^"]*)">\s*'
+        r'<input type="hidden" name="decision" value="([^"]*)">\s*'
+        r'<input type="hidden" name="revision" value="([^"]*)">',
+        result_page.text,
+    )
+    homework, decision, revision = forms[0] if forms else ("assignment-none", "automatic", "1")
+    statuses[("POST", RESULT_HOMEWORK)] = browser.post(
+        RESULT_HOMEWORK.format(result_id=result_id),
+        data={"homework": homework, "decision": decision, "revision": revision},
+        headers=asked,
     ).status_code
     names = browser.get(HOMEWORK_CLASSES, headers=asked)
     statuses[("GET", HOMEWORK_CLASSES)] = names.status_code
@@ -230,6 +244,7 @@ ALLOWED = {
     ("POST", CURRENT_TERM): 303,
     ("GET", CLASS_AT): 200,
     ("GET", RESULT_HOMEWORK): 200,
+    ("POST", RESULT_HOMEWORK): 303,
     ("GET", HOMEWORK_CLASSES): 200,
     ("POST", HOMEWORK_CLASSES): 303,
 }
