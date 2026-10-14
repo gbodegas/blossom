@@ -16,6 +16,9 @@
   it. When a response renders this page with an explanation, the explanation takes focus when
   the page opens, and nothing else does. A press that stands lands as a written one does. A
   press the index, a stored value or her links stop gets the plain generic 500.
+  After the rows come the other results that could be the same homework: each result that
+  shares a candidate with this one, whatever decisions stand, as a link to its own page by its
+  title, with its class name, due line, term and year. With none, the list is left out.
   Last, a search of the homework whose class name connects to the result's class: its words
   and its page number travel in a form's body, never an address, and the words stay in the
   field. A search's answer lands on the heading over what it found, where a search with no
@@ -83,6 +86,19 @@
         </div>
       </section>
     {% endfor %}
+    {% if others %}
+      <h2 id="other-results">{{ others_heading }}</h2>
+      <ul>
+        {% for other in others %}
+          <li>
+            <p><a href="{{ other.address }}"><span class="authored-text">{{ other.title }}</span></a></p>
+            <p><span class="authored-text">{{ other.class_name }}</span></p>
+            <p>{{ other.due }}</p>
+            <p>{{ other.term }} · <span class="year-range">{{ other.year }}</span></p>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
     <h2 id="search-heading">{{ said(search_heading) }}</h2>
     <form method="post" action="{{ search_action }}" class="decision">
       <label for="search-words">{{ search_label }}</label>

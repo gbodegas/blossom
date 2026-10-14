@@ -13,6 +13,7 @@ import dataclasses
 import difflib
 import functools
 import html
+import inspect
 import json
 import logging
 import pathlib
@@ -60,20 +61,23 @@ from blossom.homework_search import PAGE_SIZE, QUERY_MAX_LENGTH, ResultsPage
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
 from blossom.plans import PlanBlock
 from blossom.reconciliation import SourceChannel
-from blossom.routes.grades import result_page_read, result_said, row_shown
+from blossom.routes.grades import OtherShown, other_shown, result_page_read, result_said, row_shown
 from blossom.routes.homework_scores import (
     FoundRow,
     FoundState,
     HomeworkFound,
     HomeworkRow,
     NoList,
+    OtherResult,
     PairStanding,
     ResultHomework,
     RuleValues,
     ScoreShown,
     Withheld,
+    YearRead,
     homework_found,
     homework_of,
+    other_results,
     read_grade_facts,
     read_links,
     read_score_facts,
@@ -99,8 +103,10 @@ from blossom.stores.gradebook import (
     DeletePreview,
     GradeReportNotSaved,
     GradeTransactionLost,
+    HomeworkClasses,
     HomeworkLinkWritten,
     LinkDecision,
+    NamedClass,
     _cells,
     _copied,
     _month,
@@ -5656,6 +5662,131 @@ def test_each_found_row_s_state_follows_the_decisions_made_through_the_store() -
     assert confirmed(NOTEBOOK_ID, log) in links_third
 
 
+THEN_CLASS = ClassOfYear("class-biology-then", BIOLOGY, "2025-2026")
+"""Last school year's class of the same name, another class."""
+
+
+def year_of(year: str, *classes: ClassOfYear) -> YearRead:
+    """A school year as plain values: its classes by ID and name, and nothing read."""
+    named = tuple(NamedClass(one.class_id, one.name, ()) for one in classes)
+    return YearRead(HomeworkClasses(year, named, {}), None, (), {})
+
+
+def a_result(
+    result_id: str,
+    day: date | None,
+    *,
+    title: str = LOG,
+    term: str = "T1",
+    class_id: str = THE_CLASS.class_id,
+) -> Result:
+    """A result as the rules read it, its day resolved when it has one."""
+    return Result(class_id, term, result_id, title, day, day is not None, True, True)
+
+
+def with_values(read: RuleValues) -> RuleValues:
+    """The values with each result's current value, as a page's read holds them."""
+    found = {(one.class_id, one.term, one.result_id): (value_with(), 1) for one in read.results}
+    return read._replace(found=found)
+
+
+def others_of(read: RuleValues, result_id: str = "result-log", term: str = "T1") -> list[str]:
+    """The IDs of the other results listed beside one of the one class's results."""
+    years = (year_of("2025-2026", THEN_CLASS), year_of(YEAR, THE_CLASS))
+    return [
+        one.result_id for one in other_results(THE_CLASS.class_id, term, result_id, read, years)
+    ]
+
+
+def test_other_results_share_a_candidate_with_the_result_each_once_and_go_no_further() -> None:
+    """Plain values: the log's result and four more. One shares both its candidates, one in
+    another class shares one, one has another title, and one shares a candidate only with a
+    result that shares one with the log's. The first two are listed, each once, in the
+    order the results came; the log's own result and the others are not."""
+    dated, twin = homework(), homework("assignment-twin")
+    later = homework("assignment-later", on=date(2026, 8, 27))
+    results = [
+        a_result("result-none", THURSDAY, title=DIAGRAM),
+        a_result("result-twice", None),
+        a_result("result-log", THURSDAY),
+        a_result("result-further", date(2026, 8, 27)),
+        a_result("result-once", THURSDAY, class_id=THEN_CLASS.class_id),
+    ]
+    plain = as_read([dated, twin, later], results)
+    classes = {**plain.classes, LOG_ID: [THE_CLASS.class_id, THEN_CLASS.class_id]}
+    read = with_values(plain._replace(classes=classes))
+
+    assert others_of(read) == ["result-twice", "result-once"]
+    assert others_of(read, "result-further") == ["result-twice"]
+    assert others_of(read, "result-none") == []
+
+
+def test_other_results_come_from_every_term_and_school_year_read_in_the_results_order() -> None:
+    """Plain values: the log's result, its twin in the next term, and last year's in a class of
+    the same name, which the log's homework name connects to as well. Each other result is
+    listed with its own class's name and year and its own term, in the order the results came."""
+    results = [
+        a_result("result-then", THURSDAY, class_id=THEN_CLASS.class_id),
+        a_result("result-log", THURSDAY),
+        a_result("result-next", THURSDAY, term="T2"),
+    ]
+    plain = as_read([homework()], results)
+    read = with_values(plain._replace(classes={LOG_ID: [THE_CLASS.class_id, THEN_CLASS.class_id]}))
+    years = (year_of("2025-2026", THEN_CLASS), year_of(YEAR, THE_CLASS))
+
+    listed = other_results(THE_CLASS.class_id, "T1", "result-log", read, years)
+    from_next = other_results(THE_CLASS.class_id, " T2 ", "result-next", read, years)
+
+    assert [(one.result_id, one.class_name, one.year, one.term) for one in listed] == [
+        ("result-then", BIOLOGY, "2025-2026", "T1"),
+        ("result-next", BIOLOGY, YEAR, "T2"),
+    ]
+    assert listed[0] == OtherResult(
+        class_id=THEN_CLASS.class_id,
+        class_name=BIOLOGY,
+        year="2025-2026",
+        term="T1",
+        result_id="result-then",
+        value=value_with(),
+        day=THURSDAY,
+    )
+    assert [one.result_id for one in from_next] == ["result-then", "result-log"]
+
+
+def test_other_results_are_read_before_any_decision_and_never_through_a_link_alone() -> None:
+    """Plain values: the log's result and its twin in the next term share the log's homework;
+    a notebook of another title is linked to the log's result. The list takes no decisions, so
+    the notebook adds nothing, and nothing a parent decides can change it."""
+    results = [a_result("result-log", THURSDAY), a_result("result-next", THURSDAY, term="T2")]
+    read = with_values(as_read([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)], results))
+
+    assert others_of(read) == ["result-next"]
+    assert "links" not in inspect.signature(other_results).parameters
+
+
+def test_identical_looking_twins_are_listed_apart_with_nothing_made_up_to_tell_them_apart() -> None:
+    """Plain values: two other results whose title, class, due line, term and year all agree.
+    Each is its own item, with the address of its own page and nothing else that differs."""
+    twins = [
+        OtherResult(THE_CLASS.class_id, BIOLOGY, YEAR, "T1", one, value_with(), THURSDAY)
+        for one in ("result-first", "result-second")
+    ]
+
+    shown = [other_shown(one, {}) for one in twins]
+
+    assert shown == [
+        OtherShown(
+            address=f"/parent/grades/results/{one}/homework#homework",
+            title=LOG,
+            class_name=BIOLOGY,
+            due="Due August 20",
+            term="T1",
+            year=YEAR,
+        )
+        for one in ("result-first", "result-second")
+    ]
+
+
 RESULT_PAGE = "/parent/grades/results/{result_id}/homework"
 ON_THE_COMPUTER = "127.0.0.1:8781"
 
@@ -5683,6 +5814,8 @@ ANOTHER = (
 )
 SYNTHETIC_CAUSE = "synthetic-cause-text-for-the-boundary"
 SEARCH_HEADING_AT = '<h2 id="search-heading">'
+OTHERS_AT = '<h2 id="other-results">Other results that could be the same homework:</h2>'
+"""The heading over the other results that could be the same homework, before the search."""
 """Where a result's page's search begins, after every row of its own homework."""
 
 
@@ -5701,10 +5834,11 @@ def card_of(page: str, result_id: str) -> str:
 
 
 def said_on(page: str) -> list[str]:
-    """Each line a reader reads on a result's page after its result card and before its search,
-    in order: the paragraphs, list items, homework headings and buttons, each as its text."""
+    """Each line a reader reads on a result's page after its result card and before its other
+    results and its search, in order: the paragraphs, list items, homework headings and
+    buttons, each as its text."""
     start = page.index('<h1 id="homework"')
-    end = page.index(SEARCH_HEADING_AT, start)
+    end = page.index(OTHERS_AT, start) if OTHERS_AT in page else page.index(SEARCH_HEADING_AT)
     return lines_of(page[page.index("</section>", start) + len("</section>") : end])
 
 
@@ -7679,3 +7813,102 @@ def test_no_record_holds_a_search_s_words(caplog: pytest.LogCaptureFixture) -> N
 
     assert [one.status_code for one in answers] == [200, 200, 422, 422]
     assert [one for one in records if words in one.getMessage() or one.exc_info] == []
+
+
+def others_on(page: str) -> list[str]:
+    """Each line a reader reads in a result's page's other results, before its search: the
+    heading and each paragraph, each as its text."""
+    if OTHERS_AT not in page:
+        return []
+    part = page[page.index(OTHERS_AT) : page.index(SEARCH_HEADING_AT)]
+    return [
+        " ".join(html.unescape(re.sub(r"<[^>]+>", "", found[2])).split())
+        for found in re.finditer(r"<(p|h2)\b[^>]*>(.*?)</\1>", part, re.S)
+    ]
+
+
+def other_links(page: str) -> list[tuple[str, str]]:
+    """Each other result's link: its address and its words."""
+    if OTHERS_AT not in page:
+        return []
+    part = page[page.index(OTHERS_AT) : page.index(SEARCH_HEADING_AT)]
+    return [
+        (html.unescape(href), html.unescape(re.sub(r"<[^>]+>", "", words)))
+        for href, words in re.findall(r'<a href="([^"]*)">(.*?)</a>', part)
+    ]
+
+
+def three_logs(client: TestClient) -> tuple[str, str, str]:
+    """The log's homework, and a result of its title in this year's first and second terms
+    and in last year's first term, in a class of the same name whose first month waits. The
+    IDs of this year's first and second, then last year's."""
+    store = store_of(client)
+    store.put_on_record([homework(), *SET_ROWS], {})
+    then = draft_of(IN_WEEK.replace(f"**{YEAR}**", "**2025-2026**"))
+    review = store.review_grade_report(then, capture_key(then), key=KEY)
+    saved = save_grade(
+        store, then, key=KEY, review=review, answers=grade_answers(review, month=None)
+    )
+    assert isinstance(saved, GradeReportSaved)
+    last_year = capture_class(store, then)
+    class_id = with_report(client)
+    with_report(client, SECOND_TERM)
+    return (
+        result_named(client, class_id, LOG),
+        result_named(client, class_id, LOG, "T2"),
+        result_named(client, last_year, LOG),
+    )
+
+
+def test_a_result_s_page_lists_each_other_result_of_its_homework_before_the_search() -> None:
+    """The log's results in two terms of this year and in last year's class of the same name.
+    The first term's page lists the other two after its homework rows and before the search,
+    last year's first: each a link to its own page by its title, then its class name, its due
+    line, and its term and year. The diagram's page, which shares no homework, has no list."""
+    with browser() as client:
+        first, second, then = three_logs(client)
+        place = store_of(client).result_place(first)
+        assert place is not None
+        page = result_page(client, first)
+        diagram = result_page(client, result_named(client, place.class_id, DIAGRAM))
+
+    assert others_on(page) == [
+        "Other results that could be the same homework:",
+        LOG,
+        BIOLOGY,
+        "Due date shown: 08/20",
+        "T1 · 2025-2026",
+        LOG,
+        BIOLOGY,
+        "Due August 20",
+        "T2 · 2026-2027",
+    ]
+    assert other_links(page) == [(way_in_to(then), LOG), (way_in_to(second), LOG)]
+    assert page.index(OTHERS_AT) < page.index(SEARCH_HEADING_AT)
+    assert page.rindex("</section>", 0, page.index(OTHERS_AT)) > page.index('id="homework-1"')
+    assert OTHERS_AT not in diagram
+    assert "Other results" not in diagram
+
+
+def test_the_other_results_stay_the_same_after_decisions_and_on_every_page_of_a_search() -> None:
+    """The three logs' results: the first term's page before any decision, after its homework
+    is linked to it and kept apart from the second term's, on a decision's 409, and on each
+    page of a search that finds twenty-one rows, lists the same other results."""
+    with browser() as client:
+        first, second, then = three_logs(client)
+        place = store_of(client).result_place(first)
+        assert place is not None
+        before = others_on(result_page(client, first))
+        parent_links(client, place.class_id, first)
+        parent_links(client, place.class_id, second, term="T2", decision="apart")
+        after = others_on(result_page(client, first))
+        stale = pressed(client, first, decision="apart", revision="1")
+        pages = [search(client, first, "practice set", page) for page in ("", "2")]
+
+    assert len(before) == 9
+    assert after == before
+    assert stale.status_code == 409
+    assert others_on(stale.text) == before
+    assert [one.status_code for one in pages] == [200, 200]
+    assert [others_on(one.text) for one in pages] == [before, before]
+    assert other_links(pages[1].text) == [(way_in_to(then), LOG), (way_in_to(second), LOG)]

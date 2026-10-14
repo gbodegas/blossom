@@ -50,7 +50,9 @@ rules take from one page read, the mapping of school scores is made from that, a
 pairs kept apart, and why a linked or matched result's score stays off her homework.
 ``homework_found`` filters the same values by a parent's search words: the homework whose
 class name connects to the result's class, a page of twenty at a time, each row with its
-standing against the result. It reads nothing more and writes nothing.
+standing against the result. ``other_results`` names, from the same values, every other result
+that could be the same homework: each shares a candidate with the result, whatever decisions
+stand. Neither reads anything more or writes anything.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """
@@ -221,6 +223,20 @@ class FoundRow:
 
     item: Assignment
     state: FoundState
+
+
+@dataclass(frozen=True)
+class OtherResult:
+    """Another result that could be the same homework as a result: its class's ID and name, its
+    school year, its own term and ID, its current value, and its due day when it resolves."""
+
+    class_id: str
+    class_name: str
+    year: str
+    term: str
+    result_id: str
+    value: CurrentValue
+    day: date | None
 
 
 @dataclass(frozen=True)
@@ -543,3 +559,33 @@ def homework_found(
     return HomeworkFound(
         shown, tuple(FoundRow(item, state(item.assignment_id)) for item in shown.items)
     )
+
+
+def other_results(
+    class_id: str, term: str, result_id: str, read: RuleValues, years: Iterable[YearRead]
+) -> tuple[OtherResult, ...]:
+    """Every other result sharing a candidate homework with the result ``result_id`` of
+    ``class_id`` in ``term`` by the rules' candidate step, before any decision, each once, in
+    the order ``read`` gives the results. Terms compare with their spaces folded."""
+    here = (class_id, result_id, folded(term))
+    could = {
+        (one.class_id, one.result_id, folded(one.term)): set(one.assignments)
+        for one in candidate_homework(read.homework, read.results, read.classes)
+    }
+    mine = could.get(here, set())
+    named = {
+        one.class_id: (one.name, year.mapping.year)
+        for year in years
+        for one in year.mapping.classes
+    }
+    others = []
+    for one in read.results:
+        at = (one.class_id, one.result_id, folded(one.term))
+        if at == here or not mine & could.get(at, set()):
+            continue
+        name, year = named[one.class_id]
+        value = read.found[(one.class_id, one.term, one.result_id)][0]
+        others.append(
+            OtherResult(one.class_id, name, year, one.term, one.result_id, value, one.day)
+        )
+    return tuple(others)

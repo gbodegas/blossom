@@ -115,15 +115,18 @@ from blossom.routes.homework_scores import (
     HomeworkFound,
     HomeworkRow,
     NoList,
+    OtherResult,
     PairStanding,
     ResultHomework,
     Withheld,
     homework_found,
+    other_results,
     read_grade_facts,
     read_links,
     result_homework,
     results_read,
     rule_values,
+    title_of,
 )
 from blossom.routes.navigation import (
     CLASS_AT,
@@ -2551,6 +2554,7 @@ LINK_FOUND: Final = "Link to this homework: {title}, {course}, {due}"
 NO_SUCH_PAGE: Final = "There is no such page of results."
 PREVIOUS_PAGE: Final = "Previous page"
 NEXT_PAGE: Final = "Next page"
+OTHER_RESULTS: Final = "Other results that could be the same homework:"
 NOT_LISTED: Final = {
     NoList.WORDS_REFUSED: SEARCH_WORDS_REFUSED,
     NoList.NO_SUCH_PAGE: NO_SUCH_PAGE,
@@ -2709,6 +2713,32 @@ def search_shown(
     )
 
 
+@dataclass(frozen=True)
+class OtherShown:
+    """Another result that could be the same homework, as a result's page lists it: the address
+    of its page, its title and class name, its due line, and its term and year."""
+
+    address: str
+    title: str
+    class_name: str
+    due: str
+    term: str
+    year: str
+
+
+def other_shown(one: OtherResult, names: dict[str, str]) -> OtherShown:
+    """Another result as a result's page lists it, its due line as class details words it from
+    its class and term's report names ``names``."""
+    return OtherShown(
+        address=RESULT_HOMEWORK_AT.format(result_id=one.result_id),
+        title=title_of(one.value),
+        class_name=one.class_name,
+        due=due_of(one.value, one.day, names),
+        term=one.term,
+        year=one.year,
+    )
+
+
 def result_said(view: ResultHomework) -> tuple[Said, list[Said], list[Said]]:
     """What a result's page says of it: whether it is linked, matched or neither; each reason
     its score stays off her homework; and each reason the rules leave it waiting."""
@@ -2826,6 +2856,8 @@ def result_page_read(
             links=links,
             current_year=None if current is None else current[0],
         )
+        others = other_results(place.class_id, place.term, result_id, rules, years)
+    reads = {at: one for year in years for at, one in year.reads.items()}
     found = (
         None
         if search is None
@@ -2866,6 +2898,13 @@ def result_page_read(
         "link_label": LINK_HOMEWORK[1],
         "previous_page": PREVIOUS_PAGE,
         "next_page": NEXT_PAGE,
+        "others_heading": OTHER_RESULTS,
+        "others": [
+            other_shown(
+                one, report_names(reads[(one.class_id, one.term)].reports, state.clock.zone)
+            )
+            for one in others
+        ],
         "found": found,
         "search": None if found is None else search_shown(found, view.linked, named.name),
     }

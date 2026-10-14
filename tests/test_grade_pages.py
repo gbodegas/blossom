@@ -1310,7 +1310,8 @@ def test_the_year_range_rule_is_pinned_and_only_the_result_s_homework_page_carri
     assert carriers == ["grade_result_homework.html"]
     assert page.count('<span class="year-range">{{ year }}</span>') == 1
     assert page.count('<span class="year-range">{{ line.keep }}</span>') == 1
-    assert page.count("year-range") == 2
+    assert page.count('<span class="year-range">{{ other.year }}</span>') == 1
+    assert page.count("year-range") == 3
 
 
 CARD_TITLE_RULE = ".card-title {\n  font-size: 1.3rem;\n  margin: 0 0 0.6rem;\n}\n"
