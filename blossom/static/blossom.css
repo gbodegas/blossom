@@ -2390,6 +2390,12 @@ main.wide {
   overflow-wrap: anywhere;
 }
 
+/* A school-year range moves to the next line whole when a line can hold it, and breaks
+   inside only when it is wider than the line. */
+.year-range {
+  display: inline-block;
+}
+
 .hand-in input[type="text"] {
   width: 100%;
   max-width: 100%;

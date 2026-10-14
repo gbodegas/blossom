@@ -2303,10 +2303,12 @@ def category_line(value: CurrentValue) -> str:
 
 
 class Said(NamedTuple):
-    """A sentence a page says, and whether it holds text the school or the family wrote."""
+    """A sentence a page says, whether it holds text the school or the family wrote, and a
+    school-year range in it that a line keeps together where it can."""
 
     text: str
     authored: bool
+    keep: str = ""
 
 
 @dataclass(frozen=True)
@@ -2336,7 +2338,7 @@ def ways_in(
                 else Said(LINKED_TO_HOMEWORK.format(title=homework.title), authored=True)
             )
         ways[result_id] = WayIn(
-            address=RESULT_HOMEWORK.format(result_id=result_id),
+            address=RESULT_HOMEWORK_AT.format(result_id=result_id),
             label=f"{HOMEWORK_FOR_RESULT}: {item.title}",
             linked=linked,
         )
@@ -2442,6 +2444,8 @@ def family_class(class_id: str, n: str, request: Request, state: State) -> Respo
 RESULT_HOMEWORK: Final = "/parent/grades/results/{result_id}/homework"
 """A result's homework page, a parent's: its address holds the result's ID alone."""
 RESULT_HOMEWORK_AT: Final = RESULT_HOMEWORK + "#homework"
+STATE_LINE: Final = "state"
+"""The ID of a result's page's line that says whether it is linked, matched or neither."""
 """Where a decision lands: the result's page at its heading, which takes the focus."""
 RESULT_NOT_ON_RECORD: Final = "Blossom has no current record of this result."
 LINKS_CHANGED: Final = (
@@ -2506,11 +2510,12 @@ MATCH_AGAIN: Final = ("automatic", "Let Blossom match again")
 
 @dataclass(frozen=True)
 class HomeworkShown:
-    """One homework on a result's page: its place on the page, its class name, title and due
-    line as on record or none of them, what its row says, and each button as the decision its
-    form sends with its words."""
+    """One homework on a result's page: its place on the page, the element that names its row,
+    its class name, title and due line as on record or none of them, what its row says, and
+    each button as the decision its form sends with its words."""
 
     number: int
+    label: str
     assignment_id: str
     course: str | None
     title: str | None
@@ -2529,9 +2534,11 @@ def row_shown(number: int, row: HomeworkRow, linked: HomeworkRow | None) -> Home
     the result already has, and the buttons that decision leaves."""
     said: list[Said] = []
     buttons: list[tuple[str, str]]
+    # A link to homework not on record is named by the page's own state line, said once.
+    label = f"homework-{number}"
     if row.standing is PairStanding.LINKED:
         if not row.on_record:
-            said.append(Said(LINKED_OFF_RECORD, authored=False))
+            label = STATE_LINE
         buttons = [REMOVE_LINK]
     elif row.standing is PairStanding.APART:
         if row.title is None:
@@ -2552,6 +2559,7 @@ def row_shown(number: int, row: HomeworkRow, linked: HomeworkRow | None) -> Home
             said.append(Said(ANOTHER_RESULT, authored=False))
     return HomeworkShown(
         number=number,
+        label=label,
         assignment_id=row.assignment_id,
         course=row.course,
         title=row.title,
@@ -2580,6 +2588,7 @@ def result_said(view: ResultHomework) -> tuple[Said, list[Said], list[Said]]:
             WITHHELD_WORDS[reason].format(name=name, class_name=view.class_name, year=view.year),
             authored=reason
             in (Withheld.NAME_NOT_CONNECTED, Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR),
+            keep=view.year if reason is Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR else "",
         )
         for reason in view.withheld
     ]
@@ -2658,7 +2667,8 @@ def result_page_read(state: ApplicationState, result_id: str) -> dict[str, objec
             base=GRADES, class_id=place.class_id, n=terms.index(folded(place.term)) + 1
         ),
         "class_name": named.name,
-        "term": term_named((named.year, place.term)),
+        "term_name": place.term,
+        "year": named.year,
         "result_id": result_id,
         "item": shown,
         "state": state_said,

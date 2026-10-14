@@ -5305,6 +5305,19 @@ def test_a_matched_result_s_page_draws_its_card_and_a_form_for_each_decision_on_
         details, log
     )
     assert '<h1 id="homework" tabindex="-1">Homework for this result</h1>' in page
+    assert re.search(
+        r'<p class="course">School result</p>\s*<section class="panel grade-card">', page
+    )
+    assert '<p>T1 · <span class="year-range">2026-2027</span></p>' in page
+    assert (
+        len(
+            re.findall(
+                r'<div class="actions">\s*(?:<form [^>]*>.*?</form>\s*){2}</div>', page, re.S
+            )
+        )
+        == 1
+    )
+    assert ties_hold(page)
     back = f'<a href="/parent/grades/classes/{class_id}/terms/1">Back to '
     assert back + f'<span class="authored-text">{BIOLOGY}</span></a>' in page
     addresses = re.findall(r'(?:href|action)="([^"]*)"', page)
@@ -5418,12 +5431,14 @@ def test_a_result_s_page_says_a_link_would_move_from_homework_on_record_or_not()
     gone = "Linked to homework that isn't on record any more."
     assert said_on(page) == [
         gone,
-        gone,
         "Remove link",
         *LOG_ROW_SAID,
         "Linking moves this result's link from homework that isn't on record any more.",
         *CHOOSE,
     ]
+    assert '<p id="state">Linked to homework that isn&#39;t on record any more.</p>' in page
+    assert '<section class="panel grade-card" aria-labelledby="state">' in page
+    assert ties_hold(page)
     assert [
         decision for _, homework_id, decision, _ in forms_on(page) if homework_id == NOTEBOOK_ID
     ] == ["apart"]
@@ -5688,7 +5703,10 @@ def test_class_details_gives_a_parent_each_result_s_way_in_and_its_linked_homewo
         return
     for page in pages:
         assert sorted(ways_on(page)) == sorted(
-            (RESULT_PAGE.format(result_id=result_id), f"Homework for this result: {title}")
+            (
+                f"{RESULT_PAGE.format(result_id=result_id)}#homework",
+                f"Homework for this result: {title}",
+            )
             for result_id, title in titles.items()
         )
         card = card_of(page, log)
@@ -5833,6 +5851,7 @@ def test_a_pair_kept_apart_from_homework_not_on_record_is_said_with_no_title() -
         "Kept apart from homework that isn't on record any more.",
         "Let Blossom match again",
     ]
+    assert ties_hold(page)
     assert [decision for _, _, decision, _ in forms_on(page)] == ["automatic"]
 
 
@@ -6259,10 +6278,14 @@ def test_while_the_required_index_is_unavailable_every_decision_answers_500_and_
     ],
 )
 def test_a_write_the_file_refuses_or_loses_answers_500_with_its_sentence(
-    refusal: type[Exception], said: str, monkeypatch: pytest.MonkeyPatch
+    refusal: type[Exception],
+    said: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The store's write made to raise in the test, as it does when the file refuses the write
-    or the transaction is lost: 500 with the page and its sentence, nothing written."""
+    """The store's write made to raise in the test, as when the file refuses it or the
+    transaction is lost: 500 with the page and its sentence, no record, nothing written. A page
+    that can't be read again answers the generic 500 with one record instead."""
     with browser() as client:
         store_of(client).put_on_record([homework()], {})
         class_id = with_report(client)
@@ -6275,16 +6298,29 @@ def test_a_write_the_file_refuses_or_loses_answers_500_with_its_sentence(
 
         monkeypatch.setattr(store_of(client), "decide_homework_link", refused)
         before = every_row(database_of(client))
-        answer = pressed(client, log, revision=revision)
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            answer = pressed(client, log, revision=revision)
+            answered = [
+                one.getMessage() for one in caplog.records if one.name.startswith("blossom")
+            ]
         after = every_row(database_of(client))
         points_presence(client, log, SYNTHETIC_CAUSE)
-        stopped = pressed(client, log, revision=revision)
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            stopped = pressed(client, log, revision=revision)
+            stopped_records = list(caplog.records)
 
     assert answer.status_code == 500
     assert problem_on(answer.text) == said
     assert '<h1 id="homework" tabindex="-1">' in answer.text
     assert after == before
+    assert answered == []
     assert (stopped.status_code, stopped.text) == (500, "Internal Server Error")
+    assert [one.getMessage() for one in stopped_records if one.name.startswith("blossom")] == [
+        "a homework link wasn't written: GradeValueUndecodable"
+    ]
+    assert [one for one in stopped_records if SYNTHETIC_CAUSE in one.getMessage()] == []
 
 
 def test_two_parents_deciding_at_once_one_lands_and_the_other_reads_again() -> None:
@@ -6382,3 +6418,48 @@ def test_only_the_index_in_the_file_when_pressed_decides_and_a_shapeless_id_is_4
     assert opened.status_code == 200
     assert landed.status_code == 303
     assert rows == [(LOG_ID, "confirmed")]
+
+
+def ties_hold(page: str) -> bool:
+    """Whether every element a page names a region or a control by is on the page."""
+    named = [
+        labels or descriptions
+        for labels, descriptions in re.findall(
+            r'aria-labelledby="([^"]*)"|aria-describedby="([^"]*)"', page
+        )
+    ]
+    return bool(named) and all(f'id="{one}"' in page for each in named for one in each.split())
+
+
+def test_a_school_year_range_on_a_result_s_page_is_kept_together_where_it_fits() -> None:
+    """Homework of Biology linked to last year's log, the current year made this one, then the
+    homework put on record under another class name, each by the store's own write: the page
+    names last year's class and its year, the range in one inline box a line keeps whole."""
+    then = draft_of(IN_WEEK.replace(f"**{YEAR}**", "**2025-2026**"))
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(NOTEBOOK_ID, NOTEBOOK, None)], {})
+        review = store.review_grade_report(then, capture_key(then), key=KEY)
+        saved = save_grade(
+            store, then, key=KEY, review=review, answers=grade_answers(review, month=9)
+        )
+        assert isinstance(saved, GradeReportSaved)
+        last_year = capture_class(store, then)
+        with_report(client)
+        store.set_current_context(("2025-2026", "T1"), (YEAR, "T1"), role="parent")
+        log = result_named(client, last_year, LOG)
+        parent_links(client, last_year, log, NOTEBOOK_ID)
+        store.put_on_record([homework(NOTEBOOK_ID, NOTEBOOK, None, course="Earth Science")], {})
+        page = result_page(client, log)
+
+    reason = (
+        f"Earth Science isn't connected to {BIOLOGY}, a class of 2025-2026. Homework class names "
+        "changes the current school year only."
+    )
+    assert reason in said_on(page)
+    assert (
+        f'<li><span class="authored-text">Earth Science isn&#39;t connected to {BIOLOGY}, a class '
+        'of <span class="year-range">2025-2026</span>. Homework class names changes the current '
+        "school year only.</span></li>"
+    ) in page
+    assert '<p>T1 · <span class="year-range">2025-2026</span></p>' in page

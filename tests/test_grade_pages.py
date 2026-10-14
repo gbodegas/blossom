@@ -1258,8 +1258,29 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
     assert card.count("<section") == 1
     assert "<section" not in (TEMPLATES / "grade_class.html").read_text(encoding="utf-8")
     homework = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
-    row = '<section class="panel grade-card" aria-labelledby="homework-{{ row.number }}">'
+    row = '<section class="panel grade-card" aria-labelledby="{{ row.label }}">'
     assert homework.count(row) == homework.count("<section") == 1
+
+
+YEAR_RANGE_RULE = ".year-range {\n  display: inline-block;\n}\n"
+"""A school-year range, pinned whole: one inline box, so a line takes it whole where it fits."""
+
+
+def test_the_year_range_rule_is_pinned_and_only_the_result_s_homework_page_carries_it() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if "year-range" in page.read_text(encoding="utf-8")
+    )
+    page = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
+
+    assert css.count("year-range") == 1
+    assert css.count(YEAR_RANGE_RULE) == 1
+    assert carriers == ["grade_result_homework.html"]
+    assert page.count('<span class="year-range">{{ year }}</span>') == 1
+    assert page.count('<span class="year-range">{{ line.keep }}</span>') == 1
+    assert page.count("year-range") == 2
 
 
 CARD_TITLE_RULE = ".card-title {\n  font-size: 1.3rem;\n  margin: 0 0 0.6rem;\n}\n"
