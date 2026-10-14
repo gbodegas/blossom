@@ -2304,11 +2304,12 @@ def category_line(value: CurrentValue) -> str:
 
 class Said(NamedTuple):
     """A sentence a page says, whether it holds text the school or the family wrote, and a
-    school-year range in it that a line keeps together where it can."""
+    school-year range in it, by its place in the text, that a line keeps together if it can."""
 
     text: str
     authored: bool
     keep: str = ""
+    keep_at: int = 0
 
 
 @dataclass(frozen=True)
@@ -2444,9 +2445,9 @@ def family_class(class_id: str, n: str, request: Request, state: State) -> Respo
 RESULT_HOMEWORK: Final = "/parent/grades/results/{result_id}/homework"
 """A result's homework page, a parent's: its address holds the result's ID alone."""
 RESULT_HOMEWORK_AT: Final = RESULT_HOMEWORK + "#homework"
+"""Where a decision lands: the result's page at its heading, which takes the focus."""
 STATE_LINE: Final = "state"
 """The ID of a result's page's line that says whether it is linked, matched or neither."""
-"""Where a decision lands: the result's page at its heading, which takes the focus."""
 RESULT_NOT_ON_RECORD: Final = "Blossom has no current record of this result."
 LINKS_CHANGED: Final = (
     "Grades or links for this class changed while you were choosing. Nothing was saved. "
@@ -2525,7 +2526,8 @@ class HomeworkShown:
 
 
 def due_line(day: date | None) -> str:
-    """A homework's due date as her cards say it."""
+    """A homework's due date on its row: "Due" with the weekday, month and day, or the words
+    for no date."""
     return "Due date not recorded" if day is None else f"Due {day:%A, %B} {day.day}"
 
 
@@ -2589,6 +2591,12 @@ def result_said(view: ResultHomework) -> tuple[Said, list[Said], list[Said]]:
             authored=reason
             in (Withheld.NAME_NOT_CONNECTED, Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR),
             keep=view.year if reason is Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR else "",
+            # The range's place is where the sentence puts the year, whatever the names hold.
+            keep_at=len(
+                WITHHELD_WORDS[reason]
+                .partition("{year}")[0]
+                .format(name=name, class_name=view.class_name)
+            ),
         )
         for reason in view.withheld
     ]
@@ -2738,8 +2746,8 @@ def homework_for_result(result_id: str, request: Request, state: State) -> Respo
 @family_router.post("/results/{result_id}/homework", response_class=HTMLResponse)
 async def decide_homework(result_id: str, request: Request, state: State) -> Response:
     """Route 13: a parent's decision about the result and one homework, by the store's one
-    write. A decision on record, written now or standing already, lands on the result's
-    heading; any other answer writes nothing and says why."""
+    write. A decision written now or standing already lands on the result's heading; any other
+    answer writes nothing: the page with its answer, or the plain generic 500."""
     fields, whole = await fields_of(request, DECISION_FIELDS)
     homework, decision = fields.get("homework", "").strip(), fields.get("decision", "")
     revision = fields.get("revision", "")

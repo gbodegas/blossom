@@ -5135,9 +5135,9 @@ def test_a_view_s_candidates_and_match_are_the_rules_own_for_twins_and_single_pa
 def test_a_matched_result_names_each_reason_its_score_stays_off_her_homework(
     value: CurrentValue, withheld: tuple[Withheld, ...]
 ) -> None:
-    """Plain values: one homework and one result the rules stand together, its name connected
-    or not. The view names the points and showing reasons exactly when the score rules show
-    no score, never the class connection, and the match, the candidates and waiting stay."""
+    """Plain values: one homework and one result the rules stand together, with this school
+    year current or another. The view names the points and showing reasons exactly when the
+    rules show no score, never the class connection; the match, candidates and waiting stay."""
     log = homework()
     scored = value.cells["points"][0] is Presence.REPORTED
     results = [school_result("result-log", scored=scored, shown=value.not_shown is None)]
@@ -5514,7 +5514,8 @@ def test_a_matched_result_s_page_names_the_points_and_showing_reasons_alone() ->
 
 def test_the_words_for_each_reason_and_each_decision_left_on_a_row() -> None:
     """Plain values: each reason a score stays off her homework in its words, a class of
-    another year's among them, and each row's words and buttons for each decision."""
+    another year's among them with its range marked by its place, and each row's words and
+    buttons for each decision."""
     notebook = HomeworkRow(NOTEBOOK_ID, True, "Life Science", NOTEBOOK, None, LINKED, False, False)
     view = ResultHomework(
         class_id=THE_CLASS.class_id,
@@ -5557,12 +5558,21 @@ def test_the_words_for_each_reason_and_each_decision_left_on_a_row() -> None:
         ANOTHER,
     ]
     assert rows[PairStanding.NONE].buttons == [("link", CHOOSE[0]), ("apart", CHOOSE[1])]
+    assert [said.text for said in rows[PairStanding.APART].said] == [
+        f"Kept apart from {LOG}. Blossom won't match these two by itself.",
+        f"Linking moves this result's link from {NOTEBOOK}.",
+        ANOTHER,
+    ]
     assert rows[PairStanding.APART].buttons == [
         ("link", "Link to this homework"),
         ("automatic", "Let Blossom match again"),
     ]
     assert rows[PairStanding.LINKED].buttons == [("apart", "Remove link")]
     assert rows[PairStanding.LINKED].said == []
+    year_named = result_said(dataclasses.replace(view, class_name="Biology 2025-2026"))[1][-1]
+    assert year_named.keep == "2025-2026"
+    assert year_named.text[year_named.keep_at :].startswith("2025-2026. Homework class names")
+    assert year_named.keep_at > year_named.text.index("2025-2026")
     gone = row_shown(2, off_record("assignment-gone", APART), notebook)
     assert [one.text for one in gone.said] == [
         "Kept apart from homework that isn't on record any more."
@@ -5941,8 +5951,8 @@ def problem_on(page: str) -> str:
 
 def test_each_decision_from_each_prior_state_writes_its_row_and_lands_on_the_heading() -> None:
     """Link, remove the link, link again, let the rules match again, then not this homework:
-    each answers 303 to the result's heading, changes only the link row and raises the class
-    and term's revision by one, and the page it lands on focuses the heading."""
+    each answers 303 to the heading, changes only the link row, raises the class and term's
+    revision by one, and lands on a page holding that heading, which can take the focus."""
     with browser() as client:
         store_of(client).put_on_record([homework()], {})
         class_id = with_report(client)
@@ -6448,10 +6458,10 @@ def ties_hold(page: str) -> bool:
     return bool(named) and all(f'id="{one}"' in page for each in named for one in each.split())
 
 
-def test_a_school_year_range_on_a_result_s_page_is_kept_together_where_it_fits() -> None:
+def test_a_school_year_range_on_a_result_s_page_is_marked_as_one_piece() -> None:
     """Homework of Biology linked to last year's log, the current year made this one, then the
     homework put on record under another class name, each by the store's own write: the page
-    names last year's class and its year, the range in one inline box a line keeps whole."""
+    names last year's class and its year, each range in its own mark, and offers no link."""
     then = draft_of(IN_WEEK.replace(f"**{YEAR}**", "**2025-2026**"))
     with browser() as client:
         store = store_of(client)
@@ -6480,3 +6490,101 @@ def test_a_school_year_range_on_a_result_s_page_is_kept_together_where_it_fits()
         "school year only.</span></li>"
     ) in page
     assert '<p>T1 · <span class="year-range">2025-2026</span></p>' in page
+    assert '<a href="/parent/grades/homework-classes">' not in page
+
+
+@pytest.mark.parametrize(
+    ("failing", "named"),
+    [
+        pytest.param("another term", "HomeworkLinksConflict", id="a value of another term"),
+        pytest.param("its own term", "GradeValueUndecodable", id="a value of its own term"),
+    ],
+)
+def test_a_result_s_page_reads_its_own_term_then_her_links_then_the_rest(
+    failing: str, named: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two confirmed links to the first term's log, and a points presence that is no presence
+    in the second term's log or in the first term's diagram, each in a file changed by hand:
+    the one record names the failure the page's read order meets first."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        with_report(client, SECOND_TERM)
+        first = result_named(client, class_id, LOG)
+        conflicting(client, first)
+        if failing == "another term":
+            points_presence(client, result_named(client, class_id, LOG, "T2"), SMUDGED)
+        else:
+            points_presence(client, result_named(client, class_id, DIAGRAM), SMUDGED)
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            answer = computer(client).get(RESULT_PAGE.format(result_id=first), headers=PAGE_HEADERS)
+            records = [one.getMessage() for one in caplog.records if one.name.startswith("blossom")]
+
+    assert (answer.status_code, answer.text) == (500, "Internal Server Error")
+    assert records == [f"a grade page wasn't shown: {named}"]
+
+
+def test_a_date_claim_that_can_t_be_read_leaves_the_result_waiting_as_on_her_week() -> None:
+    """The log's homework with one more date claim that can't be read, as a file changed by
+    hand holds it: her week shows no score for it, and the result's page says a due date
+    isn't settled rather than that the rules matched it."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        unreadable_claim(store, LOG_ID, THURSDAY.isoformat())
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        page = result_page(client, log)
+        card = on_card(client)
+
+    assert card == []
+    assert said_on(page) == [
+        "Not linked to homework.",
+        "Blossom doesn't match these by itself:",
+        "a due date isn't settled.",
+        *LOG_ROW_SAID,
+        *CHOOSE,
+    ]
+
+
+def test_an_unrelated_error_from_the_write_leaves_the_decision_route_as_itself(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The store's write made to raise a ValueError in the test: the decision route raises it
+    as itself, with no record of a link not written."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        revision = revision_of(client, log)
+
+        def refused(*_: object, **__: object) -> None:
+            msg = "synthetic"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(store_of(client), "decide_homework_link", refused)
+        with caplog.at_level(logging.DEBUG), pytest.raises(ValueError, match="synthetic"):
+            pressed(client, log, revision=revision)
+
+    assert not [one for one in caplog.records if "wasn't written" in one.getMessage()]
+
+
+def test_a_result_whose_term_is_not_among_its_year_s_terms_answers_the_generic_500(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The year's term row deleted from the file by hand, as no save does: the result's page
+    answers the plain generic 500 with one record of the failure's type alone."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        stored(store, "DELETE FROM grade_terms WHERE label = 'T1'")
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            answer = computer(client).get(RESULT_PAGE.format(result_id=log), headers=PAGE_HEADERS)
+            records = [one.getMessage() for one in caplog.records if one.name.startswith("blossom")]
+
+    assert (answer.status_code, answer.text) == (500, "Internal Server Error")
+    assert records == ["a grade page wasn't shown: GradeValueUndecodable"]
