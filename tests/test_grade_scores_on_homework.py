@@ -7105,7 +7105,8 @@ def test_a_conflict_only_the_waiting_read_meets_stops_a_parent_s_class_details_w
             "a grade page wasn't shown: HomeworkLinksConflict",
         )
     ]
-    assert [one for one in records if one.exc_info or SYNTHETIC_CAUSE in one.getMessage()] == []
+    assert [one for one in records if SYNTHETIC_CAUSE in one.getMessage()] == []
+    assert with_details(records) == []
     assert hers.status_code == 200
 
 
@@ -7131,18 +7132,16 @@ def test_her_links_in_conflict_stop_a_parent_s_class_details_before_who_waits_is
                 answer = computer(client).get(
                     f"/parent/grades/classes/{one}/terms/1", headers=PAGE_HEADERS
                 )
-                messages = [
-                    record.getMessage()
-                    for record in caplog.records
-                    if record.name.startswith("blossom")
-                ]
+                kept = list(caplog.records)
             connection.set_trace_callback(None)
-            answers.append((answer.status_code, answer.text, messages, seen))
+            answers.append((answer.status_code, answer.text, kept, seen))
 
     assert second_class != class_id
-    for status, text, messages, seen in answers:
+    for status, text, kept, seen in answers:
         assert (status, text) == (500, "Internal Server Error")
+        messages = [one.getMessage() for one in kept if one.name.startswith("blossom")]
         assert messages == ["a grade page wasn't shown: HomeworkLinksConflict"]
+        assert with_details(kept) == []
         assert not [one for one in seen if "assignments" in one]
 
 
@@ -7189,21 +7188,21 @@ def test_her_links_in_conflict_stop_a_signed_in_parent_s_class_details_on_either
         class_id = with_report(client)
         conflicting(client, result_named(client, class_id, LOG))
         answers = []
+        details: list[logging.LogRecord] = []
         for tree in ("student", "parent"):
             caplog.clear()
             with caplog.at_level(logging.DEBUG):
                 answer = client.get(
                     f"/{tree}/grades/classes/{class_id}/terms/1", headers=PAGE_HEADERS
                 )
-                messages = [
-                    record.getMessage()
-                    for record in caplog.records
-                    if record.name.startswith("blossom")
-                ]
+                kept = list(caplog.records)
+            messages = [one.getMessage() for one in kept if one.name.startswith("blossom")]
             answers.append((answer.status_code, answer.text, messages))
+            details.extend(with_details(kept))
 
     stopped = (500, "Internal Server Error", ["a grade page wasn't shown: HomeworkLinksConflict"])
     assert answers == [stopped, stopped]
+    assert details == []
 
 
 CHEMISTRY = IN_WEEK.replace("07 BIO - C", "08 CHE - A").replace(
@@ -7239,6 +7238,11 @@ def damaged(client: TestClient, damage: str, other: str) -> None:
         stored(
             store_of(client), "UPDATE grade_reports SET term_label = 'T9' WHERE class_id = ?", other
         )
+
+
+def with_details(records: Iterable[logging.LogRecord]) -> list[logging.LogRecord]:
+    """The records among ``records`` that carry an exception, its text or a stack."""
+    return [one for one in records if one.exc_info or one.exc_text or one.stack_info]
 
 
 def blossom_records(caplog: pytest.LogCaptureFixture) -> list[tuple[str, int, str]]:
@@ -7280,11 +7284,13 @@ def test_when_only_who_waits_can_t_be_read_a_parent_gets_the_page_with_one_sente
             once = blossom_records(caplog)
             again = parent_class_page(client, class_id)
             twice = blossom_records(caplog)
+            parents_kept = list(caplog.records)
         store_of(client)._connection.set_trace_callback(None)
         caplog.clear()
         with caplog.at_level(logging.DEBUG):
             hers = class_details(client, class_id)
             her_records = blossom_records(caplog)
+            hers_kept = list(caplog.records)
         titles = {
             result_id: title_of(value)
             for result_id, value in store_of(client)
@@ -7312,7 +7318,8 @@ def test_when_only_who_waits_can_t_be_read_a_parent_gets_the_page_with_one_sente
     record = ("blossom.routes.homework_scores", logging.WARNING, NO_CUE)
     assert once == [record]
     assert twice == [record, record]
-    assert [one for one in caplog.records if one.exc_info] == []
+    assert with_details(parents_kept) == []
+    assert with_details(hers_kept) == []
     reads = " ".join(" ".join(one.split()) for one in seen).split("BEGIN")[1:]
     assert len(reads) == 2
     for read in reads:
@@ -7352,6 +7359,7 @@ def test_her_links_stop_the_page_before_who_waits_is_read_also_when_that_read_wo
                 f"/parent/grades/classes/{class_id}/terms/1", headers=PAGE_HEADERS
             )
             records = blossom_records(caplog)
+            kept = list(caplog.records)
         hers = client.get(f"/student/grades/classes/{class_id}/terms/1", headers=PAGE_HEADERS)
 
     kind = "HomeworkLinksConflict" if failure == "two links" else "GradeValueUndecodable"
@@ -7359,6 +7367,8 @@ def test_her_links_stop_the_page_before_who_waits_is_read_also_when_that_read_wo
     assert records == [
         ("blossom.routes.grades", logging.WARNING, f"a grade page wasn't shown: {kind}")
     ]
+    assert with_details(kept) == []
+    assert [one for one in kept if SYNTHETIC_CAUSE in one.getMessage()] == []
     assert hers.status_code == 200
 
 
@@ -7381,6 +7391,7 @@ def test_a_conflict_the_store_s_check_misses_stops_the_page_though_who_waits_can
                 f"/parent/grades/classes/{class_id}/terms/1", headers=PAGE_HEADERS
             )
             records = blossom_records(caplog)
+            kept = list(caplog.records)
 
     assert (answer.status_code, answer.text) == (500, "Internal Server Error")
     assert records == [
@@ -7390,7 +7401,7 @@ def test_a_conflict_the_store_s_check_misses_stops_the_page_though_who_waits_can
             "a grade page wasn't shown: HomeworkLinksConflict",
         )
     ]
-    assert [one for one in caplog.records if one.exc_info] == []
+    assert with_details(kept) == []
 
 
 BEFORE_THE_RESULTS = (
