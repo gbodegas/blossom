@@ -72,6 +72,7 @@ from blossom.grades.review import (
     GradeReportSaved,
     GradeReview,
     GradeValueUndecodable,
+    HomeworkLinksConflict,
     IdentityAnswer,
     ItemStatus,
     Label,
@@ -127,6 +128,7 @@ from blossom.routes.homework_scores import (
     results_read,
     rule_values,
     title_of,
+    waiting_in,
 )
 from blossom.routes.navigation import (
     CLASS_AT,
@@ -2332,11 +2334,19 @@ class Said(NamedTuple):
 @dataclass(frozen=True)
 class WayIn:
     """A parent's way from a result's card on class details to its homework page: the address,
-    the link's accessible name, and the homework a link names, when one does."""
+    the link's accessible name, the homework a link names, when one does, and the line saying
+    the result waits for a parent's choice, when it does."""
 
     address: str
     label: str
     linked: Said | None
+    waits: str | None = None
+
+
+def waiting_way(way: WayIn) -> WayIn:
+    """A result's way in when it waits for a parent's choice: the line on its card, and the
+    same words at the end of the link's accessible name."""
+    return replace(way, label=f"{way.label}. {NOT_MATCHED_ALONE}", waits=NOT_MATCHED_ALONE)
 
 
 def ways_in(
@@ -2390,8 +2400,9 @@ def class_page_read(
     state: ApplicationState, class_id: str, n: str, *, family: bool
 ) -> dict[str, object] | GradeValueUndecodable | None:
     """What class details shows, read alone; for a parent reading, in one hold, with each
-    result's way to its homework page read after the page's own values. None for a class or
-    place not on record; the error itself when her links stop a parent's page."""
+    result's way to its homework page read after the page's own values, then which results
+    wait for a choice. None for a class or place not on record; the error itself when her
+    links, or the rules' own check of them, stop a parent's page."""
     store = state.project_state
     with store.reading() if family else nullcontext():
         named = store.class_named(class_id)
@@ -2438,6 +2449,28 @@ def class_page_read(
             except GradeValueUndecodable as error:
                 return error
             ways = ways_in(store, links, [*cards, *undated])
+            # Who waits is worked out last, from her links as read above and no link statement.
+            try:
+                everyone = store.all_assignments()
+                years = read_grade_facts(store, (one.course for one in everyone))
+                claims = (
+                    store.read_claims([one.assignment_id for one in everyone])
+                    if results_read(years)
+                    else None
+                )
+                rules = rule_values(
+                    everyone,
+                    {} if claims is None else claims.records,
+                    () if claims is None else claims.unreadable,
+                    years,
+                )
+                waiting = waiting_in(class_id, term, rules, links=links)
+            except HomeworkLinksConflict as error:
+                return error
+            ways = {
+                result_id: waiting_way(way) if result_id in waiting else way
+                for result_id, way in ways.items()
+            }
     return {
         "missing": None,
         "name": named.name,
@@ -2511,6 +2544,7 @@ WITHHELD_WORDS: Final = {
 }
 """Each reason a score stays off her homework, after ``SCORE_NOT_SHOWN``."""
 NOT_MATCHED_BY_ITSELF: Final = "Blossom doesn't match these by itself:"
+NOT_MATCHED_ALONE: Final = "Blossom doesn't match this result by itself."
 ASSIGNMENTS_COULD_BE: Final = "{n} assignments could be this result."
 RESULTS_COULD_BE: Final = "{n} results could be this homework."
 ANOTHER_RESULT: Final = (

@@ -1387,6 +1387,9 @@ RESULT_CARD = """  <section class="panel grade-card">
       {%- if way.linked %}
     <p>{% if way.linked.authored %}<span class="authored-text">{{ way.linked.text }}</span>{% else %}{{ way.linked.text }}{% endif %}</p>
       {%- endif %}
+      {%- if way.waits %}
+    <p class="source">{{ way.waits }}</p>
+      {%- endif %}
     <p class="details-link"><a class="assignment-link" href="{{ way.address }}" aria-label="{{ way.label }}">Homework for this result</a></p>
     {%- endif %}
     <details class="steps update">
@@ -1395,8 +1398,8 @@ RESULT_CARD = """  <section class="panel grade-card">
 week card's order: the category as the kicker when the school reported it and as a quiet line
 when it didn't, the title, a heading of the level the page gives, which carries the result's
 ID and takes the focus so a link can land on it, the due line with the gradebook status as its
-quieter phrase, the score, where it was last shown, and the school record details under the
-card's rule."""
+quieter phrase, the score, where it was last shown, a parent's way in with the quiet line for a
+result that waits just before it, and the school record details under the card's rule."""
 REVIEW_ROW = (
     "              <p class=\"{{ 'course' if shown.category.name.presence.name == 'REPORTED' "
     'else \'source\' }}">{{ cell(shown.category.name, "Category name") }}</p>\n'

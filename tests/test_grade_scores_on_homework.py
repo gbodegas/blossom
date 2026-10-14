@@ -6095,12 +6095,47 @@ def test_the_results_waiting_on_a_class_and_term_are_refused_whole_on_conflictin
         assert refused.value.__context__ is None
 
 
-def waiting_now(
-    client: TestClient, class_id: str, term: str = "T1"
-) -> tuple[frozenset[str], frozenset[str]]:
+WAITS_LINE = '<p class="source">Blossom doesn&#39;t match this result by itself.</p>'
+"""The quiet line on a card of class details whose result waits for a parent's choice."""
+
+
+def parent_class_page(client: TestClient, class_id: str, term: str = "T1") -> str:
+    """Class details of a class and term as a parent reads it, on the computer Blossom runs on
+    with the sign-in off."""
+    store = store_of(client)
+    named = store.class_named(class_id)
+    assert named is not None
+    n = store.terms_of_year(named.year).index(term) + 1
+    address = f"/parent/grades/classes/{class_id}/terms/{n}"
+    answer = computer(client).get(address, headers=PAGE_HEADERS)
+    assert answer.status_code == 200
+    return answer.text
+
+
+def cued_on(page: str) -> frozenset[str]:
+    """The results whose card on a class details page says they wait for a parent's choice,
+    each the same as those whose way in has the same words at the end of its accessible name."""
+    cued = frozenset(
+        one for one in order_on_class_details(page) if WAITS_LINE in card_of(page, one)
+    )
+    named = frozenset(
+        address.split("/")[4]
+        for address, label in ways_on(page)
+        if label.endswith(f". {grades.NOT_MATCHED_ALONE}")
+    )
+    assert named == cued
+    return cued
+
+
+Waits = tuple[frozenset[str], frozenset[str], frozenset[str]]
+"""Who waits on a class and term: by the function, by each result's own page, on class details."""
+
+
+def waiting_now(client: TestClient, class_id: str, term: str = "T1") -> Waits:
     """The results of a class and term that wait for a parent's choice, from the store as it
-    stands, read in one hold as the result's page reads it; and those of the class and term whose
-    own page, read on its own, says why the rules leave them waiting."""
+    stands, read in one hold as the result's page reads it; those of the class and term whose
+    own page, read on its own, says why the rules leave them waiting; and those whose card on
+    class details, as a parent reads it, says they wait."""
     state = state_of(client)
     store = state.project_state
     with store.reading():
@@ -6125,7 +6160,8 @@ def waiting_now(
         assert page is not None
         if page["waiting"]:
             said.add(result_id)
-    return waiting_in(class_id, term, read, links=links), frozenset(said)
+    cued = cued_on(parent_class_page(client, class_id, term))
+    return waiting_in(class_id, term, read, links=links), frozenset(said), cued
 
 
 def results_titled(
@@ -6231,8 +6267,9 @@ def test_the_results_waiting_on_a_class_and_term_through_the_store_are_those_who
     setup: Callable[[TestClient], Pages],
 ) -> None:
     """Each record below saved through the store's own writes, then read as the result's page
-    reads it. On each class and term the results that wait are the ones listed, and exactly the
-    ones whose own page says why the rules leave them waiting; results of other titles never do."""
+    reads it. On each class and term the results that wait are the ones listed, exactly the
+    ones whose own page says why the rules leave them waiting, and exactly the ones class details
+    shows a parent as waiting; results of other titles never wait."""
     with browser() as client:
         pages = setup(client)
         found = [
@@ -6243,8 +6280,8 @@ def test_the_results_waiting_on_a_class_and_term_through_the_store_are_those_who
             for class_id, term, titles in pages
         ]
 
-    for (waiting, said), expected in found:
-        assert waiting == said == expected
+    for (waiting, said, cued), expected in found:
+        assert waiting == said == cued == expected
 
 
 def test_a_result_waits_while_its_homework_is_linked_elsewhere_until_a_decision_of_its_own() -> (
@@ -6253,7 +6290,8 @@ def test_a_result_waits_while_its_homework_is_linked_elsewhere_until_a_decision_
     """The log's homework and a notebook, and the log's result in two terms, the first linked
     to the log's homework by the store's own write. The second waits until it is linked to that
     homework, kept apart from it, or linked to the notebook, and waits again once returned to
-    the rules. A read of who waits leaves every table as it was."""
+    the rules; linked, its card says which homework instead. A read of who waits, class details
+    as a parent reads it among them, leaves every table as it was."""
     with browser() as client:
         store_of(client).put_on_record([homework(), NOTEBOOK_ROW], {})
         class_id = with_report(client)
@@ -6261,7 +6299,7 @@ def test_a_result_waits_while_its_homework_is_linked_elsewhere_until_a_decision_
         first = result_named(client, class_id, LOG)
         second = result_named(client, class_id, LOG, "T2")
 
-        def now() -> tuple[frozenset[str], frozenset[str]]:
+        def now() -> Waits:
             return waiting_now(client, class_id, "T2")
 
         def decide(decision: LinkDecision, assignment_id: str = LOG_ID) -> None:
@@ -6274,6 +6312,7 @@ def test_a_result_waits_while_its_homework_is_linked_elsewhere_until_a_decision_
         read_alone = closed_world([database_of(client)], leaving_out=())
         decide("link")
         linked = now()
+        linked_card = card_of(parent_class_page(client, class_id, "T2"), second)
         decide("apart")
         apart = now()
         decide("automatic")
@@ -6282,9 +6321,11 @@ def test_a_result_waits_while_its_homework_is_linked_elsewhere_until_a_decision_
         linked_to_other = now()
 
     waits = frozenset({second})
-    assert both == elsewhere == returned == (waits, waits)
+    assert both == elsewhere == returned == (waits, waits, waits)
     assert read_alone == world
-    assert linked == apart == linked_to_other == (frozenset(), frozenset())
+    assert linked == apart == linked_to_other == (frozenset(), frozenset(), frozenset())
+    assert f'<span class="authored-text">Linked to homework: {LOG}.</span>' in linked_card
+    assert WAITS_LINE not in linked_card
 
 
 def test_a_row_kept_apart_leaves_its_twin_to_the_rules_unless_its_twin_s_day_is_in_doubt() -> None:
@@ -6302,9 +6343,10 @@ def test_a_row_kept_apart_leaves_its_twin_to_the_rules_unless_its_twin_s_day_is_
         unreadable_claim(store, twin)
         in_doubt = waiting_now(client, class_id), on_card(client, twin)
 
-    assert settled[0] == (frozenset(), frozenset())
+    waits = frozenset({log})
+    assert settled[0] == (frozenset(), frozenset(), frozenset())
     assert [line for line, _, _ in settled[1]] == [LINE]
-    assert in_doubt == ((frozenset({log}), frozenset({log})), [])
+    assert in_doubt == ((waits, waits, waits), [])
 
 
 def test_a_result_the_rules_show_on_one_row_waits_nowhere_and_its_read_stores_nothing() -> None:
@@ -6328,7 +6370,7 @@ def test_a_result_the_rules_show_on_one_row_waits_nowhere_and_its_read_stores_no
         with_report(client, NO_POINTS.replace("**T1**", "**T2**"))
         blank = waiting_now(client, class_id, "T2"), on_card(client, twin)
 
-    nothing: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())
+    nothing: Waits = (frozenset(), frozenset(), frozenset())
     assert shown[0] == blank[0] == nothing
     assert [line for line, _, _ in shown[1]] == [LINE]
     assert blank[1] == []
@@ -6912,43 +6954,257 @@ def test_class_details_gives_a_parent_each_result_s_way_in_and_its_linked_homewo
 
 
 def test_class_details_as_she_reads_it_asks_the_same_statements_with_links_on_record() -> None:
-    """With the sign-in off, her class details asks the same statements with a link on record as
-    with none, and none of a link, a homework row or a hold; a parent's asks hers, then, inside
-    one hold, her links and the linked homework's row."""
+    """With the sign-in off, her class details asks the same statements, and reads the same
+    page, with a link and a result that waits on record as with neither, and none of a link, a
+    homework row or a hold. A parent's asks hers, then, inside one hold, her links, the linked
+    homework's row, and last the reads the rules take to say who waits, with no link statement
+    among them."""
     her_record = " ".join(gradebook.HER_NAME_RECORD.split())
 
-    def asked(client: TestClient, address: str) -> list[str]:
+    def asked(client: TestClient, address: str) -> tuple[list[str], str]:
         seen: list[str] = []
         connection = store_of(client)._connection
         connection.set_trace_callback(seen.append)
         try:
-            assert client.get(address, headers=PAGE_HEADERS).status_code == 200
+            answer = client.get(address, headers=PAGE_HEADERS)
         finally:
             connection.set_trace_callback(None)
-        return [" ".join(statement.split()) for statement in seen]
+        assert answer.status_code == 200
+        return [" ".join(statement.split()) for statement in seen], answer.text
 
     with browser() as client:
-        store_of(client).put_on_record([homework(NOTEBOOK_ID, NOTEBOOK, None)], {})
+        store = store_of(client)
         class_id = with_report(client)
         hers = f"/student/grades/classes/{class_id}/terms/1"
         parents = f"/parent/grades/classes/{class_id}/terms/1"
-        with_none = asked(client, hers)
+        with_none, page_with_none = asked(client, hers)
+        twin = homework("assignment-practice-twin", PRACTICE, date(2026, 8, 12))
+        practice = homework(PRACTICE_ID, PRACTICE, date(2026, 8, 12))
+        store.put_on_record([homework(NOTEBOOK_ID, NOTEBOOK, None), practice, twin], {})
         parent_links(client, class_id, result_named(client, class_id, LOG), NOTEBOOK_ID)
-        with_one = asked(client, hers)
-        parent = asked(computer(client), parents)
-        her_links = gradebook.HOMEWORK_LINKS.replace("?", f"'{store_of(client).student_id()}'")
+        with_one, page_with_one = asked(client, hers)
+        parent, parent_page = asked(computer(client), parents)
+        her_links = gradebook.HOMEWORK_LINKS.replace("?", f"'{store.student_id()}'")
+        seen: list[str] = []
+        store._connection.set_trace_callback(seen.append)
+        everyone = store.all_assignments()
+        years = read_grade_facts(store, (one.course for one in everyone))
+        store.read_claims([one.assignment_id for one in everyone])
+        store._connection.set_trace_callback(None)
+        practice_result = result_named(client, class_id, PRACTICE)
 
+    rules_read = [" ".join(statement.split()) for statement in seen]
+    assert results_read(years)
     assert with_one == with_none
+    assert page_with_one == page_with_none
     assert not [one for one in with_one if "grade_homework_links" in one or "assignments" in one]
     assert not [one for one in with_one if one.startswith(("BEGIN", "COMMIT", "ROLLBACK"))]
     at = parent.index(her_links)
     assert parent[0].startswith("BEGIN")
     assert parent[1 : at - 1] == with_one
     assert parent[at - 1] == her_record
-    (title_read,) = parent[at + 1 : -1]
-    assert title_read.endswith(f"FROM assignments WHERE assignment_id = '{NOTEBOOK_ID}'")
+    assert parent[at + 1].endswith(f"FROM assignments WHERE assignment_id = '{NOTEBOOK_ID}'")
+    assert parent[at + 2 : -1] == rules_read
+    assert not [one for one in rules_read if "grade_homework_links" in one]
     assert parent[-1] == "COMMIT"
     assert parent.count(her_links) == 1
+    assert cued_on(parent_page) == {practice_result}
+    assert "match this result" not in page_with_one
+
+
+def test_a_waiting_result_s_card_says_so_before_its_way_in_whose_name_ends_the_same() -> None:
+    """Twin homework of the log's result. On class details as a parent reads it with the
+    sign-in off, the log's card carries the quiet line directly before its way in, whose
+    accessible name is the way's own followed by the same words; no other card does, and her
+    page says nothing of it."""
+    with browser() as client:
+        store_of(client).put_on_record([homework(), TWIN_ROW], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        page = parent_class_page(client, class_id)
+        hers = class_details(client, class_id)
+
+    way = (
+        f'<p class="details-link"><a class="assignment-link" href="{way_in_to(log)}" '
+        f'aria-label="Homework for this result: {LOG}. Blossom doesn&#39;t match this result by '
+        'itself.">Homework for this result</a></p>'
+    )
+    after_score = f'<p class="effect">{LINE}</p>\n    \n    {WAITS_LINE}\n    {way}\n    <details '
+    assert after_score in card_of(page, log)
+    assert page.count(WAITS_LINE) == 1
+    assert cued_on(page) == {log}
+    assert "match this result" not in hers
+
+
+@pytest.mark.parametrize(
+    ("reader", "trees"),
+    [("parent", ("student", "parent")), ("her", ("student",))],
+)
+def test_only_a_parent_reading_class_details_sees_which_results_wait_on_either_tree(
+    reader: str, trees: tuple[str, ...], tmp_path: pathlib.Path
+) -> None:
+    """With the sign-in on, a parent reading class details on either tree sees the log's result
+    wait while twin homework could be it; she sees nothing of it, and her page reads as it does
+    with no homework on record."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        class_id = with_report(client)
+        before = [class_details(client, class_id, tree=tree) for tree in trees]
+        store_of(client).put_on_record([homework(), TWIN_ROW], {})
+        log = result_named(client, class_id, LOG)
+        pages = [class_details(client, class_id, tree=tree) for tree in trees]
+
+    if reader == "her":
+        assert pages == before
+        assert "match this result" not in pages[0]
+        return
+    assert [cued_on(page) for page in pages] == [{log}, {log}]
+
+
+@pytest.mark.parametrize("cause", [False, True])
+def test_a_conflict_only_the_waiting_read_meets_stops_a_parent_s_class_details_with_one_record(
+    cause: bool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Her links as the page reads them made to hold two confirmed links that name the log's
+    result, the store's own check left out, so only the rules' own check meets them; and the
+    same refusal given a cause holding a chosen text. A parent's page answers as an unanswered
+    failure does, with one record of the type alone and no card; nothing is raised and hers
+    opens."""
+    with browser() as client:
+        store_of(client).put_on_record([homework(), TWIN_ROW], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        two = (confirmed(LOG_ID, log), confirmed(TWIN_ROW.assignment_id, log))
+        monkeypatch.setattr(grades, "read_links", lambda _: two)
+        if cause:
+
+            def refused(*_: object, **__: object) -> frozenset[str]:
+                try:
+                    raise ValueError(SYNTHETIC_CAUSE)
+                except ValueError as error:
+                    raise HomeworkLinksConflict from error
+
+            monkeypatch.setattr(grades, "waiting_in", refused)
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            answer = computer(client).get(
+                f"/parent/grades/classes/{class_id}/terms/1", headers=PAGE_HEADERS
+            )
+            records = list(caplog.records)
+        hers = client.get(f"/student/grades/classes/{class_id}/terms/1", headers=PAGE_HEADERS)
+
+    assert (answer.status_code, answer.text) == (500, "Internal Server Error")
+    assert answer.headers["content-type"] == "text/plain; charset=utf-8"
+    application = [one for one in records if one.name.startswith("blossom")]
+    assert [(one.name, one.levelno, one.getMessage()) for one in application] == [
+        (
+            "blossom.routes.grades",
+            logging.WARNING,
+            "a grade page wasn't shown: HomeworkLinksConflict",
+        )
+    ]
+    assert [one for one in records if one.exc_info or SYNTHETIC_CAUSE in one.getMessage()] == []
+    assert hers.status_code == 200
+
+
+def test_her_links_in_conflict_stop_a_parent_s_class_details_before_who_waits_is_read(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two confirmed links that name the log's result, in a file changed by hand, with twin
+    homework that would make it wait. A parent's class details of the log's class and term, and
+    of a second class with results neither link names, each stop at her links with one record
+    naming the conflict, and ask no homework statement."""
+    other = IN_WEEK.replace("07 BIO - C", "08 CHE - A").replace(
+        "| **Biology** |", "| **Chemistry** |"
+    )
+    with browser() as client:
+        store_of(client).put_on_record([homework(), TWIN_ROW], {})
+        class_id = with_report(client)
+        second_class = with_report(client, other)
+        conflicting(client, result_named(client, class_id, LOG))
+        answers = []
+        for one in (class_id, second_class):
+            seen: list[str] = []
+            connection = store_of(client)._connection
+            connection.set_trace_callback(seen.append)
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG):
+                answer = computer(client).get(
+                    f"/parent/grades/classes/{one}/terms/1", headers=PAGE_HEADERS
+                )
+                messages = [
+                    record.getMessage()
+                    for record in caplog.records
+                    if record.name.startswith("blossom")
+                ]
+            connection.set_trace_callback(None)
+            answers.append((answer.status_code, answer.text, messages, seen))
+
+    assert second_class != class_id
+    for status, text, messages, seen in answers:
+        assert (status, text) == (500, "Internal Server Error")
+        assert messages == ["a grade page wasn't shown: HomeworkLinksConflict"]
+        assert not [one for one in seen if "assignments" in one]
+
+
+def test_a_linked_result_s_card_names_its_homework_and_never_says_it_waits_when_withheld() -> None:
+    """Twin homework under a name a parent connects, the log's result waiting until linked to
+    one row by the store's own write. Linked, its card on class details names that homework and
+    says nothing of waiting, with its score showing, with its points left blank by a newer
+    report, with a complete report that doesn't show it, and with the name disconnected."""
+    name = "Life Science"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [homework(course=name), homework(TWIN_ROW.assignment_id, course=name)], {}
+        )
+        class_id = with_report(client)
+        store.connect_homework_class(YEAR, name, shown=None, chosen=class_id, role="parent")
+        log = result_named(client, class_id, LOG)
+        before = cued_on(parent_class_page(client, class_id))
+        parent_links(client, class_id, log)
+        cards = [card_of(parent_class_page(client, class_id), log)]
+        with_report(client, NO_POINTS)
+        cards.append(card_of(parent_class_page(client, class_id), log))
+        with_report(client, WITHOUT_LOG, complete=True)
+        cards.append(card_of(parent_class_page(client, class_id), log))
+        store.connect_homework_class(YEAR, name, shown=class_id, chosen=UNCONNECTED, role="parent")
+        cards.append(card_of(parent_class_page(client, class_id), log))
+
+    assert before == {log}
+    for card in cards:
+        assert f'<p><span class="authored-text">Linked to homework: {LOG}.</span></p>' in card
+        assert WAITS_LINE not in card
+        assert "match this result" not in card
+
+
+def test_her_links_in_conflict_stop_a_signed_in_parent_s_class_details_on_either_tree(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With the sign-in on, two confirmed links that name the log's result, in a file changed by
+    hand, and twin homework that would make it wait: a parent's class details on her tree and on
+    the family tree each stop at her links, with one record naming the conflict."""
+    with household_client("parent", tmp_path) as client:
+        sign_in_as(client, "parent")
+        store_of(client).put_on_record([homework(), TWIN_ROW], {})
+        class_id = with_report(client)
+        conflicting(client, result_named(client, class_id, LOG))
+        answers = []
+        for tree in ("student", "parent"):
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG):
+                answer = client.get(
+                    f"/{tree}/grades/classes/{class_id}/terms/1", headers=PAGE_HEADERS
+                )
+                messages = [
+                    record.getMessage()
+                    for record in caplog.records
+                    if record.name.startswith("blossom")
+                ]
+            answers.append((answer.status_code, answer.text, messages))
+
+    stopped = (500, "Internal Server Error", ["a grade page wasn't shown: HomeworkLinksConflict"])
+    assert answers == [stopped, stopped]
 
 
 @pytest.mark.parametrize("failure", ["two links", "a link value"])
