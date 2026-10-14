@@ -30,6 +30,11 @@ GRADES: Final = "/parent/grades"
 HER_GRADES: Final = "/student/grades"
 CLASS_AT: Final = "{base}/classes/{class_id}/terms/{n}"
 """Class details of a class in the term at place ``n`` of its year, under either grade tree."""
+RESULT_HOMEWORK: Final = GRADES + "/results/{result_id}/homework"
+"""A result's homework page, a parent's: its address holds the result's ID alone."""
+RESULT_HOMEWORK_AT: Final = RESULT_HOMEWORK + "#homework"
+"""Where a decision, and a way in, lands: the result's page at its heading, which takes the
+focus."""
 UNRESERVED: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 """The characters a path segment may carry as they are; every other one is escaped."""
 QUERY_KEPT: Final = frozenset({ord(kept) for kept in UNRESERVED | set("!$%&()*+,/:;=?@[\\]^`{|}")})

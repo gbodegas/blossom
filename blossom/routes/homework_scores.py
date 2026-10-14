@@ -81,7 +81,7 @@ from blossom.grades.wording import presence_words, report_names, score_line
 from blossom.homework_search import ResultsPage, found, page_number, page_of, terms_of
 from blossom.noticing import read_date
 from blossom.reconciliation import SourceRecord
-from blossom.routes.navigation import CLASS_AT, address
+from blossom.routes.navigation import CLASS_AT, RESULT_HOMEWORK_AT, address
 from blossom.stores.gradebook import (
     LINK_CONFIRMED,
     ClassOfYear,
@@ -110,13 +110,14 @@ class YearRead:
 @dataclass(frozen=True)
 class ScoreShown:
     """A result's school score as a page shows it: the line, the address of the result on
-    class details, its title as class details words it, and whether it stands by a parent's
-    link or else by the rules."""
+    class details, its title as class details words it, whether it stands by a parent's link
+    or else by the rules, and the address of its homework page, a parent's."""
 
     line: str
     details: str
     title: str
     linked: bool
+    homework: str
 
 
 class RuleValues(NamedTuple):
@@ -402,6 +403,7 @@ def scores_shown(
                     ),
                     title=title_of(value),
                     linked=at.linked,
+                    homework=RESULT_HOMEWORK_AT.format(result_id=at.result_id),
                 )
             )
         shown[assignment_id] = tuple(scores)

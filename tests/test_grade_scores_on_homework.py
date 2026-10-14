@@ -263,6 +263,22 @@ def link_to(class_id: str, result_id: str, n: int = 1, tree: str = "student") ->
     return f"/{tree}/grades/classes/{class_id}/terms/{n}#{result_id}"
 
 
+def way_in_to(result_id: str) -> str:
+    """The address of a result's homework page, a parent's, landing on its heading."""
+    return f"/parent/grades/results/{result_id}/homework#homework"
+
+
+def ways_in_on(page: str) -> list[tuple[str, str, str]]:
+    """Each link on a page to a result's homework page: its address, its words, and its
+    accessible name when it has one of its own."""
+    found = re.findall(
+        r'<a class="assignment-link" href="(/parent/grades/results/[^"]*)"'
+        r'(?: aria-label="([^"]*)")?>([^<]*)</a>',
+        page,
+    )
+    return [(html.unescape(href), words, html.unescape(name)) for href, name, words in found]
+
+
 def earlier_row(page: str, title: str) -> str:
     found = re.search(
         rf'<li id="earlier-[^"]*" tabindex="-1">\s*<strong>{re.escape(title)}</strong>.*?</li>',
@@ -492,6 +508,45 @@ def test_the_link_is_on_the_reader_s_own_tree(
     assert shown == expected
     assert detailed == expected
     assert line_on_class_details(landed, result_id) == LINE
+
+
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_a_signed_in_parent_finds_beside_each_result_on_assignment_details_its_page(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """The log matched by the rules, and a notebook linked to the diagram's result and to the
+    osmosis lab's. On assignment details a signed-in parent finds, after each result's Grade
+    details, "Confirm or reject this match" for the match and "Change or remove link" for each
+    link, each to that result's page; she, and anyone with the sign-in off, finds none."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store_of(client).put_on_record([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)], {})
+        class_id = with_report(client)
+        log, diagram, osmosis = (
+            result_named(client, class_id, title) for title in (LOG, DIAGRAM, OSMOSIS)
+        )
+        parent_links(client, class_id, diagram, NOTEBOOK_ID)
+        parent_links(client, class_id, osmosis, NOTEBOOK_ID)
+        matched = details_of(client)
+        linked = details_of(client, NOTEBOOK_ID)
+
+    assert [len(scores(matched)), len(EACH_RESULT.findall(linked))] == [1, 2]
+    if reader != "parent":
+        assert ways_in_on(matched) == ways_in_on(linked) == []
+        return
+    match_way, link_way = "Confirm or reject this match", "Change or remove link"
+    assert ways_in_on(matched) == [(way_in_to(log), match_way, f"{match_way}: {LOG}, {BIOLOGY}")]
+    assert ways_in_on(linked) == [
+        (way_in_to(diagram), link_way, f"{link_way}: {DIAGRAM}, {BIOLOGY}"),
+        (way_in_to(osmosis), link_way, f"{link_way}: {OSMOSIS}, {BIOLOGY}"),
+    ]
+    beside = (
+        'Grade details</a></p>\n      <p class="details-link"><a class="assignment-link" '
+        f'href="{way_in_to(log)}" aria-label="{match_way}: {LOG}, {BIOLOGY}">{match_way}</a></p>'
+        "\n    </section>"
+    )
+    assert matched.count(beside) == 1
+    assert linked.count('Grade details</a></p>\n      <p class="details-link">') == 2
 
 
 def test_g3a_i3_with_no_class_on_record_her_week_and_details_show_no_score() -> None:
@@ -3668,7 +3723,8 @@ def test_the_details_list_each_result_with_its_title_its_line_and_its_own_link(
 ) -> None:
     """Three results linked to one assignment, two in one term and one in the next: each has its
     title, class details' line and a link to its own term on the reader's tree. No word says who
-    chose them, the section holds no form or button, and the newer of one term's two is first."""
+    chose them, but for a signed-in parent's way to each result's page; the section holds no
+    form or button, and the newer of one term's two is first."""
     with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         store_of(client).put_on_record([homework(title=NOTEBOOK)], {})
@@ -3707,6 +3763,18 @@ def test_the_details_list_each_result_with_its_title_its_line_and_its_own_link(
     ]
     assert len(scores(section)) == 3
     assert [count for count, _, _ in several(card)] == ["3"]
+    link_way = "Change or remove link"
+    ways = [
+        (way_in_to(one), link_way, f"{link_way}: {title}, {BIOLOGY}")
+        for one, title in ((diagram, DIAGRAM), (first, LOG), (second, LOG))
+    ]
+    assert ways_in_on(section) == (ways if reader == "parent" else [])
+    for address, words, name in ways:
+        section = section.replace(
+            f'<p class="details-link"><a class="assignment-link" href="{address}" '
+            f'aria-label="{name}">{words}</a></p>',
+            "",
+        )
     said = re.sub(r"<[^>]*>", " ", section).lower()
     assert not [word for word in ("link", "match", "parent", "chose") if word in said]
     assert "<form" not in section
@@ -4161,13 +4229,12 @@ def test_the_read_gives_the_grade_facts_and_her_links_and_the_mapping_says_how_e
         Link(DIAGRAM_ID, diagram, confirmed=False),
         Link(LOG_ID, log, confirmed=True),
     ]
-    assert with_links == {
-        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), title=LOG, linked=True),)
-    }
+    log_page, diagram_page = (way_in_to(one) for one in (log, diagram))
+    assert with_links == {LOG_ID: (ScoreShown(LINE, link_to(class_id, log), LOG, True, log_page),)}
     assert by_the_rules == {
-        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), title=LOG, linked=False),),
+        LOG_ID: (ScoreShown(LINE, link_to(class_id, log), LOG, False, log_page),),
         DIAGRAM_ID: (
-            ScoreShown(DIAGRAM_LINE, link_to(class_id, diagram), title=DIAGRAM, linked=False),
+            ScoreShown(DIAGRAM_LINE, link_to(class_id, diagram), DIAGRAM, False, diagram_page),
         ),
     }
 
@@ -4200,6 +4267,9 @@ def test_two_confirmed_links_naming_one_result_leave_her_pages_as_with_no_class_
         after = every_row(database_of(client))
 
     assert [len(scores(page)) for page in whole] == [2, 1, 1]
+    assert [len(ways_in_on(page)) for page in whole[1:]] == (
+        [1, 1] if reader == "parent" else [0, 0]
+    )
     assert said == bare * 2
     for page in said:
         assert not [
@@ -4207,6 +4277,7 @@ def test_two_confirmed_links_naming_one_result_leave_her_pages_as_with_no_class_
             for word in ("School score", "School results", "Grade details", "See the results")
             if word in page
         ]
+        assert ways_in_on(page) == []
         assert HEADING not in page
     assert [records for records, _ in logged] == [[CONFLICT]] * 6
     for _, text in logged:

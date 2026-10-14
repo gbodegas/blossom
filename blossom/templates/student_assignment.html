@@ -18,7 +18,11 @@
   from, and the page says so. What a save did is said at the update, where
   the address lands, with the way back beside it. A problem with the update
   is said at the top with a link to it, and beside the field it is about.
+  Beside each school result, a parent signed in, and nobody else, finds the
+  way to that result's homework page, worded by whether a parent linked it.
 #}
+{% macro way_in(score, title, course, viewer) %}{% if viewer == "parent" %}{% set words = "Change or remove link" if score.linked else "Confirm or reject this match" %}
+      <p class="details-link"><a class="assignment-link" href="{{ score.homework }}" aria-label="{{ words }}: {{ title }}, {{ course }}">{{ words }}</a></p>{% endif %}{% endmacro %}
 {% block content %}
   <p class="return"><a href="{{ back.href }}">{{ back.label }}</a>{% if back.note %} <span class="note">{{ back.note }}</span>{% endif %}</p>
   {#
@@ -87,13 +91,13 @@
     <section>
       <h2 class="update-heading">From the school's gradebook</h2>
       <p class="effect">{{ score.line }}</p>
-      <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ assignment.title }}, {{ assignment.course }}">Grade details</a></p>
+      <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ assignment.title }}, {{ assignment.course }}">Grade details</a></p>{{ way_in(score, assignment.title, assignment.course, ctx.viewer) }}
     </section>{% endwith %}{% elif scores %}
     <section>
       <h2 class="update-heading" id="school-results" tabindex="-1">From the school's gradebook</h2>{% for score in scores %}
       <h3 class="result-title"><span class="authored-text">{{ score.title }}</span></h3>
       <p class="effect">{{ score.line }}</p>
-      <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ score.title }}, {{ assignment.course }}">Grade details</a></p>{% endfor %}
+      <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ score.title }}, {{ assignment.course }}">Grade details</a></p>{{ way_in(score, score.title, assignment.course, ctx.viewer) }}{% endfor %}
     </section>{% endif %}{% endwith %}
     {#
       Help is hers to ask for on her week, and a parent answers it on the

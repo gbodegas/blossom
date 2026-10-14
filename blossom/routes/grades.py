@@ -125,7 +125,13 @@ from blossom.routes.homework_scores import (
     results_read,
     rule_values,
 )
-from blossom.routes.navigation import CLASS_AT, GRADES, HER_GRADES
+from blossom.routes.navigation import (
+    CLASS_AT,
+    GRADES,
+    HER_GRADES,
+    RESULT_HOMEWORK,
+    RESULT_HOMEWORK_AT,
+)
 from blossom.routes.student import parent_reads, templates, viewer_of
 from blossom.stores.gradebook import (
     ACCEPTANCE_ID,
@@ -2457,10 +2463,6 @@ def family_class(class_id: str, n: str, request: Request, state: State) -> Respo
     return class_page(request, state, class_id, n)
 
 
-RESULT_HOMEWORK: Final = "/parent/grades/results/{result_id}/homework"
-"""A result's homework page, a parent's: its address holds the result's ID alone."""
-RESULT_HOMEWORK_AT: Final = RESULT_HOMEWORK + "#homework"
-"""Where a decision lands: the result's page at its heading, which takes the focus."""
 STATE_LINE: Final = "state"
 """The ID of a result's page's line that says whether it is linked, matched or neither."""
 RESULT_NOT_ON_RECORD: Final = "Blossom has no current record of this result."
