@@ -114,6 +114,7 @@ from blossom.routes.homework_scores import (
     PairStanding,
     ResultHomework,
     Withheld,
+    homework_found,
     read_grade_facts,
     read_links,
     result_homework,
@@ -2652,10 +2653,12 @@ def result_own(store: ProjectStateStore, result_id: str) -> ResultOwn | None:
     return ResultOwn(place, named, read, value, terms)
 
 
-def result_page_read(state: ApplicationState, result_id: str) -> dict[str, object] | None:
-    """What a result's page shows, read in one hold in class details' order: the result's own
-    class and term with its lines, her links, then the rest of the score read. None when the ID
-    has no such shape, or names no result of hers with a current value."""
+def result_page_read(
+    state: ApplicationState, result_id: str, *, search: tuple[str, str] | None = None
+) -> dict[str, object] | None:
+    """What a result's page shows, read in one hold in class details' order: its own class and
+    term with its lines, her links, then the rest of the score read; and what a ``search``, its
+    words and page field, finds there. None for an ID of no such shape or no current result."""
     store = state.project_state
     if not RESULT_ID.fullmatch(result_id):
         return None
@@ -2681,20 +2684,26 @@ def result_page_read(state: ApplicationState, result_id: str) -> dict[str, objec
             else None
         )
         current = store.grade_contexts().current
+        rules = rule_values(
+            everyone,
+            {} if claims is None else claims.records,
+            () if claims is None else claims.unreadable,
+            years,
+        )
         view = result_homework(
             named,
             place.term,
             result_id,
             value,
-            rule_values(
-                everyone,
-                {} if claims is None else claims.records,
-                () if claims is None else claims.unreadable,
-                years,
-            ),
+            rules,
             links=links,
             current_year=None if current is None else current[0],
         )
+    found = (
+        None
+        if search is None
+        else homework_found(*search, place.class_id, result_id, rules, links=links)
+    )
     state_said, withheld, waiting = result_said(view)
     rows: dict[str, HomeworkRow] = {}
     for row in (view.linked, *view.candidates, *view.apart):
@@ -2721,6 +2730,7 @@ def result_page_read(state: ApplicationState, result_id: str) -> dict[str, objec
         ],
         "action": RESULT_HOMEWORK.format(result_id=result_id),
         "revision": "" if place.revision is None else str(place.revision),
+        "found": found,
     }
 
 

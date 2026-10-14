@@ -56,19 +56,26 @@ from blossom.grades.school_scores import (
 from blossom.grades.text_reader import read_grade_report
 from blossom.grades.wording import report_names, score_line, spoken_day
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
+from blossom.homework_search import PAGE_SIZE, QUERY_MAX_LENGTH, ResultsPage
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
 from blossom.plans import PlanBlock
 from blossom.reconciliation import SourceChannel
-from blossom.routes.grades import result_said, row_shown
+from blossom.routes.grades import result_page_read, result_said, row_shown
 from blossom.routes.homework_scores import (
+    FoundRow,
+    FoundState,
+    HomeworkFound,
     HomeworkRow,
+    NoList,
     PairStanding,
     ResultHomework,
     RuleValues,
     ScoreShown,
     Withheld,
+    homework_found,
     homework_of,
     read_grade_facts,
+    read_links,
     read_score_facts,
     result_homework,
     results_read,
@@ -109,6 +116,7 @@ from tests.support import (
     HER_PAGE,
     PAGE_HEADERS,
     ZONE,
+    Statements,
     accepting,
     as_stored,
     browser,
@@ -133,6 +141,7 @@ from tests.support import (
     school_said,
     scripted_graphs,
     sign_in_as,
+    state_of,
     store_of,
     unreadable_claim,
     whole_form,
@@ -5205,6 +5214,375 @@ def test_a_result_s_view_holds_closed_fields_and_closed_sets_of_values() -> None
         "name_not_connected",
         "name_not_connected_in_another_year",
     ]
+
+
+SET = "Practice set"
+"""A homework title no result has, shared by the rows a search pages through."""
+TWENTY_ONE = [homework(f"assignment-set-{n:02}", SET, None) for n in range(21, 0, -1)]
+"""Twenty-one undated assignments of one class name and one title, which no word tells apart,
+in the reverse of the search's order."""
+CODE = "07 BIO - C"
+"""The Biology class's report code, a second name homework connects to it by."""
+
+
+def searched(
+    words: str,
+    read: RuleValues,
+    links: Collection[Link] = (),
+    *,
+    page: str = "",
+    result_id: str = "result-log",
+) -> HomeworkFound | NoList:
+    """A search of the one class's result ``result_id`` for ``words`` with the page field
+    ``page``, from plain values."""
+    return homework_found(words, page, THE_CLASS.class_id, result_id, read, links=links)
+
+
+def found_ids(answer: HomeworkFound | NoList) -> list[str]:
+    """The assignment ID of each row a search lists, in its order."""
+    assert isinstance(answer, HomeworkFound), answer
+    return [row.item.assignment_id for row in answer.rows]
+
+
+def test_a_search_lists_only_the_class_s_homework_each_word_finds_in_its_name_or_title() -> None:
+    """Plain values: homework of the class under its name and under its report code, a task
+    among it, and homework of the log's title under a name of another class or of none. Every
+    word must be in the class name or the title, and rows come in the search's one order."""
+    log, notebook = homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)
+    task = homework("assignment-task", "Germination reading", None, kind=AssignmentKind.TASK)
+    coded = homework("assignment-coded", "Germination photos", course=CODE)
+    other = homework("assignment-other", LOG, course="08 GEOMETRY")
+    waits = homework("assignment-waits", LOG, course="Life Science")
+    plain = as_read(
+        [other, log, waits, notebook, task, coded],
+        [school_result("result-log")],
+        unconnected=["assignment-waits"],
+    )
+    read = plain._replace(classes={**plain.classes, "assignment-other": ["class-geometry"]})
+
+    answer = searched("germination", read)
+
+    assert answer == HomeworkFound(
+        ResultsPage(1, 1, 3, (coded, task, log)),
+        (
+            FoundRow(coded, FoundState.NONE),
+            FoundRow(task, FoundState.NONE),
+            FoundRow(log, FoundState.NONE),
+        ),
+    )
+    assert found_ids(searched("seed", read)) == [LOG_ID]
+    assert found_ids(searched("  GERMINATION   Log ", read)) == ["assignment-task", LOG_ID]
+    assert found_ids(searched("notebook", read)) == [NOTEBOOK_ID]
+    assert found_ids(searched("07", read)) == ["assignment-coded"]
+    assert found_ids(searched("biology", read)) == ["assignment-task", NOTEBOOK_ID, LOG_ID]
+    for words in ("geometry", "life science", "germination notebook"):
+        assert searched(words, read) == HomeworkFound(ResultsPage(1, 1, 0, ()), ())
+
+
+def test_each_found_row_s_state_is_the_first_of_linked_here_kept_apart_or_linked_elsewhere() -> (
+    None
+):
+    """Plain values: homework linked to the result and to another, kept apart from it, linked
+    to another result, kept apart from it and linked to another, kept apart from another result
+    only, and with no decision. A row's state is the first that holds, as the page's rows say."""
+    names = ["here", "apart", "elsewhere", "apart-and-elsewhere", "apart-from-other", "none"]
+    items = [homework(f"assignment-{name}", SET, None) for name in names]
+    links = [
+        confirmed("assignment-here", "result-log"),
+        confirmed("assignment-here", "result-2"),
+        kept_apart("assignment-apart", "result-log"),
+        confirmed("assignment-elsewhere", "result-3"),
+        kept_apart("assignment-apart-and-elsewhere", "result-log"),
+        confirmed("assignment-apart-and-elsewhere", "result-4"),
+        kept_apart("assignment-apart-from-other", "result-2"),
+    ]
+    read = as_read(items, [school_result("result-log", SET)])
+
+    answer = searched("practice", read, links)
+    view = viewed("result-log", read, links)
+
+    assert isinstance(answer, HomeworkFound)
+    states = {row.item.assignment_id: row.state for row in answer.rows}
+    assert states == {
+        "assignment-here": FoundState.LINKED,
+        "assignment-apart": FoundState.APART,
+        "assignment-elsewhere": FoundState.ANOTHER_RESULT,
+        "assignment-apart-and-elsewhere": FoundState.APART,
+        "assignment-apart-from-other": FoundState.NONE,
+        "assignment-none": FoundState.NONE,
+    }
+    first = {LINKED: FoundState.LINKED, APART: FoundState.APART}
+    assert len(view.candidates) == len(items)
+    for one in view.candidates:
+        alone = FoundState.ANOTHER_RESULT if one.another_result else FoundState.NONE
+        assert states[one.assignment_id] == first.get(one.standing, alone)
+
+
+def test_a_search_comes_twenty_to_a_page_and_every_row_one_title_shares_can_be_reached() -> None:
+    """Plain values: twenty-one assignments that no word tells apart. The page field empty or
+    "1" gives the first twenty in the search's order with a next page; "2" gives the twenty-
+    first with a previous page; together they hold every one."""
+    read = as_read(TWENTY_ONE, [])
+    order = sorted(TWENTY_ONE, key=lambda item: item.assignment_id)
+
+    first, again, second = (searched("practice set", read, page=page) for page in ("", "1", "2"))
+
+    assert isinstance(first, HomeworkFound)
+    assert isinstance(second, HomeworkFound)
+    assert again == first
+    assert first.page == ResultsPage(1, 2, 21, tuple(order[:PAGE_SIZE]))
+    assert (first.page.previous, first.page.next) == (None, 2)
+    assert second.page == ResultsPage(2, 2, 21, tuple(order[PAGE_SIZE:]))
+    assert (second.page.previous, second.page.next) == (1, None)
+    assert [row.item for row in (*first.rows, *second.rows)] == order
+    assert {row.state for row in (*first.rows, *second.rows)} == {FoundState.NONE}
+
+
+@pytest.mark.parametrize(
+    ("words", "page", "nothing"),
+    [
+        pytest.param("", "", NoList.NO_WORDS, id="no words"),
+        pytest.param("   ", "", NoList.NO_WORDS, id="only spaces"),
+        pytest.param("", "two", NoList.NO_WORDS, id="no words and a page in words"),
+        pytest.param("  ", "3", NoList.NO_WORDS, id="only spaces and a page past the last"),
+        pytest.param("practice\nset", "", NoList.WORDS_REFUSED, id="two lines"),
+        pytest.param("s" * 201, "", NoList.WORDS_REFUSED, id="201 characters"),
+        pytest.param(" s" * 101, "", NoList.WORDS_REFUSED, id="201 once spaces collapse"),
+        pytest.param("practice\nset", "two", NoList.WORDS_REFUSED, id="two lines, a page in words"),
+        pytest.param(SET, "0", NoList.NO_SUCH_PAGE, id="page 0"),
+        pytest.param(SET, "3", NoList.NO_SUCH_PAGE, id="a page past the last"),
+        pytest.param(SET, "02", NoList.NO_SUCH_PAGE, id="a leading zero"),
+        pytest.param(SET, "two", NoList.NO_SUCH_PAGE, id="a page in words"),
+        pytest.param(SET, "1234567", NoList.NO_SUCH_PAGE, id="seven digits"),
+        pytest.param(SET, "+2", NoList.NO_SUCH_PAGE, id="a sign"),
+        pytest.param(SET, " 2", NoList.NO_SUCH_PAGE, id="a space"),
+        pytest.param(SET, "\uff12", NoList.NO_SUCH_PAGE, id="a digit that is not ASCII"),
+        pytest.param("geometry", "2", NoList.NO_SUCH_PAGE, id="a second page of nothing found"),
+    ],
+)
+def test_a_search_lists_nothing_for_no_words_refused_words_or_a_page_its_rows_lack(
+    words: str, page: str, nothing: NoList
+) -> None:
+    """Plain values: twenty-one rows of one title. With no words any page field is a search with
+    no words; refused words are refused whatever the page field; then a field that is no page
+    number, or a number no page of the rows found has, names no page."""
+    assert searched(words, as_read(TWENTY_ONE, []), page=page) is nothing
+
+
+def test_a_search_past_the_last_page_gives_the_first_page_again_with_the_page_field_empty() -> None:
+    """Plain values: "3" names no page of twenty-one rows; the same words with the page field
+    empty, as the search's own button sends it, give the first page of twenty."""
+    read = as_read(TWENTY_ONE, [])
+
+    past = searched(SET, read, page="3")
+    again = searched(SET, read, page="")
+
+    assert past is NoList.NO_SUCH_PAGE
+    assert isinstance(again, HomeworkFound)
+    assert (again.page.number, again.page.total, len(again.rows)) == (1, 21, PAGE_SIZE)
+
+
+def test_words_over_the_limit_as_typed_and_at_it_once_their_spaces_collapse_are_searched() -> None:
+    """Plain values: words of 248 characters as typed and 200 once their spaces collapse find
+    the rows that hold every one of them."""
+    words = "  ".join([*["set"] * 48, "practice"])
+
+    answer = searched(words, as_read(TWENTY_ONE, []))
+
+    assert (len(words), len(" ".join(words.split()))) == (248, QUERY_MAX_LENGTH)
+    assert isinstance(answer, HomeworkFound)
+    assert answer.page.total == 21
+
+
+@pytest.mark.parametrize(
+    "words", ["practice", "", "two\nlines"], ids=["words", "no words", "refused words"]
+)
+def test_a_search_is_refused_whole_on_two_confirmed_links_naming_one_result(words: str) -> None:
+    """Plain values. Two confirmed links that name one result raise the conflict error with no
+    cause and no context, whatever the words, and whether or not that result is the one
+    searched for."""
+    read = as_read(TWENTY_ONE, [])
+    links = [confirmed("assignment-set-01", "result-2"), confirmed("assignment-set-02", "result-2")]
+
+    for result_id in ("result-log", "result-2"):
+        with pytest.raises(GradeValueUndecodable) as refused:
+            searched(words, read, links, result_id=result_id)
+
+        assert type(refused.value) is HomeworkLinksConflict
+        assert refused.value.__cause__ is None
+        assert refused.value.__context__ is None
+
+
+def test_a_search_s_answer_holds_closed_fields_and_closed_sets_of_values() -> None:
+    assert [field.name for field in dataclasses.fields(HomeworkFound)] == ["page", "rows"]
+    assert [field.name for field in dataclasses.fields(FoundRow)] == ["item", "state"]
+    assert list(FoundState) == ["linked", "apart", "another_result", "none"]
+    assert list(NoList) == ["no_words", "words_refused", "no_such_page"]
+
+
+def found_now(
+    client: TestClient, result_id: str, words: str, page: str = ""
+) -> HomeworkFound | NoList:
+    """What a search finds from a result's page read, as the store stands."""
+    shown = result_page_read(state_of(client), result_id, search=(words, page))
+    assert shown is not None
+    answer = shown["found"]
+    assert isinstance(answer, HomeworkFound | NoList), answer
+    return answer
+
+
+def test_a_search_makes_the_result_s_page_read_and_asks_no_statement_and_writes_nothing() -> None:
+    """The log's page read with no search, then with a search that finds homework, with no
+    words, with refused words, and with a page past the last. Each asks the page's statements
+    in the page's order and no other, gives the page the same values, and writes nothing."""
+    searches = [("germination", ""), ("", ""), ("two\nlines", ""), ("germination", "2")]
+    with browser() as client:
+        store_of(client).put_on_record([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        state = state_of(client)
+        before = closed_world([database_of(client)], leaving_out=())
+        with Statements(state) as seen:
+            plain = result_page_read(state, log)
+        asked = list(seen)
+        answers: list[tuple[dict[str, object] | None, list[str]]] = []
+        for search in searches:
+            with Statements(state) as seen:
+                answers.append((result_page_read(state, log, search=search), list(seen)))
+        after = closed_world([database_of(client)], leaving_out=())
+
+    assert plain is not None
+    assert plain["found"] is None
+    assert asked
+    found = []
+    for shown, statements in answers:
+        assert statements == asked
+        assert shown is not None
+        assert {**shown, "found": None} == plain
+        found.append(shown["found"])
+    assert found[1:] == [NoList.NO_WORDS, NoList.WORDS_REFUSED, NoList.NO_SUCH_PAGE]
+    assert isinstance(found[0], HomeworkFound)
+    assert found_ids(found[0]) == [LOG_ID]
+    assert after == before
+
+
+def test_a_search_through_the_store_finds_homework_whose_name_the_year_makes_the_class() -> None:
+    """Homework under the class's name and its report code, a task among it, and homework under
+    another class's name and under a name that waits, all with one word in the title. A search
+    on the log's page finds the homework whose name the year's answers make the log's class."""
+    on_record = [
+        homework(),
+        homework("assignment-task", "Germination reading", None, kind=AssignmentKind.TASK),
+        homework("assignment-coded", "Germination photos", course=CODE),
+        homework("assignment-other", "Germination angles", course="08 GEOMETRY"),
+        homework("assignment-waits", "Germination survey", course="Life Science"),
+    ]
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(on_record, {})
+        class_id = with_report(client)
+        geometry = with_report(client, GEOMETRY)
+        log = result_named(client, class_id, LOG)
+        every_word = found_now(client, log, "germination")
+        by_code = found_now(client, log, "07")
+        by_name = found_now(client, log, "biology")
+        mapping = store.homework_classes(YEAR)
+
+    classes = {item.assignment_id: class_for(item.course, mapping) for item in on_record}
+    assert classes == {
+        LOG_ID: class_id,
+        "assignment-task": class_id,
+        "assignment-coded": class_id,
+        "assignment-other": geometry,
+        "assignment-waits": None,
+    }
+    assert found_ids(every_word) == ["assignment-coded", "assignment-task", LOG_ID]
+    assert found_ids(by_code) == ["assignment-coded"]
+    assert found_ids(by_name) == ["assignment-task", LOG_ID]
+
+
+def test_a_search_through_the_store_reads_a_class_name_by_the_answers_of_the_class_s_year() -> None:
+    """Last school year's report and this year's, in two classes of one name, and this year's
+    answer that Biology is no class. Homework under Biology is found on last year's log page
+    alone; homework under the report code, on both."""
+    then = draft_of(IN_WEEK.replace(f"**{YEAR}**", "**2025-2026**"))
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [homework(), homework("assignment-coded", "Germination photos", course=CODE)], {}
+        )
+        review = store.review_grade_report(then, capture_key(then), key=KEY)
+        saved = save_grade(
+            store, then, key=KEY, review=review, answers=grade_answers(review, month=9)
+        )
+        assert isinstance(saved, GradeReportSaved)
+        last_year = capture_class(store, then)
+        this_year = with_report(client)
+        store.set_current_context(("2025-2026", "T1"), (YEAR, "T1"), role="parent")
+        store.connect_homework_class(YEAR, BIOLOGY, shown=None, chosen=UNCONNECTED, role="parent")
+        now = found_now(client, result_named(client, this_year, LOG), "germination")
+        earlier = found_now(client, result_named(client, last_year, LOG), "germination")
+        connected = [
+            class_for(BIOLOGY, store.homework_classes(year)) for year in (YEAR, "2025-2026")
+        ]
+
+    assert connected == [None, last_year]
+    assert found_ids(now) == ["assignment-coded"]
+    assert found_ids(earlier) == ["assignment-coded", LOG_ID]
+
+
+def states_now(client: TestClient, result_id: str) -> dict[str, FoundState]:
+    """Each Biology homework a search finds from a result's page read, with its state."""
+    answer = found_now(client, result_id, "biology")
+    assert isinstance(answer, HomeworkFound)
+    return {row.item.assignment_id: row.state for row in answer.rows}
+
+
+def test_each_found_row_s_state_follows_the_decisions_made_through_the_store() -> None:
+    """The log's and the diagram's results, and four homework rows of the class. By the store's
+    own write: a notebook linked to the log, the log's homework kept apart from it, practice
+    linked to the diagram; then practice kept apart from the log; then the notebook linked to
+    the diagram too. Each found row's state is the first that holds."""
+    spare = "assignment-spare"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record(
+            [
+                homework(),
+                homework(NOTEBOOK_ID, NOTEBOOK, None),
+                homework(PRACTICE_ID, PRACTICE, date(2026, 8, 12)),
+                homework(spare, "Field sketch", None),
+            ],
+            {},
+        )
+        class_id = with_report(client)
+        log, diagram = (result_named(client, class_id, title) for title in (LOG, DIAGRAM))
+        untouched = states_now(client, log)
+        parent_links(client, class_id, log, NOTEBOOK_ID)
+        parent_links(client, class_id, log, decision="apart")
+        parent_links(client, class_id, diagram, PRACTICE_ID)
+        first = states_now(client, log)
+        parent_links(client, class_id, log, PRACTICE_ID, decision="apart")
+        second = states_now(client, log)
+        links_second = read_links(store)
+        parent_links(client, class_id, diagram, NOTEBOOK_ID)
+        third = states_now(client, log)
+        links_third = read_links(store)
+
+    none, linked, apart = FoundState.NONE, FoundState.LINKED, FoundState.APART
+    assert list(untouched) == [spare, NOTEBOOK_ID, PRACTICE_ID, LOG_ID]
+    assert untouched == dict.fromkeys(untouched, none)
+    assert first == {
+        spare: none,
+        NOTEBOOK_ID: linked,
+        PRACTICE_ID: FoundState.ANOTHER_RESULT,
+        LOG_ID: apart,
+    }
+    assert second == {**first, PRACTICE_ID: apart}
+    assert third == second
+    assert confirmed(PRACTICE_ID, diagram) in links_second
+    assert confirmed(NOTEBOOK_ID, diagram) in links_third
+    assert confirmed(NOTEBOOK_ID, log) in links_third
 
 
 RESULT_PAGE = "/parent/grades/results/{result_id}/homework"
