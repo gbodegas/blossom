@@ -529,6 +529,7 @@ def homework_found(
     if shown is None:
         return NoList.NO_SUCH_PAGE
 
+    # A found row has at most one line of state: the first of these that holds.
     def state(assignment_id: str) -> FoundState:
         held = standing.get(assignment_id)
         if held is PairStanding.LINKED:
