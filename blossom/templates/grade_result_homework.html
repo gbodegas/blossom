@@ -23,7 +23,7 @@
   and its page number travel in a form's body, never an address, and the words stay in the
   field. A search's answer lands on the heading over what it found, where a search with no
   words, or with words that find nothing, says so. Refused words, or a page number that names
-  no page, get an explanation and no list; for refused words it ends with a link to the field.
+  no page, get an explanation and no list; for refused words a link to the field follows it.
   Each found row has at most one line of state and, unless the result is linked to it, one
   form that posts a row's own Link decision. The pages before and after are forms that carry
   the words and the page number they lead to.
@@ -39,7 +39,10 @@
     <p class="return"><a href="{{ back }}">Back to <span class="authored-text">{{ class_name }}</span></a></p>
     <h1 id="homework" tabindex="-1">Homework for this result</h1>
     {% if problem %}
-      <p class="problem" role="alert" id="problem" tabindex="-1" autofocus>{{ problem }}{% if words_refused %} <a href="#search-words">Review your search words</a>{% endif %}</p>
+      <p class="problem" role="alert" id="problem" tabindex="-1" autofocus>{{ problem }}</p>
+      {% if words_refused %}
+        <p class="jump"><a href="#search-words">Review your search words</a></p>
+      {% endif %}
     {% endif %}
     <p>{{ term_name }} · <span class="year-range">{{ year }}</span></p>
     <p class="course">School result</p>
@@ -91,7 +94,7 @@
       <ul>
         {% for other in others %}
           <li>
-            <p><a href="{{ other.address }}"><span class="authored-text">{{ other.title }}</span></a></p>
+            <p class="jump"><a href="{{ other.address }}"><span class="authored-text">{{ other.title }}</span></a></p>
             <p><span class="authored-text">{{ other.class_name }}</span></p>
             <p>{{ other.due }}</p>
             <p>{{ other.term }} · <span class="year-range">{{ other.year }}</span></p>

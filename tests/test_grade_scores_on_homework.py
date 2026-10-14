@@ -6545,11 +6545,7 @@ def focuses_its_answer(page: str) -> bool:
 
 
 def problem_on(page: str) -> str:
-    """A page's explanation, without a link to the field it is about."""
-    found = re.search(
-        r'<p class="problem" role="alert" id="problem"[^>]*>([^<]*)(?: <a [^>]*>[^<]*</a>)?</p>',
-        page,
-    )
+    found = re.search(r'<p class="problem" role="alert" id="problem"[^>]*>([^<]*)</p>', page)
     assert found is not None
     return html.unescape(found[1])
 
@@ -7343,8 +7339,8 @@ WORDS_REFUSED = (
     "changed."
 )
 NO_PAGE = "There is no such page of results."
-REVIEW_WORDS = ' <a href="#search-words">Review your search words</a>'
-"""What ends the explanation of refused words: the way to the field that holds them."""
+REVIEW_WORDS = '<p class="jump"><a href="#search-words">Review your search words</a></p>'
+"""What follows the explanation of refused words: the way to the field that holds them."""
 LINK = "Link to this homework"
 SKETCH_ID = "assignment-sketch"
 Sent = Mapping[str, str | list[str]]
@@ -7687,9 +7683,11 @@ def test_a_search_refused_or_naming_no_page_answers_422_with_its_explanation_and
         assert html.unescape(re.sub(r"\s", "", field_of(answer.text))) == re.sub(r"\s", "", kept)
         refused = 'aria-describedby="search-hint problem" aria-invalid="true"' in answer.text
         assert refused is (said == WORDS_REFUSED), case
-        review = REVIEW_WORDS if said == WORDS_REFUSED else ""
-        assert f"{ANSWER_IN_FOCUS}{html.escape(said)}{review}</p>" in answer.text, case
-        assert answer.text.count('href="#search-words"') == (1 if review else 0), case
+        explained = re.escape(f"{ANSWER_IN_FOCUS}{html.escape(said)}</p>")
+        assert re.search(explained, answer.text), case
+        followed = re.search(explained + r"\s*" + re.escape(REVIEW_WORDS), answer.text)
+        assert (followed is not None) is (said == WORDS_REFUSED), case
+        assert answer.text.count('href="#search-words"') == (1 if said == WORDS_REFUSED else 0)
     assert after == before
 
 
@@ -7884,6 +7882,9 @@ def test_a_result_s_page_lists_each_other_result_of_its_homework_before_the_sear
         "T2 · 2026-2027",
     ]
     assert other_links(page) == [(way_in_to(then), LOG), (way_in_to(second), LOG)]
+    for one in (then, second):
+        item = f'<p class="jump"><a href="{way_in_to(one)}"><span class="authored-text">{LOG}'
+        assert page.count(f"{item}</span></a></p>") == 1
     assert page.index(OTHERS_AT) < page.index(SEARCH_HEADING_AT)
     assert page.rindex("</section>", 0, page.index(OTHERS_AT)) > page.index('id="homework-1"')
     assert OTHERS_AT not in diagram

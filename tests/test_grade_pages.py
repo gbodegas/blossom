@@ -1296,6 +1296,38 @@ YEAR_RANGE_RULE = ".year-range {\n  display: inline-block;\n}\n"
 """A school-year range, pinned whole: one inline box, so a line takes it whole where it fits."""
 
 
+JUMP_RULE = (
+    "/* A link on a line of its own, as tall as a button: the jump at the top of an assignment's\n"
+    "   details, past the instructions to her update; and on a result's homework page, each other\n"
+    "   result's title and the way from refused search words to their field. */\n"
+    ".jump a {\n  display: inline-flex;\n  align-items: center;\n  min-height: 2.75rem;\n}\n"
+)
+"""The jump rule, pinned whole with what it covers: a link that stands alone as tall as a
+button, its words at the size they have."""
+
+
+def test_the_jump_rule_is_pinned_and_the_result_s_homework_page_takes_it_for_two_links() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in TEMPLATES.glob("*.html")
+        if 'class="jump"' in page.read_text(encoding="utf-8")
+    )
+    page = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
+    other = (
+        '<p class="jump"><a href="{{ other.address }}"><span class="authored-text">'
+        "{{ other.title }}</span></a></p>"
+    )
+    review = '<p class="jump"><a href="#search-words">Review your search words</a></p>'
+
+    assert css.count(".jump") == 1
+    assert css.count(JUMP_RULE) == 1
+    assert carriers == ["grade_result_homework.html", "student_assignment.html"]
+    assert page.count(other) == page.count(review) == 1
+    assert page.count('class="jump"') == 2
+    assert page.count('href="#search-words"') == 1
+
+
 def test_the_year_range_rule_is_pinned_and_only_the_result_s_homework_page_carries_it() -> None:
     css = STYLESHEET.read_text(encoding="utf-8")
     carriers = sorted(
