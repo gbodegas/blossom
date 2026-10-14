@@ -14,7 +14,8 @@
   buttons of a row are one group, each its own form; a link to homework not on record is named
   by the page's state line, said once. A school-year range stays whole where a line can hold
   it. A press that writes nothing gets the
-  page as it reads now, with why first.
+  page as it reads now, with why first; that answer takes the focus when the page opens, and
+  nothing else does.
 #}
 {% macro words(line) %}{% if line.keep %}{% set at = line.text.index(line.keep) %}{{ line.text[:at] }}<span class="year-range">{{ line.keep }}</span>{{ line.text[at + line.keep|length:] }}{% else %}{{ line.text }}{% endif %}{% endmacro %}
 {% macro said(line) %}{% if line.authored %}<span class="authored-text">{{ words(line) }}</span>{% else %}{{ words(line) }}{% endif %}{% endmacro %}
@@ -22,12 +23,12 @@
   {% if missing %}
     <p class="return"><a href="{{ grades }}">Back to Grades</a></p>
     <h1>Homework for this result</h1>
-    <p class="problem" role="alert" id="problem">{{ missing }}</p>
+    <p class="problem" role="alert" id="problem" tabindex="-1" autofocus>{{ missing }}</p>
   {% else %}
     <p class="return"><a href="{{ back }}">Back to <span class="authored-text">{{ class_name }}</span></a></p>
     <h1 id="homework" tabindex="-1">Homework for this result</h1>
     {% if problem %}
-      <p class="problem" role="alert" id="problem">{{ problem }}</p>
+      <p class="problem" role="alert" id="problem" tabindex="-1" autofocus>{{ problem }}</p>
     {% endif %}
     <p>{{ term_name }} · <span class="year-range">{{ year }}</span></p>
     <p class="course">School result</p>

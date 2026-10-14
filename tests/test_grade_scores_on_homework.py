@@ -5318,6 +5318,7 @@ def test_a_matched_result_s_page_draws_its_card_and_a_form_for_each_decision_on_
         == 1
     )
     assert ties_hold(page)
+    assert "autofocus" not in page
     back = f'<a href="/parent/grades/classes/{class_id}/terms/1">Back to '
     assert back + f'<span class="authored-text">{BIOLOGY}</span></a>' in page
     addresses = re.findall(r'(?:href|action)="([^"]*)"', page)
@@ -5594,7 +5595,7 @@ def test_a_result_s_page_answers_404_for_an_id_that_names_no_current_result(caus
         answer = computer(client).get(RESULT_PAGE.format(result_id=asked), headers=PAGE_HEADERS)
 
     assert answer.status_code == 404
-    assert '<p class="problem" role="alert" id="problem">' in answer.text
+    assert focuses_its_answer(answer.text)
     assert "Blossom has no current record of this result." in answer.text
     assert '<a href="/parent/grades">Back to Grades</a>' in answer.text
     assert "<form" not in answer.text
@@ -5923,8 +5924,17 @@ def everything_else(client: TestClient) -> dict[str, object]:
     return closed_world([database_of(client)], leaving_out={LINKS, REVISIONS})
 
 
+ANSWER_IN_FOCUS = '<p class="problem" role="alert" id="problem" tabindex="-1" autofocus>'
+"""The answer of a page that says why, which takes the focus when the page opens."""
+
+
+def focuses_its_answer(page: str) -> bool:
+    """Whether a page gives the focus to its answer when it opens, and to nothing else."""
+    return page.count(ANSWER_IN_FOCUS) == 1 and page.count("autofocus") == 1
+
+
 def problem_on(page: str) -> str:
-    found = re.search(r'<p class="problem" role="alert" id="problem">([^<]*)</p>', page)
+    found = re.search(r'<p class="problem" role="alert" id="problem"[^>]*>([^<]*)</p>', page)
     assert found is not None
     return html.unescape(found[1])
 
@@ -5958,6 +5968,7 @@ def test_each_decision_from_each_prior_state_writes_its_row_and_lands_on_the_hea
     ]
     assert unchanged == others
     assert '<h1 id="homework" tabindex="-1">Homework for this result</h1>' in landed.text
+    assert "autofocus" not in landed.text
 
 
 @pytest.mark.parametrize(
@@ -6047,6 +6058,7 @@ def test_a_form_from_an_old_page_answers_409_and_writes_nothing(stale: str) -> N
 
     assert answer.status_code == 409
     assert problem_on(answer.text) == LINKS_CHANGED
+    assert focuses_its_answer(answer.text)
     assert '<h1 id="homework" tabindex="-1">' in answer.text
     assert after == before
 
@@ -6075,6 +6087,7 @@ def test_a_link_to_homework_whose_name_is_connected_differently_answers_409() ->
         "Check this page again."
     )
     assert NOTEBOOK_ID not in [one[1] for one in forms_on(answer.text)]
+    assert focuses_its_answer(answer.text)
     assert after == before
 
 
@@ -6092,6 +6105,7 @@ def test_a_decision_on_homework_not_on_record_answers_409_and_writes_nothing(
 
     assert answer.status_code == 409
     assert problem_on(answer.text) == "That homework is not on record now. Nothing was saved."
+    assert focuses_its_answer(answer.text)
     assert after == before
 
 
@@ -6122,6 +6136,7 @@ def test_a_decision_on_a_result_with_no_current_record_answers_404_and_writes_no
 
     assert answer.status_code == 404
     assert problem_on(answer.text) == "Blossom has no current record of this result."
+    assert focuses_its_answer(answer.text)
     assert after == before
 
 
@@ -6168,6 +6183,7 @@ def test_a_form_that_is_not_whole_answers_422_with_the_page_and_writes_nothing(
 
     assert answer.status_code == 422
     assert problem_on(answer.text) == "Choose homework. Nothing was saved."
+    assert focuses_its_answer(answer.text)
     assert '<h1 id="homework" tabindex="-1">' in answer.text
     assert after == before
 
@@ -6313,6 +6329,7 @@ def test_a_write_the_file_refuses_or_loses_answers_500_with_its_sentence(
 
     assert answer.status_code == 500
     assert problem_on(answer.text) == said
+    assert focuses_its_answer(answer.text)
     assert '<h1 id="homework" tabindex="-1">' in answer.text
     assert after == before
     assert answered == []

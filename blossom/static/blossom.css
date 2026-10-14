@@ -902,6 +902,7 @@ a.assignment-link:focus-visible {
 #update-or-turn-in:focus,
 #turning-it-in:focus,
 .list-heading:focus,
+h1#homework:focus,
 .assignment h2[tabindex="-1"]:focus,
 .card-title[tabindex="-1"]:focus,
 .assigned .row-title:focus,

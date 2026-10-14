@@ -1262,6 +1262,22 @@ def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> No
     assert homework.count(row) == homework.count("<section") == 1
 
 
+HOMEWORK_HEADING_LANDING = (
+    '.list-heading:focus,\nh1#homework:focus,\n.assignment h2[tabindex="-1"]:focus,\n'
+)
+"""The result's homework heading among the places a press or a link lands on, pinned in the
+landing rule's selector list as written."""
+
+
+def test_the_result_s_homework_heading_takes_the_landing_rule() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    page = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
+
+    assert css.count(HOMEWORK_HEADING_LANDING) == 1
+    assert css.count("h1#homework") == 1
+    assert page.count('<h1 id="homework" tabindex="-1">Homework for this result</h1>') == 1
+
+
 YEAR_RANGE_RULE = ".year-range {\n  display: inline-block;\n}\n"
 """A school-year range, pinned whole: one inline box, so a line takes it whole where it fits."""
 
