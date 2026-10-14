@@ -323,6 +323,12 @@ def scores_left_out(error: GradeValueUndecodable) -> None:
     logger.warning("a homework page shows no school score: %s", type(error).__name__)
 
 
+def cues_left_out(error: GradeValueUndecodable) -> None:
+    """Records that class details shows no result waiting for a parent's choice, by the
+    failure's type alone: nothing the gradebook holds is written."""
+    logger.warning("class details shows no cue: %s", type(error).__name__)
+
+
 def results_read(years: Iterable[YearRead]) -> bool:
     """Whether any class and term was read: with none, no assignment shows a score."""
     return any(year.reads for year in years)

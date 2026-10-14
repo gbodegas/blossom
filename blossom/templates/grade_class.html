@@ -12,7 +12,8 @@
   A result's card is drawn by the macro its own file holds, which a result's homework page
   shares. A parent reading also gets, on each card, the way to the result's homework page; for
   a linked result, which homework it is linked to; and for a result that waits for a parent's
-  choice, a quiet line saying so.
+  choice, a quiet line saying so. When who waits couldn't be worked out, one sentence before
+  the results says so, and each way in says it in its accessible name.
 #}
 {% from "grade_result_card.html" import result %}
 {% block content %}
@@ -28,6 +29,9 @@
       <p class="note">{{ summary.supplied_by }}</p>
     {% elif not reported %}
       <p class="note">{{ no_report_added }}</p>
+    {% endif %}
+    {% if unchecked %}
+      <p class="problem">{{ unchecked }}</p>
     {% endif %}
     {% if dated %}
       <h2 class="grade-heading">Assignments</h2>
