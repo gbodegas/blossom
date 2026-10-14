@@ -8,6 +8,7 @@ does. The line is the one class details writes for the same result, the link goe
 result in its own term on the reader's tree, and showing it stores nothing and moves nothing.
 """
 
+import contextlib
 import dataclasses
 import difflib
 import functools
@@ -20,13 +21,15 @@ import sqlite3
 import sys
 import threading
 import types
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from datetime import date, time
 from time import monotonic
 from typing import Any, Protocol
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
+from starlette.responses import Response
 
 from blossom.grades.dates import due_date_of
 from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key, folded
@@ -80,6 +83,7 @@ from blossom.routes.navigation import (
     note_add_href,
 )
 from blossom.routes.runs import plan_graphs
+from blossom.routes.student import templates
 from blossom.stores import gradebook
 from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
@@ -6621,3 +6625,59 @@ def test_a_press_for_a_result_whose_term_is_not_among_its_year_s_terms_writes_no
     assert (answer.status_code, answer.text) == (500, "Internal Server Error")
     assert records == ["a homework link wasn't written: GradeValueUndecodable"]
     assert after == before
+
+
+def test_class_details_and_a_result_s_page_are_rendered_after_every_hold_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each page these routes render is built with no hold of the store open: class details
+    and its page for a class or place not on record, as a parent and as she reads them, a
+    result's page and its answers to a press."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        held = [0]
+        reading = store.reading
+
+        @contextlib.contextmanager
+        def counted() -> Iterator[None]:
+            held[0] += 1
+            try:
+                with reading():
+                    yield
+            finally:
+                held[0] -= 1
+
+        built: list[tuple[str, int]] = []
+        response = templates.TemplateResponse
+
+        def recorded(
+            request: Request, name: str, context: dict[str, object], status_code: int = 200
+        ) -> Response:
+            built.append((name, held[0]))
+            return response(request, name, context, status_code=status_code)
+
+        monkeypatch.setattr(store, "reading", counted)
+        monkeypatch.setattr(templates, "TemplateResponse", recorded)
+        answers = [
+            computer(client).get(
+                f"/parent/grades/classes/{class_id}/terms/9", headers=PAGE_HEADERS
+            ),
+            computer(client).get(
+                f"/parent/grades/classes/{class_id}/terms/1", headers=PAGE_HEADERS
+            ),
+            client.get(f"/student/grades/classes/{class_id}/terms/9", headers=PAGE_HEADERS),
+            computer(client).get(RESULT_PAGE.format(result_id=log), headers=PAGE_HEADERS),
+            pressed(client, log, revision="999999"),
+        ]
+
+    assert [one.status_code for one in answers] == [404, 200, 404, 200, 409]
+    assert built == [
+        ("grade_class.html", 0),
+        ("grade_class.html", 0),
+        ("grade_class.html", 0),
+        ("grade_result_homework.html", 0),
+        ("grade_result_homework.html", 0),
+    ]

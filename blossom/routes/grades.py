@@ -2352,26 +2352,38 @@ def ways_in(
 def class_page(request: Request, state: ApplicationState, class_id: str, n: str) -> Response:
     """Class details of her class in the term at place ``n`` of its year: the term grade, each
     result by due date, newest first, the dates not confirmed apart, and the term's reports. A
-    read alone; a class or place not on record is a page saying so. A parent reading gets each
-    result's way to its homework page, read in one hold after the page's own values."""
-    store = state.project_state
+    read alone; a class or place not on record is a page saying so. Rendered after any hold."""
     family = parent_reads(request)
-    base = GRADES if family else HER_GRADES
     context: dict[str, object] = {
         "family_tree": request.url.path.startswith(GRADES),
-        "grades": base,
+        "grades": GRADES if family else HER_GRADES,
         "marks": state.settings.page_marks,
     }
+    shown = class_page_read(state, class_id, n, family=family)
+    if isinstance(shown, GradeValueUndecodable):
+        return grade_page_not_shown(shown)
+    if shown is None:
+        return templates.TemplateResponse(
+            request,
+            "grade_class.html",
+            {**context, "missing": CLASS_NOT_ON_RECORD},
+            status_code=404,
+        )
+    return templates.TemplateResponse(request, "grade_class.html", {**context, **shown})
+
+
+def class_page_read(
+    state: ApplicationState, class_id: str, n: str, *, family: bool
+) -> dict[str, object] | GradeValueUndecodable | None:
+    """What class details shows, read alone; for a parent reading, in one hold, with each
+    result's way to its homework page read after the page's own values. None for a class or
+    place not on record; the error itself when her links stop a parent's page."""
+    store = state.project_state
     with store.reading() if family else nullcontext():
         named = store.class_named(class_id)
         terms = store.terms_of_year(named.year) if named is not None else ()
         if named is None or not POSITION.fullmatch(n) or int(n) > len(terms):
-            return templates.TemplateResponse(
-                request,
-                "grade_class.html",
-                {**context, "missing": CLASS_NOT_ON_RECORD},
-                status_code=404,
-            )
+            return None
         term = terms[int(n) - 1]
         read = store.class_term(class_id, term)
         reports, values = read.reports, read.current
@@ -2410,27 +2422,22 @@ def class_page(request: Request, state: ApplicationState, class_id: str, n: str)
             try:
                 links = read_links(store)
             except GradeValueUndecodable as error:
-                return grade_page_not_shown(error)
+                return error
             ways = ways_in(store, links, [*cards, *undated])
-    return templates.TemplateResponse(
-        request,
-        "grade_class.html",
-        {
-            **context,
-            "missing": None,
-            "name": named.name,
-            "term": term_named((named.year, term)),
-            "reported": bool(reports),
-            "summary": summary,
-            "no_report_added": NO_REPORT_ADDED,
-            # Each result with its ID, which its title carries so a link can land on it.
-            "dated": cards,
-            "undated": undated,
-            "ways": ways,
-            "categories": categories,
-            "reports": listed,
-        },
-    )
+    return {
+        "missing": None,
+        "name": named.name,
+        "term": term_named((named.year, term)),
+        "reported": bool(reports),
+        "summary": summary,
+        "no_report_added": NO_REPORT_ADDED,
+        # Each result with its ID, which its title carries so a link can land on it.
+        "dated": cards,
+        "undated": undated,
+        "ways": ways,
+        "categories": categories,
+        "reports": listed,
+    }
 
 
 @student_router.get("/classes/{class_id}/terms/{n}", response_class=HTMLResponse)
