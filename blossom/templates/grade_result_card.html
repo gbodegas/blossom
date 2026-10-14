@@ -8,7 +8,8 @@
   one it left blank, or that wasn't read or copied, says so in the same place as a quiet line.
   The title, a heading of ``level``, carries the result's ID and takes the focus, so a link to
   one result lands on it. ``way``, given to a parent reading class details, adds the line for
-  the homework a link names and the way to the result's homework page.
+  the homework a link names, the quiet line for a result that waits for a parent's choice, and
+  the way to the result's homework page.
 #}
 {% macro result(item, result_id, level=3, way=none) %}
   <section class="panel grade-card">
@@ -22,6 +23,9 @@
     {%- if way %}
       {%- if way.linked %}
     <p>{% if way.linked.authored %}<span class="authored-text">{{ way.linked.text }}</span>{% else %}{{ way.linked.text }}{% endif %}</p>
+      {%- endif %}
+      {%- if way.waits %}
+    <p class="source">{{ way.waits }}</p>
       {%- endif %}
     <p class="details-link"><a class="assignment-link" href="{{ way.address }}" aria-label="{{ way.label }}">Homework for this result</a></p>
     {%- endif %}

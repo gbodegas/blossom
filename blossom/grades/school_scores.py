@@ -162,15 +162,9 @@ class Pairs(NamedTuple):
     named: dict[str, set[str]]
 
 
-def pairs_of(
-    assignments: Sequence[Homework],
-    results: Iterable[Result],
-    classes: Mapping[str, Collection[str]],
-    links: Collection[Link],
-) -> Pairs:
-    """The step every answer shares: who could be whose, who competes once a parent's links
-    are read, and which pairs the rules stand before points and showing are read. Two confirmed
-    links that name one result raise ``HomeworkLinksConflict`` before anything is paired."""
+def linked_results(links: Collection[Link]) -> dict[str, set[str]]:
+    """Each assignment's result IDs that a parent's confirmed links name, by assignment ID. Two
+    confirmed links that name one result raise ``HomeworkLinksConflict``, with nothing chained."""
     named: dict[str, set[str]] = {}
     held: set[str] = set()
     for link in links:
@@ -180,6 +174,20 @@ def pairs_of(
             raise HomeworkLinksConflict
         held.add(link.result_id)
         named.setdefault(link.assignment_id, set()).add(link.result_id)
+    return named
+
+
+def pairs_of(
+    assignments: Sequence[Homework],
+    results: Iterable[Result],
+    classes: Mapping[str, Collection[str]],
+    links: Collection[Link],
+) -> Pairs:
+    """The step every answer shares: who could be whose, who competes once a parent's links
+    are read, and which pairs the rules stand before points and showing are read. Two confirmed
+    links that name one result raise ``HomeworkLinksConflict`` before anything is paired."""
+    named = linked_results(links)
+    held = {result_id for named_here in named.values() for result_id in named_here}
     judged = {(link.assignment_id, link.result_id) for link in links}
     school = list(results)
     titled: dict[tuple[str, str], list[int]] = {}
