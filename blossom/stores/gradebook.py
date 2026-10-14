@@ -2469,7 +2469,7 @@ class GradebookRecords:
                 return None
             class_id, term = _text(scope[0]), _text(scope[1])
             stored = self._connection.execute(REVISION_OF, (student_id, class_id, term)).fetchone()
-        return ResultPlace(class_id, term, None if stored is None else _whole(stored[0], 0))
+        return ResultPlace(class_id, term, None if stored is None else _whole(stored[0], 1))
 
     def class_term(self, class_id: str, term: str) -> ClassTermRead:
         """Her class and term's reports by acceptance order, each with its use, its import time,

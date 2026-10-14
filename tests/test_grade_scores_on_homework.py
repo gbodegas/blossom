@@ -6681,3 +6681,49 @@ def test_class_details_and_a_result_s_page_are_rendered_after_every_hold_ends(
         ("grade_result_homework.html", 0),
         ("grade_result_homework.html", 0),
     ]
+
+
+def test_a_revision_below_its_column_s_bound_stops_a_result_s_page_and_every_press(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The class and term's revision set to 0 by hand, the table's checks turned off for that
+    one statement, as no write does: the page and a press of each decision answer the plain
+    generic 500 with one record of the failure's type alone, and the file is as it was."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        stored(store, "PRAGMA ignore_check_constraints = ON")
+        stored(store, "UPDATE grade_scope_revisions SET revision = 0")
+        stored(store, "PRAGMA ignore_check_constraints = OFF")
+        before = every_row(database_of(client))
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            page = computer(client).get(RESULT_PAGE.format(result_id=log), headers=PAGE_HEADERS)
+            shown = [one.getMessage() for one in caplog.records if one.name.startswith("blossom")]
+        presses = []
+        for decision in ("link", "apart", "automatic"):
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG):
+                answer = pressed(client, log, decision=decision, revision="0")
+                written = [
+                    one.getMessage() for one in caplog.records if one.name.startswith("blossom")
+                ]
+            presses.append((answer.status_code, answer.text, written))
+        after = every_row(database_of(client))
+
+    assert (page.status_code, page.text) == (500, "Internal Server Error")
+    assert shown == ["a grade page wasn't shown: GradeValueUndecodable"]
+    assert (
+        presses
+        == [
+            (
+                500,
+                "Internal Server Error",
+                ["a homework link wasn't written: GradeValueUndecodable"],
+            )
+        ]
+        * 3
+    )
+    assert after == before
