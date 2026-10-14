@@ -6411,7 +6411,11 @@ def focuses_its_answer(page: str) -> bool:
 
 
 def problem_on(page: str) -> str:
-    found = re.search(r'<p class="problem" role="alert" id="problem"[^>]*>([^<]*)</p>', page)
+    """A page's explanation, without a link to the field it is about."""
+    found = re.search(
+        r'<p class="problem" role="alert" id="problem"[^>]*>([^<]*)(?: <a [^>]*>[^<]*</a>)?</p>',
+        page,
+    )
     assert found is not None
     return html.unescape(found[1])
 
@@ -7205,6 +7209,8 @@ WORDS_REFUSED = (
     "changed."
 )
 NO_PAGE = "There is no such page of results."
+REVIEW_WORDS = ' <a href="#search-words">Review your search words</a>'
+"""What ends the explanation of refused words: the way to the field that holds them."""
 LINK = "Link to this homework"
 SKETCH_ID = "assignment-sketch"
 Sent = Mapping[str, str | list[str]]
@@ -7525,7 +7531,8 @@ REFUSED_SEARCHES: list[tuple[str, Sent, str]] = [
 def test_a_search_refused_or_naming_no_page_answers_422_with_its_explanation_and_no_list() -> None:
     """Each form of ``REFUSED_SEARCHES`` on a result with twenty-one rows to find: 422, its
     explanation taking the focus, no heading over what was found, no list and no page controls,
-    the words posted kept in the field, marked as refused only when they are. Nothing written."""
+    the words posted kept in the field. Refused words alone mark the field and end the
+    explanation with a link to it. Nothing written."""
     with browser() as client:
         store_of(client).put_on_record(SET_ROWS, {})
         class_id = with_report(client)
@@ -7546,6 +7553,9 @@ def test_a_search_refused_or_naming_no_page_answers_422_with_its_explanation_and
         assert html.unescape(re.sub(r"\s", "", field_of(answer.text))) == re.sub(r"\s", "", kept)
         refused = 'aria-describedby="search-hint problem" aria-invalid="true"' in answer.text
         assert refused is (said == WORDS_REFUSED), case
+        review = REVIEW_WORDS if said == WORDS_REFUSED else ""
+        assert f"{ANSWER_IN_FOCUS}{html.escape(said)}{review}</p>" in answer.text, case
+        assert answer.text.count('href="#search-words"') == (1 if review else 0), case
     assert after == before
 
 
