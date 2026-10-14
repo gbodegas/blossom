@@ -5540,8 +5540,8 @@ def test_the_words_for_each_reason_and_each_decision_left_on_a_row() -> None:
         "the points weren't in the copy.",
         "the newest complete report doesn't show this result.",
         f"Life Science isn't connected to {BIOLOGY} now.",
-        f"Life Science isn't connected to {BIOLOGY}, a class of 2025-2026. Homework class names "
-        "changes the current school year only.",
+        f"Life Science isn't connected to {BIOLOGY}, a class of 2025-2026. The Homework class "
+        "names page changes connections for the current school year only.",
     ]
     assert [one.text for one in waiting] == [
         "2 assignments could be this result.",
@@ -5571,7 +5571,9 @@ def test_the_words_for_each_reason_and_each_decision_left_on_a_row() -> None:
     assert rows[PairStanding.LINKED].said == []
     year_named = result_said(dataclasses.replace(view, class_name="Biology 2025-2026"))[1][-1]
     assert year_named.keep == "2025-2026"
-    assert year_named.text[year_named.keep_at :].startswith("2025-2026. Homework class names")
+    assert year_named.text[year_named.keep_at :].startswith(
+        "2025-2026. The Homework class names page"
+    )
     assert year_named.keep_at > year_named.text.index("2025-2026")
     gone = row_shown(2, off_record("assignment-gone", APART), notebook)
     assert [one.text for one in gone.said] == [
@@ -6481,8 +6483,8 @@ def test_a_school_year_range_on_a_result_s_page_is_marked_as_one_piece(name: str
         page = result_page(client, log)
 
     reason = (
-        f"{name} isn't connected to {BIOLOGY}, a class of 2025-2026. Homework class names "
-        "changes the current school year only."
+        f"{name} isn't connected to {BIOLOGY}, a class of 2025-2026. The Homework class names "
+        "page changes connections for the current school year only."
     )
     assert reason in said_on(page)
     (item,) = [one for one in re.findall(r"<li>(.*?)</li>", page, re.S) if "a class of" in one]
@@ -6491,8 +6493,8 @@ def test_a_school_year_range_on_a_result_s_page_is_marked_as_one_piece(name: str
     assert html.unescape(re.sub(r"<[^>]+>", "", before)).endswith("a class of ")
     assert (
         f'<li><span class="authored-text">{name} isn&#39;t connected to {BIOLOGY}, a class '
-        'of <span class="year-range">2025-2026</span>. Homework class names changes the current '
-        "school year only.</span></li>"
+        'of <span class="year-range">2025-2026</span>. The Homework class names page changes '
+        "connections for the current school year only.</span></li>"
     ) in page
     assert '<p>T1 · <span class="year-range">2025-2026</span></p>' in page
     assert '<a href="/parent/grades/homework-classes">' not in page

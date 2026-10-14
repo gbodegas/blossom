@@ -2486,7 +2486,7 @@ WITHHELD_WORDS: Final = {
     Withheld.NAME_NOT_CONNECTED: "{name} isn't connected to {class_name} now.",
     Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR: (
         "{name} isn't connected to {class_name}, a class of {year}. "
-        "Homework class names changes the current school year only."
+        "The Homework class names page changes connections for the current school year only."
     ),
 }
 """Each reason a score stays off her homework, after ``SCORE_NOT_SHOWN``."""
