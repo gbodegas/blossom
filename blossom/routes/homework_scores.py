@@ -48,11 +48,12 @@ One result's homework is worked out from the same values: ``rule_values`` makes 
 rules take from one page read, the mapping of school scores is made from that, and
 ``result_homework`` gives one result's candidates, its link or the pair the rules stand, the
 pairs kept apart, and why a linked or matched result's score stays off her homework.
-``homework_found`` filters the same values by a parent's search words: the homework whose
-class name connects to the result's class, a page of twenty at a time, each row with its
-standing against the result. ``other_results`` names, from the same values, every other result
-that could be the same homework: each shares a candidate with the result, whatever decisions
-stand. Neither reads anything more or writes anything.
+``waiting_in`` names the results of one class and term that the same answer leaves waiting
+for a parent's choice. ``homework_found`` filters the same values by a parent's search words:
+the homework whose class name connects to the result's class, a page of twenty at a time, each
+row with its standing against the result. ``other_results`` names, from the same values, every
+other result that could be the same homework: each shares a candidate with the result,
+whatever decisions stand. None of the three reads anything more or writes anything.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """
@@ -494,6 +495,20 @@ def result_homework(
         apart=tuple(row(one) for one in apart),
         withheld=tuple(withheld),
         waiting=next((one for one in waits if this(one)), None),
+    )
+
+
+def waiting_in(
+    class_id: str, term: str, read: RuleValues, *, links: Collection[Link]
+) -> frozenset[str]:
+    """The IDs of the results of ``class_id`` in ``term`` that wait for a parent's choice, from
+    what ``rule_values`` made of one page read and a parent's links: the same answer
+    ``result_homework`` gives each result. Terms compare with their spaces folded."""
+    here = (class_id, folded(term))
+    return frozenset(
+        one.result_id
+        for one in waiting_results(read.homework, read.results, read.classes, decided=links)
+        if (one.class_id, folded(one.term)) == here
     )
 
 
