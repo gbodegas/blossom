@@ -1375,6 +1375,16 @@ class ClassOfYear:
 
 
 @dataclass(frozen=True)
+class ResultPlace:
+    """One of her results by its ID: its class and term, and the class and term's revision,
+    None where no revision is on record."""
+
+    class_id: str
+    term: str
+    revision: int | None
+
+
+@dataclass(frozen=True)
 class ClassTermRead:
     """Her class and term's reports by acceptance order and each target's current value, read
     together, so every report a value names is among the reports."""
@@ -2448,6 +2458,18 @@ class GradebookRecords:
             student_id = self._her_name_record()[0]
             row = self._connection.execute(CLASS_NAMED, (student_id, class_id)).fetchone()
         return None if row is None else ClassOfYear(class_id, str(row[1]), str(row[0]))
+
+    def result_place(self, result_id: str) -> ResultPlace | None:
+        """Her result ``result_id``'s class and term with their revision; None when no result of
+        hers has that ID. A read alone."""
+        with self._lock:
+            student_id = self._her_name_record()[0]
+            scope = self._connection.execute(RESULT_SCOPE, (student_id, result_id)).fetchone()
+            if scope is None:
+                return None
+            class_id, term = _text(scope[0]), _text(scope[1])
+            stored = self._connection.execute(REVISION_OF, (student_id, class_id, term)).fetchone()
+        return ResultPlace(class_id, term, None if stored is None else _whole(stored[0], 1))
 
     def class_term(self, class_id: str, term: str) -> ClassTermRead:
         """Her class and term's reports by acceptance order, each with its use, its import time,

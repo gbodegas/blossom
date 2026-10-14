@@ -44,24 +44,42 @@ original result can return to automatic matching and appear on other homework. N
 dangling decision. A link row whose student ID does not match the read is excluded and stops
 applying without a diagnostic. Nothing here detects every edit.
 
+One result's homework is worked out from the same values: ``rule_values`` makes what the
+rules take from one page read, the mapping of school scores is made from that, and
+``result_homework`` gives one result's candidates, its link or the pair the rules stand, the
+pairs kept apart, and why a linked or matched result's score stays off her homework.
+
 Nothing a plan is made from reads this module or holds what it returns.
 """
 
 import logging
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import tzinfo
+from datetime import date, tzinfo
+from enum import StrEnum
+from typing import Final, NamedTuple
 
 from blossom.grades.dates import due_date_of
 from blossom.grades.draft import Presence, folded
 from blossom.grades.review import CurrentValue, GradeValueUndecodable
-from blossom.grades.school_scores import Homework, Link, Result, result_of, school_scores
+from blossom.grades.school_scores import (
+    Candidates,
+    Homework,
+    Link,
+    Result,
+    Waiting,
+    candidate_homework,
+    result_of,
+    school_scores,
+    waiting_results,
+)
 from blossom.grades.wording import presence_words, report_names, score_line
 from blossom.noticing import read_date
 from blossom.reconciliation import SourceRecord
 from blossom.routes.navigation import CLASS_AT, address
 from blossom.stores.gradebook import (
     LINK_CONFIRMED,
+    ClassOfYear,
     ClassTermRead,
     GradebookRecords,
     HomeworkClasses,
@@ -94,6 +112,82 @@ class ScoreShown:
     details: str
     title: str
     linked: bool
+
+
+class RuleValues(NamedTuple):
+    """One page read as the score rules take it: each assignment's record and the rules' value
+    made from it, every result read in the page's order, each assignment's connected classes,
+    and each result's value with its term's place in its year, by class, term and result ID."""
+
+    assignments: list[Assignment]
+    homework: list[Homework]
+    results: list[Result]
+    classes: dict[str, list[str]]
+    found: dict[tuple[str, str, str], tuple[CurrentValue, int]]
+
+
+class PairStanding(StrEnum):
+    """A parent's standing decision about one result and one homework, or none."""
+
+    NONE = "none"
+    LINKED = "linked"
+    APART = "apart"
+
+
+class Withheld(StrEnum):
+    """Why a linked or matched result's score stays off her homework: its points cell by
+    presence, a class and term that doesn't show it, or, for a link, the homework's class name
+    not connected to its class, a class of the current school year or of another."""
+
+    POINTS_BLANK = "points_blank"
+    POINTS_UNREADABLE = "points_unreadable"
+    POINTS_NOT_IN_COPY = "points_not_in_copy"
+    NOT_SHOWN = "not_shown"
+    NAME_NOT_CONNECTED = "name_not_connected"
+    NAME_NOT_CONNECTED_IN_ANOTHER_YEAR = "name_not_connected_in_another_year"
+
+
+POINTS_WITHHELD: Final = {
+    Presence.BLANK: Withheld.POINTS_BLANK,
+    Presence.UNREADABLE: Withheld.POINTS_UNREADABLE,
+    Presence.NOT_CAPTURED: Withheld.POINTS_NOT_IN_COPY,
+}
+"""The reason for each presence of a points cell the school did not report."""
+
+
+@dataclass(frozen=True)
+class HomeworkRow:
+    """One homework beside a result: its class name, title and due date as on record, none of
+    the three when it is not; the pair's standing decision; whether linking it would move the
+    result's link from other homework; and whether another result is linked to it."""
+
+    assignment_id: str
+    on_record: bool
+    course: str | None
+    title: str | None
+    due: date | None
+    standing: PairStanding
+    moves_link: bool
+    another_result: bool
+
+
+@dataclass(frozen=True)
+class ResultHomework:
+    """One result's homework: the homework a link names, or else the one the rules stand it
+    with; its candidates whatever links stand; the pairs kept apart; each reason a linked or
+    matched result's score stays off her homework; and the rules' answer when it waits."""
+
+    class_id: str
+    term: str
+    result_id: str
+    class_name: str
+    year: str
+    linked: HomeworkRow | None
+    matched: HomeworkRow | None
+    candidates: tuple[HomeworkRow, ...]
+    apart: tuple[HomeworkRow, ...]
+    withheld: tuple[Withheld, ...]
+    waiting: Waiting | None
 
 
 def read_grade_facts(store: GradebookRecords, courses: Iterable[str]) -> tuple[YearRead, ...]:
@@ -143,9 +237,15 @@ def read_score_facts(
     years = read_grade_facts(store, courses)
     if not results_read(years):
         return years, ()
+    return years, read_links(store)
+
+
+def read_links(store: GradebookRecords) -> tuple[Link, ...]:
+    """Her homework links as the score rules read them, with text decoded strictly: the
+    store's link read and its checks. A read alone."""
     with store.strict_text():
         stored = store.homework_links()
-    return years, tuple(
+    return tuple(
         Link(one.assignment_id, one.result_id, confirmed=one.state == LINK_CONFIRMED)
         for one in stored
     )
@@ -181,19 +281,15 @@ def homework_of(item: Assignment, claims: Sequence[SourceRecord], unreadable: bo
     return Homework(item.assignment_id, item.title, day, resolved)
 
 
-def scores_shown(
+def rule_values(
     assignments: Iterable[Assignment],
     claims: Mapping[str, Sequence[SourceRecord]],
     unreadable: Collection[str],
     years: Iterable[YearRead],
-    *,
-    links: Collection[Link] = (),
-    zone: tzinfo,
-    base: str,
-) -> dict[str, tuple[ScoreShown, ...]]:
-    """Each assignment's school scores by assignment ID, for a page under the grade tree
-    ``base``, in the order of school year, term place, then class details' own. Given every
-    assignment, each one's date claims, those with one unreadable, and a parent's links."""
+) -> RuleValues:
+    """What the score rules take from one page read, the results in the order of school year,
+    term place, then class details' own. Given every assignment, each one's date claims, and
+    those with one unreadable."""
     listed = list(assignments)
     homework = [
         homework_of(item, claims.get(item.assignment_id, ()), item.assignment_id in unreadable)
@@ -201,14 +297,13 @@ def scores_shown(
     ]
     classes: dict[str, list[str]] = {}
     ordered: list[tuple[tuple[str, int, str, bool, int, str, int], Result]] = []
-    found: dict[tuple[str, str, str], tuple[CurrentValue, dict[str, str], int]] = {}
+    found: dict[tuple[str, str, str], tuple[CurrentValue, int]] = {}
     for year in years:
         for item in listed:
             class_id = class_for(item.course, year.mapping)
             if class_id is not None:
                 classes.setdefault(item.assignment_id, []).append(class_id)
         for (class_id, term), read in year.reads.items():
-            names = report_names(read.reports, zone)
             place = year.terms.index(term) + 1
             for order, (result_id, value) in enumerate(read.current.results.items()):
                 day = (
@@ -228,16 +323,38 @@ def scores_shown(
                     order,
                 )
                 ordered.append((key, result_of(class_id, term, result_id, value, day)))
-                found[(class_id, term, result_id)] = (value, names, place)
+                found[(class_id, term, result_id)] = (value, place)
     results = [result for _, result in sorted(ordered, key=lambda one: one[0])]
+    return RuleValues(listed, homework, results, classes, found)
+
+
+def scores_shown(
+    assignments: Iterable[Assignment],
+    claims: Mapping[str, Sequence[SourceRecord]],
+    unreadable: Collection[str],
+    years: Iterable[YearRead],
+    *,
+    links: Collection[Link] = (),
+    zone: tzinfo,
+    base: str,
+) -> dict[str, tuple[ScoreShown, ...]]:
+    """Each assignment's school scores by assignment ID, for a page under the grade tree
+    ``base``, in the order of school year, term place, then class details' own. Given every
+    assignment, each one's date claims, those with one unreadable, and a parent's links."""
+    facts = tuple(years)
+    names = {
+        at: report_names(read.reports, zone) for year in facts for at, read in year.reads.items()
+    }
+    rules = rule_values(assignments, claims, unreadable, facts)
+    ruled = school_scores(rules.homework, rules.results, rules.classes, decided=links)
     shown: dict[str, tuple[ScoreShown, ...]] = {}
-    for assignment_id, several in school_scores(homework, results, classes, decided=links).items():
+    for assignment_id, several in ruled.items():
         scores = []
         for at in several:
-            value, names, place = found[(at.class_id, at.term, at.result_id)]
+            value, place = rules.found[(at.class_id, at.term, at.result_id)]
             scores.append(
                 ScoreShown(
-                    line=score_line(value, names),
+                    line=score_line(value, names[(at.class_id, at.term)]),
                     details=address(
                         CLASS_AT.format(base=base, class_id=at.class_id, n=place),
                         fragment=at.result_id,
@@ -248,3 +365,81 @@ def scores_shown(
             )
         shown[assignment_id] = tuple(scores)
     return shown
+
+
+def result_homework(
+    of: ClassOfYear,
+    term: str,
+    result_id: str,
+    value: CurrentValue,
+    read: RuleValues,
+    *,
+    links: Collection[Link],
+    current_year: str | None,
+) -> ResultHomework:
+    """The homework of the result ``result_id`` of the class ``of`` in ``term``, whose current
+    value is ``value``: from what ``rule_values`` made of one page read, its records included,
+    a parent's links and the current school year. Terms compare with their spaces folded."""
+    listed = {item.assignment_id: item for item in read.assignments}
+    could = candidate_homework(read.homework, read.results, read.classes, decided=links)
+    waits = waiting_results(read.homework, read.results, read.classes, decided=links)
+
+    def this(one: Candidates | Waiting) -> bool:
+        there = (one.class_id, one.result_id, folded(one.term))
+        return there == (of.class_id, result_id, folded(term))
+
+    standing = {
+        link.assignment_id: PairStanding.LINKED if link.confirmed else PairStanding.APART
+        for link in links
+        if link.result_id == result_id
+    }
+    holder = next((one for one, how in standing.items() if how is PairStanding.LINKED), None)
+    shared = {
+        link.assignment_id for link in links if link.confirmed and link.result_id != result_id
+    }
+
+    def row(assignment_id: str) -> HomeworkRow:
+        item = listed.get(assignment_id)
+        return HomeworkRow(
+            assignment_id=assignment_id,
+            on_record=item is not None,
+            course=None if item is None else item.course,
+            title=None if item is None else item.title,
+            due=None if item is None else item.due_date,
+            standing=standing.get(assignment_id, PairStanding.NONE),
+            moves_link=item is not None and holder not in (None, assignment_id),
+            another_result=assignment_id in shared,
+        )
+
+    found = next((one for one in could if this(one)), None)
+    linked_here = holder is not None and holder in listed
+    withheld: list[Withheld] = []
+    # A pair the rules stand connects by its class already, so only a link can lack it.
+    if linked_here or (found is not None and found.stood is not None):
+        points = value.cells["points"][0]
+        if points is not Presence.REPORTED:
+            withheld.append(POINTS_WITHHELD[points])
+        if value.not_shown is not None:
+            withheld.append(Withheld.NOT_SHOWN)
+    if holder is not None and linked_here and of.class_id not in read.classes.get(holder, ()):
+        withheld.append(
+            Withheld.NAME_NOT_CONNECTED
+            if of.year == current_year
+            else Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR
+        )
+    kept = {one for one, how in standing.items() if how is PairStanding.APART}
+    # Homework on record first, in the order the assignments came, then the rest by ID.
+    apart = [one for one in listed if one in kept] + sorted(kept - set(listed))
+    return ResultHomework(
+        class_id=of.class_id,
+        term=term,
+        result_id=result_id,
+        class_name=of.name,
+        year=of.year,
+        linked=None if holder is None else row(holder),
+        matched=None if found is None or found.stood is None else row(found.stood),
+        candidates=() if found is None else tuple(row(one) for one in found.assignments),
+        apart=tuple(row(one) for one in apart),
+        withheld=tuple(withheld),
+        waiting=next((one for one in waits if this(one)), None),
+    )

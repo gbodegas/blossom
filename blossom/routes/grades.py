@@ -33,10 +33,11 @@ import ipaddress
 import logging
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, tzinfo
 from functools import partial
-from typing import Annotated, Final, Literal, cast, get_args
+from typing import Annotated, Final, Literal, NamedTuple, cast, get_args
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -70,6 +71,7 @@ from blossom.grades.review import (
     GradeAnswers,
     GradeReportSaved,
     GradeReview,
+    GradeValueUndecodable,
     IdentityAnswer,
     ItemStatus,
     Label,
@@ -93,6 +95,7 @@ from blossom.grades.review import (
     still_asked,
     use_asked,
 )
+from blossom.grades.school_scores import Link
 from blossom.grades.text_reader import NotRead, read_grade_report, reading_complete
 from blossom.grades.wording import (
     absent_alike,
@@ -106,6 +109,17 @@ from blossom.grades.wording import (
 from blossom.household import UnreadableHouseholdSecret, read_authority, secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes.forms import fields_of
+from blossom.routes.homework_scores import (
+    HomeworkRow,
+    PairStanding,
+    ResultHomework,
+    Withheld,
+    read_grade_facts,
+    read_links,
+    result_homework,
+    results_read,
+    rule_values,
+)
 from blossom.routes.navigation import CLASS_AT, GRADES, HER_GRADES
 from blossom.routes.student import parent_reads, templates, viewer_of
 from blossom.stores.gradebook import (
@@ -114,6 +128,8 @@ from blossom.stores.gradebook import (
     RESULT_ID,
     REVISION_MAX,
     UNCONNECTED,
+    ClassOfYear,
+    ClassTermRead,
     ConfirmedBy,
     ContextChanged,
     ContextNotOnRecord,
@@ -122,8 +138,15 @@ from blossom.stores.gradebook import (
     GradeTransactionLost,
     HomeworkClassChanged,
     HomeworkClassNotOnRecord,
+    HomeworkLinkChanged,
+    HomeworkLinkClassNameChanged,
+    HomeworkLinkHomeworkNotOnRecord,
+    HomeworkLinkResultNotOnRecord,
     HomeworkYearNotCurrent,
+    LinkDecision,
     NamedClass,
+    RequiredIndexUnavailable,
+    ResultPlace,
     Term,
     TermNotOnRecord,
     Viewer,
@@ -132,6 +155,7 @@ from blossom.stores.gradebook import (
     name_key,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
+from blossom.stores.project_state import ProjectStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -2281,72 +2305,139 @@ def category_line(value: CurrentValue) -> str:
     return f"{cell_text(name, 'Category name')}: {', '.join(said)}"
 
 
+class Said(NamedTuple):
+    """A sentence a page says, whether it holds text the school or the family wrote, and a
+    school-year range in it, by its place in the text, that a line keeps together if it can."""
+
+    text: str
+    authored: bool
+    keep: str = ""
+    keep_at: int = 0
+
+
+@dataclass(frozen=True)
+class WayIn:
+    """A parent's way from a result's card on class details to its homework page: the address,
+    the link's accessible name, and the homework a link names, when one does."""
+
+    address: str
+    label: str
+    linked: Said | None
+
+
+def ways_in(
+    store: ProjectStateStore, links: Iterable[Link], shown: Iterable[tuple[str, ResultShown]]
+) -> dict[str, WayIn]:
+    """Each result's way to its homework page, by result ID, with the homework its link names
+    read for its title alone."""
+    named = {one.result_id: one.assignment_id for one in links if one.confirmed}
+    ways = {}
+    for result_id, item in shown:
+        linked = None
+        if result_id in named:
+            homework = store.one_assignment(named[result_id])
+            linked = (
+                Said(LINKED_OFF_RECORD, authored=False)
+                if homework is None
+                else Said(LINKED_TO_HOMEWORK.format(title=homework.title), authored=True)
+            )
+        ways[result_id] = WayIn(
+            address=RESULT_HOMEWORK_AT.format(result_id=result_id),
+            label=f"{HOMEWORK_FOR_RESULT}: {item.title}",
+            linked=linked,
+        )
+    return ways
+
+
 def class_page(request: Request, state: ApplicationState, class_id: str, n: str) -> Response:
     """Class details of her class in the term at place ``n`` of its year: the term grade, each
     result by due date, newest first, the dates not confirmed apart, and the term's reports. A
-    read alone; a class or place not on record is a page saying so."""
-    store = state.project_state
-    base = GRADES if parent_reads(request) else HER_GRADES
+    read alone; a class or place not on record is a page saying so. Rendered after any hold."""
+    family = parent_reads(request)
     context: dict[str, object] = {
         "family_tree": request.url.path.startswith(GRADES),
-        "grades": base,
+        "grades": GRADES if family else HER_GRADES,
         "marks": state.settings.page_marks,
     }
-    named = store.class_named(class_id)
-    terms = store.terms_of_year(named.year) if named is not None else ()
-    if named is None or not POSITION.fullmatch(n) or int(n) > len(terms):
+    shown = class_page_read(state, class_id, n, family=family)
+    if isinstance(shown, GradeValueUndecodable):
+        return grade_page_not_shown(shown)
+    if shown is None:
         return templates.TemplateResponse(
             request,
             "grade_class.html",
             {**context, "missing": CLASS_NOT_ON_RECORD},
             status_code=404,
         )
-    term = terms[int(n) - 1]
-    read = store.class_term(class_id, term)
-    reports, values = read.reports, read.current
-    names = report_names(reports, state.clock.zone)
-    newest = newest_current(reports)
-    first_month = store.first_month_of(named.year)
-    dated: list[tuple[date, str, str, ResultShown]] = []
-    undated: list[tuple[str, ResultShown]] = []
-    for result_id, value in values.results.items():
-        resolved, shown = result_shown(
-            value, year=named.year, first_month=first_month, newest=newest, names=names
-        )
-        if resolved is None:
-            undated.append((result_id, shown))
-        else:
-            dated.append((resolved, folded(shown.title).casefold(), result_id, shown))
-    dated.sort(key=lambda item: (-item[0].toordinal(), item[1]))
-    undated.sort(key=lambda item: folded(item[1].title).casefold())
-    uses = {report.report_id: report.use for report in reports}
-    captures: dict[str, ClassReport] = {}
-    for report in reports:
-        captures.setdefault(report.latest_of_capture, report)
-    return templates.TemplateResponse(
-        request,
-        "grade_class.html",
-        {
-            **context,
-            "missing": None,
-            "name": named.name,
-            "term": term_named((named.year, term)),
-            "reported": bool(reports),
-            "summary": term_summary(values, names),
-            "no_report_added": NO_REPORT_ADDED,
-            # Each result with its ID, which its title carries so a link can land on it.
-            "dated": [(result_id, shown) for _, _, result_id, shown in dated],
-            "undated": undated,
-            "categories": [category_line(value) for value in values.categories.values()],
-            "reports": [
-                (
-                    as_line(names.get(first.report_id, "report")),
-                    "Current" if uses[latest] == "current" else "Kept as an earlier report",
-                )
-                for latest, first in captures.items()
-            ],
-        },
-    )
+    return templates.TemplateResponse(request, "grade_class.html", {**context, **shown})
+
+
+def class_page_read(
+    state: ApplicationState, class_id: str, n: str, *, family: bool
+) -> dict[str, object] | GradeValueUndecodable | None:
+    """What class details shows, read alone; for a parent reading, in one hold, with each
+    result's way to its homework page read after the page's own values. None for a class or
+    place not on record; the error itself when her links stop a parent's page."""
+    store = state.project_state
+    with store.reading() if family else nullcontext():
+        named = store.class_named(class_id)
+        terms = store.terms_of_year(named.year) if named is not None else ()
+        if named is None or not POSITION.fullmatch(n) or int(n) > len(terms):
+            return None
+        term = terms[int(n) - 1]
+        read = store.class_term(class_id, term)
+        reports, values = read.reports, read.current
+        names = report_names(reports, state.clock.zone)
+        newest = newest_current(reports)
+        first_month = store.first_month_of(named.year)
+        dated: list[tuple[date, str, str, ResultShown]] = []
+        undated: list[tuple[str, ResultShown]] = []
+        for result_id, value in values.results.items():
+            resolved, shown = result_shown(
+                value, year=named.year, first_month=first_month, newest=newest, names=names
+            )
+            if resolved is None:
+                undated.append((result_id, shown))
+            else:
+                dated.append((resolved, folded(shown.title).casefold(), result_id, shown))
+        dated.sort(key=lambda item: (-item[0].toordinal(), item[1]))
+        undated.sort(key=lambda item: folded(item[1].title).casefold())
+        uses = {report.report_id: report.use for report in reports}
+        captures: dict[str, ClassReport] = {}
+        for report in reports:
+            captures.setdefault(report.latest_of_capture, report)
+        summary = term_summary(values, names)
+        categories = [category_line(value) for value in values.categories.values()]
+        listed = [
+            (
+                as_line(names.get(first.report_id, "report")),
+                "Current" if uses[latest] == "current" else "Kept as an earlier report",
+            )
+            for latest, first in captures.items()
+        ]
+        cards = [(result_id, shown) for _, _, result_id, shown in dated]
+        ways: dict[str, WayIn] = {}
+        if family and values.results:
+            # Her links are read only once the page's own values are all made.
+            try:
+                links = read_links(store)
+            except GradeValueUndecodable as error:
+                return error
+            ways = ways_in(store, links, [*cards, *undated])
+    return {
+        "missing": None,
+        "name": named.name,
+        "term": term_named((named.year, term)),
+        "reported": bool(reports),
+        "summary": summary,
+        "no_report_added": NO_REPORT_ADDED,
+        # Each result with its ID, which its title carries so a link can land on it.
+        "dated": cards,
+        "undated": undated,
+        "ways": ways,
+        "categories": categories,
+        "reports": listed,
+    }
 
 
 @student_router.get("/classes/{class_id}/terms/{n}", response_class=HTMLResponse)
@@ -2359,3 +2450,378 @@ def her_class(class_id: str, n: str, request: Request, state: State) -> Response
 def family_class(class_id: str, n: str, request: Request, state: State) -> Response:
     """Route 9p: class details in a parent's voice."""
     return class_page(request, state, class_id, n)
+
+
+RESULT_HOMEWORK: Final = "/parent/grades/results/{result_id}/homework"
+"""A result's homework page, a parent's: its address holds the result's ID alone."""
+RESULT_HOMEWORK_AT: Final = RESULT_HOMEWORK + "#homework"
+"""Where a decision lands: the result's page at its heading, which takes the focus."""
+STATE_LINE: Final = "state"
+"""The ID of a result's page's line that says whether it is linked, matched or neither."""
+RESULT_NOT_ON_RECORD: Final = "Blossom has no current record of this result."
+LINKS_CHANGED: Final = (
+    "Grades or links for this class changed while you were choosing. Nothing was saved. "
+    "Check this page again."
+)
+NAME_CONNECTED_DIFFERENTLY: Final = (
+    "That homework's class name is connected differently now. Nothing was saved. "
+    "Check this page again."
+)
+HOMEWORK_NOT_ON_RECORD: Final = "That homework is not on record now. Nothing was saved."
+CHOOSE_HOMEWORK: Final = "Choose homework. Nothing was saved."
+PRESS_UNKNOWN: Final = (
+    "Blossom couldn't tell whether this was saved. Pressing the button again is safe."
+)
+INDEX_UNAVAILABLE: Final = (
+    "a homework link wasn't written: the required homework-links index is unavailable"
+)
+"""The one record of a link write refused while the required index is unavailable."""
+DECISION_FIELDS: Final = frozenset({"homework", "decision", "revision"})
+A_REVISION: Final = re.compile(r"[0-9]{1,19}")
+"""A revision as a decision's form sends it: digits alone."""
+HOMEWORK_FOR_RESULT: Final = "Homework for this result"
+LINKED_TO_HOMEWORK: Final = "Linked to homework: {title}."
+LINKED_TO: Final = "Linked to {title}."
+MATCHED_TO: Final = "Matched by class, title and due date to {title}."
+NOT_LINKED: Final = "Not linked to homework."
+LINKED_OFF_RECORD: Final = "Linked to homework that isn't on record any more."
+KEPT_APART_FROM: Final = "Kept apart from {title}. Blossom won't match these two by itself."
+KEPT_APART_OFF_RECORD: Final = "Kept apart from homework that isn't on record any more."
+SCORE_NOT_SHOWN: Final = "The score isn't shown on her homework:"
+WITHHELD_WORDS: Final = {
+    Withheld.POINTS_BLANK: "the points cell was left blank.",
+    Withheld.POINTS_UNREADABLE: "the points couldn't be read.",
+    Withheld.POINTS_NOT_IN_COPY: "the points weren't in the copy.",
+    Withheld.NOT_SHOWN: "the newest complete report doesn't show this result.",
+    Withheld.NAME_NOT_CONNECTED: "{name} isn't connected to {class_name} now.",
+    Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR: (
+        "{name} isn't connected to {class_name}, a class of {year}. "
+        "The Homework class names page changes connections for the current school year only."
+    ),
+}
+"""Each reason a score stays off her homework, after ``SCORE_NOT_SHOWN``."""
+NOT_MATCHED_BY_ITSELF: Final = "Blossom doesn't match these by itself:"
+ASSIGNMENTS_COULD_BE: Final = "{n} assignments could be this result."
+RESULTS_COULD_BE: Final = "{n} results could be this homework."
+ANOTHER_RESULT: Final = (
+    "This homework already has another linked school result. You can link this result too or "
+    "keep them apart."
+)
+DATE_NOT_SETTLED: Final = "a due date isn't settled."
+MOVES_LINK_FROM: Final = "Linking moves this result's link from {title}."
+MOVES_LINK_OFF_RECORD: Final = (
+    "Linking moves this result's link from homework that isn't on record any more."
+)
+LINK_HOMEWORK: Final = ("link", "Link to this homework")
+NOT_THIS_HOMEWORK: Final = ("apart", "Not this homework")
+REMOVE_LINK: Final = ("apart", "Remove link")
+MATCH_AGAIN: Final = ("automatic", "Let Blossom match again")
+"""Each button of a homework row: the decision its form sends, and its words."""
+
+
+@dataclass(frozen=True)
+class HomeworkShown:
+    """One homework on a result's page: its place on the page, the element that names its row,
+    its class name, title and due line as on record or none of them, what its row says, and
+    each button as the decision its form sends with its words."""
+
+    number: int
+    label: str
+    assignment_id: str
+    course: str | None
+    title: str | None
+    due: str | None
+    said: list[Said]
+    buttons: list[tuple[str, str]]
+
+
+def due_line(day: date | None) -> str:
+    """A homework's due date on its row: "Due" with the weekday, month and day, or the words
+    for no date."""
+    return "Due date not recorded" if day is None else f"Due {day:%A, %B} {day.day}"
+
+
+def row_shown(number: int, row: HomeworkRow, linked: HomeworkRow | None) -> HomeworkShown:
+    """A homework row of a result's page: what it says, from the pair's decision and the link
+    the result already has, and the buttons that decision leaves."""
+    said: list[Said] = []
+    buttons: list[tuple[str, str]]
+    # A link to homework not on record is named by the page's own state line, said once.
+    label = f"homework-{number}"
+    if row.standing is PairStanding.LINKED:
+        if not row.on_record:
+            label = STATE_LINE
+        buttons = [REMOVE_LINK]
+    elif row.standing is PairStanding.APART:
+        if row.title is None:
+            said.append(Said(KEPT_APART_OFF_RECORD, authored=False))
+        else:
+            said.append(Said(KEPT_APART_FROM.format(title=row.title), authored=True))
+        buttons = [LINK_HOMEWORK, MATCH_AGAIN] if row.on_record else [MATCH_AGAIN]
+    else:
+        buttons = [LINK_HOMEWORK, NOT_THIS_HOMEWORK]
+    if row.standing is not PairStanding.LINKED and row.on_record:
+        if row.moves_link and linked is not None:
+            said.append(
+                Said(MOVES_LINK_OFF_RECORD, authored=False)
+                if linked.title is None
+                else Said(MOVES_LINK_FROM.format(title=linked.title), authored=True)
+            )
+        if row.another_result:
+            said.append(Said(ANOTHER_RESULT, authored=False))
+    return HomeworkShown(
+        number=number,
+        label=label,
+        assignment_id=row.assignment_id,
+        course=row.course,
+        title=row.title,
+        due=due_line(row.due) if row.on_record else None,
+        said=said,
+        buttons=buttons,
+    )
+
+
+def result_said(view: ResultHomework) -> tuple[Said, list[Said], list[Said]]:
+    """What a result's page says of it: whether it is linked, matched or neither; each reason
+    its score stays off her homework; and each reason the rules leave it waiting."""
+    if view.linked is not None:
+        state = (
+            Said(LINKED_OFF_RECORD, authored=False)
+            if view.linked.title is None
+            else Said(LINKED_TO.format(title=view.linked.title), authored=True)
+        )
+    elif view.matched is not None:
+        state = Said(MATCHED_TO.format(title=view.matched.title), authored=True)
+    else:
+        state = Said(NOT_LINKED, authored=False)
+    name = None if view.linked is None else view.linked.course
+    withheld = [
+        Said(
+            WITHHELD_WORDS[reason].format(name=name, class_name=view.class_name, year=view.year),
+            authored=reason
+            in (Withheld.NAME_NOT_CONNECTED, Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR),
+            keep=view.year if reason is Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR else "",
+            # The range's place is where the sentence puts the year, whatever the names hold.
+            keep_at=len(
+                WITHHELD_WORDS[reason]
+                .partition("{year}")[0]
+                .format(name=name, class_name=view.class_name)
+            ),
+        )
+        for reason in view.withheld
+    ]
+    waiting: list[Said] = []
+    if view.waiting is not None:
+        if view.waiting.assignments:
+            waiting.append(Said(ASSIGNMENTS_COULD_BE.format(n=view.waiting.assignments), False))
+        if view.waiting.results:
+            waiting.append(Said(RESULTS_COULD_BE.format(n=view.waiting.results), False))
+        if view.waiting.linked_elsewhere:
+            waiting.append(Said(ANOTHER_RESULT, authored=False))
+        if view.waiting.unsettled:
+            waiting.append(Said(DATE_NOT_SETTLED, authored=False))
+    return state, withheld, waiting
+
+
+class ResultOwn(NamedTuple):
+    """A result's own class and term as its page reads them first: its place, its class, the
+    class and term's read, its current value, and its year's terms by place, folded."""
+
+    place: ResultPlace
+    named: ClassOfYear
+    read: ClassTermRead
+    value: CurrentValue
+    terms: list[str]
+
+
+def result_own(store: ProjectStateStore, result_id: str) -> ResultOwn | None:
+    """A result's own class and term; None when no result of hers has that ID or it holds no
+    current value. A term not among its year's terms is ``GradeValueUndecodable``. A read."""
+    place = store.result_place(result_id)
+    named = None if place is None else store.class_named(place.class_id)
+    if place is None or named is None:
+        return None
+    read = store.class_term(place.class_id, place.term)
+    value = read.current.results.get(result_id)
+    if value is None:
+        return None
+    terms = [folded(one) for one in store.terms_of_year(named.year)]
+    if folded(place.term) not in terms:
+        # Its class's page can't be named: a term outside its year is a damaged record.
+        raise GradeValueUndecodable
+    return ResultOwn(place, named, read, value, terms)
+
+
+def result_page_read(state: ApplicationState, result_id: str) -> dict[str, object] | None:
+    """What a result's page shows, read in one hold in class details' order: the result's own
+    class and term with its lines, her links, then the rest of the score read. None when the ID
+    has no such shape, or names no result of hers with a current value."""
+    store = state.project_state
+    if not RESULT_ID.fullmatch(result_id):
+        return None
+    with store.reading():
+        own = result_own(store, result_id)
+        if own is None:
+            return None
+        place, named, read, value, terms = own
+        names = report_names(read.reports, state.clock.zone)
+        _, shown = result_shown(
+            value,
+            year=named.year,
+            first_month=store.first_month_of(named.year),
+            newest=newest_current(read.reports),
+            names=names,
+        )
+        links = read_links(store)
+        everyone = store.all_assignments()
+        years = read_grade_facts(store, (one.course for one in everyone))
+        claims = (
+            store.read_claims([one.assignment_id for one in everyone])
+            if results_read(years)
+            else None
+        )
+        current = store.grade_contexts().current
+        view = result_homework(
+            named,
+            place.term,
+            result_id,
+            value,
+            rule_values(
+                everyone,
+                {} if claims is None else claims.records,
+                () if claims is None else claims.unreadable,
+                years,
+            ),
+            links=links,
+            current_year=None if current is None else current[0],
+        )
+    state_said, withheld, waiting = result_said(view)
+    rows: dict[str, HomeworkRow] = {}
+    for row in (view.linked, *view.candidates, *view.apart):
+        if row is not None:
+            rows.setdefault(row.assignment_id, row)
+    return {
+        "missing": None,
+        "back": CLASS_AT.format(
+            base=GRADES, class_id=place.class_id, n=terms.index(folded(place.term)) + 1
+        ),
+        "class_name": named.name,
+        "term_name": place.term,
+        "year": named.year,
+        "result_id": result_id,
+        "item": shown,
+        "state": state_said,
+        "score_not_shown": SCORE_NOT_SHOWN,
+        "withheld": withheld,
+        "connect": HOMEWORK_CLASSES if Withheld.NAME_NOT_CONNECTED in view.withheld else None,
+        "not_matched": NOT_MATCHED_BY_ITSELF,
+        "waiting": waiting,
+        "rows": [
+            row_shown(number, row, view.linked) for number, row in enumerate(rows.values(), start=1)
+        ],
+        "action": RESULT_HOMEWORK.format(result_id=result_id),
+        "revision": "" if place.revision is None else str(place.revision),
+    }
+
+
+def grade_page_not_shown(error: GradeValueUndecodable) -> Response:
+    """The generic answer of a grade page a stored value or her links stop, with one record of
+    the failure's type alone: nothing the gradebook holds is written."""
+    logger.warning("a grade page wasn't shown: %s", type(error).__name__)
+    return Response("Internal Server Error", status_code=500, media_type="text/plain")
+
+
+def result_page(
+    request: Request,
+    state: ApplicationState,
+    result_id: str,
+    *,
+    said: str | None = None,
+    status_code: int = 200,
+) -> Response:
+    """A result's page as it reads now, with ``said`` first when an answer says something, or
+    the page saying no current record holds the result. A read alone."""
+    context: dict[str, object] = {"grades": GRADES, "marks": state.settings.page_marks}
+    shown = result_page_read(state, result_id)
+    if shown is None:
+        return templates.TemplateResponse(
+            request,
+            "grade_result_homework.html",
+            {**context, "missing": RESULT_NOT_ON_RECORD},
+            status_code=404,
+        )
+    return templates.TemplateResponse(
+        request,
+        "grade_result_homework.html",
+        {**context, **shown, "problem": said},
+        status_code=status_code,
+    )
+
+
+def link_not_written(error: GradeValueUndecodable) -> Response:
+    """The generic answer of a decision a stored value or her links stop, with one record of
+    the failure's type alone: nothing the gradebook holds is written."""
+    logger.warning("a homework link wasn't written: %s", type(error).__name__)
+    return Response("Internal Server Error", status_code=500, media_type="text/plain")
+
+
+@family_router.get("/results/{result_id}/homework", response_class=HTMLResponse)
+def homework_for_result(result_id: str, request: Request, state: State) -> Response:
+    """Route 12: the homework of one result, a parent's page, with a form for each decision."""
+    try:
+        return result_page(request, state, result_id)
+    except GradeValueUndecodable as error:
+        return grade_page_not_shown(error)
+
+
+@family_router.post("/results/{result_id}/homework", response_class=HTMLResponse)
+async def decide_homework(result_id: str, request: Request, state: State) -> Response:
+    """Route 13: a parent's decision about the result and one homework, by the store's one
+    write. A decision written now or standing already lands on the result's heading. Other
+    handled outcomes return a page with an explanation or the plain generic 500."""
+    fields, whole = await fields_of(request, DECISION_FIELDS)
+    homework, decision = fields.get("homework", "").strip(), fields.get("decision", "")
+    revision = fields.get("revision", "")
+    answer = partial(result_page, request, state, result_id)
+    try:
+        if not RESULT_ID.fullmatch(result_id):
+            return answer()
+        if (
+            not whole
+            or not homework
+            or decision not in get_args(LinkDecision)
+            or not A_REVISION.fullmatch(revision)
+            or int(revision) > REVISION_MAX
+        ):
+            return answer(said=CHOOSE_HOMEWORK, status_code=422)
+        # A read of its own, before the write and outside its transaction: a term not among
+        # its year's terms stops the press as it stops the page; no result is the write's 404.
+        with state.project_state.reading():
+            result_own(state.project_state, result_id)
+        try:
+            async with state.decision_lock:
+                outcome = state.project_state.decide_homework_link(
+                    result_id,
+                    homework,
+                    decision=cast(LinkDecision, decision),
+                    revision=int(revision),
+                    role=role_of(state),
+                )
+        except GradeTransactionLost:
+            return answer(said=PRESS_UNKNOWN, status_code=500)
+        except GradeReportNotSaved:
+            return answer(said=NOT_SAVED, status_code=500)
+        if isinstance(outcome, RequiredIndexUnavailable):
+            logger.warning(INDEX_UNAVAILABLE)
+            return Response("Internal Server Error", status_code=500, media_type="text/plain")
+        if isinstance(outcome, HomeworkLinkResultNotOnRecord):
+            return answer()
+        if isinstance(outcome, HomeworkLinkChanged):
+            return answer(said=LINKS_CHANGED, status_code=409)
+        if isinstance(outcome, HomeworkLinkClassNameChanged):
+            return answer(said=NAME_CONNECTED_DIFFERENTLY, status_code=409)
+        if isinstance(outcome, HomeworkLinkHomeworkNotOnRecord):
+            return answer(said=HOMEWORK_NOT_ON_RECORD, status_code=409)
+    except GradeValueUndecodable as error:
+        return link_not_written(error)
+    return RedirectResponse(RESULT_HOMEWORK_AT.format(result_id=result_id), status_code=303)

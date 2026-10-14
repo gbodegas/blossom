@@ -27,6 +27,10 @@ link names the result, and the rules stand none of its pairs. For this alone, a 
 assignment has a confirmed link to another result still counts as the result's. Whether a
 result waits never depends on its points or on whether its class and term still show it.
 
+For each result, ``candidate_homework`` gives every assignment that meets the class, the title
+and the date for it, whether or not a link takes the pair out of the count, and the assignment
+the rules stand it with.
+
 Everything arrives as plain values, hers alone: each side's day with whether it is fully
 resolved, the classes each assignment's name connects to, and a parent's standing links.
 Nothing here reads a store, a clock, a term in use or what is said about an assignment.
@@ -104,6 +108,18 @@ class Waiting:
     unsettled: bool
 
 
+@dataclass(frozen=True)
+class Candidates:
+    """A result with the assignments that could be it by class, title and date, whatever links
+    stand, in the order the assignments came, and the one the rules stand it with, if any."""
+
+    class_id: str
+    term: str
+    result_id: str
+    assignments: tuple[str, ...]
+    stood: str | None
+
+
 def result_of(
     class_id: str, term: str, result_id: str, value: CurrentValue, day: date | None
 ) -> Result:
@@ -134,11 +150,13 @@ def settled(side: Homework | Result) -> date | None:
 
 
 class Pairs(NamedTuple):
-    """What a parent's links leave: the results in a list; per assignment, its candidates'
-    places less each pair with a link and each result a confirmed link names (``unjudged``),
-    and the one the rules stand it with (``stood``); and each assignment's linked result IDs."""
+    """The results in a list; per assignment, its candidates' places whatever links stand
+    (``could``), those less each pair with a link and each result a confirmed link names
+    (``unjudged``), and the one the rules stand it with (``stood``); and each assignment's
+    linked result IDs."""
 
     school: list[Result]
+    could: list[list[int]]
     unjudged: list[list[int]]
     stood: list[int | None]
     named: dict[str, set[str]]
@@ -150,9 +168,9 @@ def pairs_of(
     classes: Mapping[str, Collection[str]],
     links: Collection[Link],
 ) -> Pairs:
-    """The step both answers share: who competes once a parent's links are read, and which
-    pairs the rules stand before points and showing are read. Two confirmed links that name
-    one result raise ``HomeworkLinksConflict`` before anything is paired."""
+    """The step every answer shares: who could be whose, who competes once a parent's links
+    are read, and which pairs the rules stand before points and showing are read. Two confirmed
+    links that name one result raise ``HomeworkLinksConflict`` before anything is paired."""
     named: dict[str, set[str]] = {}
     held: set[str] = set()
     for link in links:
@@ -166,24 +184,29 @@ def pairs_of(
     school = list(results)
     titled: dict[tuple[str, str], list[int]] = {}
     for place, result in enumerate(school):
-        if result.title is not None and result.result_id not in held:
+        if result.title is not None:
             titled.setdefault((result.class_id, title_key(result.title)), []).append(place)
+    could: list[list[int]] = []
     unjudged: list[list[int]] = []
     rivals = [0] * len(school)
     for one in assignments:
         day = settled(one)
         key = title_key(one.title)
-        mine = []
+        every, mine = [], []
         for class_id in set(classes.get(one.assignment_id, ())):
             for place in titled.get((class_id, key), ()):
-                if (one.assignment_id, school[place].result_id) in judged:
-                    continue
                 other = settled(school[place])
-                if day is None or other is None or day == other:
-                    mine.append(place)
-                    # A linked assignment's pairs stay unjudged and are out of the count.
-                    if one.assignment_id not in named:
-                        rivals[place] += 1
+                if day is not None and other is not None and day != other:
+                    continue
+                every.append(place)
+                result_id = school[place].result_id
+                if result_id in held or (one.assignment_id, result_id) in judged:
+                    continue
+                mine.append(place)
+                # A linked assignment's pairs stay unjudged and are out of the count.
+                if one.assignment_id not in named:
+                    rivals[place] += 1
+        could.append(every)
         unjudged.append(mine)
     stood: list[int | None] = []
     for one, mine in zip(assignments, unjudged, strict=True):
@@ -191,7 +214,7 @@ def pairs_of(
         day = settled(one)
         both = alone and day is not None and day == settled(school[mine[0]])
         stood.append(mine[0] if both else None)
-    return Pairs(school, unjudged, stood, named)
+    return Pairs(school, could, unjudged, stood, named)
 
 
 def school_scores(
@@ -205,7 +228,7 @@ def school_scores(
     them: its linked ones, or else the one the rules stand. One that shows none is left out.
     ``classes`` gives each assignment's connected classes; ``decided``, a parent's links."""
     assignments = list(homework)
-    school, _, stood, named = pairs_of(assignments, results, classes, decided)
+    school, _, _, stood, named = pairs_of(assignments, results, classes, decided)
     shown: dict[str, tuple[ScoreAt, ...]] = {}
     for one, place in zip(assignments, stood, strict=True):
         links = named.get(one.assignment_id)
@@ -239,7 +262,7 @@ def waiting_results(
     """The results that wait for a parent's choice, in the order ``results`` gives them, each
     with every reason that holds for it. The parameters are those of ``school_scores``."""
     assignments = list(homework)
-    school, unjudged, stood, named = pairs_of(assignments, results, classes, decided)
+    school, _, unjudged, stood, named = pairs_of(assignments, results, classes, decided)
     could_be: list[list[int]] = [[] for _ in school]
     for index, mine in enumerate(unjudged):
         for place in mine:
@@ -267,3 +290,37 @@ def waiting_results(
             )
         )
     return tuple(waiting)
+
+
+def candidate_homework(
+    homework: Iterable[Homework],
+    results: Iterable[Result],
+    classes: Mapping[str, Collection[str]],
+    *,
+    decided: Collection[Link] = (),
+) -> tuple[Candidates, ...]:
+    """Each result with a candidate, in the order ``results`` gives them: its candidates
+    whatever links stand, and the assignment the rules stand it with once ``decided`` is read.
+    The parameters are those of ``school_scores``."""
+    assignments = list(homework)
+    school, could, _, stood, _ = pairs_of(assignments, results, classes, decided)
+    theirs: list[list[str]] = [[] for _ in school]
+    for one, places in zip(assignments, could, strict=True):
+        for place in places:
+            theirs[place].append(one.assignment_id)
+    stands = {
+        place: one.assignment_id
+        for one, place in zip(assignments, stood, strict=True)
+        if place is not None
+    }
+    return tuple(
+        Candidates(
+            class_id=result.class_id,
+            term=result.term,
+            result_id=result.result_id,
+            assignments=tuple(theirs[place]),
+            stood=stands.get(place),
+        )
+        for place, result in enumerate(school)
+        if theirs[place]
+    )

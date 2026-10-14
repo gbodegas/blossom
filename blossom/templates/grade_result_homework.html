@@ -1,0 +1,79 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% from "grade_result_card.html" import result %}
+{% set page = "parent-grades" %}
+{% block title %}Blossom - Homework for this result{% endblock %}
+{#
+  A parent's page about one result: the result as class details draws it, whether it is linked
+  to homework, matched by the rules or neither, why its score stays off her homework, why the
+  rules leave it waiting, and a row for each homework that could be it, is linked to it or is
+  kept apart from it, with one form for each decision. Each form sends the homework, the
+  decision and the revision the page was read at; the address holds the result's ID alone.
+  The heading takes the focus, so a press, and the way in from class details, land on it. The
+  buttons of a row are one group, each its own form; a link to homework not on record is named
+  by the page's state line, said once. A school-year range stays whole where a line can hold
+  it. When a response renders this page with an explanation, the explanation takes focus when
+  the page opens, and nothing else does. A press that stands lands as a written one does. A
+  press the index, a stored value or her links stop gets the plain generic 500.
+#}
+{% macro words(line) %}{% if line.keep %}{{ line.text[:line.keep_at] }}<span class="year-range">{{ line.keep }}</span>{{ line.text[line.keep_at + line.keep|length:] }}{% else %}{{ line.text }}{% endif %}{% endmacro %}
+{% macro said(line) %}{% if line.authored %}<span class="authored-text">{{ words(line) }}</span>{% else %}{{ words(line) }}{% endif %}{% endmacro %}
+{% block content %}
+  {% if missing %}
+    <p class="return"><a href="{{ grades }}">Back to Grades</a></p>
+    <h1>Homework for this result</h1>
+    <p class="problem" role="alert" id="problem" tabindex="-1" autofocus>{{ missing }}</p>
+  {% else %}
+    <p class="return"><a href="{{ back }}">Back to <span class="authored-text">{{ class_name }}</span></a></p>
+    <h1 id="homework" tabindex="-1">Homework for this result</h1>
+    {% if problem %}
+      <p class="problem" role="alert" id="problem" tabindex="-1" autofocus>{{ problem }}</p>
+    {% endif %}
+    <p>{{ term_name }} · <span class="year-range">{{ year }}</span></p>
+    <p class="course">School result</p>
+    {{ result(item, result_id, 2) }}
+    <p id="state">{{ said(state) }}</p>
+    {% if withheld %}
+      <p>{{ score_not_shown }}</p>
+      <ul>
+        {% for line in withheld %}
+          <li>{{ said(line) }}</li>
+        {% endfor %}
+      </ul>
+      {% if connect %}
+        <p class="return"><a href="{{ connect }}">Homework class names</a></p>
+      {% endif %}
+    {% endif %}
+    {% if waiting %}
+      <p>{{ not_matched }}</p>
+      <ul>
+        {% for line in waiting %}
+          <li>{{ said(line) }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% for row in rows %}
+      <section class="panel grade-card" aria-labelledby="{{ row.label }}">
+        {% if row.title is not none %}
+          <p class="course"><span class="authored-text">{{ row.course }}</span></p>
+          <h2 class="card-title" id="homework-{{ row.number }}"><span class="authored-text">{{ row.title }}</span></h2>
+          <p class="due">{{ row.due }}</p>
+        {% endif %}
+        {% for line in row.said %}
+          <p{% if row.title is none and loop.first %} id="homework-{{ row.number }}"{% endif %}>{{ said(line) }}</p>
+        {% endfor %}
+        <div class="actions">
+          {% for decision, label in row.buttons %}
+            <form method="post" action="{{ action }}">
+              <input type="hidden" name="homework" value="{{ row.assignment_id }}">
+              <input type="hidden" name="decision" value="{{ decision }}">
+              <input type="hidden" name="revision" value="{{ revision }}">
+              <button type="submit" class="secondary">{{ label }}</button>
+            </form>
+          {% endfor %}
+        </div>
+      </section>
+    {% endfor %}
+  {% endif %}
+{% endblock %}

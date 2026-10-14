@@ -9,32 +9,11 @@
   its score as the school wrote it, by due date, newest first, and the dates not confirmed
   apart; then the categories and the term's reports. A class or place not on record says so.
 
-  A result's card is drawn with the parts of a card on her week, in that card's order: the
-  category as the kicker, the title, the due line with the gradebook status as its quieter
-  phrase, the score, where it was last shown, and the school record details under the card's
-  rule. A category the school reported is the kicker; one it left blank, or that wasn't read or
-  copied, says so in the same place as a quiet line. The title carries the result's ID and
-  takes the focus, so a link to one result lands on it.
+  A result's card is drawn by the macro its own file holds, which a result's homework page
+  shares. A parent reading also gets, on each card, the way to the result's homework page and,
+  for a linked result, which homework it is linked to.
 #}
-{% macro result(item, result_id) %}
-  <section class="panel grade-card">
-    <p class="{{ 'course' if item.category_reported else 'source' }}"><span class="authored-text">{{ item.category }}</span></p>
-    <h3 class="card-title" id="{{ result_id }}" tabindex="-1"><span class="authored-text">{{ item.title }}</span></h3>
-    <p class="due">{{ item.due }} <span class="source">{{ item.status }}</span></p>
-    <p class="effect">{{ item.score }}</p>
-    {% for line in item.showing %}
-      <p class="source">{{ line }}</p>
-    {% endfor %}
-    <details class="steps update">
-      <summary>School record details{% if item.cues %}: {{ item.cues|join(", ") }}{% endif %}</summary>
-      <ul class="record-lines">
-        {% for line in item.record %}
-          <li><span class="authored-text">{{ line }}</span></li>
-        {% endfor %}
-      </ul>
-    </details>
-  </section>
-{% endmacro %}
+{% from "grade_result_card.html" import result %}
 {% block content %}
   <p class="return"><a href="{{ grades }}">Back to Grades</a></p>
   {% if missing %}
@@ -51,11 +30,11 @@
     {% endif %}
     {% if dated %}
       <h2 class="grade-heading">Assignments</h2>
-      {% for result_id, item in dated %}{{ result(item, result_id) }}{% endfor %}
+      {% for result_id, item in dated %}{{ result(item, result_id, 3, ways.get(result_id)) }}{% endfor %}
     {% endif %}
     {% if undated %}
       <h2 class="grade-heading">Date not confirmed</h2>
-      {% for result_id, item in undated %}{{ result(item, result_id) }}{% endfor %}
+      {% for result_id, item in undated %}{{ result(item, result_id, 3, ways.get(result_id)) }}{% endfor %}
     {% endif %}
     {% if categories %}
       <details class="steps">
