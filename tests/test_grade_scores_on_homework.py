@@ -20,7 +20,7 @@ import sqlite3
 import sys
 import threading
 import types
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, time
 from time import monotonic
 from typing import Any
@@ -32,8 +32,23 @@ from blossom.grades.dates import due_date_of
 from blossom.grades.draft import GradeReportDraft, GradeValue, Presence, capture_key, folded
 from blossom.grades.identity import name_form_key
 from blossom.grades.projection import MadeCurrent, original_of
-from blossom.grades.review import GradeReportSaved, GradeValueUndecodable, MatchAnswer
-from blossom.grades.school_scores import Homework, Link, Result, ScoreAt, school_scores
+from blossom.grades.review import (
+    CurrentValue,
+    GradeReportSaved,
+    GradeValueUndecodable,
+    HomeworkLinksConflict,
+    MatchAnswer,
+    ReportAt,
+)
+from blossom.grades.school_scores import (
+    Homework,
+    Link,
+    Result,
+    ScoreAt,
+    Waiting,
+    school_scores,
+    waiting_results,
+)
 from blossom.grades.text_reader import read_grade_report
 from blossom.grades.wording import report_names, score_line, spoken_day
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
@@ -41,11 +56,18 @@ from blossom.noticing import canonical_active_input, planning_digest, read_every
 from blossom.plans import PlanBlock
 from blossom.reconciliation import SourceChannel
 from blossom.routes.homework_scores import (
+    HomeworkRow,
+    PairStanding,
+    ResultHomework,
+    RuleValues,
     ScoreShown,
+    Withheld,
     homework_of,
     read_grade_facts,
     read_score_facts,
+    result_homework,
     results_read,
+    rule_values,
     scores_shown,
 )
 from blossom.routes.navigation import (
@@ -60,6 +82,7 @@ from blossom.stores import gradebook
 from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
     UNCONNECTED,
+    ClassOfYear,
     DeletePreview,
     HomeworkLinkWritten,
     LinkDecision,
@@ -4281,3 +4304,792 @@ def test_an_undecodable_cell_beside_a_link_or_a_conflict_leaves_no_score_and_one
     assert first == [LEFT_OUT]
     assert both == []
     assert second == [LEFT_OUT]
+
+
+THE_CLASS = ClassOfYear("class-biology", BIOLOGY, YEAR)
+NOTEBOOK_ID = "assignment-notebook"
+LINKED, APART = PairStanding.LINKED, PairStanding.APART
+
+
+def school_result(
+    result_id: str,
+    title: str = LOG,
+    *,
+    term: str = "T1",
+    class_id: str = THE_CLASS.class_id,
+    scored: bool = True,
+    shown: bool = True,
+) -> Result:
+    """A result as the score rules read it, due on the log's day."""
+    return Result(class_id, term, result_id, title, THURSDAY, True, scored, shown)
+
+
+def as_read(
+    items: Sequence[Assignment],
+    results: Sequence[Result],
+    *,
+    in_doubt: Collection[str] = (),
+    unconnected: Collection[str] = (),
+) -> RuleValues:
+    """One page read as plain values: each assignment's name connected to the one class but
+    for those ``unconnected``, and a date claim that can't be read for those ``in_doubt``."""
+    return RuleValues(
+        homework=[homework_of(item, (), item.assignment_id in in_doubt) for item in items],
+        results=list(results),
+        classes={
+            item.assignment_id: [THE_CLASS.class_id]
+            for item in items
+            if item.assignment_id not in unconnected
+        },
+        found={},
+    )
+
+
+def value_with(points: Presence = Presence.REPORTED, *, shown: bool = True) -> CurrentValue:
+    """A result's current value with its points cell in the presence ``points``, shown by its
+    class and term or else not shown by a newer report."""
+    text = {Presence.REPORTED: "18.0", Presence.UNREADABLE: "EX"}.get(points, "")
+    return CurrentValue(
+        cells={"assignment": (Presence.REPORTED, LOG), "points": (points, text)},
+        report_id="report",
+        order=1,
+        not_shown=None if shown else ReportAt("report-2", 2),
+    )
+
+
+def viewed(
+    result_id: str,
+    items: Sequence[Assignment],
+    read: RuleValues,
+    links: Collection[Link] = (),
+    *,
+    term: str = "T1",
+    value: CurrentValue | None = None,
+    current_year: str | None = YEAR,
+) -> ResultHomework:
+    """The view of a result of the one class, its points reported unless ``value`` says so."""
+    return result_homework(
+        THE_CLASS,
+        term,
+        result_id,
+        value_with() if value is None else value,
+        items,
+        read,
+        links=links,
+        current_year=current_year,
+    )
+
+
+def row(
+    item: Assignment,
+    standing: PairStanding = PairStanding.NONE,
+    *,
+    moves_link: bool = False,
+    another_result: bool = False,
+) -> HomeworkRow:
+    """A row for homework on record, with its class name, title and due date as written."""
+    return HomeworkRow(
+        assignment_id=item.assignment_id,
+        on_record=True,
+        course=item.course,
+        title=item.title,
+        due=item.due_date,
+        standing=standing,
+        moves_link=moves_link,
+        another_result=another_result,
+    )
+
+
+def off_record(assignment_id: str, standing: PairStanding) -> HomeworkRow:
+    """A row for homework that is not on record: its ID and the decision alone."""
+    return HomeworkRow(assignment_id, False, None, None, None, standing, False, False)
+
+
+def confirmed(assignment_id: str, result_id: str) -> Link:
+    return Link(assignment_id, result_id, confirmed=True)
+
+
+def kept_apart(assignment_id: str, result_id: str) -> Link:
+    return Link(assignment_id, result_id, confirmed=False)
+
+
+def test_a_result_s_view_says_linked_matched_or_neither_and_lists_each_candidate() -> None:
+    """Plain values: one result with homework of its title and day, and undated homework of
+    another title. The view names the homework the rules stand it with, or the homework a link
+    names, or neither, and every candidate keeps its row whatever decision stands."""
+    log, twin = homework(), homework("assignment-twin")
+    notebook = homework(NOTEBOOK_ID, NOTEBOOK, None)
+    one = [school_result("result-log")]
+    items = [log, notebook]
+    alone = as_read(items, one)
+
+    matched = viewed("result-log", items, alone)
+    apart = viewed("result-log", items, alone, [kept_apart(LOG_ID, "result-log")])
+    linked = viewed("result-log", items, alone, [confirmed(LOG_ID, "result-log")])
+    elsewhere = viewed("result-log", items, alone, [confirmed(NOTEBOOK_ID, "result-log")])
+    twins = viewed("result-log", [log, twin], as_read([log, twin], one))
+    spelled = viewed("result-log", items, alone, term="  T1 ")
+    unread = viewed("result-other", items, alone)
+
+    assert matched == ResultHomework(
+        class_id=THE_CLASS.class_id,
+        term="T1",
+        result_id="result-log",
+        class_name=BIOLOGY,
+        year=YEAR,
+        linked=None,
+        matched=row(log),
+        candidates=(row(log),),
+        apart=(),
+        withheld=(),
+        waiting=None,
+    )
+    assert apart == dataclasses.replace(
+        matched, matched=None, candidates=(row(log, APART),), apart=(row(log, APART),)
+    )
+    assert linked == dataclasses.replace(
+        matched, matched=None, linked=row(log, LINKED), candidates=(row(log, LINKED),)
+    )
+    assert elsewhere == dataclasses.replace(
+        matched,
+        matched=None,
+        linked=row(notebook, LINKED),
+        candidates=(row(log, moves_link=True),),
+    )
+    assert twins == dataclasses.replace(
+        matched,
+        matched=None,
+        candidates=(row(log), row(twin)),
+        waiting=Waiting(THE_CLASS.class_id, "T1", "result-log", 2, 0, False, False),
+    )
+    assert spelled == dataclasses.replace(matched, term="  T1 ")
+    assert unread == dataclasses.replace(
+        matched, result_id="result-other", matched=None, candidates=()
+    )
+
+
+def test_a_candidate_s_row_says_when_its_homework_already_has_another_linked_result() -> None:
+    """Plain values: one homework and a result of its title in each of two terms, the first
+    linked. The second waits with the homework as its candidate, and its row says the homework
+    has another linked result; linked too, its own row still says so."""
+    log = homework()
+    results = [school_result("result-first"), school_result("result-second", term="T2")]
+    read = as_read([log], results)
+    one = [confirmed(LOG_ID, "result-first")]
+    both = [*one, confirmed(LOG_ID, "result-second")]
+
+    first = viewed("result-first", [log], read, one)
+    second = viewed("result-second", [log], read, one, term="T2")
+    second_linked = viewed("result-second", [log], read, both, term="T2")
+
+    assert first.candidates == (row(log, LINKED),)
+    assert (first.linked, first.waiting) == (row(log, LINKED), None)
+    assert second.candidates == (row(log, another_result=True),)
+    assert (second.linked, second.matched) == (None, None)
+    assert second.waiting == Waiting(THE_CLASS.class_id, "T2", "result-second", 0, 0, True, False)
+    assert second_linked.linked == row(log, LINKED, another_result=True)
+    assert second_linked.waiting is None
+
+
+def test_pairs_kept_apart_and_a_link_are_listed_with_their_homework_on_record_or_not() -> None:
+    """Plain values: a result kept apart from homework of its title, from homework of another
+    title and from homework not among the assignments given, and linked to homework not among
+    them. Rows for homework on record come first, in the order the assignments came."""
+    log, notebook = homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)
+    items = [notebook, log]
+    read = as_read(items, [school_result("result-log")])
+    links = [
+        kept_apart("assignment-gone", "result-log"),
+        kept_apart(LOG_ID, "result-log"),
+        confirmed("assignment-left", "result-log"),
+        kept_apart(NOTEBOOK_ID, "result-log"),
+        kept_apart(LOG_ID, "result-other"),
+    ]
+
+    view = viewed("result-log", items, read, links, value=value_with(Presence.BLANK))
+
+    assert view.linked == off_record("assignment-left", LINKED)
+    assert view.matched is None
+    assert view.candidates == (row(log, APART, moves_link=True),)
+    assert view.apart == (
+        row(notebook, APART, moves_link=True),
+        row(log, APART, moves_link=True),
+        off_record("assignment-gone", APART),
+    )
+    assert view.withheld == ()
+    assert view.waiting is None
+
+
+@pytest.mark.parametrize(
+    ("value", "connected", "current_year", "withheld"),
+    [
+        pytest.param(value_with(), True, YEAR, (), id="nothing withheld"),
+        pytest.param(
+            value_with(Presence.BLANK), True, YEAR, (Withheld.POINTS_BLANK,), id="points blank"
+        ),
+        pytest.param(
+            value_with(Presence.UNREADABLE),
+            True,
+            YEAR,
+            (Withheld.POINTS_UNREADABLE,),
+            id="points unreadable",
+        ),
+        pytest.param(
+            value_with(Presence.NOT_CAPTURED),
+            True,
+            YEAR,
+            (Withheld.POINTS_NOT_IN_COPY,),
+            id="points not in the copy",
+        ),
+        pytest.param(value_with(shown=False), True, YEAR, (Withheld.NOT_SHOWN,), id="not shown"),
+        pytest.param(
+            value_with(), False, YEAR, (Withheld.NAME_NOT_CONNECTED,), id="name not connected"
+        ),
+        pytest.param(
+            value_with(),
+            False,
+            "2027-2028",
+            (Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR,),
+            id="name not connected, a class of another school year",
+        ),
+        pytest.param(
+            value_with(),
+            False,
+            None,
+            (Withheld.NAME_NOT_CONNECTED_IN_ANOTHER_YEAR,),
+            id="name not connected, no current school year",
+        ),
+        pytest.param(
+            value_with(Presence.BLANK, shown=False),
+            False,
+            YEAR,
+            (Withheld.POINTS_BLANK, Withheld.NOT_SHOWN, Withheld.NAME_NOT_CONNECTED),
+            id="all three at once",
+        ),
+    ],
+)
+def test_a_linked_result_names_each_reason_its_score_stays_off_her_homework(
+    value: CurrentValue, connected: bool, current_year: str | None, withheld: tuple[Withheld, ...]
+) -> None:
+    """Plain values: undated homework of another title linked to the result. The view names a
+    reason exactly when the score rules show no score for the pair, never reads a parent's
+    assertion, and names none with no link or with the linked homework not given."""
+    notebook = homework(NOTEBOOK_ID, NOTEBOOK, None)
+    scored = value.cells["points"][0] is Presence.REPORTED
+    results = [school_result("result-log", scored=scored, shown=value.not_shown is None)]
+    read = as_read([notebook], results, unconnected=() if connected else [NOTEBOOK_ID])
+    links = [confirmed(NOTEBOOK_ID, "result-log")]
+
+    view = viewed("result-log", [notebook], read, links, value=value, current_year=current_year)
+    unlinked = viewed("result-log", [notebook], read, value=value, current_year=current_year)
+    left = viewed("result-log", [], read, links, value=value, current_year=current_year)
+
+    assert view.withheld == withheld
+    assert view.linked == row(notebook, LINKED)
+    told = dataclasses.replace(value, asserted={"points": (Presence.REPORTED, "20.0")})
+    assert viewed("result-log", [notebook], read, links, value=told, current_year=current_year) == (
+        view
+    )
+    shows = school_scores(read.homework, read.results, read.classes, decided=links)
+    assert bool(shows) is (withheld == ())
+    assert unlinked.withheld == ()
+    assert (left.linked, left.withheld) == (off_record(NOTEBOOK_ID, LINKED), ())
+
+
+def test_each_result_of_a_class_waits_in_its_view_exactly_as_the_score_rules_name_it() -> None:
+    """Plain values: one class with a result of each kind that waits and of each that does not.
+    Every result's view holds the rules' own answer for it, and none both waits and stands."""
+
+    def rows(title: str, *assignment_ids: str) -> list[Assignment]:
+        return [homework(one, title) for one in assignment_ids]
+
+    items = [
+        *rows("Twin Homework", "twin-1", "twin-2"),
+        *rows("Twin Results", "shared"),
+        *rows("In Doubt", "doubt"),
+        *rows("No Points", "unscored"),
+        *rows("Showing", "showing"),
+        *rows("Kept Apart", "apart"),
+        *rows("Twins No Points", "pointless-1", "pointless-2"),
+        *rows("Linked", "linked"),
+        *rows("Second Result", "second"),
+        *rows("Both Ways", "first-row", "second-row"),
+    ]
+    results = [
+        school_result("twin-homework", "Twin Homework"),
+        school_result("twin-result-1", "Twin Results"),
+        school_result("twin-result-2", "Twin Results", term="T2"),
+        school_result("in-doubt", "In Doubt"),
+        school_result("no-points", "No Points", scored=False),
+        school_result("not-shown", "Showing", shown=False),
+        school_result("kept-apart", "Kept Apart"),
+        school_result("twins-no-points", "Twins No Points", scored=False),
+        school_result("linked", "Linked"),
+        school_result("first-linked", "Second Result"),
+        school_result("second-waits", "Second Result"),
+        school_result("row-linked", "Both Ways"),
+        school_result("row-ruled", "Both Ways"),
+        school_result("no-homework", "No Homework"),
+        school_result("unconnected", "Twin Homework", class_id="class-other"),
+    ]
+    links = [
+        kept_apart("apart", "kept-apart"),
+        confirmed("linked", "linked"),
+        confirmed("second", "first-linked"),
+        confirmed("first-row", "row-linked"),
+    ]
+    read = as_read(items, results, in_doubt=["doubt"])
+
+    named = {
+        (one.class_id, one.term, one.result_id): one
+        for one in waiting_results(read.homework, read.results, read.classes, decided=links)
+    }
+    views = {
+        one.result_id: result_homework(
+            ClassOfYear(one.class_id, BIOLOGY, YEAR),
+            one.term,
+            one.result_id,
+            value_with(),
+            items,
+            read,
+            links=links,
+            current_year=YEAR,
+        )
+        for one in results
+    }
+
+    def waits(
+        result_id: str,
+        assignments: int = 0,
+        results: int = 0,
+        *,
+        elsewhere: bool = False,
+        unsettled: bool = False,
+        term: str = "T1",
+    ) -> Waiting:
+        return Waiting(
+            THE_CLASS.class_id, term, result_id, assignments, results, elsewhere, unsettled
+        )
+
+    for one in results:
+        assert views[one.result_id].waiting == named.get((one.class_id, one.term, one.result_id))
+    assert {view.waiting for view in views.values() if view.waiting is not None} == {
+        waits("twin-homework", assignments=2),
+        waits("twin-result-1", results=2),
+        waits("twin-result-2", results=2, term="T2"),
+        waits("in-doubt", unsettled=True),
+        waits("twins-no-points", assignments=2),
+        waits("second-waits", elsewhere=True),
+    }
+    assert {
+        result_id: view.matched.assignment_id
+        for result_id, view in views.items()
+        if view.matched is not None
+    } == {"no-points": "unscored", "not-shown": "showing", "row-ruled": "second-row"}
+    assert {
+        result_id: view.linked.assignment_id
+        for result_id, view in views.items()
+        if view.linked is not None
+    } == {"linked": "linked", "first-linked": "second", "row-linked": "first-row"}
+    by_id = {item.assignment_id: item for item in items}
+    assert views["row-ruled"].candidates == (
+        row(by_id["first-row"], another_result=True),
+        row(by_id["second-row"]),
+    )
+    assert views["second-waits"].candidates == (row(by_id["second"], another_result=True),)
+    assert views["kept-apart"].candidates == (row(by_id["apart"], APART),)
+    assert [views[one].candidates for one in ("no-homework", "unconnected")] == [(), ()]
+    for view in views.values():
+        assert [view.linked, view.matched, view.waiting].count(None) >= 2
+
+
+def test_a_result_s_view_is_refused_whole_on_two_confirmed_links_naming_one_result() -> None:
+    """Plain values. The view raises the conflict error with no cause and no context, whether
+    or not the two links name the result asked about."""
+    log, twin = homework(), homework("assignment-twin")
+    read = as_read([log, twin], [school_result("result-log"), school_result("result-2")])
+    links = [confirmed(LOG_ID, "result-2"), confirmed("assignment-twin", "result-2")]
+
+    for result_id in ("result-log", "result-2"):
+        with pytest.raises(GradeValueUndecodable) as refused:
+            viewed(result_id, [log, twin], read, links)
+
+        assert type(refused.value) is HomeworkLinksConflict
+        assert refused.value.__cause__ is None
+        assert refused.value.__context__ is None
+
+
+def test_her_pages_and_a_result_s_view_take_the_rules_values_from_one_reading() -> None:
+    """With a report on record and homework for the log, the values the rules take hold each
+    assignment on record, the class's results in class details' order, and the class for each
+    assignment under its name; her pages' mapping names the assignments the rules show."""
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None)], {})
+        class_id = with_report(client)
+        years, links = read_score_facts(store, [BIOLOGY])
+        everyone = store.all_assignments()
+        read = rule_values(everyone, {}, (), years)
+        shown = scores_shown(
+            everyone, {}, (), years, links=links, zone=ZONE, base="/student/grades"
+        )
+        page = class_details(client, class_id)
+        log = result_named(client, class_id, LOG)
+
+    assert read.homework == [homework_of(item, (), False) for item in everyone]
+    assert read.classes == {
+        item.assignment_id: [class_id] for item in everyone if item.course == BIOLOGY
+    }
+    assert {LOG_ID, NOTEBOOK_ID} <= set(read.classes)
+    assert [one.result_id for one in read.results] == order_on_class_details(page)
+    assert {(one.class_id, one.term) for one in read.results} == {(class_id, "T1")}
+    assert set(read.found) == {(class_id, "T1", one.result_id) for one in read.results}
+    ruled = school_scores(read.homework, read.results, read.classes, decided=links)
+    assert {LOG_ID: [at.result_id for at in ruled[LOG_ID]]} == {LOG_ID: [log]}
+    assert list(shown) == list(ruled)
+
+
+def view_now(client: TestClient, class_id: str, result_id: str) -> tuple[ResultHomework, list[str]]:
+    """A result's view from the store as it stands, read as her pages read, and the IDs of the
+    assignments her pages' mapping shows a score on."""
+    store = store_of(client)
+    of = store.class_named(class_id)
+    current = store.grade_contexts().current
+    assert of is not None
+    assert current is not None
+    everyone = store.all_assignments()
+    years, links = read_score_facts(store, [one.course for one in everyone])
+    view = result_homework(
+        of,
+        "T1",
+        result_id,
+        store.class_term(class_id, "T1").current.results[result_id],
+        everyone,
+        rule_values(everyone, {}, (), years),
+        links=links,
+        current_year=current[0],
+    )
+    shown = scores_shown(everyone, {}, (), years, links=links, zone=ZONE, base="/student/grades")
+    return view, sorted(shown)
+
+
+def test_a_result_s_view_follows_each_decision_a_parent_makes_through_the_store() -> None:
+    """The log's result, homework of its title and day, and a notebook under a name a parent
+    connects; each decision by the store's own write, then the notebook's row deleted by hand,
+    as no save does. A reason is named exactly when her pages show no score for the link."""
+    name = "Life Science"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(), homework(NOTEBOOK_ID, NOTEBOOK, None, course=name)], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+
+        def now() -> tuple[ResultHomework, list[str]]:
+            return view_now(client, class_id, log)
+
+        on_record = {item.assignment_id: item for item in store.all_assignments()}
+        by_the_rules = now()
+        parent_links(client, class_id, log, decision="apart")
+        apart = now()
+        parent_links(client, class_id, log, decision="automatic")
+        again = now()
+        parent_links(client, class_id, log)
+        linked = now()
+        store.connect_homework_class(YEAR, name, shown=None, chosen=class_id, role="parent")
+        parent_links(client, class_id, log, NOTEBOOK_ID)
+        moved = now()
+        store.connect_homework_class(YEAR, name, shown=class_id, chosen=UNCONNECTED, role="parent")
+        disconnected = now()
+        stored(store, "DELETE FROM assignments WHERE assignment_id = ?", NOTEBOOK_ID)
+        left = now()
+
+    mine, notebook = on_record[LOG_ID], on_record[NOTEBOOK_ID]
+    plain = ResultHomework(
+        class_id=class_id,
+        term="T1",
+        result_id=log,
+        class_name=BIOLOGY,
+        year=YEAR,
+        linked=None,
+        matched=row(mine),
+        candidates=(row(mine),),
+        apart=(),
+        withheld=(),
+        waiting=None,
+    )
+    kept = row(mine, APART)
+    assert by_the_rules == (plain, [LOG_ID])
+    assert apart == (
+        dataclasses.replace(plain, matched=None, candidates=(kept,), apart=(kept,)),
+        [],
+    )
+    assert again == by_the_rules
+    assert linked == (
+        dataclasses.replace(
+            plain, matched=None, linked=row(mine, LINKED), candidates=(row(mine, LINKED),)
+        ),
+        [LOG_ID],
+    )
+    after_move = dataclasses.replace(
+        plain,
+        matched=None,
+        linked=row(notebook, LINKED),
+        candidates=(row(mine, APART, moves_link=True),),
+        apart=(row(mine, APART, moves_link=True),),
+    )
+    assert moved == (after_move, [NOTEBOOK_ID])
+    assert disconnected == (
+        dataclasses.replace(after_move, withheld=(Withheld.NAME_NOT_CONNECTED,)),
+        [],
+    )
+    assert left == (
+        dataclasses.replace(after_move, linked=off_record(NOTEBOOK_ID, LINKED)),
+        [],
+    )
+
+
+def test_a_linked_result_s_view_names_points_left_blank_and_a_report_that_does_not_show_it() -> (
+    None
+):
+    """Undated homework of another title linked to the log's result by the store's own write.
+    A newer report leaves the log's points blank; then a complete report doesn't show the log.
+    Each reason is named while her pages' mapping holds no score, and the link row stays."""
+    no_points = IN_WEEK.replace(LOG_ROW, "| Seed Germination Log |         | 20.0    | 90.0    |")
+    gone = "\n".join(line for line in IN_WEEK.split("\n") if LOG not in line)
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(title=NOTEBOOK, on=None)], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        parent_links(client, class_id, log)
+        rows = as_stored(store, "grade_homework_links")
+        shows = view_now(client, class_id, log)
+        with_report(client, no_points)
+        blank = view_now(client, class_id, log)
+        with_report(client, gone, complete=True)
+        both = view_now(client, class_id, log)
+        rows_after = as_stored(store, "grade_homework_links")
+
+    assert (shows[0].withheld, shows[1]) == ((), [LOG_ID])
+    assert (blank[0].withheld, blank[1]) == ((Withheld.POINTS_BLANK,), [])
+    assert (both[0].withheld, both[1]) == ((Withheld.POINTS_BLANK, Withheld.NOT_SHOWN), [])
+    assert {view.linked.assignment_id for view, _ in (shows, blank, both) if view.linked} == {
+        LOG_ID
+    }
+    assert rows_after == rows
+
+
+def test_twin_homework_waits_in_a_result_s_view_until_a_parent_links_one_through_the_store() -> (
+    None
+):
+    """Two homework rows with the log's class, title and day. The log's result waits with both
+    rows as its candidates; linked to one by the store's own write, it waits no more, both
+    rows stay listed, and the other row's says a link would move."""
+    twin = "assignment-twin"
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework(), homework(twin)], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        on_record = {item.assignment_id: item for item in store.all_assignments()}
+        waiting = view_now(client, class_id, log)
+        parent_links(client, class_id, log, twin)
+        linked = view_now(client, class_id, log)
+
+    mine, other = on_record[LOG_ID], on_record[twin]
+    assert waiting[0].candidates == (row(mine), row(other))
+    assert waiting[0].waiting == Waiting(class_id, "T1", log, 2, 0, False, False)
+    assert (waiting[0].linked, waiting[0].matched, waiting[1]) == (None, None, [])
+    assert linked[0].candidates == (row(mine, moves_link=True), row(other, LINKED))
+    assert (linked[0].linked, linked[0].waiting, linked[1]) == (row(other, LINKED), None, [twin])
+
+
+DONE_LOG = homework().model_copy(update={"reported_submission_status": "done"})
+"""The log's homework reported done: its status is not among what the rules read."""
+TWIN_ROW = homework("assignment-twin")
+NOTEBOOK_ROW = homework(NOTEBOOK_ID, NOTEBOOK, None)
+UNDATED_LOG = homework(on=None)
+
+
+@pytest.mark.parametrize(
+    ("items", "results", "links", "expected"),
+    [
+        pytest.param(
+            [homework()],
+            [school_result("r1")],
+            [],
+            {"r1": ([LOG_ID], LOG_ID, None)},
+            id="one pair by the rule",
+        ),
+        pytest.param(
+            [homework()],
+            [school_result("r1")],
+            [kept_apart(LOG_ID, "r1")],
+            {"r1": ([LOG_ID], None, None)},
+            id="one pair kept apart",
+        ),
+        pytest.param(
+            [NOTEBOOK_ROW],
+            [school_result("r1")],
+            [confirmed(NOTEBOOK_ID, "r1")],
+            {"r1": ([], None, NOTEBOOK_ID)},
+            id="titles differ, linked",
+        ),
+        pytest.param(
+            [UNDATED_LOG],
+            [school_result("r1")],
+            [confirmed(LOG_ID, "r1")],
+            {"r1": ([LOG_ID], None, LOG_ID)},
+            id="homework undated, linked",
+        ),
+        pytest.param(
+            [homework(), TWIN_ROW],
+            [school_result("r1")],
+            [],
+            {"r1": ([LOG_ID, "assignment-twin"], None, None)},
+            id="twin homework",
+        ),
+        pytest.param(
+            [DONE_LOG, TWIN_ROW],
+            [school_result("r1")],
+            [],
+            {"r1": ([LOG_ID, "assignment-twin"], None, None)},
+            id="twin homework, one done",
+        ),
+        pytest.param(
+            [homework(), TWIN_ROW],
+            [school_result("r1")],
+            [confirmed(LOG_ID, "r1")],
+            {"r1": ([LOG_ID, "assignment-twin"], None, LOG_ID)},
+            id="twin homework, one linked",
+        ),
+        pytest.param(
+            [homework(), TWIN_ROW],
+            [school_result("r1")],
+            [kept_apart(LOG_ID, "r1")],
+            {"r1": ([LOG_ID, "assignment-twin"], "assignment-twin", None)},
+            id="twin homework, one kept apart",
+        ),
+        pytest.param(
+            [homework()],
+            [school_result("r1"), school_result("r2")],
+            [],
+            {"r1": ([LOG_ID], None, None), "r2": ([LOG_ID], None, None)},
+            id="twin results",
+        ),
+        pytest.param(
+            [homework()],
+            [school_result("r1"), school_result("r2")],
+            [confirmed(LOG_ID, "r1")],
+            {"r1": ([LOG_ID], None, LOG_ID), "r2": ([LOG_ID], None, None)},
+            id="twin results, one linked",
+        ),
+        pytest.param(
+            [homework()],
+            [school_result("r1"), school_result("r2")],
+            [confirmed(LOG_ID, "r1"), confirmed(LOG_ID, "r2")],
+            {"r1": ([LOG_ID], None, LOG_ID), "r2": ([LOG_ID], None, LOG_ID)},
+            id="twin results, both linked",
+        ),
+        pytest.param(
+            [homework()],
+            [school_result("r1"), school_result("r2", term="T2")],
+            [confirmed(LOG_ID, "r2")],
+            {"r1": ([LOG_ID], None, None), "r2": ([LOG_ID], None, LOG_ID)},
+            id="twin results in two terms, the later linked",
+        ),
+        pytest.param(
+            [homework(), TWIN_ROW],
+            [school_result("r1"), school_result("r2")],
+            [confirmed(LOG_ID, "r1")],
+            {
+                "r1": ([LOG_ID, "assignment-twin"], None, LOG_ID),
+                "r2": ([LOG_ID, "assignment-twin"], "assignment-twin", None),
+            },
+            id="twin homework and twin results, one pair linked",
+        ),
+        pytest.param(
+            [homework(), NOTEBOOK_ROW],
+            [school_result("r1")],
+            [confirmed(NOTEBOOK_ID, "r1")],
+            {"r1": ([LOG_ID], None, NOTEBOOK_ID)},
+            id="the rule's homework beside a link to other homework",
+        ),
+        pytest.param(
+            [homework()],
+            [school_result("r1"), school_result("r2", NOTEBOOK, scored=False)],
+            [confirmed(LOG_ID, "r2")],
+            {"r1": ([LOG_ID], None, None), "r2": ([], None, LOG_ID)},
+            id="linked to a result without points, beside the rule's own result",
+        ),
+    ],
+)
+def test_a_view_s_candidates_and_match_are_the_rules_own_for_twins_and_single_pairs(
+    items: list[Assignment],
+    results: list[Result],
+    links: list[Link],
+    expected: dict[str, tuple[list[str], str | None, str | None]],
+) -> None:
+    """Plain values. Each result's view lists the candidates, the homework the rules stand it
+    with, and the linked homework given below, and the homework it is matched with is the one
+    the score rules show it on."""
+    read = as_read(items, results)
+
+    views = {
+        one.result_id: viewed(one.result_id, items, read, links, term=one.term) for one in results
+    }
+
+    assert {
+        result_id: (
+            [one.assignment_id for one in view.candidates],
+            None if view.matched is None else view.matched.assignment_id,
+            None if view.linked is None else view.linked.assignment_id,
+        )
+        for result_id, view in views.items()
+    } == expected
+    ruled = school_scores(read.homework, read.results, read.classes, decided=links)
+    assert {
+        at.result_id: assignment_id
+        for assignment_id, shown in ruled.items()
+        for at in shown
+        if not at.linked
+    } == {
+        result_id: view.matched.assignment_id
+        for result_id, view in views.items()
+        if view.matched is not None
+    }
+
+
+def test_a_result_s_view_holds_closed_fields_and_closed_sets_of_values() -> None:
+    assert [field.name for field in dataclasses.fields(ResultHomework)] == [
+        "class_id",
+        "term",
+        "result_id",
+        "class_name",
+        "year",
+        "linked",
+        "matched",
+        "candidates",
+        "apart",
+        "withheld",
+        "waiting",
+    ]
+    assert [field.name for field in dataclasses.fields(HomeworkRow)] == [
+        "assignment_id",
+        "on_record",
+        "course",
+        "title",
+        "due",
+        "standing",
+        "moves_link",
+        "another_result",
+    ]
+    assert list(PairStanding) == ["none", "linked", "apart"]
+    assert list(Withheld) == [
+        "points_blank",
+        "points_unreadable",
+        "points_not_in_copy",
+        "not_shown",
+        "name_not_connected",
+        "name_not_connected_in_another_year",
+    ]

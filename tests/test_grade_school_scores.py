@@ -27,11 +27,13 @@ from blossom.grades.review import (
     ReportAt,
 )
 from blossom.grades.school_scores import (
+    Candidates,
     Homework,
     Link,
     Result,
     ScoreAt,
     Waiting,
+    candidate_homework,
     result_of,
     school_scores,
     waiting_results,
@@ -873,3 +875,334 @@ def test_a_result_is_read_with_its_own_place_title_day_and_showing() -> None:
     assert result_of(GEOMETRY, "T1", "result-1", plain, None) == result(day=None)
     assert result_of(GEOMETRY, "T1", "result-1", gone, DAY) == result(shown=False)
     assert result_of(GEOMETRY, "T1", "result-1", untitled, DAY) == result(title=None)
+
+
+def could_be(
+    result_id: str,
+    *assignments: str,
+    stood: str | None = None,
+    class_id: str = GEOMETRY,
+    term: str = "T1",
+) -> Candidates:
+    """A result as an answer names it, with its candidate assignments and the one that stands."""
+    return Candidates(class_id, term, result_id, assignments, stood)
+
+
+def place_of(one: Candidates | ScoreAt | Waiting) -> tuple[str, str, str]:
+    """The class, term and ID an answer names a result by."""
+    return (one.class_id, one.term, one.result_id)
+
+
+@pytest.mark.parametrize(
+    ("homework_read", "results", "links", "found"),
+    [
+        pytest.param(
+            [ONE], [FIRST], [], (could_be("result-1", "homework-1", stood="homework-1"),), id="one"
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST],
+            [apart("homework-1", "result-1")],
+            (could_be("result-1", "homework-1"),),
+            id="one each way, kept apart",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST],
+            [link("homework-1", "result-1")],
+            (could_be("result-1", "homework-1"),),
+            id="one each way, linked",
+        ),
+        pytest.param(
+            [RENAMED], [FIRST], [link("homework-2", "result-1")], (), id="linked, titles differ"
+        ),
+        pytest.param(
+            [ONE, RENAMED],
+            [FIRST],
+            [link("homework-2", "result-1")],
+            (could_be("result-1", "homework-1"),),
+            id="linked to homework of another title, with homework of its own title",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST],
+            [link("homework-gone", "result-1")],
+            (could_be("result-1", "homework-1"),),
+            id="linked to homework not given",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST],
+            [link("homework-1", "result-gone")],
+            (could_be("result-1", "homework-1"),),
+            id="its homework linked to a result not given",
+        ),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST],
+            [],
+            (could_be("result-1", "homework-1", "homework-2"),),
+            id="two assignments",
+        ),
+        pytest.param(
+            [TWIN, ONE],
+            [FIRST],
+            [],
+            (could_be("result-1", "homework-2", "homework-1"),),
+            id="two assignments given in the other order",
+        ),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST],
+            [link("homework-1", "result-1")],
+            (could_be("result-1", "homework-1", "homework-2"),),
+            id="two assignments, one linked",
+        ),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST],
+            [apart("homework-1", "result-1")],
+            (could_be("result-1", "homework-1", "homework-2", stood="homework-2"),),
+            id="two assignments, one kept apart: the rules stand the other",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND],
+            [],
+            (could_be("result-1", "homework-1"), could_be("result-2", "homework-1")),
+            id="two results",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND],
+            [link("homework-1", "result-1")],
+            (could_be("result-1", "homework-1"), could_be("result-2", "homework-1")),
+            id="two results, one linked",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, SECOND],
+            [link("homework-1", "result-1"), link("homework-1", "result-2")],
+            (could_be("result-1", "homework-1"), could_be("result-2", "homework-1")),
+            id="two results, both linked",
+        ),
+        pytest.param(
+            [ONE],
+            [FIRST, result("result-2", term="T2")],
+            [link("homework-1", "result-2")],
+            (could_be("result-1", "homework-1"), could_be("result-2", "homework-1", term="T2")),
+            id="two results, the one in another term linked",
+        ),
+        pytest.param(
+            [ONE, TWIN],
+            [FIRST, SECOND],
+            [link("homework-1", "result-1")],
+            (
+                could_be("result-1", "homework-1", "homework-2"),
+                could_be("result-2", "homework-1", "homework-2", stood="homework-2"),
+            ),
+            id="two assignments and two results, one pair linked: the rules stand the other",
+        ),
+        pytest.param([IN_DOUBT], [FIRST], [], (could_be("result-1", "homework-1"),), id="doubt"),
+    ],
+)
+def test_a_result_s_candidates_are_the_same_whatever_links_stand(
+    homework_read: list[Homework],
+    results: list[Result],
+    links: list[Link],
+    found: tuple[Candidates, ...],
+) -> None:
+    """Each result with a candidate, its candidates in the order the assignments came, and the
+    one the rules stand it with: the candidates alike with no link, no points and no result
+    shown. Every waiting result is among them; the ones that stand are the scores' own."""
+    classes = connected(*homework_read)
+    withheld = [dataclasses.replace(one, scored=False, shown=False) for one in results]
+    before = (list(homework_read), list(results), dict(classes), list(links))
+
+    answer = candidate_homework(homework_read, results, classes, decided=links)
+
+    assert answer == found
+    assert (homework_read, results, classes, links) == before
+    assert candidate_homework(homework_read, withheld, classes, decided=links) == found
+    assert [(place_of(one), one.assignments) for one in found] == [
+        (place_of(one), one.assignments)
+        for one in candidate_homework(homework_read, results, classes)
+    ]
+    ruled = {
+        place_of(at): assignment_id
+        for assignment_id, shown in school_scores(
+            homework_read, results, classes, decided=links
+        ).items()
+        for at in shown
+        if not at.linked
+    }
+    assert {place_of(one): one.stood for one in answer if one.stood is not None} == ruled
+    waiting = waiting_results(homework_read, results, classes, decided=links)
+    assert {place_of(one) for one in waiting} <= {place_of(one) for one in answer}
+
+
+@pytest.mark.parametrize(
+    ("one", "school", "could"),
+    [
+        pytest.param(homework(), result(), True, id="equal dates"),
+        pytest.param(homework(resolved=False), result(), True, id="homework date in doubt"),
+        pytest.param(homework(day=None), result(), True, id="homework undated"),
+        pytest.param(homework(day=NEXT_DAY, resolved=False), result(), True, id="a claim not read"),
+        pytest.param(homework(), result(day=None), True, id="result date not resolved"),
+        pytest.param(homework(), result(day=NEXT_DAY), False, id="both resolved and different"),
+        pytest.param(homework(title="angle  PROOFS"), result(), True, id="spelled apart"),
+        pytest.param(homework(title="Angle Proof"), result(), False, id="another title"),
+        pytest.param(homework(title=""), result(title=None), False, id="title not reported"),
+        pytest.param(homework(), result(class_id=BIOLOGY), False, id="another class"),
+    ],
+)
+def test_a_candidate_has_the_class_the_title_and_a_date_that_can_t_be_ruled_out(
+    one: Homework, school: Result, could: bool
+) -> None:
+    found = candidate_homework([one], [school], connected(one))
+
+    assert [held.assignments for held in found] == ([("homework-1",)] if could else [])
+    assert candidate_homework([one], [school], {}) == ()
+
+
+@pytest.mark.parametrize(
+    "links",
+    [
+        pytest.param([link("homework-1", "result-1"), link("homework-2", "result-1")], id="two"),
+        pytest.param(
+            [link("homework-1", "result-gone"), link("homework-2", "result-gone")],
+            id="two that name a result not given",
+        ),
+    ],
+)
+def test_candidates_are_refused_whole_on_two_confirmed_links_naming_one_result(
+    links: list[Link],
+) -> None:
+    """The function raises the conflict error itself, with its own message and with no cause
+    and no context, and returns nothing."""
+    with pytest.raises(GradeValueUndecodable) as refused:
+        candidate_homework([ONE, TWIN], [FIRST, SECOND], connected(ONE, TWIN), decided=links)
+
+    assert type(refused.value) is HomeworkLinksConflict
+    assert str(refused.value) == "two confirmed homework links name one result"
+    assert refused.value.__cause__ is None
+    assert refused.value.__context__ is None
+
+
+def test_candidates_hold_closed_fields_and_take_the_inputs_the_scores_take() -> None:
+    assert [field.name for field in dataclasses.fields(Candidates)] == [
+        "class_id",
+        "term",
+        "result_id",
+        "assignments",
+        "stood",
+    ]
+    assert inspect.signature(candidate_homework).parameters.keys() == (
+        inspect.signature(school_scores).parameters.keys()
+    )
+
+
+def titled(title: str, *assignment_ids: str, resolved: bool = True) -> list[Homework]:
+    """Homework rows of one title on the shared day."""
+    return [homework(one, title=title, resolved=resolved) for one in assignment_ids]
+
+
+EACH_CASE_HOMEWORK = [
+    *titled("Twin Homework", "twin-1", "twin-2"),
+    *titled("Twin Results", "shared"),
+    *titled("In Doubt", "doubt", resolved=False),
+    *titled("No Points", "unscored"),
+    *titled("Showing", "showing"),
+    *titled("Kept Apart", "apart"),
+    *titled("Twins No Points", "pointless-1", "pointless-2"),
+    *titled("Linked", "linked"),
+    *titled("Second Result", "second"),
+    *titled("Both Ways", "first-row", "second-row"),
+]
+EACH_CASE_RESULTS = [
+    result("twin-homework", title="Twin Homework"),
+    result("twin-result-1", title="Twin Results"),
+    result("twin-result-2", title="Twin Results", term="T2"),
+    result("in-doubt", title="In Doubt"),
+    result("no-points", title="No Points", scored=False),
+    result("not-shown", title="Showing", shown=False),
+    result("kept-apart", title="Kept Apart"),
+    result("twins-no-points", title="Twins No Points", scored=False),
+    result("linked", title="Linked"),
+    result("first-linked", title="Second Result"),
+    result("second-waits", title="Second Result"),
+    result("row-linked", title="Both Ways"),
+    result("row-ruled", title="Both Ways"),
+    result("no-homework", title="No Homework"),
+    result("unconnected", class_id=BIOLOGY, title="Twin Homework"),
+]
+EACH_CASE_LINKS = [
+    apart("apart", "kept-apart"),
+    link("linked", "linked"),
+    link("second", "first-linked"),
+    link("first-row", "row-linked"),
+]
+"""One class with a result for each way a result waits or does not: twins of either side, a
+date in doubt, lone pairs without points or not shown, a pair kept apart, links, the rules
+standing it elsewhere, no homework of its title, and a class no name connects to."""
+
+
+def test_a_class_with_one_result_of_each_kind_names_each_one_s_candidates_and_who_waits() -> None:
+    """No result both stands by the rules and waits, and each result with a candidate and no
+    link of its own either stands, waits, or has every pair kept apart."""
+    classes = connected(*EACH_CASE_HOMEWORK)
+
+    found = candidate_homework(
+        EACH_CASE_HOMEWORK, EACH_CASE_RESULTS, classes, decided=EACH_CASE_LINKS
+    )
+    waiting = waiting_results(
+        EACH_CASE_HOMEWORK, EACH_CASE_RESULTS, classes, decided=EACH_CASE_LINKS
+    )
+
+    assert found == (
+        could_be("twin-homework", "twin-1", "twin-2"),
+        could_be("twin-result-1", "shared"),
+        could_be("twin-result-2", "shared", term="T2"),
+        could_be("in-doubt", "doubt"),
+        could_be("no-points", "unscored", stood="unscored"),
+        could_be("not-shown", "showing", stood="showing"),
+        could_be("kept-apart", "apart"),
+        could_be("twins-no-points", "pointless-1", "pointless-2"),
+        could_be("linked", "linked"),
+        could_be("first-linked", "second"),
+        could_be("second-waits", "second"),
+        could_be("row-linked", "first-row", "second-row"),
+        could_be("row-ruled", "first-row", "second-row", stood="second-row"),
+    )
+    assert waiting == (
+        waits("twin-homework", assignments=2),
+        waits("twin-result-1", results=2),
+        waits("twin-result-2", term="T2", results=2),
+        waits("in-doubt", unsettled=True),
+        waits("twins-no-points", assignments=2),
+        waits("second-waits", linked_elsewhere=True),
+    )
+    stands = {place_of(one) for one in found if one.stood is not None}
+    waits_now = {place_of(one) for one in waiting}
+    linked = {one.result_id for one in EACH_CASE_LINKS if one.confirmed}
+    assert stands.isdisjoint(waits_now)
+    assert {
+        one.result_id
+        for one in found
+        if one.result_id not in linked and place_of(one) not in stands | waits_now
+    } == {"kept-apart"}
+
+
+def test_another_year_s_result_is_a_candidate_until_both_dates_rule_it_out() -> None:
+    one = homework()
+    both = connected(one, to=(LAST_YEAR, GEOMETRY))
+    then = result("result-then", class_id=LAST_YEAR, term="T4", day=None)
+    dated = dataclasses.replace(then, day=DAY.replace(year=2025), resolved=True)
+
+    assert candidate_homework([one], [then, result()], both) == (
+        could_be("result-then", "homework-1", class_id=LAST_YEAR, term="T4"),
+        could_be("result-1", "homework-1"),
+    )
+    assert candidate_homework([one], [dated, result()], both) == (
+        could_be("result-1", "homework-1", stood="homework-1"),
+    )
