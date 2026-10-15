@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 from pydantic import ValidationError
 
-from blossom.app import create_app
+from blossom.app import NOTHING_SENT, create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.routes import parent as parent_routes
@@ -53,6 +53,7 @@ from tests.support import (
     refusing,
     signed_in_household,
     state_of,
+    store_free_page,
     waiting_note,
     whole_form,
 )
@@ -1507,9 +1508,8 @@ def test_a_note_sent_as_a_file_sends_nothing_and_shows_none_of_it() -> None:
         )
         held = requests_held(client)
 
-    assert answer.status_code == 422
+    store_free_page(answer, status=400, heading="Request not sent", alert=NOTHING_SENT)
     assert "file words" not in answer.text
-    assert str(escape(NOT_WHOLE_SAID)) in answer.text
     assert held == []
 
 

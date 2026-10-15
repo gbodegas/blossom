@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.app import create_app
+from blossom.app import NOTHING_SENT, create_app
 from blossom.captures import new_capture_id
 from blossom.routes import captures as note_routes
 from blossom.routes.captures import (
@@ -66,6 +66,7 @@ from tests.support import (
     scripted_graphs,
     signed_in_household,
     state_of,
+    store_free_page,
     whole_form,
 )
 
@@ -1170,8 +1171,7 @@ def test_a_note_question_sent_as_a_file_asks_nothing_and_says_why() -> None:
         )
         held = help_held(client)
 
-    assert refused.status_code == 422
-    assert str(escape(HELP_FORM_NOT_WHOLE)) in refused.text
+    store_free_page(refused, status=400, heading="Request not sent", alert=NOTHING_SENT)
     assert "file words" not in refused.text
     assert held == ([], 0)
 

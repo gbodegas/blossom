@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.app import create_app
+from blossom.app import NOTHING_SAVED, create_app
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.reconciliation import SourceChannel
 from blossom.routes.hand_in import (
@@ -85,6 +85,7 @@ from tests.support import (
     school_said,
     signed_in_household,
     state_of,
+    store_free_page,
     with_clock,
 )
 
@@ -900,8 +901,8 @@ def test_a_press_with_a_file_or_a_field_twice_writes_nothing(origin: str) -> Non
         )
         kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
 
-    assert (filed.status_code, twice.status_code) == (422, 422)
-    assert said_first(filed.text, LIST_BAD_FORM)
+    store_free_page(filed, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
+    assert twice.status_code == 422
     assert said_first(twice.text, LIST_BAD_FORM)
     assert kept == 1
 

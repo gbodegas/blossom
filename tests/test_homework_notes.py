@@ -21,7 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.app import create_app
+from blossom.app import NOTHING_SAVED, create_app
 from blossom.captures import (
     CAPTURE_TEXT_MAX_LENGTH,
     HOUSEHOLD,
@@ -90,6 +90,7 @@ from tests.support import (
     promote_note,
     signed_in_household,
     state_of,
+    store_free_page,
     unlink_note,
     waiting_note,
     whole_form,
@@ -1110,9 +1111,11 @@ def test_a_form_that_is_not_the_one_the_page_made_writes_nothing_and_keeps_her_w
         no_id = send(client, {**fields, "capture_id": "note-1"}, text=WORDS, course="", due_date="")
         written = tables(store)
 
-    for answer in (twice, extra, filed, no_id):
+    for answer in (twice, extra, no_id):
         assert answer.status_code == 422
         assert said_first(answer.text, BAD_FORM)
+    store_free_page(filed, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
+    assert "from a file" not in filed.text
     assert escape(WORDS) in extra.text
     assert ">one</textarea>" in twice.text
     assert capture_id_from(form_fields(no_id.text, NOTE_ACTIONS)["capture_id"])
@@ -1942,7 +1945,7 @@ def test_a_delete_sent_as_a_file_deletes_nothing() -> None:
             headers=PAGE_HEADERS,
         )
 
-        assert answer.status_code == 422
+        store_free_page(answer, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
         assert tables(store) == before
 
 

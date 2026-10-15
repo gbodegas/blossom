@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.app import create_app
+from blossom.app import NOTHING_SAVED, create_app
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.noticing import planning_digest, read_everything, week_from
 from blossom.plans import DailyPlan
@@ -76,6 +76,7 @@ from tests.support import (
     signed_in_household,
     spoil,
     state_of,
+    store_free_page,
     with_clock,
     words,
 )
@@ -950,16 +951,20 @@ def malformed(client: TestClient, page: str, how: str) -> Answer:
     ],
 )
 def test_a_form_refused_for_another_field_keeps_the_choice_she_made(how: str) -> None:
-    """Showing what was readable is not accepting the form: nothing is written for it."""
+    """Showing what was readable is not accepting the form: nothing is written for it. A note
+    sent as a file is a form that could not be read, so nothing typed beside it is kept."""
     with browser() as client:
         answer = malformed(client, opened(client), how)
 
-        assert answer.status_code == 422
-        turning = section(answer.text)
-        assert escape(BAD_FORM) in answer.text
-        assert 'value="turned_in" checked' in turning
-        assert "kept step" in turning
-        if how != "a note sent as a file":
+        if how == "a note sent as a file":
+            store_free_page(answer, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
+            assert "kept step" not in answer.text
+        else:
+            assert answer.status_code == 422
+            turning = section(answer.text)
+            assert escape(BAD_FORM) in answer.text
+            assert 'value="turned_in" checked' in turning
+            assert "kept step" in turning
             assert "first note" in turning
             assert "second note" not in turning
         assert chain(client) == []

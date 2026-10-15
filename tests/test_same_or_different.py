@@ -25,7 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.app import create_app
+from blossom.app import NOTHING_SAVED, create_app
 from blossom.assignment_status import statuses_for
 from blossom.captures import Author
 from blossom.intake import (
@@ -48,6 +48,7 @@ from tests.support import (
     fixture_clock,
     fixture_settings,
     homework_from_a_note,
+    store_free_page,
     store_of,
     waiting_note,
 )
@@ -2482,16 +2483,20 @@ def test_an_answer_sent_twice_or_as_a_file_refuses_the_whole_paste(
         after = tables(client)
         saved = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": first})
 
+    assert after == before
+    assert saved.status_code == 303
+    if sent == "a-homework-as-a-file":
+        # A file part is a form that could not be read, so nothing typed beside it comes back.
+        store_free_page(refused, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
+        return
     returned = review_form(refused.text)
     assert refused.status_code == 422
-    assert after == before
     assert returned["text"] == review_form(page)["text"]
     if sent == "a-note-twice":
         # Both boxes say the same, so the note comes back ticked, with the homework chosen.
         assert (returned["identity-0"], returned["link-0-0"]) == (first, "1")
     else:
         assert sorted(choices(refused.text, 0)) == sorted([GUIDE_COPY, SECOND_GUIDE, DIFFERENT])
-    assert saved.status_code == 303
 
 
 def test_a_failed_save_says_back_no_homework_for_an_answer_sent_twice(
@@ -3397,9 +3402,12 @@ def test_link_choices_that_cannot_be_read_are_refused_in_words_true_of_each(
         before = tables(client), len(store_of(client).capture_history(name))
         refused = client.post("/parent/inbox/keep", data=form, files=files)
         after = tables(client), len(store_of(client).capture_history(name))
+        # A file part is a form that could not be read, so the review is answered again from
+        # the page that sent it.
+        filed = sent == "an-offered-box-as-a-file"
         returned = {
             field: value
-            for field, value in review_form(refused.text).items()
+            for field, value in review_form(page if filed else refused.text).items()
             if not field.startswith("link-")
         }
         corrected = {**returned, box: "1"}
@@ -3410,11 +3418,14 @@ def test_link_choices_that_cannot_be_read_are_refused_in_words_true_of_each(
         note = store_of(client).capture(name)
 
     summary = re.search(r'<p class="problem"[^>]*id="problem-summary"[^>]*>(.*?)</p>', refused.text)
-    assert refused.status_code == 422
     assert after == before
-    assert returned["text"] == review_form(page)["text"]
-    assert summary is not None
-    assert html.unescape(summary.group(1)) == LINKS_UNREADABLE
+    if filed:
+        store_free_page(refused, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
+    else:
+        assert refused.status_code == 422
+        assert returned["text"] == review_form(page)["text"]
+        assert summary is not None
+        assert html.unescape(summary.group(1)) == LINKS_UNREADABLE
     assert (saved.status_code, again.status_code) == (303, 303)
     assert once != before
     assert twice == once

@@ -21,7 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.app import create_app
+from blossom.app import NOTHING_SAVED, create_app
 from blossom.intake import (
     Change,
     ChangedSinceShown,
@@ -61,6 +61,7 @@ from tests.support import (
     fixture_clock,
     fixture_settings,
     homework_from_a_note,
+    store_free_page,
     store_of,
     whole_form,
 )
@@ -773,7 +774,7 @@ def test_a_file_in_place_of_an_instructions_words_refuses_the_whole_paste(
         )
         after = tables(client)
 
-    assert answer.status_code == 422
+    store_free_page(answer, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
     assert after == start
 
 
