@@ -1298,6 +1298,30 @@ pre.body {
   }
 }
 
+/* The cards in a fold, for an earlier plan or for a run that ended without one, give way the
+   same way: on a phone with text at 200%, a word of a card's heading, summary or steps is
+   wider than its line once the ordinary side padding is taken out. A card keeps its
+   ordinary padding on every screen 271 pixels or wider with ordinary text, and 640 pixels or
+   wider with text at 200%. */
+.steps .draft {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+@media (max-width: 30rem) {
+  .steps .draft {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
+}
+
+/* The line of finished work with school reports to check gives way as a problem line in Help
+   does: on a phone with text at 200%, a word of its sentence or of a title is wider than the
+   line once the ordinary side padding is taken out. The line keeps its ordinary padding on
+   every screen 240 pixels or wider with ordinary text, and 480 pixels or wider with text at
+   200%. */
+.to-check {
+  padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);
+}
+
 /* The buttons of the grade paste and retry pages hold the page's own words, never a typed one.
    On a phone with text at 200%, their side padding gives way first, to 13vw - 1rem where that
    is narrower, and a word stays whole. Every screen 290 pixels or wider with ordinary text,
