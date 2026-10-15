@@ -16,8 +16,9 @@ fits, and none is kept. Dates are kept as the text shown and read as dates here.
 A draft's readings are put together into rows by their content alone, never by the order
 the screenshots came in, and read as today's portal claims through ``intake.read_cards``. A
 card is dated only by its own due line or by a day heading above it in its own screenshot; no
-heading carries from one screenshot to another, and every card that is clipped or can't be
-dated or read stays a visible item with its reason.
+heading carries from one screenshot to another. Two matching cards of one screenshot are two
+rows, and every card that is clipped or can't be dated or read stays a visible item with its
+reason, keyed by its screenshot, its stored reading and its place.
 ``homework_rows`` gives the draft store each row's key from the same assembly, so the rows
 the parent sees and the keys the store keeps can't disagree.
 """
@@ -311,8 +312,9 @@ so the keys never read the clock."""
 
 
 class ScreenshotRow(NamedTuple):
-    """One row the screenshots read as: its key, the reading it would write, and the fields
-    marked uncertain on any card it came from, the day heading among them."""
+    """One row the screenshots read as: its key (what it would write and its layer), the
+    reading it would write, and the fields marked uncertain on any card it came from, the day
+    heading among them."""
 
     key: str
     reading: Reading
@@ -330,8 +332,11 @@ can't be told: no due line of its own and no day heading above it in its screens
 
 
 class UnreadCard(NamedTuple):
-    """A card that couldn't be read as a row, or a stored reading that couldn't be decoded
-    (``place`` and ``card`` then ``None``), keyed by what was read of it, with its reason."""
+    """A card that couldn't be read as a row, keyed by its image's SHA-256, its stored
+    reading's SHA-256, its place and what was read of it; a stored reading that couldn't be
+    decoded (``place`` and ``card`` then ``None``), keyed by the two SHA-256s; or a later row
+    of one layer that would write what another does (``sha256`` empty), keyed by that row's
+    key, its layer and how many came before it. Each with its reason."""
 
     key: str
     sha256: str
@@ -348,9 +353,11 @@ class Assembly(NamedTuple):
 
 
 class _Seen(NamedTuple):
-    """A card at its place in its image, with the day heading it sits under, if one is known."""
+    """A card at its place in its image's stored reading, with the day heading it sits under,
+    if one is known."""
 
     sha256: str
+    stored: str
     place: int
     card: Card | None
     heading: Heading | None
@@ -372,60 +379,70 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     The cards of every reading are one set. A card takes a day only from its own due line or
     from a day heading above it in its own screenshot; no heading carries to another
     screenshot, and no card's text is evidence of where another card is, so no card, a clipped
-    one included, is set aside for a copy read elsewhere. The cards read whole and dated are
-    walked in an order fixed by content and read as today's portal claims; every other card
-    stays a visible item with its reason, never merged into another, and only a recapture of a
-    card named with certainty under one day shares its item. ``now`` stamps the claims and is
-    in no key.
+    one included, is set aside for a copy read elsewhere.
+
+    The cards read whole and dated are read as today's portal claims in layers. A card's layer
+    is how many such cards before it in its screenshot have its course and title, folded, its
+    kind and its date, so two matching cards of one screenshot are in two layers and never
+    join. Each layer is walked in an order fixed by content and read on its own, where cards
+    of different screenshots join as a paste's do, and a row's key holds its layer. Every other
+    card stays a visible item with its reason, never merged into another. ``now`` stamps the
+    claims and is in no key.
     """
-    images: dict[str, HomeworkReading | None] = {}
+    images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
-        images[stored.sha256] = _decoded(stored)
+        images[stored.sha256] = (_stored(stored), _decoded(stored))
     unread: dict[str, UnreadCard] = {}
-    placed: dict[str, tuple[HomeworkReading, list[_Seen]]] = {}
-    for sha, reading in sorted(images.items()):
+    seen: list[_Seen] = []
+    for sha, (stored_key, reading) in sorted(images.items(), key=lambda image: image[0]):
         if reading is None:
-            key = _key({"reading": "undecodable", "image": sha})
+            key = _key({"reading": "undecodable", "image": sha, "stored": stored_key})
             unread[key] = UnreadCard(key, sha, None, None, "reading_unreadable")
         elif not reading.wrong_kind:
-            placed[sha] = (reading, _placed(sha, reading))
-    seen = [seen for sha, (_, cards) in sorted(placed.items()) for seen in cards]
-    units: list[tuple[tuple[object, ...], PortalCard, frozenset[str]]] = []
-    copies: dict[tuple[str, str], int] = {}
+            seen += _placed(sha, stored_key, reading)
+    layers: dict[int, list[tuple[tuple[object, ...], PortalCard, frozenset[str]]]] = {}
+    matching: dict[tuple[object, ...], int] = {}
     for item in seen:
         card = item.card
         portal = None if card is None or card.clipped else _portal(card, item.heading)
         if card is None or portal is None:
-            payload = _as_item(item)
-            same = (item.sha256, _key(payload))
-            copies[same] = copies.get(same, 0) + 1
-            found = _unread(item, _reason(card), payload, copies[same] - 1)
-            # Equal keys are one card recaptured, read with certainty under one day.
-            unread.setdefault(found.key, found)
+            found = _unread(item, _reason(card))
+            unread[found.key] = found
             continue
         marks = _marks(card, item.heading)
-        units.append((_walk_order(portal, card, item.heading, marks), portal, marks))
-    units.sort(key=lambda unit: unit[0])
-    cards_read = read_cards([portal for _, portal, _ in units], now=now)
-    marks_of: list[set[str]] = [set() for _ in cards_read.readings]
-    for (_, _, marks), place in zip(units, cards_read.joined, strict=True):
-        marks_of[place] |= marks
+        same = (item.sha256, _fold(portal.course), _fold(portal.title), portal.card, portal.when)
+        layer = matching.get(same, 0)
+        matching[same] = layer + 1
+        unit = (_walk_order(portal, card, item.heading, marks), portal, marks)
+        layers.setdefault(layer, []).append(unit)
     rows: list[ScreenshotRow] = []
-    taken: dict[str, int] = {}
-    for written, marked in zip(cards_read.readings, marks_of, strict=True):
-        key = _key(_written(written, frozenset(marked)))
-        if key in taken:
-            # Two rows that would write the same: each later one shown as not read, never merged.
-            taken[key] += 1
-            repeat = _key({"repeated": key, "count": taken[key]})
-            unread.setdefault(repeat, UnreadCard(repeat, "", None, None, "repeated"))
-            continue
-        taken[key] = 0
-        rows.append(ScreenshotRow(key, written, frozenset(marked)))
+    for layer, units in sorted(layers.items()):
+        units.sort(key=lambda unit: unit[0])
+        cards_read = read_cards([portal for _, portal, _ in units], now=now)
+        marks_of: list[set[str]] = [set() for _ in cards_read.readings]
+        for (_, _, marks), place in zip(units, cards_read.joined, strict=True):
+            marks_of[place] |= marks
+        taken: dict[str, int] = {}
+        for written, marked in zip(cards_read.readings, marks_of, strict=True):
+            key = _key(_written(written, frozenset(marked), layer))
+            if key in taken:
+                # Two rows of one layer that would write the same: each later one shown as not
+                # read, never merged.
+                taken[key] += 1
+                repeat = _key({"repeated": key, "layer": layer, "count": taken[key]})
+                unread[repeat] = UnreadCard(repeat, "", None, None, "repeated")
+                continue
+            taken[key] = 0
+            rows.append(ScreenshotRow(key, written, frozenset(marked)))
     return Assembly(
         rows=tuple(sorted(rows, key=lambda row: row.key)),
         unread=tuple(sorted(unread.values(), key=lambda item: item.key)),
     )
+
+
+def _stored(stored: StoredReading) -> str:
+    """The SHA-256 of a stored reading itself: its prompt version, schema version and body."""
+    return _key([stored.prompt_version, stored.schema_version, stored.body])
 
 
 def _decoded(stored: StoredReading) -> HomeworkReading | None:
@@ -438,7 +455,7 @@ def _decoded(stored: StoredReading) -> HomeworkReading | None:
         return None
 
 
-def _placed(sha: str, reading: HomeworkReading) -> list[_Seen]:
+def _placed(sha: str, stored: str, reading: HomeworkReading) -> list[_Seen]:
     """Each card of a reading at its place, under the last heading above its top edge."""
     headings = sorted(reading.headings, key=lambda heading: heading.y)
     seen: list[_Seen] = []
@@ -446,7 +463,7 @@ def _placed(sha: str, reading: HomeworkReading) -> list[_Seen]:
         above = None
         if card is not None:
             above = next((h for h in reversed(headings) if h.y <= card.y_top), None)
-        seen.append(_Seen(sha, place, card, above))
+        seen.append(_Seen(sha, stored, place, card, above))
     return seen
 
 
@@ -521,31 +538,30 @@ def _reason(card: Card | None) -> ItemReason:
 
 
 def _as_item(item: _Seen) -> dict[str, object]:
-    """What an item's key is made of: what was read of the card, and its screenshot and place
-    too unless its course and title were read with certainty under a heading read with
-    certainty as a day. Only a recapture of such a card can then share its key."""
+    """What an item's key is made of: what was read of the card, its image's SHA-256, its
+    stored reading's SHA-256 and its place there. No two cards share it, a recapture as new
+    bytes included, and a changed reading of the same image gives a new one."""
     card = item.card
-    payload: dict[str, object] = {
+    return {
         "unread": None if card is None else [*_as_read(card), card.clipped, _text(item.heading)],
         "marks": [] if card is None else sorted(_marks(card, item.heading)),
+        "image": item.sha256,
+        "stored": item.stored,
+        "place": item.place,
     }
-    if card is None or not _named(card) or _read_day(item.heading) is None:
-        payload |= {"image": item.sha256, "place": item.place}
-    return payload
 
 
-def _unread(item: _Seen, reason: ItemReason, payload: dict[str, object], copy: int) -> UnreadCard:
-    """A card that couldn't be read as a row, keyed by its payload and by ``copy``, how many
-    cards before it in its screenshot have the same payload, so two cards of one screenshot
-    stay two items."""
-    key = _key({**payload, "copy": copy})
-    return UnreadCard(key, item.sha256, item.place, item.card, reason)
+def _unread(item: _Seen, reason: ItemReason) -> UnreadCard:
+    """A card that couldn't be read as a row, keyed by what ``_as_item`` makes of it."""
+    return UnreadCard(_key(_as_item(item)), item.sha256, item.place, item.card, reason)
 
 
-def _written(reading: Reading, marks: frozenset[str]) -> dict[str, object]:
-    """Everything a row would write, as read, with its marks: never a name, a position, a
-    correction or an instant. A round of a recurring name is told by its own dates; its
-    occurrence, which changes when an earlier round's screenshot arrives, is left out."""
+def _written(reading: Reading, marks: frozenset[str], layer: int) -> dict[str, object]:
+    """Everything a row would write, as read, with its marks and its layer: never a name, a
+    position, a correction or an instant. A round of a recurring name is told by its own
+    dates; its occurrence, which changes when an earlier round's screenshot arrives, is left
+    out. Its layer, how many matching cards come before its own in their screenshot, is kept,
+    and no other screenshot changes it."""
     return {
         "course": _fold(reading.course),
         "title": _fold(reading.title),
@@ -561,6 +577,7 @@ def _written(reading: Reading, marks: frozenset[str]) -> dict[str, object]:
         ),
         "reports": sorted([report.status, _day(report.reported_on)] for report in reading.reports),
         "marks": sorted(marks),
+        "layer": layer,
     }
 
 
@@ -580,17 +597,6 @@ def _words(text: str | None) -> bool:
 
 def _text(heading: Heading | None) -> str | None:
     return None if heading is None else folded(heading.text)
-
-
-def _read_day(heading: Heading | None) -> date | None:
-    """The day a heading names when it was read with certainty, or ``None``."""
-    return None if heading is None or heading.uncertain is not None else heading.day
-
-
-def _named(card: Card) -> bool:
-    """Whether a card's course and title were both read, with words and with certainty."""
-    marked = {"course", "title"} & card.uncertain_fields
-    return _words(card.course) and _words(card.title) and not marked
 
 
 def _day(day: date | None) -> str:

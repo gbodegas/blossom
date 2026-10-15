@@ -7,6 +7,7 @@ the answer schema. The student is Wren; every other name is invented.
 """
 
 import copy
+import hashlib
 import itertools
 import json
 import logging
@@ -662,13 +663,25 @@ def test_a_clipped_card_is_an_item_that_couldnt_be_read() -> None:
 
 
 def test_the_same_batch_reordered_repeated_or_recaptured_gives_the_same_rows() -> None:
+    """In any order, and recaptured as new bytes, the batch gives the same rows; the recapture
+    brings its clip back as an item of its own."""
     first, second = wednesday_and_after()
     recaptured = first._replace(sha256="0" * 64)
 
     expected = keys(first, second)
     for images in itertools.permutations([first, second]):
         assert keys(*images) == expected
-    assert keys(first, second, recaptured) == expected
+    again = keys(first, second, recaptured)
+    assert [key for key in again if key.readable] == [key for key in expected if key.readable]
+    assert set(expected) < set(again)
+    [added] = set(again) - set(expected)
+    assert not added.readable
+    [clip] = [
+        item
+        for item in homework_assembly([first, second, recaptured], now=NOW).unread
+        if item.sha256 == recaptured.sha256
+    ]
+    assert (clip.key, clip.reason) == (added.key, "clipped")
     assert len({key for key, _ in expected}) == len(expected)
 
 
@@ -874,8 +887,9 @@ def test_a_clip_stays_an_item_beside_a_copy_under_another_day() -> None:
     assert (item.card.title, item.card.clipped) == ("Spelling List 5", True)
 
 
-def test_an_item_whose_course_and_title_were_read_keeps_its_key_in_any_capture() -> None:
-    """Its image and its place enter its key only when the course or title wasn't read."""
+def test_an_item_takes_its_image_and_place_in_its_key() -> None:
+    """The same clip, read with certainty under one dated heading in two screenshots, is two
+    items: no text read makes two screenshots' cards one."""
     clip = due("Science 8", "Spelling List 5", 920, clipped=True)
     first = homework(clip, headings=[heading("Wednesday 10/7/2026", 250)])
     second = homework(
@@ -884,10 +898,14 @@ def test_an_item_whose_course_and_title_were_read_keeps_its_key_in_any_capture()
 
     [one] = homework_assembly([stored_homework("first", first)], now=NOW).unread
     [other] = homework_assembly([stored_homework("second", second)], now=NOW).unread
+    both = homework_assembly(
+        [stored_homework("first", first), stored_homework("second", second)], now=NOW
+    ).unread
 
     assert (one.place, other.place) == (0, 1)
     assert one.sha256 != other.sha256
-    assert one.key == other.key
+    assert one.key != other.key
+    assert {item.key for item in both} == {one.key, other.key}
 
 
 # ------------------------------------------------------------------ order, by content alone
@@ -1509,18 +1527,18 @@ SCENARIOS: dict[
         [],
         [("Practice set", "no_day"), ("Practice set", "no_day")],
     ),
-    "two copies in one screenshot stay two items, recaptured or not": (
+    "two copies in each of two screenshots are four items": (
         [
             shot((THU, 150), undated(PS, 200), undated(PS, 300)),
             shot((THU, 150), undated(PS, 200), undated(PS, 300), card(U1, 400)),
         ],
         [("U1 Quiz 3", "10-08")],
-        [("Practice set", "no_day"), ("Practice set", "no_day")],
+        [("Practice set", "no_day")] * 4,
     ),
-    "a card with no due line recaptured under its day is one item": (
+    "a card with no due line recaptured under its day is two items": (
         [shot((THU, 150), undated(PS, 200)), shot((THU, 150), undated(PS, 200), card(U1, 300))],
         [("U1 Quiz 3", "10-08")],
-        [("Practice set", "no_day")],
+        [("Practice set", "no_day"), ("Practice set", "no_day")],
     ),
 }
 
@@ -1645,6 +1663,131 @@ def test_each_row_that_would_write_what_another_does_is_its_own_item(
 
     assert len(assembly.rows) == 1
     assert [item.reason for item in assembly.unread] == ["repeated", "repeated"]
+
+
+# ------------------------------------------------------------------ matching cards in one shot
+
+VQ = ("English 8", "Vocab Quiz")
+
+
+def row_keys(*images: StoredReading) -> frozenset[str]:
+    """The row keys the screenshots give, the same in every order of their images."""
+    found = {
+        frozenset(row.key for row in homework_assembly(list(order), now=NOW).rows)
+        for order in itertools.permutations(images)
+    }
+    [keys_found] = found
+    return keys_found
+
+
+def test_two_matching_cards_in_one_screenshot_are_two_rows_in_every_capture() -> None:
+    """Two DUE Vocab Quiz cards under one Thursday are two rows with keys of their own. Another
+    screenshot showing one copy or both adds no row; a screenshot of one copy alone is one row,
+    with the first copy's key."""
+    both = homework(due(*VQ, 200), due(*VQ, 300), headings=[heading(THU, 150)])
+    one = homework(due(*VQ, 200), headings=[heading(THU, 150)])
+    pair_of, single, again = (
+        stored_homework("both", both),
+        stored_homework("one", one),
+        stored_homework("both-again", both),
+    )
+
+    two = row_keys(pair_of)
+
+    assert len(two) == 2
+    assert row_keys(pair_of, single) == two
+    assert row_keys(pair_of, again) == two
+    assert row_keys(pair_of, single, again) == two
+    [alone] = row_keys(single)
+    assert alone in two
+
+
+def test_an_assigned_card_elsewhere_joins_only_the_first_of_two_matching_due_cards() -> None:
+    """Vocab Quiz assigned Monday and due Thursday, with two DUE cards under Thursday in one
+    screenshot: the ASSIGNED card joins the first copy's row, and the second copy is a row of
+    its own with only its day's claim."""
+    both = homework(due(*VQ, 200), due(*VQ, 300), headings=[heading(THU, 150)])
+    on_monday = homework(assigned(*VQ, "Due (10/8/2026)", 200), headings=[heading(MON, 150)])
+    images = [stored_homework("both", both), stored_homework("assigned", on_monday)]
+
+    found = set()
+    for order in itertools.permutations(images):
+        rows = homework_assembly(list(order), now=NOW).rows
+        found.add(
+            tuple(
+                sorted(
+                    (
+                        str(row.reading.assigned_on),
+                        tuple(sorted(c.seen_in or "" for c in row.reading.claims)),
+                    )
+                    for row in rows
+                )
+            )
+        )
+
+    assert found == {
+        (("2026-10-05", tuple(sorted((DAY_HEADER, OWN_LINE)))), ("None", (DAY_HEADER,)))
+    }
+
+
+def test_a_card_the_reader_missed_never_merges_two_cards_into_one_item() -> None:
+    """Monday holds two Reading log cards whose label wasn't read. One screenshot lists the
+    first; another shows both, but its reading lists only the second: two items, one each."""
+
+    def unlabeled(y_top: int) -> dict[str, object]:
+        return card(RL, y_top, badge=None, instruction=LOG_WORDS)
+
+    shots = [
+        shot((MON, 150), card(WS, 200), unlabeled(300)),
+        shot((MON, 150), card(WS, 200), unlabeled(500)),
+    ]
+
+    assert in_every_order("missed", shots) == {
+        ((("Worksheet 3", "10-05"),), (("Reading log", "incomplete"),) * 2)
+    }
+
+
+def test_a_changed_reading_at_the_same_image_and_place_gives_new_item_keys() -> None:
+    """Read again with a changed reading, the same image and places give new item keys, a card
+    that couldn't be read included; the same stored reading gives the same keys in any order."""
+    before = shot(UNREAD, (THU, 250), undated(PS, 300), card(U1, 400))
+    after = shot(UNREAD, (THU, 250), undated(PS, 300), card(("Math 8", "U1 Quiz 4"), 400))
+    first, changed = stored_homework("image", before), stored_homework("image", after)
+    elsewhere = stored_homework("other", shot((MON, 150), undated(WS, 200)))
+
+    def item_keys(*images: StoredReading) -> set[tuple[int | None, str]]:
+        return {
+            (item.place, item.key)
+            for item in homework_assembly(list(images), now=NOW).unread
+            if item.sha256 == first.sha256
+        }
+
+    kept = item_keys(first, elsewhere)
+    renewed = item_keys(changed, elsewhere)
+
+    assert first.sha256 == changed.sha256
+    assert {place for place, _ in kept} == {place for place, _ in renewed} == {0, 1}
+    assert item_keys(elsewhere, first) == kept
+    assert {key for _, key in kept}.isdisjoint(key for _, key in renewed)
+
+
+def test_a_changed_reading_that_couldnt_be_decoded_gives_a_new_item_key() -> None:
+    undecodable = StoredReading(
+        sha256=hashlib.sha256(b"synthetic-png-old").hexdigest(),
+        kind="homework_list",
+        prompt_version="v0",
+        schema_version="screenshot-reading/0",
+        body='{"cards": []}',
+    )
+    changed = undecodable._replace(body='{"cards": [1]}')
+
+    [one] = homework_assembly([undecodable], now=NOW).unread
+    [again] = homework_assembly([undecodable], now=NOW).unread
+    [other] = homework_assembly([changed], now=NOW).unread
+
+    assert one.reason == other.reason == "reading_unreadable"
+    assert one.key == again.key
+    assert one.key != other.key
 
 
 def test_chains_with_an_instruction_keeps_mondays_card_day() -> None:

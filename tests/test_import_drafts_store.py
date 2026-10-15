@@ -156,14 +156,15 @@ class World:
             timing=TIMING,
         )
 
-    def accept(self, draft_id: str, *keys: str, kind: str = HOMEWORK) -> None:
-        """Plant an acceptance as a save of this draft writes it."""
+    def accept(self, draft_id: str, *keys: str, kind: str = HOMEWORK, replay: int = 0) -> None:
+        """Plant an acceptance as a save of this draft writes it; ``replay`` numbers another
+        copy of the same acceptance, as a save written again would leave."""
         connection = sqlite3.connect(self.path)
         with connection:
             connection.execute(
                 ADD_ACCEPTANCE,
                 (
-                    f"acceptance-{len(keys)}-{draft_id}-{keys}",
+                    f"acceptance-{len(keys)}-{draft_id}-{keys}-{replay}",
                     self.student,
                     kind,
                     draft_id,
@@ -533,6 +534,93 @@ def test_a_saved_row_stays_saved_however_its_images_come_and_go(homework: World)
     still_saved("image one read again")
 
     assert list(states(homework, draft_id).values()).count("saved") == 1
+
+
+THURSDAY = {"text": "Thursday 10/8/2026", "y": 150, "uncertain": None}
+
+
+def copies(*tops: int, badge: str = "DUE", title: str = "Vocab Quiz") -> dict[str, object]:
+    """One screenshot under Thursday of a matching card at each top edge given."""
+    card = homework_card(badge=badge, title=title, footer=None, instruction=None)
+    cards = [dict(card, y_top=top, y_bottom=top + 80) for top in tops]
+    return homework_answer(headings=[THURSDAY], cards=cards)
+
+
+def open_draft(world: World, *images: tuple[str, object]) -> str:
+    """A draft whose images, labeled, are read in the order given."""
+    draft_id = world.draft(*(label for label, _ in images))
+    for label, answer in images:
+        world.read_as(draft_id, label, uploaded(label, answer))
+    return draft_id
+
+
+def finished(world: World, draft_id: str) -> bool:
+    return world.store.snapshot(world.student, draft_id).finished
+
+
+def test_of_two_matching_rows_a_save_and_its_replay_leave_the_other_open(
+    homework: World,
+) -> None:
+    """Two DUE Vocab Quiz cards in one screenshot are two rows: saving one, and the same save
+    written again, never marks the other handled or closes the draft."""
+    draft_id = open_draft(homework, ("both", copies(200, 300)))
+    first, second = real_keys(("both", copies(200, 300)))
+
+    homework.accept(draft_id, first)
+    homework.accept(draft_id, first, replay=1)
+
+    assert states(homework, draft_id) == {first: "saved", second: "open"}
+    assert not finished(homework, draft_id)
+
+
+def test_of_two_matching_rows_a_discard_leaves_the_other_open(homework: World) -> None:
+    draft_id = open_draft(homework, ("both", copies(200, 300)))
+    first, second = real_keys(("both", copies(200, 300)))
+    version = homework.store.snapshot(homework.student, draft_id).version
+
+    homework.store.discard_rest(homework.student, draft_id, version=version, keys=[first])
+
+    assert states(homework, draft_id) == {first: "discarded", second: "open"}
+    assert not finished(homework, draft_id)
+
+
+def test_two_matching_rows_keep_their_decisions_in_any_order_and_after_reopening(
+    homework: World,
+) -> None:
+    """The first copy's row, which a screenshot of one copy also gives, is saved; read in
+    either order and reopened, the save stays on its own key and the other row stays open
+    until it is discarded, which finishes the draft."""
+    both, one = ("both", copies(200, 300)), ("one", copies(200))
+    [layer_0] = real_keys(one)
+    [layer_1] = set(real_keys(both)) - {layer_0}
+    drafts = [open_draft(homework, both, one), open_draft(homework, one, both)]
+    for draft_id in drafts:
+        assert states(homework, draft_id) == {layer_0: "open", layer_1: "open"}
+        homework.accept(draft_id, layer_0)
+
+    homework.store.close()
+    homework.store = homework.reopen()
+
+    for draft_id in drafts:
+        assert states(homework, draft_id) == {layer_0: "saved", layer_1: "open"}
+        assert not finished(homework, draft_id)
+        version = homework.store.snapshot(homework.student, draft_id).version
+        homework.store.discard_rest(homework.student, draft_id, version=version, keys=[layer_1])
+        assert finished(homework, draft_id)
+
+
+def test_discarding_one_item_never_handles_another(homework: World) -> None:
+    """Two screenshots each show an ASSIGNED Practice set with no due line under Thursday:
+    two items, and discarding one leaves the other open and the draft open."""
+    undated = copies(200, badge="ASSIGNED", title="Practice set")
+    draft_id = open_draft(homework, ("a", undated), ("b", undated))
+    first, second = sorted(states(homework, draft_id))
+    version = homework.store.snapshot(homework.student, draft_id).version
+
+    homework.store.discard_rest(homework.student, draft_id, version=version, keys=[first])
+
+    assert states(homework, draft_id) == {first: "discarded", second: "open"}
+    assert not finished(homework, draft_id)
 
 
 # ------------------------------------------------------------------ results the store drops
