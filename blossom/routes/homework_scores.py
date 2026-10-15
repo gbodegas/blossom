@@ -59,7 +59,9 @@ Check together is worked out from the same values and one reading of the record:
 gives each homework with a result to check together, its standing from her own account, and
 those results. Her Done and her Turned in are each read literally and apart, so a record of
 hers that can't be read never cancels the other's evidence; when neither readable record says
-either and one can't be read, the standing is unknown. Nothing is stored or written.
+either and one can't be read, the standing is unknown. ``week_to_check`` makes her week's one
+line from that answer: each homework once, and whether the count is unknown. Nothing is stored
+or written.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """
@@ -276,6 +278,15 @@ class ToCheck:
 
 
 @dataclass(frozen=True)
+class WeekToCheck:
+    """Her week's to-check line: the homework it lists together, in the week's order, when any
+    has a grade basis, else none; and whether Check together's count can't be worked out."""
+
+    together: tuple[str, ...]
+    unknown: bool
+
+
+@dataclass(frozen=True)
 class HomeworkFound:
     """One page of the homework a search found for a result: the page as ``page_of`` gives it,
     and each of its rows with its standing, in the page's order."""
@@ -386,6 +397,29 @@ def to_check(
         assignment_id: ToCheck(check_standing(account_of(everything, assignment_id)), results)
         for assignment_id, results in counted.items()
     }
+
+
+def week_to_check(
+    reach: Sequence[tuple[str, bool]],
+    checks: Mapping[str, ToCheck],
+    everything: Everything,
+    *,
+    failed: bool,
+) -> WeekToCheck:
+    """Her week's line over ``reach``: each homework's ID, in the week's order, with whether
+    the school's Missing stands beside her Done. The count is unknown when a homework there is
+    indeterminate, or after a covered failure (``failed``) unless none there could count."""
+    said = dict.fromkeys(one for one, _ in reach)
+    email = {one for one, missing in reach if missing}
+    standing = {one: checks[one].standing for one in said if one in checks}
+    could = any(
+        check_standing(account_of(everything, one)) is not CheckStanding.NOT_COUNTED for one in said
+    )
+    unknown = (failed and could) or CheckStanding.INDETERMINATE in standing.values()
+    counted = {one for one, how in standing.items() if how is CheckStanding.COUNTED}
+    if unknown or not counted:
+        return WeekToCheck((), unknown)
+    return WeekToCheck(tuple(one for one in said if one in email or one in counted), False)
 
 
 def scores_left_out(error: GradeValueUndecodable) -> None:

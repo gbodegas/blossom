@@ -1512,6 +1512,15 @@ SMUDGED = "smudged"
 """Text that is no presence, no whole number, no moment and no JSON, which no save writes."""
 LEFT_OUT = "a homework page shows no school score: GradeValueUndecodable"
 """The one record a page read makes when it leaves its school scores out."""
+CHECK_UNKNOWN = '\n    <p class="problem">Check together can\'t be worked out right now.</p>\n  '
+"""Her week's one line that Check together's count can't be worked out, as the page writes it."""
+
+
+def without_check_unknown(page: str, address: str) -> str:
+    """A page read after a covered failure, with her week's one Check together line taken out:
+    her week holds it once, since her Done homework is in its reach, and details never do."""
+    assert page.count(CHECK_UNKNOWN) == (1 if address == HER_PAGE else 0), address
+    return page.replace(CHECK_UNKNOWN, "")
 
 
 def stored(store: ProjectStateStore, statement: str, *values: object) -> None:
@@ -1543,8 +1552,9 @@ def test_a_grade_cell_that_can_t_be_decoded_leaves_her_pages_as_with_no_class_on
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Her week and the details of the cell's assignment, of one whose result decodes and of one
-    with none answer, show no score and read as with no class on record. Each read records the
-    failure's type alone, the file stays as it was, and the lines return once the cell decodes."""
+    with none answer, show no score and read as with no class on record, but for her week's one
+    line that Check together can't be worked out. Each read records the failure's type alone,
+    the file stays as it was, and the lines return once the cell decodes."""
     notes_id = "assignment-reading-notes"
     addresses = [
         HER_PAGE,
@@ -1587,12 +1597,12 @@ def test_a_grade_cell_that_can_t_be_decoded_leaves_her_pages_as_with_no_class_on
 
     assert [len(scores(page)) for page in whole] == [2, 1, 1, 0]
     assert [status for status, _ in said] == [200, 200, 200, 200]
-    for (_, page), with_no_class in zip(said, bare, strict=True):
+    for address, (_, page), with_no_class in zip(addresses, said, bare, strict=True):
         assert "School score" not in page
         assert "Grade details" not in page
         assert HEADING not in page
         assert not [said for said in ("no grades", "not grade") if said in page.lower()]
-        assert without_scores(page) == without_scores(with_no_class)
+        assert without_scores(without_check_unknown(page, address)) == without_scores(with_no_class)
     assert [records for records, _ in logged] == [[LEFT_OUT]] * 4
     for _, text in logged:
         assert not [word for word in (LOG, DIAGRAM, BIOLOGY, "18.0", SMUDGED) if word in text]
@@ -1879,7 +1889,8 @@ def test_each_of_these_moments_and_copied_lists_leaves_her_pages_as_with_no_clas
 ) -> None:
     """With one of these moments or copied lists stored, her week and the details of two assignments
     with a result and of one with none each answer, show no score at all, and read as with no class
-    on record. Each read records the failure's type alone, and the file stays as it was."""
+    on record, but for her week's one line that Check together can't be worked out. Each read
+    records the failure's type alone, and the file stays as it was."""
     notes_id = "assignment-reading-notes"
     addresses = [
         HER_PAGE,
@@ -1924,12 +1935,12 @@ def test_each_of_these_moments_and_copied_lists_leaves_her_pages_as_with_no_clas
         [],
     ]
     assert [status for status, _ in said] == [200, 200, 200, 200]
-    for (_, page), with_no_class in zip(said, bare, strict=True):
+    for address, (_, page), with_no_class in zip(addresses, said, bare, strict=True):
         assert "School score" not in page
         assert "Grade details" not in page
         assert HEADING not in page
         assert not [said for said in ("no grades", "not grade") if said in page.lower()]
-        assert without_scores(page) == without_scores(with_no_class)
+        assert without_scores(without_check_unknown(page, address)) == without_scores(with_no_class)
     assert [records for records, _ in logged] == [[LEFT_OUT]] * 4
     for _, text in logged:
         assert not [word for word in (LOG, DIAGRAM, BIOLOGY, "18.0", value) if word in text]
@@ -2335,8 +2346,9 @@ def test_each_of_these_hand_edited_grade_values_leaves_her_pages_as_with_no_clas
     edit: Edit, caplog: pytest.LogCaptureFixture
 ) -> None:
     """With one of these values stored, her week and the details of three assignments answer in
-    time, show no score and read as with no class on record. Each read records the failure's type
-    alone; the gradebook's rows and the connection's decoding stay as they were."""
+    time, show no score and read as with no class on record, but for her week's one line that
+    Check together can't be worked out. Each read records the failure's type alone; the
+    gradebook's rows and the connection's decoding stay as they were."""
     notes_id = "assignment-reading-notes"
     addresses = [
         HER_PAGE,
@@ -2385,12 +2397,12 @@ def test_each_of_these_hand_edited_grade_values_leaves_her_pages_as_with_no_clas
         [],
     ]
     assert [status for status, _ in said] == [200, 200, 200, 200]
-    for (_, page), with_no_class in zip(said, bare, strict=True):
+    for address, (_, page), with_no_class in zip(addresses, said, bare, strict=True):
         assert "School score" not in page
         assert "Grade details" not in page
         assert HEADING not in page
         assert not [said for said in ("no grades", "not grade") if said in page.lower()]
-        assert without_scores(page) == without_scores(with_no_class)
+        assert without_scores(without_check_unknown(page, address)) == without_scores(with_no_class)
     assert [records for records, _ in logged] == [[LEFT_OUT]] * 4
     for _, text in logged:
         assert not [word for word in private if word in text]
@@ -3514,6 +3526,8 @@ LINK_ROW = "INSERT INTO grade_homework_links VALUES (?, ?, ?, 'confirmed', 'pare
 LINKED_AT = "2026-08-19T12:00:00+00:00"
 DROP_LINKS_INDEX = "DROP INDEX grade_homework_links_one_homework"
 HER_PAGES = [HER_PAGE, f"/student/assignments/{LOG_ID}"]
+TOGETHER_LINE = r'\n    <p class="confidence disagree to-check" role="status">.*?</p>\n  '
+"""Her week's line of homework to check together, as the page writes it."""
 
 
 def parent_links(
@@ -3670,7 +3684,9 @@ def test_a_link_of_the_pair_the_rules_already_show_changes_no_byte_of_her_pages(
 def test_each_place_shows_the_count_of_an_assignment_s_results_and_one_way_to_them() -> None:
     """Seven places on her week, each for an assignment linked to a result in each of two terms,
     show the count and one link to the results on the row's own details. With the score blocks
-    out, her week and each details page equal those with no class on record; reads write nothing."""
+    out, her week and each details page equal those with no class on record, but for the line
+    that lists her Done homework linked to a result the school reports Missing; reads write
+    nothing."""
     rows = {LOG_ID: LOG, DIAGRAM_ID: DIAGRAM, PRACTICE_ID: PRACTICE, OSMOSIS_ID: OSMOSIS}
     addresses = [
         HER_PAGE,
@@ -3737,7 +3753,11 @@ def test_each_place_shows_the_count_of_an_assignment_s_results_and_one_way_to_th
     assert [len(scores(page)) for page in linked[2:]] == [2, 2, 2, 2]
     assert [without_results(page) for page in linked] == bare
     assert len(several(done_linked)) == 4
-    assert without_results(done_linked) == done_bare
+    together = re.findall(TOGETHER_LINE, done_linked, re.S)
+    assert [" ".join(re.sub(r"<[^>]+>", "", line).split()) for line in together] == [
+        f"1 assignment to check together: {DIAGRAM}."
+    ]
+    assert without_results(re.sub(TOGETHER_LINE, "", done_linked, flags=re.S)) == done_bare
     assert after_reading == on_record
 
 

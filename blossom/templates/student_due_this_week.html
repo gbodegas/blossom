@@ -417,12 +417,19 @@
   {% if not view.week.current and (view.assignments or view.assigned_this_week or view.apart) %}
     <p class="note">Updates show the latest saved information, even when you view a different week.</p>
   {% endif %}
-  {% if to_check %}
+  {% if together %}
+    <p class="confidence disagree to-check" role="status">
+      <strong>{{ together|length }} assignment{% if together|length != 1 %}s{% endif %} to check together:</strong>
+      {% for item in together %}<span class="to-check-item"><a href="{{ week_href(view.week.start, item.assignment_id, show=item.assignment_id) }}" aria-label="{{ item.title }}, {{ item.course }}: to check together">{{ item.title }}</a><span class="to-check-mark">{% if loop.last %}.{% else %},{% endif %}</span></span>{% if not loop.last %} {% endif %}{% endfor %}
+    </p>
+  {% elif to_check %}
     <p class="confidence disagree to-check" role="status">
       <strong>{{ to_check|length }} finished assignment{% if to_check|length != 1 %}s{% endif %}
       {% if to_check|length == 1 %}has a school report{% else %}have school reports{% endif %} to check:</strong>
       {% for item in to_check %}<span class="to-check-item"><a href="{{ week_href(view.week.start, item.assignment_id, show=item.assignment_id) }}" aria-label="{{ item.title }}, {{ item.course }}: school report to check">{{ item.title }}</a><span class="to-check-mark">{% if loop.last %}.{% else %},{% endif %}</span></span>{% if not loop.last %} {% endif %}{% endfor %}
     </p>
+  {% endif %}{% if together_unknown %}
+    <p class="problem">Check together can't be worked out right now.</p>
   {% endif %}
   {% for assignment in active_cards %}
     {% include "student_card.html" %}

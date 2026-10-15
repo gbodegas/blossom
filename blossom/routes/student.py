@@ -132,11 +132,15 @@ from blossom.reconciliation import (
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.homework_scores import (
     ScoreShown,
+    ToCheck,
     YearRead,
     read_score_facts,
     results_read,
+    rule_values,
     scores_left_out,
     scores_shown,
+    to_check,
+    week_to_check,
 )
 from blossom.routes.navigation import (
     DETAILS,
@@ -2209,15 +2213,21 @@ def student_page(
         # that name one result, leaves the page without any school score.
         grade_facts: tuple[YearRead, ...] = ()
         links: tuple[Link, ...] = ()
+        grades_failed = False
         try:
             grade_facts, links = read_score_facts(
                 state.project_state, (item.course for item in everything.assignments)
             )
         except GradeValueUndecodable as error:
             scores_left_out(error)
+            grades_failed = True
+    # The score lines and Check together's grade basis are made together and kept only when
+    # both are: a failure leaves neither, and the week's line says the count can't be worked
+    # out unless no homework it reaches could count.
     school_scores: dict[str, tuple[ScoreShown, ...]] = {}
+    checks: dict[str, ToCheck] = {}
     try:
-        school_scores = scores_shown(
+        shown = scores_shown(
             everything.assignments,
             everything.records,
             everything.claims_unavailable,
@@ -2226,8 +2236,13 @@ def student_page(
             zone=state.clock.zone,
             base=GRADES if parent_reads(request) else HER_GRADES,
         )
+        rules = rule_values(
+            everything.assignments, everything.records, everything.claims_unavailable, grade_facts
+        )
+        school_scores, checks = shown, to_check(rules, links, everything)
     except GradeValueUndecodable as error:
         scores_left_out(error)
+        grades_failed = True
     todays = (
         None
         if record is None
@@ -2255,6 +2270,19 @@ def student_page(
     )
     planned = in_todays_plan(view.earlier, record, None if todays is None else todays.reading)
     view = view.model_copy(update={"earlier": kept_in_place(planned, earlier_note)})
+    # Her week's one to-check line reaches the week's cards and the work given out for later,
+    # as the family-check count always has; earlier work is not in it. It counts each homework
+    # once: Check together's words when any it lists has a grade basis, whatever each one's
+    # basis, and the family check's own otherwise. When Check together's count can't be worked
+    # out, the family check's line stands alone for its homework and the problem follows it.
+    reach = [*view.assignments, *view.assigned_this_week]
+    line = week_to_check(
+        [(item.assignment_id, item.check_school) for item in reach],
+        checks,
+        everything,
+        failed=grades_failed,
+    )
+    together = list({item.assignment_id: item for item in reach}.values())
     problem_opening: tuple[str, str] | None = None
     if plan_answer is not None:
         # A press's line says a plan is shown, or names the button, only when this page does.
@@ -2309,6 +2337,8 @@ def student_page(
             # Each assignment's school score, made once for the page: every card and row
             # that lists the assignment reads this one mapping.
             "school_scores": school_scores,
+            "together": [item for item in together if item.assignment_id in line.together],
+            "together_unknown": line.unknown,
             "report_contexts": {
                 item.assignment_id: week_context(
                     item.assignment_id,
