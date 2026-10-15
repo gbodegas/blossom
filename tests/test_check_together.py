@@ -36,6 +36,7 @@ from blossom.routes.homework_scores import (
     CheckStanding,
     HerAccount,
     account_of,
+    account_read,
     check_standing,
     read_score_facts,
     rule_values,
@@ -2283,3 +2284,109 @@ def test_the_viewer_s_chosen_term_is_the_one_grades_counts(tmp_path: pathlib.Pat
             f"link: See {BIOLOGY}",
         ]
     ]
+
+
+ACCOUNT_STATES = {
+    "Done": (("done",), (), (), HerAccount(done=True, turned_in=False)),
+    "Done, then its Undo": (("done", "undo"), (), (), HerAccount(done=False, turned_in=False)),
+    "Done, then Not yet": (("done", "not_yet"), (), (), HerAccount(done=False, turned_in=False)),
+    "Not yet, Done, then its Undo": (
+        ("not_yet", "done", "undo"),
+        (),
+        (),
+        HerAccount(done=False, turned_in=False),
+    ),
+    "Done, Not yet, then its Undo": (
+        ("done", "not_yet", "undo"),
+        (),
+        (),
+        HerAccount(done=True, turned_in=False),
+    ),
+    "Done, its Undo, then Done": (
+        ("done", "undo", "done"),
+        (),
+        (),
+        HerAccount(done=True, turned_in=False),
+    ),
+    "Turned in": ((), (TURNED_IN,), (), HerAccount(done=False, turned_in=True)),
+    "Turned in, then its undo": (
+        (),
+        (TURNED_IN, "undo"),
+        (),
+        HerAccount(done=False, turned_in=False),
+    ),
+    "still to hand in, Turned in, then its undo": (
+        (),
+        (NEEDS_HAND_IN, TURNED_IN, "undo"),
+        (),
+        HerAccount(done=False, turned_in=False),
+    ),
+    "Turned in, still to hand in, then its undo": (
+        (),
+        (TURNED_IN, NEEDS_HAND_IN, "undo"),
+        (),
+        HerAccount(done=False, turned_in=True),
+    ),
+    "updates that can't be read": (
+        ("done",),
+        (TURNED_IN, "undo"),
+        ("student_reports",),
+        HerAccount(done=None, turned_in=False),
+    ),
+    "a hand-in that can't be read": (
+        ("done", "undo"),
+        (TURNED_IN,),
+        ("hand_in_events",),
+        HerAccount(done=False, turned_in=None),
+    ),
+    "both can't be read": (
+        ("done",),
+        (TURNED_IN,),
+        ("student_reports", "hand_in_events"),
+        HerAccount(done=None, turned_in=None),
+    ),
+}
+"""Her two chains, each made by the record's own writes, the tables whose notes are then made
+unreadable, and her account as Done or Turned in stands after them."""
+
+
+@pytest.mark.parametrize("state", ACCOUNT_STATES)
+def test_grades_reads_her_account_as_her_pages_do_from_what_stands(
+    store: ProjectStateStore, state: str
+) -> None:
+    """Grades' reader of her two chains gives the Done and Turned in that stand after every
+    report, Undo and Not yet, never one said and since taken back, and unknown for a chain that
+    can't be read, each note made so by the test's own SQL. Her pages' reader agrees, and so
+    does the standing."""
+    updates, hand_ins, spoiled, expected = ACCOUNT_STATES[state]
+    for said in updates:
+        if said == "undo":
+            store.undo_report(
+                DIAGRAM_ID,
+                store.student_reports(DIAGRAM_ID)[-1].report_id,
+                now=NOW,
+                today=PLAN_DATE,
+            )
+        else:
+            reported(store, said, DIAGRAM_ID)
+    for said in hand_ins:
+        if said == "undo":
+            head = store.hand_in_readings([DIAGRAM_ID]).readable[DIAGRAM_ID].head_id
+            assert head is not None
+            store.undo_hand_in(DIAGRAM_ID, head, now=NOW, today=PLAN_DATE)
+        else:
+            handed(store, said)
+    for table in spoiled:
+        spoil(store, table, "note", NOT_UTF8, DIAGRAM_ID)
+
+    with store.reading():
+        on_grades_reads = account_read(
+            store.update_readings([DIAGRAM_ID]),
+            store.hand_in_readings([DIAGRAM_ID]),
+            DIAGRAM_ID,
+        )
+        on_her_pages = account_of(read_everything(store, store), DIAGRAM_ID)
+
+    assert on_grades_reads == expected
+    assert on_her_pages == expected
+    assert check_standing(on_grades_reads) is check_standing(on_her_pages)
