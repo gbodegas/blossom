@@ -554,7 +554,6 @@ def test_a_form_that_parses_but_is_not_whole_keeps_its_answer(
 
 
 BODYLESS: Final = (
-    "/student/actions/too-much",
     f"/student/actions/take-back/{uuid4().hex}",
     f"/student/actions/take-back-help/{uuid4().hex}",
 )
@@ -959,6 +958,7 @@ FILE_NAME: Final = "Paper lanterns.txt"
 """A file's name in a body that carries a file, which no answer and no log line may show."""
 MORE_FORMS: Final = (
     "/student/actions/plan",
+    "/student/actions/too-much",
     f"/student/actions/assignments/{ESSAY_ID}/earlier-work",
     "/student/grades/view",
     *[
@@ -976,7 +976,8 @@ MORE_FORMS: Final = (
         )
     ],
 )
-"""The form routes the tests above don't press: her plan, earlier work, and the grade pages."""
+"""The form routes the tests above don't press: her plan, Too much right now, earlier work, and
+the grade pages."""
 EVERY_FORM_ROUTE: Final = (*EVERY_FORM, *MORE_FORMS)
 NO_BODY: Final = frozenset(
     {
@@ -985,7 +986,6 @@ NO_BODY: Final = frozenset(
         "/student/help-requests/{request_id}",
         "/student/plans",
         "/student/actions/take-back-help/{request_id}",
-        "/student/actions/too-much",
         "/student/actions/take-back/{signal_id}",
     }
 )
@@ -1004,6 +1004,7 @@ SHOWS_HER_WEEK: Final = frozenset(
         f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in",
         f"/student/actions/assignments/{ESSAY_ID}/earlier-work",
         ASK,
+        "/student/actions/too-much",
     }
 )
 """Her presses that tell a parent, 403, on her current week, that the press is hers: the

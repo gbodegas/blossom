@@ -18,10 +18,11 @@ from blossom.retrieval import (
     RetrievalRouter,
     SemanticRetriever,
 )
+from blossom.routes.student import WorkloadSignalRequest
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.tools import TOOL_REGISTRY
 from blossom.views import ParentCheckpointView, StudentAssignmentView, VerifierClaimView
-from tests.support import SAME_ORIGIN, fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings, fresh_signal_fields
 
 
 class RecordingRetriever:
@@ -399,13 +400,18 @@ def test_reconciler_preserves_all_four_conflicting_records() -> None:
     assert result.conflicting_claims == records
 
 
-def test_empty_workload_signal_post_succeeds() -> None:
+def test_a_workload_signal_post_asks_no_rating_and_no_reason() -> None:
+    """The press sends what keeps it once, its id, evening and issue time, and nothing about
+    the load: words are optional, and no field asks for a rating or a reason."""
     with TestClient(create_app(), headers=SAME_ORIGIN) as client:
-        response = client.post("/student/workload-signals")
+        response = client.post("/student/workload-signals", json=fresh_signal_fields(client))
 
     assert response.status_code == 201
     assert response.json()["principal"] == "STUDENT"
     assert response.json()["signal"]["detail"] is None
+    fields = WorkloadSignalRequest.model_fields
+    assert set(fields) == {"signal_id", "evening", "issued_at", "detail"}
+    assert not fields["detail"].is_required()
 
 
 def test_three_principal_views_are_distinct_and_forbid_absent_fields() -> None:

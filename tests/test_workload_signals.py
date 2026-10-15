@@ -8,6 +8,7 @@ hold the store, the graph, the routes, and the page to that.
 """
 
 import asyncio
+import json
 import logging
 import pathlib
 import re
@@ -16,7 +17,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import date, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from time import monotonic
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -37,7 +38,7 @@ from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes import student as student_routes
 from blossom.routes.parent import SIGNAL_ENDED as THEIR_SIGNAL_ENDED
 from blossom.routes.parent import SIGNALED_SINCE as THEIR_SIGNALED_SINCE
-from blossom.routes.runs import plan_graphs
+from blossom.routes.runs import FORM_LIFETIME, ISSUED_AT_FORM, plan_graphs
 from blossom.routes.student import (
     ASSIGNMENTS_CHANGED,
     SIGNAL_ENDED,
@@ -54,6 +55,7 @@ from blossom.settings import (
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.workload_signals import (
     DETAIL_MAX_LENGTH,
+    PRESS_LIFETIME,
     SIGNAL_RETENTION_DAYS,
     WorkloadSignalsStore,
 )
@@ -74,6 +76,7 @@ from tests.support import (
     drafts_in_memory,
     fixture_clock,
     fixture_settings,
+    fresh_signal_fields,
     good_plan,
     graph_with,
     human_text,
@@ -83,9 +86,12 @@ from tests.support import (
     plan_form,
     refusing,
     scripted_graphs,
+    signal_form,
+    signal_kept_before,
     signals_in_memory,
     signed_in,
     signed_in_household,
+    state_of,
     without_minted_fields,
 )
 
@@ -205,7 +211,7 @@ def test_words_she_adds_are_kept_but_never_required() -> None:
     store = store_in_memory()
 
     with_words = store.record(PLAN_DATE, "everything at once")
-    without = store.record(PLAN_DATE)
+    without = store.record(PLAN_DATE - timedelta(days=1))
 
     kept = {item.signal_id: item.detail for item in store.held()}
     assert kept == {with_words.signal_id: "everything at once", without.signal_id: None}
@@ -244,6 +250,7 @@ def test_the_store_offers_no_way_to_read_a_pattern() -> None:
 
     assert offered == {
         "record",
+        "record_once",
         "withdraw",
         "for_evening",
         "held",
@@ -344,7 +351,7 @@ def browser(*, key: bool = False, planners: list[Scripted[DailyPlan]] | None = N
 
 def test_a_press_is_answered_with_what_it_changed() -> None:
     with browser() as client:
-        response = client.post("/student/workload-signals")
+        response = client.post("/student/workload-signals", json=fresh_signal_fields(client))
         listed = client.get("/student/workload-signals").json()
 
     assert response.status_code == 201
@@ -357,7 +364,9 @@ def test_a_press_is_answered_with_what_it_changed() -> None:
 
 def test_a_signal_can_be_deleted_once_and_is_then_gone() -> None:
     with browser() as client:
-        signal_id = client.post("/student/workload-signals").json()["signal"]["signal_id"]
+        signal_id = client.post(
+            "/student/workload-signals", json=fresh_signal_fields(client)
+        ).json()["signal"]["signal_id"]
         first = client.delete(f"/student/workload-signals/{signal_id}")
         second = client.delete(f"/student/workload-signals/{signal_id}")
         listed = client.get("/student/workload-signals").json()
@@ -370,7 +379,7 @@ def test_a_signal_can_be_deleted_once_and_is_then_gone() -> None:
 def test_the_page_offers_the_control_and_then_shows_what_it_changed() -> None:
     with browser() as client:
         before = client.get("/student/due-this-week").text
-        pressed = client.post("/student/actions/too-much")
+        pressed = client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         after = client.get("/student/due-this-week").text
 
     assert "Too much right now" in before
@@ -386,7 +395,7 @@ def test_the_page_offers_the_control_and_then_shows_what_it_changed() -> None:
 
 def test_taking_it_back_from_the_page_restores_the_evening() -> None:
     with browser() as client:
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         signal_id = client.get("/student/workload-signals").json()[0]["signal_id"]
         taken_back = client.post(f"/student/actions/take-back/{signal_id}")
         page = client.get(taken_back.headers["location"]).text
@@ -487,7 +496,7 @@ def test_a_signal_says_what_it_asks_for_beside_its_undo(plan: str) -> None:
         if plan == "a full plan":
             client.post("/student/actions/plan", data=plan_form(client))
         before = asked(planners)
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         after = asked(planners)
         if plan == "a smaller plan":
             client.post("/student/actions/plan", data=plan_form(client))
@@ -516,7 +525,7 @@ def test_undo_removes_her_request_says_so_and_leaves_the_plan_as_saved(plan: boo
     No model is asked, and the saved plan is as it was."""
     planners: list[Scripted[DailyPlan]] = []
     with browser(key=True, planners=planners) as client:
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         if plan:
             client.post("/student/actions/plan", data=plan_form(client))
         saved = todays_draft(client)
@@ -552,13 +561,13 @@ def test_the_line_an_undo_lands_on_takes_the_arrival_cue() -> None:
 
 
 def test_with_two_requests_each_undo_says_what_still_stands() -> None:
-    """Each press keeps a row, and the evening stays shorter while any is left. Undo removes
-    the latest: the page says that request isn't active and that a shorter plan is still
-    requested, with what it does, and its Undo is for the one left. That removes the last,
-    and only then is nothing said to be requested."""
+    """A file from before keeps two requests for tonight, and the evening stays shorter while
+    any is left. Undo removes the latest: the page says that request isn't active and that a
+    shorter plan is still requested, with what it does, and its Undo is for the one left.
+    That removes the last, and only then is nothing said to be requested."""
     with browser(key=True) as client:
-        client.post("/student/actions/too-much")
-        client.post("/student/actions/too-much")
+        signal_kept_before(client, PLAN_DATE)
+        signal_kept_before(client, PLAN_DATE)
         first, latest = tonight(client)
         two = today_of(client.get(PAGE).text)
         one_left = today_of(undo(client, latest))
@@ -590,10 +599,11 @@ def test_with_two_requests_each_undo_says_what_still_stands() -> None:
 def test_an_undo_sent_again_changes_nothing_and_never_says_the_evening_is_back() -> None:
     """Undo pressed twice, as a double press or a page left open sends it: the second finds
     its request gone, changes nothing, and lands on the same words. With an earlier request
-    still kept, the page says so, and nothing says the usual evening is back."""
+    still kept, as a file from before can keep one, the page says so, and nothing says the
+    usual evening is back."""
     with browser(key=True) as client:
-        client.post("/student/actions/too-much")
-        client.post("/student/actions/too-much")
+        signal_kept_before(client, PLAN_DATE)
+        signal_kept_before(client, PLAN_DATE)
         first, latest = tonight(client)
         once = today_of(undo(client, latest))
         twice = today_of(undo(client, latest))
@@ -613,8 +623,8 @@ def test_only_the_page_her_undo_lands_on_says_she_removed_her_request() -> None:
     """The Undo's redirect names a new landing and leaves a mark for that page alone, which
     reads it once, clears it and is kept by no cache. A refresh or a return says what stands."""
     with browser(key=True) as client:
-        client.post("/student/actions/too-much")
-        client.post("/student/actions/too-much")
+        signal_kept_before(client, PLAN_DATE)
+        signal_kept_before(client, PLAN_DATE)
         first, latest = tonight(client)
         pressed = client.post(f"/student/actions/take-back/{latest}")
         landed = client.get(pressed.headers["location"])
@@ -653,7 +663,7 @@ def test_an_address_alone_never_says_she_removed_her_request(kept: int, query: s
     says what stands, as on any visit."""
     with browser(key=True) as client:
         for _ in range(kept):
-            client.post("/student/actions/too-much")
+            signal_kept_before(client, PLAN_DATE)
         page = client.get(f"{PAGE}?{query}")
 
     today = today_of(page.text)
@@ -676,7 +686,7 @@ def test_try_again_after_an_unreadable_landing_says_the_removal_once(
     so Try again, the same address while the mark waits, says it once."""
     real = student_routes.student_page
     with browser(key=True) as client:
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         pressed = client.post(f"/student/actions/take-back/{tonight(client)[0]}")
         monkeypatch.setattr(student_routes, "student_page", refusing())
         failed = client.get(pressed.headers["location"])
@@ -697,7 +707,7 @@ def test_try_again_after_an_unreadable_landing_says_the_removal_once(
 
 def test_a_press_on_her_page_reaches_the_parents_plan() -> None:
     with browser() as client:
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         started = client.post("/parent/plans", json={}).json()
         page = client.get("/parent").text
 
@@ -709,7 +719,7 @@ def test_a_press_on_her_page_reaches_the_parents_plan() -> None:
 
 def test_the_application_keeps_her_signals_in_the_drafts_file_swept_by_the_real_clock() -> None:
     with browser() as client:
-        client.post("/student/workload-signals")
+        client.post("/student/workload-signals", json=fresh_signal_fields(client))
         state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
         held = state.workload_signals.held()
 
@@ -724,7 +734,7 @@ def test_the_application_keeps_her_signals_in_the_drafts_file_swept_by_the_real_
 def test_a_press_after_a_draft_is_waiting_makes_it_stale() -> None:
     with browser() as client:
         started = client.post("/parent/plans", json={}).json()
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         queue = client.get("/parent/approvals").json()["waiting"]
         page = client.get("/parent").text
         approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
@@ -743,7 +753,7 @@ def test_a_press_after_a_draft_is_waiting_makes_it_stale() -> None:
 def test_a_stale_draft_can_still_be_refused() -> None:
     with browser() as client:
         started = client.post("/parent/plans", json={}).json()
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         refused = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": False})
 
     assert refused.status_code == 200
@@ -752,7 +762,9 @@ def test_a_stale_draft_can_still_be_refused() -> None:
 
 def test_taking_the_signal_back_after_a_reduced_draft_makes_it_stale() -> None:
     with browser() as client:
-        signal_id = client.post("/student/workload-signals").json()["signal"]["signal_id"]
+        signal_id = client.post(
+            "/student/workload-signals", json=fresh_signal_fields(client)
+        ).json()["signal"]["signal_id"]
         started = client.post("/parent/plans", json={}).json()
         client.delete(f"/student/workload-signals/{signal_id}")
         queue = client.get("/parent/approvals").json()["waiting"]
@@ -767,7 +779,7 @@ def test_taking_the_signal_back_after_a_reduced_draft_makes_it_stale() -> None:
 
 def test_a_plan_made_after_the_press_fits_and_can_be_approved() -> None:
     with browser() as client:
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         started = client.post("/parent/plans", json={}).json()
         queue = client.get("/parent/approvals").json()["waiting"]
         approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
@@ -797,7 +809,7 @@ def test_a_decided_draft_is_not_measured_against_the_evening_again() -> None:
     with browser() as client:
         started = client.post("/parent/plans", json={}).json()
         client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         decided = client.get(f"/parent/approvals/{started['draft_id']}").json()
         page = client.get("/parent").text
 
@@ -811,7 +823,10 @@ def test_a_decided_draft_is_not_measured_against_the_evening_again() -> None:
 
 def test_her_words_are_shown_back_to_her_exactly_as_kept() -> None:
     with browser() as client:
-        pressed = client.post("/student/workload-signals", json={"detail": "everything at once"})
+        pressed = client.post(
+            "/student/workload-signals",
+            json=fresh_signal_fields(client, detail="everything at once"),
+        )
         listed = client.get("/student/workload-signals").json()
         page = client.get("/student/due-this-week").text
 
@@ -827,7 +842,9 @@ def test_a_press_waits_while_a_decision_is_being_recorded() -> None:
         portal = client.portal
         assert portal is not None
         portal.call(state.decision_lock.acquire)
-        pressing = pool.submit(client.post, "/student/actions/too-much")
+        pressing = pool.submit(
+            client.post, "/student/actions/too-much", data=fresh_signal_fields(client)
+        )
         _, still_waiting = wait([pressing], timeout=0.3)
         held_while_locked = state.workload_signals.held()
         portal.call(state.decision_lock.release)
@@ -846,10 +863,12 @@ def test_a_press_waits_while_a_decision_is_being_recorded() -> None:
 def test_her_words_are_capped_at_the_boundary_and_in_the_store() -> None:
     with browser() as client:
         at_the_cap = client.post(
-            "/student/workload-signals", json={"detail": "w" * DETAIL_MAX_LENGTH}
+            "/student/workload-signals",
+            json=fresh_signal_fields(client, detail="w" * DETAIL_MAX_LENGTH),
         )
         over = client.post(
-            "/student/workload-signals", json={"detail": "w" * (DETAIL_MAX_LENGTH + 1)}
+            "/student/workload-signals",
+            json=fresh_signal_fields(client, detail="w" * (DETAIL_MAX_LENGTH + 1)),
         )
         listed = client.get("/student/workload-signals").json()
 
@@ -941,11 +960,13 @@ def as_a_parent(client: TestClient) -> str:
 
 
 def a_shorter_plan_saved(folder: pathlib.Path, *, presses: int = 1) -> object:
-    """Too much pressed ``presses`` times, then a plan made under the usual 75 minutes: one
-    block, 60 minutes long. The plan as saved."""
+    """Too much pressed, with ``presses`` requests for tonight in all, the rest as a file from
+    before keeps them, then a plan made under the usual 75 minutes: one block, 60 minutes
+    long. The plan as saved."""
     with started(folder, DEFAULT_TOO_MUCH_MINUTES) as client:
-        for _ in range(presses):
-            client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
+        for _ in range(presses - 1):
+            signal_kept_before(client, PLAN_DATE)
         client.post("/student/actions/plan", data=plan_form(client))
         return todays_draft(client)
 
@@ -1218,7 +1239,7 @@ def test_a_changed_signal_is_said_before_the_limit(tmp_path: pathlib.Path) -> No
     with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
         client.post("/student/actions/plan", data=plan_form(client))
     with started(tmp_path, 40) as client:
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         since = client.get("/student/plans/today").json()
         as_a_parent(client)
         their_since = client.get("/parent/approvals").json()["waiting"]
@@ -1266,7 +1287,7 @@ def test_a_decided_plan_and_a_past_evening_are_not_measured_against_the_limit_se
     """A decided plan is a record, and a past evening's plan can't be planned again: neither
     is stale after a start that lowers the limit under its blocks."""
     with started(tmp_path, DEFAULT_TOO_MUCH_MINUTES) as client:
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         client.post("/student/actions/plan", data=plan_form(client))
         draft_id = client.get("/student/plans/today").json()["draft_id"]
         as_a_parent(client)
@@ -1288,3 +1309,703 @@ def test_a_decided_plan_and_a_past_evening_are_not_measured_against_the_limit_se
     assert theirs["stale"] is None
     assert [item["plan_date"] for item in waiting] == [PLAN_DATE.isoformat()]
     assert waiting[0]["stale"] is None
+
+
+# ------------------------------------------------------------ one press, one signal
+
+W7 = "Blossom couldn&#39;t use that press of Too much right now. Nothing was recorded."
+W8 = "That button was for Tuesday, August 18. Nothing was recorded for today."
+W8B = "That page was opened a week or more ago. Nothing was recorded."
+PRESS_IT = "If today is too much, press Too much right now."
+TOO_MUCH = "/student/actions/too-much"
+WEEK = timedelta(days=SIGNAL_RETENTION_DAYS)
+
+
+def issued(instant: datetime) -> str:
+    """An issue time as a page writes it."""
+    return instant.astimezone(UTC).strftime(ISSUED_AT_FORM)
+
+
+def ids_kept(store: WorkloadSignalsStore) -> list[tuple[str, str]]:
+    """Every used id the store keeps, with its time, straight from its table."""
+    return [
+        (str(row[0]), str(row[1]))
+        for row in store._connection.execute(
+            "SELECT signal_id, used_at FROM workload_signal_ids ORDER BY 1"
+        )
+    ]
+
+
+def problem_line(page: str) -> str:
+    """The line at the top of her week that says what a press could not do."""
+    found = re.search(r'<p class="problem week-problem"[^>]*>(.*?)</p>', page, re.S)
+    assert found is not None, "no problem line"
+    return said(re.sub(r"<[^>]+>", "", found.group(1)))
+
+
+def test_the_press_lifetime_is_the_form_lifetime() -> None:
+    """A press and its form share one lifetime, a week. The expiry and sweep tests exercise it
+    at its boundaries."""
+    assert PRESS_LIFETIME == FORM_LIFETIME == WEEK
+
+
+def test_one_id_records_one_signal_under_that_id() -> None:
+    store = store_in_memory()
+    now = store._clock.now()
+    form = "a" * 32
+
+    store.record_once(form, PLAN_DATE, now, None)
+    store.record_once(form, PLAN_DATE, now, None)
+
+    assert [signal.signal_id for signal in store.for_evening(PLAN_DATE)] == [form]
+    assert ids_kept(store) == [(form, now.astimezone(UTC).isoformat())]
+
+
+def test_a_second_id_while_a_signal_stands_is_kept_as_handled_and_records_nothing() -> None:
+    store = store_in_memory()
+    now = store._clock.now()
+
+    store.record_once("a" * 32, PLAN_DATE, now, None)
+    store.record_once("b" * 32, PLAN_DATE, now, None)
+    store.withdraw("a" * 32)
+    store.record_once("b" * 32, PLAN_DATE, now, None)
+
+    assert store.for_evening(PLAN_DATE) == []
+    assert [form for form, _ in ids_kept(store)] == ["a" * 32, "b" * 32]
+
+
+def test_an_id_stays_used_after_its_signal_is_taken_back() -> None:
+    store = store_in_memory()
+    now = store._clock.now()
+    store.record_once("a" * 32, PLAN_DATE, now, None)
+    store.withdraw("a" * 32)
+
+    store.record_once("a" * 32, PLAN_DATE, now, None)
+
+    assert store.held() == []
+    assert [form for form, _ in ids_kept(store)] == ["a" * 32]
+
+
+@pytest.mark.parametrize("age", [WEEK, WEEK + timedelta(seconds=1)])
+def test_a_form_a_week_old_or_more_at_the_write_records_nothing(age: timedelta) -> None:
+    store = store_in_memory()
+    now = store._clock.now()
+
+    store.record_once("a" * 32, PLAN_DATE, now - age, None)
+
+    assert store.held() == []
+    assert ids_kept(store) == []
+
+
+def test_used_at_is_the_later_of_now_and_the_issue_time_in_utc() -> None:
+    store = store_in_memory()
+    now = store._clock.now()
+    ahead = (now + timedelta(minutes=3)).astimezone(ZoneInfo("America/Los_Angeles"))
+
+    store.record_once("a" * 32, PLAN_DATE, ahead, None)
+    store.record_once("b" * 32, PLAN_DATE + timedelta(days=1), now - timedelta(hours=1), None)
+
+    assert ids_kept(store) == [
+        ("a" * 32, ahead.astimezone(UTC).isoformat()),
+        ("b" * 32, now.astimezone(UTC).isoformat()),
+    ]
+
+
+def test_an_id_issued_ahead_is_still_found_until_its_form_expires() -> None:
+    """A form issued five minutes ahead of the clock, pressed and swept a week and a minute
+    later on a pinned day, is still recognized: its form is valid, so its id is kept."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    then = WorkloadSignalsStore(connection, FrozenClock(OBSERVED_AT, ZONE))
+    ahead = OBSERVED_AT + timedelta(minutes=5)
+    then.record_once("a" * 32, PLAN_DATE, ahead, None)
+    later = WorkloadSignalsStore(
+        connection, FrozenClock(OBSERVED_AT + WEEK + timedelta(minutes=1), ZONE)
+    )
+
+    later.sweep()
+    later.record_once("a" * 32, PLAN_DATE, ahead, None)
+
+    assert later.held() == []
+    assert [form for form, _ in ids_kept(later)] == ["a" * 32]
+
+
+@pytest.mark.parametrize(
+    ("after_issue", "kept"),
+    [(WEEK - timedelta(seconds=1), True), (WEEK, True), (WEEK + timedelta(seconds=1), False)],
+    ids=["just under seven days", "exactly seven days", "more than seven days"],
+)
+def test_an_id_issued_ahead_is_kept_by_its_issue_time(after_issue: timedelta, kept: bool) -> None:
+    """An id handled five minutes before its issue time is kept by that later time: a
+    cleanup keeps it until more than seven days have passed since the issue time, seven days
+    and five minutes after it was handled, and removes it after that."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    then = WorkloadSignalsStore(connection, FrozenClock(OBSERVED_AT, ZONE))
+    ahead = OBSERVED_AT + timedelta(minutes=5)
+    then.record_once("a" * 32, PLAN_DATE, ahead, None)
+    later = WorkloadSignalsStore(connection, FrozenClock(ahead + after_issue, ZONE))
+
+    later.sweep()
+
+    assert [form for form, _ in ids_kept(later)] == (["a" * 32] if kept else [])
+
+
+def test_used_ids_are_swept_with_the_signals_at_seven_days() -> None:
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    then = WorkloadSignalsStore(connection, FrozenClock(OBSERVED_AT, ZONE))
+    then.record_once("a" * 32, PLAN_DATE, OBSERVED_AT, None)
+    then.record_once("b" * 32, PLAN_DATE, OBSERVED_AT + timedelta(seconds=2), None)
+    later = WorkloadSignalsStore(
+        connection, FrozenClock(OBSERVED_AT + WEEK + timedelta(seconds=1), ZONE)
+    )
+
+    later.sweep()
+
+    assert [form for form, _ in ids_kept(later)] == ["b" * 32]
+    assert later.held() == []
+
+
+class AnOffsetClock:
+    """A clock that answers its instant at a fixed offset from UTC, as a clock may."""
+
+    def __init__(self, instant: datetime, hours: int) -> None:
+        self._at = instant.astimezone(timezone(timedelta(hours=hours)))
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return ZONE
+
+    def now(self) -> datetime:
+        return self._at
+
+    def today(self) -> date:
+        return self._at.astimezone(ZONE).date()
+
+
+@pytest.mark.parametrize("hours", [5, -7])
+def test_ids_are_swept_by_the_instant_whatever_offset_the_clock_answers_in(hours: int) -> None:
+    """The kept time and the sweep's cutoff are compared as UTC instants, so an id stays until
+    more than seven days have passed and goes after, whatever offset the clock reads in."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    WorkloadSignalsStore(connection, AnOffsetClock(OBSERVED_AT, hours)).record_once(
+        "a" * 32, PLAN_DATE, OBSERVED_AT, None
+    )
+    almost = WorkloadSignalsStore(
+        connection, AnOffsetClock(OBSERVED_AT + WEEK - timedelta(minutes=1), hours)
+    )
+    almost.sweep()
+    kept_almost = [form for form, _ in ids_kept(almost)]
+    past = WorkloadSignalsStore(
+        connection, AnOffsetClock(OBSERVED_AT + WEEK + timedelta(seconds=1), hours)
+    )
+    past.sweep()
+
+    assert kept_almost == ["a" * 32]
+    assert ids_kept(past) == []
+    assert past.held() == []
+
+
+def test_a_file_from_before_marks_every_signal_id_used_once_opened() -> None:
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        "CREATE TABLE workload_signals (signal_id TEXT PRIMARY KEY, evening TEXT NOT NULL, "
+        "given_at TEXT NOT NULL, detail TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO workload_signals VALUES (?, ?, ?, NULL)",
+        ("c" * 32, PLAN_DATE.isoformat(), OBSERVED_AT.isoformat()),
+    )
+    connection.commit()
+    WorkloadSignalsStore(connection, FrozenClock(OBSERVED_AT, ZONE))
+    store = WorkloadSignalsStore(connection, FrozenClock(OBSERVED_AT, ZONE))
+    columns = [row[1] for row in connection.execute("PRAGMA table_info(workload_signal_ids)")]
+
+    store.withdraw("c" * 32)
+    store.record_once("c" * 32, PLAN_DATE, OBSERVED_AT, None)
+
+    assert columns == ["signal_id", "used_at"]
+    assert ids_kept(store) == [("c" * 32, OBSERVED_AT.isoformat())]
+    assert store.held() == []
+
+
+def test_every_signal_kept_has_its_id_kept() -> None:
+    store = store_in_memory()
+
+    kept = store.record(PLAN_DATE)
+
+    assert [form for form, _ in ids_kept(store)] == [kept.signal_id]
+
+
+def test_one_id_on_two_connections_records_one_signal(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "signals.sqlite3"
+    first = WorkloadSignalsStore.open(path, fixture_clock())
+    second = WorkloadSignalsStore.open(path, fixture_clock())
+    now = first._clock.now()
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            done = [
+                pool.submit(store.record_once, "a" * 32, PLAN_DATE, now, None)
+                for store in (first, second)
+            ]
+            wait(done)
+        for future in done:
+            future.result()
+        held = first.held()
+    finally:
+        first.close()
+        second.close()
+
+    assert [signal.signal_id for signal in held] == ["a" * 32]
+
+
+def test_the_same_form_sent_twice_records_one_signal() -> None:
+    with browser() as client:
+        form = signal_form(client)
+        first = client.post(TOO_MUCH, data=form)
+        second = client.post(TOO_MUCH, data=form)
+        held = tonight(client)
+
+    assert (first.status_code, first.headers["location"]) == (303, PAGE)
+    assert (second.status_code, second.headers["location"]) == (303, PAGE)
+    assert held == [form["signal_id"]]
+
+
+def test_a_replay_after_undo_records_nothing_and_says_the_request_isnt_active() -> None:
+    with browser() as client:
+        form = signal_form(client)
+        client.post(TOO_MUCH, data=form)
+        undo(client, form["signal_id"])
+        replay = client.post(TOO_MUCH, data=form)
+        page = client.get(replay.headers["location"]).text
+        held = tonight(client)
+
+    assert replay.status_code == 303
+    assert replay.headers["location"] == landed_at(replay.headers["location"])
+    assert held == []
+    assert REMOVED in today_of(page)
+    assert REQUESTED not in page
+
+
+def test_a_second_tab_records_no_second_signal_before_or_after_undo() -> None:
+    with browser() as client:
+        one, other = signal_form(client), signal_form(client)
+        client.post(TOO_MUCH, data=one)
+        second = client.post(TOO_MUCH, data=other)
+        standing = tonight(client)
+        undo(client, one["signal_id"])
+        again = [client.post(TOO_MUCH, data=form) for form in (other, one)]
+        left = tonight(client)
+
+    assert one["signal_id"] != other["signal_id"]
+    assert (second.status_code, second.headers["location"]) == (303, PAGE)
+    assert standing == [one["signal_id"]]
+    assert [answer.status_code for answer in again] == [303, 303]
+    assert left == []
+
+
+def test_a_fresh_form_after_undo_is_a_new_request() -> None:
+    with browser() as client:
+        form = signal_form(client)
+        client.post(TOO_MUCH, data=form)
+        undo(client, form["signal_id"])
+        fresh = signal_form(client)
+        pressed = client.post(TOO_MUCH, data=fresh)
+        held = tonight(client)
+
+    assert fresh["signal_id"] != form["signal_id"]
+    assert (pressed.status_code, pressed.headers["location"]) == (303, PAGE)
+    assert held == [fresh["signal_id"]]
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [
+        "no id",
+        "an id of another shape",
+        "an evening twice",
+        "a field no page sends",
+        "an issue time of another shape",
+        "an issue time far ahead",
+        "nothing at all",
+    ],
+)
+def test_a_form_that_isnt_whole_records_nothing_and_says_so(sent: str) -> None:
+    with browser() as client:
+        form: dict[str, Any] = signal_form(client)
+        match sent:
+            case "no id":
+                del form["signal_id"]
+            case "an id of another shape":
+                form["signal_id"] = "A" * 32
+            case "an evening twice":
+                form["evening"] = [form["evening"], form["evening"]]
+            case "a field no page sends":
+                form["in_place"] = ""
+            case "an issue time of another shape":
+                form["issued_at"] = "yesterday"
+            case "an issue time far ahead":
+                form["issued_at"] = issued(datetime.now(UTC) + timedelta(hours=1))
+            case _:
+                form = {}
+        answer = client.post(TOO_MUCH, data=form)
+        held = tonight(client)
+
+    assert answer.status_code == 422
+    assert problem_line(answer.text) == f"{W7} {PRESS_IT}"
+    assert held == []
+
+
+def test_a_form_from_another_evening_records_nothing_and_names_it() -> None:
+    with browser() as client:
+        form = signal_form(client, evening=(PLAN_DATE - timedelta(days=1)).isoformat())
+        answer = client.post(TOO_MUCH, data=form)
+        held = tonight(client)
+
+    assert answer.status_code == 409
+    assert problem_line(answer.text) == f"{W8} {PRESS_IT}"
+    assert held == []
+
+
+def test_a_form_issued_a_week_ago_or_more_records_nothing() -> None:
+    with browser() as client:
+        form = signal_form(client, issued_at=issued(datetime.now(UTC) - WEEK))
+        answer = client.post(TOO_MUCH, data=form)
+        held = tonight(client)
+
+    assert answer.status_code == 409
+    assert problem_line(answer.text) == f"{W8B} {PRESS_IT}"
+    assert held == []
+
+
+def test_the_answer_names_the_button_only_when_the_page_shows_it() -> None:
+    with browser() as client:
+        state_of(client).workload_signals.record(PLAN_DATE)
+        answer = client.post(TOO_MUCH, data=fresh_signal_fields(client, signal_id="Z"))
+        held = tonight(client)
+
+    assert answer.status_code == 422
+    assert problem_line(answer.text) == W7
+    assert 'action="/student/actions/too-much"' not in answer.text
+    assert len(held) == 1
+
+
+def test_the_answer_without_her_week_says_its_facts_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with browser() as client:
+        form = signal_form(client, evening=(PLAN_DATE - timedelta(days=1)).isoformat())
+        monkeypatch.setattr(
+            state_of(client).drafts, "latest_for", refusing(sqlite3.OperationalError)
+        )
+        answer = client.post(TOO_MUCH, data=form, headers={"Accept": "text/html"})
+        monkeypatch.undo()
+        held = tonight(client)
+
+    assert answer.status_code == 409
+    assert W8 in answer.text
+    assert PRESS_IT not in answer.text
+    assert held == []
+
+
+# ------------------------------------------------------------ the JSON route, one id one signal
+
+SIGNALS = "/student/workload-signals"
+J2 = (
+    "A signal needs signal_id, a new id of 32 lowercase hexadecimal characters for each "
+    "press; evening, the household's today as YYYY-MM-DD; and issued_at, the time the press "
+    "was made, in ISO 8601 with its offset and no more than five minutes ahead of the "
+    "server's clock. detail is optional, at most 500 characters. Nothing was recorded."
+)
+J5 = (
+    "This signal_id already recorded a signal with other words, so nothing was recorded. "
+    "Use a new signal_id and issued_at for a new signal."
+)
+J6 = "The evening 2026-08-18 is not today, 2026-08-19, so nothing was recorded."
+AGED = (
+    "This press was made a week or more ago, so nothing was recorded. A new press needs a new "
+    "signal_id and issued_at."
+)
+
+
+def refusal(code: str, message: str, today: str | None = None) -> dict[str, object]:
+    """A refusal's body as the route sends it."""
+    return {"detail": {"code": code, "message": message, "today": today}}
+
+
+def test_a_json_press_records_one_signal_under_its_id() -> None:
+    with browser() as client:
+        body = fresh_signal_fields(client, detail="a long day")
+        answer = client.post(SIGNALS, json=body)
+        held = tonight(client)
+
+    assert answer.status_code == 201
+    sent = answer.json()
+    assert (sent["principal"], sent["recorded"]) == ("STUDENT", True)
+    assert (sent["signal"]["signal_id"], sent["signal"]["detail"]) == (
+        body["signal_id"],
+        "a long day",
+    )
+    assert held == [body["signal_id"]]
+
+
+def test_a_json_retry_answers_its_own_signal_and_records_nothing() -> None:
+    with browser() as client:
+        body = fresh_signal_fields(client, detail="a long day")
+        first = client.post(SIGNALS, json=body).json()
+        again = client.post(SIGNALS, json=body)
+        held = tonight(client)
+
+    assert again.status_code == 200
+    assert again.json() == {**first, "recorded": False}
+    assert held == [body["signal_id"]]
+
+
+def test_a_json_retry_with_other_words_is_refused_and_records_nothing() -> None:
+    with browser() as client:
+        body = fresh_signal_fields(client, detail="a long day")
+        client.post(SIGNALS, json=body)
+        other = client.post(SIGNALS, json={**body, "detail": "something else"})
+        kept = state_of(client).workload_signals.held()
+
+    assert other.status_code == 409
+    assert other.json() == refusal("other_words", J5)
+    assert [(signal.signal_id, signal.detail) for signal in kept] == [
+        (body["signal_id"], "a long day")
+    ]
+
+
+def test_a_json_retry_with_other_words_after_undo_records_nothing_and_answers_none() -> None:
+    """Once the signal an id recorded is taken back, the same id with other words is a retry
+    like any other: 200, no signal, and nothing recorded."""
+    with browser() as client:
+        body = fresh_signal_fields(client, detail="a long day")
+        client.post(SIGNALS, json=body)
+        client.delete(f"{SIGNALS}/{body['signal_id']}")
+        other = client.post(SIGNALS, json={**body, "detail": "something else"})
+        kept = state_of(client).workload_signals.held()
+
+    assert other.status_code == 200
+    assert other.json()["signal"] is None
+    assert other.json()["recorded"] is False
+    assert kept == []
+
+
+def test_a_second_json_id_while_a_signal_stands_answers_that_signal() -> None:
+    with browser() as client:
+        first = client.post(SIGNALS, json=fresh_signal_fields(client)).json()
+        second = client.post(SIGNALS, json=fresh_signal_fields(client, detail="me too"))
+        held = tonight(client)
+
+    assert second.status_code == 200
+    assert second.json() == {**first, "recorded": False}
+    assert held == [first["signal"]["signal_id"]]
+
+
+@pytest.mark.parametrize("by", ["the same id", "the page's form"])
+def test_a_json_retry_after_undo_records_nothing_and_says_nothing_stands(by: str) -> None:
+    with browser() as client:
+        if by == "the same id":
+            body = fresh_signal_fields(client)
+            client.post(SIGNALS, json=body)
+        else:
+            body = signal_form(client)
+            client.post(TOO_MUCH, data=body)
+        client.delete(f"{SIGNALS}/{body['signal_id']}")
+        again = client.post(SIGNALS, json=body)
+        held = tonight(client)
+
+    assert again.status_code == 200
+    assert again.json() == {"principal": "STUDENT", "signal": None, "recorded": False}
+    assert held == []
+
+
+def test_a_new_json_action_after_undo_records_a_new_signal() -> None:
+    with browser() as client:
+        body = fresh_signal_fields(client)
+        client.post(SIGNALS, json=body)
+        client.delete(f"{SIGNALS}/{body['signal_id']}")
+        fresh = client.post(SIGNALS, json=fresh_signal_fields(client))
+        held = tonight(client)
+
+    assert fresh.status_code == 201
+    assert held == [fresh.json()["signal"]["signal_id"]]
+
+
+def test_a_json_press_for_another_evening_names_today_and_records_nothing() -> None:
+    with browser() as client:
+        body = fresh_signal_fields(client, evening=(PLAN_DATE - timedelta(days=1)).isoformat())
+        answer = client.post(SIGNALS, json=body)
+        held = tonight(client)
+
+    assert answer.status_code == 409
+    assert answer.json() == refusal("another_evening", J6, PLAN_DATE.isoformat())
+    assert held == []
+
+
+@pytest.mark.parametrize("age", [WEEK, WEEK + timedelta(minutes=1)])
+def test_a_json_press_made_a_week_ago_or_more_records_nothing(age: timedelta) -> None:
+    with browser() as client:
+        body = fresh_signal_fields(client, issued_at=issued(datetime.now(UTC) - age))
+        answer = client.post(SIGNALS, json=body)
+        held = tonight(client)
+
+    assert answer.status_code == 409
+    assert answer.json() == refusal("expired", AGED)
+    assert held == []
+
+
+NOT_A_SIGNAL: dict[str, object] = {
+    "no body": None,
+    "an empty object": {},
+    "no id": {"signal_id": None},
+    "an id of another shape": {"signal_id": "A" * 32},
+    "no evening": {"evening": None},
+    "an evening that isn't a date": {"evening": "tonight"},
+    "no issue time": {"issued_at": None},
+    "an issue time that isn't one": {"issued_at": "yesterday"},
+    "an issue time with no offset": {"issued_at": "2026-08-19T09:00:00"},
+    "an issue time far ahead": {"issued_at": "2099-01-01T00:00:00+00:00"},
+    "an issue time as a number": {"issued_at": 1787130000},
+    "a rating": {"rating": 5},
+    "words past the cap": {"detail": "w" * (DETAIL_MAX_LENGTH + 1)},
+}
+
+
+@pytest.mark.parametrize("sent", [*NOT_A_SIGNAL, "a field twice", "not JSON", "plain text"])
+def test_a_json_press_that_isnt_a_signal_is_refused_with_its_code(sent: str) -> None:
+    with browser() as client:
+        body = fresh_signal_fields(client)
+        changed = NOT_A_SIGNAL.get(sent, {})
+        typed = {"Content-Type": "application/json"}
+        match sent:
+            case "no body":
+                answer = client.post(SIGNALS)
+            case "a field twice":
+                raw = json.dumps(body)[:-1] + f', "signal_id": "{"b" * 32}"}}'
+                answer = client.post(SIGNALS, content=raw.encode(), headers=typed)
+            case "not JSON":
+                answer = client.post(SIGNALS, content=b"{not json", headers=typed)
+            case "plain text":
+                answer = client.post(
+                    SIGNALS,
+                    content=json.dumps(body).encode(),
+                    headers={"Content-Type": "text/plain"},
+                )
+            case "an empty object":
+                answer = client.post(SIGNALS, json={})
+            case _:
+                assert isinstance(changed, dict)
+                sent_body = {
+                    key: value
+                    for key, value in {**body, **changed}.items()
+                    if value is not None or key == "detail"
+                }
+                answer = client.post(SIGNALS, json=sent_body)
+        held = tonight(client)
+        ids = (
+            state_of(client)
+            .workload_signals._connection.execute("SELECT count(*) FROM workload_signal_ids")
+            .fetchone()[0]
+        )
+
+    assert answer.status_code == 422
+    assert answer.json() == refusal("not_valid", J2)
+    assert held == []
+    assert ids == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"\xff\xfe{", b"[" * 200_000],
+    ids=["bytes in no encoding JSON allows", "nesting past the reader's depth"],
+)
+def test_a_body_the_framework_cant_read_as_json_keeps_its_400(body: bytes) -> None:
+    with browser() as client:
+        answer = client.post(SIGNALS, content=body, headers={"Content-Type": "application/json"})
+        held = tonight(client)
+
+    assert answer.status_code == 400
+    assert answer.json() == {"detail": "There was an error parsing the body"}
+    assert held == []
+
+
+def test_a_json_body_in_utf_16_is_read_and_records_one_signal() -> None:
+    """JSON may come in UTF-16 as well as UTF-8, and the framework reads it as JSON."""
+    with browser() as client:
+        body = fresh_signal_fields(client)
+        answer = client.post(
+            SIGNALS,
+            content=json.dumps(body).encode("utf-16"),
+            headers={"Content-Type": "application/json"},
+        )
+        held = tonight(client)
+
+    assert answer.status_code == 201
+    assert held == [body["signal_id"]]
+
+
+def test_a_json_retry_answers_the_signal_standing_for_the_evening() -> None:
+    """A retry answers the evening's standing signal, which a file from before can keep beside
+    the press's own, and records nothing."""
+    with browser() as client:
+        body = fresh_signal_fields(client)
+        client.post(SIGNALS, json=body)
+        later = signal_kept_before(client, PLAN_DATE)
+        again = client.post(SIGNALS, json=body)
+        held = tonight(client)
+
+    assert again.status_code == 200
+    assert again.json()["signal"]["signal_id"] == later
+    assert again.json()["recorded"] is False
+    assert held == [body["signal_id"], later]
+
+
+@pytest.mark.parametrize("route", ["page", "JSON"])
+def test_the_evening_is_read_under_the_lock_the_write_holds(
+    route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press that waits on a decision while the evening turns is held to the new evening, so
+    it records nothing for the evening that has just ended."""
+    with browser() as client, ThreadPoolExecutor(max_workers=1) as pool:
+        state = state_of(client)
+        form = signal_form(client) if route == "page" else fresh_signal_fields(client)
+        portal = client.portal
+        assert portal is not None
+        portal.call(state.decision_lock.acquire)
+        try:
+            pressing = (
+                pool.submit(client.post, TOO_MUCH, data=form)
+                if route == "page"
+                else pool.submit(client.post, SIGNALS, json=form)
+            )
+            _, waiting = wait([pressing], timeout=0.3)
+            midday = datetime.combine(PLAN_DATE + timedelta(days=1), time(12), tzinfo=ZONE)
+            # The household clock is pinned to the fixture day; the evening turns while she waits.
+            monkeypatch.setattr(state.clock, "_instant", midday.astimezone(UTC))
+        finally:
+            portal.call(state.decision_lock.release)
+        answer = pressing.result(timeout=10)
+        kept = state.workload_signals.held()
+
+    assert pressing in waiting
+    assert answer.status_code == 409
+    assert kept == []
+
+
+def test_a_signal_the_file_refuses_after_its_id_leaves_the_id_unused() -> None:
+    """The id and the signal are one write: when the signal can't be written, the id is not
+    kept either, so the same press sent again records."""
+    store = store_in_memory()
+    now = store._clock.now()
+    store._connection.execute(
+        "CREATE TRIGGER refused BEFORE INSERT ON workload_signals "
+        "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+    )
+    with pytest.raises(sqlite3.Error):
+        store.record_once("a" * 32, PLAN_DATE, now, None)
+    left = ids_kept(store)
+    store._connection.execute("DROP TRIGGER refused")
+
+    store.record_once("a" * 32, PLAN_DATE, now, None)
+
+    assert left == []
+    assert [signal.signal_id for signal in store.for_evening(PLAN_DATE)] == ["a" * 32]

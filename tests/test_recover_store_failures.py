@@ -69,6 +69,7 @@ from tests.support import (
     fixture_settings,
     form_fields,
     fresh_plan_fields,
+    fresh_signal_fields,
     hidden,
     household_client,
     main_of,
@@ -280,7 +281,7 @@ OTHER_FAILURES = {
     "her notes": ("project_state", "outstanding_captures", "get notes"),
     "her To turn in list": ("routes", "read_everything", "get list"),
     "taking a request back": ("help_requests", "take_back", "take back"),
-    "saying today is too much": ("workload_signals", "record", "too much"),
+    "saying today is too much": ("workload_signals", "record_once", "too much"),
     "a parent taking her request up": ("help_requests", "accept", "take up"),
 }
 
@@ -317,7 +318,7 @@ def test_another_kind_of_failure_is_not_taken_for_a_file_that_cannot_be_read(
         elif press == "take back":
             answer = client.post(f"/student/actions/take-back-help/{asked}")
         elif press == "too much":
-            answer = client.post("/student/actions/too-much")
+            answer = client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         elif press == "take up":
             answer = client.post(
                 f"/parent/actions/help/{asked}", data={"step": "accept", "response": TYPED}
@@ -1285,18 +1286,19 @@ def test_a_signal_the_file_would_not_keep_is_said_at_the_top_and_kept_once_after
             if press == "too much"
             else f"/student/actions/take-back/{held[0]}"
         )
+        form = fresh_signal_fields(client) if press == "too much" else None
         monkeypatch.setattr(
-            signals, "record" if press == "too much" else "withdraw", refusing(kind)
+            signals, "record_once" if press == "too much" else "withdraw", refusing(kind)
         )
-        refused = client.post(path, headers=PAGE_HEADERS)
+        refused = client.post(path, data=form, headers=PAGE_HEADERS)
         kept = [signal.signal_id for signal in signals.held()]
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
                 state_of(client).drafts, "latest_for", refusing(sqlite3.OperationalError, seen)
             )
-            unread = client.post(path, headers=PAGE_HEADERS)
+            unread = client.post(path, data=form, headers=PAGE_HEADERS)
         monkeypatch.undo()
-        again = client.post(path, headers=PAGE_HEADERS)
+        again = client.post(path, data=form, headers=PAGE_HEADERS)
         left = signals.held()
 
     assert refused.status_code == 500

@@ -684,7 +684,7 @@ still answers the structured side for one that would.
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, as its text and, in a nullable versioned column, the plan as data; every decision about it; and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
-| `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her |
+| `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her; each press's id is kept with one time, the later of its handling and its issue, until a cleanup once more than seven days have passed since that time |
 | `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, a parent's updates, and the id of the homework note a request is about, never the note's words | Wired and tested; in the drafts file, kept until resolved and swept two weeks after; each request's id alone is kept for good |
 
 They are separate because their retention and access rules differ, not for
@@ -1086,21 +1086,53 @@ the file.
 
 ## The workload signal
 
-The control is one press. `POST /student/workload-signals` takes no body, and
-the button on her page sends nothing but the press. It does not ask her to
-rate or describe anything: assigning a rating requires stepping back and
-assessing, and that capacity is least available exactly when the signal
-matters most. Words may be attached, and are never asked for.
+The control is one press. The button on her page sends only what keeps the
+press to one signal: its id, its evening and when its page was made. It does
+not ask her to rate or describe anything: assigning a rating requires stepping
+back and assessing, and that capacity is least available exactly when the
+signal matters most. Words may be attached, and are never asked for.
+
+`POST /student/workload-signals` takes the same three values as JSON:
+`signal_id`, a new id of 32 lowercase hexadecimal characters such as
+`uuid.uuid4().hex`; `evening`, the household's today as YYYY-MM-DD; and
+`issued_at`, when the press was made, in ISO 8601 with its offset. A caller
+makes a fresh `signal_id` and `issued_at` for each deliberate press and sends
+both unchanged on a retry. Each press records at most once: a new signal
+answers 201, and a press whose id was already handled answers 200 with the
+signal standing for the evening, or none after it was taken back, and records
+nothing. A new id while a signal stands answers the same way; it records no
+signal, and its id is kept as handled. Every refusal records nothing and
+carries a code from a closed set:
+`not_valid` (422) for a body that isn't a signal, a field missing, of another
+shape, extra or sent twice; `another_evening` (409), which names today;
+`expired` (409) for a press made a week or more ago; and `other_words` (409)
+for an id sent again with other words while the signal it recorded is kept.
+These are the only 422 and 409 bodies
+the route sends. A body the framework can't read as JSON at all gets the
+framework's own 400.
 
 A press records that today, by the household's clock, is too much, in
 `WorkloadSignalsStore`, `blossom/stores/workload_signals.py`. Three things
 follow, each visible at once. Her page says a shorter plan is requested for
 today and what that does, to her next plan or to the plan saved under it,
 with Undo 'Too much right now' beside it; its list of what Blossom keeps gives
-the time she said it. Each press keeps a row of its own, and the evening stays
-shorter while any is left, so after an Undo the page says that request isn't
-active and what still stands, never that the usual evening is back, whether
-the press removed it or found it gone. Only the page the Undo lands on says so: the redirect names a landing of
+the time she said it. Each press records at most one signal. The button's form
+carries an id, the evening and the time its page was made, fresh on every page,
+and the store keeps that id with one time, the later of when it was handled and
+when its page was made, and nothing else of it. The id is due for removal once
+more than seven days have passed since that time, which can be up to seven days
+and five minutes after the press was handled, and the next cleanup removes it;
+the press itself expires exactly seven days after its page was made. So the same form
+sent again, or another tab's form while a signal stands, records nothing and
+lands on her week as tonight stands, and a form sent again after an Undo doesn't
+bring the signal back; it lands on the line that says that request isn't
+active. A form that isn't whole, is for another evening, or was made seven days
+ago or more records nothing and says so at the top of her week. Removing a
+signal deletes it; the id of the press that asked for it stays until that
+cleanup. A file from before can hold more than one signal for an evening, and
+the evening stays shorter while any is left, so after an Undo the page says
+that request isn't active and what still stands, never that the usual evening
+is back, whether the press removed it or found it gone. Only the page the Undo lands on says so: the redirect names a landing of
 its own and the line that says what stands, which takes the focus as a save's
 result line does, and the short-lived cookie for that landing holds the mark
 and no card, read once and cleared like the cards a save keeps in place. An address

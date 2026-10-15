@@ -157,14 +157,16 @@
       minutes: a shorter plan is asked for, and her next plan will be held to it, or
       the plan saved after it already is, when its blocks fit the minutes set now.
       Undo 'Too much right now' sits under those words, which describe it. Each press
-      keeps a row of its own, and the evening stays shorter while any is left, so
+      records at most one signal, but a file from before can hold more than one for an
+      evening, and the evening stays shorter while any is left, so
       an Undo, or a Remove below, lands on this line, which takes the focus, and on
       the one page it lands on, told by a mark in that landing's cookie and never by
       the address, the line says that request isn't active and then what still stands:
       a shorter plan still asked for, with the Undo for the request left, or, with
       none left, that her saved plan has not changed. Neither press plans anything. Saying today is too much, and undoing it,
       are hers alone: a parent reads what she said and meets neither control, and
-      nothing takes their place.
+      nothing takes their place. The press carries its form's id, issue time and
+      evening, fresh on every page, so a press sent again records nothing.
     #}
     {% set signal_said %}
       {% if parent %}
@@ -192,6 +194,7 @@
     {% set signal_press %}
       {% if viewer != "parent" and not view.too_much %}
         <form method="post" action="/student/actions/too-much" class="action">
+          {% for name, value in (signal_form or {}).items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
           <button type="submit" class="secondary">Too much right now</button>
         </form>
       {% endif %}

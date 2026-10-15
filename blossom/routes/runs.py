@@ -368,17 +368,29 @@ def fresh_plan_form(state: ApplicationState, evening: date, newest_plan: str) ->
     return PlanForm(uuid4().hex, evening, state.real_clock.now(), newest_plan)
 
 
+def issue_time_from(value: str | None, now: datetime) -> datetime | None:
+    """A form's issue time, held to ISO 8601 with an offset and no further ahead of ``now``
+    than ``ISSUED_AHEAD``; ``None`` when it is missing or another shape."""
+    try:
+        issued_at = datetime.fromisoformat(value or "")
+    except ValueError:
+        return None
+    if issued_at.tzinfo is None or issued_at - now > ISSUED_AHEAD:
+        return None
+    return issued_at
+
+
 def plan_form_from(fields: Mapping[str, str | None], now: datetime) -> PlanForm | None:
     """The plan form a press sent, held to the shapes a page writes: ``None`` when a field is
     missing or another shape, or its issue time is further ahead of ``now`` than allowed."""
     try:
         run_id = request_id_from(fields.get(RUN_ID) or "")
         evening = date.fromisoformat(fields.get(EVENING) or "")
-        issued_at = datetime.fromisoformat(fields.get(ISSUED_AT) or "")
     except (NotARequestId, ValueError):
         return None
+    issued_at = issue_time_from(fields.get(ISSUED_AT), now)
     newest_plan = fields.get(NEWEST_PLAN)
-    if newest_plan is None or issued_at.tzinfo is None or issued_at - now > ISSUED_AHEAD:
+    if newest_plan is None or issued_at is None:
         return None
     return PlanForm(run_id, evening, issued_at, newest_plan)
 

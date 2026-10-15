@@ -113,6 +113,7 @@ from tests.support import (
     fixture_week_plan,
     forgetful_fixture_plan,
     form_fields,
+    fresh_signal_fields,
     hidden,
     human_text,
     landing_in,
@@ -2825,7 +2826,10 @@ def test_a_plan_from_before_ids_and_a_smaller_evening_ask_for_nothing_either() -
         assert client.post("/student/actions/plan", data=plan_form(client)).status_code == 303
         state = state_of(client)
         changed_by_hand(state.drafts, "UPDATE drafts SET plan_assignment_ids=NULL")
-        assert client.post("/student/actions/too-much").status_code == 303
+        assert (
+            client.post("/student/actions/too-much", data=fresh_signal_fields(client)).status_code
+            == 303
+        )
         finish_everything(client)
         page = client.get(PAGE, headers=PAGE_HEADERS).text
 
@@ -2893,7 +2897,12 @@ def test_with_nothing_to_plan_today_leads_with_it_and_keeps_support_in_a_quieter
     with browser(key=True) as client:
         finish_everything(client)
         if signal:
-            assert client.post("/student/actions/too-much").status_code == 303
+            assert (
+                client.post(
+                    "/student/actions/too-much", data=fresh_signal_fields(client)
+                ).status_code
+                == 303
+            )
         page = client.get(PAGE, headers=PAGE_HEADERS).text
 
     panel = today_panel(page)

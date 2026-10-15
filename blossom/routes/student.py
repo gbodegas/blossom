@@ -26,10 +26,16 @@ The workload signal takes no argument: rating or describing the load requires
 stepping back, and that capacity is least available exactly when the signal
 matters. One press records that today is too much, the page shows it at once
 with what it changes, tonight's plan is held to a reduced budget, and Undo
-'Too much right now' beside it takes it back. Each press keeps a row of its own
-and the evening stays shorter while any is left, so after an Undo the page says
-what still stands and never promises the usual evening. The page also lists
-every signal still kept, each with a way to remove it, because the record is hers.
+'Too much right now' beside it takes it back. Each press records at most one signal: its
+form's id is kept, so the same form sent again, or another tab's while a signal stands,
+records nothing, and a form sent again after an Undo doesn't bring the signal back. A file
+from before can hold more than one signal for an evening, and the evening stays shorter
+while any is left, so after an Undo the page says what still stands and never promises the
+usual evening. The page also lists every signal still kept, each with a way to remove it,
+because the record is hers. Removing one removes the signal; the id of the press that asked
+for it stays, with one time, the later of when it was handled and when it was issued,
+and nothing else, until a cleanup removes it once more than seven days have passed since
+that time.
 
 Asking for help is the other press on her page. It is addressed to a person,
 so it has a state a parent moves, requested to accepted to resolved, and each
@@ -63,6 +69,7 @@ from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 from functools import partial
 from typing import Annotated, Any, ClassVar, Final, Literal, cast
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import (
@@ -75,6 +82,7 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
@@ -176,6 +184,10 @@ from blossom.routes.runs import (
     CHECK_ON_THAT_REQUEST,
     COULD_NOT_START,
     COULD_NOT_START_SENTENCES,
+    EVENING,
+    FORM_LIFETIME,
+    ISSUED_AT,
+    ISSUED_AT_FORM,
     NOT_USED,
     OPENED_A_WEEK_AGO,
     PLAN_ANSWERS,
@@ -203,11 +215,13 @@ from blossom.routes.runs import (
     fact,
     fresh_plan_form,
     graph_for_a_run,
+    issue_time_from,
     landed,
     make_plan,
     named_work,
     not_saved,
     not_saved_sentences,
+    opening_and_rest,
     past_due_views,
     plan_form_from,
     planning_sentences,
@@ -269,7 +283,14 @@ from blossom.stores.project_state import (
     normalize_note,
 )
 from blossom.stores.project_state import NOTE_MAX_LENGTH as UPDATE_NOTE_MAX_LENGTH
-from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
+from blossom.stores.workload_signals import (
+    DETAIL_MAX_LENGTH,
+    SignalExpired,
+    SignalOutcome,
+    SignalRecorded,
+    SignalUsed,
+    WorkloadSignal,
+)
 from blossom.templating import page_templates
 from blossom.to_turn_in import (
     COMPACT_ROWS,
@@ -289,6 +310,7 @@ from blossom.views import (
     NamedAssignmentView,
     ParentUpdateView,
     PastDueView,
+    ProblemView,
     PublishedRunView,
     RunStatusView,
     SchoolStatementView,
@@ -695,7 +717,8 @@ State = Annotated[ApplicationState, Depends(get_application_state)]
 
 
 class WorkloadSignalRequest(BaseModel):
-    """Optional detail attached to a signal. The signal itself needs no body.
+    """One press sent as JSON: the id and issue time the caller made for it, the evening it is
+    about, and words she may add. Nothing asks for a rating or a reason.
 
     The words are capped at the boundary, so a request cannot grow the drafts
     file or every later page by sending more than a sentence or two.
@@ -703,23 +726,142 @@ class WorkloadSignalRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    detail: str | None = Field(default=None, max_length=DETAIL_MAX_LENGTH)
+    signal_id: str = Field(
+        pattern=r"^[0-9a-f]{32}$",
+        description=(
+            "A new id of 32 lowercase hexadecimal characters, made by the caller for each "
+            "press, for example uuid.uuid4().hex. A retry sends the same id."
+        ),
+    )
+    evening: str = Field(description="The household's today, as YYYY-MM-DD.")
+    issued_at: str = Field(
+        description=(
+            "When the press was made, in ISO 8601 with its offset, made once for each press "
+            "and sent unchanged on a retry. A press made a week or more ago records nothing."
+        )
+    )
+    detail: str | None = Field(
+        default=None,
+        max_length=DETAIL_MAX_LENGTH,
+        description="Words she chose to add. Never required.",
+    )
 
 
 class WorkloadSignalResponse(BaseModel):
-    """What one press did: the signal exactly as kept, words included."""
+    """What one press did: the signal standing for the evening, exactly as kept, words included,
+    and whether this request recorded it."""
 
     model_config = ConfigDict(extra="forbid")
 
     principal: Principal
-    signal: WorkloadSignalView
+    signal: WorkloadSignalView | None = Field(
+        description=(
+            "The signal standing for the evening after this request: the one it recorded, or "
+            "the one already standing; null when none stands, as after it was taken back."
+        )
+    )
+    recorded: bool = Field(
+        description=(
+            "Whether this request recorded the signal. A press whose id was already handled "
+            "records nothing. A new id while a signal stands records no signal, and its id is "
+            "kept as handled."
+        )
+    )
+
+
+SignalRefusalCode = Literal["not_valid", "another_evening", "expired", "other_words"]
+
+
+class SignalRefusalView(BaseModel):
+    """Why a JSON press recorded nothing: a code from a closed set, a sentence, and, for an
+    evening that isn't today, the household's today."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: SignalRefusalCode
+    message: str
+    today: date | None = None
+
+
+class SignalRefusal(BaseModel):
+    """A JSON press refused, as its body carries it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: SignalRefusalView
+
+
+NOT_A_SIGNAL: Final = SignalRefusalView(
+    code="not_valid",
+    message=(
+        "A signal needs signal_id, a new id of 32 lowercase hexadecimal characters for each "
+        "press; evening, the household's today as YYYY-MM-DD; and issued_at, the time the press "
+        "was made, in ISO 8601 with its offset and no more than five minutes ahead of the "
+        f"server's clock. detail is optional, at most {DETAIL_MAX_LENGTH} characters. Nothing "
+        "was recorded."
+    ),
+)
+MADE_A_WEEK_AGO: Final = SignalRefusalView(
+    code="expired",
+    message=(
+        "This press was made a week or more ago, so nothing was recorded. A new press needs a "
+        "new signal_id and issued_at."
+    ),
+)
+OTHER_WORDS: Final = SignalRefusalView(
+    code="other_words",
+    message=(
+        "This signal_id already recorded a signal with other words, so nothing was recorded. "
+        "Use a new signal_id and issued_at for a new signal."
+    ),
+)
+"""The JSON refusals of a press, each the same fact the page says in its own words: a body
+that isn't a signal, a press made a week or more ago, and an id that recorded other words."""
+
+
+def not_tonight(evening: date, today: date) -> SignalRefusalView:
+    """A JSON press about an evening that isn't today, naming today."""
+    return SignalRefusalView(
+        code="another_evening",
+        message=f"The evening {evening.isoformat()} is not today, {today.isoformat()}, so nothing "
+        "was recorded.",
+        today=today,
+    )
+
+
+def signal_refusal(refused: SignalRefusalView) -> JSONResponse:
+    """A JSON press that recorded nothing: 422 for a body that isn't a signal, 409 otherwise."""
+    code = (
+        status.HTTP_422_UNPROCESSABLE_CONTENT
+        if refused.code == "not_valid"
+        else status.HTTP_409_CONFLICT
+    )
+    return JSONResponse(SignalRefusal(detail=refused).model_dump(mode="json"), status_code=code)
+
+
+def repeats_a_field(body: bytes) -> bool:
+    """Whether a JSON body names a field twice in one object, which a reader would take as its
+    last. A body that isn't JSON repeats nothing here; the framework refuses it."""
+    repeated = False
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal repeated
+        repeated = repeated or len({name for name, _ in items}) != len(items)
+        return dict(items)
+
+    try:
+        json.loads(body, object_pairs_hook=pairs)
+    except (ValueError, RecursionError):
+        return False
+    return repeated
 
 
 def signal_view(state: ApplicationState, signal: WorkloadSignal) -> WorkloadSignalView:
     """Her projection of a signal, with the time in the household's zone.
 
-    Everything the store holds about a signal is in it, her words included, so
-    what she can see is what is kept.
+    Everything the store holds about a signal is in it, her words included. Beside the
+    signals, the store keeps the id of each press with one time, so a press sent again
+    records nothing; that is no signal, and no page lists it.
     """
     return WorkloadSignalView(
         signal_id=signal.signal_id,
@@ -763,15 +905,120 @@ class HersToSignal(HersAlone):
     refusal = NOT_HERS_TO_SIGNAL
 
 
-async def record_signal(state: ApplicationState, detail: str | None) -> WorkloadSignal:
-    """Keep one press, about today by the household's clock.
+class SignalRoute(HersToSignal):
+    """Saying today is too much as JSON: hers alone, checked first, and then a body that isn't
+    a signal, a field missing, of another shape, extra or sent twice, answered with the one
+    refusal ``NOT_A_SIGNAL``, 422, never the framework's list of errors."""
 
-    Written under the decision lock: a decision is checked against the evening
-    as signaled, and the evening must not change between that check and the
-    decision landing. A press during a decision waits the moment it takes.
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        """``HersToSignal``'s handler, with a body that isn't a signal refused as one."""
+        handle = super().get_route_handler()
+
+        async def coded(request: Request) -> Response:
+            if viewer_of(request) != "parent" and repeats_a_field(await request.body()):
+                return signal_refusal(NOT_A_SIGNAL)
+            try:
+                return await handle(request)
+            except RequestValidationError:
+                return signal_refusal(NOT_A_SIGNAL)
+
+        return coded
+
+
+SIGNAL_ID: Final = "signal_id"
+SIGNAL_FIELDS: Final = frozenset({SIGNAL_ID, EVENING, ISSUED_AT})
+"""What her Too much right now form carries: the id its press is kept under, the evening it
+was made for, and the real instant its page issued it, each once."""
+PRESS_IT: Final = "If today is too much, press Too much right now."
+"""Said after a refused press only when her week shows the button below."""
+SIGNAL_NOT_USED: Final = (
+    "Blossom couldn't use that press of Too much right now.",
+    "Nothing was recorded.",
+)
+SIGNAL_A_WEEK_AGO: Final = ("That page was opened a week or more ago.", "Nothing was recorded.")
+"""The two refusals of a Too much right now form: one that isn't whole or holds a field of
+another shape, and one issued ``FORM_LIFETIME`` or more before it was handled."""
+
+
+def signal_another_evening(evening: date) -> Sentences:
+    """A Too much right now press for an evening that isn't today, naming that evening."""
+    return (f"That button was for {evening_named(evening)}.", "Nothing was recorded for today.")
+
+
+@dataclass(frozen=True)
+class SignalForm:
+    """A Too much right now form's own fields, as her week writes them."""
+
+    signal_id: str
+    evening: date
+    issued_at: datetime
+
+    def fields(self) -> dict[str, str]:
+        """The hidden fields her week writes for this form."""
+        return {
+            SIGNAL_ID: self.signal_id,
+            EVENING: self.evening.isoformat(),
+            ISSUED_AT: self.issued_at.astimezone(UTC).strftime(ISSUED_AT_FORM),
+        }
+
+    def expired(self, now: datetime) -> bool:
+        """Whether the form was issued ``FORM_LIFETIME`` or more before ``now``."""
+        return now - self.issued_at >= FORM_LIFETIME
+
+
+def fresh_signal_form(state: ApplicationState, evening: date) -> SignalForm:
+    """A new Too much right now form for ``evening``, issued now by the real clock. Writes
+    nothing."""
+    return SignalForm(uuid4().hex, evening, state.real_clock.now())
+
+
+def signal_form_from(fields: Mapping[str, str], now: datetime) -> SignalForm | None:
+    """The Too much right now form a press sent, held to the shapes her week writes, as a
+    plan form is: ``None`` when a field is another shape."""
+    try:
+        signal_id = request_id_from(fields.get(SIGNAL_ID) or "")
+        evening = date.fromisoformat(fields.get(EVENING) or "")
+    except (NotARequestId, ValueError):
+        return None
+    issued_at = issue_time_from(fields.get(ISSUED_AT), now)
+    return None if issued_at is None else SignalForm(signal_id, evening, issued_at)
+
+
+@dataclass(frozen=True)
+class SignalAnswer:
+    """A Too much right now press that recorded nothing: its status, and the sentences it says
+    whatever the page shows. Her week adds ``PRESS_IT`` when it shows the button."""
+
+    status: int
+    said: Sentences
+
+
+@dataclass(frozen=True)
+class NotTonight:
+    """A press for an evening that isn't the household's today, which records nothing."""
+
+    today: date
+
+
+async def press_once(
+    state: ApplicationState, form: SignalForm, detail: str | None = None
+) -> NotTonight | SignalOutcome:
+    """A press held to its evening and its age and then kept once, all under the decision lock,
+    so today is read where the write happens.
+
+    A decision is checked against the evening as signaled, and the evening must not change
+    between that check and the decision landing. A press during a decision waits the moment
+    it takes.
     """
     async with state.decision_lock:
-        return state.workload_signals.record(state.clock.today(), detail)
+        today = state.clock.today()
+        if form.evening != today:
+            return NotTonight(today)
+        if form.expired(state.real_clock.now()):
+            return SignalExpired()
+        return state.workload_signals.record_once(
+            form.signal_id, form.evening, form.issued_at, detail
+        )
 
 
 async def withdraw_signal(state: ApplicationState, signal_id: str) -> bool:
@@ -781,13 +1028,101 @@ async def withdraw_signal(state: ApplicationState, signal_id: str) -> bool:
 
 
 async def register_workload_signal(
-    state: State,
-    payload: Annotated[WorkloadSignalRequest | None, Body()] = None,
+    state: State, payload: Annotated[WorkloadSignalRequest, Body()], response: Response
+) -> WorkloadSignalResponse | JSONResponse:
+    """Record that today is too much, once for each press.
+
+    The caller makes two values for each deliberate press: signal_id, a new id of 32
+    lowercase hexadecimal characters such as uuid.uuid4().hex, and issued_at, the moment
+    the press is made, in ISO 8601 with its offset. evening is the household's today,
+    YYYY-MM-DD; a press for another evening is refused with today named. A retry of the same
+    press sends the same signal_id and issued_at; a new press gets new ones. Each press
+    records at most once: a new signal is 201, and a press whose id was already handled is
+    200 and records nothing, with the signal standing for the evening, or none after it was
+    taken back. A new id while a signal stands is 200 with that signal too; it records no
+    signal, and its id is kept as handled. A parent is answered 403 before the body is read.
+    Refusals record nothing and carry a code: not_valid, 422, for a body that isn't a
+    signal; another_evening, 409; expired, 409, for a press made a week or more ago; and
+    other_words, 409, for an id sent again with other words while the signal it recorded
+    is kept. A body the framework can't read as JSON at all is its own 400.
+    """
+    now = state.real_clock.now()
+    try:
+        evening = date.fromisoformat(payload.evening)
+    except ValueError:
+        return signal_refusal(NOT_A_SIGNAL)
+    issued_at = issue_time_from(payload.issued_at, now)
+    if issued_at is None:
+        return signal_refusal(NOT_A_SIGNAL)
+    form = SignalForm(payload.signal_id, evening, issued_at)
+    handled = await press_once(state, form, payload.detail)
+    match handled:
+        case NotTonight(today=today):
+            return signal_refusal(not_tonight(evening, today))
+        case SignalExpired():
+            return signal_refusal(MADE_A_WEEK_AGO)
+        case SignalRecorded(signal=signal):
+            return signal_answer(state, signal, recorded=True)
+        case SignalUsed(own=WorkloadSignal() as own) if own.detail != payload.detail:
+            return signal_refusal(OTHER_WORDS)
+        case SignalUsed(standing=standing):
+            response.status_code = status.HTTP_200_OK
+            return signal_answer(state, standing, recorded=False)
+
+
+def signal_answer(
+    state: ApplicationState, signal: WorkloadSignal | None, *, recorded: bool
 ) -> WorkloadSignalResponse:
-    """Record that today is too much. ``payload`` is optional so an empty POST works."""
-    detail = None if payload is None else payload.detail
-    signal = await record_signal(state, detail)
-    return WorkloadSignalResponse(principal=Principal.STUDENT, signal=signal_view(state, signal))
+    """What a JSON press answers when it is not refused: the signal, if any, and whether this
+    request wrote it."""
+    shown = None if signal is None else signal_view(state, signal)
+    return WorkloadSignalResponse(principal=Principal.STUDENT, signal=shown, recorded=recorded)
+
+
+SIGNAL_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
+    status.HTTP_200_OK: {
+        "model": WorkloadSignalResponse,
+        "description": (
+            "A press whose id was already handled, which records nothing, or a new id while a "
+            "signal stands, which records no signal and keeps its id as handled."
+        ),
+    },
+    status.HTTP_400_BAD_REQUEST: {
+        "model": ProblemView,
+        "description": (
+            "A body the framework can't read as JSON at all, in its own answer. Nothing was "
+            "recorded."
+        ),
+    },
+    status.HTTP_401_UNAUTHORIZED: {
+        "model": ProblemView,
+        "description": "No sign-in, with the household sign-in on. Nothing was read.",
+    },
+    status.HTTP_403_FORBIDDEN: {
+        "model": ProblemView,
+        "description": (
+            "A parent's sign-in, answered before the body is read; or, in plain text, a "
+            "request from another origin."
+        ),
+        "content": {"text/plain": {"schema": {"type": "string"}}},
+    },
+    status.HTTP_409_CONFLICT: {
+        "model": SignalRefusal,
+        "description": (
+            "another_evening, expired or other_words. Nothing was recorded; another_evening "
+            "names today."
+        ),
+    },
+    status.HTTP_422_UNPROCESSABLE_CONTENT: {
+        "model": SignalRefusal,
+        "description": "not_valid: a body that isn't a signal. Nothing was recorded.",
+    },
+    status.HTTP_500_INTERNAL_SERVER_ERROR: {
+        "description": "The server's own error, in plain text, as for any route.",
+        "content": {"text/plain": {"schema": {"type": "string"}}},
+    },
+}
+"""Every body the JSON press sends besides a new signal."""
 
 
 router.add_api_route(
@@ -795,7 +1130,10 @@ router.add_api_route(
     register_workload_signal,
     methods=["POST"],
     status_code=status.HTTP_201_CREATED,
-    route_class_override=HersToSignal,
+    response_model=WorkloadSignalResponse,
+    response_description="A new signal, recorded under this signal_id.",
+    responses=SIGNAL_ANSWERS,
+    route_class_override=SignalRoute,
 )
 
 
@@ -806,7 +1144,11 @@ def held_workload_signals(state: State) -> list[WorkloadSignalView]:
 
 
 async def withdraw_workload_signal(signal_id: str, state: State) -> Response:
-    """Take a signal back. It is gone, not marked; the record is hers to remove."""
+    """Take a signal back. The signal is deleted, not marked; the record is hers to remove.
+    The id of the press that asked for it stays, with one time, the later of when it was
+    handled and when it was issued, so that press can't record it again. It is due for
+    removal once more than seven days have passed since that time, up to seven days and five
+    minutes after the press was handled, and the next cleanup removes it."""
     if not await withdraw_signal(state, signal_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no signal {signal_id!r}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -2143,6 +2485,7 @@ def student_page(
     run_notice: RunNotice | None = None,
     signal_removed: bool = False,
     plan_answer: PlanAnswer | None = None,
+    signal_answer: SignalAnswer | None = None,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
@@ -2177,7 +2520,10 @@ def student_page(
        beside what the signals kept for today say now.
     ``plan_answer`` is a plan press's answer, its line
        made from what this page shows: today's plan, and the plan button. Its first sentence,
-       as the answer is built, takes the focus in place of the line.
+       as the answer is built, takes the focus in place of the line. ``signal_answer`` is a
+       Too much right now press that recorded nothing, said the same way, with ``PRESS_IT``
+       after it when this page shows that button. Every page carries a fresh Too much right
+       now form, which needs no read.
     """
     viewer = viewer_of(request)
     # An address that only brings a card into view, as a way back from its details does.
@@ -2302,6 +2648,12 @@ def student_page(
 
         problem = plan_answer.said(shows)
         problem_opening = plan_answer.opening(shows)
+    if signal_answer is not None:
+        # A refused press names the button only when this page shows it, below the line.
+        press = viewer != "parent" and view.week.current and view.too_much is None
+        sentences = (*signal_answer.said, *((PRESS_IT,) if press else ()))
+        problem = " ".join(sentences)
+        problem_opening = opening_and_rest(sentences)
     if earlier_note is not None and (
         viewer == "parent" or not receipt_holds(earlier_note, planned)
     ):
@@ -2390,6 +2742,7 @@ def student_page(
             if plan_failure is not None and plan_failure.uncertain
             else fresh_plan_form(state, today, newest).fields(),
             "plan_label_mark": PLAN_LABEL_MARK,
+            "signal_form": fresh_signal_form(state, today).fields(),
             "run_notice": run_notice,
             # A notice about a run of today's evening links the past-due work it kept, as
             # the answer to its press does.
@@ -4219,15 +4572,58 @@ def take_back_help_from_the_page(request: Request, request_id: str, state: State
 async def too_much_from_the_page(request: Request, state: State) -> Response:
     """The one control on her page. Records the signal and returns to the page, which shows it.
     A parent is answered 403 before anything is read or kept: the signal is hers to give. A
-    signal the file refuses is rolled back and said at the top of her week, 500."""
+    signal the file refuses is rolled back and said at the top of her week, 500.
+
+    Each form records once. Its id is kept with the press, so the same form sent again, or
+    another tab's form while a signal stands, records nothing and returns to her week as
+    tonight stands, saying that request isn't active when no signal stands. A form that isn't
+    whole, is for another evening, or was issued seven days ago or more records nothing, and
+    says so at the top of her week. The evening is checked under the lock the write holds,
+    so a press is never kept for an evening that has just ended.
+    """
     if viewer_of(request) == "parent":
         return not_hers(request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL)
+    fields, whole = await fields_of(request, SIGNAL_FIELDS)
+    form = signal_form_from(fields, state.real_clock.now()) if whole else None
+    if form is None:
+        return signal_refused(
+            request, state, SignalAnswer(status.HTTP_422_UNPROCESSABLE_CONTENT, SIGNAL_NOT_USED)
+        )
     try:
-        await record_signal(state, None)
+        handled = await press_once(state, form)
     except sqlite3.Error as error:
         logger.warning("her signal could not be kept: %s", type(error).__name__)
         return signal_not_saved(request, state)
-    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+    match handled:
+        case NotTonight():
+            return signal_refused(
+                request,
+                state,
+                SignalAnswer(status.HTTP_409_CONFLICT, signal_another_evening(form.evening)),
+            )
+        case SignalExpired():
+            return signal_refused(
+                request, state, SignalAnswer(status.HTTP_409_CONFLICT, SIGNAL_A_WEEK_AGO)
+            )
+        case SignalUsed(standing=None):
+            return sent_removed(address(PAGE, fragment=TOO_MUCH_STATE))
+        case _:
+            return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def signal_refused(request: Request, state: ApplicationState, answer: SignalAnswer) -> HTMLResponse:
+    """Her week after a Too much right now press that recorded nothing, the answer at the top
+    with the focus on its first sentence; the page that reads no store, saying the answer's
+    own sentences alone, when her week can't be read."""
+    return shown_once(
+        request,
+        state,
+        lambda: student_page(
+            request, state, signal_answer=answer, pressed=True, status_code=answer.status
+        ),
+        week_not_shown(request, NOT_SAVED_HEADING, " ".join(answer.said)),
+        answer.status,
+    )
 
 
 @router.post("/actions/take-back/{signal_id}", response_class=HTMLResponse, include_in_schema=False)

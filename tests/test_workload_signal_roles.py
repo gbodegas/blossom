@@ -40,10 +40,12 @@ from tests.support import (
     every_route,
     fixture_settings,
     fixture_week_plan,
+    fresh_signal_fields,
     landing_in,
     light_fixture_plan,
     plan_form,
     scripted_graphs,
+    signal_kept_before,
     signed_in,
     signed_in_household,
     state_of,
@@ -126,17 +128,231 @@ HELP_POST = {
     "tags": ["student"],
 }
 SIGNAL_POST = {
-    "description": (
-        "Record that today is too much. ``payload`` is optional so an empty POST works."
-    ),
-    "operationId": "register_workload_signal_student_workload_signals_post",
-    "requestBody": body_of("WorkloadSignalRequest"),
-    "responses": {"201": answered_with("WorkloadSignalResponse"), "422": NOT_VALID},
-    "summary": "Register Workload Signal",
     "tags": ["student"],
+    "summary": "Register Workload Signal",
+    "description": "Record that today is too much, once for each press.\n"
+    "\n"
+    "The caller makes two values for each deliberate "
+    "press: signal_id, a new id of 32\n"
+    "lowercase hexadecimal characters such as "
+    "uuid.uuid4().hex, and issued_at, the moment\n"
+    "the press is made, in ISO 8601 with its offset. "
+    "evening is the household's today,\n"
+    "YYYY-MM-DD; a press for another evening is refused "
+    "with today named. A retry of the same\n"
+    "press sends the same signal_id and issued_at; a "
+    "new press gets new ones. Each press\n"
+    "records at most once: a new signal is 201, and a "
+    "press whose id was already handled is\n"
+    "200 and records nothing, with the signal standing "
+    "for the evening, or none after it was\n"
+    "taken back. A new id while a signal stands is 200 "
+    "with that signal too; it records no\n"
+    "signal, and its id is kept as handled. A parent is "
+    "answered 403 before the body is read.\n"
+    "Refusals record nothing and carry a code: "
+    "not_valid, 422, for a body that isn't a\n"
+    "signal; another_evening, 409; expired, 409, for a "
+    "press made a week or more ago; and\n"
+    "other_words, 409, for an id sent again with other "
+    "words while the signal it recorded\n"
+    "is kept. A body the framework can't read as JSON "
+    "at all is its own 400.",
+    "operationId": "register_workload_signal_student_workload_signals_post",
+    "requestBody": {
+        "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/WorkloadSignalRequest"}}
+        },
+        "required": True,
+    },
+    "responses": {
+        "201": {
+            "description": "A new signal, recorded under this signal_id.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/WorkloadSignalResponse"}
+                }
+            },
+        },
+        "200": {
+            "description": "A press whose id was already handled, which records "
+            "nothing, or a new id while a signal stands, which "
+            "records no signal and keeps its id as handled.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/WorkloadSignalResponse"}
+                }
+            },
+        },
+        "400": {
+            "description": "A body the framework can't read as JSON at all, in its "
+            "own answer. Nothing was recorded.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
+            },
+        },
+        "401": {
+            "description": "No sign-in, with the household sign-in on. Nothing was read.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
+            },
+        },
+        "403": {
+            "description": "A parent's sign-in, answered before the body is read; "
+            "or, in plain text, a request from another origin.",
+            "content": {
+                "text/plain": {"schema": {"type": "string"}},
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}},
+            },
+        },
+        "409": {
+            "description": "another_evening, expired or other_words. Nothing was "
+            "recorded; another_evening names today.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/SignalRefusal"}}
+            },
+        },
+        "422": {
+            "description": "not_valid: a body that isn't a signal. Nothing was recorded.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/SignalRefusal"}}
+            },
+        },
+        "500": {
+            "description": "The server's own error, in plain text, as for any route.",
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+        },
+    },
 }
+SIGNAL_SCHEMAS = {
+    "WorkloadSignalRequest": {
+        "properties": {
+            "signal_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$",
+                "title": "Signal Id",
+                "description": "A new id of 32 "
+                "lowercase hexadecimal "
+                "characters, made by "
+                "the caller for each "
+                "press, for example "
+                "uuid.uuid4().hex. A "
+                "retry sends the same "
+                "id.",
+            },
+            "evening": {
+                "type": "string",
+                "title": "Evening",
+                "description": "The household's today, as YYYY-MM-DD.",
+            },
+            "issued_at": {
+                "type": "string",
+                "title": "Issued At",
+                "description": "When the press was "
+                "made, in ISO 8601 "
+                "with its offset, made "
+                "once for each press "
+                "and sent unchanged on "
+                "a retry. A press made "
+                "a week or more ago "
+                "records nothing.",
+            },
+            "detail": {
+                "anyOf": [{"type": "string", "maxLength": 500}, {"type": "null"}],
+                "title": "Detail",
+                "description": "Words she chose to add. Never required.",
+            },
+        },
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["signal_id", "evening", "issued_at"],
+        "title": "WorkloadSignalRequest",
+        "description": "One press sent as JSON: the id and issue time the "
+        "caller made for it, the evening it is\n"
+        "about, and words she may add. Nothing asks for a "
+        "rating or a reason.\n"
+        "\n"
+        "The words are capped at the boundary, so a request "
+        "cannot grow the drafts\n"
+        "file or every later page by sending more than a "
+        "sentence or two.",
+    },
+    "WorkloadSignalResponse": {
+        "properties": {
+            "principal": {"$ref": "#/components/schemas/Principal"},
+            "signal": {
+                "anyOf": [{"$ref": "#/components/schemas/WorkloadSignalView"}, {"type": "null"}],
+                "description": "The signal standing for "
+                "the evening after this "
+                "request: the one it "
+                "recorded, or the one "
+                "already standing; null "
+                "when none stands, as "
+                "after it was taken "
+                "back.",
+            },
+            "recorded": {
+                "type": "boolean",
+                "title": "Recorded",
+                "description": "Whether this request "
+                "recorded the signal. "
+                "A press whose id was "
+                "already handled records "
+                "nothing. A new id "
+                "while a signal stands "
+                "records no signal, "
+                "and its id is kept as "
+                "handled.",
+            },
+        },
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["principal", "signal", "recorded"],
+        "title": "WorkloadSignalResponse",
+        "description": "What one press did: the signal standing for the "
+        "evening, exactly as kept, words included,\n"
+        "and whether this request recorded it.",
+    },
+    "SignalRefusal": {
+        "properties": {"detail": {"$ref": "#/components/schemas/SignalRefusalView"}},
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["detail"],
+        "title": "SignalRefusal",
+        "description": "A JSON press refused, as its body carries it.",
+    },
+    "SignalRefusalView": {
+        "properties": {
+            "code": {
+                "type": "string",
+                "enum": ["not_valid", "another_evening", "expired", "other_words"],
+                "title": "Code",
+            },
+            "message": {"type": "string", "title": "Message"},
+            "today": {
+                "anyOf": [{"type": "string", "format": "date"}, {"type": "null"}],
+                "title": "Today",
+            },
+        },
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["code", "message"],
+        "title": "SignalRefusalView",
+        "description": "Why a JSON press recorded nothing: a code from a "
+        "closed set, a sentence, and, for an\n"
+        "evening that isn't today, the household's today.",
+    },
+}
+"""The request and refusal bodies the JSON press declares, whole: their fields, the
+closed set of refusal codes, and the words a caller reads."""
 SIGNAL_DELETE = {
-    "description": "Take a signal back. It is gone, not marked; the record is hers to remove.",
+    "description": (
+        "Take a signal back. The signal is deleted, not marked; the record is hers to remove.\n"
+        "The id of the press that asked for it stays, with one time, the later of when it was\n"
+        "handled and when it was issued, so that press can't record it again. It is due for\n"
+        "removal once more than seven days have passed since that time, up to seven days and five\n"
+        "minutes after the press was handled, and the next cleanup removes it."
+    ),
     "operationId": "withdraw_workload_signal_student_workload_signals__signal_id__delete",
     "parameters": [
         {
@@ -204,28 +420,29 @@ def one_of_hers(client: TestClient, detail: str | None = None) -> str:
     return state_of(client).workload_signals.record(PLAN_DATE, detail).signal_id
 
 
-def hers_in_turn(client: TestClient, monkeypatch: pytest.MonkeyPatch, *details: str) -> list[str]:
-    """Her signals for today, kept a second apart in the order given, so which one is latest
-    rests on neither the host clock nor how the ids sort."""
-    store = state_of(client).workload_signals
-    start, zone = store._clock.now(), store._clock.zone
-    signal_ids: list[str] = []
-    for step, detail in enumerate(details):
-        monkeypatch.setattr(store, "_clock", FrozenClock(start + timedelta(seconds=step), zone))
-        signal_ids.append(store.record(PLAN_DATE, detail).signal_id)
-    return signal_ids
+def hers_in_turn(client: TestClient, made: list[str], *details: str) -> list[str]:
+    """Her signals for today as a file from before keeps several, a second apart in the order
+    given, under the ids ``made``, so which one is latest rests on neither the host clock nor
+    how the ids sort."""
+    start = state_of(client).workload_signals._clock.now()
+    return [
+        signal_kept_before(
+            client, PLAN_DATE, detail, signal_id=signal_id, given_at=start + timedelta(seconds=step)
+        )
+        for step, (signal_id, detail) in enumerate(zip(made, details, strict=True))
+    ]
 
 
-def back_to_back(client: TestClient, monkeypatch: pytest.MonkeyPatch, clock: str, ids: str) -> None:
-    """The store's clock stands still or runs, and its next two ids sort with or against
-    the order they're made in: the ways two signals given back to back could tie."""
+def back_to_back(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, clock: str, ids: str
+) -> list[str]:
+    """The store's clock stands still or runs, and the next two ids sort with or against the
+    order they're made in: the ways two signals given back to back could tie. The two ids."""
     store = state_of(client).workload_signals
     if clock == "still":
         monkeypatch.setattr(store, "_clock", FrozenClock(store._clock.now(), store._clock.zone))
-    made = [UUID(hex="1" * 32), UUID(hex="e" * 32)]
-    if ids == "falling":
-        made.reverse()
-    monkeypatch.setattr("blossom.stores.workload_signals.uuid4", iter(made).__next__)
+    made = [UUID(hex="1" * 32).hex, UUID(hex="e" * 32).hex]
+    return made if ids == "rising" else made[::-1]
 
 
 def never(*args: object, **kwargs: object) -> None:
@@ -235,9 +452,10 @@ def never(*args: object, **kwargs: object) -> None:
 
 def nothing_reaches_the_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Any record or withdrawal from here on fails the test: a refusal looks nothing up."""
-    monkeypatch.setattr(student_routes, "record_signal", never)
+    monkeypatch.setattr(student_routes, "press_once", never)
     monkeypatch.setattr(student_routes, "withdraw_signal", never)
     monkeypatch.setattr(state_of(client).workload_signals, "record", never)
+    monkeypatch.setattr(state_of(client).workload_signals, "record_once", never)
     monkeypatch.setattr(state_of(client).workload_signals, "withdraw", never)
 
 
@@ -245,11 +463,11 @@ def press(client: TestClient, which: str, signal_id: str = ABSENT) -> Response:
     """One of the four presses that would record or withdraw a signal."""
     match which:
         case "too much":
-            return client.post(TOO_MUCH)
+            return client.post(TOO_MUCH, data=fresh_signal_fields(client))
         case "take back":
             return client.post(TAKE_BACK + signal_id)
         case "create":
-            return client.post(SIGNALS)
+            return client.post(SIGNALS, json=fresh_signal_fields(client))
         case _:
             return client.delete(f"{SIGNALS}/{signal_id}")
 
@@ -378,7 +596,7 @@ def answered(client: TestClient, which: str) -> tuple[int, object]:
         case "delete absent":
             answer = press(client, "delete")
         case "create":
-            answer = client.post(SIGNALS, json={"detail": "a long day"})
+            answer = client.post(SIGNALS, json=fresh_signal_fields(client, detail="a long day"))
         case "malformed":
             answer = client.post(SIGNALS, content=b"{not json", headers=JSON_TYPE)
         case "overlong":
@@ -393,8 +611,7 @@ def answered(client: TestClient, which: str) -> tuple[int, object]:
             answer = client.post(SIGNALS, content=b"\xff\xfe{", headers=JSON_TYPE)
     said: object = None
     if answer.status_code == 422:
-        error = answer.json()["detail"][0]
-        said = (error["type"], error["loc"])
+        said = answer.json()["detail"]["code"]
     elif answer.status_code == 404:
         said = answer.json()["detail"]
     elif answer.status_code == 201:
@@ -427,10 +644,10 @@ def landed(answer: Response) -> str | tuple[str, str]:
         ("create", (201, ("STUDENT", "a long day")), 1),
         ("delete", (204, None), 0),
         ("delete absent", (404, f"no signal '{ABSENT}'"), 0),
-        ("malformed", (422, ("json_invalid", ["body", 1])), 0),
-        ("overlong", (422, ("string_too_long", ["body", "detail"])), 0),
-        ("unknown field", (422, ("extra_forbidden", ["body", "status"])), 0),
-        ("plain text", (422, ("model_attributes_type", ["body"])), 0),
+        ("malformed", (422, "not_valid"), 0),
+        ("overlong", (422, "not_valid"), 0),
+        ("unknown field", (422, "not_valid"), 0),
+        ("plain text", (422, "not_valid"), 0),
         ("not utf-8", (400, None), 0),
     ],
 )
@@ -504,7 +721,8 @@ def test_a_parent_is_answered_at_once_while_a_decision_holds_the_lock(
 
 def test_her_presses_wait_while_a_decision_holds_the_lock(tmp_path: pathlib.Path) -> None:
     with household(tmp_path, "her") as client, ThreadPoolExecutor(max_workers=4) as pool:
-        first, second = one_of_hers(client), one_of_hers(client)
+        first = signal_kept_before(client, PLAN_DATE)
+        second = signal_kept_before(client, PLAN_DATE)
         state = state_of(client)
         portal = client.portal
         assert portal is not None
@@ -521,12 +739,23 @@ def test_her_presses_wait_while_a_decision_holds_the_lock(tmp_path: pathlib.Path
         finally:
             portal.call(state.decision_lock.release)
         statuses = [each.result(timeout=10).status_code for each in presses]
-        after = len(rows(client))
+        created = presses[2].result().json()
+        after = [row[0] for row in rows(client)]
 
     assert still_waiting == set(presses)
     assert while_held == 2
-    assert statuses == [303, 303, 201, 204]
-    assert after == 2
+    # A new signal is 201 when none stands at its turn, and 200 otherwise: the order the
+    # presses meet the lock in is the event loop's.
+    assert [statuses[0], statuses[1], statuses[3]] == [303, 303, 204]
+    assert statuses[2] in {200, 201}
+    assert first not in after
+    assert second not in after
+    if statuses[2] == 201:
+        # Nothing stood at its turn, so the page's press, before or after it, recorded none.
+        assert after == [created["signal"]["signal_id"]]
+    else:
+        # Which of the page's press and the removals came first is the event loop's.
+        assert len(after) <= 1
 
 
 # ------------------------------------------------------------- a shared device
@@ -563,7 +792,8 @@ def test_a_parent_who_opens_the_page_her_undo_landed_on_reads_no_removal(
     mark still waits, reads what stands in the parent's words and nothing of the removal; the
     mark is cleared, so she meets none after."""
     with household(tmp_path, "her") as client:
-        _, removed = one_of_hers(client), one_of_hers(client)
+        signal_kept_before(client, PLAN_DATE)
+        removed = signal_kept_before(client, PLAN_DATE)
         pressed = client.post(TAKE_BACK + removed)
         as_a_parent(client)
         opened = client.get(pressed.headers["location"])
@@ -627,9 +857,9 @@ def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
     clock: str, ids: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with household(tmp_path, "parent") as client:
-        back_to_back(client, monkeypatch, clock, ids)
+        made = back_to_back(client, monkeypatch, clock, ids)
         none_yet = client.get(PAGE).text
-        hers_in_turn(client, monkeypatch, "the essay and two quizzes", "a late night")
+        hers_in_turn(client, made, "the essay and two quizzes", "a late night")
         signaled = client.get(PAGE).text
         named_removed = client.get(NAMED_REMOVED).text
 
@@ -672,11 +902,9 @@ def test_she_and_the_open_household_keep_every_control_and_word(
     reader: Reader, clock: str, ids: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with household(tmp_path, reader) as client:
-        back_to_back(client, monkeypatch, clock, ids)
+        made = back_to_back(client, monkeypatch, clock, ids)
         none_yet = client.get(PAGE).text
-        first, latest = hers_in_turn(
-            client, monkeypatch, "the essay and two quizzes", "a late night"
-        )
+        first, latest = hers_in_turn(client, made, "the essay and two quizzes", "a late night")
         signaled = client.get(PAGE).text
 
     assert f'action="{TOO_MUCH}"' in none_yet
@@ -821,10 +1049,12 @@ def test_a_smaller_plan_says_whose_signal_shortened_it(
 
 def test_the_openapi_entries_are_pinned_whole(tmp_path: pathlib.Path) -> None:
     with household(tmp_path, "open") as client:
-        paths = client.get("/openapi.json").json()["paths"]
+        declared = client.get("/openapi.json").json()
+    paths, schemas = declared["paths"], declared["components"]["schemas"]
 
     assert paths[SIGNALS]["post"] == SIGNAL_POST
     assert paths[SIGNALS + "/{signal_id}"]["delete"] == SIGNAL_DELETE
+    assert {name: schemas[name] for name in SIGNAL_SCHEMAS} == SIGNAL_SCHEMAS
     assert paths[HELP]["post"] == HELP_POST
 
 
@@ -833,12 +1063,12 @@ def test_the_created_signal_and_help_request_keep_their_fields(
     reader: Reader, tmp_path: pathlib.Path
 ) -> None:
     with household(tmp_path, reader) as client:
-        signal = client.post(SIGNALS, json={"detail": "a long day"})
+        signal = client.post(SIGNALS, json=fresh_signal_fields(client, detail="a long day"))
         asked = client.post(HELP, json={"note": "the essay"})
 
     assert signal.status_code == 201
     assert asked.status_code == 201
-    assert set(signal.json()) == {"principal", "signal"}
+    assert set(signal.json()) == {"principal", "signal", "recorded"}
     assert signal.json()["principal"] == "STUDENT"
     assert set(asked.json()) == {"principal", "request"}
     assert asked.json()["principal"] == "STUDENT"
@@ -870,6 +1100,42 @@ def test_exactly_three_routes_are_hers_alone(tmp_path: pathlib.Path) -> None:
 
     assert hers_alone == [
         (HELP, ["POST"], "HersToAsk"),
-        (SIGNALS, ["POST"], "HersToSignal"),
+        (SIGNALS, ["POST"], "SignalRoute"),
         (SIGNALS + "/{signal_id}", ["DELETE"], "HersToSignal"),
     ]
+
+
+# ------------------------------------------------------------- a replay meets the door first
+
+
+def test_a_parents_replay_of_her_json_press_is_refused_before_any_outcome(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Her press sent again from a parent's sign-in is answered 403 before its id is looked up:
+    no signal, no recorded flag, none of her words."""
+    with household(tmp_path, "her") as client:
+        body = fresh_signal_fields(client, detail="a late night")
+        made = client.post(SIGNALS, json=body)
+        as_a_parent(client)
+        nothing_reaches_the_store(client, monkeypatch)
+        replay = client.post(SIGNALS, json=body)
+
+    assert made.status_code == 201
+    assert replay.status_code == 403
+    assert replay.json() == {"detail": REFUSAL}
+    assert body["signal_id"] not in replay.text
+    assert "a late night" not in replay.text
+
+
+def test_a_replay_after_sign_out_is_asked_to_sign_in_and_reads_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with household(tmp_path, "her") as client:
+        body = fresh_signal_fields(client)
+        client.post(SIGNALS, json=body)
+        client.post("/sign-out")
+        nothing_reaches_the_store(client, monkeypatch)
+        replay = client.post(SIGNALS, json=body)
+
+    assert replay.status_code == 401
+    assert replay.json() == {"detail": "Sign in first."}

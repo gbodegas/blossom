@@ -22,7 +22,12 @@ from blossom.noticing import monday_of
 from blossom.reconciliation import SourceConfidence
 from blossom.settings import STATIC_PATH as STATIC
 from blossom.settings import TEMPLATE_PATH as TEMPLATES
-from tests.support import SAME_ORIGIN, fixture_settings, outside_earlier_work
+from tests.support import (
+    SAME_ORIGIN,
+    fixture_settings,
+    fresh_signal_fields,
+    outside_earlier_work,
+)
 
 PINNED_TODAY = "2026-08-19"
 MONDAY = "2026-08-17"
@@ -217,7 +222,11 @@ def test_the_page_shows_the_households_budgets() -> None:
         BLOSSOM_TODAY=PINNED_TODAY, BLOSSOM_EVENING_MINUTES="120", BLOSSOM_TOO_MUCH_MINUTES="40"
     )
     with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
-        client.post("/student/actions/too-much", follow_redirects=False)
+        client.post(
+            "/student/actions/too-much",
+            data=fresh_signal_fields(client),
+            follow_redirects=False,
+        )
         shown = client.get("/student/due-this-week").text
 
     assert "Your next plan will use up to 40 minutes." in shown
