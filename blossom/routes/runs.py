@@ -1314,7 +1314,8 @@ class Planning:
             return await self.cut_off(SERVICE_FAILED)
         except Exception as error:
             # A store's or a request's own TimeoutError is a failure like any other. When
-            # the graph couldn't save how the run ended, the route's ending says so.
+            # the graph couldn't save how the run ended, the route's ending asks to say so,
+            # which the record keeps only when that ending is the one recorded in time.
             unsaved = isinstance(error, EndingNotSaved)
             made = await self.end(INTERRUPTED, self.result_not_saved_step() if unsaved else None)
             tidy_later(self.run_id, self.state)
