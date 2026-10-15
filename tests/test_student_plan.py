@@ -1476,7 +1476,7 @@ def test_the_api_schema_names_the_body_of_each_answer_to_a_press_and_to_a_runs_s
         "201": ["PlanRunView"],
         "202": ["UnconfirmedRunView"],
         "409": ["PlanConflictView"],
-        "422": ["HTTPValidationError"],
+        "422": ["ProblemView", "HTTPValidationError"],
         "503": ["ProblemView"],
     }
     for path in ("/student/plans/runs/{run_id}", "/parent/plans/runs/{run_id}"):
@@ -1494,6 +1494,85 @@ def test_the_api_schema_names_the_body_of_each_answer_to_a_press_and_to_a_runs_s
         AlreadyPlanning(STILL_RUNNING).detail
     )
     assert schemas["ProblemView"]["required"] == ["detail"]
+
+
+JSON_TYPES: dict[str, type | tuple[type, ...]] = {
+    "string": str,
+    "integer": int,
+    "number": (int, float),
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+    "null": type(None),
+}
+"""The Python value each JSON schema type names, as a decoded answer holds it."""
+
+
+def fits(value: object, schema: dict[str, Any]) -> bool:
+    """Whether a decoded value has the type a schema declares: one type, any of several, and
+    for an array, each item. A schema that names no type admits any value."""
+    if "anyOf" in schema:
+        return any(fits(value, part) for part in schema["anyOf"])
+    kind = schema.get("type")
+    if kind is None:
+        return True
+    if kind == "array":
+        items = schema.get("items", {})
+        return isinstance(value, list) and all(fits(item, items) for item in value)
+    if isinstance(value, bool) and kind in ("integer", "number"):
+        return False
+    return isinstance(value, JSON_TYPES[kind])
+
+
+def test_the_api_schema_declares_each_body_a_press_is_refused_with_422() -> None:
+    """The family's press answers 422 with a sentence for an evening that has passed or is
+    past the calendar's edge, and with a list of field errors for a body that isn't a plan
+    request, and its schema declares both. Her press reads no body, so one the family's route
+    refuses is answered as any press, and her schema declares no 422."""
+    sentences = {"passed": "2026-08-18", "beyond": "9999-12-31"}
+    not_requests: dict[str, dict[str, Any] | None] = {
+        "no body": None,
+        "not a date": {"plan_date": "not a date"},
+        "unknown field": {"plan_date": PLAN_DATE.isoformat(), "evening": "tonight"},
+    }
+    with browser() as client:
+        api = client.get("/openapi.json").json()
+        refused = {
+            name: client.post("/parent/plans", json={"plan_date": evening})
+            for name, evening in sentences.items()
+        } | {name: client.post("/parent/plans", json=body) for name, body in not_requests.items()}
+        hers = client.post("/student/plans", json=not_requests["not a date"])
+
+    schemas = api["components"]["schemas"]
+    family = api["paths"]["/parent/plans"]["post"]["responses"]["422"]
+    declared = family["content"]["application/json"]["schema"]
+    named = [part["$ref"].rsplit("/", 1)[-1] for part in declared.get("anyOf", [declared])]
+    assert named == ["ProblemView", "HTTPValidationError"]
+    sentence, field_errors = (schemas[name] for name in named)
+    assert sentence["properties"]["detail"]["type"] == "string"
+    assert sentence["required"] == ["detail"]
+    assert field_errors["properties"]["detail"]["type"] == "array"
+    error = schemas[field_errors["properties"]["detail"]["items"]["$ref"].rsplit("/", 1)[-1]]
+    for name, answer in refused.items():
+        assert answer.status_code == 422, name
+        assert set(answer.json()) == {"detail"}, name
+        detail = answer.json()["detail"]
+        if name in sentences:
+            assert isinstance(detail, str), name
+            continue
+        assert isinstance(detail, list), name
+        assert detail, name
+        for problem in detail:
+            assert set(error["required"]) <= set(problem) <= set(error["properties"]), name
+            for key, value in problem.items():
+                assert fits(value, error["properties"][key]), (name, key)
+    # The check can fail: a location given as a string, a message as a number, a type as null.
+    assert not fits("plan_date", error["properties"]["loc"])
+    assert not fits(["body", 1.5], error["properties"]["loc"])
+    assert not fits(3, error["properties"]["msg"])
+    assert not fits(None, error["properties"]["type"])
+    assert "422" not in api["paths"]["/student/plans"]["post"]["responses"]
+    assert hers.status_code == 201
 
 
 def test_her_plan_is_answered_by_its_run_when_reading_it_back_does_not_finish(
