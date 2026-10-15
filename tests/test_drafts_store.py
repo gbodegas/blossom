@@ -2390,3 +2390,206 @@ def test_only_end_run_writes_the_past_due_work_and_no_table_is_added(
     assert {name: count for name, count in writers.items() if count} == {"stores/drafts.py": 1}
     assert "SET past_due" in inspect.getsource(DraftsStore.end_run)
     assert tables == {"drafts", "runs", "steps"}
+
+
+# ------------------------------------------------- one account of how a run ended
+
+TIME_LIMIT = f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out."
+SERVICE_STEP = "No plan came back: the planning service failed or didn't answer."
+
+
+@pytest.mark.parametrize("out_of_time", [True, False])
+def test_an_ending_recorded_out_of_time_keeps_its_own_step_and_category(
+    out_of_time: bool,
+) -> None:
+    """Past its deadline a run asked to end for another reason ends timed out, its time under
+    that category, with the step for running out of time or none: never the step that
+    explains the ending it was asked for."""
+    fake = FakeTime()
+    store = faked_store(fake)
+    try:
+        admitted(store, "plan:x", now=fake, seconds=10)
+        fake.now += 10
+        ended = store.end_run(
+            "plan:x",
+            reason="service_failed",
+            steps=[step("retrieve", 0)],
+            terminal=step("plan", 1, SERVICE_STEP),
+            timing=RunTiming(seconds=10.0, category="service"),
+            out_of_time=step("time_limit", 0, TIME_LIMIT) if out_of_time else None,
+        )
+        (run,) = store.runs_without_a_draft()
+    finally:
+        store.close()
+
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", TIMED_OUT)
+    assert [item.found for item in run.steps] == (
+        ["as expected", TIME_LIMIT] if out_of_time else ["as expected"]
+    )
+    assert run.timing == RunTiming(seconds=10.0, category="timeout")
+
+
+def test_an_ending_in_time_keeps_the_step_and_category_it_was_asked_for() -> None:
+    fake = FakeTime()
+    store = faked_store(fake)
+    try:
+        admitted(store, "plan:x", now=fake, seconds=10)
+        store.end_run(
+            "plan:x",
+            reason="service_failed",
+            steps=[step("retrieve", 0)],
+            terminal=step("plan", 1, SERVICE_STEP),
+            timing=RunTiming(seconds=3.0, category="service"),
+            out_of_time=step("time_limit", 0, TIME_LIMIT),
+        )
+        (run,) = store.runs_without_a_draft()
+    finally:
+        store.close()
+
+    assert run.outcome == "service_failed"
+    assert [item.found for item in run.steps] == ["as expected", SERVICE_STEP]
+    assert run.timing == RunTiming(seconds=3.0, category="service")
+
+
+@pytest.mark.parametrize("how", ["end_run", "reconciled"])
+def test_a_run_whose_kept_time_cant_be_read_still_ends(how: str) -> None:
+    """Keeping the category with the outcome never fails an ending: a time that isn't JSON is
+    left as it is, and the run ends, asked to or past its deadline."""
+    fake = FakeTime()
+    store = faked_store(fake)
+    try:
+        admitted(store, "plan:x", now=fake, seconds=10)
+        store._connection.execute("UPDATE runs SET timing='not a time' WHERE thread_id='plan:x'")
+        store._connection.commit()
+        fake.now += 10
+        if how == "end_run":
+            store.end_run("plan:x", reason=INTERRUPTED, timing=None)
+        else:
+            store.run_status("plan:x")
+        ended = store.run_status("plan:x", reconcile=False)
+        (kept,) = store._connection.execute(
+            "SELECT timing FROM runs WHERE thread_id='plan:x'"
+        ).fetchone()
+    finally:
+        store.close()
+
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", TIMED_OUT)
+    assert kept == "not a time"
+
+
+def test_a_time_kept_after_a_run_ended_stays_under_its_outcomes_category() -> None:
+    """A later write of a run's time never changes the category its ending gave it."""
+    store = DraftsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    try:
+        ended_run(store, thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed")
+        store.record_timing("plan:a", RunTiming(seconds=41.25, category="interrupted"))
+        (run,) = store.runs_without_a_draft()
+    finally:
+        store.close()
+
+    assert run.timing == RunTiming(seconds=41.25, category="invalid_output")
+
+
+def test_a_running_run_past_its_deadline_reads_timed_out_under_that_category() -> None:
+    """A time kept while the run was still running, under the category its route had in
+    mind, reads under the timed-out category once the deadline has passed: listed so before
+    anything ends the run, and kept so once the store ends it."""
+    fake = FakeTime()
+    store = faked_store(fake)
+    try:
+        admitted(store, "plan:x", now=fake, seconds=10)
+        store.record_timing("plan:x", RunTiming(seconds=4.0, category="service"))
+        fake.now += 10
+        (listed,) = store.runs_without_a_draft()
+        store.run_status("plan:x")
+        ended = store.run_status("plan:x", reconcile=False)
+        stored = stored_ending(store, "plan:x")
+    finally:
+        store.close()
+
+    assert (listed.outcome, listed.timing) == (
+        TIMED_OUT,
+        RunTiming(seconds=4.0, category="timeout"),
+    )
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", TIMED_OUT)
+    assert stored == ("ended", TIMED_OUT, "timeout")
+
+
+def stored_ending(store: DraftsStore, run_id: str) -> tuple[str, str, str | None]:
+    """A run's row as stored: its status, its outcome and the category of its time."""
+    (status, outcome, category) = store._connection.execute(
+        "SELECT status, outcome, json_extract(timing, '$.category') FROM runs WHERE thread_id=?",
+        (run_id,),
+    ).fetchone()
+    return str(status), str(outcome), category
+
+
+STRAY = RunTiming(seconds=2.0, category="service")
+"""A time written under a category no ending in these tests gives."""
+
+
+@pytest.mark.parametrize(
+    ("ending", "stored"),
+    [
+        ("overtaken as it settles", ("ended", OVERTAKEN, None)),
+        ("interrupted as it settles", ("ended", INTERRUPTED, "interrupted")),
+        ("saving its draft past the deadline", ("ended", TIMED_OUT, "timeout")),
+        ("stopped with its process", ("ended", INTERRUPTED, "interrupted")),
+        ("published, then its time written", ("published", "accepted", None)),
+    ],
+)
+def test_every_ending_keeps_the_runs_time_under_its_outcomes_category(
+    ending: str, stored: tuple[str, str, str | None]
+) -> None:
+    """A time written under another category while the run ran, or after its plan was
+    published, is kept under the category of the outcome the run's record keeps."""
+    store = store_in_memory()
+    try:
+        if ending == "published, then its time written":
+            save_and_publish(
+                store, draft(), thread_id="tb", plan_date=PLAN_DATE, outcome="accepted"
+            )
+            store.record_timing("tb", STRAY)
+        else:
+            if ending == "overtaken as it settles":
+                save_and_publish(
+                    store,
+                    Draft(draft_id="draft:a", body="a", created_at=CREATED),
+                    thread_id="ta",
+                    plan_date=PLAN_DATE,
+                    outcome="accepted",
+                )
+            admitted(store, "tb", seconds=-1.0 if "past the deadline" in ending else 90.0)
+            store.record_timing("tb", STRAY)
+            if ending == "overtaken as it settles":
+                store.record_waiting(
+                    draft(), thread_id="tb", plan_date=PLAN_DATE, outcome="accepted"
+                )
+                store._connection.execute(
+                    """
+                    INSERT INTO drafts (draft_id, thread_id, plan_date, status, outcome, body,
+                                        created_at, published, published_order)
+                    VALUES ('draft:other', 'tother', '2026-08-19', 'DRAFT', 'accepted', 'other',
+                            ?, 1, 9)
+                    """,
+                    (CREATED.isoformat(),),
+                )
+                store._connection.commit()
+                store.settle_run("tb")
+            elif ending == "interrupted as it settles":
+                store.settle_run("tb")
+            elif ending == "saving its draft past the deadline":
+                with pytest.raises(RunEnded):
+                    store.record_waiting(
+                        draft(), thread_id="tb", plan_date=PLAN_DATE, outcome="accepted"
+                    )
+            else:
+                store.end_interrupted_runs()
+        found = stored_ending(store, "tb")
+    finally:
+        store.close()
+
+    assert found == stored

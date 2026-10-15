@@ -73,7 +73,7 @@ from pydantic import BaseModel
 from blossom.agent.compose import compose as compose_plan
 from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.prompts import critic_brief, planner_brief
-from blossom.agent.runs import RunBudget, draft_id_for
+from blossom.agent.runs import RunBudget, draft_id_for, time_limit_step
 from blossom.agent.steps import (
     DATE_PROBLEM,
     EXPECT_A_KEPT_PLAN,
@@ -653,7 +653,8 @@ def build_plan_graph(
         ``compose``; this node ends the run with its steps, so the parent's page
         can say why nothing came of it, and a date problem keeps the past-due work it
         names. Past the run's deadline the record says ``timed_out`` whatever the run
-        ended with, and ``committed`` says what it says.
+        ended with, its steps then the run's time limit, and ``committed`` says what it
+        says.
         """
         thread_id = str(config["configurable"]["thread_id"])
         return committed(
@@ -662,6 +663,7 @@ def build_plan_graph(
                 reason=state["outcome"],
                 steps=state.get("steps", []),
                 past_due=past_due_work(state.get("assignments", []), state.get("past_due", {})),
+                out_of_time=time_limit_step(clock.now()),
             )
         )
 

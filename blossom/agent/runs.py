@@ -43,6 +43,7 @@ import contextlib
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Final
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -81,6 +82,22 @@ RETRY_PAUSE_SECONDS: Final = 0.5
 """The wait before the first retry; each later one waits twice as long, never past the limit."""
 
 
+EXPECT_AN_ANSWER: Final = "an answer inside the run's time"
+"""What a step waiting on a model, or on the run's time, expected."""
+
+
+def time_limit_step(recorded_at: datetime) -> StepRecord:
+    """The step a run recorded out of time ends with when no model request was awaited
+    past its deadline: the run's time limit."""
+    return StepRecord(
+        node="time_limit",
+        round=0,
+        expected=EXPECT_AN_ANSWER,
+        found=f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out.",
+        recorded_at=recorded_at,
+    )
+
+
 class RunTimedOut(TimeoutError):
     """The run's time ran out while it waited for a model, or before it could ask one."""
 
@@ -110,6 +127,9 @@ class RunBudget:
     outputs: list[int] = field(default_factory=list)
     waiting_on: tuple[str, int] | None = None
     """The node and round of the request in progress, kept when one ends the run."""
+    in_flight: tuple[str, int] | None = None
+    """The node and round of a model request awaited at this moment; ``None`` once it has
+    answered, failed or been canceled, and between requests."""
     _lap: float = field(init=False)
 
     def __post_init__(self) -> None:
@@ -152,6 +172,7 @@ class RunBudget:
             if attempt:
                 self.retries += 1
             limit = asyncio.timeout(left)
+            self.in_flight = (stage, round_number)
             try:
                 async with limit:
                     answer = await call()
@@ -170,6 +191,8 @@ class RunBudget:
                     raise RunTimedOut
                 self.waiting_on = None
                 return answer
+            finally:
+                self.in_flight = None
             await self.sleep(min(RETRY_PAUSE_SECONDS * 2**attempt, self.remaining()))
             attempt += 1
 
