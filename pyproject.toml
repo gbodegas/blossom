@@ -39,6 +39,10 @@ dependencies = [
     # Naming it here means a resolver cannot quietly pick a vulnerable one.
     "starlette==1.6.0",
     "uvicorn==0.35.0",
+    # Prepares uploaded screenshots: decodes PNG and JPEG and writes one PNG of
+    # a bounded size. 12.3.0 is the first release outside the version ranges of
+    # the advisories published for it on 2026-07-20.
+    "pillow==12.3.0",
 ]
 
 [dependency-groups]
