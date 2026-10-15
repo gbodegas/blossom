@@ -1686,6 +1686,9 @@ def test_a_review_held_through_a_publication_out_of_time_still_lands(
             late = await plan_evening(
                 graph_for(state, fixture_week_plan()), PLAN_DATE, state, budget=budget
             )
+            # The timed-out run's ending goes on without a wait, so the next press comes
+            # once it has landed instead of racing it for the household.
+            await detached_done(state)
             saver.slow = None
             again = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
             return first.draft_id, late, again

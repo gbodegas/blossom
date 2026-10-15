@@ -11,9 +11,12 @@ not be read: no cookie is set, changed or cleared, the passphrase is in no page 
 line, and nothing is said about being signed in or out.
 """
 
+import codecs
 import logging
 import pathlib
 import re
+from collections.abc import Buffer, Iterator
+from html import unescape
 from typing import Final, cast
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -300,52 +303,175 @@ def test_a_boundary_reads_up_to_256_bytes_and_a_longer_one_is_a_form_that_cannot
                 assert TYPED not in long.text, path
 
 
-UNDECODABLE: Final = "xn--zz"
-"""A value the idna, punycode and undefined codecs all fail to decode."""
+UNDECODABLE: Final = "undecodable"
+"""A charset these tests register: it reads ASCII, and refuses a part holding ``TYPED`` with a
+plain ``UnicodeError``, which Starlette does not read as Latin-1."""
+
+
+def undecodable_codec(name: str) -> codecs.CodecInfo | None:
+    """The codec for ``UNDECODABLE``, as Python's codec search asks for it; none for any
+    other name."""
+    if name != UNDECODABLE:
+        return None
+
+    def decode(sent: Buffer, errors: str = "strict") -> tuple[str, int]:
+        if TYPED.encode() in bytes(sent):
+            raise UnicodeError(UNDECODABLE)
+        return codecs.ascii_decode(sent, errors)
+
+    return codecs.CodecInfo(codecs.ascii_encode, decode, name=UNDECODABLE)
+
+
+@pytest.fixture
+def undecodable() -> Iterator[None]:
+    """``UNDECODABLE`` known to Python's codecs for one test, and unknown again after it."""
+    codecs.register(undecodable_codec)
+    yield
+    codecs.unregister(undecodable_codec)
+
+
+@pytest.mark.usefixtures("undecodable")
+@pytest.mark.parametrize("charset", ["undefined", UNDECODABLE])
+def test_a_charset_a_part_cannot_be_decoded_in_is_a_form_that_cannot_be_read(
+    charset: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A charset whose codec fails on a part with a plain ``UnicodeError``, on every part or
+    only on the typed words, gets the 400 page, through a handler and through a form of
+    parameters alike: no cookie, no store call, no statement, no row changed, and nothing
+    typed in a page or a log line, which names the failure's kind alone."""
+    with pytest.raises(UnicodeError) as raised:
+        TYPED.encode().decode(charset)
+    assert type(raised.value) is UnicodeError
+    caplog.set_level(logging.DEBUG)
+    answers = {}
+    for reader, paths, fields in (
+        ("her", (SIGN_IN,), [("passphrase", HERS), ("x", TYPED)]),
+        ("open", (ASK, PASTE, DECIDE), [("note", TYPED)]),
+    ):
+        with household_client(reader, tmp_path / reader) as client:
+            state = state_of(client)
+            before = every_row(database_of(client))
+            calls: list[str] = []
+            spy_on_stores(monkeypatch, state, calls)
+            sent = multipart(fields, "synthetic", charset=charset)
+            with Statements(state) as seen:
+                for path in paths:
+                    answers[path] = press(client, path, *sent)
+            assert (calls, seen, every_row(database_of(client))) == ([], [], before), reader
+
+    for path, answer in answers.items():
+        heading, said, back = expected(path, "open")
+        main = store_free_page(answer, status=400, heading=heading, alert=said)
+        assert ways_back_of(main) == back, path
+        assert "set-cookie" not in answer.headers, path
+        assert TYPED not in answer.text, path
+        assert HERS not in answer.text, path
+    logged = [r.getMessage() for r in caplog.records]
+    assert [line for line in logged if TYPED in line or HERS in line] == []
+    assert [r.getMessage() for r in caplog.records if r.name == "blossom.app"] == [
+        "a form could not be read: UnicodeError"
+    ] * len(answers)
+
+
+SENT: Final = "caf\u00e9"
+"""Words whose UTF-8 bytes ASCII can't decode, and Latin-1 reads as other words."""
+
+
+def as_met(answer: Answer) -> tuple[int, str | None, str | None, bool, str]:
+    """An answer as its reader meets it: the status, the kind, where it sends them, whether it
+    sets a cookie, and its words."""
+    headers = answer.headers
+    return (
+        answer.status_code,
+        headers.get("content-type"),
+        headers.get("location"),
+        "set-cookie" in headers,
+        words(answer.text),
+    )
+
+
+def sent_both_ways(
+    charset: str, read_in: str, tmp_path: pathlib.Path
+) -> dict[str, tuple[Answer, Answer]]:
+    """Each form with no charset, carrying the text ``read_in`` reads from its bytes, names and
+    values alike, and then its own bytes naming ``charset``: the sign-in's with the right
+    passphrase, and ``SENT`` as a note through a handler and through a form of parameters."""
+
+    def both(fields: list[tuple[str, str]]) -> tuple[tuple[bytes, str], tuple[bytes, str]]:
+        read = [(n.encode().decode(read_in), v.encode().decode(read_in)) for n, v in fields]
+        return multipart(read, "synthetic"), multipart(fields, "synthetic", charset=charset)
+
+    answers: dict[str, tuple[Answer, Answer]] = {}
+    with household_client("her", tmp_path / "her") as client:
+        plain, named = both([("passphrase", HERS), ("x", SENT)])
+        answers[SIGN_IN] = (press(client, SIGN_IN, *plain), press(client, SIGN_IN, *named))
+    with household_client("open", tmp_path / "open") as client:
+        plain, named = both([("note", SENT)])
+        for path in (ASK, PASTE, DECIDE):
+            answers[path] = (press(client, path, *plain), press(client, path, *named))
+    return answers
+
+
+def note_kept(answer: Answer) -> str:
+    """The words an Ask for help that is not whole keeps in its fresh form."""
+    found = re.findall(r'<input id="help-note" [^>]*\bvalue="([^"]*)"', answer.text)
+    assert len(found) == 1, found
+    return unescape(cast(str, found[0]))
 
 
 @pytest.mark.parametrize(
-    ("charset", "value", "read"),
-    [
-        ("idna", UNDECODABLE, False),
-        ("punycode", UNDECODABLE, False),
-        ("undefined", TYPED, False),
-        ("utf-8", "caf\u00e9", True),
-        ("latin-1", "caf\u00e9", True),
-        ("ascii", "caf\u00e9", True),
-        ("no-such-charset", "caf\u00e9", True),
-    ],
+    ("charset", "refusal"), [("ascii", UnicodeDecodeError), ("no-such-charset", LookupError)]
 )
-def test_a_charset_a_part_cannot_be_decoded_in_is_a_form_that_cannot_be_read(
-    charset: str, value: str, read: bool, tmp_path: pathlib.Path
+def test_a_charset_whose_codec_refuses_a_part_reads_that_part_as_latin_1(
+    charset: str, refusal: type[Exception], tmp_path: pathlib.Path
 ) -> None:
-    """A charset whose codec fails on a part gets the 400 page, through a handler and through a
-    form of parameters alike; one that decodes it, or that Starlette reads as Latin-1 when the
-    charset is unknown or the bytes don't fit it, reads as it does with no charset."""
-    sign_in = [("passphrase", HERS), ("x", value)]
-    with household_client("her", tmp_path / "her") as client:
-        door = press(client, SIGN_IN, *multipart(sign_in, "synthetic", charset=charset))
-    answers = {}
-    with household_client("open", tmp_path / "open") as client:
-        for path in (ASK, PASTE, DECIDE):
-            fields = [("note", value)]
-            answers[path] = (
-                press(client, path, *multipart(fields, "synthetic")),
-                press(client, path, *multipart(fields, "synthetic", charset=charset)),
-            )
+    """A codec that refuses the typed bytes with ``UnicodeDecodeError``, or a charset Python
+    doesn't know, has Starlette read the part as Latin-1: the form answers as one with no
+    charset that carries the Latin-1 reading, the right passphrase opens the door, and the
+    note comes back as Latin-1 reads it."""
+    with pytest.raises(refusal) as raised:
+        SENT.encode().decode(charset)
+    assert type(raised.value) is refusal
+    answers = sent_both_ways(charset, "latin-1", tmp_path)
 
-    if read:
-        assert door.status_code == 303
-        for path, (plain, named) in answers.items():
-            assert named.status_code == plain.status_code != 400, path
-            assert named.headers["content-type"] == plain.headers["content-type"], path
-    else:
-        store_free_page(door, status=400, heading=SIGN_IN_HEADING, alert=SIGN_IN_SAID)
-        assert "set-cookie" not in door.headers
-        for path, (_, named) in answers.items():
-            heading, said, back = expected(path, "open")
-            main = store_free_page(named, status=400, heading=heading, alert=said)
-            assert ways_back_of(main) == back, path
+    for path, (plain, named) in answers.items():
+        assert as_met(named) == as_met(plain), path
+    assert {path: named.status_code for path, (_, named) in answers.items()} == {
+        SIGN_IN: 303,
+        ASK: 422,
+        PASTE: 422,
+        DECIDE: 422,
+    }
+    plain, named = answers[ASK]
+    assert note_kept(named) == note_kept(plain) == "caf\u00c3\u00a9"
+
+
+@pytest.mark.parametrize(
+    ("charset", "door", "kept"),
+    [("utf-8", 303, SENT), ("latin-1", 303, "caf\u00c3\u00a9"), ("cp500", 422, "")],
+)
+def test_a_charset_that_decodes_every_part_reads_the_form_as_decoded_names_included(
+    charset: str, door: int, kept: str, tmp_path: pathlib.Path
+) -> None:
+    """A charset that decodes every part reads the form as the text it decodes, even when that
+    is not what was typed: Latin-1 reads the note as other words, and EBCDIC reads each
+    field's name as another name, so no passphrase and no note are read. Each answers as a
+    form with no charset that carries the same text, through the same validation."""
+    answers = sent_both_ways(charset, charset, tmp_path)
+
+    for path, (plain, named) in answers.items():
+        assert as_met(named) == as_met(plain), path
+    assert {path: named.status_code for path, (_, named) in answers.items()} == {
+        SIGN_IN: door,
+        ASK: 422,
+        PASTE: 422,
+        DECIDE: 422,
+    }
+    plain, named = answers[ASK]
+    assert note_kept(named) == note_kept(plain) == kept
 
 
 @pytest.mark.parametrize(
