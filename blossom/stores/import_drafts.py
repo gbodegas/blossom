@@ -37,7 +37,7 @@ from typing import Final, Literal, NamedTuple, cast
 from blossom.clock import Clock
 from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.paths import refuse_unsafe_path
-from blossom.unreadable import text_or_refusal
+from blossom.unreadable import TextNotUtf8, text_or_named_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -375,7 +375,7 @@ class ImportDraftsStore:
     ) -> None:
         self._connection = connection
         self._connection.row_factory = sqlite3.Row
-        self._connection.text_factory = text_or_refusal
+        self._connection.text_factory = text_or_named_refusal
         self._clock = clock
         self._monotonic = monotonic
         self._rows = dict(rows)
@@ -973,11 +973,14 @@ class ImportDraftsStore:
 
     def _finished_or_failure(self, draft: sqlite3.Row) -> bool | str:
         """Whether the draft is finished, worked out in this transaction; or, when its rows
-        function or the decoding of its acceptance records fails, that failure's kind alone.
-        Working it out writes nothing. A failure of the file itself is raised."""
+        function fails, or decoding its acceptance records or readings does, that failure's
+        kind alone, text that isn't UTF-8 included. Working it out writes nothing. A failure
+        of the file itself is raised."""
         kind = ""
         try:
             return self._worked_out(draft).finished
+        except TextNotUtf8 as refused:
+            kind = type(refused).__name__
         except sqlite3.Error:
             raise
         except Exception as error:

@@ -30,12 +30,28 @@ def refusal_in_names(fault: Exception, fields: Collection[str]) -> str:
     return f"{fault.title}: {', '.join(refusals)}"
 
 
+class TextNotUtf8(sqlite3.OperationalError):
+    """A text column refused because its bytes aren't UTF-8. It is an ``OperationalError``, as
+    sqlite3 refuses such text, so whatever handles one handles this; a store that decodes a
+    row can tell it apart from a failure of the file itself."""
+
+
 def text_or_refusal(raw: bytes) -> str:
     """A text column as its UTF-8, for a connection's ``text_factory``. Bytes that aren't
     UTF-8 are refused as sqlite3 refuses them, an ``OperationalError`` at the read, in words
     that repeat none of the column."""
+    return _utf8_or(raw, sqlite3.OperationalError)
+
+
+def text_or_named_refusal(raw: bytes) -> str:
+    """``text_or_refusal`` for a store that passes over a row it can't decode: the refusal is
+    raised as ``TextNotUtf8``, which sqlite3 raises from the read as it is."""
+    return _utf8_or(raw, TextNotUtf8)
+
+
+def _utf8_or(raw: bytes, refusal: type[sqlite3.OperationalError]) -> str:
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         msg = "a text column holds bytes that are not UTF-8"
-    raise sqlite3.OperationalError(msg)
+    raise refusal(msg)

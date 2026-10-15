@@ -418,18 +418,17 @@ def _carried(placed: dict[str, tuple[HomeworkReading, list[_Seen]]]) -> dict[str
     carried: dict[str, Heading] = {}
     for _ in range(len(placed)):
         found: dict[str, Heading] = {}
-        for sha, (_, cards) in placed.items():
+        for sha, (own, cards) in placed.items():
             orphans = _in_order(item for item in cards if _orphan(item))
             if sha in carried or not orphans:
                 continue
+            first = min(own.headings, key=lambda heading: heading.y, default=None)
             proofs: dict[str, list[Heading]] = {}
             for other, (reading, other_cards) in placed.items():
                 if other == sha:
                     continue
-                for heading, section, open_end in _sections(
-                    reading, other_cards, carried.get(other)
-                ):
-                    if _continues(orphans, section, open_end):
+                for heading, section, after in _sections(reading, other_cards, carried.get(other)):
+                    if _continues(orphans, first, section, after):
                         proofs.setdefault(folded(heading.text), []).append(heading)
             if len(proofs) == 1:
                 [named] = proofs.values()
@@ -448,32 +447,42 @@ def _in_order(cards: Iterable[_Seen]) -> list[Card]:
 
 def _sections(
     reading: HomeworkReading, cards: list[_Seen], carried: Heading | None
-) -> list[tuple[Heading, list[Card], bool]]:
-    """Each heading of a screenshot with the whole cards under it, and whether its section
-    runs to the screenshot's bottom; its top cards' section too, when a heading was carried."""
+) -> list[tuple[Heading, list[Card], Heading | None]]:
+    """Each heading of a screenshot with the whole cards under it and the heading that closes
+    its section, ``None`` when it runs to the screenshot's bottom; its top cards' section too,
+    when a heading was carried, closed by the screenshot's first heading."""
     headings = sorted(reading.headings, key=lambda heading: heading.y)
     sections = [
         (
             heading,
             _in_order(item for item in cards if item.heading == heading),
-            heading == headings[-1],
+            headings[place + 1] if place + 1 < len(headings) else None,
         )
-        for heading in headings
+        for place, heading in enumerate(headings)
     ]
     if carried is not None:
-        sections.append((carried, _in_order(item for item in cards if _orphan(item)), not headings))
+        top = _in_order(item for item in cards if _orphan(item))
+        sections.append((carried, top, headings[0] if headings else None))
     return sections
 
 
-def _continues(orphans: list[Card], section: list[Card], open_end: bool) -> bool:
-    """Whether the top cards repeat a run of a section's cards, in order, from one of them on:
-    to the run's end, or on past it when the section runs to its screenshot's bottom."""
+def _continues(
+    orphans: list[Card], first: Heading | None, section: list[Card], after: Heading | None
+) -> bool:
+    """Whether a screenshot's top cards, above its first heading ``first``, continue a section
+    closed by ``after``: they repeat a run of its whole cards from one of them to the section's
+    end, then either stop there, before no heading or before the one that closes the section,
+    or run on past it, only when the section runs to its screenshot's bottom."""
     for start, card in enumerate(section):
         run = section[start:]
         repeated = _same(card, orphans[0]) and all(
             _same(one, other) for one, other in zip(orphans, run, strict=False)
         )
-        if repeated and (len(orphans) <= len(run) or open_end):
+        if not repeated or len(orphans) < len(run):
+            continue
+        if after is None:
+            return True
+        if len(orphans) == len(run) and (first is None or _text(first) == _text(after)):
             return True
     return False
 

@@ -783,3 +783,48 @@ def test_a_start_still_refuses_when_the_file_fails_while_a_draft_is_worked_out(
 
     with pytest.raises(sqlite3.DatabaseError):
         build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+
+
+@pytest.mark.parametrize("column", ["acceptance", "reading"])
+def test_a_start_passes_over_a_draft_whose_text_isnt_utf_8(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture, column: str
+) -> None:
+    """Bytes that aren't UTF-8 in an acceptance record or a stored reading are a decoding
+    refusal, passed over by its kind like any other; the expired draft after it still goes."""
+    settings = fixture_settings(**file_settings(tmp_path))
+    first = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    student = first.project_state.student_id()
+    first.close()
+    path = settings.database_path
+    failing = plant_read_draft(path, student, REAL_NOW - timedelta(hours=2), homework_answer())
+    expired = plant_draft(path, student, REAL_NOW - timedelta(minutes=30))
+    if column == "acceptance":
+        plant_acceptance(path, student, failing, "[]")
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE import_drafts SET expires_at = ? WHERE draft_id = ?",
+            (instant(REAL_NOW - timedelta(minutes=1)), expired),
+        )
+        if column == "acceptance":
+            connection.execute(
+                "UPDATE grade_acceptances SET accepted = CAST(X'5B5B22FF22' AS TEXT) "
+                "WHERE source_key = ?",
+                (failing,),
+            )
+        else:
+            connection.execute(
+                "UPDATE import_draft_images SET reading = CAST(X'7BFF7D' AS TEXT) "
+                "WHERE draft_id = ?",
+                (failing,),
+            )
+    connection.close()
+
+    with caplog.at_level(logging.DEBUG):
+        state = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    state.close()
+
+    found = drafts_in_file(path)
+    assert expired not in found
+    assert found[failing] == (None, 1)
+    assert PASSED_OVER.format("TextNotUtf8") in caplog.messages
+    assert not [record for record in caplog.records if record.exc_info]

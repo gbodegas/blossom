@@ -715,3 +715,14 @@ def test_no_screenshot_answer_or_error_body_reaches_a_log_with_the_sdk_at_debug(
         if record.name.split(".")[0] in {"anthropic", "httpx", "httpcore"}
         and record.levelno <= logging.DEBUG
     ]
+
+
+@pytest.mark.parametrize(
+    "fence", ["```python\n", "```JSON\n", "```jsonc\n"], ids=["python", "upper-case", "jsonc"]
+)
+def test_only_a_json_fence_is_stripped(fence: str) -> None:
+    """The answer is read as the tested reader read it: a fence named anything but json is
+    left in place, and the text is then not JSON."""
+    answer = read(Service(message(f"{fence}{json.dumps(AN_ANSWER)}\n```")))
+
+    assert answer.failure == "not_json"

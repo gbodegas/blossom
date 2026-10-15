@@ -63,7 +63,7 @@ class Press:
         self.student = record.student_id()
         record.close()
         self.store = self.reopen()
-        self.answers: dict[bytes, list[ScreenshotAnswer]] = {}
+        self.answers: dict[bytes, list[ScreenshotAnswer | Exception]] = {}
         self.calls: list[tuple[bytes, float]] = []
         self.held: set[asyncio.Future[Any]] = set()
         self.gates: dict[bytes, threading.Event] = {}
@@ -126,7 +126,7 @@ class Press:
             if sha in by_sha
         }
 
-    def answer(self, label: str, *answers: ScreenshotAnswer) -> None:
+    def answer(self, label: str, *answers: ScreenshotAnswer | Exception) -> None:
         self.answers[f"synthetic-png-{label}".encode()] = list(answers)
 
     def hold_open(self, label: str) -> tuple[threading.Event, threading.Event]:
@@ -148,7 +148,10 @@ class Press:
                 self.gates[png].wait(10)
             time.sleep(self.pause)
             queued = self.answers.get(png, [])
-            return queued.pop(0) if queued else ANSWERED
+            answer = queued.pop(0) if queued else ANSWERED
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
         finally:
             with self.lock:
                 self.running -= 1
@@ -667,3 +670,39 @@ def test_the_outcome_holds_ids_and_kinds_alone(press: Press) -> None:
 
     assert "Sentinel" not in repr(outcome)
     assert outcome.failed == ((press.ids(draft_id)["b"], "not_valid"),)
+
+
+def test_a_reader_that_raises_ends_unfinished_and_is_logged_by_its_kind_alone(
+    press: Press, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An error nothing expects, raised before the deadline and after it, each carrying text:
+    the press returns by its deadline, both images are unfinished, and the log names each
+    error's kind alone, with no traceback."""
+    short_deadline(monkeypatch)
+    draft_id = press.draft("a", "b", "c")
+    outer = RuntimeError("Sentinel-outer-O2")
+    outer.__cause__ = ValueError("Sentinel-inner-I1 synthetic-png-a")
+    press.answer("a", outer)
+    press.answer("b", KeyError("Sentinel-late-L3"))
+    _, gate = press.hold_open("b")
+    started = time.monotonic()
+
+    with caplog.at_level(logging.DEBUG):
+        outcome = press.press(draft_id, "a", "b", "c")
+        returned = time.monotonic() - started
+        gate.set()
+        finish_held(press)
+
+    ids = press.ids(draft_id)
+    assert returned < 0.5 + 0.4
+    assert outcome.read == (ids["c"],)
+    assert sorted(outcome.unfinished) == sorted([ids["a"], ids["b"]])
+    ended = [r for r in caplog.records if r.getMessage().startswith("a screenshot reading ended")]
+    assert sorted(record.getMessage() for record in ended) == [
+        "a screenshot reading ended with KeyError",
+        "a screenshot reading ended with RuntimeError",
+    ]
+    assert all(record.levelno == logging.ERROR for record in ended)
+    assert not [record for record in caplog.records if record.exc_info]
+    assert not [record for record in caplog.records if record.name == "asyncio"]
+    assert "Sentinel" not in caplog.text

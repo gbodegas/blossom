@@ -781,3 +781,148 @@ def test_a_blank_instruction_reads_as_no_words_and_the_row_stands() -> None:
 
     assert row.reading.instructions == ()
     assert row.reading.due_date == date(2026, 10, 5)
+
+
+# ------------------------------------------------------------------ what proves an overlap
+
+LOG_WORDS = "Read 20 minutes and log it."
+
+
+def test_top_cards_matching_only_the_start_of_a_closed_run_prove_nothing() -> None:
+    """A shows Monday [Reading log, Worksheet 3], then Tuesday [Spelling List 5]. B shows a
+    Reading log with the same words at its top, then Thursday. Monday goes on past the log to
+    the worksheet, which B doesn't show before its heading, so B isn't continuing Monday: its
+    top card stays an item that couldn't be read, never merged into Monday's."""
+    a = homework(
+        due("English 8", "Reading log", 200, instruction=LOG_WORDS),
+        due("Math 8", "Worksheet 3", 300),
+        due("Science 8", "Spelling List 5", 500),
+        headings=[heading("Monday 10/5/2026", 150), heading("Tuesday 10/6/2026", 450)],
+    )
+    b = homework(
+        due("English 8", "Reading log", 20, instruction=LOG_WORDS),
+        due("Math 8", "U1 Quiz 3", 300),
+        headings=[heading("Thursday 10/8/2026", 250)],
+    )
+
+    assembly = homework_assembly([stored_homework("a", a), stored_homework("b", b)], now=NOW)
+
+    assert [item.card.title for item in assembly.unread if item.card] == ["Reading log"]
+    log = next(row.reading for row in assembly.rows if row.reading.title == "Reading log")
+    assert [(c.asserted_value, c.seen_in) for c in log.claims] == [("2026-10-05", DAY_HEADER)]
+
+
+def test_top_cards_ending_a_closed_run_prove_it_only_before_that_runs_next_heading() -> None:
+    """B's top cards repeat Monday's whole run, which A closes with Tuesday: they continue it
+    when B's first heading is Tuesday, and are a coincidence of recurring cards when it is
+    Thursday."""
+    a = homework(
+        due("English 8", "Reading log", 200, instruction=LOG_WORDS),
+        due("Math 8", "Worksheet 3", 300),
+        due("Science 8", "Spelling List 5", 500),
+        headings=[heading("Monday 10/5/2026", 150), heading("Tuesday 10/6/2026", 450)],
+    )
+
+    def top_then(day: str) -> dict[str, object]:
+        return homework(
+            due("English 8", "Reading log", 20, instruction=LOG_WORDS),
+            due("Math 8", "Worksheet 3", 120),
+            due("Science 8", "Spelling List 5", 300),
+            headings=[heading(day, 250)],
+        )
+
+    continuing = homework_assembly(
+        [stored_homework("a", a), stored_homework("b", top_then("Tuesday 10/6/2026"))], now=NOW
+    )
+    elsewhere = homework_assembly(
+        [stored_homework("a", a), stored_homework("b", top_then("Thursday 10/8/2026"))], now=NOW
+    )
+
+    assert continuing.unread == ()
+    assert {item.card.title for item in elsewhere.unread if item.card} == {
+        "Reading log",
+        "Worksheet 3",
+    }
+
+
+# ------------------------------------------------------------------ clips and item keys
+
+
+def test_a_clip_is_covered_only_by_a_whole_copy_under_the_same_heading() -> None:
+    """A recurring card, whole under next Wednesday, never covers its clip under this one."""
+    clipped = homework(
+        due("English 8", "Vocab 4", 300),
+        due("Science 8", "Spelling List 5", 940, clipped=True),
+        headings=[heading("Wednesday 10/7/2026", 250)],
+    )
+    next_week = homework(
+        due("Science 8", "Spelling List 5", 300), headings=[heading("Wednesday 10/14/2026", 250)]
+    )
+
+    assembly = homework_assembly(
+        [stored_homework("this", clipped), stored_homework("next", next_week)], now=NOW
+    )
+
+    [item] = assembly.unread
+    assert item.card is not None
+    assert (item.card.title, item.card.clipped) == ("Spelling List 5", True)
+
+
+def test_an_item_whose_course_and_title_were_read_keeps_its_key_in_any_capture() -> None:
+    """Its image and its place enter its key only when the course or title wasn't read."""
+    clip = due("Science 8", "Spelling List 5", 940, clipped=True)
+    first = homework(clip, headings=[heading("Wednesday 10/7/2026", 250)])
+    second = homework(
+        due("English 8", "Vocab 4", 300), clip, headings=[heading("Wednesday 10/7/2026", 250)]
+    )
+
+    [one] = homework_assembly([stored_homework("first", first)], now=NOW).unread
+    [other] = homework_assembly([stored_homework("second", second)], now=NOW).unread
+
+    assert (one.place, other.place) == (0, 1)
+    assert one.sha256 != other.sha256
+    assert one.key == other.key
+
+
+# ------------------------------------------------------------------ order, by content alone
+
+
+def test_the_rows_are_the_same_in_every_order_whether_sha256_order_matches_dates_or_not() -> None:
+    """Vocab Quiz due 10/8 in one image and 10/22 in another, under two pairs of labels: one
+    where the images' SHA-256 order is the dates' order, one where it is the reverse."""
+    early = homework(
+        due("English 8", "Vocab Quiz", 200), headings=[heading("Thursday 10/8/2026", 150)]
+    )
+    late = homework(
+        due("English 8", "Vocab Quiz", 200), headings=[heading("Thursday 10/22/2026", 150)]
+    )
+    found = []
+    agree = []
+    for first, second in (("one", "two"), ("two", "one")):
+        images = [stored_homework(first, early), stored_homework(second, late)]
+        agree.append(images[0].sha256 < images[1].sha256)
+        for order in itertools.permutations(images):
+            rows = homework_assembly(list(order), now=NOW).rows
+            found.append(
+                sorted(
+                    (row.key, row.reading.due_date, row.reading.occurrence or "") for row in rows
+                )
+            )
+
+    assert sorted(agree) == [False, True]
+    assert all(rows == found[0] for rows in found)
+    assert [(due_date, occurrence) for _, due_date, occurrence in found[0]] in (
+        [(date(2026, 10, 8), ""), (date(2026, 10, 22), "2026-10-22")],
+        [(date(2026, 10, 22), "2026-10-22"), (date(2026, 10, 8), "")],
+    )
+
+
+# ------------------------------------------------------------------ bounds
+
+
+def test_forty_headings_fit_and_forty_one_do_not() -> None:
+    def headings(count: int) -> list[dict[str, object]]:
+        return [heading(f"Monday 10/{day}/2026", day * 10) for day in range(1, count + 1)]
+
+    assert homework_reading(an_answer(headings=headings(40))).failure is None
+    assert homework_reading(an_answer(headings=headings(41))) == (None, "not_valid")
