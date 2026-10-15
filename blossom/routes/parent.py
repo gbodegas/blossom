@@ -56,6 +56,7 @@ from functools import partial
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response, status
+from fastapi.openapi.constants import REF_PREFIX
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
@@ -213,6 +214,7 @@ from blossom.views import (
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
+    ProblemView,
     RunStatusView,
     RunView,
     SchoolStatementView,
@@ -610,11 +612,32 @@ def beyond(evening: date) -> Sentences:
     )
 
 
+FAMILY_PLAN_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
+    **PLAN_ANSWERS,
+    status.HTTP_422_UNPROCESSABLE_CONTENT: {
+        "description": "An evening refused in a sentence, or a body that isn't a plan request",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "anyOf": [
+                        {"$ref": f"{REF_PREFIX}{ProblemView.__name__}"},
+                        {"$ref": f"{REF_PREFIX}HTTPValidationError"},
+                    ]
+                }
+            }
+        },
+    },
+}
+"""The family's press answers besides its plan: both plan routes' answers, and its 422, a
+sentence for an evening that has passed or is past the calendar's edge, or FastAPI's list of
+field errors for a body that isn't a plan request. A 422 declared here replaces FastAPI's own."""
+
+
 @router.post(
     "/plans",
     response_model=PlanRunView,
     status_code=status.HTTP_201_CREATED,
-    responses=PLAN_ANSWERS,
+    responses=FAMILY_PLAN_ANSWERS,
 )
 async def start_plan(
     request: PlanRequest, state: State, graphs: Graphs
@@ -622,16 +645,17 @@ async def start_plan(
     """Run the plan graph for one evening, up to the gate or to the reason it stopped.
 
     An evening that has passed, or one past the edge of the calendar, is
-    refused with 422 before anything runs, and so is an evening with nothing
-    left to plan, before and after the run: a report of hers can land between
-    the question and the run's reading, and such a run made no plan. Any other
-    run that ended without a plan is answered 201 with its record, since the
-    page lists those, a run that ended on a date problem before any model was
-    asked, or one that failed on the way, included. A press while the
-    household's run is still running is a 409 naming it, in a parent's words; a
-    plan whose saving couldn't be confirmed in time is a 202 with its run's id;
-    and a plan not saved or a run that couldn't start is a 503 that says her
-    updates are saved.
+    refused with 422 in a sentence before anything runs, and a body that isn't
+    a plan request is a 422 with FastAPI's list of field errors. An evening with
+    nothing left to plan is a 409, before and after the run: a report of hers
+    can land between the question and the run's reading, and such a run made
+    no plan. Any other run that ended without a plan is answered 201 with its
+    record, since the page lists those, a run that ended on a date problem
+    before any model was asked, or one that failed on the way, included. A
+    press while the household's run is still running is a 409 naming it, in a
+    parent's words; a plan whose saving couldn't be confirmed in time is a 202
+    with its run's id; and a plan not saved or a run that couldn't start is a
+    503 that says her updates are saved.
     """
     budget = graphs.budget()
     evening = request.plan_date or state.clock.today()
