@@ -988,7 +988,8 @@ class Planning:
         """
         out_of_time = self.time_limit_step()
         ending = partial(
-            self.ended_out_of_time,
+            self.state.drafts.end_run,
+            self.run_id,
             reason=reason,
             steps=list(self.budget.steps),
             terminal=terminal,
@@ -997,10 +998,12 @@ class Planning:
         )
         left = self.budget.remaining()
         if left <= 0:
+            # Nobody waits for this ending, so its steps are never read.
             in_the_background(self.state, ending, f"ending run {self.run_id}")
             return None
+        waited = partial(self.ended_out_of_time, ending, reason=reason)
         try:
-            kept = await bounded(ending, min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS))
+            kept = await bounded(waited, min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS))
         except Unfinished as unfinished:
             detach(self.state, unfinished.work, f"ending run {self.run_id}")
             logger.warning("run %s not seen ended in time; its deadline ends it", self.run_id)
@@ -1011,28 +1014,22 @@ class Planning:
         return None if kept is None else self.ended_view(TIMED_OUT, kept)
 
     def ended_out_of_time(
-        self,
-        *,
-        reason: str,
-        steps: list[StepRecord],
-        terminal: StepRecord | None,
-        timing: RunTiming,
-        out_of_time: StepRecord,
+        self, ending: Callable[[], RunState | None], *, reason: str
     ) -> list[StepRecord] | None:
-        """End the run, on a worker thread, and the steps its record keeps when the run is
+        """Run ``ending``, on a worker thread, and the steps the record keeps when the run is
         found ended ``timed_out`` in place of ``reason``, by this ending or one before it;
-        ``None`` otherwise."""
-        ended = self.state.drafts.end_run(
-            self.run_id,
-            reason=reason,
-            steps=steps,
-            terminal=terminal,
-            timing=timing,
-            out_of_time=out_of_time,
-        )
+        ``None`` otherwise. Steps that can't be read are none, so a read that fails after
+        the ending is never taken for a failed ending."""
+        ended = ending()
         if reason == TIMED_OUT or ended is None or ended.reason != TIMED_OUT:
             return None
-        return self.state.drafts.steps_for(self.run_id)
+        try:
+            return self.state.drafts.steps_for(self.run_id)
+        except Exception as error:
+            logger.warning(
+                "run %s could not be read for a press: %s", self.run_id, type(error).__name__
+            )
+            return []
 
     def ended_view(
         self, reason: str, steps: Sequence[StepRecord], past_due: Sequence[PastDueView] = ()
@@ -1240,6 +1237,21 @@ class Planning:
             raise self.not_saved(kept=kept)
         return self.as_settled(found, view.steps)
 
+    async def stored_steps(self) -> list[StepRecord]:
+        """The steps the run's record keeps, read on a worker thread within what is left of
+        the run's time and its grace; none when the read fails or doesn't finish."""
+        left = self.budget.remaining()
+        try:
+            return await bounded(
+                partial(self.state.drafts.steps_for, self.run_id),
+                min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS),
+            )
+        except Exception as error:
+            logger.warning(
+                "run %s could not be read for a press: %s", self.run_id, type(error).__name__
+            )
+            return []
+
     async def run(self, graph: CompiledPlanGraph) -> PlanMade:
         """From the graph to the answer, for a run already admitted."""
         try:
@@ -1275,13 +1287,17 @@ class Planning:
         committed = result.get("committed")
         if committed is not None:
             # The record's own reason and past-due work, as it committed them, never ones
-            # worked out here.
+            # worked out here; and, when it ended out of time in place of the graph's own
+            # ending, the steps it keeps, never the graph's.
             tidy_later(self.run_id, self.state)
-            ended = run_view(self.run_id, self.plan_date, {**result, "outcome": ""})
+            reason = str(committed["reason"])
+            steps = run_view(self.run_id, self.plan_date, {**result, "outcome": ""}).steps
+            if reason == TIMED_OUT and result.get("outcome") != TIMED_OUT:
+                steps = await self.stored_steps()
             kept = committed.get("past_due")
             return self.ended_view(
-                str(committed["reason"]),
-                ended.steps,
+                reason,
+                steps,
                 past_due_views(() if kept is None else PAST_DUE_WORK.validate_json(str(kept))),
             )
         view = run_view(self.run_id, self.plan_date, result)

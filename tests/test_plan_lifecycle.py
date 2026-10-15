@@ -5,6 +5,7 @@ answer keeps, publication only by ``settle_run``, and an answer that matches the
 
 import asyncio
 import json
+import logging
 import pathlib
 import sqlite3
 import threading
@@ -4374,3 +4375,168 @@ def test_a_run_canceled_past_its_deadline_with_no_request_in_flight_ends_on_the_
 
     assert stopped
     assert ended == ("timed_out", TIME_LIMIT, "timeout")
+
+
+def test_a_run_its_last_node_ends_out_of_time_is_answered_with_the_steps_its_record_keeps(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The store's deadline passes while the route's has not, and the run's own last node
+    ends it: the record keeps the run's explanation and the time-limit step after it, and
+    the press answers with those steps."""
+    route = FakeTime()
+    store_clock = FakeTime()
+    state = application_on(tmp_path, store_clock)
+    refusal: ModelAnswer[DailyPlan] = ModelAnswer(
+        parsed=None, stop_reason="refusal", parsing_error=None
+    )
+    try:
+        graph = plan_graph_for(
+            state, planner=Spending(store_clock, (1.0, refusal)), critic=critic()
+        )
+
+        async def scenario() -> PlanMade:
+            made = await make_plan(graph, PLAN_DATE, state, budget=route.budget(0.5))
+            await settled_down(state)
+            return made
+
+        made = route.run(scenario())
+        kept = [step.found for step in state.drafts.steps_for(made.view.thread_id)]
+    finally:
+        state.close()
+
+    assert made.view.outcome == "timed_out"
+    assert [step.found for step in made.view.steps] == kept
+    assert kept[-2:] == ["No plan came back: the model declined to answer.", TIME_LIMIT]
+
+
+def test_a_run_the_store_ends_before_its_draft_is_saved_is_answered_with_the_steps_it_keeps(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The store's deadline passes while the route's has not, and a status read ends the
+    run before its draft is saved: the save is refused, and the press answers with the
+    steps the record keeps, none of the run's own."""
+    route = FakeTime()
+    store_clock = FakeTime()
+    state = application_on(tmp_path, store_clock)
+
+    async def reviewed_once_the_store_ended_the_run(
+        messages: Sequence[BaseMessage],
+    ) -> ModelAnswer[CriticVerdict]:
+        store_clock.now += 1.0
+        run = state.drafts.latest_run()
+        assert run is not None
+        state.drafts.run_status(run.run_id)
+        return ok(accepting())
+
+    try:
+        graph = plan_graph_for(
+            state,
+            planner=Scripted(ok(fixture_week_plan())),
+            critic=reviewed_once_the_store_ended_the_run,
+        )
+
+        async def scenario() -> PlanMade:
+            made = await make_plan(graph, PLAN_DATE, state, budget=route.budget(0.5))
+            await settled_down(state)
+            return made
+
+        made = route.run(scenario())
+        kept = [step.found for step in state.drafts.steps_for(made.view.thread_id)]
+    finally:
+        state.close()
+
+    assert made.view.outcome == "timed_out"
+    assert [step.found for step in made.view.steps] == kept == []
+
+
+def test_steps_that_cant_be_read_after_an_out_of_time_ending_leave_it_ended(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failure of the run's own whose ending is recorded past the deadline, and the
+    record's steps then can't be read: the press answers out of time with no steps, and the
+    log names the read that failed, never the ending."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+
+        def busy(run_id: str) -> list[StepRecord]:
+            raise StoreBusy
+
+        async def scenario() -> tuple[object, str]:
+            ending = Gated(state.drafts.end_run, asyncio.get_running_loop())
+            monkeypatch.setattr(state.drafts, "end_run", ending)
+            monkeypatch.setattr(state.drafts, "steps_for", busy)
+            request = asyncio.ensure_future(
+                make_plan(
+                    plan_graph_for(state, planner=raising(RuntimeError("boom")), critic=critic()),
+                    PLAN_DATE,
+                    state,
+                    budget=fake.budget(0.2),
+                )
+            )
+            await asyncio.wait_for(ending.began.wait(), timeout=5)
+            run = state.drafts.latest_run()
+            assert run is not None
+            fake.advance(0.5)
+            ending.go.set()
+            (answer,) = await asyncio.gather(request, return_exceptions=True)
+            await settled_down(state)
+            monkeypatch.undo()
+            return answer, run.run_id
+
+        with caplog.at_level(logging.WARNING, logger="blossom.routes.runs"):
+            answer, run_id = fake.run(scenario())
+        ended = account(state, run_id)
+    finally:
+        state.close()
+
+    assert isinstance(answer, PlanMade)
+    assert (answer.view.outcome, answer.view.steps) == ("timed_out", [])
+    assert ended == ("timed_out", TIME_LIMIT, "timeout")
+    said = [record.getMessage() for record in caplog.records]
+    assert f"run {run_id} could not be read for a press: StoreBusy" in said
+    assert not any("could not be ended" in line for line in said)
+
+
+def test_an_ending_nobody_waits_for_never_reads_the_runs_steps(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A held review read fails after the deadline, so the ending goes on without a wait:
+    it ends the run timed out with the time-limit step, and the run's steps are never read
+    for an answer nobody waits for."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    reads: list[str] = []
+    try:
+        steps_for = state.drafts.steps_for
+
+        def counted(run_id: str) -> list[StepRecord]:
+            reads.append(run_id)
+            return steps_for(run_id)
+
+        async def unreadable(*args: object, **kwargs: object) -> list[Any]:
+            fake.advance(1.0)
+            msg = "the saved state could not be read"
+            raise RuntimeError(msg)
+
+        async def scenario() -> tuple[object, str]:
+            monkeypatch.setattr(state.drafts, "steps_for", counted)
+            monkeypatch.setattr(runs_module, "finish_held_reviews", unreadable)
+            (answer,) = await asyncio.gather(
+                make_plan(accepted_graph(state), PLAN_DATE, state, budget=fake.budget(0.2)),
+                return_exceptions=True,
+            )
+            await settled_down(state)
+            monkeypatch.undo()
+            run = state.drafts.latest_run()
+            assert run is not None
+            return answer, run.run_id
+
+        answer, run_id = fake.run(scenario())
+        ended = account(state, run_id)
+    finally:
+        state.close()
+
+    assert answered(answer) == ("raised", "the saved state could not be read")
+    assert ended == ("timed_out", TIME_LIMIT, "timeout")
+    assert reads == []
