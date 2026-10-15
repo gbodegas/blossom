@@ -617,8 +617,7 @@ def wednesday_and_after() -> tuple[StoredReading, StoredReading]:
 
 def test_a_heading_never_carries_to_another_screenshots_top_cards() -> None:
     """The second screenshot's top cards repeat the first's Wednesday, but no heading carries
-    between screenshots: they stay items, and so does the first's clip, which no whole copy
-    under Wednesday covers."""
+    between screenshots: they stay items, and so does the first's clip."""
     first, second = wednesday_and_after()
 
     assembly = homework_assembly([first, second], now=NOW)
@@ -651,7 +650,7 @@ def test_an_overlap_two_headings_could_explain_proves_neither() -> None:
     }
 
 
-def test_a_clipped_card_no_whole_copy_covers_is_an_item_that_couldnt_be_read() -> None:
+def test_a_clipped_card_is_an_item_that_couldnt_be_read() -> None:
     first, _ = wednesday_and_after()
 
     assembly = homework_assembly([first], now=NOW)
@@ -854,8 +853,9 @@ def test_top_cards_take_no_day_whatever_heading_follows_them() -> None:
 # ------------------------------------------------------------------ clips and item keys
 
 
-def test_a_clip_is_covered_only_by_a_whole_copy_under_the_same_heading() -> None:
-    """A recurring card, whole under next Wednesday, never covers its clip under this one."""
+def test_a_clip_stays_an_item_beside_a_copy_under_another_day() -> None:
+    """A recurring card's clip under this Wednesday stays an item beside its whole copy under
+    next Wednesday."""
     clipped = homework(
         due("English 8", "Vocab 4", 300),
         due("Science 8", "Spelling List 5", 920, clipped=True),
@@ -1080,9 +1080,9 @@ def test_an_uncertain_field_is_no_evidence_that_two_cards_are_one() -> None:
     assert "Spelling List 5" not in {row.reading.title for row in assembly.rows}
 
 
-def test_a_clip_is_covered_only_by_certain_evidence() -> None:
-    """Case 3, coverage: a whole copy with a field marked uncertain covers nothing, and a due
-    line the clip shows with certainty as absent is no wildcard."""
+def test_a_clip_stays_an_item_beside_an_uncertain_or_different_copy() -> None:
+    """Case 3: a clip stays an item beside a whole copy with a field marked uncertain, and
+    beside one with a due line the clip shows as absent."""
 
     def clip(**fields: object) -> dict[str, object]:
         return homework(
@@ -1428,7 +1428,7 @@ SCENARIOS: dict[
         [("U1 Quiz 3", "10-08")],
         [("Spelling List 5", "clipped")],
     ),
-    "rule 5: a clip with no heading is never covered": (
+    "rule 5: a clip with no heading stays an item": (
         [
             shot(card(SL, 0, clipped=True), (THU, 250), card(U1, 300)),
             shot(card(SL, 20), (NEXT_MON, 250), card(LQ, 300)),
@@ -1457,7 +1457,7 @@ SCENARIOS: dict[
         [],
         [("", "incomplete")],
     ),
-    "a clip under a heading with no readable day is never covered": (
+    "a clip under a heading with no readable day stays an item": (
         [
             shot(("Monday", 150), assigned(*U1, "Due (10/", 920, clipped=True, uncertain=HIDDEN)),
             shot(("Monday", 150), assigned(*U1, "Due (10/8/2026)", 200)),
@@ -1465,12 +1465,12 @@ SCENARIOS: dict[
         [("U1 Quiz 3", "10-08")],
         [("U1 Quiz 3", "clipped")],
     ),
-    "a clip is never covered by a card in its own screenshot": (
+    "a clip stays an item beside a card in its own screenshot": (
         [shot((THU, 150), card(U1, 200), card(U1, 920, clipped=True, uncertain=HIDDEN))],
         [("U1 Quiz 3", "10-08")],
         [("U1 Quiz 3", "clipped")],
     ),
-    "a clip under a heading read with doubt is never covered": (
+    "a clip under a heading read with doubt stays an item": (
         [
             shot((THU, 150, DOUBT), card(U1, 920, clipped=True, uncertain=HIDDEN)),
             shot((THU, 150), card(U1, 200)),
@@ -1478,7 +1478,7 @@ SCENARIOS: dict[
         [("U1 Quiz 3", "10-08")],
         [("U1 Quiz 3", "clipped")],
     ),
-    "a clip is never covered by a card under a heading read with doubt": (
+    "a clip stays an item beside a card under a heading read with doubt": (
         [
             shot((THU, 150), card(U1, 920, clipped=True, uncertain=HIDDEN)),
             shot((THU, 150, DOUBT), card(U1, 200)),
@@ -1531,8 +1531,18 @@ def test_cards_take_a_day_only_from_their_own_date_or_a_heading_above_them(name:
     or by the heading above it in its screenshot, and every other card stays a visible item
     with its reason, never merged into another."""
     shots, rows, items = SCENARIOS[name]
-    images = [stored_homework(f"{name}-{place}", answer) for place, answer in enumerate(shots)]
-    found = set()
+
+    assert in_every_order(name, shots) == {(tuple(rows), tuple(items))}
+
+
+Read = tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]
+
+
+def in_every_order(label: str, shots: list[dict[str, object]]) -> set[Read]:
+    """What the screenshots read as in every order of their images: the rows (title, due
+    date) and the items (title, reason), each sorted."""
+    images = [stored_homework(f"{label}-{place}", answer) for place, answer in enumerate(shots)]
+    found: set[Read] = set()
     for order in itertools.permutations(images):
         assembly = homework_assembly(list(order), now=NOW)
         found.add(
@@ -1552,8 +1562,70 @@ def test_cards_take_a_day_only_from_their_own_date_or_a_heading_above_them(name:
                 ),
             )
         )
+    return found
 
-    assert found == {(tuple(rows), tuple(items))}
+
+# ------------------------------------------------------------------ every clip stays an item
+
+CUT = "cut off by the edge"
+
+
+def reading_log(y_top: int) -> dict[str, object]:
+    """A DUE Reading log card with the teacher's words."""
+    return card(RL, y_top, instruction=LOG_WORDS)
+
+
+def clipped_log() -> dict[str, object]:
+    """A Reading log cut off at the image's bottom, its words marked as cut off."""
+    cut = [{"field": "instruction", "reason": CUT}]
+    return dict(reading_log(920), clipped=True, uncertain=cut)
+
+
+def test_a_clip_stays_an_item_when_the_next_screenshot_shows_its_day() -> None:
+    """Both screenshots show Monday above the Reading log the first cuts off: the clip stays
+    an item beside the rows, since matching text never shows that two cards are one."""
+    shots = [
+        shot((MON, 150), card(WS, 200), clipped_log()),
+        shot((MON, 150), card(WS, 200), reading_log(300)),
+    ]
+
+    assert in_every_order("next-shows-its-day", shots) == {
+        (
+            (("Reading log", "10-05"), ("Worksheet 3", "10-05")),
+            (("Reading log", "clipped"),),
+        )
+    }
+
+
+def test_a_whole_card_alone_elsewhere_never_hides_a_second_clipped_card() -> None:
+    """One screenshot shows a whole Reading log and a clip of another under Monday; a second
+    shows the whole card alone. Monday holds at least two, so the clip stays an item."""
+    shots = [
+        shot((MON, 150), reading_log(200), clipped_log()),
+        shot((MON, 150), reading_log(200)),
+    ]
+
+    assert in_every_order("whole-alone-elsewhere", shots) == {
+        ((("Reading log", "10-05"),), (("Reading log", "clipped"),))
+    }
+
+
+def test_a_clip_with_its_label_and_due_line_cut_stays_an_item() -> None:
+    """A Vocab quiz clip with its label and due line cut off, and marked, could be the next
+    round's ASSIGNED card: it stays an item beside the DUE Vocab quiz under the same Monday."""
+    cut_off = [{"field": "badge", "reason": CUT}, {"field": "footer", "reason": CUT}]
+    clip = card(("English 8", "Vocab quiz"), 920, badge=None, clipped=True, uncertain=cut_off)
+    shots = [
+        shot((MON, 150), card(WS, 200), clip),
+        shot((MON, 150), card(("English 8", "Vocab quiz"), 300)),
+    ]
+
+    assert in_every_order("label-and-due-line-cut", shots) == {
+        (
+            (("Vocab quiz", "10-05"), ("Worksheet 3", "10-05")),
+            (("Vocab quiz", "clipped"),),
+        )
+    }
 
 
 def test_each_row_that_would_write_what_another_does_is_its_own_item(
@@ -1636,3 +1708,16 @@ def test_a_clipped_card_partly_in_the_image_is_brought_to_its_edges() -> None:
     )
 
     assert [(c.y_top, c.y_bottom) for c in reading.cards if c is not None] == [(0, 60), (940, 1000)]
+
+
+@pytest.mark.parametrize("clipped", [False, True], ids=["unclipped", "clipped"])
+@pytest.mark.parametrize("edge", [1000, 0, 500], ids=["at-the-bottom", "at-the-top", "mid-image"])
+def test_a_card_with_no_height_couldnt_be_read(edge: int, clipped: bool) -> None:
+    """A card whose bottom edge is its top shows nothing, so it is a card that couldn't be
+    read, never a row: at the image's bottom, at its top, or in between."""
+    ghost = dict(card(("Math 8", "Ghost card"), edge, clipped=clipped), y_bottom=edge)
+    shots = [shot((MON, 150), card(WS, 200), ghost)]
+
+    assert in_every_order(f"no-height-{edge}-{clipped}", shots) == {
+        ((("Worksheet 3", "10-05"),), (("", "card_unreadable"),))
+    }

@@ -16,8 +16,8 @@ fits, and none is kept. Dates are kept as the text shown and read as dates here.
 A draft's readings are put together into rows by their content alone, never by the order
 the screenshots came in, and read as today's portal claims through ``intake.read_cards``. A
 card is dated only by its own due line or by a day heading above it in its own screenshot; no
-heading carries from one screenshot to another, and every card that can't be dated or read
-stays a visible item with its reason.
+heading carries from one screenshot to another, and every card that is clipped or can't be
+dated or read stays a visible item with its reason.
 ``homework_rows`` gives the draft store each row's key from the same assembly, so the rows
 the parent sees and the keys the store keeps can't disagree.
 """
@@ -133,8 +133,8 @@ class Card(_Closed):
 
     @model_validator(mode="after")
     def _edges_in_order(self) -> Self:
-        if self.y_bottom < self.y_top:
-            message = "a card's bottom edge is above its top"
+        if self.y_bottom <= self.y_top:
+            message = "a card's bottom edge is not below its top"
             raise ValueError(message)
         return self
 
@@ -153,12 +153,6 @@ class Card(_Closed):
     def complete(self) -> bool:
         """Whether its label, course and title were all read, the course and title with words."""
         return self.badge is not None and _words(self.course) and _words(self.title)
-
-    @property
-    def certain(self) -> bool:
-        """Whether it is read whole: complete, unclipped, and with no field marked uncertain,
-        so it can stand as evidence that it is the same card as another."""
-        return self.complete and not self.clipped and not self.uncertain
 
 
 class Heading(_Closed):
@@ -329,10 +323,10 @@ ItemReason = Literal[
     "reading_unreadable", "card_unreadable", "incomplete", "clipped", "no_day", "repeated"
 ]
 """Why an item couldn't be read as a row. The first three say text couldn't be read: a whole
-reading, a card, or a card's label, course or title. ``clipped`` is a card partly cut off that
-no whole copy covers. ``no_day`` is a card read whole whose date can't be told: no due line of
-its own and no day heading above it in its screenshot. ``repeated`` is a second row that would
-write what another does."""
+reading, a card, or a card's label, course or title. ``clipped`` is a card partly cut off,
+whether or not a whole copy is read elsewhere. ``no_day`` is a card read whole whose date
+can't be told: no due line of its own and no day heading above it in its screenshot.
+``repeated`` is a second row that would write what another does."""
 
 
 class UnreadCard(NamedTuple):
@@ -377,12 +371,12 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
 
     The cards of every reading are one set. A card takes a day only from its own due line or
     from a day heading above it in its own screenshot; no heading carries to another
-    screenshot, and no card's text is evidence of where another card is. A clipped card goes
-    when a whole copy in another screenshot, under the same heading read as a day, is read. The
-    rest are walked in an order fixed by content and read as today's portal claims; every other
-    card stays a visible item with its reason, never merged into another, and only a recapture
-    of a card named with certainty under one day shares its item. ``now`` stamps the claims and
-    is in no key.
+    screenshot, and no card's text is evidence of where another card is, so no card, a clipped
+    one included, is set aside for a copy read elsewhere. The cards read whole and dated are
+    walked in an order fixed by content and read as today's portal claims; every other card
+    stays a visible item with its reason, never merged into another, and only a recapture of a
+    card named with certainty under one day shares its item. ``now`` stamps the claims and is
+    in no key.
     """
     images: dict[str, HomeworkReading | None] = {}
     for stored in readings:
@@ -396,13 +390,10 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
         elif not reading.wrong_kind:
             placed[sha] = (reading, _placed(sha, reading))
     seen = [seen for sha, (_, cards) in sorted(placed.items()) for seen in cards]
-    whole = [item for item in seen if item.card is not None and not item.card.clipped]
     units: list[tuple[tuple[object, ...], PortalCard, frozenset[str]]] = []
     copies: dict[tuple[str, str], int] = {}
     for item in seen:
         card = item.card
-        if card is not None and card.clipped and _covered(item, whole):
-            continue
         portal = None if card is None or card.clipped else _portal(card, item.heading)
         if card is None or portal is None:
             payload = _as_item(item)
@@ -468,33 +459,6 @@ def _as_read(card: Card) -> tuple[object, ...]:
         _fold(card.instruction),
         _fold(card.footer),
     )
-
-
-def _covered(clipped: _Seen, whole: list[_Seen]) -> bool:
-    """Whether a whole card in another screenshot, under the same heading read with certainty
-    as a day, reads as everything the clip read with certainty, course and title among it: a
-    field the clip marks uncertain is no evidence, and one it shows as absent must be absent."""
-    card = clipped.card
-    if card is None or not _named(card) or _read_day(clipped.heading) is None:
-        return False
-    marked = card.uncertain_fields
-    for other in whole:
-        full = other.card
-        if (
-            full is None
-            or not full.certain
-            # A screenshot shows each card once, so a card in the clip's own is another card.
-            or other.sha256 == clipped.sha256
-            or _read_day(other.heading) is None
-            or _text(other.heading) != _text(clipped.heading)
-        ):
-            continue
-        if all(
-            field in marked or _fold(getattr(card, field)) == _fold(getattr(full, field))
-            for field in ("badge", "course", "title", "instruction", "footer")
-        ):
-            return True
-    return False
 
 
 def _portal(card: Card, heading: Heading | None) -> PortalCard | None:
