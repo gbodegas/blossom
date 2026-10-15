@@ -40,6 +40,7 @@ from starlette.formparsers import MultiPartParser
 from starlette.routing import Mount, Route
 from starlette.types import Message, Scope
 
+from blossom.dependencies import ApplicationState
 from blossom.routes.forms import FormRoute
 from tests.support import (
     ESSAY_ID,
@@ -995,6 +996,39 @@ PARENT_MAY_PRESS: Final = frozenset({"/student/actions/plan", "/student/grades/v
 and the grades view."""
 
 
+SHOWS_HER_WEEK: Final = frozenset(
+    {
+        REPORT,
+        f"/student/actions/assignments/{ESSAY_ID}/undo-report",
+        f"/student/actions/assignments/{ESSAY_ID}/hand-in",
+        f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in",
+        f"/student/actions/assignments/{ESSAY_ID}/earlier-work",
+        ASK,
+    }
+)
+"""Her presses that tell a parent, 403, on her current week, that the press is hers: the
+refusal reads the store to show her week. Every other refusal here reads no store."""
+TEXT_ONLY: Final = multipart([("note", TYPED)], "synthetic")
+"""A multipart body of the typed note alone, the file part's body without its file."""
+MOMENT: Final = re.compile(r"'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+00:00'")
+"""A moment of the real clock written into a statement, as a store's retention window is."""
+
+
+def traced(
+    client: TestClient,
+    state: ApplicationState,
+    calls: list[str],
+    path: str,
+    sent: tuple[bytes, str],
+) -> tuple[Answer, list[str], list[str]]:
+    """A press, with the store calls it made and the statements the stores ran for it, each
+    moment of the real clock in them written as ``'<moment>'``, so two presses compare."""
+    calls.clear()
+    with Statements(state) as seen:
+        answer = press(client, path, *sent)
+    return answer, list(calls), [MOMENT.sub("'<moment>'", statement) for statement in seen]
+
+
 def refused_before_reading(path: str, reader: str) -> bool:
     """Whether the route refuses this reader, 403, before it reads a body: the family's tree
     to her, hers to a parent but for the routes a parent may press, and the family's grade
@@ -1099,10 +1133,12 @@ def test_a_file_among_the_fields_is_a_form_that_cannot_be_read_and_no_file_is_ma
     files_made: list[int],
 ) -> None:
     """Every form route answers a body carrying a file part, named or with an empty name, as
-    a body the parser can't read: where the route refuses the reader before reading a body,
-    with that same 403, and otherwise the 400 page with the route's ways back. No
-    temporary file is made, nothing is read from the store or written, no cookie is set, and
-    neither the typed words nor the file's name reach a page or a log line."""
+    a body the parser can't read. Where the route refuses the reader before reading a body,
+    it answers with that same 403, reading the store exactly as its refusal of the typed
+    note alone does: not at all, but for her week shown to a parent. Otherwise it answers
+    the 400 page with the route's ways back, reading no store. No temporary file is made,
+    no row changes, no cookie is set, and neither the typed words nor the file's name reach
+    a page or a log line."""
     caplog.set_level(logging.DEBUG)
     body, kind = with_a_file(filename)
     broken, broken_kind = unreadable()["multipart the parser rejects"]
@@ -1113,24 +1149,30 @@ def test_a_file_among_the_fields_is_a_form_that_cannot_be_read_and_no_file_is_ma
         calls: list[str] = []
         spy_on_stores(monkeypatch, state, calls)
         for path in EVERY_FORM_ROUTE:
+            refused = refused_before_reading(path, reader)
             refused_first = press(client, path, broken, broken_kind)
-            calls.clear()
-            with Statements(state) as seen:
-                answer = press(client, path, body, kind)
+            if refused:
+                text_only, text_calls, text_seen = traced(client, state, calls, path, TEXT_ONLY)
+            rows = every_row(database_of(client))
+            answer, file_calls, file_seen = traced(client, state, calls, path, (body, kind))
             assert files_made == [], path
+            assert every_row(database_of(client)) == rows, path
             assert "set-cookie" not in answer.headers, path
             assert TYPED not in answer.text, path
             assert not filename or filename not in answer.text, path
-            if refused_before_reading(path, reader):
-                assert refused_first.status_code == 403, path
+            if refused:
+                assert refused_first.status_code == text_only.status_code == 403, path
                 assert as_met(answer) == as_met(refused_first), path
+                assert (file_calls, file_seen) == (text_calls, text_seen), path
+                shows_her_week = reader == "parent" and path in SHOWS_HER_WEEK
+                assert bool(file_calls) == bool(file_seen) == shows_her_week, (path, file_calls)
                 continue
             assert refused_first.status_code == 400, path
             heading, said, back = expected(path, reader)
             main = store_free_page(answer, status=400, heading=heading, alert=said)
             assert ways_back_of(main) == back, path
-            assert calls == [], (path, calls)
-            assert seen == [], (path, seen[:3])
+            assert file_calls == [], (path, file_calls)
+            assert file_seen == [], (path, file_seen[:3])
         after = every_row(database_of(client))
 
     assert after == before
