@@ -27,6 +27,7 @@ from langchain_core.messages import BaseMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from starlette.requests import Request
 
+from blossom.agent import graph as graph_module
 from blossom.agent.graph import Ask, ModelAnswer, PlanState, plan_graph_for
 from blossom.agent.retention import SavedThread, reviewable, saved_thread, sweep_saved_state
 from blossom.agent.runs import (
@@ -4802,3 +4803,314 @@ def test_a_graph_refused_because_the_store_ended_its_run_is_answered_from_the_re
     assert made.view.outcome == "timed_out"
     assert [step.found for step in made.view.steps] == kept == []
     assert ended == ("timed_out", None, "timeout")
+
+
+RESULT_NOT_SAVED_LINE: Final = "The run's result couldn't be saved, so the run stopped."
+
+
+class FailsFirst:
+    """A store method whose first ``times`` calls are refused as a busy store refuses them;
+    the calls after go on, through ``then`` when given."""
+
+    def __init__(
+        self, call: Callable[..., Any], times: int = 1, then: Callable[..., Any] | None = None
+    ) -> None:
+        self.call = call
+        self.left = times
+        self.then = then
+
+    def __call__(self, *args: object, **kwargs: object) -> Any:  # noqa: ANN401
+        if self.left > 0:
+            self.left -= 1
+            raise StoreBusy
+        return (self.then or self.call)(*args, **kwargs)
+
+
+def declining() -> Scripted[DailyPlan]:
+    """A planner that declines to answer."""
+    return Scripted(ModelAnswer(parsed=None, stop_reason="refusal", parsing_error=None))
+
+
+def refused_by_a_busy_store(answer: object) -> bool:
+    """Whether the press raised a busy store's refusal, itself or as the cause of what it
+    raised: the failure pages answer as interrupted."""
+    return isinstance(answer, StoreBusy) or isinstance(
+        getattr(answer, "__cause__", None), StoreBusy
+    )
+
+
+def last_step_label(state: ApplicationState, run_id: str) -> str:
+    """The label the parent page gives a run's last stored step."""
+    last = state.drafts.steps_for(run_id)[-1]
+    return step_label(last.node, last.round)
+
+
+def stored_ending(state: ApplicationState, run_id: str) -> tuple[str, str, list[str], str | None]:
+    """A run's stored ending, read without ending anything: its status, outcome, steps'
+    sentences and the category of its time."""
+    ended = state.drafts.run_status(run_id, reconcile=False)
+    assert ended is not None
+    (category,) = state.drafts._connection.execute(
+        "SELECT json_extract(timing, '$.category') FROM runs WHERE thread_id=?", (run_id,)
+    ).fetchone()
+    steps = [step.found for step in state.drafts.steps_for(run_id)]
+    return ended.status, ended.reason, steps, category
+
+
+@pytest.mark.parametrize("unsaved", ["its own ending", "its draft"])
+def test_a_run_whose_graph_cant_save_how_it_ended_is_stopped_with_a_step_that_says_so(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, unsaved: str
+) -> None:
+    """The graph's own write of how the run ended is refused, and the route then ends the run
+    interrupted in time: the record keeps the graph's steps and then says the result
+    couldn't be saved, and the press still raises with the store's refusal as its cause."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+
+        async def scenario() -> tuple[object, str]:
+            graph: Any
+            if unsaved == "its own ending":
+                monkeypatch.setattr(state.drafts, "end_run", FailsFirst(state.drafts.end_run))
+                graph = plan_graph_for(state, planner=declining(), critic=critic())
+            else:
+                saving = FailsFirst(state.drafts.record_waiting)
+                monkeypatch.setattr(state.drafts, "record_waiting", saving)
+                graph = accepted_graph(state)
+            (answer,) = await asyncio.gather(
+                make_plan(graph, PLAN_DATE, state, budget=fake.budget(0.2)),
+                return_exceptions=True,
+            )
+            await settled_down(state)
+            monkeypatch.undo()
+            run = state.drafts.latest_run()
+            assert run is not None
+            return answer, run.run_id
+
+        answer, run_id = fake.run(scenario())
+        status, outcome, steps, category = stored_ending(state, run_id)
+        last_node = state.drafts.steps_for(run_id)[-1].node
+        label = last_step_label(state, run_id)
+    finally:
+        state.close()
+
+    assert refused_by_a_busy_store(answer)
+    assert (status, outcome, category) == ("ended", "interrupted", "interrupted")
+    assert steps[-2:] == [
+        REFUSED if unsaved == "its own ending" else REVIEWED,
+        RESULT_NOT_SAVED_LINE,
+    ]
+    assert (last_node, label) == ("stopped", "Stopped")
+
+
+def test_a_route_ending_not_seen_in_time_that_lands_in_time_says_the_result_wasnt_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The graph's own ending is refused; the route's ending outlasts its wait, so the press
+    answers without it, and then lands before the deadline: the step that says the result
+    couldn't be saved is recorded with it."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+
+        async def scenario() -> tuple[object, str]:
+            ending = Gated(state.drafts.end_run, asyncio.get_running_loop())
+            monkeypatch.setattr(
+                state.drafts, "end_run", FailsFirst(state.drafts.end_run, then=ending)
+            )
+            request = asyncio.ensure_future(
+                make_plan(
+                    plan_graph_for(state, planner=declining(), critic=critic()),
+                    PLAN_DATE,
+                    state,
+                    budget=fake.budget(10.0),
+                )
+            )
+            await asyncio.wait_for(ending.began.wait(), timeout=60)
+            fake.advance(6.0)
+            (answer,) = await asyncio.gather(request, return_exceptions=True)
+            ending.go.set()
+            await asyncio.wait_for(ending.returned.wait(), timeout=60)
+            await settled_down(state)
+            monkeypatch.undo()
+            run = state.drafts.latest_run()
+            assert run is not None
+            return answer, run.run_id
+
+        answer, run_id = fake.run(scenario())
+        status, outcome, steps, category = stored_ending(state, run_id)
+        last_node = state.drafts.steps_for(run_id)[-1].node
+        label = last_step_label(state, run_id)
+    finally:
+        state.close()
+
+    assert refused_by_a_busy_store(answer)
+    assert (status, outcome, category) == ("ended", "interrupted", "interrupted")
+    assert steps[-2:] == [REFUSED, RESULT_NOT_SAVED_LINE]
+    assert (last_node, label) == ("stopped", "Stopped")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "the store ends it first",
+        "the route's ending fails too",
+        "the route's ending crosses the deadline",
+        "the route's ending lands past the deadline",
+    ],
+)
+def test_a_route_ending_that_isnt_the_one_recorded_in_time_adds_no_such_step(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """The graph's own ending is refused, and the route's ending is not the one recorded in
+    time: another writer ended the run first, the route's write failed too, or it landed
+    past the deadline. No step says the result couldn't be saved, and the existing
+    out-of-time handling stands."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+
+        async def scenario() -> str:
+            ending = Gated(state.drafts.end_run, asyncio.get_running_loop())
+            failing = 2 if case == "the route's ending fails too" else 1
+            monkeypatch.setattr(
+                state.drafts,
+                "end_run",
+                FailsFirst(state.drafts.end_run, failing, then=ending),
+            )
+            request = asyncio.ensure_future(
+                make_plan(
+                    plan_graph_for(state, planner=declining(), critic=critic()),
+                    PLAN_DATE,
+                    state,
+                    budget=fake.budget(0.2),
+                )
+            )
+            if case == "the route's ending fails too":
+                await asyncio.gather(request, return_exceptions=True)
+                await settled_down(state)
+                run = state.drafts.latest_run()
+                assert run is not None
+                fake.advance(1.0)
+                state.drafts.run_status(run.run_id)
+            else:
+                await asyncio.wait_for(ending.began.wait(), timeout=5)
+                run = state.drafts.latest_run()
+                assert run is not None
+                if case == "the store ends it first":
+                    fake.advance(0.5)
+                    state.drafts.run_status(run.run_id)
+                elif case == "the route's ending crosses the deadline":
+                    fake.advance(0.5)
+                else:
+                    fake.advance(1.5)
+                    await asyncio.gather(request, return_exceptions=True)
+                ending.go.set()
+                await asyncio.gather(request, return_exceptions=True)
+                await settled_down(state)
+            monkeypatch.undo()
+            return run.run_id
+
+        run_id = fake.run(scenario())
+        status, outcome, steps, category = stored_ending(state, run_id)
+    finally:
+        state.close()
+
+    assert (status, outcome, category) == ("ended", "timed_out", "timeout")
+    assert RESULT_NOT_SAVED_LINE not in steps
+    if case in {"the store ends it first", "the route's ending fails too"}:
+        assert steps == []
+    else:
+        assert steps[-2:] == [REFUSED, TIME_LIMIT]
+
+
+def test_the_step_that_says_the_result_wasnt_saved_reads_stopped() -> None:
+    assert step_label("stopped", 0) == "Stopped"
+
+
+def test_a_failure_before_the_graphs_ending_is_written_is_not_an_unsaved_result(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The graph's last node fails working out what to write, before any write is asked
+    for: the failure is its own, not a result that couldn't be saved, and the route's
+    ending adds no step saying so."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    writes: list[object] = []
+    try:
+        ending = state.drafts.end_run
+
+        def counted(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            writes.append(kwargs.get("reason"))
+            return ending(*args, **kwargs)
+
+        def broken(*args: object, **kwargs: object) -> Any:  # noqa: ANN401
+            msg = "not a write"
+            raise ValueError(msg)
+
+        async def scenario() -> tuple[object, str]:
+            monkeypatch.setattr(state.drafts, "end_run", counted)
+            monkeypatch.setattr(graph_module, "past_due_work", broken)
+            (answer,) = await asyncio.gather(
+                make_plan(
+                    plan_graph_for(state, planner=declining(), critic=critic()),
+                    PLAN_DATE,
+                    state,
+                    budget=fake.budget(10.0),
+                ),
+                return_exceptions=True,
+            )
+            await settled_down(state)
+            monkeypatch.undo()
+            run = state.drafts.latest_run()
+            assert run is not None
+            return answer, run.run_id
+
+        answer, run_id = fake.run(scenario())
+        status, outcome, steps, category = stored_ending(state, run_id)
+    finally:
+        state.close()
+
+    assert answered(answer) == ("raised", "not a write")
+    assert isinstance(answer, ValueError)
+    assert writes == ["interrupted"]
+    assert (status, outcome, category) == ("ended", "interrupted", "interrupted")
+    assert steps[-1] == REFUSED
+    assert RESULT_NOT_SAVED_LINE not in steps
+
+
+def test_a_draft_save_refused_because_another_writer_ended_the_run_answers_that_ending(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another writer ends the run in time just before the graph saves its draft: the save
+    is refused as for a run already ended, the press answers that ending, and no step says
+    the result couldn't be saved."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+        save = state.drafts.record_waiting
+
+        def ended_first(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            state.drafts.end_interrupted_runs()
+            return save(*args, **kwargs)
+
+        async def scenario() -> tuple[object, str]:
+            monkeypatch.setattr(state.drafts, "record_waiting", ended_first)
+            (answer,) = await asyncio.gather(
+                make_plan(accepted_graph(state), PLAN_DATE, state, budget=fake.budget(10.0)),
+                return_exceptions=True,
+            )
+            await settled_down(state)
+            monkeypatch.undo()
+            run = state.drafts.latest_run()
+            assert run is not None
+            return answer, run.run_id
+
+        answer, run_id = fake.run(scenario())
+        status, outcome, steps, category = stored_ending(state, run_id)
+    finally:
+        state.close()
+
+    assert answered(answer) == "interrupted"
+    assert (status, outcome, category) == ("ended", "interrupted", "interrupted")
+    assert RESULT_NOT_SAVED_LINE not in steps

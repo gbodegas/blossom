@@ -60,6 +60,7 @@ import operator
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from functools import partial
 from typing import Annotated, Any, Final, Literal, NotRequired, TypedDict, cast
 
 from langchain_core.messages import AIMessage, BaseMessage
@@ -212,6 +213,15 @@ class ModelAnswer[T: BaseModel]:
 type Ask[T: BaseModel] = Callable[[Sequence[BaseMessage]], Awaitable[ModelAnswer[T]]]
 """One structured model call: messages in, a typed answer out. The graph holds
 two, and a test substitutes both."""
+
+
+class EndingNotSaved(RuntimeError):
+    """The graph couldn't write how its run ended, its ending or its draft. Nothing of the
+    write was saved, and the failure that stopped it is the cause."""
+
+    def __init__(self, thread_id: str) -> None:
+        super().__init__(f"run {thread_id!r} couldn't save how it ended")
+        self.thread_id = thread_id
 
 
 class Committed(TypedDict):
@@ -608,7 +618,9 @@ def build_plan_graph(
         survive whatever happens next; the draft reaches the pages only when
         the route settles the run, once it has paused. A run that already ended,
         out of time or ended by its route, saves nothing; what its record committed
-        goes to ``committed`` and the run ends here instead of pausing.
+        goes to ``committed`` and the run ends here instead of pausing; one for a run
+        the store never admitted is ``RunEnded``, as before. A save that fails
+        otherwise is ``EndingNotSaved``, with that failure as its cause.
         """
         thread_id = str(config["configurable"]["thread_id"])
         outcome = state["outcome"]
@@ -628,22 +640,28 @@ def build_plan_graph(
         if outcome not in REACHED_THE_GATE:
             msg = f"compose reached with outcome {outcome!r}, which produces no draft"
             raise RuntimeError(msg)
+        # Everything the save needs is worked out first, so only the save itself can be
+        # a draft that wasn't saved.
+        saving = partial(
+            drafts.record_waiting,
+            composed.draft,
+            thread_id=thread_id,
+            plan_date=state["plan_date"],
+            outcome=cast(Literal["accepted", "unsettled"], outcome),
+            steps=state.get("steps", []),
+            too_much=state.get("too_much", False),
+            inputs_digest=state.get("inputs_digest"),
+            plan_assignment_ids=composed.snapshot.assignment_ids,
+            plan_snapshot=composed.snapshot,
+        )
         try:
-            drafts.record_waiting(
-                composed.draft,
-                thread_id=thread_id,
-                plan_date=state["plan_date"],
-                outcome=cast(Literal["accepted", "unsettled"], outcome),
-                steps=state.get("steps", []),
-                too_much=state.get("too_much", False),
-                inputs_digest=state.get("inputs_digest"),
-                plan_assignment_ids=composed.snapshot.assignment_ids,
-                plan_snapshot=composed.snapshot,
-            )
+            saving()
         except RunEnded as ended:
             if ended.run is None:
                 raise
             return committed(ended.run)
+        except Exception as error:
+            raise EndingNotSaved(thread_id) from error
         return {"draft": composed.draft}
 
     def record_run(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
@@ -654,18 +672,24 @@ def build_plan_graph(
         can say why nothing came of it, and a date problem keeps the past-due work it
         names. Past the run's deadline the record says ``timed_out`` whatever the run
         ended with, its steps then the run's time limit, and ``committed`` says what it
-        says.
+        says. A write that fails is ``EndingNotSaved``, with that failure as its cause.
         """
         thread_id = str(config["configurable"]["thread_id"])
-        return committed(
-            drafts.end_run(
-                thread_id,
-                reason=state["outcome"],
-                steps=state.get("steps", []),
-                past_due=past_due_work(state.get("assignments", []), state.get("past_due", {})),
-                out_of_time=time_limit_step(clock.now()),
-            )
+        # Everything the write needs is worked out first, so only the write itself can be
+        # an ending that wasn't saved.
+        ending = partial(
+            drafts.end_run,
+            thread_id,
+            reason=state["outcome"],
+            steps=state.get("steps", []),
+            past_due=past_due_work(state.get("assignments", []), state.get("past_due", {})),
+            out_of_time=time_limit_step(clock.now()),
         )
+        try:
+            ended = ending()
+        except Exception as error:
+            raise EndingNotSaved(thread_id) from error
+        return committed(ended)
 
     def gate(state: PlanState) -> dict[str, Any]:
         """The approval gate, unchanged; the state's gate keys match its own."""
