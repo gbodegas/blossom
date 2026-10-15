@@ -68,7 +68,7 @@ import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Final
+from typing import Final, NamedTuple
 
 from blossom.candidates import readings_for
 from blossom.captures import Author, Capture, CaptureNotSaved, CapturePromoted, candidate_basis
@@ -632,6 +632,58 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
         reading for rounds in drafts.values() for draft in rounds for reading in draft.readings()
     )
     return Read(items=items, unread=tuple(unread))
+
+
+class PortalCard(NamedTuple):
+    """One card of the portal's homework page as a screenshot showed it: its course and title,
+    whether it is assigned or due, its date, the day heading it sits under, and the teacher's
+    words under it. An assigned card's date is its own due date; a due card's is its day."""
+
+    course: str
+    title: str
+    card: Card
+    when: date
+    day: date | None
+    instruction: str | None
+
+
+class CardsRead(NamedTuple):
+    """What a run of portal cards reads as, and which reading each card joined."""
+
+    readings: tuple[Reading, ...]
+    joined: tuple[int, ...]
+    """For each card given, in order, the place in ``readings`` of the reading it joined."""
+
+
+def read_cards(cards: Sequence[PortalCard], *, now: datetime) -> CardsRead:
+    """Read portal cards, in the order given, as ``read_text`` reads the same cards in a paste.
+
+    Each card is one of today's portal claims: an assigned card's own line, a due card's day
+    header. Rounds of a name are told apart as a paste's are, by the first card of each, so
+    the order given decides them; a caller fixes that order by the cards' content.
+    """
+    drafts: dict[tuple[str, str], list[_Draft]] = {}
+    joined: list[_Draft] = []
+    for number, card in enumerate(cards, start=1):
+        draft = _draft_for(drafts, card.course, card.title, SourceChannel.LMS, number, card.when)
+        seen_in = OWN_LINE if card.card == "assigned" else DAY_HEADER
+        draft.add(claim(SourceChannel.LMS, card.when, seen_in, now, PORTAL_CONFIDENCE))
+        if draft.due_date is None:
+            draft.due_date = card.when
+            draft.field_origins["due_date"] = SourceChannel.LMS
+        if card.card == "assigned" and draft.assigned_on is None and card.day is not None:
+            draft.assigned_on = card.day
+            draft.field_origins["assigned_on"] = SourceChannel.LMS
+        # A due card is filed under its day, as a paste's is under its day line.
+        day = card.when if card.card == "due" else card.day
+        draft.notes.append((card.card, day, [] if card.instruction is None else [card.instruction]))
+        joined.append(draft)
+    ordered = [draft for rounds in drafts.values() for draft in rounds]
+    place = {id(draft): index for index, draft in enumerate(ordered)}
+    return CardsRead(
+        readings=tuple(draft.reading() for draft in ordered),
+        joined=tuple(place[id(draft)] for draft in joined),
+    )
 
 
 def _unbroken(line: str) -> str:

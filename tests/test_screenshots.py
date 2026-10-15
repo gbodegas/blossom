@@ -7,58 +7,28 @@ the answer schema. The student is Wren; every other name is invented.
 """
 
 import copy
+import itertools
 import json
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, get_args
 
 import pytest
 
 from blossom import screenshots
+from blossom.intake import DAY_HEADER, OWN_LINE, identity
 from blossom.screenshot_prompt import SCHEMA
-from blossom.screenshots import Card, HomeworkReading, homework_reading
-from blossom.stores.import_drafts import FAILURES
-
-
-def a_card(**fields: object) -> dict[str, Any]:
-    """One card as the schema shapes it, every property present."""
-    card: dict[str, Any] = {
-        "badge": "ASSIGNED",
-        "course": "English 8",
-        "title": "Sentence Composing",
-        "instruction": "Complete pages 12 to 14.",
-        "footer": "Due (10/8/2026)",
-        "y_top": 210,
-        "y_bottom": 340,
-        "clipped": False,
-        "uncertain": [],
-    }
-    card.update(fields)
-    return card
-
-
-def an_answer(**fields: object) -> dict[str, Any]:
-    """A homework list's answer: one heading and two cards, the selected student Wren."""
-    answer: dict[str, Any] = {
-        "image_kind": "homework_list",
-        "active_student": {"name": "Wren", "uncertain": None},
-        "headings": [{"text": "Monday 10/5/2026", "y": 150, "uncertain": None}],
-        "cards": [
-            a_card(),
-            a_card(
-                badge="DUE",
-                course="Science 8",
-                title="Chains Reading Guide 6",
-                instruction=None,
-                footer=None,
-                y_top=360,
-                y_bottom=430,
-            ),
-        ],
-        "report": None,
-    }
-    answer.update(fields)
-    return answer
+from blossom.screenshots import (
+    Card,
+    HomeworkReading,
+    homework_assembly,
+    homework_reading,
+    homework_rows,
+)
+from blossom.stores.import_drafts import FAILURES, DraftRow, StoredReading
+from tests.support import homework_answer as an_answer
+from tests.support import homework_card as a_card
+from tests.support import stored_homework
 
 
 def a_report(**fields: object) -> dict[str, Any]:
@@ -225,6 +195,7 @@ UNTYPED_CARDS = {
     "mark-unknown-field": a_card(uncertain=[{"field": "teacher", "reason": "hidden"}]),
     "mark-not-an-object": a_card(uncertain=["title"]),
     "title-too-long": a_card(title="T" * 301),
+    "instruction-unwritable": a_card(instruction="Read\udfff"),
     "null": None,
     "a-list": ["English 8", "Sentence Composing"],
 }
@@ -248,15 +219,14 @@ def test_a_card_that_doesnt_fit_stays_at_its_place_as_one_that_couldnt_be_read(
 # ------------------------------------------------------------------ the selected student
 
 
-def test_only_the_selected_tab_is_kept() -> None:
-    """The answer names the selected student alone; a field for other tabs doesn't fit."""
+def test_other_names_on_inactive_tabs_are_ignored_and_the_reading_stands() -> None:
+    """The reader names the selected tab alone, so a screenshot whose inactive tabs show
+    Rowan and Ellis reads as Wren's, with nothing else of the picker kept."""
     reading = checked(an_answer())
-    others = an_answer(
-        active_student={"name": "Wren", "uncertain": None, "other_tabs": ["Rowan", "Ellis"]}
-    )
 
     assert reading.student.name == "Wren"
-    assert homework_reading(others) == (None, "not_valid")
+    assert reading.student.uncertain is None
+    assert set(type(reading.student).model_fields) == {"name", "uncertain"}
 
 
 def test_a_missing_name_is_kept_as_missing_with_its_note() -> None:
@@ -347,6 +317,11 @@ MALFORMED: dict[str, object] = {
     "student-not-an-object": an_answer(active_student="Wren"),
     "student-name-a-number": an_answer(active_student={"name": 7, "uncertain": None}),
     "student-name-too-long": an_answer(active_student={"name": "W" * 101, "uncertain": None}),
+    "student-extra-field": an_answer(
+        active_student={"name": "Wren", "uncertain": None, "other_tabs": ["Rowan", "Ellis"]}
+    ),
+    "name-unwritable": an_answer(active_student={"name": "W\ud800", "uncertain": None}),
+    "heading-unwritable": an_answer(headings=[{"text": "Monday\ud800", "y": 1, "uncertain": None}]),
     "headings-not-a-list": an_answer(headings={"text": "Monday 10/5/2026"}),
     "heading-without-y": an_answer(headings=[{"text": "Monday 10/5/2026", "uncertain": None}]),
     "heading-y-as-text": an_answer(headings=[{"text": "Monday", "y": "150", "uncertain": None}]),
@@ -468,3 +443,341 @@ def test_no_name_or_school_text_reaches_a_log_and_no_error_escapes(
     assert "Sentinel" not in caplog.text
     for result in results[2:]:
         assert "Sentinel" not in repr(result)
+
+
+# ------------------------------------------------------------------ text a card can carry
+
+
+def test_a_blank_course_or_title_is_not_a_complete_card() -> None:
+    reading = checked(an_answer(cards=[a_card(course="  "), a_card(title=""), a_card()]))
+
+    assert [card.complete for card in reading.cards if card is not None] == [False, False, True]
+
+
+# ------------------------------------------------------------------ from readings to rows
+
+NOW = datetime(2026, 10, 9, 18, 0, tzinfo=UTC)
+
+
+def heading(text: str, y: int, uncertain: str | None = None) -> dict[str, object]:
+    return {"text": text, "y": y, "uncertain": uncertain}
+
+
+def homework(*cards: dict[str, object], headings: list[dict[str, object]]) -> dict[str, object]:
+    return an_answer(headings=headings, cards=list(cards))
+
+
+def due(course: str, title: str, y_top: int, **fields: object) -> dict[str, object]:
+    """A DUE card with no instruction unless one is given."""
+    card = a_card(badge="DUE", course=course, title=title, instruction=None, footer=None)
+    card.update(y_top=y_top, y_bottom=y_top + 80, **fields)
+    return card
+
+
+def assigned(
+    course: str, title: str | None, footer: str, y_top: int, **fields: object
+) -> dict[str, object]:
+    """An ASSIGNED card with its due line and no instruction unless one is given."""
+    card = a_card(course=course, title=title, footer=footer, instruction=None)
+    card.update(y_top=y_top, y_bottom=y_top + 80, **fields)
+    return card
+
+
+def keys(*images: StoredReading) -> tuple[DraftRow, ...]:
+    return homework_rows(images)
+
+
+def test_sentence_composing_across_two_images_is_one_row_with_both_dates() -> None:
+    """Assigned on Tuesday, due Wednesday, each card in its own screenshot, the teacher's
+    exception kept word for word, once."""
+    words = "Complete pages 12 to 14. Exception: skip number 9."
+    tuesday = homework(
+        assigned("English 8", "Sentence Composing", "Due (10/7/2026)", 200, instruction=words),
+        headings=[heading("Tuesday 10/6/2026", 150)],
+    )
+    wednesday = homework(
+        due("English 8", "Sentence Composing", 200, instruction=words),
+        headings=[heading("Wednesday 10/7/2026", 150)],
+    )
+
+    assembly = homework_assembly(
+        [stored_homework("t", tuesday), stored_homework("w", wednesday)], now=NOW
+    )
+
+    [row] = assembly.rows
+    assert assembly.unread == ()
+    assert (row.reading.assigned_on, row.reading.due_date) == (date(2026, 10, 6), date(2026, 10, 7))
+    assert {(c.asserted_value, c.seen_in) for c in row.reading.claims} == {
+        ("2026-10-07", OWN_LINE),
+        ("2026-10-07", DAY_HEADER),
+    }
+    assert [seen.text for seen in row.reading.instructions] == [words]
+    assert row.marks == frozenset()
+
+
+def test_chains_reading_guide_6_assigned_monday_and_due_thursday_is_one_row() -> None:
+    """Its footer says Thursday, and it sits under Thursday in the next screenshot, where it
+    first repeats as the overlap at the top."""
+    chains = assigned("Science 8", "Chains Reading Guide 6", "Due (10/8/2026)", 260)
+    monday = homework(
+        assigned("Math 8", "Lab Safety Quiz", "Due (10/9/2026)", 160),
+        chains,
+        headings=[heading("Monday 10/5/2026", 100)],
+    )
+    thursday = homework(
+        dict(chains, y_top=10, y_bottom=90),
+        due("Science 8", "Chains Reading Guide 6", 200),
+        headings=[heading("Thursday 10/8/2026", 150)],
+    )
+
+    assembly = homework_assembly(
+        [stored_homework("m", monday), stored_homework("t", thursday)], now=NOW
+    )
+
+    by_title = {row.reading.title: row.reading for row in assembly.rows}
+    assert set(by_title) == {"Chains Reading Guide 6", "Lab Safety Quiz"}
+    guide = by_title["Chains Reading Guide 6"]
+    assert (guide.assigned_on, guide.due_date) == (date(2026, 10, 5), date(2026, 10, 8))
+    assert {c.seen_in for c in guide.claims} == {OWN_LINE, DAY_HEADER}
+    assert assembly.unread == ()
+
+
+def test_u1_quiz_3_proposes_its_day_and_keeps_the_sentence_about_the_move() -> None:
+    words = "moved from 10/1 to 10/5"
+    monday = homework(
+        due("Math 8", "U1 Quiz 3", 200, instruction=words),
+        headings=[heading("Monday 10/5/2026", 150)],
+    )
+
+    [row] = homework_assembly([stored_homework("m", monday)], now=NOW).rows
+
+    assert row.reading.due_date == date(2026, 10, 5)
+    assert [(c.asserted_value, c.seen_in) for c in row.reading.claims] == [
+        ("2026-10-05", DAY_HEADER)
+    ]
+    assert [seen.text for seen in row.reading.instructions] == [words]
+
+
+def test_a_hidden_title_is_an_item_that_couldnt_be_read_and_the_other_row_stays_ready() -> None:
+    hidden = assigned(
+        "English 8",
+        None,
+        "Due (10/8/2026)",
+        300,
+        uncertain=[{"field": "title", "reason": "covered by an overlay"}],
+    )
+    monday = homework(
+        assigned("Math 8", "Lab Safety Quiz", "Due (10/9/2026)", 160),
+        hidden,
+        headings=[heading("Monday 10/5/2026", 100)],
+    )
+    stored = stored_homework("m", monday)
+
+    assembly = homework_assembly([stored], now=NOW)
+
+    assert [row.reading.title for row in assembly.rows] == ["Lab Safety Quiz"]
+    [item] = assembly.unread
+    assert (item.sha256, item.place) == (stored.sha256, 1)
+    assert sorted(readable for _, readable in keys(stored)) == [False, True]
+
+
+def test_a_due_card_above_every_heading_is_never_given_a_day_without_an_overlap() -> None:
+    """Nothing is guessed from the phone's time or the upload's order."""
+    top = homework(
+        due("Science 8", "Spelling List 5", 20),
+        due("English 8", "Vocab 4", 300),
+        headings=[heading("Thursday 10/8/2026", 250)],
+    )
+
+    assembly = homework_assembly([stored_homework("x", top)], now=NOW)
+
+    assert [row.reading.title for row in assembly.rows] == ["Vocab 4"]
+    [item] = assembly.unread
+    assert item.card is not None
+    assert item.card.title == "Spelling List 5"
+
+
+def wednesday_and_after() -> tuple[StoredReading, StoredReading]:
+    """Two screenshots of one list, scrolled: the second's top card repeats the first's last
+    whole card under Wednesday, then goes on past the first's bottom edge."""
+    first = homework(
+        due("English 8", "Vocab 4", 300),
+        due("Science 8", "Spelling List 5", 940, clipped=True),
+        headings=[heading("Wednesday 10/7/2026", 250)],
+    )
+    second = homework(
+        due("English 8", "Vocab 4", 10),
+        due("Science 8", "Spelling List 5", 100),
+        due("Math 8", "U1 Quiz 3", 400),
+        headings=[heading("Thursday 10/8/2026", 350)],
+    )
+    return stored_homework("first", first), stored_homework("second", second)
+
+
+def test_a_heading_carries_to_the_next_screenshot_only_through_a_proven_overlap() -> None:
+    first, second = wednesday_and_after()
+
+    assembly = homework_assembly([first, second], now=NOW)
+    alone = homework_assembly([second], now=NOW)
+
+    due_on = {row.reading.title: row.reading.due_date for row in assembly.rows}
+    assert due_on == {
+        "Vocab 4": date(2026, 10, 7),
+        "Spelling List 5": date(2026, 10, 7),
+        "U1 Quiz 3": date(2026, 10, 8),
+    }
+    assert assembly.unread == (), "the clipped card is covered by its whole copy"
+    assert {row.reading.title for row in alone.rows} == {"U1 Quiz 3"}
+    assert len(alone.unread) == 2
+
+
+def test_an_overlap_two_headings_could_explain_proves_neither() -> None:
+    first, second = wednesday_and_after()
+    other_week = homework(
+        due("English 8", "Vocab 4", 300),
+        headings=[heading("Wednesday 10/14/2026", 250)],
+    )
+
+    assembly = homework_assembly([first, second, stored_homework("other", other_week)], now=NOW)
+
+    assert {row.reading.title for row in assembly.rows} == {"Vocab 4", "U1 Quiz 3"}
+    assert {item.card.title for item in assembly.unread if item.card} == {
+        "Vocab 4",
+        "Spelling List 5",
+    }
+
+
+def test_a_clipped_card_no_whole_copy_covers_is_an_item_that_couldnt_be_read() -> None:
+    first, _ = wednesday_and_after()
+
+    assembly = homework_assembly([first], now=NOW)
+
+    assert [row.reading.title for row in assembly.rows] == ["Vocab 4"]
+    [item] = assembly.unread
+    assert item.card is not None
+    assert item.card.clipped
+
+
+def test_the_same_batch_reordered_repeated_or_recaptured_gives_the_same_rows() -> None:
+    first, second = wednesday_and_after()
+    recaptured = first._replace(sha256="0" * 64)
+
+    expected = keys(first, second)
+    for images in itertools.permutations([first, second]):
+        assert keys(*images) == expected
+    assert keys(first, second, recaptured) == expected
+    assert len({key for key, _ in expected}) == len(expected)
+
+
+def test_a_recurring_name_is_two_rows_and_a_similar_title_is_its_own() -> None:
+    """``pair()`` stays exact: a similar title is a row for the parent's decision."""
+    october = homework(
+        due("English 8", "Vocab Quiz", 200),
+        due("English 8", "Vocab Quiz 4", 300),
+        headings=[heading("Thursday 10/8/2026", 150)],
+    )
+    later = homework(
+        due("English 8", "Vocab Quiz", 200), headings=[heading("Thursday 10/22/2026", 150)]
+    )
+
+    rows = homework_assembly(
+        [stored_homework("a", october), stored_homework("b", later)], now=NOW
+    ).rows
+
+    found = sorted((row.reading.title, row.reading.occurrence or "") for row in rows)
+    assert found == [("Vocab Quiz", ""), ("Vocab Quiz", "2026-10-22"), ("Vocab Quiz 4", "")]
+
+
+def vocab_quiz() -> tuple[StoredReading, StoredReading]:
+    """Image 1 shows Vocab Quiz due 10/8; image 2 shows it due 10/22."""
+    one = homework(
+        due("English 8", "Vocab Quiz", 200), headings=[heading("Thursday 10/8/2026", 150)]
+    )
+    two = homework(
+        due("English 8", "Vocab Quiz", 200), headings=[heading("Thursday 10/22/2026", 150)]
+    )
+    return stored_homework("one", one), stored_homework("two", two)
+
+
+def test_the_same_images_in_reverse_order_give_the_same_rows_keys_and_new_row_ids() -> None:
+    one, two = vocab_quiz()
+
+    forward = homework_assembly([one, two], now=NOW)
+    backward = homework_assembly([two, one], now=NOW)
+
+    assert [row.key for row in forward.rows] == [row.key for row in backward.rows]
+    ids = {
+        row.key: identity(row.reading.course, row.reading.title, row.reading.occurrence)
+        for row in forward.rows
+    }
+    assert ids == {
+        row.key: identity(row.reading.course, row.reading.title, row.reading.occurrence)
+        for row in backward.rows
+    }
+    later = next(row for row in forward.rows if row.reading.due_date == date(2026, 10, 22))
+    assert later.reading.occurrence == "2026-10-22"
+
+
+def test_a_key_stands_for_the_content_and_moves_only_with_it() -> None:
+    """An unrelated image or an identical recapture leaves a row's key; a claim added to the
+    row gives a new key; no name, mark of place or instant enters a key."""
+    tuesday = homework(
+        assigned("English 8", "Sentence Composing", "Due (10/7/2026)", 200),
+        headings=[heading("Tuesday 10/6/2026", 150)],
+    )
+    image = stored_homework("t", tuesday)
+    [row] = keys(image)
+    unrelated = stored_homework(
+        "u", homework(due("Math 8", "U1 Quiz 3", 200), headings=[heading("Monday 10/5/2026", 150)])
+    )
+    renamed = stored_homework(
+        "t", dict(tuesday, active_student={"name": "Rowan", "uncertain": "x"})
+    )
+    claim = stored_homework(
+        "w",
+        homework(
+            due("English 8", "Sentence Composing", 200),
+            headings=[heading("Wednesday 10/7/2026", 150)],
+        ),
+    )
+
+    assert row in keys(image, unrelated)
+    assert keys(image._replace(sha256="1" * 64)) == (row,)
+    assert keys(renamed) == (row,)
+    assert row not in keys(image, claim)
+    assert homework_assembly([image], now=datetime(2030, 1, 1, tzinfo=UTC)).rows[0].key == row[0]
+
+
+def test_a_mark_on_a_card_or_its_heading_travels_with_the_row() -> None:
+    marked = homework(
+        due("Math 8", "U1 Quiz 3", 200, uncertain=[{"field": "instruction", "reason": "blurred"}]),
+        headings=[heading("Monday 10/5/2026", 150, uncertain="partly covered")],
+    )
+    plain = homework(due("Math 8", "U1 Quiz 3", 200), headings=[heading("Monday 10/5/2026", 150)])
+
+    [row] = homework_assembly([stored_homework("m", marked)], now=NOW).rows
+
+    assert row.marks == frozenset({"instruction", "heading"})
+    assert keys(stored_homework("m", marked)) != keys(stored_homework("p", plain))
+
+
+def test_another_kind_gives_no_rows_and_an_undecodable_reading_one_item() -> None:
+    message = stored_homework("msg", an_answer(image_kind="unsupported"))
+    broken = message._replace(sha256="2" * 64, body='{"image_kind": "homework_list"}')
+    old = message._replace(sha256="3" * 64, schema_version="screenshot-reading/0")
+
+    assert keys(message) == ()
+    assert [readable for _, readable in keys(broken, old)] == [False, False]
+
+
+def test_a_blank_instruction_reads_as_no_words_and_the_row_stands() -> None:
+    """An instruction of spaces alone has no words to keep, so it never stops the rows."""
+    monday = homework(
+        due("Math 8", "U1 Quiz 3", 200, instruction="   "),
+        headings=[heading("Monday 10/5/2026", 150)],
+    )
+
+    [row] = homework_assembly([stored_homework("m", monday)], now=NOW).rows
+
+    assert row.reading.instructions == ()
+    assert row.reading.due_date == date(2026, 10, 5)

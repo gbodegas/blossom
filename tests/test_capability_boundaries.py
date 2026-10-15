@@ -60,8 +60,9 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "httpx": "the HTTP client under the SDK; confined to the model seam, see NETWORK_CAPABLE",
     "json": (
         "standard library; reads fixture files from disk, writes a grade report's canonical "
-        "form, keeps the keys of the values a grade save accepted, and parses the answer a "
-        "screenshot reading gives"
+        "form, keeps the keys of the values a grade save accepted, parses the answer a "
+        "screenshot reading gives, and writes the one fixed form a screenshot row's key is "
+        "taken from"
     ),
     "langchain": "agent middleware; the tool backstop is confined, see TOOL_CONSTRUCTION",
     "langchain_anthropic": "the model client; confined to the model seam, see NETWORK_CAPABLE",
@@ -76,8 +77,9 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
     "hashlib": (
         "standard library; tags the packaged stylesheet and script by their contents, names "
-        "a pasted grade report by what it says, its capture key, and names a prepared "
-        "screenshot in its import draft by the SHA-256 of its bytes"
+        "a pasted grade report by what it says, its capture key, names a prepared "
+        "screenshot in its import draft by the SHA-256 of its bytes, and keys each row a "
+        "draft's screenshots read as"
     ),
     "hmac": (
         "standard library; signs and checks the household sign-in cookie, the result a save "

@@ -8,6 +8,7 @@ punctuation. Nothing from a real family appears in it. The three-week summary
 has the structure of a real download, hyphen bullets included.
 """
 
+import dataclasses
 import pathlib
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -33,6 +34,7 @@ from blossom.intake import (
     Kept,
     NotAsked,
     NotOffered,
+    PortalCard,
     Reading,
     by_hand,
     by_week,
@@ -41,6 +43,7 @@ from blossom.intake import (
     identity,
     keep,
     kind_of,
+    read_cards,
     read_text,
     slug,
     spoken_report,
@@ -1427,3 +1430,64 @@ def test_the_review_is_grouped_by_school_week_with_the_undated_last(
         change.reading.due_date or date.max for change in weeks[1].changes
     )
     assert weeks[3].changes[0].reading.title == "Fraction practice"
+
+
+# ------------------------------------------------------------------ cards from screenshots
+
+PORTAL_WEEK = """Monday 10/5/2026
+Science 8
+Assigned: Chains Reading Guide 6: (Due: 10/8/2026)
+Read chapter 6 and answer the guide.
+Math 8
+Due: U1 Quiz 3
+moved from 10/1 to 10/5
+Thursday 10/8/2026
+Science 8
+Due: Chains Reading Guide 6
+Thursday 10/22/2026
+Science 8
+Due: Chains Reading Guide 6
+"""
+
+
+def test_portal_cards_read_as_the_same_cards_read_in_a_paste() -> None:
+    """The screenshots' cards go through the paste's own assembly: the same claims, dates,
+    instructions and rounds, apart from the paste's line numbers."""
+    cards = [
+        PortalCard(
+            "Science 8",
+            "Chains Reading Guide 6",
+            "assigned",
+            date(2026, 10, 8),
+            date(2026, 10, 5),
+            "Read chapter 6 and answer the guide.",
+        ),
+        PortalCard(
+            "Math 8",
+            "U1 Quiz 3",
+            "due",
+            date(2026, 10, 5),
+            date(2026, 10, 5),
+            "moved from 10/1 to 10/5",
+        ),
+        PortalCard(
+            "Science 8", "Chains Reading Guide 6", "due", date(2026, 10, 8), date(2026, 10, 8), None
+        ),
+        PortalCard(
+            "Science 8",
+            "Chains Reading Guide 6",
+            "due",
+            date(2026, 10, 22),
+            date(2026, 10, 22),
+            None,
+        ),
+    ]
+
+    pasted = read_text(PORTAL_WEEK, now=NOW, today=TODAY)
+    read = read_cards(cards, now=NOW)
+
+    assert pasted.unread == ()
+    assert [dataclasses.replace(r, at_line=None) for r in read.readings] == [
+        dataclasses.replace(r, at_line=None) for r in pasted.items
+    ]
+    assert read.joined == (0, 2, 0, 1)

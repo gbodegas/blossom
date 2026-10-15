@@ -18,6 +18,7 @@ makes the same file reachable under two module names, which mypy rejects.
 
 import asyncio
 import dataclasses
+import hashlib
 import pathlib
 import re
 import sqlite3
@@ -97,6 +98,8 @@ from blossom.routes.runs import (
     make_plan,
     plan_graphs,
 )
+from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA_VERSION
+from blossom.screenshots import homework_reading
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
     DEFAULT_EVENING_MINUTES,
@@ -115,6 +118,7 @@ from blossom.stores.drafts import (
     Settled,
 )
 from blossom.stores.gradebook import CorrectionPage, new_correction_id
+from blossom.stores.import_drafts import StoredReading
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -3636,3 +3640,62 @@ def answers_in(rows: list[tuple[object, ...]]) -> list[tuple[str, ...]]:
         tuple("" if cell is None else cast(bytes, cell).decode() for cell in row[1:5])
         for row in rows
     ]
+
+
+# ------------------------------------------------------------------ screenshot readings
+
+
+def homework_card(**fields: object) -> dict[str, Any]:
+    """One homework card as the screenshot answer schema shapes it, every property present."""
+    card: dict[str, Any] = {
+        "badge": "ASSIGNED",
+        "course": "English 8",
+        "title": "Sentence Composing",
+        "instruction": "Complete pages 12 to 14.",
+        "footer": "Due (10/8/2026)",
+        "y_top": 210,
+        "y_bottom": 340,
+        "clipped": False,
+        "uncertain": [],
+    }
+    card.update(fields)
+    return card
+
+
+def homework_answer(**fields: object) -> dict[str, Any]:
+    """A homework list's answer, as a fake reader gives it: one heading and two cards, the
+    selected student Wren."""
+    answer: dict[str, Any] = {
+        "image_kind": "homework_list",
+        "active_student": {"name": "Wren", "uncertain": None},
+        "headings": [{"text": "Monday 10/5/2026", "y": 150, "uncertain": None}],
+        "cards": [
+            homework_card(),
+            homework_card(
+                badge="DUE",
+                course="Science 8",
+                title="Chains Reading Guide 6",
+                instruction=None,
+                footer=None,
+                y_top=360,
+                y_bottom=430,
+            ),
+        ],
+        "report": None,
+    }
+    answer.update(fields)
+    return answer
+
+
+def stored_homework(label: str, answer: object) -> StoredReading:
+    """A screenshot's validated reading as the draft store hands it on, under the SHA-256 of a
+    synthetic image named ``label``."""
+    checked = homework_reading(answer)
+    assert checked.reading is not None
+    return StoredReading(
+        sha256=hashlib.sha256(f"synthetic-png-{label}".encode()).hexdigest(),
+        kind=checked.reading.image_kind,
+        prompt_version=PROMPT_VERSION,
+        schema_version=SCHEMA_VERSION,
+        body=checked.reading.model_dump_json(),
+    )
