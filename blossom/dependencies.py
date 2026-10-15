@@ -44,12 +44,14 @@ from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.help_requests import HelpRequestsStore
 from blossom.stores.household_claim import claim_household
+from blossom.stores.import_drafts import ImportDraftsStore
 from blossom.stores.paths import refuse_mismarked_state
 from blossom.stores.project_state import ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
 from blossom.stores.traces import TraceStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
+from blossom.uploads import quiet_the_image_library
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,10 @@ class ApplicationState:
     help_requests: HelpRequestsStore
     """Her requests for help and what a parent did with each, in the drafts file,
     kept until resolved and for two weeks after."""
+    import_drafts: ImportDraftsStore
+    """Screenshot import drafts, in the drafts file, kept until the review finishes and never
+    past 48 hours: unavailable from that instant, and removed from the file by the first sweep
+    after it or the next start. No rows function is wired, so no draft can be made yet."""
     real_clock: Clock
     """The real clock, whatever day the household's is pinned to: the traces, her signals and
     her requests are stamped and swept by it, and a page's forms carry the instant it issued
@@ -130,6 +136,7 @@ class ApplicationState:
         self.traces.close()
         self.workload_signals.close()
         self.help_requests.close()
+        self.import_drafts.close()
 
 
 def build_application_state(
@@ -166,7 +173,12 @@ def build_application_state(
         else lambda store: plant_notes(store, fixture.homework_notes()),
     )
     opened: list[
-        ProjectStateStore | DraftsStore | TraceStore | WorkloadSignalsStore | HelpRequestsStore
+        ProjectStateStore
+        | DraftsStore
+        | TraceStore
+        | WorkloadSignalsStore
+        | HelpRequestsStore
+        | ImportDraftsStore
     ] = [project_state]
     # A later step can refuse its path or fail to open its file. Whatever was
     # opened before it is closed on the way out, so a startup that fails and is
@@ -197,6 +209,14 @@ def build_application_state(
         help_requests = HelpRequestsStore.open(settings.database_path, real)
         opened.append(help_requests)
         help_requests.sweep()
+        # Screenshot import drafts share the file and read its acceptance records, so they
+        # open after the record. Expiry runs on the real clock and a Read attempt's deadline
+        # on ``monotonic``: an attempt left by a stopped process can't be current, so every
+        # attempt is cleared before anything is served, then the sweep runs.
+        import_drafts = ImportDraftsStore.open(settings.database_path, real, monotonic, rows={})
+        opened.append(import_drafts)
+        import_drafts.clear_attempts()
+        import_drafts.sweep()
     except Exception:
         for store in reversed(opened[1:]):
             store.close()
@@ -216,25 +236,30 @@ def build_application_state(
         tracer=LocalRunTracer(traces),
         workload_signals=signals,
         help_requests=help_requests,
+        import_drafts=import_drafts,
         real_clock=real,
         monotonic=monotonic,
     )
 
 
 async def sweep_aged(state: ApplicationState) -> None:
-    """Apply every retention rule once: expired drafts, old traces, old signals.
+    """Apply every retention rule once: expired drafts, old traces, old signals, old
+    requests, and screenshot import drafts that expired or finished.
 
     The saved-state sweep records decisions, so it runs under the decision
-    lock like any other decision. The other two delete rows nothing reads any
-    more, since both stores already leave aged rows out of every read. Each
-    store waits for its file on a worker thread, so a held file never holds
-    the server.
+    lock like any other decision. The traces, signals and requests sweeps
+    delete rows nothing reads any more, since each store already leaves aged
+    rows out of every read. The import drafts sweep deletes expired drafts and
+    closes finished ones, and goes last, so a busy draft store leaves the
+    others swept. Each store waits for its file on a worker thread, so a held
+    file never holds the server.
     """
     async with state.decision_lock:
         await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
     await asyncio.to_thread(state.traces.sweep)
     await asyncio.to_thread(state.workload_signals.sweep)
     await asyncio.to_thread(state.help_requests.sweep)
+    await asyncio.to_thread(state.import_drafts.sweep)
 
 
 async def repeat(interval: float, tick: Callable[[], Awaitable[None]]) -> None:
@@ -269,6 +294,8 @@ def create_lifespan(
         # The form parser's own log lines can quote a body it refuses; the application
         # logs each refusal by its kind, so the parser's lines stay out of the log.
         quiet_the_parser()
+        # Pillow's debug lines describe the chunks of an image it reads; they stay out too.
+        quiet_the_image_library()
         # One process serves a household. The claim covers both files that
         # make up its state, is taken before either is opened, so a second
         # process is refused with a sentence rather than left to share state

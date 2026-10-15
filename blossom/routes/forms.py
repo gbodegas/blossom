@@ -62,7 +62,11 @@ PARSER_LOGGER: Final = "python_multipart"
 def quiet_the_parser() -> None:
     """Keep the form parser's own lines out of the log. Its warnings name a byte of the body
     it refuses, as a number or a character, and the application logs each refusal by its
-    kind alone. Only the parser's logger changes."""
+    kind alone. Every one of the parser's loggers is held, since a record passes a parent's
+    handlers without its level, and no other logger changes."""
+    for name in list(logging.root.manager.loggerDict):
+        if name.startswith(PARSER_LOGGER + "."):
+            logging.getLogger(name).setLevel(logging.CRITICAL + 1)
     logging.getLogger(PARSER_LOGGER).setLevel(logging.CRITICAL + 1)
 
 

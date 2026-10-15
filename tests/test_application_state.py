@@ -16,7 +16,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,7 +39,16 @@ from blossom.settings import (
     TRACE_PATH_VARIABLE,
 )
 from blossom.stores.checkpoints import open_checkpointer
-from blossom.stores.drafts import DraftsStore
+from blossom.stores.drafts import DraftsStore, WriterBusy
+from blossom.stores.import_drafts import (
+    DRAFT_LIFETIME,
+    DraftNotFound,
+    DraftRow,
+    ImportDraftsStore,
+    KindNotWired,
+    NewImage,
+    new_creation_token,
+)
 from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.workload_signals import SIGNAL_RETENTION_DAYS, WorkloadSignalsStore
@@ -146,6 +155,7 @@ def test_dependency_can_be_overridden_to_substitute_stores() -> None:
         tracer=substitute.tracer,
         workload_signals=substitute.workload_signals,
         help_requests=substitute.help_requests,
+        import_drafts=substitute.import_drafts,
         real_clock=substitute.real_clock,
     )
     app.dependency_overrides[get_application_state] = lambda: substitute_with_empty_store
@@ -305,3 +315,189 @@ def test_a_running_process_sweeps_on_its_own(
 
     assert held_by_the_page == []
     assert remaining == 0
+
+
+# ------------------------------------------------------- the import drafts store
+
+
+def no_rows(readings: object) -> list[DraftRow]:
+    """A rows function for planting drafts; the application wires none."""
+    return []
+
+
+def plant_draft(path: pathlib.Path, student_id: str, made_at: datetime) -> str:
+    """Make one draft in the file as a process at ``made_at`` would, with a Read attempt
+    left open on that process's monotonic clock."""
+    planter = ImportDraftsStore.open(
+        path,
+        FrozenClock(made_at, fixture_clock().zone),
+        lambda: 0.0,
+        rows={"homework_screenshot": no_rows},
+    )
+    try:
+        added = planter.create(
+            student_id,
+            kind="homework_screenshot",
+            made_by="parent",
+            creation_token=new_creation_token(),
+            images=[NewImage(png=f"synthetic-{made_at}".encode(), width=4, height=3)],
+        )
+        assert added is not None
+        assert planter.start_attempt(student_id, added.draft_id, added.added) is not None
+        return added.draft_id
+    finally:
+        planter.close()
+
+
+def attempts_in_file(path: pathlib.Path) -> list[object]:
+    """Every attempt id a draft or an image of one holds in the file."""
+    with sqlite3.connect(path) as connection:
+        held = connection.execute(
+            "SELECT attempt_id FROM import_drafts UNION ALL "
+            "SELECT attempt_id FROM import_draft_images"
+        ).fetchall()
+    return [attempt for (attempt,) in held]
+
+
+REAL_NOW = OBSERVED_AT
+"""The real clock's instant in these tests, whatever the household date is pinned to."""
+
+
+def real_clock() -> Clock:
+    return FrozenClock(REAL_NOW, fixture_clock().zone)
+
+
+def test_the_import_drafts_store_opens_with_the_state_and_closes_with_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = fixture_settings(**file_settings(tmp_path))
+    app = create_app(settings)
+
+    with TestClient(app, headers=SAME_ORIGIN) as client:
+        client.get("/student/due-this-week")
+        state: ApplicationState = getattr(app.state, STATE_ATTRIBUTE)
+        student = state.project_state.student_id()
+        for kind in ("homework_screenshot", "grade_screenshot"):
+            with pytest.raises(KindNotWired):
+                state.import_drafts.create(
+                    student,
+                    kind=kind,
+                    made_by="parent",
+                    creation_token=new_creation_token(),
+                    images=[NewImage(png=b"synthetic", width=1, height=1)],
+                )
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        state.import_drafts.snapshot(student, "0" * 32)
+
+
+def test_a_start_clears_every_attempt_and_sweeps_expired_drafts(tmp_path: pathlib.Path) -> None:
+    settings = fixture_settings(**file_settings(tmp_path))
+    first = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    student = first.project_state.student_id()
+    first.close()
+    expired = plant_draft(settings.database_path, student, REAL_NOW - DRAFT_LIFETIME)
+    open_draft = plant_draft(settings.database_path, student, REAL_NOW - timedelta(hours=1))
+    assert len([held for held in attempts_in_file(settings.database_path) if held]) == 4
+
+    state = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    try:
+        assert attempts_in_file(settings.database_path) == [None, None]
+        with pytest.raises(DraftNotFound):
+            state.import_drafts.snapshot(student, expired)
+        kept = state.import_drafts.snapshot(student, open_draft)
+    finally:
+        state.close()
+
+    assert (len(kept.images), kept.attempt_ends) == (1, None)
+
+
+def test_the_scheduled_sweep_removes_expired_drafts(tmp_path: pathlib.Path) -> None:
+    settings = fixture_settings(**file_settings(tmp_path))
+
+    async def go() -> tuple[str, str]:
+        async with open_checkpointer(settings.checkpoint_path) as checkpointer:
+            state = build_application_state(settings, checkpointer, real_clock=real_clock())
+            try:
+                student = state.project_state.student_id()
+                expired = plant_draft(settings.database_path, student, REAL_NOW - DRAFT_LIFETIME)
+                kept = plant_draft(settings.database_path, student, REAL_NOW - timedelta(hours=1))
+                await sweep_aged(state)
+                with pytest.raises(DraftNotFound):
+                    state.import_drafts.snapshot(student, expired)
+                return kept, state.import_drafts.snapshot(student, kept).draft_id
+            finally:
+                state.close()
+
+    planted, found = asyncio.run(go())
+    assert found == planted
+
+
+@pytest.mark.parametrize(
+    ("step", "fault"),
+    [
+        ("clear_attempts", WriterBusy()),
+        ("sweep", WriterBusy()),
+        ("sweep", sqlite3.DatabaseError("synthetic")),
+    ],
+)
+def test_a_start_whose_import_drafts_store_fails_closes_what_it_opened(
+    monkeypatch: pytest.MonkeyPatch, step: str, fault: Exception
+) -> None:
+    """A busy or failed draft store stops the start, as the other stores' sweeps do."""
+    opened: list[DraftsStore | ImportDraftsStore] = []
+    real_drafts_open = DraftsStore.open
+    real_imports_open = ImportDraftsStore.open
+
+    def remembering_drafts(
+        path: pathlib.Path, clock: Clock, monotonic: Callable[[], float] = time.monotonic
+    ) -> DraftsStore:
+        store = real_drafts_open(path, clock, monotonic)
+        opened.append(store)
+        return store
+
+    def remembering_imports(*args: object, **kwargs: object) -> ImportDraftsStore:
+        store = real_imports_open(*args, **kwargs)  # type: ignore[arg-type]
+        opened.append(store)
+        return store
+
+    def failing(*args: object, **kwargs: object) -> object:
+        raise fault
+
+    monkeypatch.setattr(DraftsStore, "open", staticmethod(remembering_drafts))
+    monkeypatch.setattr(ImportDraftsStore, "open", staticmethod(remembering_imports))
+    monkeypatch.setattr(ImportDraftsStore, step, failing)
+
+    with pytest.raises(type(fault)):
+        build_application_state(fixture_settings(), InMemorySaver())
+
+    assert [type(store) for store in opened] == [DraftsStore, ImportDraftsStore]
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].waiting()  # type: ignore[union-attr]
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[1].snapshot("student", "0" * 32)  # type: ignore[union-attr]
+
+
+def test_a_scheduled_sweep_whose_draft_store_is_busy_still_runs_the_others(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The draft sweep runs last, and its failure reaches the schedule, which logs it."""
+    settings = fixture_settings(**file_settings(tmp_path))
+
+    def busy(*args: object, **kwargs: object) -> object:
+        raise WriterBusy
+
+    async def go() -> tuple[int, int]:
+        async with open_checkpointer(settings.checkpoint_path) as checkpointer:
+            state = build_application_state(settings, checkpointer)
+            try:
+                age_a_signal_into(settings.database_path)
+                before = signals_in_file(settings.database_path)
+                monkeypatch.setattr(state.import_drafts, "sweep", busy)
+                with pytest.raises(WriterBusy):
+                    await sweep_aged(state)
+                return before, signals_in_file(settings.database_path)
+            finally:
+                state.close()
+
+    assert asyncio.run(go()) == (1, 0)
