@@ -18,7 +18,10 @@ the screenshots came in, and read as today's portal claims through ``intake.read
 card is dated only by its own due line or by a day heading above it in its own screenshot; no
 heading carries from one screenshot to another. Two matching cards of one screenshot are two
 rows, and every card that is clipped or can't be dated or read stays a visible item with its
-reason, keyed by its screenshot, its stored reading and its place.
+reason, keyed by its screenshot, its reading's digest and its place. A decoded reading's digest
+leaves out the selected student, name and note, so a reading that differs only there keeps
+its items' keys; a reading that doesn't decode is digested whole, text that can hold a name
+included. A digest is a hash of that text, not an anonymized form of it.
 ``homework_rows`` gives the draft store each row's key from the same assembly, so the rows
 the parent sees and the keys the store keeps can't disagree.
 """
@@ -332,11 +335,11 @@ can't be told: no due line of its own and no day heading above it in its screens
 
 
 class UnreadCard(NamedTuple):
-    """A card that couldn't be read as a row, keyed by its image's SHA-256, its stored
-    reading's SHA-256, its place and what was read of it; a stored reading that couldn't be
-    decoded (``place`` and ``card`` then ``None``), keyed by the two SHA-256s; or a later row
-    of one layer that would write what another does (``sha256`` empty), keyed by that row's
-    key, its layer and how many came before it. Each with its reason."""
+    """A card that couldn't be read as a row, keyed by its image's SHA-256, its reading's
+    digest (``_digest``), its place and what was read of it; a stored reading that couldn't be
+    decoded (``place`` and ``card`` then ``None``), keyed by its image's SHA-256 and its
+    digest; or a later row of one layer that would write what another does (``sha256`` empty),
+    keyed by that row's key, its layer and how many came before it. Each with its reason."""
 
     key: str
     sha256: str
@@ -391,15 +394,16 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
-        images[stored.sha256] = (_stored(stored), _decoded(stored))
+        decoded = _decoded(stored)
+        images[stored.sha256] = (_digest(stored, decoded), decoded)
     unread: dict[str, UnreadCard] = {}
     seen: list[_Seen] = []
-    for sha, (stored_key, reading) in sorted(images.items(), key=lambda image: image[0]):
+    for sha, (digest, reading) in sorted(images.items(), key=lambda image: image[0]):
         if reading is None:
-            key = _key({"reading": "undecodable", "image": sha, "stored": stored_key})
+            key = _key({"reading": "undecodable", "image": sha, "stored": digest})
             unread[key] = UnreadCard(key, sha, None, None, "reading_unreadable")
         elif not reading.wrong_kind:
-            seen += _placed(sha, stored_key, reading)
+            seen += _placed(sha, digest, reading)
     layers: dict[int, list[tuple[tuple[object, ...], PortalCard, frozenset[str]]]] = {}
     matching: dict[tuple[object, ...], int] = {}
     for item in sorted(seen, key=_top_down):
@@ -440,9 +444,15 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     )
 
 
-def _stored(stored: StoredReading) -> str:
-    """The SHA-256 of a stored reading itself: its prompt version, schema version and body."""
-    return _key([stored.prompt_version, stored.schema_version, stored.body])
+def _digest(stored: StoredReading, decoded: HomeworkReading | None) -> str:
+    """A stored reading's SHA-256 for its items' keys. Decoded, it is taken over the prompt
+    and schema versions and the decoded reading with the selected student field left out, name
+    and note. Not decoded, it is taken over the versions and the whole stored text, which can
+    hold a name: a hash of it, not an anonymized form."""
+    versions = [stored.prompt_version, stored.schema_version]
+    if decoded is None:
+        return _key([*versions, stored.body])
+    return _key([*versions, decoded.model_dump(mode="json", exclude={"student"})])
 
 
 def _decoded(stored: StoredReading) -> HomeworkReading | None:
@@ -545,8 +555,9 @@ def _reason(card: Card | None) -> ItemReason:
 
 def _as_item(item: _Seen) -> dict[str, object]:
     """What an item's key is made of: what was read of the card, its image's SHA-256, its
-    stored reading's SHA-256 and its place there. No two cards share it, a recapture as new
-    bytes included, and a changed reading of the same image gives a new one."""
+    reading's digest and its place there. No two cards share it, a recapture as new bytes
+    included; a changed reading of the same image gives a new one, unless only the selected
+    student changed, which the digest leaves out."""
     card = item.card
     return {
         "unread": None if card is None else [*_as_read(card), card.clipped, _text(item.heading)],

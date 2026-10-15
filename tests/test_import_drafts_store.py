@@ -623,6 +623,36 @@ def test_discarding_one_item_never_handles_another(homework: World) -> None:
     assert not finished(homework, draft_id)
 
 
+def test_a_read_again_that_changes_only_the_student_keeps_item_decisions(
+    homework: World,
+) -> None:
+    """Image one shows two ASSIGNED cards with no due line; one item is discarded and progress
+    naming the other is saved. Image one is removed, added again and read with only the
+    selected student's name and note changed: the discard stays, and the progress names keys
+    the draft still holds."""
+    items = copies(200, 300, badge="ASSIGNED", title="Practice set")
+    renamed = dict(items, active_student={"name": "Rowan", "uncertain": "partly hidden"})
+    draft_id = open_draft(homework, ("one", items), ("two", copies(200)))
+    [row] = real_keys(("two", copies(200)))
+    first, second = sorted(set(states(homework, draft_id)) - {row})
+    version = homework.store.snapshot(homework.student, draft_id).version
+    homework.store.discard_rest(homework.student, draft_id, version=version, keys=[first])
+    progress = json.dumps({second: "checked"})
+    revision = homework.store.snapshot(homework.student, draft_id).progress_revision
+    homework.store.save_progress(homework.student, draft_id, revision=revision, progress=progress)
+
+    homework.store.remove_image(
+        homework.student, draft_id, homework.image_ids(draft_id)[sha("one")]
+    )
+    homework.store.add_images(homework.student, draft_id, [image("one")])
+    homework.read_as(draft_id, "one", uploaded("one", renamed))
+
+    snapshot = homework.store.snapshot(homework.student, draft_id)
+    assert states(homework, draft_id) == {first: "discarded", second: "open", row: "open"}
+    assert snapshot.progress == progress
+    assert not snapshot.finished
+
+
 # ------------------------------------------------------------------ results the store drops
 
 

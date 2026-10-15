@@ -18,7 +18,7 @@ import pytest
 
 from blossom import screenshots
 from blossom.intake import DAY_HEADER, OWN_LINE, CardsRead, PortalCard, identity, read_cards
-from blossom.screenshot_prompt import SCHEMA
+from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA, SCHEMA_VERSION
 from blossom.screenshots import (
     Card,
     HomeworkReading,
@@ -1834,6 +1834,49 @@ def test_the_same_body_under_other_versions_gives_a_new_item_key() -> None:
 
     assert [[item.reason for item in found] for found in items] == [["reading_unreadable"]] * 3
     assert len({found[0].key for found in items}) == 3
+
+
+@pytest.mark.parametrize(
+    "student",
+    [
+        {"name": "Rowan", "uncertain": None},
+        {"name": "Wren", "uncertain": "partly hidden"},
+        {"name": None, "uncertain": "not shown"},
+    ],
+    ids=["the-name-alone", "the-note-alone", "both"],
+)
+def test_a_change_to_the_selected_student_alone_keeps_every_key(student: dict[str, object]) -> None:
+    """The selected student, name and note, is left out of a decoded reading's digest: a
+    reading of the same image that differs only there gives the same item and row keys."""
+    cards = shot(UNREAD, (THU, 250), undated(PS, 300), card(U1, 400))
+    before = stored_homework("image", cards)
+    after = stored_homework("image", dict(cards, active_student=student))
+    elsewhere = stored_homework("other", shot((MON, 150), undated(WS, 200)))
+
+    assert before.body != after.body
+    assert keys(before, elsewhere) == keys(after, elsewhere)
+    assert len([key for key in keys(before, elsewhere) if not key.readable]) == 3
+
+
+def test_a_reading_that_doesnt_decode_is_keyed_by_its_whole_text() -> None:
+    """A stored reading under today's versions whose text doesn't decode is keyed by that whole
+    text, a name in it included: the same text gives the same key, and any change a new one."""
+    stored = StoredReading(
+        sha256=hashlib.sha256(b"synthetic-png-cut").hexdigest(),
+        kind="homework_list",
+        prompt_version=PROMPT_VERSION,
+        schema_version=SCHEMA_VERSION,
+        body='{"image_kind": "homework_list", "active_student": {"name": "Wren"',
+    )
+    renamed = stored._replace(body=stored.body.replace("Wren", "Rowan"))
+
+    [one] = homework_assembly([stored], now=NOW).unread
+    [again] = homework_assembly([stored], now=NOW).unread
+    [other] = homework_assembly([renamed], now=NOW).unread
+
+    assert one.reason == other.reason == "reading_unreadable"
+    assert one.key == again.key
+    assert one.key != other.key
 
 
 def test_chains_with_an_instruction_keeps_mondays_card_day() -> None:
