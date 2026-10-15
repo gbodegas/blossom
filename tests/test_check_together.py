@@ -2006,3 +2006,66 @@ def test_every_answer_grades_gives_shows_what_its_get_shows(
     assert answer.status_code == code
     assert grade_rows(read)[0] == CANT_WORK_OUT
     assert grade_rows(answer.text) == grade_rows(read)
+
+
+CHECK_TOGETHER_READS = [
+    "grade_student",
+    "grade_homework_links",
+    "grade_student",
+    "grade_classes",
+    "grade_class_aliases",
+    "grade_homework_classes",
+    "assignments",
+    "student_reports",
+    "status_reports",
+    "family_checks",
+    "hand_in_events",
+]
+"""What Check together asks on Grades after the class reads, by the table each statement reads
+first: her record, her links, her record, the year's classes, their aliases and the homework
+class names, the linked homework, then her updates, the school's reports, the family's checks
+and her hand-ins for those homework."""
+
+
+def grades_asked(reader: str, folder: pathlib.Path, status: str) -> tuple[list[str], str]:
+    """The statements Grades asks in a household whose linked result the school reports with
+    ``status``, beside her Done, masked as ``masked`` does, and the page."""
+    folder.mkdir()
+    with household_client(reader, folder) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        reported(store, "done", DIAGRAM_ID)
+        text = REPORT.replace(DIAGRAM_ROW, DIAGRAM_ROW.replace("Missing", status.ljust(7)))
+        class_id = saved(store, text)
+        decided(store, class_id, result_named(store, class_id))
+        grades_of(reader, client)
+        with Statements(state_of(client)) as seen:
+            page = grades_of(reader, client)
+    return masked(list(seen)), page
+
+
+def first_table(statement: str) -> str:
+    """The table a statement reads first."""
+    found = re.search(r"\bFROM\s+(\w+)", statement)
+    return found.group(1) if found else statement.split()[0]
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_grades_asks_the_same_statements_with_check_together_shown_or_not(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Two households seeded alike but for the linked result's Status, Valid or Missing: Grades
+    asks the same statements in the same order, generated IDs and moments aside. Check together
+    adds its reads after the class reads, inside the one hold, and nothing else."""
+    without, plain = grades_asked(reader, tmp_path / "valid", "Valid")
+    shown, counted = grades_asked(reader, tmp_path / "missing", "Missing")
+
+    assert "Check together" not in plain
+    assert "Check together (1)" in counted
+    assert shown == without
+    links = next(at for at, one in enumerate(shown) if "FROM grade_homework_links" in one)
+    added = shown[links - 1 : shown.index("COMMIT")]
+    assert [first_table(one) for one in added] == CHECK_TOGETHER_READS
+    assert shown.count("BEGIN DEFERRED") == 1
+    assert [first_table(one) for one in shown].count("grade_homework_links") == 1
