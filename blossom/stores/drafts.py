@@ -954,10 +954,9 @@ class DraftsStore:
         ending's step is added after them; a run that saved none keeps ``steps`` and then
         that step. The ending's step is ``terminal``, or, for a run ended ``timed_out`` in
         place of ``reason``, ``out_of_time`` or none: never ``terminal``, which explains
-        another ending. A run that ends on the date problem
-        keeps ``past_due``, the work its answer names, in the same transaction. A run that
-        is not running is returned unchanged, and ``None`` is returned for a run the store
-        never admitted.
+        another ending. A run that ends on the date problem keeps ``past_due``, the work
+        its answer names, in the same transaction. A run that is not running is returned
+        unchanged, and ``None`` is returned for a run the store never admitted.
         """
         with self._session(wait, write=True):
             run = self._run_state(run_id)

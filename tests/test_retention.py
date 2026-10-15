@@ -2501,6 +2501,11 @@ def test_a_run_canceled_while_it_ends_out_of_time_keeps_one_account_of_how_it_en
             if times == 2:
                 reached.append(not late.done() and not ending.returned.is_set() and late.cancel())
                 await asyncio.wait({late})
+            else:
+                # The loop turns, and the clock moves well inside the grace: one cancel is
+                # still waiting for its ending.
+                asyncio.get_running_loop().call_soon(time_now.advance, 0.05)
+                await asyncio.wait({late}, timeout=0.05)
             stopped_while_held = late.done() and not ending.returned.is_set()
             ending.go.set()
             (outcome,) = await asyncio.gather(late, return_exceptions=True)

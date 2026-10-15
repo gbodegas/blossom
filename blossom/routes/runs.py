@@ -35,12 +35,13 @@ from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread, finish_held_reviews
 from blossom.agent.runs import (
     DURABILITY,
-    RUN_DEADLINE_SECONDS,
+    EXPECT_AN_ANSWER,
     RunBudget,
     RunTimedOut,
     Unfinished,
     bounded,
     run_config,
+    time_limit_step,
 )
 from blossom.agent.steps import (
     DATE_PROBLEM,
@@ -853,7 +854,6 @@ async def read_in_time[T](reading: Awaitable[T], budget: RunBudget) -> T:
     return read
 
 
-EXPECT_AN_ANSWER: Final = "an answer inside the run's time"
 WAITED_FOR: Final = {"plan": "plan", "critique": "verdict"}
 
 ADMISSION_ALLOWANCE_SECONDS: Final = 0.25
@@ -965,7 +965,7 @@ class Planning:
     def time_limit_step(self) -> StepRecord:
         """The step an ending recorded out of time takes when no model request was still
         awaited past the deadline: the run's time limit, with no lap."""
-        return self.step("time_limit", 0, f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out.")
+        return time_limit_step(self.state.clock.now())
 
     def canceled_step(self) -> StepRecord:
         """The step a canceled run's ending takes if it is recorded out of time: the model
@@ -981,14 +981,14 @@ class Planning:
         immediate press is admitted; at or after it, it goes on without a wait.
 
         Past the deadline the store records the run ``timed_out``, with the time-limit
-        step in place of ``terminal``. When the ending is seen recorded that way in place
-        of ``reason``, the answer follows the record: the out-of-time answer, which is
-        returned. Otherwise ``None``, and the caller answers for ``reason``.
+        step in place of ``terminal``. When the run is seen ended ``timed_out`` in place
+        of ``reason``, by this ending or one before it, the answer follows the record: the
+        out-of-time answer with the steps the record keeps, which is returned. Otherwise
+        ``None``, and the caller answers for ``reason``.
         """
         out_of_time = self.time_limit_step()
         ending = partial(
-            self.state.drafts.end_run,
-            self.run_id,
+            self.ended_out_of_time,
             reason=reason,
             steps=list(self.budget.steps),
             terminal=terminal,
@@ -1000,7 +1000,7 @@ class Planning:
             in_the_background(self.state, ending, f"ending run {self.run_id}")
             return None
         try:
-            ended = await bounded(ending, min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS))
+            kept = await bounded(ending, min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS))
         except Unfinished as unfinished:
             detach(self.state, unfinished.work, f"ending run {self.run_id}")
             logger.warning("run %s not seen ended in time; its deadline ends it", self.run_id)
@@ -1008,9 +1008,31 @@ class Planning:
         except Exception:
             logger.exception("run %s could not be ended; its deadline ends it", self.run_id)
             return None
+        return None if kept is None else self.ended_view(TIMED_OUT, kept)
+
+    def ended_out_of_time(
+        self,
+        *,
+        reason: str,
+        steps: list[StepRecord],
+        terminal: StepRecord | None,
+        timing: RunTiming,
+        out_of_time: StepRecord,
+    ) -> list[StepRecord] | None:
+        """End the run, on a worker thread, and the steps its record keeps when the run is
+        found ended ``timed_out`` in place of ``reason``, by this ending or one before it;
+        ``None`` otherwise."""
+        ended = self.state.drafts.end_run(
+            self.run_id,
+            reason=reason,
+            steps=steps,
+            terminal=terminal,
+            timing=timing,
+            out_of_time=out_of_time,
+        )
         if reason == TIMED_OUT or ended is None or ended.reason != TIMED_OUT:
             return None
-        return self.ended_view(TIMED_OUT, [*self.budget.steps, out_of_time])
+        return self.state.drafts.steps_for(self.run_id)
 
     def ended_view(
         self, reason: str, steps: Sequence[StepRecord], past_due: Sequence[PastDueView] = ()
@@ -1155,8 +1177,8 @@ class Planning:
             return self.timed_out()
         except Exception:
             # A held review that can't be read is a failure like any other: the run ends
-            # interrupted before the answer, so the next press is admitted. The decision
-            # lock is already free, so no decision waits on that ending.
+            # before the answer, so the next press is admitted. The decision lock is
+            # already free, so no decision waits on that ending.
             made = await self.end(INTERRUPTED)
             tidy_later(self.run_id, self.state)
             if made is not None:

@@ -43,6 +43,7 @@ import contextlib
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Final
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -79,6 +80,22 @@ MODEL_RETRIES: Final = 2
 
 RETRY_PAUSE_SECONDS: Final = 0.5
 """The wait before the first retry; each later one waits twice as long, never past the limit."""
+
+
+EXPECT_AN_ANSWER: Final = "an answer inside the run's time"
+"""What a step waiting on a model, or on the run's time, expected."""
+
+
+def time_limit_step(recorded_at: datetime) -> StepRecord:
+    """The step a run recorded out of time ends with when no model request was awaited
+    past its deadline: the run's time limit."""
+    return StepRecord(
+        node="time_limit",
+        round=0,
+        expected=EXPECT_AN_ANSWER,
+        found=f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out.",
+        recorded_at=recorded_at,
+    )
 
 
 class RunTimedOut(TimeoutError):
