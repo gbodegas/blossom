@@ -1,0 +1,944 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
+"""The stored import draft: its tables, its checks, completion, closing and the sweep.
+
+Images here are opaque synthetic bytes, and readings are opaque JSON a fake rows function
+reads. Acceptances are planted as a save would write them, so completion can be followed
+without a save path.
+"""
+
+import hashlib
+import json
+import logging
+import sqlite3
+from collections.abc import Callable, Sequence
+from datetime import date, timedelta
+from pathlib import Path
+
+import pytest
+
+from blossom.stores.drafts import WriterBusy
+from blossom.stores.gradebook import ADD_ACCEPTANCE
+from blossom.stores.import_drafts import (
+    DRAFT_LIFETIME,
+    MOST_IMAGES_PRESENT,
+    READ_DEADLINE_SECONDS,
+    AttemptUnderWay,
+    DraftClosed,
+    DraftExpired,
+    DraftNotFound,
+    DraftRow,
+    ImportDraftsStore,
+    KindNotWired,
+    NewImage,
+    ProgressBehind,
+    ReadTiming,
+    ReviewChanged,
+    StoredReading,
+    TooManyImages,
+    UnknownImage,
+    UploadedReading,
+    new_creation_token,
+)
+from blossom.stores.project_state import ProjectStateStore
+from tests.support import OBSERVED_AT, SetClock, closed_world
+
+HOMEWORK = "homework_screenshot"
+GRADES = "grade_screenshot"
+TIMING = ReadTiming(seconds=1.5, input_tokens=1200, output_tokens=300)
+IMPORT_TABLES = frozenset(
+    {"import_drafts", "import_draft_images", "import_draft_discards", "import_draft_progress"}
+)
+PINNED_DAY = date(2026, 3, 2)
+"""A household date pinned far from the real clock, which expiry must never read."""
+
+
+class Ticks:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.at = 1000.0
+
+    def __call__(self) -> float:
+        return self.at
+
+
+def fake_rows(readings: Sequence[StoredReading]) -> list[DraftRow]:
+    """Every key each reading lists, numbered by the reading's place in what it is given, so
+    a store that passed readings in arrival order would give different keys."""
+    rows: list[DraftRow] = []
+    for place, reading in enumerate(readings):
+        body = json.loads(reading.body)
+        rows.extend(DraftRow(key=f"{place}:{key}", readable=True) for key in body["rows"])
+        rows.extend(DraftRow(key=f"{place}:{key}", readable=False) for key in body["unread"])
+    return rows
+
+
+def body(*keys: str, unread: Sequence[str] = (), name: str = "Wren") -> str:
+    return json.dumps({"rows": list(keys), "unread": list(unread), "student": name})
+
+
+def reading(*keys: str, unread: Sequence[str] = (), name: str = "Wren") -> UploadedReading:
+    return UploadedReading(
+        kind="homework_list",
+        prompt_version="v1b",
+        schema_version="screenshot-reading/1",
+        body=body(*keys, unread=unread, name=name),
+    )
+
+
+def image(label: str) -> NewImage:
+    return NewImage(png=f"synthetic-png-{label}".encode(), width=800, height=600)
+
+
+def sha(label: str) -> str:
+    return hashlib.sha256(f"synthetic-png-{label}".encode()).hexdigest()
+
+
+class World:
+    """One household file with her record, a draft store on it, and hands on its clocks."""
+
+    def __init__(self, path: Path, **rows: object) -> None:
+        self.path = path
+        self.clock = SetClock(PINNED_DAY, OBSERVED_AT)
+        self.ticks = Ticks()
+        record = ProjectStateStore.open(path, self.clock)
+        self.student = record.student_id()
+        record.close()
+        self.rows = rows or {HOMEWORK: fake_rows, GRADES: fake_rows}
+        self.store = self.reopen()
+
+    def reopen(self) -> ImportDraftsStore:
+        return ImportDraftsStore.open(self.path, self.clock, self.ticks, rows=self.rows)  # type: ignore[arg-type]
+
+    def draft(self, *labels: str, kind: str = HOMEWORK) -> str:
+        added = self.store.create(
+            self.student,
+            kind=kind,
+            made_by="parent",
+            creation_token=new_creation_token(),
+            images=[image(label) for label in labels],
+        )
+        assert added is not None
+        return added.draft_id
+
+    def image_ids(self, draft_id: str) -> dict[str, str]:
+        snapshot = self.store.snapshot(self.student, draft_id)
+        return {item.sha256: item.image_id for item in snapshot.images}
+
+    def read(self, draft_id: str, label: str, *keys: str, **more: object) -> bool:
+        """Start an attempt over one image, after any earlier attempt's deadline, and store
+        its reading."""
+        self.ticks.at += READ_DEADLINE_SECONDS
+        image_id = self.image_ids(draft_id)[sha(label)]
+        attempt = self.store.start_attempt(self.student, draft_id, [image_id])
+        assert attempt is not None
+        return self.store.store_reading(
+            self.student,
+            draft_id,
+            attempt_id=attempt.attempt_id,
+            image_id=image_id,
+            sha256=sha(label),
+            reading=reading(*keys, **more),  # type: ignore[arg-type]
+            timing=TIMING,
+        )
+
+    def accept(self, draft_id: str, *keys: str, kind: str = HOMEWORK) -> None:
+        """Plant an acceptance as a save of this draft writes it."""
+        connection = sqlite3.connect(self.path)
+        with connection:
+            connection.execute(
+                ADD_ACCEPTANCE,
+                (
+                    f"acceptance-{len(keys)}-{draft_id}-{keys}",
+                    self.student,
+                    kind,
+                    draft_id,
+                    None,
+                    None if kind == HOMEWORK else "class-synthetic",
+                    None if kind == HOMEWORK else "Fall 2026",
+                    json.dumps([[key, f"assignment-{key}"] for key in keys]),
+                    "matches",
+                    "shown",
+                    None,
+                    len(keys),
+                    0,
+                    0,
+                    0,
+                    len(keys),
+                    0,
+                    1,
+                    OBSERVED_AT.isoformat(),
+                    "parent",
+                ),
+            )
+        connection.close()
+
+    def outside_tables(self) -> dict[str, object]:
+        """Every table, index and trigger of the file but the draft store's, rows included."""
+        return closed_world([self.path], leaving_out=IMPORT_TABLES)
+
+    def file_bytes(self) -> bytes:
+        return self.path.read_bytes()
+
+
+@pytest.fixture
+def world(tmp_path: Path) -> World:
+    return World(tmp_path / "blossom.sqlite3")
+
+
+def states(world: World, draft_id: str) -> dict[str, str]:
+    return {row.key: row.state for row in world.store.snapshot(world.student, draft_id).rows}
+
+
+# ------------------------------------------------------------------ the store's pattern
+
+
+def test_the_file_keeps_deleted_pages_overwritten_and_temporary_storage_in_memory(
+    world: World,
+) -> None:
+    connection = world.store._connection
+    assert connection.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    assert connection.execute("PRAGMA temp_store").fetchone()[0] == 2
+
+
+def test_the_retention_policy_says_removed_from_the_file_and_never_erased() -> None:
+    policy = ImportDraftsStore.retention_policy
+
+    assert ImportDraftsStore.name == "import_drafts"
+    assert "48 hours" in policy
+    assert "removed from the file" in policy
+    assert "erase" not in policy
+    assert "progress saved for later" in policy
+    assert "backup" in policy
+
+
+def test_a_draft_starts_at_version_one_with_its_fixed_expiry(world: World) -> None:
+    draft_id = world.draft("a", "b")
+    snapshot = world.store.snapshot(world.student, draft_id)
+
+    assert len(draft_id) == 32
+    assert snapshot.version == 1
+    assert snapshot.expires_at == OBSERVED_AT + DRAFT_LIFETIME
+    assert [item.sha256 for item in snapshot.images] == [sha("a"), sha("b")]
+    assert world.store.image_png(world.student, draft_id, snapshot.images[0].image_id) == (
+        b"synthetic-png-a"
+    )
+
+
+# ------------------------------------------------------------------ the rows function
+
+
+def test_finished_closing_and_the_sweep_follow_the_rows_functions_keys(world: World) -> None:
+    draft_id = world.draft("a")
+    assert world.read(draft_id, "a", "r1", "r2")
+    assert states(world, draft_id) == {"0:r1": "open", "0:r2": "open"}
+
+    world.accept(draft_id, "0:r1")
+    assert states(world, draft_id) == {"0:r1": "saved", "0:r2": "open"}
+    assert world.store.clean_up(world.student, draft_id) is False
+
+    world.accept(draft_id, "0:r2")
+    assert world.store.snapshot(world.student, draft_id).finished is True
+    swept = world.store.sweep()
+
+    assert (swept.expired, swept.closed) == (0, 1)
+    snapshot = world.store.snapshot(world.student, draft_id)
+    assert snapshot.closed_at is not None
+    assert snapshot.images == ()
+    assert snapshot.saved == frozenset({"0:r1", "0:r2"})
+
+
+def test_the_same_readings_in_any_order_give_the_same_keys(world: World) -> None:
+    first = world.draft("a", "b")
+    world.read(first, "b", "late")
+    world.read(first, "a", "early")
+    second = world.draft("b", "a")
+    world.read(second, "a", "early")
+    world.read(second, "b", "late")
+
+    assert states(world, first) == states(world, second)
+
+
+def test_a_kind_with_no_rows_function_makes_no_draft(tmp_path: Path) -> None:
+    world = World(tmp_path / "blossom.sqlite3", homework_screenshot=fake_rows)
+
+    with pytest.raises(KindNotWired):
+        world.draft("a", kind=GRADES)
+
+    connection = sqlite3.connect(world.path)
+    assert connection.execute("SELECT count(*) FROM import_drafts").fetchone()[0] == 0
+    connection.close()
+
+
+def test_the_sweep_applies_expiry_alone_to_a_kind_with_no_rows_function(tmp_path: Path) -> None:
+    world = World(tmp_path / "blossom.sqlite3")
+    draft_id = world.draft("a", kind=GRADES)
+    world.read(draft_id, "a", "r1")
+    world.accept(draft_id, "0:r1", kind=GRADES)
+    world.store.close()
+    world.rows = {HOMEWORK: fake_rows}
+    world.store = world.reopen()
+
+    assert world.store.sweep().closed == 0
+    assert world.store.snapshot(world.student, draft_id).closed_at is None
+
+    world.clock.at = OBSERVED_AT + DRAFT_LIFETIME
+    assert world.store.sweep().expired == 1
+    with pytest.raises(DraftNotFound):
+        world.store.snapshot(world.student, draft_id)
+
+
+# ------------------------------------------------------------------ results the store drops
+
+
+def attempt_over(world: World, draft_id: str, *labels: str) -> str:
+    ids = world.image_ids(draft_id)
+    attempt = world.store.start_attempt(world.student, draft_id, [ids[sha(x)] for x in labels])
+    assert attempt is not None
+    return attempt.attempt_id
+
+
+def offer(world: World, draft_id: str, attempt_id: str, label: str, image_id: str = "") -> bool:
+    return world.store.store_reading(
+        world.student,
+        draft_id,
+        attempt_id=attempt_id,
+        image_id=image_id or world.image_ids(draft_id)[sha(label)],
+        sha256=sha(label),
+        reading=reading("r1", name="Sentinel-Name-Q7"),
+        timing=TIMING,
+    )
+
+
+def test_a_result_after_the_deadline_is_dropped_with_its_timing_alone_logged(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    draft_id = world.draft("a")
+    attempt_id = attempt_over(world, draft_id, "a")
+    world.ticks.at += READ_DEADLINE_SECONDS
+
+    with caplog.at_level(logging.DEBUG):
+        assert offer(world, draft_id, attempt_id, "a") is False
+
+    left = world.store.snapshot(world.student, draft_id).images[0]
+    assert (left.read, left.covered, left.in_ended_attempt) == (False, False, True)
+    assert "Sentinel-Name-Q7" not in caplog.text
+    assert "1200" in caplog.text
+
+
+def test_a_result_after_expiry_is_dropped(world: World) -> None:
+    draft_id = world.draft("a")
+    attempt_id = attempt_over(world, draft_id, "a")
+    image_id = world.image_ids(draft_id)[sha("a")]
+    world.clock.at = OBSERVED_AT + DRAFT_LIFETIME
+
+    assert offer(world, draft_id, attempt_id, "a", image_id) is False
+    world.clock.at = OBSERVED_AT
+    assert world.store.snapshot(world.student, draft_id).images[0].read is False
+
+
+def test_a_result_for_a_removed_or_replaced_image_is_dropped(world: World) -> None:
+    draft_id = world.draft("a")
+    attempt_id = attempt_over(world, draft_id, "a")
+    old_id = world.image_ids(draft_id)[sha("a")]
+    world.store.remove_image(world.student, draft_id, old_id)
+    world.store.add_images(world.student, draft_id, [image("a2")])
+
+    assert offer(world, draft_id, attempt_id, "a", old_id) is False
+    replaced = world.image_ids(draft_id)[sha("a2")]
+    assert (
+        world.store.store_reading(
+            world.student,
+            draft_id,
+            attempt_id=attempt_id,
+            image_id=replaced,
+            sha256=sha("a"),
+            reading=reading("r1"),
+            timing=TIMING,
+        )
+        is False
+    )
+    assert world.store.snapshot(world.student, draft_id).images[0].read is False
+
+
+def test_a_result_into_a_closed_draft_is_dropped(world: World) -> None:
+    draft_id = world.draft("a", "b")
+    attempt_id = attempt_over(world, draft_id, "a")
+    image_id = world.image_ids(draft_id)[sha("a")]
+    version = world.store.snapshot(world.student, draft_id).version
+    world.store.discard_review(world.student, draft_id, version=version)
+
+    assert offer(world, draft_id, attempt_id, "a", image_id) is False
+
+
+def test_a_busy_file_drops_the_result_and_leaves_the_image_unread(world: World) -> None:
+    draft_id = world.draft("a")
+    attempt_id = attempt_over(world, draft_id, "a")
+    image_id = world.image_ids(draft_id)[sha("a")]
+    other = sqlite3.connect(world.path, isolation_level=None)
+    other.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(WriterBusy):
+            world.store.store_reading(
+                world.student,
+                draft_id,
+                attempt_id=attempt_id,
+                image_id=image_id,
+                sha256=sha("a"),
+                reading=reading("r1"),
+                timing=TIMING,
+                wait=0.05,
+            )
+    finally:
+        other.execute("ROLLBACK")
+        other.close()
+
+    assert world.store.snapshot(world.student, draft_id).images[0].read is False
+
+
+def test_a_stored_reading_is_never_replaced(world: World) -> None:
+    draft_id = world.draft("a")
+    assert world.read(draft_id, "a", "first")
+    image_id = world.image_ids(draft_id)[sha("a")]
+    world.ticks.at += READ_DEADLINE_SECONDS
+
+    assert world.store.start_attempt(world.student, draft_id, [image_id]) is None
+    assert states(world, draft_id) == {"0:first": "open"}
+
+
+# ------------------------------------------------------------------ a removed image stays removed
+
+
+def test_a_late_result_never_restores_a_removed_image(world: World) -> None:
+    draft_id = world.draft("x", "y")
+    tab_b_version = world.store.snapshot(world.student, draft_id).version
+    attempt_id = attempt_over(world, draft_id, "x", "y")
+    x_id = world.image_ids(draft_id)[sha("x")]
+    assert offer(world, draft_id, attempt_id, "y")
+    assert world.store.snapshot(world.student, draft_id).version > tab_b_version
+
+    world.store.remove_image(world.student, draft_id, x_id)
+
+    assert offer(world, draft_id, attempt_id, "x", x_id) is False
+    assert sha("x") not in world.image_ids(draft_id)
+    world.store.add_images(world.student, draft_id, [image("x")])
+    again = world.store.snapshot(world.student, draft_id)
+    readded = next(item for item in again.images if item.sha256 == sha("x"))
+    assert readded.image_id != x_id
+    assert (readded.read, readded.covered) == (False, False)
+    assert offer(world, draft_id, attempt_id, "x", readded.image_id) is False
+    assert offer(world, draft_id, attempt_id, "x", x_id) is False
+
+
+def test_removing_an_image_deletes_a_reading_that_arrived_since_the_page_opened(
+    world: World,
+) -> None:
+    draft_id = world.draft("x")
+    x_id = world.image_ids(draft_id)[sha("x")]
+    assert world.read(draft_id, "x", "r1", name="Sentinel-Name-R1")
+    assert b"Sentinel-Name-R1" in world.file_bytes()
+
+    world.store.remove_image(world.student, draft_id, x_id)
+
+    connection = sqlite3.connect(world.path)
+    assert connection.execute("SELECT count(*) FROM import_draft_images").fetchone()[0] == 0
+    connection.close()
+    assert b"Sentinel-Name-R1" not in world.file_bytes()
+
+
+def test_removing_an_image_not_in_the_draft_is_refused(world: World) -> None:
+    draft_id = world.draft("a")
+    other = world.draft("b")
+
+    with pytest.raises(UnknownImage):
+        world.store.remove_image(world.student, draft_id, world.image_ids(other)[sha("b")])
+
+
+# ------------------------------------------------------------------ one attempt at a time
+
+
+def test_a_second_press_during_a_current_attempt_starts_nothing(world: World) -> None:
+    draft_id = world.draft("a", "b")
+    ids = list(world.image_ids(draft_id).values())
+    first = world.store.start_attempt(world.student, draft_id, ids[:1])
+    assert first is not None
+
+    with pytest.raises(AttemptUnderWay) as under_way:
+        world.store.start_attempt(world.student, draft_id, ids)
+
+    assert under_way.value.ends == first.ends
+    snapshot = world.store.snapshot(world.student, draft_id)
+    assert [item.covered for item in snapshot.images] == [True, False]
+    world.ticks.at = first.ends
+    assert world.store.start_attempt(world.student, draft_id, ids) is not None
+
+
+def test_an_attempt_covers_only_the_unread_images_it_names(world: World) -> None:
+    draft_id = world.draft("a", "b", "c")
+    world.read(draft_id, "a", "r1")
+    ids = world.image_ids(draft_id)
+    world.ticks.at += READ_DEADLINE_SECONDS
+
+    attempt = world.store.start_attempt(world.student, draft_id, [ids[sha("a")], ids[sha("b")]])
+
+    assert attempt is not None
+    assert attempt.covered == (ids[sha("b")],)
+    assert attempt.ends == world.ticks.at + READ_DEADLINE_SECONDS
+
+
+def test_a_failure_leaves_the_image_open_and_it_can_be_read_again(world: World) -> None:
+    draft_id = world.draft("a")
+    attempt_id = attempt_over(world, draft_id, "a")
+    image_id = world.image_ids(draft_id)[sha("a")]
+    version = world.store.snapshot(world.student, draft_id).version
+
+    assert world.store.store_failure(
+        world.student,
+        draft_id,
+        attempt_id=attempt_id,
+        image_id=image_id,
+        sha256=sha("a"),
+        failure="not_valid",
+        timing=TIMING,
+    )
+
+    snapshot = world.store.snapshot(world.student, draft_id)
+    assert (snapshot.images[0].failure, snapshot.version) == ("not_valid", version)
+    world.ticks.at += READ_DEADLINE_SECONDS
+    assert world.read(draft_id, "a", "r1")
+    assert world.store.snapshot(world.student, draft_id).images[0].failure is None
+
+
+# ------------------------------------------------------------------ a restart
+
+
+def test_a_restart_clears_attempts_and_keeps_images_readings_and_the_version(
+    world: World,
+) -> None:
+    draft_id = world.draft("a", "b")
+    world.read(draft_id, "a", "r1")
+    world.ticks.at += READ_DEADLINE_SECONDS
+    attempt_id = attempt_over(world, draft_id, "b")
+    before = world.store.snapshot(world.student, draft_id)
+    assert [item.covered for item in before.images] == [False, True]
+    world.store.close()
+
+    world.store = world.reopen()
+    assert world.store.clear_attempts() == 1
+
+    after = world.store.snapshot(world.student, draft_id)
+    assert after.version == before.version
+    assert after.attempt_ends is None
+    assert [(item.read, item.covered, item.in_ended_attempt) for item in after.images] == [
+        (True, False, False),
+        (False, False, False),
+    ]
+    assert offer(world, draft_id, attempt_id, "b") is False
+    world.store.discard_rest(world.student, draft_id, version=before.version, keys=["0:r1"])
+
+
+# ------------------------------------------------------------------ the version
+
+
+def test_every_change_to_images_or_readings_raises_the_version_and_nothing_else_does(
+    world: World,
+) -> None:
+    draft_id = world.draft("a", "b")
+    versions = [world.store.snapshot(world.student, draft_id).version]
+    world.store.add_images(world.student, draft_id, [image("c")])
+    versions.append(world.store.snapshot(world.student, draft_id).version)
+    world.read(draft_id, "a", "r1")
+    versions.append(world.store.snapshot(world.student, draft_id).version)
+    world.store.remove_image(world.student, draft_id, world.image_ids(draft_id)[sha("c")])
+    versions.append(world.store.snapshot(world.student, draft_id).version)
+    world.store.save_progress(world.student, draft_id, revision=0, progress="{}")
+    world.ticks.at += READ_DEADLINE_SECONDS
+    attempt_over(world, draft_id, "b")
+    world.store.add_images(world.student, draft_id, [image("a")])
+    versions.append(world.store.snapshot(world.student, draft_id).version)
+
+    assert versions == [1, 2, 3, 4, 4]
+
+
+def test_discard_from_a_page_behind_the_version_returns_the_review_and_writes_nothing(
+    world: World,
+) -> None:
+    draft_id = world.draft("a", "b")
+    world.read(draft_id, "a", "r1")
+    page = world.store.snapshot(world.student, draft_id).version
+    world.store.add_images(world.student, draft_id, [image("c")])
+
+    with pytest.raises(ReviewChanged):
+        world.store.discard_rest(world.student, draft_id, version=page, keys=["0:r1"])
+    with pytest.raises(ReviewChanged):
+        world.store.discard_review(world.student, draft_id, version=page)
+
+    assert states(world, draft_id) == {"0:r1": "open"}
+    assert len(world.store.snapshot(world.student, draft_id).images) == 3
+
+
+def test_upload_and_removal_from_a_page_behind_the_version_proceed(world: World) -> None:
+    draft_id = world.draft("a", "b")
+    world.read(draft_id, "a", "r1")
+
+    world.store.add_images(world.student, draft_id, [image("c")])
+    world.store.remove_image(world.student, draft_id, world.image_ids(draft_id)[sha("b")])
+
+    assert set(world.image_ids(draft_id)) == {sha("a"), sha("c")}
+
+
+def test_a_discard_naming_a_row_the_draft_doesnt_hold_writes_nothing(world: World) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1")
+    version = world.store.snapshot(world.student, draft_id).version
+
+    with pytest.raises(ReviewChanged):
+        world.store.discard_rest(world.student, draft_id, version=version, keys=["0:other"])
+
+    assert states(world, draft_id) == {"0:r1": "open"}
+
+
+# ------------------------------------------------------------------ discard and cleanup first
+
+
+def test_discarding_the_review_removes_every_image_and_raises_the_version(world: World) -> None:
+    draft_id = world.draft("a", "b")
+    world.read(draft_id, "a", "r1")
+    page = world.store.snapshot(world.student, draft_id).version
+
+    world.store.discard_review(world.student, draft_id, version=page)
+
+    after = world.store.snapshot(world.student, draft_id)
+    assert after.version > page
+    assert after.images == ()
+    assert after.closed_at is not None
+    with pytest.raises(DraftClosed):
+        world.store.discard_review(world.student, draft_id, version=after.version)
+
+
+def test_cleanup_after_a_finishing_save_raises_the_version(world: World) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1")
+    page = world.store.snapshot(world.student, draft_id).version
+    world.accept(draft_id, "0:r1")
+
+    assert world.store.clean_up(world.student, draft_id) is True
+
+    after = world.store.snapshot(world.student, draft_id)
+    assert after.version > page
+    assert after.closed_at is not None
+    with pytest.raises(DraftClosed):
+        world.store.discard_rest(world.student, draft_id, version=page, keys=["0:r1"])
+
+
+# ------------------------------------------------------------------ saved progress
+
+
+def test_saved_progress_survives_a_restart_and_extends_nothing(world: World) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1")
+    before = world.store.snapshot(world.student, draft_id)
+
+    revision = world.store.save_progress(
+        world.student, draft_id, revision=0, progress='{"0:r1": {"title": "Typed"}}'
+    )
+    world.store.close()
+    world.clock.at = OBSERVED_AT + timedelta(hours=40)
+    world.store = world.reopen()
+
+    after = world.store.snapshot(world.student, draft_id)
+    assert (after.progress, after.progress_revision) == ('{"0:r1": {"title": "Typed"}}', revision)
+    assert after.expires_at == before.expires_at
+    assert after.version == before.version
+    assert states(world, draft_id) == {"0:r1": "open"}
+
+
+def test_progress_from_a_page_behind_its_revision_stores_nothing(world: World) -> None:
+    draft_id = world.draft("a")
+    world.store.save_progress(world.student, draft_id, revision=0, progress='{"tab": "one"}')
+
+    with pytest.raises(ProgressBehind):
+        world.store.save_progress(world.student, draft_id, revision=0, progress='{"tab": "two"}')
+
+    assert world.store.snapshot(world.student, draft_id).progress == '{"tab": "one"}'
+
+
+def test_progress_is_deleted_when_the_draft_closes_and_refused_after(world: World) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1")
+    world.store.save_progress(
+        world.student, draft_id, revision=0, progress='{"typed": "Sentinel-Typed-K4"}'
+    )
+    world.accept(draft_id, "0:r1")
+
+    world.store.clean_up(world.student, draft_id)
+
+    snapshot = world.store.snapshot(world.student, draft_id)
+    assert snapshot.progress is None
+    assert b"Sentinel-Typed-K4" not in world.file_bytes()
+    with pytest.raises(DraftClosed):
+        world.store.save_progress(
+            world.student, draft_id, revision=snapshot.progress_revision, progress="{}"
+        )
+
+
+def test_progress_on_a_finished_draft_is_refused(world: World) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1")
+    world.accept(draft_id, "0:r1")
+
+    with pytest.raises(DraftClosed):
+        world.store.save_progress(world.student, draft_id, revision=0, progress="{}")
+
+
+# ------------------------------------------------------------------ closing and deletion
+
+
+def test_the_last_save_closes_the_draft_and_its_name_text_goes_with_the_images(
+    world: World,
+) -> None:
+    draft_id = world.draft("a", "b")
+    world.read(draft_id, "a", "r1", name="Sentinel-Name-Q7 (uncertain: Sentinel-Note-Z3)")
+    world.ticks.at += READ_DEADLINE_SECONDS
+    world.read(draft_id, "b", "r2")
+    world.store.save_progress(world.student, draft_id, revision=0, progress="{}")
+    held = world.file_bytes()
+    assert b"Sentinel-Name-Q7" in held
+    assert b"Sentinel-Note-Z3" in held
+    page = world.store.snapshot(world.student, draft_id).version
+    keys = sorted(states(world, draft_id))
+    assert [key.split(":")[1] for key in keys] in (["r1", "r2"], ["r2", "r1"])
+    world.accept(draft_id, *keys)
+
+    assert world.store.clean_up(world.student, draft_id) is True
+
+    closed = world.store.snapshot(world.student, draft_id)
+    assert closed.version > page
+    assert closed.closed_at is not None
+    assert (closed.images, closed.readings, closed.progress) == ((), (), None)
+    assert closed.saved == frozenset(keys)
+    assert b"Sentinel-Name-Q7" not in world.file_bytes()
+    assert b"Sentinel-Note-Z3" not in world.file_bytes()
+
+
+def test_when_cleanup_doesnt_run_the_sweep_closes_the_finished_draft(world: World) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1", name="Sentinel-Name-Q7")
+    world.accept(draft_id, "0:r1")
+
+    assert world.store.sweep().closed == 1
+
+    assert world.store.snapshot(world.student, draft_id).closed_at is not None
+    assert b"Sentinel-Name-Q7" not in world.file_bytes()
+
+
+def test_the_name_text_is_gone_from_the_file_after_expiry(world: World) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1", name="Sentinel-Name-Q7")
+    world.clock.at = OBSERVED_AT + DRAFT_LIFETIME
+
+    assert world.store.sweep().expired == 1
+
+    assert b"Sentinel-Name-Q7" not in world.file_bytes()
+
+
+def test_discard_the_rest_removes_unread_images_and_finishes_the_draft(world: World) -> None:
+    draft_id = world.draft("a", "b")
+    world.read(draft_id, "a", "r1", "r2")
+    world.accept(draft_id, "0:r1")
+    page = world.store.snapshot(world.student, draft_id).version
+
+    world.store.discard_rest(world.student, draft_id, version=page, keys=["0:r2"])
+
+    closed = world.store.snapshot(world.student, draft_id)
+    assert closed.images == ()
+    assert closed.closed_at is not None
+    assert closed.version > page
+    assert closed.saved == frozenset({"0:r1"})
+    assert closed.discarded == frozenset({"0:r2"})
+
+
+def test_discard_the_rest_skips_rows_already_saved(world: World) -> None:
+    draft_id = world.draft("a", "b")
+    world.read(draft_id, "a", "r1", "r2")
+    page = world.store.snapshot(world.student, draft_id).version
+    world.accept(draft_id, "0:r1")
+
+    world.store.discard_rest(world.student, draft_id, version=page, keys=["0:r1", "0:r2"])
+
+    closed = world.store.snapshot(world.student, draft_id)
+    assert (closed.saved, closed.discarded) == (frozenset({"0:r1"}), frozenset({"0:r2"}))
+
+
+# ------------------------------------------------------------------ closing invents nothing
+
+
+@pytest.mark.parametrize("how", ["discard_review", "not_hers", "finishing_discard", "sweep"])
+def test_closing_never_invents_a_saved_outcome(world: World, how: str) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1", "r2")
+    world.accept(world.draft("other"), "0:unrelated")
+    page = world.store.snapshot(world.student, draft_id).version
+    before = world.outside_tables()
+
+    if how in {"discard_review", "not_hers"}:
+        world.store.discard_review(world.student, draft_id, version=page)
+    elif how == "finishing_discard":
+        world.store.discard_rest(world.student, draft_id, version=page, keys=["0:r1", "0:r2"])
+    else:
+        world.store.discard_rest(world.student, draft_id, version=page, keys=["0:r1"])
+        world.store.close()
+        world.rows = {HOMEWORK: fake_rows, GRADES: fake_rows}
+        world.store = world.reopen()
+        # The draft holds one open row; a saved discard of it, planted as a lost response
+        # would leave it, finishes the draft for the sweep to close.
+        connection = sqlite3.connect(world.path)
+        with connection:
+            connection.execute(
+                "INSERT INTO import_draft_discards VALUES (?, '0:r2', ?)",
+                (draft_id, OBSERVED_AT.isoformat()),
+            )
+        connection.close()
+        assert world.store.sweep().closed == 1
+
+    closed = world.store.snapshot(world.student, draft_id)
+    assert world.outside_tables() == before
+    assert closed.closed_at is not None
+    assert closed.saved == frozenset()
+    assert [row for row in closed.rows if row.state == "open"] == []
+
+
+# ------------------------------------------------------------------ expiry
+
+
+def test_the_draft_expires_48_hours_after_creation_on_the_real_clock(world: World) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1")
+    world.store.save_progress(world.student, draft_id, revision=0, progress="{}")
+    world.clock.day = PINNED_DAY + timedelta(days=30)
+    world.clock.at = OBSERVED_AT + DRAFT_LIFETIME - timedelta(seconds=1)
+    assert world.store.snapshot(world.student, draft_id).expires_at == OBSERVED_AT + DRAFT_LIFETIME
+    before = world.outside_tables()
+
+    world.clock.at = OBSERVED_AT + DRAFT_LIFETIME
+
+    with pytest.raises(DraftExpired):
+        world.store.snapshot(world.student, draft_id)
+    with pytest.raises(DraftExpired):
+        world.store.add_images(world.student, draft_id, [image("b")])
+    with pytest.raises(DraftExpired):
+        world.store.save_progress(world.student, draft_id, revision=1, progress="{}")
+    assert world.store.sweep().expired == 1
+    with pytest.raises(DraftNotFound):
+        world.store.snapshot(world.student, draft_id)
+    assert world.outside_tables() == before
+
+
+# ------------------------------------------------------------------ another student's draft
+
+
+def test_a_draft_of_another_student_answers_as_an_unknown_one(world: World) -> None:
+    draft_id = world.draft("a")
+    image_id = world.image_ids(draft_id)[sha("a")]
+    connection = sqlite3.connect(world.path)
+    with connection:
+        connection.execute("UPDATE import_drafts SET student_id = 'someone-else'")
+    connection.close()
+
+    calls: list[Callable[[], object]] = [
+        lambda: world.store.snapshot(world.student, draft_id),
+        lambda: world.store.add_images(world.student, draft_id, [image("b")]),
+        lambda: world.store.remove_image(world.student, draft_id, image_id),
+        lambda: world.store.start_attempt(world.student, draft_id, [image_id]),
+        lambda: world.store.image_png(world.student, draft_id, image_id),
+        lambda: world.store.save_progress(world.student, draft_id, revision=0, progress="{}"),
+        lambda: world.store.discard_rest(world.student, draft_id, version=1, keys=[]),
+        lambda: world.store.discard_review(world.student, draft_id, version=1),
+        lambda: world.store.clean_up(world.student, draft_id),
+        lambda: world.store.snapshot(world.student, "0" * 32),
+    ]
+    for call in calls:
+        with pytest.raises(DraftNotFound):
+            call()
+
+
+# ------------------------------------------------------------------ the store side of uploads
+
+
+def test_a_resent_first_upload_lands_on_the_same_draft(world: World) -> None:
+    token = new_creation_token()
+    first = world.store.create(
+        world.student, kind=HOMEWORK, made_by="parent", creation_token=token, images=[image("a")]
+    )
+    again = world.store.create(
+        world.student, kind=HOMEWORK, made_by="parent", creation_token=token, images=[image("a")]
+    )
+
+    assert first is not None
+    assert again is not None
+    assert again.draft_id == first.draft_id
+    assert (again.added, again.duplicates, again.version) == ((), (0,), 1)
+
+
+def test_a_first_upload_with_no_image_makes_no_draft(world: World) -> None:
+    made = world.store.create(
+        world.student,
+        kind=HOMEWORK,
+        made_by="household",
+        creation_token=new_creation_token(),
+        images=[],
+    )
+
+    assert made is None
+    connection = sqlite3.connect(world.path)
+    assert connection.execute("SELECT count(*) FROM import_drafts").fetchone()[0] == 0
+    connection.close()
+
+
+def test_ten_images_present_at_most_and_duplicates_take_no_place(world: World) -> None:
+    draft_id = world.draft(*[str(n) for n in range(9)])
+
+    with pytest.raises(TooManyImages) as full:
+        world.store.add_images(world.student, draft_id, [image("9"), image("10")])
+    assert full.value.free == 1
+    assert len(world.image_ids(draft_id)) == 9
+
+    added = world.store.add_images(world.student, draft_id, [image("0"), image("9")])
+    assert (len(added.added), added.duplicates, added.free) == (1, (0,), 0)
+    assert len(world.image_ids(draft_id)) == MOST_IMAGES_PRESENT
+
+    world.store.remove_image(world.student, draft_id, world.image_ids(draft_id)[sha("0")])
+    assert world.store.add_images(world.student, draft_id, [image("10")]).free == 0
+
+
+def test_adding_to_a_closed_or_finished_draft_is_refused_and_to_an_emptied_one_accepted(
+    world: World,
+) -> None:
+    finished = world.draft("a")
+    world.read(finished, "a", "r1")
+    world.accept(finished, "0:r1")
+    with pytest.raises(DraftClosed):
+        world.store.add_images(world.student, finished, [image("b")])
+    world.store.clean_up(world.student, finished)
+    with pytest.raises(DraftClosed):
+        world.store.add_images(world.student, finished, [image("b")])
+
+    emptied = world.draft("c")
+    world.store.remove_image(world.student, emptied, world.image_ids(emptied)[sha("c")])
+    assert world.store.add_images(world.student, emptied, [image("d")]).added
+
+
+def test_the_last_place_goes_to_one_upload_whichever_connection_commits_first(
+    world: World,
+) -> None:
+    draft_id = world.draft(*[str(n) for n in range(9)])
+    second = world.reopen()
+
+    world.store.add_images(world.student, draft_id, [image("one")])
+    with pytest.raises(TooManyImages) as full:
+        second.add_images(world.student, draft_id, [image("other")])
+
+    second.close()
+    assert full.value.free == 0
+    assert len(world.image_ids(draft_id)) == MOST_IMAGES_PRESENT
