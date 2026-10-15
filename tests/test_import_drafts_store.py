@@ -499,9 +499,9 @@ def test_a_reading_of_another_kind_doesnt_hold_the_draft_open(homework: World) -
 
 
 def test_a_saved_row_stays_saved_however_its_images_come_and_go(homework: World) -> None:
-    """Vocab Quiz due 10/8 in image one and due 10/22 in image two. The 10/22 round is saved;
-    an unrelated image comes, image two is recaptured, and image one is removed and added
-    again after the rest: the 10/22 round is saved throughout, even while it is the only round."""
+    """Vocab Quiz due 10/8 in image one and due 10/22 in image two, the 10/22 round saved. An
+    unrelated image comes, image two is recaptured, image one is removed and added again: after
+    every step, unread images and the 10/22 round alone included, its key is there and saved."""
     one, two = due_on("Thursday 10/8/2026"), due_on("Thursday 10/22/2026")
     draft_id = homework.draft("one", "two")
     homework.read_as(draft_id, "one", uploaded("one", one))
@@ -511,21 +511,27 @@ def test_a_saved_row_stays_saved_however_its_images_come_and_go(homework: World)
     )
     homework.accept(draft_id, later)
 
+    def still_saved(after: str) -> None:
+        assert states(homework, draft_id).get(later) == "saved", f"after {after}"
+
+    still_saved("the save")
     homework.store.add_images(homework.student, draft_id, [image("unrelated"), image("two-again")])
+    still_saved("two images added, neither read")
     homework.read_as(
         draft_id, "unrelated", uploaded("unrelated", due_on("Monday 10/5/2026", "U1 Quiz 3"))
     )
+    still_saved("the unrelated image read")
     homework.read_as(draft_id, "two-again", uploaded("two-again", two))
-    assert states(homework, draft_id)[later] == "saved"
-
+    still_saved("image two recaptured")
     homework.store.remove_image(
         homework.student, draft_id, homework.image_ids(draft_id)[sha("one")]
     )
-    assert states(homework, draft_id)[later] == "saved", "alone, the 10/22 round keeps its key"
+    still_saved("image one removed, the 10/22 round alone")
     homework.store.add_images(homework.student, draft_id, [image("one")])
+    still_saved("image one added again, not read")
     homework.read_as(draft_id, "one", uploaded("one", one))
+    still_saved("image one read again")
 
-    assert states(homework, draft_id)[later] == "saved"
     assert list(states(homework, draft_id).values()).count("saved") == 1
 
 

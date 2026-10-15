@@ -16,6 +16,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, TypeVar
@@ -271,7 +272,9 @@ def test_a_service_busy_twice_is_stored_as_busy_after_two_calls(press: Press) ->
     assert len(press.calls) == 2
 
 
-def test_each_call_waits_at_most_90_seconds_and_never_past_the_deadline(press: Press) -> None:
+def test_with_more_than_90_seconds_left_a_call_is_given_90_seconds(press: Press) -> None:
+    """The reader is handed a timeout of 90 seconds under the press's 120 second deadline. The
+    argument is checked here; the trickling tests check time spent over a mock service."""
     draft_id = press.draft("a")
 
     press.press(draft_id, "a")
@@ -280,9 +283,11 @@ def test_each_call_waits_at_most_90_seconds_and_never_past_the_deadline(press: P
     assert timeout == screenshot_reading.CALL_TIMEOUT_SECONDS == 90.0
 
 
-def test_with_less_than_90_seconds_left_a_call_waits_only_what_is_left(
+def test_with_less_than_90_seconds_left_a_call_is_given_only_what_is_left(
     press: Press, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Under a 5 second deadline the reader is handed a timeout of at most 5 seconds. The
+    argument is checked here; the trickling tests check time spent over a mock service."""
     short_deadline(monkeypatch, 5.0)
     draft_id = press.draft("a")
 
@@ -719,6 +724,10 @@ def test_a_reader_that_raises_ends_unfinished_and_is_logged_by_its_kind_alone(
 TRICKLE_SECONDS = 3.0
 """How long each trickling answer would take to arrive in full."""
 
+HELD_POOL_THREADS = 16
+"""The held-workers test's thread pool: fewer than its twenty calls, and the default size on a
+twelve-core machine."""
+
 
 def trickling_reader(
     seconds: float = TRICKLE_SECONDS,
@@ -758,9 +767,9 @@ def test_a_stop_waits_on_no_trickling_call_past_its_time_plus_one_read(
 def test_with_every_worker_held_by_trickling_calls_later_reads_still_run(
     press: Press, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Four presses of five trickling calls each want more threads than the default executor
-    has. Once their deadline passes, a press on another draft reads, and the planner's kind of
-    threaded work runs at once."""
+    """Four presses of five trickling calls want twenty threads from a pool of sixteen, set on
+    the test loop so the test doesn't depend on the CPU count. Once their deadline passes, a
+    press on another draft and the planner's kind of threaded work each run within a second."""
     short_deadline(monkeypatch)
     labels = ("a", "b", "c", "d", "e")
     held = [press.draft(*labels) for _ in range(4)]
@@ -781,6 +790,9 @@ def test_with_every_worker_held_by_trickling_calls_later_reads_still_run(
         )
 
     async def then_more() -> tuple[str, ReadOutcome, float]:
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=HELD_POOL_THREADS)
+        )
         await asyncio.gather(*(press_on(draft_id, trickling_reader()) for draft_id in held))
         await asyncio.sleep(0.15)
         planned = await asyncio.wait_for(

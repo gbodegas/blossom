@@ -513,7 +513,9 @@ def test_the_reader_client_ignores_the_environment_and_never_retries_on_its_own(
         assert client._client._mounts == {}
 
 
-def test_a_reading_waits_only_the_time_it_is_given() -> None:
+def test_a_reading_sends_the_timeout_it_is_given_with_its_request() -> None:
+    """The request carries the call's timeout for connecting, reading, writing and the pool.
+    The setting is checked here; the trickling tests check time spent over a mock service."""
     service = Service(message(json.dumps(AN_ANSWER)))
 
     read(service, timeout=7.5)
@@ -748,7 +750,8 @@ def test_a_trickling_answer_ends_busy_by_the_calls_time_plus_one_read() -> None:
     assert answer == anthropic_client.ScreenshotAnswer(None, "service_busy", 0, 0)
 
 
-def test_an_answer_that_arrives_in_time_reads_as_before_through_the_time_check() -> None:
+def test_an_answer_that_arrives_in_time_is_read_whole_through_the_time_check() -> None:
+    """An answer that trickles in for about 0.3 seconds under a 5 second call reads in full."""
     answer = anthropic_client.read_screenshot(
         settings_with_key(), synthetic_png(), timeout=5.0, transport=trickling(0.3)
     )

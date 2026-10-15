@@ -219,9 +219,10 @@ def test_a_card_that_doesnt_fit_stays_at_its_place_as_one_that_couldnt_be_read(
 # ------------------------------------------------------------------ the selected student
 
 
-def test_other_names_on_inactive_tabs_are_ignored_and_the_reading_stands() -> None:
-    """The reader names the selected tab alone, so a screenshot whose inactive tabs show
-    Rowan and Ellis reads as Wren's, with nothing else of the picker kept."""
+def test_the_selected_student_field_is_kept_as_given_in_its_closed_schema() -> None:
+    """The answer's selected student passes through as given, a name and an uncertainty and
+    nothing else. Which tab the reader selects is the model's reading, checked only by a live
+    or recorded answer, and isn't tested here."""
     reading = checked(an_answer())
 
     assert reading.student.name == "Wren"
