@@ -4,11 +4,14 @@
 result stored for the image its call was made for.
 
 The press starts an attempt over the unread images its page named, then reads each in a
-worker thread, a few at a time. A call waits at most 90 seconds and never past the attempt's
-deadline, and a busy service is asked once more while time is left; an answer, valid or not,
-is never asked for again. The press returns by the deadline. A call still open then is held
-until it ends, and the store drops what it brings, since it takes nothing after the deadline:
-such an image reads as not read in time from the attempt that covered it.
+worker thread, a few at a time. A call is given at most 90 seconds and no more than the time
+left, and a busy service is asked once more while time is left; an answer, valid or not, is
+never asked for again. The press returns by the deadline. A call still open then is held until
+it ends: the answer's body is checked against the call's time, so the call ends by the deadline
+plus up to 90 seconds, subject to the network timeout's guarantees, since connecting, sending
+and the answer's head rely on each operation's timeout. The store drops what such a call
+brings, since it takes nothing after the deadline: the image reads as not read in time from
+the attempt that covered it.
 """
 
 import asyncio
@@ -47,7 +50,9 @@ PARALLEL_READS: Final = 5
 rounds, so a press waits about two calls' time, and the service sees a few at once."""
 
 CALL_TIMEOUT_SECONDS: Final = 90.0
-"""The longest one call waits, as the reader was tested; never past the press's deadline."""
+"""The most time one call is given, as the reader was tested, and never more than the time
+left before the press's deadline. It is each network operation's timeout and the time the
+answer's body is checked against."""
 
 RETRY_PAUSE_SECONDS: Final = 1.0
 """How long a busy service is given before it is asked again, never past the deadline."""

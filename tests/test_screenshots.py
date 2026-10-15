@@ -1434,6 +1434,14 @@ SCENARIOS: dict[
         [("Lab quiz", "10-12"), ("U1 Quiz 3", "10-08")],
         [("Spelling List 5", "no_day"), ("Spelling List 5", "no_day")],
     ),
+    "clips of a recurring card under two days stay two items": (
+        [
+            shot((MON, 150), card(RL, 920, clipped=True)),
+            shot((WED, 150), card(RL, 920, clipped=True)),
+        ],
+        [],
+        [("Reading log", "clipped"), ("Reading log", "clipped")],
+    ),
     "a card whose name wasn't read": (
         [shot((MON, 100), dict(card(WS, 200), title=None))],
         [],
@@ -1503,12 +1511,16 @@ def test_chains_with_an_instruction_keeps_mondays_card_day() -> None:
         {"clipped": True, "y_top": 1001, "y_bottom": 1080},
         {"clipped": True, "y_top": -90, "y_bottom": -10},
         {"clipped": False, "y_top": 940, "y_bottom": 1020},
+        {"clipped": True, "y_top": 1000, "y_bottom": 1040},
+        {"clipped": True, "y_top": -40, "y_bottom": 0},
     ],
     ids=[
         "clipped-reversed",
         "clipped-below-the-image",
         "clipped-above-the-image",
         "unclipped-past-the-edge",
+        "clipped-from-the-bottom-edge-down",
+        "clipped-up-to-the-top-edge",
     ],
 )
 def test_only_a_clipped_card_partly_in_the_image_is_brought_into_it(

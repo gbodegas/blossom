@@ -115,16 +115,19 @@ class Card(_Closed):
     @model_validator(mode="before")
     @classmethod
     def _clipped_into_the_image(cls, data: object) -> object:
-        """A clipped card's edges past the image are brought to the image's edges, where the
-        card runs off it. An unclipped card is never moved. A card wholly outside the image, or
-        with its edges reversed, still has an edge outside it or reversed afterward, so it stays
-        a card that couldn't be read."""
+        """A clipped card partly in the image, its top above the image's bottom and its bottom
+        below the image's top, has its edges past the image brought to the image's edges, where
+        it runs off. An unclipped card is never moved. A card wholly outside the image, even one
+        that only touches an edge, or with its edges reversed, is left as given, so it stays a
+        card that couldn't be read."""
         if not isinstance(data, dict) or data.get("clipped") is not True:
             return data
         top, bottom = data.get("y_top"), data.get("y_bottom")
         if not (isinstance(top, int) and isinstance(bottom, int)):
             return data
         if isinstance(top, bool) or isinstance(bottom, bool):
+            return data
+        if not (top < POSITION_MOST and bottom > 0):
             return data
         return {**data, "y_top": max(0, top), "y_bottom": min(POSITION_MOST, bottom)}
 

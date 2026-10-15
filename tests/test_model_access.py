@@ -755,3 +755,19 @@ def test_an_answer_that_arrives_in_time_reads_as_before_through_the_time_check()
 
     assert answer.failure is None
     assert answer.answer == AN_ANSWER
+
+
+def test_the_reader_client_bounds_its_own_transport_when_none_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In use no transport is given: the client builds its own, environment trust off, and
+    wraps it in the call's time check. Nothing is sent; the client is only built."""
+    for variable, value in REROUTING_VARIABLES.items():
+        monkeypatch.setenv(variable, value)
+
+    with anthropic_client._reader_client("sk-test-value", 12.5, None) as client:
+        outer = client._client._transport
+        assert isinstance(outer, anthropic_client._InTime)
+        assert type(outer._inner) is httpx.HTTPTransport
+        assert client._client._mounts == {}
+        assert client._client._trust_env is False

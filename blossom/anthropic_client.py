@@ -219,8 +219,10 @@ def quiet_the_model_client() -> None:
 
 class _InTime(httpx.BaseTransport):
     """A transport that ends a call's answer once the call's time is up. It sends the request
-    it is given, unchanged; each piece of the answer's body that arrives after ``ends`` raises
-    a read timeout, so a body that trickles holds the call at most one read past its time."""
+    it is given, unchanged. Each piece of the answer's body that arrives after ``ends`` raises
+    a read timeout, so a body that trickles ends within one read of the call's time. Connecting,
+    sending the request and waiting for the answer's status line and headers are not checked
+    here: they rely on each network operation's own timeout."""
 
     def __init__(self, inner: httpx.BaseTransport, ends: float) -> None:
         self._inner = inner
@@ -266,8 +268,9 @@ def _reader_client(
     key: str, timeout: float, transport: httpx.BaseTransport | None
 ) -> anthropic.Anthropic:
     """The reader's own client: the public endpoint, no environment trust, no retry of its
-    own, and the timeout it is given, both for each read and, through ``_InTime``, for the
-    whole answer, which ends at most one read past it."""
+    own, and the timeout it is given for each network operation. Through ``_InTime`` the
+    answer's body is also checked against the call's time; the connection, the request and
+    the answer's head are bounded only by each operation's timeout."""
     inner = httpx.HTTPTransport(trust_env=False) if transport is None else transport
     http_client = httpx.Client(
         timeout=timeout,
