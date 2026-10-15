@@ -19,6 +19,7 @@ makes the same file reachable under two module names, which mypy rejects.
 import asyncio
 import dataclasses
 import hashlib
+import json
 import pathlib
 import re
 import sqlite3
@@ -29,11 +30,12 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import unescape
 from html.parser import HTMLParser
-from time import monotonic
+from time import monotonic, sleep
 from typing import Annotated, Any, Protocol, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -3698,4 +3700,38 @@ def stored_homework(label: str, answer: object) -> StoredReading:
         prompt_version=PROMPT_VERSION,
         schema_version=SCHEMA_VERSION,
         body=checked.reading.model_dump_json(),
+    )
+
+
+class _Trickle(httpx.SyncByteStream):
+    """A response body sent eight bytes at a time, one piece every ``every`` seconds."""
+
+    def __init__(self, body: bytes, every: float) -> None:
+        self.body = body
+        self.every = every
+
+    def __iter__(self) -> Iterator[bytes]:
+        for start in range(0, len(self.body), 8):
+            sleep(self.every)
+            yield self.body[start : start + 8]
+
+
+def trickling_answer(answer: object, seconds: float, every: float = 0.05) -> httpx.MockTransport:
+    """A mock service whose answer, a message holding ``answer`` as JSON text, trickles in
+    eight bytes at a time for about ``seconds``. Nothing leaves the machine."""
+    message = {
+        "id": "msg_synthetic",
+        "type": "message",
+        "model": "claude-opus-5-5",
+        "content": [{"type": "text", "text": json.dumps(answer)}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 1500, "output_tokens": 300},
+    }
+    body = json.dumps(message).encode()
+    body += b" " * max(0, int(seconds / every) * 8 - len(body))
+    return httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, headers={"content-type": "application/json"}, stream=_Trickle(body, every)
+        )
     )

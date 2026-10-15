@@ -1218,3 +1218,48 @@ def test_the_last_place_goes_to_one_upload_whichever_connection_commits_first(
     second.close()
     assert full.value.free == 0
     assert len(world.image_ids(draft_id)) == MOST_IMAGES_PRESENT
+
+
+def test_a_grade_acceptance_naming_a_key_with_no_target_is_read(tmp_path: Path) -> None:
+    """The grade save writes a key with a null target for the term and each category; such a
+    draft stays readable, takes more screenshots, and isn't passed over by the sweep."""
+
+    def term_only(readings: Sequence[StoredReading]) -> list[DraftRow]:
+        return [DraftRow("term", True)]
+
+    world = World(
+        tmp_path / "blossom.sqlite3", homework_screenshot=fake_rows, grade_screenshot=term_only
+    )
+    draft_id = world.draft("a", kind=GRADES)
+    connection = sqlite3.connect(world.path)
+    with connection:
+        connection.execute(
+            ADD_ACCEPTANCE,
+            (
+                "acceptance-grade",
+                world.student,
+                GRADES,
+                draft_id,
+                None,
+                "class-synthetic",
+                "Fall 2026",
+                '[["term", null]]',
+                "matches",
+                "shown",
+                None,
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                1,
+                OBSERVED_AT.isoformat(),
+                "parent",
+            ),
+        )
+    connection.close()
+
+    assert world.store.snapshot(world.student, draft_id).saved == frozenset({"term"})
+    assert world.store.add_images(world.student, draft_id, [image("b")]) is not None
+    assert world.store.sweep().passed_over == 0

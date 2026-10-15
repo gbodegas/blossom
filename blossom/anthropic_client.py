@@ -35,6 +35,8 @@ no callback, and so no tracer, sees a screenshot or what was read from it.
 import base64
 import json
 import logging
+import time
+from collections.abc import Iterator
 from functools import cached_property
 from typing import Any, Final, Literal, NamedTuple
 
@@ -215,12 +217,63 @@ def quiet_the_model_client() -> None:
         logging.getLogger(root).setLevel(logging.INFO)
 
 
+class _InTime(httpx.BaseTransport):
+    """A transport that ends a call's answer once the call's time is up. It sends the request
+    it is given, unchanged; each piece of the answer's body that arrives after ``ends`` raises
+    a read timeout, so a body that trickles holds the call at most one read past its time."""
+
+    def __init__(self, inner: httpx.BaseTransport, ends: float) -> None:
+        self._inner = inner
+        self._ends = ends
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        response = self._inner.handle_request(request)
+        body = response.stream
+        if not isinstance(body, httpx.SyncByteStream):
+            message = "the reader's transport answers in pieces read in a thread"
+            raise TypeError(message)
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=response.headers,
+            stream=_Until(body, self._ends, request),
+            extensions=response.extensions,
+        )
+
+    def close(self) -> None:
+        self._inner.close()
+
+
+class _Until(httpx.SyncByteStream):
+    """An answer's body, read piece by piece until its call's time is up."""
+
+    def __init__(self, body: httpx.SyncByteStream, ends: float, request: httpx.Request) -> None:
+        self._body = body
+        self._ends = ends
+        self._request = request
+
+    def __iter__(self) -> Iterator[bytes]:
+        for piece in self._body:
+            if time.monotonic() > self._ends:
+                message = "the call's time is up"
+                raise httpx.ReadTimeout(message, request=self._request)
+            yield piece
+
+    def close(self) -> None:
+        self._body.close()
+
+
 def _reader_client(
     key: str, timeout: float, transport: httpx.BaseTransport | None
 ) -> anthropic.Anthropic:
     """The reader's own client: the public endpoint, no environment trust, no retry of its
-    own, and the timeout it is given."""
-    http_client = httpx.Client(timeout=timeout, trust_env=False, transport=transport)
+    own, and the timeout it is given, both for each read and, through ``_InTime``, for the
+    whole answer, which ends at most one read past it."""
+    inner = httpx.HTTPTransport(trust_env=False) if transport is None else transport
+    http_client = httpx.Client(
+        timeout=timeout,
+        trust_env=False,
+        transport=_InTime(inner, time.monotonic() + timeout),
+    )
     return anthropic.Anthropic(
         api_key=key, base_url=ENDPOINT, max_retries=0, timeout=timeout, http_client=http_client
     )

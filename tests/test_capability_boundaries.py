@@ -462,6 +462,7 @@ CLIENT_CONSTRUCTORS = frozenset(
         "anthropic.AsyncClient",
         "httpx.Client",
         "httpx.AsyncClient",
+        "httpx.HTTPTransport",
     }
 )
 """Every way the SDK and its HTTP library build a client, as the model seam spells them."""
@@ -506,6 +507,7 @@ def test_the_sdk_client_is_constructed_only_in_the_model_seam() -> None:
             ("PinnedChatAnthropic._client", "anthropic.Client"),
             ("PinnedChatAnthropic._async_client", "httpx.AsyncClient"),
             ("PinnedChatAnthropic._async_client", "anthropic.AsyncClient"),
+            ("_reader_client", "httpx.HTTPTransport"),
             ("_reader_client", "httpx.Client"),
             ("_reader_client", "anthropic.Anthropic"),
         }

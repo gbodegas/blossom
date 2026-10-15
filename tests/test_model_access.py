@@ -20,6 +20,7 @@ import logging
 import os
 import pathlib
 import re
+import time
 from collections.abc import Iterator
 from typing import Any, get_args
 
@@ -58,7 +59,7 @@ from blossom.settings import (
     enforce_local_only_tracing,
 )
 from blossom.stores.import_drafts import FAILURES
-from tests.support import SAME_ORIGIN, fixture_settings, hosted_tracer_attached
+from tests.support import SAME_ORIGIN, fixture_settings, hosted_tracer_attached, trickling_answer
 
 # Variables the model library or the HTTP client beneath it reads to pick an
 # endpoint, a proxy, or a certificate store. Each alone changes a client built
@@ -483,6 +484,7 @@ def test_a_reading_sends_the_request_the_reader_was_measured_with() -> None:
         }
     ]
     assert "anthropic-beta" not in sent.headers
+    assert "x-stainless-raw-response" not in sent.headers
 
 
 @pytest.mark.parametrize("variable", ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"])
@@ -726,3 +728,30 @@ def test_only_a_json_fence_is_stripped(fence: str) -> None:
     answer = read(Service(message(f"{fence}{json.dumps(AN_ANSWER)}\n```")))
 
     assert answer.failure == "not_json"
+
+
+def trickling(seconds: float) -> httpx.MockTransport:
+    """A service whose answer trickles in for about ``seconds``."""
+    return trickling_answer(AN_ANSWER, seconds)
+
+
+def test_a_trickling_answer_ends_busy_by_the_calls_time_plus_one_read() -> None:
+    """A body still arriving when the call's time is up ends the call as a busy service,
+    within one more piece, and nothing escapes."""
+    started = time.monotonic()
+
+    answer = anthropic_client.read_screenshot(
+        settings_with_key(), synthetic_png(), timeout=0.3, transport=trickling(3.0)
+    )
+
+    assert time.monotonic() - started < 0.3 + 0.3
+    assert answer == anthropic_client.ScreenshotAnswer(None, "service_busy", 0, 0)
+
+
+def test_an_answer_that_arrives_in_time_reads_as_before_through_the_time_check() -> None:
+    answer = anthropic_client.read_screenshot(
+        settings_with_key(), synthetic_png(), timeout=5.0, transport=trickling(0.3)
+    )
+
+    assert answer.failure is None
+    assert answer.answer == AN_ANSWER

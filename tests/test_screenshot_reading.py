@@ -39,7 +39,13 @@ from blossom.stores.import_drafts import (
     new_creation_token,
 )
 from blossom.stores.project_state import ProjectStateStore
-from tests.support import SAME_ORIGIN, SetClock, fixture_settings, homework_answer
+from tests.support import (
+    SAME_ORIGIN,
+    SetClock,
+    fixture_settings,
+    homework_answer,
+    trickling_answer,
+)
 
 T = TypeVar("T")
 HOMEWORK = "homework_screenshot"
@@ -706,3 +712,87 @@ def test_a_reader_that_raises_ends_unfinished_and_is_logged_by_its_kind_alone(
     assert not [record for record in caplog.records if record.exc_info]
     assert not [record for record in caplog.records if record.name == "asyncio"]
     assert "Sentinel" not in caplog.text
+
+
+# ------------------------------------------------------------------ calls that trickle
+
+TRICKLE_SECONDS = 3.0
+"""How long each trickling answer would take to arrive in full."""
+
+
+def trickling_reader(
+    seconds: float = TRICKLE_SECONDS,
+) -> Callable[[bytes, float], ScreenshotAnswer]:
+    """The real reader call, on a mock service whose answer trickles in."""
+    transport = trickling_answer(homework_answer(), seconds)
+    return lambda png, timeout: read_screenshot(WITH_KEY, png, timeout=timeout, transport=transport)
+
+
+def test_a_stop_waits_on_no_trickling_call_past_its_time_plus_one_read(
+    press: Press, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``asyncio.run`` waits for the executor's threads when it ends, as the server's stop does:
+    a press over trickling answers lets it end by the deadline and one more piece."""
+    short_deadline(monkeypatch)
+    draft_id = press.draft("a", "b", "c", "d", "e")
+    ids = list(press.ids(draft_id).values())
+    started = time.monotonic()
+
+    outcome = asyncio.run(
+        read_screenshots(
+            press.store,
+            WITH_KEY,
+            press.student,
+            draft_id,
+            ids,
+            monotonic=time.monotonic,
+            held=set(),
+            reader=trickling_reader(),
+        )
+    )
+
+    assert time.monotonic() - started < 0.5 + 0.5
+    assert sorted(outcome.unfinished) == sorted(ids)
+
+
+def test_with_every_worker_held_by_trickling_calls_later_reads_still_run(
+    press: Press, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Four presses of five trickling calls each want more threads than the default executor
+    has. Once their deadline passes, a press on another draft reads, and the planner's kind of
+    threaded work runs at once."""
+    short_deadline(monkeypatch)
+    labels = ("a", "b", "c", "d", "e")
+    held = [press.draft(*labels) for _ in range(4)]
+    other = press.draft("x")
+
+    async def press_on(
+        draft_id: str, reader: Callable[[bytes, float], ScreenshotAnswer]
+    ) -> ReadOutcome:
+        return await read_screenshots(
+            press.store,
+            WITH_KEY,
+            press.student,
+            draft_id,
+            list(press.ids(draft_id).values()),
+            monotonic=time.monotonic,
+            held=press.held,
+            reader=reader,
+        )
+
+    async def then_more() -> tuple[str, ReadOutcome, float]:
+        await asyncio.gather(*(press_on(draft_id, trickling_reader()) for draft_id in held))
+        await asyncio.sleep(0.15)
+        planned = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(None, lambda: "planned"), 1.0
+        )
+        started = time.monotonic()
+        later = await press_on(other, press.reader)
+        return planned, later, time.monotonic() - started
+
+    planned, later, took = press.run(then_more())
+    finish_held(press)
+
+    assert planned == "planned"
+    assert later.read == (press.ids(other)["x"],)
+    assert took < 1.0
