@@ -1868,6 +1868,8 @@ NOT_A_SIGNAL: dict[str, object] = {
     "an issue time as a number": {"issued_at": 1787130000},
     "a rating": {"rating": 5},
     "words past the cap": {"detail": "w" * (DETAIL_MAX_LENGTH + 1)},
+    "an evening in ISO's basic form": {"evening": "20260819"},
+    "an evening as an ISO week date": {"evening": "2026-W34-3"},
 }
 
 

@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import sqlite3
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -896,6 +897,8 @@ async def admit(
     plan_date: date,
     budget: RunBudget,
     basis: str | None = None,
+    *,
+    basis_of_the_evening: bool = False,
 ) -> None:
     """Record the run as the household's one running run, or refuse the press.
 
@@ -915,6 +918,7 @@ async def admit(
         deadline_mono=state.monotonic() + budget.remaining(),
         wait=wait,
         basis=basis,
+        basis_of_the_evening=basis_of_the_evening,
     )
     try:
         blocking = await bounded(admission, wait + ADMISSION_ALLOWANCE_SECONDS)
@@ -1380,12 +1384,14 @@ async def make_plan(
     budget: RunBudget | None = None,
     run_id: str | None = None,
     basis: str | None = None,
+    basis_of_the_evening: bool = False,
 ) -> PlanMade:
     """Admit a run for one evening, run the graph, and settle it, inside ``budget``.
 
     ``budget`` starts at handler entry, after the form body is read; without one, the run's
     time starts now. ``run_id`` names the run, a new thread for the evening unless given,
-    and ``basis`` is the newest plan the pressing page knew, checked at admission.
+    and ``basis`` is the newest plan the pressing page knew, checked at admission; with
+    ``basis_of_the_evening``, as a JSON request sends it, it must be a plan of ``plan_date``.
     The household has one running
     run at a time: a press while one runs is ``AlreadyPlanning``, naming it, and
     an admission that can't be made in time is ``CouldNotStart``. The graph runs
@@ -1405,7 +1411,7 @@ async def make_plan(
     """
     budget = RunBudget(clock=state.monotonic) if budget is None else budget
     run_id = thread_for(plan_date) if run_id is None else run_id
-    await admit(state, run_id, plan_date, budget, basis)
+    await admit(state, run_id, plan_date, budget, basis, basis_of_the_evening=basis_of_the_evening)
     planning = Planning(state, run_id, plan_date, budget)
     try:
         return await planning.run(graph)
@@ -1733,6 +1739,20 @@ async def answered_by_its_run(
     return JSONResponse(stands.model_dump(mode="json"), status_code=status.HTTP_200_OK)
 
 
+CALENDAR_DATE: Final = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def calendar_date(text: str) -> date | None:
+    """A date written exactly YYYY-MM-DD, as every JSON route here takes one; ``None`` for any
+    other spelling ISO 8601 allows, or a day no calendar has."""
+    if CALENDAR_DATE.fullmatch(text) is None:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 def expired_request(issued_at: datetime, now: datetime) -> bool:
     """Whether a JSON request was made ``FORM_LIFETIME`` or more before ``now``."""
     return now - issued_at >= FORM_LIFETIME
@@ -1788,8 +1808,9 @@ def plan_request_answers(
             "description": (
                 "In a sentence: no model key, a run that couldn't start, or a plan made but not "
                 "saved. Or the unconfirmed sentence when the record couldn't be read in time to "
-                "say whether the run_id names a run and a new request's refusal would otherwise "
-                "follow; its outcome is unknown, so retry with the same run_id and issued_at."
+                "say whether the run_id names a run and the request would otherwise be refused "
+                "before admission, which reads the id again; its outcome is unknown, so retry "
+                "with the same run_id and issued_at."
             ),
         },
     }

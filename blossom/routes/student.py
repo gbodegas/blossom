@@ -217,6 +217,7 @@ from blossom.routes.runs import (
     a_week_old,
     answered_by_its_run,
     being_made,
+    calendar_date,
     ended_sentences,
     ended_without_a_plan,
     evening_named,
@@ -1046,9 +1047,8 @@ async def register_workload_signal(
     nested too deeply, is its own 400; one that decodes but isn't a signal is not_valid.
     """
     now = state.real_clock.now()
-    try:
-        evening = date.fromisoformat(payload.evening)
-    except ValueError:
+    evening = calendar_date(payload.evening)
+    if evening is None:
         return signal_refusal(NOT_A_SIGNAL)
     issued_at = issue_time_from(payload.issued_at, now)
     if issued_at is None:
@@ -1630,11 +1630,14 @@ async def make_todays_plan(
     A run_id already used answers its run as it stands now, 200, at any age, or, for another
     evening, used_for_another_evening, 409. A new request for an evening that isn't today is
     another_evening, 409, naming today; one made a week or more ago is expired, 409; and one
-    whose newest_plan is behind the evening's newest plan is newer_plan, 409. When the record
-    can't be read in time to say whether the run_id is used, a request one of those two
-    refusals would meet answers 503 instead, since its run may exist. A body that decodes but
-    isn't a plan request is not_valid, 422, the route's only 422; one the framework can't
-    decode at all is its 400. None of these starts anything.
+    whose newest_plan is behind the evening's newest plan is newer_plan, 409. When the
+    record can't be read in time to say whether the run_id is used, a request that would be
+    refused before admission, by those two refusals, an evening with nothing left to plan, a
+    week that couldn't be read or no model key, answers 503 instead, since its run may
+    exist. A body that decodes but isn't a plan request is not_valid, 422, the route's only
+    422: evening must be written YYYY-MM-DD, and a nonempty newest_plan must name a
+    published plan for that evening. One the framework can't decode at all is its 400. None
+    of these starts anything.
 
     A run that ends without a plan, because the checks never passed, the
     model did not answer, or it failed on the way, is a 409 saying why in the
@@ -1651,9 +1654,8 @@ async def make_todays_plan(
     """
     budget = graphs.budget()
     now = state.real_clock.now()
-    try:
-        evening = date.fromisoformat(plan.evening)
-    except ValueError:
+    evening = calendar_date(plan.evening)
+    if evening is None:
         return plan_refusal(NOT_HER_PLAN)
     issued_at = issue_time_from(plan.issued_at, now)
     if issued_at is None:
@@ -1680,8 +1682,14 @@ async def make_todays_plan(
         return plan_refusal(refused)
     parent = parent_reads(request)
     try:
-        await require_work(state, today, budget)
-        require_model(graphs)
+        try:
+            await require_work(state, today, budget)
+            require_model(graphs)
+        except HTTPException:
+            # Admission would have read the id again; without it, the outcome is unknown.
+            if unread:
+                raise unread_outcome() from None
+            raise
         made = await make_plan(
             graph_for_a_run(graphs),
             today,
@@ -1689,6 +1697,7 @@ async def make_todays_plan(
             budget=budget,
             run_id=plan.run_id,
             basis=plan.newest_plan,
+            basis_of_the_evening=True,
         )
     except SameRun as same:
         return await answered_by_its_run(state, same.run, evening, HerPlanRefusalView)

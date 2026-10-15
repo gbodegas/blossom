@@ -968,10 +968,12 @@ answered with where it stands, after the gate has checked who is asking, at
 any age; only a request whose id names no run is held to its age, and one made
 a week or more ago starts nothing. A refusal made before anything starts
 carries a code and says no plan was started. When the record can't be read in
-time to say whether the id names a run, a request that would be refused as a
-new one answers 503 instead, since its run may exist. On each plan route
-`not_valid` is the only 422 body; a body the framework can't decode at all gets
-its own 400. The page forms' presses, whose design PR 1 settled, take a failed
+time to say whether the id names a run, a request that would be refused before
+admission, which reads the id again, answers 503 instead, since its run may
+exist. On each plan route `not_valid` is the only 422 body: it
+covers a date not written exactly YYYY-MM-DD and a nonempty `newest_plan` that
+names no published plan of the evening asked for, which admission checks in
+its transaction. A body the framework can't decode at all gets its own 400. The page forms' presses, whose design PR 1 settled, take a failed
 read as no run: their evening and age checks can then refuse a used form, and
 otherwise admission decides again.
 

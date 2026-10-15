@@ -536,6 +536,8 @@ def test_a_new_family_request_behind_the_evenings_newest_plan_starts_nothing() -
         {"run_id": "z" * 32},
         {"newest_plan": None},
         {"send": True},
+        {"plan_date": "20260819"},
+        {"plan_date": "2026-W34-3"},
     ],
     ids=[
         "no plan_date",
@@ -544,6 +546,8 @@ def test_a_new_family_request_behind_the_evenings_newest_plan_starts_nothing() -
         "a bad run_id",
         "no newest_plan",
         "a field no request sends",
+        "a plan_date in ISO's basic form",
+        "a plan_date as an ISO week date",
     ],
 )
 def test_a_json_family_request_that_isnt_one_is_refused_with_its_code(
@@ -625,3 +629,26 @@ def test_a_replay_meets_the_door_before_its_run_is_read(
     assert body["run_id"] not in hers.text + nobody.text
     assert looked_up == []
     assert runs == [body["run_id"]]
+
+
+def test_a_family_request_naming_another_evenings_plan_is_not_valid_and_starts_nothing() -> None:
+    """2026-08-19's plan and then 2026-08-20's are published; a request for 2026-08-19 naming
+    2026-08-20's plan names no plan of its evening and replaces nothing."""
+    asked = [PLAN_DATE]
+
+    def plan_for_the_evening_asked() -> list[DailyPlan]:
+        return [fixture_week_plan().model_copy(update={"plan_date": asked[0]})]
+
+    with app_with(planner=plan_for_the_evening_asked) as client:
+        today = client.post(PLANS, json=family_plan_body(client)).json()
+        asked[0] = date(2026, 8, 20)
+        tomorrow = client.post(PLANS, json=family_plan_body(client, "2026-08-20")).json()
+        asked[0] = PLAN_DATE
+        named = client.post(PLANS, json=family_plan_body(client, newest_plan=tomorrow["draft_id"]))
+        listed = client.get("/parent/approvals").json()["newest_plans"]
+        runs = runs_of(client)
+
+    assert named.status_code == 422
+    assert named.json() == refused_with("not_valid", NOT_A_FAMILY_PLAN_SAID)
+    assert listed[0] == {"plan_date": "2026-08-19", "draft_id": today["draft_id"]}
+    assert len(runs) == 2

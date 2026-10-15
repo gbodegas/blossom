@@ -759,6 +759,7 @@ class DraftsStore:
         deadline_mono: float,
         wait: float = STORE_WAIT_SECONDS,
         basis: str | None = None,
+        basis_of_the_evening: bool = False,
     ) -> RunState | None:
         """Admit a run for the household, or return the run that stands in its way.
 
@@ -766,7 +767,9 @@ class DraftsStore:
         under ``run_id`` is returned as it stands, read with its draft; then a running run,
         if one remains, is returned. With ``basis``, the newest plan the pressing page knew
         (empty for none), a later publication for the evening is ``StaleBasis`` and a draft
-        never published is ``UnknownBasis``. In each case nothing is written. Otherwise
+        never published is ``UnknownBasis``; with ``basis_of_the_evening``, as a JSON request
+        names its basis, so is a published draft of another evening. In each case nothing is
+        written. Otherwise
         this run is recorded ``running`` with its deadline, an instant on the store's
         monotonic clock, and the evening's last place in the published order, the plan it
         expects to replace.
@@ -782,7 +785,8 @@ class DraftsStore:
             ).fetchone()
             if row is not None:
                 return self._state_from(row)
-            known = 0 if not basis else self._published_place(basis)
+            evening = plan_date if basis_of_the_evening else None
+            known = 0 if not basis else self._published_place(basis, evening)
             if known is None:
                 refusal = UnknownBasis(basis)
             elif basis is not None and self._last_published(plan_date.isoformat()) > known:
@@ -793,26 +797,51 @@ class DraftsStore:
             raise refusal
         return None
 
-    def _published_place(self, draft_id: str) -> int | None:
-        """A published draft's place in the published order, ``None`` for any other id,
-        inside the caller's hold."""
-        row = self._connection.execute(
-            "SELECT published_order FROM drafts WHERE draft_id=? AND published=1", (draft_id,)
-        ).fetchone()
+    def _published_place(self, draft_id: str, evening: date | None = None) -> int | None:
+        """A published draft's place in the published order, ``None`` for any other id, or,
+        with ``evening``, for a draft of another evening, inside the caller's hold."""
+        if evening is None:
+            row = self._connection.execute(
+                "SELECT published_order FROM drafts WHERE draft_id=? AND published=1",
+                (draft_id,),
+            ).fetchone()
+        else:
+            row = self._connection.execute(
+                "SELECT published_order FROM drafts "
+                "WHERE draft_id=? AND published=1 AND plan_date=?",
+                (draft_id, evening.isoformat()),
+            ).fetchone()
         return None if row is None or row[0] is None else int(row[0])
 
     def newest_published_from(self, day: date) -> list[tuple[date, str]]:
         """The newest published plan of each evening from ``day`` on, last in the published
         order for its evening, decided or not, earliest evening first."""
         with self._session():
-            rows = self._connection.execute(
-                "SELECT plan_date, draft_id FROM drafts AS d "
-                "WHERE published=1 AND plan_date >= ? AND published_order = ("
-                "SELECT MAX(published_order) FROM drafts "
-                "WHERE plan_date=d.plan_date AND published=1) "
-                "ORDER BY plan_date",
-                (day.isoformat(),),
-            ).fetchall()
+            return self._newest_from(day)
+
+    def queue_from(self, day: date) -> tuple[list[DraftRecord], list[tuple[date, str]]]:
+        """What waits for a decision, oldest first, and ``newest_published_from(day)``, both
+        read in one transaction, so a publication lands wholly before the reading or wholly
+        after it."""
+        with self._session():
+            self._connection.execute("BEGIN")
+            try:
+                waiting = self._read_drafts(WAITING_DRAFTS, ())
+                newest = self._newest_from(day)
+            finally:
+                self._connection.rollback()
+        return waiting, newest
+
+    def _newest_from(self, day: date) -> list[tuple[date, str]]:
+        """``newest_published_from`` for a caller already holding the store."""
+        rows = self._connection.execute(
+            "SELECT plan_date, draft_id FROM drafts AS d "
+            "WHERE published=1 AND plan_date >= ? AND published_order = ("
+            "SELECT MAX(published_order) FROM drafts "
+            "WHERE plan_date=d.plan_date AND published=1) "
+            "ORDER BY plan_date",
+            (day.isoformat(),),
+        ).fetchall()
         return [(date.fromisoformat(str(row[0])), str(row[1])) for row in rows]
 
     def newest_published(self) -> str:

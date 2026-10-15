@@ -130,6 +130,7 @@ from blossom.routes.runs import (
     a_week_old,
     answered_by_its_run,
     being_made,
+    calendar_date,
     ended_sentences,
     ended_without_a_plan,
     evening_named,
@@ -630,14 +631,17 @@ async def start_plan(
     request gets new ones.
 
     A run_id already used answers its run as it stands now, 200, at any age, or, for another
-    evening, used_for_another_evening, 409. A new request made a week or more ago is expired,
-    409; one for an evening that has passed is passed, 409, and one past the edge of the
-    calendar is beyond_calendar, 409, each naming today; one whose newest_plan is behind the
-    evening's newest plan is newer_plan, 409. When the record can't be read in time to say
-    whether the run_id is used, a request one of the first three refusals would meet answers
-    503 instead, since its run may exist. A body that decodes but isn't a plan request is
-    not_valid, 422, the route's only 422; one the framework can't decode at all is its 400.
-    None of these starts anything.
+    evening, used_for_another_evening, 409. A new request made a week or more ago is
+    expired, 409; one for an evening that has passed is passed, 409, and one past the edge
+    of the calendar is beyond_calendar, 409, each naming today; one whose newest_plan is
+    behind the evening's newest plan is newer_plan, 409. When the record can't be read in
+    time to say whether the run_id is used, a request that would be refused before
+    admission, by the first three refusals, an evening with nothing left to plan, a week
+    that couldn't be read or no model key, answers 503 instead, since its run may exist. A
+    body that decodes but isn't a plan request is not_valid, 422, the route's only 422:
+    plan_date must be written YYYY-MM-DD, and a nonempty newest_plan must name a published
+    plan for that evening. One the framework can't decode at all is its 400. None of these
+    starts anything.
 
     An evening with nothing left to plan is a 409, before and after the run: a report of hers
     can land between the question and the run's reading, and such a run made no plan. Any
@@ -650,9 +654,8 @@ async def start_plan(
     """
     budget = graphs.budget()
     now = state.real_clock.now()
-    try:
-        evening = date.fromisoformat(request.plan_date)
-    except ValueError:
+    evening = calendar_date(request.plan_date)
+    if evening is None:
         return plan_refusal(NOT_A_FAMILY_PLAN)
     issued_at = issue_time_from(request.issued_at, now)
     if issued_at is None:
@@ -682,9 +685,14 @@ async def start_plan(
     could_not_start = f"{COULD_NOT_START} {saved_sentence(parent=True)}"
     try:
         await require_work(state, evening, budget)
-    except CouldNotStart as error:
-        raise HTTPException(error.status_code, detail=could_not_start) from None
-    require_model(graphs)
+        require_model(graphs)
+    except HTTPException as error:
+        # Admission would have read the id again; without it, the outcome is unknown.
+        if unread:
+            raise unread_outcome() from None
+        if isinstance(error, CouldNotStart):
+            raise HTTPException(error.status_code, detail=could_not_start) from None
+        raise
     run_id = request.run_id
     try:
         made = await make_plan(
@@ -694,6 +702,7 @@ async def start_plan(
             budget=budget,
             run_id=run_id,
             basis=request.newest_plan,
+            basis_of_the_evening=True,
         )
     except SameRun as same:
         return await answered_by_its_run(state, same.run, evening, FamilyPlanRefusalView)
@@ -753,12 +762,12 @@ def approvals(state: State) -> ApprovalQueueView:
     """Every draft waiting for a decision, oldest first, and the newest plan of each evening
     from today on that has one, which a request for that evening names as newest_plan. Needs
     no model to read."""
+    waiting, newest = state.drafts.queue_from(state.clock.today())
     return ApprovalQueueView(
         generated_at=state.clock.now(),
-        waiting=[approval_view(state, record) for record in state.drafts.waiting()],
+        waiting=[approval_view(state, record) for record in waiting],
         newest_plans=[
-            NewestPlanView(plan_date=evening, draft_id=draft_id)
-            for evening, draft_id in state.drafts.newest_published_from(state.clock.today())
+            NewestPlanView(plan_date=evening, draft_id=draft_id) for evening, draft_id in newest
         ],
     )
 
