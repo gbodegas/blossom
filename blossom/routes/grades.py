@@ -43,7 +43,6 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.requests import Request as StarletteRequest
 
-from blossom.assignment_status import statuses_for
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.grades.dates import due_date_of
 from blossom.grades.draft import (
@@ -122,7 +121,7 @@ from blossom.routes.homework_scores import (
     PairStanding,
     ResultHomework,
     Withheld,
-    account_from,
+    account_read,
     checks_left_out,
     cues_left_out,
     grades_to_check,
@@ -1935,16 +1934,11 @@ class ClassRow:
     class_id: str
 
 
-def class_rows(store: GradebookRecords, term: Term, base: str, zone: tzinfo) -> list[ClassRow]:
-    """Each class of the open term's year, by name, with its term grade in that term."""
-    return class_reads(store, term, base, zone)[0]
-
-
 def class_reads(
     store: GradebookRecords, term: Term, base: str, zone: tzinfo
 ) -> tuple[list[ClassRow], dict[str, ClassTermRead]]:
-    """The class rows ``class_rows`` gives, and each reported class's read of the term, by
-    class ID: the same reads, made once."""
+    """Each class of the open term's year, by name, with its term grade in that term, and each
+    reported class's read of the term, by class ID: the same reads, made once."""
     year, label = term
     terms = store.terms_of_year(year)
     position = terms.index(label) + 1 if label in terms else None
@@ -1985,18 +1979,12 @@ def grades_read(store: ProjectStateStore, term: Term, base: str, zone: tzinfo) -
             named = [link.assignment_id for link in links if link.confirmed]
             homework = store.homework_readings(named)
             ids = [one.assignment_id for one in homework.readable]
-            statuses = statuses_for(store, ids)
+            # Her two chains for those homework and nothing else: never the school's reports or
+            # the family's checks, so a row of theirs that can't be read never reaches Grades.
+            updates = store.update_readings(ids)
             hand_ins = store.hand_in_readings(ids)
             to_check = grades_to_check(
-                reads,
-                links,
-                mapping,
-                homework,
-                lambda one: account_from(
-                    statuses.get(one),
-                    hand_ins.readable.get(one),
-                    hand_in_unreadable=one in hand_ins.unreadable,
-                ),
+                reads, links, mapping, homework, lambda one: account_read(updates, hand_ins, one)
             )
         except GradeValueUndecodable as error:
             checks_left_out(error)

@@ -77,7 +77,7 @@ from datetime import date, tzinfo
 from enum import StrEnum
 from typing import Final, NamedTuple
 
-from blossom.assignment_status import AssignmentStatus
+from blossom.assignment_status import AssignmentStatus, standing_report
 from blossom.authored_text import TextRefused
 from blossom.grades.dates import due_date_of
 from blossom.grades.draft import Presence, folded
@@ -110,7 +110,15 @@ from blossom.stores.gradebook import (
     HomeworkClasses,
     class_for,
 )
-from blossom.stores.project_state import DONE, Assignment, HomeworkReadings, ListedHomework
+from blossom.stores.project_state import (
+    DONE,
+    Assignment,
+    ChainReadings,
+    HandInReadings,
+    HomeworkReadings,
+    ListedHomework,
+    StudentReport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -428,6 +436,23 @@ def account_from(
         done=None if status is None or status.updates_unavailable else status.status == DONE,
         turned_in=None
         if hand_in_unreadable
+        else hand_in is not None and hand_in.state == TURNED_IN,
+    )
+
+
+def account_read(
+    updates: ChainReadings[StudentReport], hand_ins: HandInReadings, assignment_id: str
+) -> HerAccount:
+    """Her account of one homework from her two chains as one read gave them, and nothing else:
+    Done from the update that stands, and her hand-in; each unknown when its chain can't be read."""
+    standing = standing_report(updates.chains.get(assignment_id, []))
+    hand_in = hand_ins.readable.get(assignment_id)
+    return HerAccount(
+        done=None
+        if assignment_id in updates.unreadable
+        else standing is not None and standing.status == DONE,
+        turned_in=None
+        if assignment_id in hand_ins.unreadable
         else hand_in is not None and hand_in.state == TURNED_IN,
     )
 
