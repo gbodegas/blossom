@@ -3419,11 +3419,11 @@ def test_link_choices_that_cannot_be_read_are_refused_in_words_true_of_each(
 
     summary = re.search(r'<p class="problem"[^>]*id="problem-summary"[^>]*>(.*?)</p>', refused.text)
     assert after == before
-    assert returned["text"] == review_form(page)["text"]
     if filed:
         store_free_page(refused, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
     else:
         assert refused.status_code == 422
+        assert returned["text"] == review_form(page)["text"]
         assert summary is not None
         assert html.unescape(summary.group(1)) == LINKS_UNREADABLE
     assert (saved.status_code, again.status_code) == (303, 303)

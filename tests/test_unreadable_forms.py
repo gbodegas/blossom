@@ -11,6 +11,7 @@ not be read: no cookie is set, changed or cleared, the passphrase is in no page 
 line, and nothing is said about being signed in or out.
 """
 
+import asyncio
 import codecs
 import logging
 import pathlib
@@ -24,7 +25,9 @@ from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI, Request
+from fastapi.params import Form as FormParameter
 from fastapi.routing import APIRoute
+from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 from python_multipart.exceptions import (
     DecodeError,
@@ -33,7 +36,11 @@ from python_multipart.exceptions import (
     ParseError,
     QuerystringParseError,
 )
+from starlette.formparsers import MultiPartParser
+from starlette.routing import Mount, Route
+from starlette.types import Message, Scope
 
+from blossom.routes.forms import FormRoute
 from tests.support import (
     ESSAY_ID,
     HERS,
@@ -884,9 +891,9 @@ def test_half_a_character_in_any_text_the_parser_decodes_is_a_form_that_cannot_b
     where: str, tmp_path: pathlib.Path
 ) -> None:
     """A field's name is text the parser decodes, so half a character there is the 400 page,
-    through a handler and through a form of parameters alike; a file part is the 400 page
-    whatever its name or bytes hold, as the same file with plain bytes is."""
-    plain = part('form-data; name="f"; filename="a.txt"', b"words")
+    through a handler and through a form of parameters alike, where the same body with a plain
+    text part is read; a file part is the 400 page whatever its name or bytes hold."""
+    plain = part('form-data; name="f"', b"words")
     sent = {
         "a field's name": part(f'form-data; name="{HALF}"', b"1"),
         "a file's name": part(f'form-data; name="f"; filename="{HALF}"', b"words"),
@@ -901,11 +908,11 @@ def test_half_a_character_in_any_text_the_parser_decodes_is_a_form_that_cannot_b
                 press(client, path, note + sent + b"--synthetic--" + CR, UTF_7),
             )
 
-    for path, control_and_answer in answers.items():
+    for path, (control, answer) in answers.items():
+        assert control.status_code != 400, path
         heading, said, back = expected(path, "open")
-        for answer in control_and_answer:
-            main = store_free_page(answer, status=400, heading=heading, alert=said)
-            assert ways_back_of(main) == back, path
+        main = store_free_page(answer, status=400, heading=heading, alert=said)
+        assert ways_back_of(main) == back, path
 
 
 UNKEPT: Final = "That has a character Blossom cannot keep."
@@ -970,25 +977,33 @@ MORE_FORMS: Final = (
 )
 """The form routes the tests above don't press: her plan, earlier work, and the grade pages."""
 EVERY_FORM_ROUTE: Final = (*EVERY_FORM, *MORE_FORMS)
-NOT_FORMS: Final = frozenset(
+NO_BODY: Final = frozenset(
     {
         "/sign-out",
-        "/student/workload-signals",
         "/student/workload-signals/{signal_id}",
-        "/student/help-requests",
         "/student/help-requests/{request_id}",
         "/student/plans",
         "/student/actions/take-back-help/{request_id}",
         "/student/actions/too-much",
         "/student/actions/take-back/{signal_id}",
-        "/parent/plans",
-        "/parent/approvals/{draft_id}",
-        "/parent/help-requests/{request_id}/accept",
-        "/parent/help-requests/{request_id}/update",
-        "/parent/help-requests/{request_id}/resolve",
     }
 )
-"""The routes that change something without reading a form: no body at all, or JSON."""
+"""The routes that change something and read no body at all."""
+READS: Final = frozenset({"GET", "HEAD"})
+PARENT_MAY_PRESS: Final = frozenset({"/student/actions/plan", "/student/grades/view"})
+"""Her routes that read the body of a parent's press rather than refusing it first: the plan
+and the grades view."""
+
+
+def refused_before_reading(path: str, reader: str) -> bool:
+    """Whether the route refuses this reader, 403, before it reads a body: the family's tree
+    to her, hers to a parent but for the routes a parent may press, and the family's grade
+    routes to a client that is not this computer when the sign-in is off."""
+    if reader == "open":
+        return path.startswith("/parent/grades/")
+    if reader == "her":
+        return path.startswith("/parent/")
+    return path.startswith("/student/") and path not in PARENT_MAY_PRESS
 
 
 def with_a_file(filename: str) -> tuple[bytes, str]:
@@ -1012,28 +1027,65 @@ def files_made(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return made
 
 
+def test_the_counted_class_is_the_one_the_parser_makes_for_a_file_part(
+    files_made: list[int],
+) -> None:
+    """Read with Starlette's own limits, outside the application, a file part makes one
+    temporary file through the class these tests count, so a count of none is a refusal
+    and not a file made some other way."""
+    body, kind = with_a_file(FILE_NAME)
+    messages: list[Message] = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive() -> Message:
+        return messages.pop(0)
+
+    async def read() -> list[str | None]:
+        scope: Scope = {
+            "type": "http",
+            "method": "POST",
+            "headers": [(b"content-type", kind.encode())],
+        }
+        async with Request(scope, receive).form() as form:
+            return [value.filename for _, value in form.multi_items() if not isinstance(value, str)]
+
+    assert asyncio.run(read()) == [FILE_NAME]
+    assert files_made == [MultiPartParser.spool_max_size]
+
+
 def test_every_route_that_changes_something_is_a_form_route_or_reads_no_form(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Each route but a read is pressed here as a form route or named as one that reads no
-    form, so a new route is one or the other before these tests pass."""
+    """Every route that takes a method other than a read is a FastAPI route: one pressed here
+    as a form route, one that reads no body, named here, or one whose body is JSON. A route
+    whose fields are form parameters is a ``FormRoute``, and the one mount serves files. So
+    a new route is one or the other before these tests pass."""
     with household_client("open", tmp_path) as client:
-        routes = [
-            route
-            for route in every_route(cast(FastAPI, client.app).routes)
-            if isinstance(route, APIRoute) and (route.methods or set()) - {"GET", "HEAD"}
-        ]
-    pressed = {
+        served = list(every_route(cast(FastAPI, client.app).routes))
+    mounts = [route for route in served if isinstance(route, Mount)]
+    routes = [route for route in served if isinstance(route, Route)]
+    writes = [route for route in routes if route.methods is None or route.methods - READS]
+    api = [route for route in writes if isinstance(route, APIRoute)]
+    json_bodies = {
         route.path
-        for route in routes
-        for path in EVERY_FORM_ROUTE
-        if route.path_regex.fullmatch(path)
+        for route in api
+        if route.body_field is not None
+        and not isinstance(route.body_field.field_info, FormParameter)
+    }
+    pressed = {
+        route.path for route in api for path in EVERY_FORM_ROUTE if route.path_regex.fullmatch(path)
     }
 
-    served = {route.path for route in routes}
-    assert served - NOT_FORMS == pressed
-    assert served >= NOT_FORMS
-    assert pressed.isdisjoint(NOT_FORMS)
+    assert len(mounts) + len(routes) == len(served)
+    assert [type(mount.app) for mount in mounts] == [StaticFiles]
+    assert [route.path for route in writes if not isinstance(route, APIRoute)] == []
+    for route in api:
+        if route.body_field is not None and isinstance(route.body_field.field_info, FormParameter):
+            assert isinstance(route, FormRoute), route.path
+        if route.path in NO_BODY:
+            assert route.body_field is None, route.path
+    assert {route.path for route in api} - json_bodies - NO_BODY == pressed
+    assert {route.path for route in api} >= NO_BODY
+    assert pressed.isdisjoint(json_bodies | NO_BODY)
 
 
 @pytest.mark.parametrize("filename", [FILE_NAME, ""], ids=["named", "unnamed"])
@@ -1048,7 +1100,7 @@ def test_a_file_among_the_fields_is_a_form_that_cannot_be_read_and_no_file_is_ma
 ) -> None:
     """Every form route answers a body carrying a file part, named or with an empty name, as
     a body the parser can't read: where the route refuses the reader before reading a body,
-    with that same refusal, and otherwise the 400 page with the route's ways back. No
+    with that same 403, and otherwise the 400 page with the route's ways back. No
     temporary file is made, nothing is read from the store or written, no cookie is set, and
     neither the typed words nor the file's name reach a page or a log line."""
     caplog.set_level(logging.DEBUG)
@@ -1068,9 +1120,12 @@ def test_a_file_among_the_fields_is_a_form_that_cannot_be_read_and_no_file_is_ma
             assert files_made == [], path
             assert "set-cookie" not in answer.headers, path
             assert TYPED not in answer.text, path
-            if refused_first.status_code != 400:
+            assert not filename or filename not in answer.text, path
+            if refused_before_reading(path, reader):
+                assert refused_first.status_code == 403, path
                 assert as_met(answer) == as_met(refused_first), path
                 continue
+            assert refused_first.status_code == 400, path
             heading, said, back = expected(path, reader)
             main = store_free_page(answer, status=400, heading=heading, alert=said)
             assert ways_back_of(main) == back, path

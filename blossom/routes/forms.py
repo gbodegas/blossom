@@ -48,8 +48,8 @@ from starlette.formparsers import FormParser, MultiPartException
 from starlette.requests import ClientDisconnect
 
 if TYPE_CHECKING:
-    # The return type Starlette's own ``form`` declares. Its module is private, so it is
-    # read only by the type checker, never imported when the application runs.
+    # The return type Starlette's own ``form`` declares. Its module is private, so this
+    # module imports it only for the type checker, not when the application runs.
     from starlette._utils import AwaitableOrContextManager
 
 TOKEN_MAX_LENGTH: Final = 200
@@ -126,18 +126,18 @@ async def form_read(request: Request) -> None:
 
 
 class FormRequest(Request):
-    """A request whose form carries no file however it is read, the framework's own reading
-    of a route's form parameters included."""
+    """A request whose form allows no file unless a caller names a number of files, so the
+    framework's own reading of a route's form parameters, which names none, allows none."""
 
     def form(
         self,
         *,
         max_files: int | float = FILES_ALLOWED,
-        max_fields: int | float = 1000,
-        max_part_size: int = 1024 * 1024,
+        **limits: Any,  # noqa: ANN401  (Starlette's other limits, passed on as given)
     ) -> "AwaitableOrContextManager[FormData]":
-        """The form, read with no file allowed unless a caller names a number."""
-        return super().form(max_files=max_files, max_fields=max_fields, max_part_size=max_part_size)
+        """The form, with no file allowed unless a caller names a number, and Starlette's own
+        defaults for every other limit."""
+        return super().form(max_files=max_files, **limits)
 
 
 class FormRoute(APIRoute):
