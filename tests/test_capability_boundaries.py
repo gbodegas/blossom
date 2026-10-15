@@ -70,8 +70,9 @@ ALLOWED_IMPORTS: dict[str, str] = {
     ),
     "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
     "hashlib": (
-        "standard library; tags the packaged stylesheet and script by their contents, and names "
-        "a pasted grade report by what it says, its capture key"
+        "standard library; tags the packaged stylesheet and script by their contents, names "
+        "a pasted grade report by what it says, its capture key, and names a prepared "
+        "screenshot in its import draft by the SHA-256 of its bytes"
     ),
     "hmac": (
         "standard library; signs and checks the household sign-in cookie, the result a save "
@@ -80,6 +81,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
         "the forms a parent confirmed, and makes the check that tells which key made them, "
         "nothing more"
     ),
+    "io": "standard library; in-memory byte buffers an image is read from and encoded into",
     "ipaddress": "standard library; reads an address named in a Host or Origin header, no network",
     "logging": "standard library; reports failures to the process log only, never to a page",
     "msvcrt": "standard library; the Windows lock behind one process per household",
@@ -89,7 +91,8 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "secrets": (
         "standard library; makes the sign-in secret and her student ID, draws the key a "
         "save's result and a paste review's answers are signed with at every start, compares "
-        "passphrases in constant time"
+        "passphrases in constant time, and draws an import draft's id and page key, its "
+        "images' and Read attempts' ids, and the creation token of an Add screenshots form"
     ),
     "starlette": "the toolkit under FastAPI; the middleware base the household gate extends",
     "urllib": (
@@ -97,10 +100,16 @@ ALLOWED_IMPORTS: dict[str, str] = {
         "sign-in to read and encode a return address, see CLOSED_PREFIXES and OPENED_PATHS"
     ),
     "pathlib": "standard library",
+    "PIL": (
+        "Pillow; opens an uploaded screenshot as a PNG or a JPEG only, in memory, and "
+        "encodes the prepared PNG; its viewer and screen capture are closed, see "
+        "CLOSED_PREFIXES"
+    ),
     "pydantic": "validation and view models; no I/O",
     "python_multipart": (
-        "the form parser under Starlette; only its parse failure is named, so a body it "
-        "can't read is answered with a page; it opens no file and no connection"
+        "the form parser under Starlette, and the multipart parser an upload is read with, "
+        "driven by callbacks alone so every part stays in memory under fixed limits; only "
+        "its parse failure is named, never its words; it opens no file and no connection"
     ),
     "sqlite3": "standard library; local file and in-memory databases only",
     "stat": "standard library; tells a plain file from a link or a folder, no I/O of its own",
@@ -145,6 +154,8 @@ CLOSED_PREFIXES: dict[str, str] = {
         "remote server through langgraph_sdk and langsmith"
     ),
     "langgraph_sdk": "the client for a hosted graph server",
+    "PIL.ImageShow": "starts an outside program to show an image",
+    "PIL.ImageGrab": "captures the screen or the clipboard",
     "langchain_core.tracers": (
         "the hosted tracer, its lazy re-export at the package level, and the "
         "context manager that turns hosted tracing on with no environment variable set; "
@@ -422,3 +433,10 @@ def test_registry_validation_rejects_a_capability_nobody_thought_to_ban() -> Non
 
 def test_validation_accepts_the_shipped_registry() -> None:
     validate_capabilities(TOOL_REGISTRY)
+
+
+def test_the_image_library_is_admitted_with_its_viewer_and_screen_capture_closed() -> None:
+    assert "PIL" in ALLOWED_IMPORTS
+    assert "io" in ALLOWED_IMPORTS
+    assert set(CLOSED_PREFIXES) >= {"PIL.ImageShow", "PIL.ImageGrab"}
+    assert not any(path.startswith("PIL") for path in OPENED_PATHS)

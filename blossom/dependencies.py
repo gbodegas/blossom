@@ -51,6 +51,7 @@ from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
 from blossom.stores.traces import TraceStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
+from blossom.uploads import quiet_the_image_library
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +293,8 @@ def create_lifespan(
         # The form parser's own log lines can quote a body it refuses; the application
         # logs each refusal by its kind, so the parser's lines stay out of the log.
         quiet_the_parser()
+        # Pillow's debug lines describe the chunks of an image it reads; they stay out too.
+        quiet_the_image_library()
         # One process serves a household. The claim covers both files that
         # make up its state, is taken before either is opened, so a second
         # process is refused with a sentence rather than left to share state
