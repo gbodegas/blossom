@@ -119,6 +119,11 @@ KEPT_FOR_REVIEW: Final = (
 )
 """What the step says when the last revision broke a rule and an earlier plan went on."""
 
+EXPECT_A_SAVED_RESULT: Final = "the run's result is saved"
+RESULT_NOT_SAVED: Final = "The run's result couldn't be saved, so the run stopped."
+"""What the step says when the run couldn't save how it ended, its ending or its draft,
+and was then stopped."""
+
 FAILURES = {
     "model_truncated": "the answer was cut off",
     "model_refused": "the model declined to answer",
@@ -219,6 +224,7 @@ LABELS: Final = {
     "critique": "Reviewer",
     "rescue": "Plan kept for review",
     "time_limit": "Time limit",
+    "stopped": "Stopped",
 }
 SECONDS_SAID: Final = 10
 """Below this many seconds a time is said to the tenth of a second."""

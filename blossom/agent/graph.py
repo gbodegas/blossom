@@ -214,6 +214,15 @@ type Ask[T: BaseModel] = Callable[[Sequence[BaseMessage]], Awaitable[ModelAnswer
 two, and a test substitutes both."""
 
 
+class EndingNotSaved(RuntimeError):
+    """The graph couldn't write how its run ended, its ending or its draft. The run is
+    still running, and the failure that stopped the write is the cause."""
+
+    def __init__(self, thread_id: str) -> None:
+        super().__init__(f"run {thread_id!r} couldn't save how it ended")
+        self.thread_id = thread_id
+
+
 class Committed(TypedDict):
     """What the record committed for a run as it ended: its status, its reason, and the
     past-due work it kept, as the JSON text the record holds, or ``None``."""
@@ -608,7 +617,8 @@ def build_plan_graph(
         survive whatever happens next; the draft reaches the pages only when
         the route settles the run, once it has paused. A run that already ended,
         out of time or ended by its route, saves nothing; what its record committed
-        goes to ``committed`` and the run ends here instead of pausing.
+        goes to ``committed`` and the run ends here instead of pausing. A save that
+        fails otherwise is ``EndingNotSaved``, with that failure as its cause.
         """
         thread_id = str(config["configurable"]["thread_id"])
         outcome = state["outcome"]
@@ -644,6 +654,8 @@ def build_plan_graph(
             if ended.run is None:
                 raise
             return committed(ended.run)
+        except Exception as error:
+            raise EndingNotSaved(thread_id) from error
         return {"draft": composed.draft}
 
     def record_run(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
@@ -654,18 +666,20 @@ def build_plan_graph(
         can say why nothing came of it, and a date problem keeps the past-due work it
         names. Past the run's deadline the record says ``timed_out`` whatever the run
         ended with, its steps then the run's time limit, and ``committed`` says what it
-        says.
+        says. A write that fails is ``EndingNotSaved``, with that failure as its cause.
         """
         thread_id = str(config["configurable"]["thread_id"])
-        return committed(
-            drafts.end_run(
+        try:
+            ended = drafts.end_run(
                 thread_id,
                 reason=state["outcome"],
                 steps=state.get("steps", []),
                 past_due=past_due_work(state.get("assignments", []), state.get("past_due", {})),
                 out_of_time=time_limit_step(clock.now()),
             )
-        )
+        except Exception as error:
+            raise EndingNotSaved(thread_id) from error
+        return committed(ended)
 
     def gate(state: PlanState) -> dict[str, Any]:
         """The approval gate, unchanged; the state's gate keys match its own."""

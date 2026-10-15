@@ -31,7 +31,7 @@ from fastapi import Depends, HTTPException, status
 from starlette.datastructures import URL
 from starlette.responses import Response
 
-from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
+from blossom.agent.graph import CompiledPlanGraph, EndingNotSaved, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread, finish_held_reviews
 from blossom.agent.runs import (
     DURABILITY,
@@ -45,7 +45,9 @@ from blossom.agent.runs import (
 )
 from blossom.agent.steps import (
     DATE_PROBLEM,
+    EXPECT_A_SAVED_RESULT,
     PAST_DUE_WORK,
+    RESULT_NOT_SAVED,
     SERVICE,
     SERVICE_FAILED,
     TIMED_OUT,
@@ -977,6 +979,17 @@ class Planning:
         awaited past the deadline: the run's time limit, with no lap."""
         return time_limit_step(self.state.clock.now())
 
+    def result_not_saved_step(self) -> StepRecord:
+        """The step an ending the route records after the graph couldn't save how the run
+        ended takes. Reads only the clock, so building it can't fail in an ending."""
+        return StepRecord(
+            node="stopped",
+            round=0,
+            expected=EXPECT_A_SAVED_RESULT,
+            found=RESULT_NOT_SAVED,
+            recorded_at=self.state.clock.now(),
+        )
+
     def canceled_step(self) -> StepRecord:
         """The step a canceled run's ending takes if it is recorded out of time: the model
         request still awaited when the deadline had passed, or else the time limit."""
@@ -1299,9 +1312,11 @@ class Planning:
             return await self.cut_off(TIMED_OUT)
         except ServiceFailed:
             return await self.cut_off(SERVICE_FAILED)
-        except Exception:
-            # A store's or a request's own TimeoutError is a failure like any other.
-            made = await self.end(INTERRUPTED)
+        except Exception as error:
+            # A store's or a request's own TimeoutError is a failure like any other. When
+            # the graph couldn't save how the run ended, the route's ending says so.
+            unsaved = isinstance(error, EndingNotSaved)
+            made = await self.end(INTERRUPTED, self.result_not_saved_step() if unsaved else None)
             tidy_later(self.run_id, self.state)
             if made is not None:
                 logger.exception("the plan for %s failed on the way", self.plan_date)
