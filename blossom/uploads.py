@@ -23,7 +23,7 @@ import threading
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Final, NamedTuple, NoReturn
 
-from PIL import Image, ImageOps, JpegImagePlugin, PngImagePlugin
+from PIL import Image, ImageMath, ImageOps, JpegImagePlugin, PngImagePlugin
 from python_multipart.exceptions import FormParserError
 from python_multipart.multipart import MultipartParser, parse_options_header
 
@@ -449,11 +449,25 @@ def _encoded(data: bytes, limit: int) -> Prepared:
             ImageOps.exif_transpose(opened, in_place=True)
         upright: Image.Image = opened
         if upright.mode.startswith("I"):
-            # Wide gray, 16 bits a pixel: scaled to 8 bits rather than clipped to white.
-            upright = upright.convert("I").point(lambda value: value * (1 / 257), "L")
+            upright = narrowed(upright)
         alpha = upright.mode in {"RGBA", "LA", "PA"} or "transparency" in upright.info
         pixels = upright.convert("RGBA" if alpha else "RGB")
     return stepped(pixels, limit)
+
+
+def narrowed(image: Image.Image) -> Image.Image:
+    """Wide gray, 16 bits a pixel, scaled to 8 bits rather than clipped to white. A
+    transparency color names one 16-bit value, so it becomes an alpha band over exactly the
+    pixels holding that value, read before the scaling joins neighboring values."""
+    wide = image.convert("I")
+    shade = image.info.get("transparency")
+    gray = wide.point(lambda value: value * (1 / 257)).convert("L")
+    gray.info.pop("transparency", None)
+    if not isinstance(shade, int):
+        return gray
+    kept = ImageMath.lambda_eval(lambda band: band["wide"] != shade, wide=wide)
+    alpha = kept.point(lambda value: value * 255).convert("L")
+    return Image.merge("LA", (gray, alpha))
 
 
 def stepped(pixels: Image.Image, limit: int) -> Prepared:

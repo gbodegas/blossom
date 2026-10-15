@@ -340,9 +340,10 @@ class ImportDraftsStore:
     name = "import_drafts"
     retention_policy = (
         "Keep a review's screenshots, what was read from them, and any progress saved for "
-        "later until the review finishes or is discarded, and never past 48 hours from when "
-        "it was started. Unavailable and removed are two steps. From the instant a review is "
-        "48 hours old, nothing of it can be read. When a review finishes or is discarded, its "
+        "later available until the review finishes or is discarded, and never past 48 hours "
+        "from when it was started. Unavailable and removed are two steps. From the instant a "
+        "review is 48 hours old, nothing of it can be read. When a review finishes or is "
+        "discarded, its "
         "screenshots, readings and progress are removed from the file at once, or by the next "
         "hourly sweep or the next start. Whatever of a review is left at 48 hours, what is left "
         "of a closed review included (its ids, times, page key and the keys of rows set "

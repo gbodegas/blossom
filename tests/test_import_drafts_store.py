@@ -214,6 +214,11 @@ def test_the_retention_policy_says_removed_from_the_file_and_never_erased() -> N
     assert "by the first sweep after those 48 hours, or at the next start" in policy
     assert "From the instant a review is 48 hours old, nothing of it can be read." in policy
     assert "Unavailable and removed are two steps." in policy
+    assert policy.startswith(
+        "Keep a review's screenshots, what was read from them, and any progress saved for "
+        "later available until the review finishes or is discarded, and never past 48 hours "
+        "from when it was started."
+    )
     assert "at the same 48 hours" not in policy
 
 

@@ -443,6 +443,23 @@ def test_a_sixteen_bit_gray_png_keeps_its_shade() -> None:
     assert 120 <= red <= 135
 
 
+def test_a_sixteen_bit_gray_transparency_color_hides_exactly_its_own_pixels() -> None:
+    shades = [0, 32768, 32700, 65535, 32768, 16384, 32896, 32768]
+    wide = Image.new("I;16", (len(shades), 1))
+    wide.putdata(shades)
+    buffer = io.BytesIO()
+    wide.save(buffer, format="PNG", transparency=32768)
+    assert Image.open(io.BytesIO(buffer.getvalue())).info["transparency"] == 32768
+
+    prepared = Image.open(io.BytesIO(prepare_image(buffer.getvalue()).png))
+
+    assert prepared.mode == "RGBA"
+    alpha = [prepared.getpixel((x, 0))[3] for x in range(len(shades))]  # type: ignore[index]
+    assert alpha == [0 if shade == 32768 else 255 for shade in shades]
+    assert prepared.getpixel((3, 0))[:3] == (255, 255, 255)  # type: ignore[index]
+    assert prepared.getpixel((0, 0))[:3] == (0, 0, 0)  # type: ignore[index]
+
+
 def test_broken_and_animated_images_are_refused_each_alone() -> None:
     whole = jpeg(Image.new("RGB", (64, 64), (10, 200, 10)))
     good = png()
