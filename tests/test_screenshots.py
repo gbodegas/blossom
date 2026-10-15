@@ -926,3 +926,54 @@ def test_forty_headings_fit_and_forty_one_do_not() -> None:
 
     assert homework_reading(an_answer(headings=headings(40))).failure is None
     assert homework_reading(an_answer(headings=headings(41))) == (None, "not_valid")
+
+
+def test_top_cards_matching_only_the_start_of_an_open_ended_run_prove_nothing() -> None:
+    """A's Wednesday runs to its bottom with [Reading log, Worksheet 3]. B shows a Reading log,
+    then Thursday: had B continued Wednesday, the worksheet would come before Thursday, so B's
+    top card stays an item that couldn't be read."""
+    a = homework(
+        due("English 8", "Reading log", 200, instruction=LOG_WORDS),
+        due("Math 8", "Worksheet 3", 300),
+        headings=[heading("Wednesday 10/7/2026", 150)],
+    )
+    b = homework(
+        due("English 8", "Reading log", 20, instruction=LOG_WORDS),
+        due("Math 8", "U1 Quiz 3", 300),
+        headings=[heading("Thursday 10/8/2026", 250)],
+    )
+
+    assembly = homework_assembly([stored_homework("a", a), stored_homework("b", b)], now=NOW)
+
+    assert [item.card.title for item in assembly.unread if item.card] == ["Reading log"]
+    log = next(row.reading for row in assembly.rows if row.reading.title == "Reading log")
+    assert [(c.asserted_value, c.seen_in) for c in log.claims] == [("2026-10-07", DAY_HEADER)]
+
+
+def test_a_card_not_read_whole_takes_no_part_in_proving_an_overlap() -> None:
+    """A card whose title the volume indicator hid matches its copy in every field read, yet
+    proves nothing: B's Vocab 4 after it gets no day from A's Wednesday and stays an item."""
+    hidden = {"field": "title", "reason": "covered by an overlay"}
+
+    def hidden_title(y_top: int) -> dict[str, object]:
+        card = due("English 8", "Hidden", y_top)
+        card.update(title=None, uncertain=[hidden])
+        return card
+
+    a = homework(
+        hidden_title(200),
+        due("English 8", "Vocab 4", 300),
+        headings=[heading("Wednesday 10/7/2026", 150)],
+    )
+    b = homework(
+        hidden_title(20),
+        due("English 8", "Vocab 4", 120),
+        due("Math 8", "U1 Quiz 3", 400),
+        headings=[heading("Thursday 10/8/2026", 350)],
+    )
+
+    assembly = homework_assembly([stored_homework("a", a), stored_homework("b", b)], now=NOW)
+
+    titles = sorted(str(item.card.title) for item in assembly.unread if item.card)
+    assert titles == ["None", "None", "Vocab 4"]
+    assert {row.reading.title for row in assembly.rows} == {"Vocab 4", "U1 Quiz 3"}
