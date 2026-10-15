@@ -17,8 +17,8 @@ import logging
 import pathlib
 import re
 import sqlite3
-from collections.abc import Callable, Iterator
-from datetime import date
+from collections.abc import Callable, Iterable, Iterator
+from datetime import date, tzinfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +34,7 @@ from blossom.reconciliation import SourceChannel
 from blossom.routes.grades import GradesRead, class_reads, grades_read
 from blossom.routes.homework_scores import (
     CheckStanding,
+    GradesToCheck,
     HerAccount,
     account_of,
     account_read,
@@ -55,7 +56,12 @@ from blossom.stores.gradebook import (
     TermNotOnRecord,
     ViewNotOnRecord,
 )
-from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
+from blossom.stores.project_state import (
+    Assignment,
+    AssignmentKind,
+    ListedHomework,
+    ProjectStateStore,
+)
 from tests.support import (
     FIXTURES,
     HER_PAGE,
@@ -2031,13 +2037,22 @@ hand-ins. Never the school's reports or the family's checks."""
 
 def grades_asked(reader: str, folder: pathlib.Path, status: str) -> tuple[list[str], str]:
     """The statements Grades asks in a household whose linked result the school reports with
-    ``status``, beside her Done, masked as ``masked`` does, and the page."""
+    ``status``, beside her Done and two homework no link names, masked as ``masked`` does, and
+    the page."""
     folder.mkdir()
     with household_client(reader, folder) as client:
         sign_in_as(client, reader)
         store = store_of(client)
-        store.put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        store.put_on_record(
+            [
+                in_week(DIAGRAM_ID, DIAGRAM),
+                in_week(LAB_ID, "Lab Report", date(2026, 8, 19)),
+                in_week(OTHER_ID, "Lab Notebook"),
+            ],
+            {},
+        )
         reported(store, "done", DIAGRAM_ID)
+        reported(store, "done", LAB_ID)
         text = REPORT.replace(DIAGRAM_ROW, DIAGRAM_ROW.replace("Missing", status.ljust(7)))
         class_id = saved(store, text)
         decided(store, class_id, result_named(store, class_id))
@@ -2069,6 +2084,13 @@ def test_grades_asks_the_same_statements_with_check_together_shown_or_not(
     links = next(at for at, one in enumerate(shown) if "FROM grade_homework_links" in one)
     added = shown[links - 1 : shown.index("COMMIT")]
     assert [first_table(one) for one in added] == CHECK_TOGETHER_READS
+    named = [one for one in added if "json_each(" in one]
+    assert [first_table(one) for one in named] == [
+        "assignments",
+        "student_reports",
+        "hand_in_events",
+    ]
+    assert all(f"json_each('[\"{DIAGRAM_ID}\"]')" in one for one in named)
     assert shown.count("BEGIN DEFERRED") == 1
     assert [first_table(one) for one in shown].count("grade_homework_links") == 1
 
@@ -2390,3 +2412,85 @@ def test_grades_reads_her_account_as_her_pages_do_from_what_stands(
     assert on_grades_reads == expected
     assert on_her_pages == expected
     assert check_standing(on_grades_reads) is check_standing(on_her_pages)
+
+
+def test_grades_reads_only_the_linked_homework_and_her_chains_for_them(
+    store: ProjectStateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Cell Diagram" linked and Done beside "Lab Notebook", Done and on record with no link:
+    the homework read and both of her chain readers are each handed the linked homework alone."""
+    reported(store, "done", DIAGRAM_ID)
+    reported(store, "done", OTHER_ID)
+    class_id, _ = linked_report(store)
+    handed_to: list[tuple[str, list[str]]] = []
+    for name in ("homework_readings", "update_readings", "hand_in_readings"):
+        monkeypatch.setattr(store, name, noting(handed_to, name, getattr(store, name)))
+
+    read = on_grades(store)
+
+    assert listed(read) == {class_id: [DIAGRAM]}
+    assert handed_to == [
+        ("homework_readings", [DIAGRAM_ID]),
+        ("update_readings", [DIAGRAM_ID]),
+        ("hand_in_readings", [DIAGRAM_ID]),
+    ]
+
+
+def noting(
+    handed_to: list[tuple[str, list[str]]], name: str, real: Callable[..., object]
+) -> Callable[[Iterable[str]], object]:
+    """``real``, noting in ``handed_to`` the IDs each call hands it, under ``name``."""
+
+    def call(ids: Iterable[str]) -> object:
+        wanted = list(ids)
+        handed_to.append((name, wanted))
+        return real(wanted)
+
+    return call
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_a_list_beside_a_count_that_can_t_be_worked_out_is_never_shown(
+    reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Grades handed lists and an unknown count together, built by hand: the page says the
+    count can't be worked out, once, and shows no count and no list."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        reported(store, "done", DIAGRAM_ID)
+        class_id, _ = linked_report(store)
+        real = grades_read
+
+        def both(
+            store: ProjectStateStore, term: tuple[str, str], base: str, zone: tzinfo
+        ) -> GradesRead:
+            read = real(store, term, base, zone)
+            item = ListedHomework(DIAGRAM_ID, BIOLOGY, DIAGRAM, date(2026, 8, 20))
+            return GradesRead(read.rows, GradesToCheck({class_id: (item,)}, True))
+
+        monkeypatch.setattr("blossom.routes.grades.grades_read", both)
+        page = grades_of(reader, client)
+
+    assert page.count(CANT_WORK_OUT) == 1
+    assert grade_rows(page)[0] == CANT_WORK_OUT
+    assert "Check together (" not in page
+    assert ": to check together" not in page
+
+
+def test_a_listed_title_is_written_as_the_homework_s_own_text(week: TestClient) -> None:
+    """A title as on record sits in the authored-text span her other titles use, so a long
+    word in it wraps within the line."""
+    store = store_of(week)
+    reported(store, "done", DIAGRAM_ID)
+    linked_report(store)
+
+    page = grades_of("her", week)
+
+    assert re.search(
+        r'<a class="assignment-link" href="/student/assignments/assignment-cell-diagram" '
+        r'aria-label="Cell Diagram, Biology: to check together">'
+        r'<span class="authored-text">Cell Diagram</span></a>',
+        page,
+    )
