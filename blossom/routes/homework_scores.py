@@ -450,8 +450,12 @@ def week_to_check(
     failed: bool,
 ) -> WeekToCheck:
     """Her week's line over ``reach``: each homework's ID, in the week's order, with whether
-    the school's Missing stands beside her Done. The count is unknown when a homework there is
-    indeterminate, or after a covered failure (``failed``) unless none there could count."""
+    the family check lists it (the school's Missing email beside her Done). ``checks`` holds
+    each homework whose linked result's Status is Missing or Incomplete, with its standing
+    from her Done or Turned in. The line lists every homework of either kind once when any
+    has a counted grade basis, and none otherwise. The count is unknown, and the line lists
+    none, when a homework there is indeterminate, or after a covered failure (``failed``)
+    unless none there could count."""
     said = dict.fromkeys(one for one, _ in reach)
     email = {one for one, missing in reach if missing}
     standing = {one: checks[one].standing for one in said if one in checks}
