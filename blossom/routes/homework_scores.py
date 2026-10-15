@@ -55,6 +55,12 @@ row with its standing against the result. ``other_results`` names, from the same
 other result that could be the same homework: each shares a candidate with the result,
 whatever decisions stand. None of the three reads anything more or writes anything.
 
+Check together is worked out from the same values and one reading of the record: ``to_check``
+gives each homework with a result to check together, its standing from her own account, and
+those results. Her Done and her Turned in are each read literally and apart, so a record of
+hers that can't be read never cancels the other's evidence; when neither readable record says
+either and one can't be read, the standing is unknown. Nothing is stored or written.
+
 Nothing a plan is made from reads this module or holds what it returns.
 """
 
@@ -77,12 +83,14 @@ from blossom.grades.school_scores import (
     Waiting,
     candidate_homework,
     result_of,
+    results_to_check,
     school_scores,
     waiting_results,
 )
 from blossom.grades.wording import presence_words, report_names, score_line
+from blossom.hand_in import TURNED_IN
 from blossom.homework_search import ResultsPage, found, page_number, page_of, terms_of
-from blossom.noticing import read_date
+from blossom.noticing import Everything, read_date
 from blossom.reconciliation import SourceRecord
 from blossom.routes.navigation import CLASS_AT, RESULT_HOMEWORK_AT, address
 from blossom.stores.gradebook import (
@@ -93,7 +101,7 @@ from blossom.stores.gradebook import (
     HomeworkClasses,
     class_for,
 )
-from blossom.stores.project_state import Assignment
+from blossom.stores.project_state import DONE, Assignment
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +248,33 @@ class OtherResult:
     day: date | None
 
 
+class CheckStanding(StrEnum):
+    """A homework's standing with a result to check together: counted, not counted, or unknown
+    while a record of hers that can't be read leaves it open."""
+
+    COUNTED = "counted"
+    NOT_COUNTED = "not_counted"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True)
+class HerAccount:
+    """Her own account of one homework as Check together reads it: whether her update stands at
+    Done and whether her hand-in stands at Turned in, each None when that record can't be read."""
+
+    done: bool | None
+    turned_in: bool | None
+
+
+@dataclass(frozen=True)
+class ToCheck:
+    """A homework with a result to check together: its standing, and each such result in the
+    rules' result order."""
+
+    standing: CheckStanding
+    results: tuple[Result, ...]
+
+
 @dataclass(frozen=True)
 class HomeworkFound:
     """One page of the homework a search found for a result: the page as ``page_of`` gives it,
@@ -315,6 +350,42 @@ def title_of(value: CurrentValue) -> str:
     title left blank, unreadable or not in the copy."""
     cell = value.cells["assignment"]
     return cell[1] if cell[0] is Presence.REPORTED else presence_words("Title", cell)
+
+
+def account_of(everything: Everything, assignment_id: str) -> HerAccount:
+    """Her account of the homework ``assignment_id`` from one reading of the record: her update
+    and her hand-in, each read on its own."""
+    status = everything.statuses.get(assignment_id)
+    hand_in = everything.hand_ins.get(assignment_id)
+    return HerAccount(
+        done=None if status is None or status.updates_unavailable else status.status == DONE,
+        turned_in=None
+        if assignment_id in everything.hand_ins_unavailable
+        else hand_in is not None and hand_in.state == TURNED_IN,
+    )
+
+
+def check_standing(account: HerAccount) -> CheckStanding:
+    """The standing of a homework with a result to check together: counted while a readable
+    record says Done or Turned in, whatever the other says; else unknown while one can't be read."""
+    if account.done or account.turned_in:
+        return CheckStanding.COUNTED
+    if account.done is None or account.turned_in is None:
+        return CheckStanding.INDETERMINATE
+    return CheckStanding.NOT_COUNTED
+
+
+def to_check(
+    rules: RuleValues, links: Collection[Link], everything: Everything
+) -> dict[str, ToCheck]:
+    """Each homework with a result to check together, by assignment ID, from what
+    ``rule_values`` made of one page read, a parent's links and the same reading's account of
+    hers. Two confirmed links that name one result raise ``HomeworkLinksConflict``."""
+    counted = results_to_check(rules.homework, rules.results, rules.classes, decided=links)
+    return {
+        assignment_id: ToCheck(check_standing(account_of(everything, assignment_id)), results)
+        for assignment_id, results in counted.items()
+    }
 
 
 def scores_left_out(error: GradeValueUndecodable) -> None:

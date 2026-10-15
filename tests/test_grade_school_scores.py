@@ -35,7 +35,9 @@ from blossom.grades.school_scores import (
     Waiting,
     candidate_homework,
     result_of,
+    results_to_check,
     school_scores,
+    status_to_check,
     waiting_results,
 )
 
@@ -73,6 +75,7 @@ def result(
     day: date | None = DAY,
     scored: bool = True,
     shown: bool = True,
+    status: str | None = None,
 ) -> Result:
     """A result with a current value, its date fully resolved when it has one."""
     return Result(
@@ -84,6 +87,7 @@ def result(
         resolved=day is not None,
         scored=scored,
         shown=shown,
+        status=status,
     )
 
 
@@ -776,6 +780,7 @@ def test_the_rules_read_no_state_about_an_assignment_and_no_term_in_use() -> Non
         "resolved",
         "scored",
         "shown",
+        "status",
     ]
     assert list(inspect.signature(school_scores).parameters) == [
         "homework",
@@ -815,12 +820,14 @@ POINTS: dict[Presence, Cell] = {
 
 
 def current(**cells: Cell) -> dict[str, Cell]:
-    """A result's cells: a reported title and score, with ``cells`` over them."""
+    """A result's cells: a reported title and score and a blank Status, with ``cells`` over
+    them."""
     return {
         "assignment": (Presence.REPORTED, TITLE),
         "points": (Presence.REPORTED, "25.0"),
         "max_points": (Presence.REPORTED, "30.0"),
         "average": (Presence.REPORTED, "83.3"),
+        "status": BLANK,
         **cells,
     }
 
@@ -1206,3 +1213,315 @@ def test_another_year_s_result_is_a_candidate_until_both_dates_rule_it_out() -> 
     assert candidate_homework([one], [dated, result()], both) == (
         could_be("result-1", "homework-1", stood="homework-1"),
     )
+
+
+# ------------------------------------------------------------- results to check together
+
+COUNTED_STATUSES = [
+    "Missing",
+    "Incomplete",
+    "MISSING",
+    " missing ",
+    " Incomplete ",
+    "Missing\t",
+    "\nincomplete\n",
+    "mIsSiNg",
+]
+"""Statuses the test counts: either word with its ends trimmed and its case ignored."""
+NOT_COUNTED_STATUSES = [
+    "Valid",
+    "In complete",
+    "Miss ing",
+    "In  complete",
+    "Missing work",
+    "Missing?",
+    "Late",
+    "",
+    " ",
+]
+"""Statuses the test never counts: an interior space kept, another word, or nothing."""
+
+
+@pytest.mark.parametrize("status", COUNTED_STATUSES)
+def test_a_status_of_missing_or_incomplete_counts_with_ends_trimmed_and_case_ignored(
+    status: str,
+) -> None:
+    one = homework()
+    linked = result(status=status)
+
+    assert status_to_check(status) is True
+    assert results_to_check(
+        [one], [linked], connected(one), decided=[link("homework-1", "result-1")]
+    ) == {"homework-1": (linked,)}
+
+
+@pytest.mark.parametrize("status", [*NOT_COUNTED_STATUSES, None])
+def test_any_other_status_or_none_reported_never_counts_and_no_interior_space_is_removed(
+    status: str | None,
+) -> None:
+    one = homework()
+    linked = result(status=status)
+
+    assert status_to_check(status) is False
+    assert (
+        results_to_check([one], [linked], connected(one), decided=[link("homework-1", "result-1")])
+        == {}
+    )
+
+
+def test_the_status_test_reads_each_run_of_whitespace_as_one_space() -> None:
+    """Runs collapse to one space and are never removed, so a word split by a run of spaces,
+    a tab or a line break stays two words."""
+    assert [status_to_check(text) for text in ("In\tcomplete", "Miss\n ing", "In complete")] == [
+        False,
+        False,
+        False,
+    ]
+    assert status_to_check("\t Missing \r\n") is True
+
+
+@pytest.mark.parametrize(
+    ("cell", "status"),
+    [
+        pytest.param((Presence.REPORTED, " Missing "), " Missing ", id="reported, as written"),
+        pytest.param(BLANK, None, id="left blank"),
+        pytest.param((Presence.UNREADABLE, "Missing"), None, id="unreadable"),
+        pytest.param((Presence.NOT_CAPTURED, ""), None, id="not in the copy"),
+    ],
+)
+def test_a_result_s_status_is_the_school_s_cell_as_written_only_when_reported(
+    cell: Cell, status: str | None
+) -> None:
+    value = CurrentValue(cells=current(status=cell), report_id="report", order=1)
+
+    read = result_of(GEOMETRY, "T1", "result-1", value, DAY)
+
+    assert read == result(status=status)
+    assert bool(
+        results_to_check(
+            [homework()], [read], connected(homework()), decided=[link("homework-1", "result-1")]
+        )
+    ) is (status is not None)
+
+
+def test_a_parent_s_status_assertion_is_never_read_as_the_school_s_status() -> None:
+    """Valid asserted on a Missing result leaves it counted, and Missing asserted on a Valid
+    one never counts it."""
+    told_valid = {"status": (Presence.REPORTED, "Valid")}
+    told_missing = {"status": (Presence.REPORTED, "Missing")}
+    missing = CurrentValue(
+        cells=current(status=(Presence.REPORTED, "Missing")),
+        report_id="report",
+        order=1,
+        asserted=told_valid,
+    )
+    valid = CurrentValue(
+        cells=current(status=(Presence.REPORTED, "Valid")),
+        report_id="report",
+        order=1,
+        asserted=told_missing,
+    )
+    links = [link("homework-1", "result-1")]
+    one = homework()
+
+    on_missing = result_of(GEOMETRY, "T1", "result-1", missing, DAY)
+    on_valid = result_of(GEOMETRY, "T1", "result-1", valid, DAY)
+
+    assert on_missing.status == "Missing"
+    assert on_valid.status == "Valid"
+    assert results_to_check([one], [on_missing], connected(one), decided=links) == {
+        "homework-1": (on_missing,)
+    }
+    assert results_to_check([one], [on_valid], connected(one), decided=links) == {}
+
+
+@pytest.mark.parametrize(
+    ("cells", "counted"),
+    [
+        pytest.param({"status": (Presence.REPORTED, "Valid")}, False, id="Valid"),
+        pytest.param(
+            {"points": (Presence.REPORTED, "0.0"), "status": BLANK},
+            False,
+            id="points 0 with the Status blank",
+        ),
+        pytest.param(
+            {"points": (Presence.REPORTED, "1.0"), "status": (Presence.REPORTED, "Valid")},
+            False,
+            id="a low score",
+        ),
+        pytest.param(
+            {"points": BLANK, "status": (Presence.REPORTED, "Missing")},
+            True,
+            id="Missing with the points blank",
+        ),
+        pytest.param(
+            {"points": (Presence.UNREADABLE, "EX"), "status": (Presence.REPORTED, "Incomplete")},
+            True,
+            id="Incomplete with the points unreadable",
+        ),
+        pytest.param(
+            {"points": (Presence.REPORTED, "0.0"), "status": (Presence.REPORTED, "Missing")},
+            True,
+            id="Missing with a zero",
+        ),
+    ],
+)
+def test_a_linked_result_counts_by_its_status_and_its_points_are_not_read(
+    cells: dict[str, Cell], counted: bool
+) -> None:
+    value = CurrentValue(cells=current(**cells), report_id="report", order=1)
+    read = result_of(GEOMETRY, "T1", "result-1", value, DAY)
+    one = homework()
+
+    assert (
+        bool(
+            results_to_check(
+                [one], [read], connected(one), decided=[link("homework-1", "result-1")]
+            )
+        )
+        is counted
+    )
+
+
+def test_only_a_confirmed_link_counts_never_the_rules_pair_or_a_pair_kept_apart() -> None:
+    """The rules stand the pair and its score shows, yet nothing counts without a link; a
+    pair kept apart counts nothing either."""
+    one = homework()
+    missing = result(status="Missing")
+    classes = connected(one)
+
+    assert school_scores([one], [missing], classes) == {"homework-1": (score_at(linked=False),)}
+    assert results_to_check([one], [missing], classes) == {}
+    assert (
+        results_to_check([one], [missing], classes, decided=[apart("homework-1", "result-1")]) == {}
+    )
+    assert results_to_check(
+        [one], [missing], classes, decided=[link("homework-1", "result-1")]
+    ) == {"homework-1": (missing,)}
+
+
+def test_a_linked_result_counts_only_while_its_class_connects_and_it_is_still_shown() -> None:
+    one = homework()
+    links = [link("homework-1", "result-1")]
+    missing = result(status="Missing")
+
+    assert results_to_check([one], [missing], connected(one, to=(BIOLOGY,)), decided=links) == {}
+    assert results_to_check([one], [missing], {}, decided=links) == {}
+    assert (
+        results_to_check(
+            [one], [dataclasses.replace(missing, shown=False)], connected(one), decided=links
+        )
+        == {}
+    )
+    assert results_to_check([one], [missing], connected(one), decided=links) == {
+        "homework-1": (missing,)
+    }
+
+
+def test_a_link_counts_whatever_titles_dates_and_twins_say() -> None:
+    """A confirmed link is read as it stands: another title, another day and a twin of the
+    homework change nothing about what it counts."""
+    one = homework()
+    twin = homework("homework-2")
+    other = result(status="Missing", title="Something Else", day=NEXT_DAY)
+
+    assert results_to_check(
+        [one, twin], [other], connected(one, twin), decided=[link("homework-1", "result-1")]
+    ) == {"homework-1": (other,)}
+
+
+def test_a_link_naming_homework_not_given_counts_nothing() -> None:
+    one = homework()
+    missing = result(status="Missing")
+
+    assert (
+        results_to_check(
+            [one], [missing], connected(one, homework("gone")), decided=[link("gone", "result-1")]
+        )
+        == {}
+    )
+
+
+def test_each_homework_is_given_once_with_each_counted_result_in_the_order_given() -> None:
+    """Two linked results of two classes, both Missing, and a third linked one Valid: the
+    homework is given once, with the two in the order the results came."""
+    one = homework()
+    biology = result("result-b", class_id=BIOLOGY, status="Missing")
+    geometry = result("result-g", status="Incomplete")
+    valid = result("result-v", status="Valid")
+    links = [
+        link("homework-1", "result-g"),
+        link("homework-1", "result-b"),
+        link("homework-1", "result-v"),
+    ]
+
+    assert results_to_check(
+        [one], [biology, valid, geometry], connected(one, to=(GEOMETRY, BIOLOGY)), decided=links
+    ) == {"homework-1": (biology, geometry)}
+
+
+def test_results_to_check_are_refused_whole_on_two_confirmed_links_naming_one_result() -> None:
+    one, two = homework(), homework("homework-2")
+    links = [link("homework-1", "result-1"), link("homework-2", "result-1")]
+
+    with pytest.raises(HomeworkLinksConflict) as raised:
+        results_to_check([one, two], [result(status="Missing")], connected(one, two), decided=links)
+
+    assert isinstance(raised.value, GradeValueUndecodable)
+    assert raised.value.__cause__ is None
+
+
+def test_results_to_check_take_the_inputs_the_scores_take_and_change_none_of_them() -> None:
+    one = homework()
+    results = [result(status="Missing")]
+    classes = connected(one)
+    links = [link("homework-1", "result-1")]
+    before = (dataclasses.replace(one), list(results), dict(classes), list(links))
+
+    results_to_check([one], results, classes, decided=links)
+
+    assert inspect.signature(results_to_check).parameters.keys() == (
+        inspect.signature(school_scores).parameters.keys()
+    )
+    assert (one, results, classes, links) == before
+
+
+def test_g3c_i2_only_a_confirmed_link_to_a_result_reported_missing_or_incomplete_counts() -> None:
+    """One class with a result for each value that never counts, each linked to homework of its
+    own, besides one unlinked, one kept apart and one the rules stand: only the one result
+    reported " Incomplete " counts."""
+    reported, valid = Presence.REPORTED, (Presence.REPORTED, "Valid")
+    linked_cells: dict[str, dict[str, Cell]] = {
+        "low-score": {"points": (reported, "1.0"), "status": valid},
+        "zero": {"points": (reported, "0.0"), "status": BLANK},
+        "valid": {"status": valid},
+        "blank": {"status": BLANK},
+        "unreadable": {"status": (Presence.UNREADABLE, "Missing")},
+        "not-captured": {"status": (Presence.NOT_CAPTURED, "")},
+        "in-complete": {"status": (reported, "In complete")},
+        "miss-ing": {"status": (reported, "Miss ing")},
+        "counts": {"status": (reported, " Incomplete ")},
+    }
+    missing: dict[str, Cell] = {"status": (reported, "Missing")}
+    every = {**linked_cells, "unlinked": missing, "apart": missing, "stood": missing}
+
+    def read(name: str, cells: dict[str, Cell]) -> Result:
+        told = {"status": (reported, "Missing")} if name == "valid" else {}
+        value = CurrentValue(
+            cells=current(assignment=(reported, name), **cells),
+            report_id="report",
+            order=1,
+            asserted=told,
+        )
+        return result_of(GEOMETRY, "T1", f"result-{name}", value, DAY)
+
+    results = [read(name, cells) for name, cells in every.items()]
+    work = [homework(name, title=name) for name in every if name != "unlinked"]
+    work.append(homework("unlinked", title="Another Title"))
+    links = [link(name, f"result-{name}") for name in linked_cells]
+    links.append(apart("apart", "result-apart"))
+
+    counted = results_to_check(work, results, connected(*work), decided=links)
+
+    assert counted == {"counts": (read("counts", linked_cells["counts"]),)}
+    assert "stood" in school_scores(work, results, connected(*work), decided=links)
