@@ -143,9 +143,13 @@ With the app running as the README describes:
   run. JSON for now.
 - <http://127.0.0.1:8000/docs> is the interactive API page, where the
   parent's routes can be driven directly. The "too much" signal is sent by
-  posting to `/student/workload-signals` with no body; the same path lists
-  the signals still kept, and a delete on one removes it. Giving and taking
-  back a signal are hers: a parent signed in gets 403.
+  posting to `/student/workload-signals` with `signal_id`, a new id of 32
+  lowercase hexadecimal characters such as `uuid.uuid4().hex`, `evening`, the
+  household's today as YYYY-MM-DD, and `issued_at`, the time of the press in
+  ISO 8601 with its offset; make a fresh id and time for each deliberate press,
+  and send both unchanged to retry it. The same path lists the signals still
+  kept, and a delete on one removes the signal. Giving and taking back a
+  signal are hers: a parent signed in gets 403.
 
 With neither passphrase set, nothing here has a login: the views are separate
 pages, and anyone who can reach the server can open all of them. That is the
@@ -288,9 +292,13 @@ Three files under `.local/` outlive a restart:
   Kept for the school year. A draft nobody decides within two weeks of its
   evening is closed as expired, and one a later plan for the same evening is
   published over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
-  any words she added, kept for a week and removable from her page, and so
-  do her requests for help with what a parent did with each, kept until
-  resolved and for two weeks after. The id of every request is kept for good,
+  any words she added, kept for a week and removable from her page. The id of
+  each press is kept with one time, the later of when it was handled and when
+  its page issued it, and nothing else of it, so a press sent again records
+  nothing; a cleanup removes it once more than seven days have passed since
+  that time, which can be up to seven days and five minutes after the press was
+  handled. Her requests for help live here too, with what a parent did with
+  each, kept until resolved and for two weeks after. The id of every request is kept for good,
   and nothing else of it, so a form sent again or an old tab never asks twice;
   requests taken back before ids were kept left none. Her homework notes are
   here as well: each

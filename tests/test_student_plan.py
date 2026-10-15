@@ -81,6 +81,7 @@ from tests.support import (
     forgetful_fixture_plan,
     form_fields,
     fresh_plan_fields,
+    fresh_signal_fields,
     light_fixture_plan,
     model_graphs,
     ok,
@@ -569,7 +570,11 @@ def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
 
 def test_times_read_as_she_reads_a_clock() -> None:
     with browser() as client:
-        client.post("/student/actions/too-much", follow_redirects=False)
+        client.post(
+            "/student/actions/too-much",
+            data=fresh_signal_fields(client),
+            follow_redirects=False,
+        )
         page = client.get(PAGE).text
 
     assert re.search(r"said at \d{1,2}:\d{2} [AP]M\.", page)
@@ -743,7 +748,7 @@ def test_the_plan_button_follows_the_evening_as_it_stands() -> None:
     """The label and the words beside it come from the plan and the signal; nothing here plans."""
     with browser(plan=light_fixture_plan) as client:
         nothing_yet = client.get(PAGE).text
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         signaled_no_plan = client.get(PAGE).text
         client.post("/student/actions/plan", data=plan_form(client))
         small_plan_signaled = client.get(PAGE).text
@@ -773,7 +778,7 @@ def test_a_full_plan_under_a_signal_offers_a_smaller_one_and_keeps_the_plan() ->
         client.post("/student/actions/plan", data=plan_form(client))
         body = client.get("/student/plans/today").json()["body"]
         saved = state_of(client).drafts.latest_for(PLAN_DATE)
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         page = client.get(PAGE).text
         after = client.get("/student/plans/today").json()["body"]
 
@@ -836,7 +841,7 @@ def test_refresh_is_a_link_on_both_pages_and_a_visit_marks_nothing() -> None:
 def test_a_press_after_the_plan_tells_her_to_plan_again_in_her_words() -> None:
     with browser() as client:
         client.post("/student/actions/plan", data=plan_form(client))
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         page = client.get(PAGE).text
         today = client.get("/student/plans/today").json()
 
@@ -855,7 +860,7 @@ def test_her_page_measures_the_plan_against_the_evening_whatever_a_parent_said()
         client.post("/student/actions/plan", data=plan_form(client))
         draft_id = client.get("/student/plans/today").json()["draft_id"]
         client.post(f"/parent/approvals/{draft_id}", json={"approved": True})
-        client.post("/student/actions/too-much")
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         today = client.get("/student/plans/today").json()
         reviewed = client.get(f"/parent/approvals/{draft_id}").json()
 
@@ -869,7 +874,9 @@ def test_her_page_measures_the_plan_against_the_evening_whatever_a_parent_said()
 
 def test_taking_the_signal_back_after_a_reduced_plan_says_so_in_her_words() -> None:
     with browser(plan=light_fixture_plan) as client:
-        signal_id = client.post("/student/workload-signals").json()["signal"]["signal_id"]
+        signal_id = client.post(
+            "/student/workload-signals", json=fresh_signal_fields(client)
+        ).json()["signal"]["signal_id"]
         client.post("/student/actions/plan", data=plan_form(client))
         reduced = client.get("/student/plans/today").json()
         client.delete(f"/student/workload-signals/{signal_id}")

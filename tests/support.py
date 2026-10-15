@@ -31,6 +31,7 @@ from html.parser import HTMLParser
 from time import monotonic
 from typing import Annotated, Any, Protocol, cast
 from urllib.parse import parse_qs, unquote, urlsplit
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -91,6 +92,7 @@ from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.routes.navigation import assignment_anchor, details_href
 from blossom.routes.runs import (
     ISSUED_AT,
+    ISSUED_AT_FORM,
     RUN_ID,
     PlanGraphs,
     fresh_plan_form,
@@ -1259,12 +1261,64 @@ def family_plan(client: TestClient, plan_date: str, **changed: str) -> dict[str,
     return plan_form(client, "/parent", plan_date=plan_date, **changed)
 
 
-MINTED_FIELD = re.compile(rf'(<input type="hidden" name="(?:{RUN_ID}|{ISSUED_AT})" value=")[^"]*"')
+TOO_MUCH_ACTION = "/student/actions/too-much"
+
+
+def signal_form(client: TestClient, **changed: str) -> dict[str, str]:
+    """The hidden fields of her Too much right now form as her week renders it now, read the
+    way a browser sends them back, with ``changed`` over them. Fails when her week shows no
+    Too much right now button."""
+    shown = client.get(HER_PAGE, headers=PAGE_HEADERS)
+    assert f'action="{TOO_MUCH_ACTION}"' in shown.text, "her week shows no Too much right now"
+    return {**form_fields(shown.text, TOO_MUCH_ACTION), **changed}
+
+
+def fresh_signal_fields(client: TestClient, **changed: str) -> dict[str, str]:
+    """The fields a fresh Too much right now form would carry for today, made from the state
+    without showing a page, for presses a test makes where no page offers the button."""
+    state = state_of(client)
+    issued = state.real_clock.now().astimezone(UTC).strftime(ISSUED_AT_FORM)
+    fields = {"signal_id": uuid4().hex, "evening": state.clock.today().isoformat()}
+    return {**fields, "issued_at": issued, **changed}
+
+
+def signal_kept_before(
+    client: TestClient,
+    evening: date,
+    detail: str | None = None,
+    *,
+    signal_id: str | None = None,
+    given_at: datetime | None = None,
+) -> str:
+    """A signal about ``evening`` as a file kept it before a press recorded one per evening:
+    written straight to the table, at ``given_at`` or a second after the latest one kept, with
+    its id kept as used, as opening that file does. Its id."""
+    store = state_of(client).workload_signals
+    connection = store._connection
+    (kept,) = connection.execute("SELECT count(*) FROM workload_signals").fetchone()
+    at = store._clock.now() + timedelta(seconds=int(kept)) if given_at is None else given_at
+    given = at.isoformat()
+    signal_id = uuid4().hex if signal_id is None else signal_id
+    with connection:
+        connection.execute(
+            "INSERT INTO workload_signals (signal_id, evening, given_at, detail) "
+            "VALUES (?, ?, ?, ?)",
+            (signal_id, evening.isoformat(), given, detail),
+        )
+        connection.execute(
+            "INSERT INTO workload_signal_ids (signal_id, used_at) VALUES (?, ?)", (signal_id, given)
+        )
+    return signal_id
+
+
+MINTED_FIELD = re.compile(
+    rf'(<input type="hidden" name="(?:{RUN_ID}|{ISSUED_AT}|signal_id)" value=")[^"]*"'
+)
 
 
 def without_minted_fields(html: str) -> str:
-    """``html`` with the id and issue time each render of a plan form mints left blank, so
-    two renders of the same state compare equal."""
+    """``html`` with the id and issue time each render of a plan or signal form mints left
+    blank, so two renders of the same state compare equal."""
     return MINTED_FIELD.sub(r'\g<1>"', html)
 
 
