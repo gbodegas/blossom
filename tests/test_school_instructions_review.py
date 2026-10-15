@@ -939,14 +939,26 @@ def test_a_result_this_process_did_not_sign_says_nothing(tmp_path: pathlib.Path)
 def test_a_result_address_of_any_other_shape_says_nothing_and_writes_nothing(
     tmp_path: pathlib.Path, token: str
 ) -> None:
-    with client_for(open_household(tmp_path)) as client:
-        a_current_b_earlier(store_of(client))
-        check = result_token(state_of(client).result_key, ESSAY_ID, "saved", 2).rsplit(".", 1)[1]
-        address = token.replace("{check}", check).replace("{upper}", check.upper())
-        before = tables(client)
-        page = client.get(PAGE, params={"result": address}, headers=PAGE_HEADERS)
-        after = tables(client)
+    # Each process signs with its own random key. A check of digits alone, about one in
+    # 1,850, has no upper-case form, so that case starts another process for its key.
+    for attempt in range(20):
+        folder = tmp_path / f"process-{attempt}"
+        folder.mkdir()
+        with client_for(open_household(folder)) as client:
+            a_current_b_earlier(store_of(client))
+            check = result_token(state_of(client).result_key, ESSAY_ID, "saved", 2)
+            check = check.rsplit(".", 1)[1]
+            if "{upper}" in token and check.upper() == check:
+                continue
+            address = token.replace("{check}", check).replace("{upper}", check.upper())
+            before = tables(client)
+            page = client.get(PAGE, params={"result": address}, headers=PAGE_HEADERS)
+            after = tables(client)
+        break
+    else:
+        pytest.fail("twenty processes signed checks of digits alone")
 
+    assert "{upper}" not in token or check.upper() != check
     assert page.status_code == 200
     assert 'id="result"' not in page.text
     assert after == before
