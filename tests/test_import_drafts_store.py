@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from blossom.screenshots import homework_rows
+from blossom.screenshots import homework_assembly, homework_rows
 from blossom.stores.drafts import WriterBusy
 from blossom.stores.gradebook import ADD_ACCEPTANCE
 from blossom.stores.import_drafts import (
@@ -1263,3 +1263,44 @@ def test_a_grade_acceptance_naming_a_key_with_no_target_is_read(tmp_path: Path) 
     assert world.store.snapshot(world.student, draft_id).saved == frozenset({"term"})
     assert world.store.add_images(world.student, draft_id, [image("b")]) is not None
     assert world.store.sweep().passed_over == 0
+
+
+def test_saved_and_discarded_rows_and_items_keep_their_keys_as_other_images_change(
+    homework: World,
+) -> None:
+    """A dated row under Thursday is saved, and the card above Thursday, with no heading of its
+    own in that screenshot, is an item and is discarded. A screenshot showing Wednesday with
+    the same card arrives and another is removed: the saved row, the discarded item and the
+    dated rows keep their keys and states."""
+    top = homework_card(badge="DUE", title="Reading log", footer=None, instruction=None)
+    top.update(y_top=20, y_bottom=100)
+    quiz = homework_card(
+        badge="DUE", course="Math 8", title="U1 Quiz 3", footer=None, instruction=None
+    )
+    quiz.update(y_top=300, y_bottom=380)
+    thursday = homework_answer(
+        headings=[{"text": "Thursday 10/8/2026", "y": 250, "uncertain": None}], cards=[top, quiz]
+    )
+    wednesday = homework_answer(
+        headings=[{"text": "Wednesday 10/7/2026", "y": 150, "uncertain": None}],
+        cards=[dict(top, y_top=200, y_bottom=280)],
+    )
+    draft_id = homework.draft("thu", "other")
+    homework.read_as(draft_id, "thu", uploaded("thu", thursday))
+    homework.read_as(draft_id, "other", uploaded("other", due_on("Monday 10/5/2026", "Lab Quiz")))
+    alone = homework_assembly([stored_homework("thu", thursday)], now=OBSERVED_AT)
+    [row] = alone.rows
+    [item] = alone.unread
+    homework.accept(draft_id, row.key)
+    version = homework.store.snapshot(homework.student, draft_id).version
+    homework.store.discard_rest(homework.student, draft_id, version=version, keys=[item.key])
+
+    homework.store.add_images(homework.student, draft_id, [image("wed")])
+    homework.read_as(draft_id, "wed", uploaded("wed", wednesday))
+    homework.store.remove_image(
+        homework.student, draft_id, homework.image_ids(draft_id)[sha("other")]
+    )
+
+    rows = {r.key: r for r in homework.store.snapshot(homework.student, draft_id).rows}
+    assert (rows[row.key].state, rows[row.key].readable) == ("saved", True)
+    assert (rows[item.key].state, rows[item.key].readable) == ("discarded", False)

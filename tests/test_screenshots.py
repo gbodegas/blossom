@@ -614,19 +614,22 @@ def wednesday_and_after() -> tuple[StoredReading, StoredReading]:
     return stored_homework("first", first), stored_homework("second", second)
 
 
-def test_a_heading_carries_to_the_next_screenshot_only_through_a_proven_overlap() -> None:
+def test_a_heading_never_carries_to_another_screenshots_top_cards() -> None:
+    """The second screenshot's top cards repeat the first's Wednesday, but no heading carries
+    between screenshots: they stay items, and so does the first's clip, which no whole copy
+    under Wednesday covers."""
     first, second = wednesday_and_after()
 
     assembly = homework_assembly([first, second], now=NOW)
     alone = homework_assembly([second], now=NOW)
 
     due_on = {row.reading.title: row.reading.due_date for row in assembly.rows}
-    assert due_on == {
-        "Vocab 4": date(2026, 10, 7),
-        "Spelling List 5": date(2026, 10, 7),
-        "U1 Quiz 3": date(2026, 10, 8),
-    }
-    assert assembly.unread == (), "the clipped card is covered by its whole copy"
+    assert due_on == {"Vocab 4": date(2026, 10, 7), "U1 Quiz 3": date(2026, 10, 8)}
+    assert sorted((str(i.card.title), i.reason) for i in assembly.unread if i.card) == [
+        ("Spelling List 5", "clipped"),
+        ("Spelling List 5", "no_day"),
+        ("Vocab 4", "no_day"),
+    ]
     assert {row.reading.title for row in alone.rows} == {"U1 Quiz 3"}
     assert len(alone.unread) == 2
 
@@ -812,10 +815,9 @@ def test_top_cards_matching_only_the_start_of_a_closed_run_prove_nothing() -> No
     assert [(c.asserted_value, c.seen_in) for c in log.claims] == [("2026-10-05", DAY_HEADER)]
 
 
-def test_top_cards_ending_a_closed_run_prove_it_only_before_that_runs_next_heading() -> None:
-    """B's top cards repeat Monday's whole run, which A closes with Tuesday: they continue it
-    when B's first heading is Tuesday, and are a coincidence of recurring cards when it is
-    Thursday."""
+def test_top_cards_take_no_day_whatever_heading_follows_them() -> None:
+    """B's top cards repeat Monday's whole run, which A closes with Tuesday. Whether B's first
+    heading is Tuesday or Thursday, they take no day from another screenshot and stay items."""
     a = homework(
         due("English 8", "Reading log", 200, instruction=LOG_WORDS),
         due("Math 8", "Worksheet 3", 300),
@@ -838,7 +840,10 @@ def test_top_cards_ending_a_closed_run_prove_it_only_before_that_runs_next_headi
         [stored_homework("a", a), stored_homework("b", top_then("Thursday 10/8/2026"))], now=NOW
     )
 
-    assert continuing.unread == ()
+    assert {item.card.title for item in continuing.unread if item.card} == {
+        "Reading log",
+        "Worksheet 3",
+    }
     assert {item.card.title for item in elsewhere.unread if item.card} == {
         "Reading log",
         "Worksheet 3",
@@ -1027,9 +1032,9 @@ def test_a_clipped_card_inside_a_compared_run_breaks_a_proof() -> None:
     assert "Spelling List 5" not in {row.reading.title for row in assembly.rows}
 
 
-def test_a_clip_at_the_edges_still_lets_a_scroll_prove_itself() -> None:
-    """A clip at A's bottom edge and one at B's top edge are set aside, so an ordinary scroll
-    still stitches."""
+def test_a_scroll_across_a_day_boundary_leaves_its_top_cards_visible() -> None:
+    """An ordinary scroll from Wednesday into Thursday: B's top cards, its top clip among them,
+    take no day from A, and A's bottom clip, with no whole copy under Wednesday, stays too."""
     a = homework(
         due("English 8", "Vocab 4", 300),
         due("Science 8", "Spelling List 5", 920, clipped=True),
@@ -1046,7 +1051,13 @@ def test_a_clip_at_the_edges_still_lets_a_scroll_prove_itself() -> None:
     assembly = homework_assembly([stored_homework("a", a), stored_homework("b", b)], now=NOW)
 
     due_on = {row.reading.title: row.reading.due_date for row in assembly.rows}
-    assert due_on["Spelling List 5"] == date(2026, 10, 7)
+    assert due_on == {"Vocab 4": date(2026, 10, 7), "U1 Quiz 3": date(2026, 10, 8)}
+    assert sorted((str(i.card.title), i.reason) for i in assembly.unread if i.card) == [
+        ("Sketch 2", "clipped"),
+        ("Spelling List 5", "clipped"),
+        ("Spelling List 5", "no_day"),
+        ("Vocab 4", "no_day"),
+    ]
 
 
 def test_an_uncertain_field_is_no_evidence_that_two_cards_are_one() -> None:
@@ -1171,3 +1182,351 @@ def test_a_rounds_key_stays_when_an_earlier_round_of_its_name_arrives() -> None:
     [alone] = keys(later)
 
     assert alone in keys(later, earlier)
+
+
+# ------------------------------------------------------------------ no carry between screenshots
+#
+# Each scenario lists its screenshots, then the rows it gives (title, due date) and the items
+# that stay visible (title, reason), the same in every order of its images.
+
+RL, PS, WS = ("English 8", "Reading log"), ("Math 8", "Practice set"), ("Math 8", "Worksheet 3")
+SL, MW, U1 = (
+    ("Science 8", "Spelling List 5"),
+    ("Social Studies 8", "Map work"),
+    ("Math 8", "U1 Quiz 3"),
+)
+LQ, V4 = ("Science 8", "Lab quiz"), ("English 8", "Vocab 4")
+
+
+def card(name: tuple[str, str], y_top: int, **fields: object) -> dict[str, object]:
+    return due(name[0], name[1], y_top, **fields)
+
+
+def shot(*parts: object) -> dict[str, object]:
+    """A screenshot from its parts top to bottom: a card, or a heading's text with its place."""
+    cards = [part for part in parts if isinstance(part, dict)]
+    headings = [heading(text, y) for text, y in (part for part in parts if isinstance(part, tuple))]
+    return homework(*cards, headings=headings)
+
+
+MON, TUE, WED, THU = (
+    "Monday 10/5/2026",
+    "Tuesday 10/6/2026",
+    "Wednesday 10/7/2026",
+    "Thursday 10/8/2026",
+)
+FRI, NEXT_MON = "Friday 10/9/2026", "Monday 10/12/2026"
+UNREAD = a_card(title=42)
+
+SCENARIOS: dict[
+    str, tuple[list[dict[str, object]], list[tuple[str, str]], list[tuple[str, str]]]
+] = {
+    "p4 a clipped top copy": (
+        [
+            shot((WED, 250), card(V4, 300), card(SL, 500)),
+            shot(card(SL, 0, clipped=True), (THU, 250), card(U1, 300)),
+        ],
+        [("Spelling List 5", "10-07"), ("U1 Quiz 3", "10-08"), ("Vocab 4", "10-07")],
+        [("Spelling List 5", "clipped")],
+    ),
+    "c2 a closed tail before its closing heading": (
+        [
+            shot((MON, 150), card(RL, 200), card(WS, 300), (TUE, 450), card(SL, 500)),
+            shot(card(WS, 20), (TUE, 250), card(SL, 300)),
+        ],
+        [("Reading log", "10-05"), ("Spelling List 5", "10-06"), ("Worksheet 3", "10-05")],
+        [("Worksheet 3", "no_day")],
+    ),
+    "c2 a closed tail with no heading": (
+        [
+            shot((MON, 150), card(RL, 200), card(WS, 300), (TUE, 450), card(SL, 500)),
+            shot(card(WS, 20)),
+        ],
+        [("Reading log", "10-05"), ("Spelling List 5", "10-06"), ("Worksheet 3", "10-05")],
+        [("Worksheet 3", "no_day")],
+    ),
+    "c2 cards running past an open end": (
+        [
+            shot((WED, 150), card(RL, 200), card(WS, 300)),
+            shot(card(WS, 20), card(SL, 120), (THU, 350), card(U1, 400)),
+        ],
+        [("Reading log", "10-07"), ("U1 Quiz 3", "10-08"), ("Worksheet 3", "10-07")],
+        [("Spelling List 5", "no_day"), ("Worksheet 3", "no_day")],
+    ),
+    "c2 a chain through a screenshot with no heading": (
+        [
+            shot((MON, 150), card(RL, 200)),
+            shot(card(RL, 20), card(WS, 120)),
+            shot(card(WS, 20), card(SL, 120), (TUE, 350), card(U1, 400)),
+        ],
+        [("Reading log", "10-05"), ("U1 Quiz 3", "10-06")],
+        [
+            ("Reading log", "no_day"),
+            ("Spelling List 5", "no_day"),
+            ("Worksheet 3", "no_day"),
+            ("Worksheet 3", "no_day"),
+        ],
+    ),
+    "c4 S and T": (
+        [
+            shot(card(RL, 20), card(PS, 120), (MON, 250), card(RL, 300), card(PS, 400)),
+            shot(card(RL, 20), card(PS, 120)),
+        ],
+        [("Practice set", "10-05"), ("Reading log", "10-05")],
+        [
+            ("Practice set", "no_day"),
+            ("Practice set", "no_day"),
+            ("Reading log", "no_day"),
+            ("Reading log", "no_day"),
+        ],
+    ),
+    "c4 S and U": (
+        [
+            shot(card(RL, 20), card(PS, 120), (MON, 250), card(RL, 300), card(PS, 400)),
+            shot((TUE, 150), card(RL, 200), card(PS, 300)),
+        ],
+        [("Practice set", "10-05"), ("Reading log", "10-05")],
+        [("Practice set", "no_day"), ("Reading log", "no_day")],
+    ),
+    "c5 a top clip": (
+        [
+            shot((WED, 150), card(RL, 200), card(PS, 300)),
+            shot(
+                card(LQ, 0, clipped=True),
+                card(RL, 90),
+                card(PS, 190),
+                card(MW, 290),
+                (THU, 450),
+                card(U1, 500),
+            ),
+        ],
+        [("Practice set", "10-07"), ("Reading log", "10-07"), ("U1 Quiz 3", "10-08")],
+        [
+            ("Lab quiz", "clipped"),
+            ("Map work", "no_day"),
+            ("Practice set", "no_day"),
+            ("Reading log", "no_day"),
+        ],
+    ),
+    "c5 a bottom clip": (
+        [
+            shot((WED, 150), card(RL, 200), card(PS, 300), card(LQ, 920, clipped=True)),
+            shot(card(RL, 20), card(PS, 120), (THU, 250), card(MW, 300)),
+        ],
+        [("Map work", "10-08"), ("Practice set", "10-07"), ("Reading log", "10-07")],
+        [("Lab quiz", "clipped"), ("Practice set", "no_day"), ("Reading log", "no_day")],
+    ),
+    "c7 screenshots with no heading never chain": (
+        [
+            shot((MON, 100), card(("Math 8", "Y"), 200)),
+            shot((TUE, 100), card(("Math 8", "Z"), 200)),
+            shot(card(("Math 8", "Z"), 20), card(("Math 8", "Y"), 120)),
+            shot(card(("Math 8", "Y"), 20), card(("Math 8", "W"), 120)),
+            shot(card(("Math 8", "W"), 20), card(("Math 8", "V"), 120)),
+        ],
+        [("Y", "10-05"), ("Z", "10-06")],
+        [
+            ("V", "no_day"),
+            ("W", "no_day"),
+            ("W", "no_day"),
+            ("Y", "no_day"),
+            ("Y", "no_day"),
+            ("Z", "no_day"),
+        ],
+    ),
+    "c9 a clip whose bottom is past the image": (
+        [
+            shot((WED, 250), card(V4, 300), card(SL, 940, clipped=True)),
+            shot(card(V4, 10), card(SL, 100), (THU, 350), card(U1, 400)),
+        ],
+        [("U1 Quiz 3", "10-08"), ("Vocab 4", "10-07")],
+        [("Spelling List 5", "clipped"), ("Spelling List 5", "no_day"), ("Vocab 4", "no_day")],
+    ),
+    "the day before shown carries nothing": (
+        [
+            shot((WED, 150), card(RL, 200), card(WS, 300)),
+            shot(card(MW, 20), (THU, 250), card(U1, 300)),
+        ],
+        [("Reading log", "10-07"), ("U1 Quiz 3", "10-08"), ("Worksheet 3", "10-07")],
+        [("Map work", "no_day")],
+    ),
+    "both headings shown in a third screenshot carry nothing": (
+        [
+            shot((FRI, 150), card(WS, 200)),
+            shot(card(MW, 20), (NEXT_MON, 250), card(LQ, 300)),
+            shot((FRI, 100), card(SL, 150), (NEXT_MON, 300), card(LQ, 350)),
+        ],
+        [("Lab quiz", "10-12"), ("Spelling List 5", "10-09"), ("Worksheet 3", "10-09")],
+        [("Map work", "no_day")],
+    ),
+    "a recurring pair above Thursday": (
+        [
+            shot((MON, 150), card(RL, 200), card(PS, 300)),
+            shot(card(RL, 20), card(PS, 120), (THU, 250), card(U1, 300)),
+        ],
+        [("Practice set", "10-05"), ("Reading log", "10-05"), ("U1 Quiz 3", "10-08")],
+        [("Practice set", "no_day"), ("Reading log", "no_day")],
+    ),
+    "a long day's middle with no heading": (
+        [
+            shot((WED, 150), card(RL, 200), card(WS, 300)),
+            shot(card(WS, 20), card(SL, 120), card(MW, 220)),
+            shot(card(MW, 20), card(LQ, 120), (THU, 250), card(U1, 300)),
+        ],
+        [("Reading log", "10-07"), ("U1 Quiz 3", "10-08"), ("Worksheet 3", "10-07")],
+        [
+            ("Lab quiz", "no_day"),
+            ("Map work", "no_day"),
+            ("Map work", "no_day"),
+            ("Spelling List 5", "no_day"),
+            ("Worksheet 3", "no_day"),
+        ],
+    ),
+    "a four-screenshot scroll": (
+        [
+            shot((MON, 100), card(RL, 150)),
+            shot(card(PS, 20), (TUE, 250), card(WS, 300)),
+            shot(card(SL, 20), (WED, 250), card(MW, 300)),
+            shot(card(LQ, 20), (THU, 250), card(U1, 300)),
+        ],
+        [
+            ("Map work", "10-07"),
+            ("Reading log", "10-05"),
+            ("U1 Quiz 3", "10-08"),
+            ("Worksheet 3", "10-06"),
+        ],
+        [("Lab quiz", "no_day"), ("Practice set", "no_day"), ("Spelling List 5", "no_day")],
+    ),
+    "an assigned card with no heading is a row by its own date": (
+        [
+            shot(
+                assigned("Science 8", "Chains Reading Guide 6", "Due (10/8/2026)", 20),
+                (THU, 250),
+                card(U1, 300),
+            )
+        ],
+        [("Chains Reading Guide 6", "10-08"), ("U1 Quiz 3", "10-08")],
+        [],
+    ),
+    "an unread top card": (
+        [shot(UNREAD, (THU, 250), card(U1, 300))],
+        [("U1 Quiz 3", "10-08")],
+        [("", "card_unreadable")],
+    ),
+    "a top clip with its top past the image": (
+        [shot(card(SL, -40, clipped=True), (THU, 250), card(U1, 300))],
+        [("U1 Quiz 3", "10-08")],
+        [("Spelling List 5", "clipped")],
+    ),
+    "rule 5: a clip with no heading is never covered": (
+        [
+            shot(card(SL, 0, clipped=True), (THU, 250), card(U1, 300)),
+            shot(card(SL, 20), (NEXT_MON, 250), card(LQ, 300)),
+        ],
+        [("Lab quiz", "10-12"), ("U1 Quiz 3", "10-08")],
+        [("Spelling List 5", "clipped"), ("Spelling List 5", "no_day")],
+    ),
+    "rule 6: copies with no heading in two screenshots stay two items": (
+        [
+            shot(card(SL, 20), (THU, 250), card(U1, 300)),
+            shot(card(SL, 20), (NEXT_MON, 250), card(LQ, 300)),
+        ],
+        [("Lab quiz", "10-12"), ("U1 Quiz 3", "10-08")],
+        [("Spelling List 5", "no_day"), ("Spelling List 5", "no_day")],
+    ),
+    "a card whose name wasn't read": (
+        [shot((MON, 100), dict(card(WS, 200), title=None))],
+        [],
+        [("", "incomplete")],
+    ),
+}
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_cards_take_a_day_only_from_their_own_date_or_a_heading_above_them(name: str) -> None:
+    """No heading carries from one screenshot to another: a card is dated by its own due line
+    or by the heading above it in its screenshot, and every other card stays a visible item
+    with its reason, never merged into another."""
+    shots, rows, items = SCENARIOS[name]
+    images = [stored_homework(f"{name}-{place}", answer) for place, answer in enumerate(shots)]
+    found = set()
+    for order in itertools.permutations(images):
+        assembly = homework_assembly(list(order), now=NOW)
+        found.add(
+            (
+                tuple(
+                    sorted(
+                        (r.reading.title, r.reading.due_date.strftime("%m-%d"))
+                        for r in assembly.rows
+                        if r.reading.due_date
+                    )
+                ),
+                tuple(
+                    sorted(
+                        (str(i.card.title or "") if i.card else "", i.reason)
+                        for i in assembly.unread
+                    )
+                ),
+            )
+        )
+
+    assert found == {(tuple(rows), tuple(items))}
+
+
+def test_chains_with_an_instruction_keeps_mondays_card_day() -> None:
+    """P 6 row 2 with the teacher's words: the copy at the next screenshot's top has no heading,
+    so Monday's copy, walked first, keeps its day on the instruction."""
+    words = "Read chapter 6 and answer the guide."
+    chains = assigned(
+        "Science 8", "Chains Reading Guide 6", "Due (10/8/2026)", 260, instruction=words
+    )
+    monday = homework(chains, headings=[heading(MON, 100)])
+    thursday = homework(
+        dict(chains, y_top=10, y_bottom=90),
+        due("Science 8", "Chains Reading Guide 6", 200),
+        headings=[heading(THU, 150)],
+    )
+
+    [row] = homework_assembly(
+        [stored_homework("m", monday), stored_homework("t", thursday)], now=NOW
+    ).rows
+
+    assert [(seen.text, seen.card, seen.card_day) for seen in row.reading.instructions] == [
+        (words, "assigned", date(2026, 10, 5))
+    ]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"clipped": True, "y_top": 300, "y_bottom": 250},
+        {"clipped": True, "y_top": 1001, "y_bottom": 1080},
+        {"clipped": True, "y_top": -90, "y_bottom": -10},
+        {"clipped": False, "y_top": 940, "y_bottom": 1020},
+    ],
+    ids=[
+        "clipped-reversed",
+        "clipped-below-the-image",
+        "clipped-above-the-image",
+        "unclipped-past-the-edge",
+    ],
+)
+def test_only_a_clipped_card_partly_in_the_image_is_brought_into_it(
+    fields: dict[str, object],
+) -> None:
+    reading = checked(an_answer(cards=[a_card(**fields)]))
+
+    assert reading.cards == (None,)
+
+
+def test_a_clipped_card_partly_in_the_image_is_brought_to_its_edges() -> None:
+    reading = checked(
+        an_answer(
+            cards=[
+                a_card(clipped=True, y_top=-40, y_bottom=60),
+                a_card(clipped=True, y_top=940, y_bottom=1020),
+            ]
+        )
+    )
+
+    assert [(c.y_top, c.y_bottom) for c in reading.cards if c is not None] == [(0, 60), (940, 1000)]

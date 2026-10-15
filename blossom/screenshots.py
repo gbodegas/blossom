@@ -14,7 +14,10 @@ couldn't be read. A report's cells, the teacher's among them, are declared so th
 fits, and none is kept. Dates are kept as the text shown and read as dates here.
 
 A draft's readings are put together into rows by their content alone, never by the order
-the screenshots came in, and read as today's portal claims through ``intake.read_cards``.
+the screenshots came in, and read as today's portal claims through ``intake.read_cards``. A
+card is dated only by its own due line or by a day heading above it in its own screenshot; no
+heading carries from one screenshot to another, and every card that can't be dated or read
+stays a visible item with its reason.
 ``homework_rows`` gives the draft store each row's key from the same assembly, so the rows
 the parent sees and the keys the store keeps can't disagree.
 """
@@ -108,6 +111,22 @@ class Card(_Closed):
     y_bottom: Position
     clipped: StrictBool
     uncertain: Annotated[tuple[CardMark, ...], Field(max_length=MOST_MARKS)]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _clipped_into_the_image(cls, data: object) -> object:
+        """A clipped card's edges past the image are brought to the image's edges, where the
+        card runs off it. An unclipped card is never moved. A card wholly outside the image, or
+        with its edges reversed, still has an edge outside it or reversed afterward, so it stays
+        a card that couldn't be read."""
+        if not isinstance(data, dict) or data.get("clipped") is not True:
+            return data
+        top, bottom = data.get("y_top"), data.get("y_bottom")
+        if not (isinstance(top, int) and isinstance(bottom, int)):
+            return data
+        if isinstance(top, bool) or isinstance(bottom, bool):
+            return data
+        return {**data, "y_top": max(0, top), "y_bottom": min(POSITION_MOST, bottom)}
 
     @model_validator(mode="after")
     def _edges_in_order(self) -> Self:
@@ -303,14 +322,25 @@ class ScreenshotRow(NamedTuple):
     marks: frozenset[str]
 
 
+ItemReason = Literal[
+    "reading_unreadable", "card_unreadable", "incomplete", "clipped", "no_day", "repeated"
+]
+"""Why an item couldn't be read as a row. The first three say text couldn't be read: a whole
+reading, a card, or a card's label, course or title. ``clipped`` is a card partly cut off that
+no whole copy covers. ``no_day`` is a card read whole whose date can't be told: no due line of
+its own and no day heading above it in its screenshot. ``repeated`` is a second row that would
+write what another does."""
+
+
 class UnreadCard(NamedTuple):
     """A card that couldn't be read as a row, or a stored reading that couldn't be decoded
-    (``place`` and ``card`` then ``None``), keyed by what was read of it."""
+    (``place`` and ``card`` then ``None``), keyed by what was read of it, with its reason."""
 
     key: str
     sha256: str
     place: int | None
     card: Card | None
+    reason: ItemReason
 
 
 class Assembly(NamedTuple):
@@ -342,11 +372,12 @@ def homework_rows(readings: Sequence[StoredReading]) -> tuple[DraftRow, ...]:
 def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> Assembly:
     """Put a draft's readings together, by their content alone, never their order.
 
-    The cards of every reading are one set. A day heading carries to another screenshot's top
-    cards only through a proven overlap. A clipped card goes when a whole copy of it is read.
-    The rest are walked in an order fixed by content and read as today's portal claims; a card
-    with no date, an unread course or title, or a clip no whole copy covers, is an item that
-    couldn't be read. ``now`` stamps the claims and is in no key.
+    The cards of every reading are one set. A card takes a day only from its own due line or
+    from a day heading above it in its own screenshot; no heading carries to another
+    screenshot, and no card's text is evidence of where another card is. A clipped card under
+    a heading goes when a whole copy under the same day is read. The rest are walked in an
+    order fixed by content and read as today's portal claims; every other card stays a visible
+    item with its reason, never merged into another. ``now`` stamps the claims and is in no key.
     """
     images: dict[str, HomeworkReading | None] = {}
     for stored in readings:
@@ -356,15 +387,10 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     for sha, reading in sorted(images.items()):
         if reading is None:
             key = _key({"reading": "undecodable", "image": sha})
-            unread[key] = UnreadCard(key, sha, None, None)
+            unread[key] = UnreadCard(key, sha, None, None, "reading_unreadable")
         elif not reading.wrong_kind:
             placed[sha] = (reading, _placed(sha, reading))
-    carried = _carried(placed)
-    seen = [
-        seen._replace(heading=carried.get(sha)) if _orphan(seen) else seen
-        for sha, (_, cards) in sorted(placed.items())
-        for seen in cards
-    ]
+    seen = [seen for sha, (_, cards) in sorted(placed.items()) for seen in cards]
     whole = [item for item in seen if item.card is not None and not item.card.clipped]
     units: list[tuple[tuple[object, ...], PortalCard, frozenset[str]]] = []
     for item in seen:
@@ -373,7 +399,7 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
             continue
         portal = None if card is None or card.clipped else _portal(card, item.heading)
         if card is None or portal is None:
-            found = _unread(item)
+            found = _unread(item, _reason(card))
             unread.setdefault(found.key, found)
             continue
         marks = _marks(card, item.heading)
@@ -390,7 +416,7 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
         if key in taken:
             # Two rows that would write the same: shown as not read, never merged.
             repeat = _key({"repeated": key, "count": len(taken)})
-            unread.setdefault(repeat, UnreadCard(repeat, "", None, None))
+            unread.setdefault(repeat, UnreadCard(repeat, "", None, None, "repeated"))
             continue
         taken.add(key)
         rows.append(ScreenshotRow(key, written, frozenset(marked)))
@@ -422,139 +448,6 @@ def _placed(sha: str, reading: HomeworkReading) -> list[_Seen]:
     return seen
 
 
-def _orphan(seen: _Seen) -> bool:
-    """A card read above every heading its screenshot shows."""
-    return seen.card is not None and seen.heading is None
-
-
-def _carried(placed: dict[str, tuple[HomeworkReading, list[_Seen]]]) -> dict[str, Heading]:
-    """For each screenshot whose top cards sit under no heading it shows, the heading they sit
-    under in another screenshot, when the overlap is proven and no proof names another.
-
-    Every screenshot's candidates are worked out together, adding only, until nothing more is
-    added: a proof from a section under a heading gives that heading, and one from another
-    screenshot's top cards gives every candidate that screenshot has. Only a screenshot left
-    with one candidate carries it, so a conflict found late undoes what rested on it.
-    """
-    shaped = {sha: _slots(reading, cards) for sha, (reading, cards) in placed.items()}
-    candidates: dict[str, dict[str, list[Heading]]] = {sha: {} for sha in placed}
-    added = True
-    while added:
-        added = False
-        for sha, (headings, slots) in shaped.items():
-            top = slots.get(_TOP, [])
-            if not any(card is not None for card in top):
-                continue
-            first = headings[0] if headings else None
-            for other, (other_headings, other_slots) in shaped.items():
-                if other == sha:
-                    continue
-                for heading, section, after in _sections(other_headings, other_slots):
-                    if not _continues(top, first, section, after):
-                        continue
-                    named = (
-                        [heading]
-                        if heading is not None
-                        else [h for found in candidates[other].values() for h in found]
-                    )
-                    for proven in named:
-                        bucket = candidates[sha].setdefault(folded(proven.text), [])
-                        if proven not in bucket:
-                            bucket.append(proven)
-                            added = True
-    return {
-        sha: min(found, key=lambda h: (h.uncertain is not None, h.y, h.text))
-        for sha, named in candidates.items()
-        if len(named) == 1
-        for found in named.values()
-    }
-
-
-_TOP: Final = -1
-"""Where a screenshot's top cards sit: above every heading it shows."""
-
-
-def _slots(
-    reading: HomeworkReading, cards: list[_Seen]
-) -> tuple[list[Heading], dict[int, list[Card | None]]]:
-    """A screenshot's headings, top to bottom, and the cards under each in the order read,
-    by the heading's place, ``_TOP`` for the cards above them all. A card that couldn't be
-    read has no position, so it is put under every heading it could sit under between the
-    cards read before and after it."""
-    headings = sorted(reading.headings, key=lambda heading: heading.y)
-    under = [
-        None
-        if item.card is None
-        else _TOP
-        if item.heading is None
-        else headings.index(item.heading)
-        for item in cards
-    ]
-    last = len(headings) - 1
-    found: dict[int, list[Card | None]] = {}
-    for place, item in enumerate(cards):
-        label = under[place]
-        if label is None:
-            before = next((at for at in reversed(under[:place]) if at is not None), _TOP)
-            after = next((at for at in under[place + 1 :] if at is not None), last)
-            spans = list(range(before, max(before, after) + 1))
-        else:
-            spans = [label]
-        for span in spans:
-            found.setdefault(span, []).append(item.card)
-    return headings, found
-
-
-def _sections(
-    headings: list[Heading], slots: dict[int, list[Card | None]]
-) -> list[tuple[Heading | None, list[Card | None], Heading | None]]:
-    """Each heading of a screenshot with the cards under it and the heading that closes its
-    section, ``None`` when it runs to the screenshot's bottom; then its top cards, under no
-    heading of its own (``None``), closed by its first heading."""
-    sections: list[tuple[Heading | None, list[Card | None], Heading | None]] = [
-        (heading, slots.get(place, []), headings[place + 1] if place + 1 < len(headings) else None)
-        for place, heading in enumerate(headings)
-    ]
-    sections.append((None, slots.get(_TOP, []), headings[0] if headings else None))
-    return sections
-
-
-def _continues(
-    top: list[Card | None], first: Heading | None, section: list[Card | None], after: Heading | None
-) -> bool:
-    """Whether a screenshot's top cards, above its first heading ``first``, continue a section
-    closed by ``after`` (``None``: running to its screenshot's bottom). They repeat the
-    section's cards card for card, each read whole, from one of them to the section's end,
-    then stop there, before no heading or before the one closing the section, or run on past
-    it only when the section runs to its screenshot's bottom. A clip at the top screenshot's
-    top edge, or at the section's bottom edge, is set aside; anything else not read whole,
-    a card that couldn't be read included, matches nothing."""
-    if top and top[0] is not None and top[0].clipped:
-        top = top[1:]
-    if after is None and section and section[-1] is not None and section[-1].clipped:
-        section = section[:-1]
-    for start in range(len(section)):
-        run = section[start:]
-        if len(top) < len(run) or not all(map(_same, run, top)):
-            continue
-        if after is None:
-            return True
-        if len(top) == len(run) and (first is None or _text(first) == _text(after)):
-            return True
-    return False
-
-
-def _same(one: Card | None, other: Card | None) -> bool:
-    """Two cards each read whole that read the same, field for field."""
-    return (
-        one is not None
-        and other is not None
-        and one.certain
-        and other.certain
-        and _as_read(one) == _as_read(other)
-    )
-
-
 def _as_read(card: Card) -> tuple[object, ...]:
     """A card's fields as read, text folded."""
     return (
@@ -571,7 +464,7 @@ def _covered(clipped: _Seen, whole: list[_Seen]) -> bool:
     read with certainty, its course and title among it. A field the clip marks uncertain is
     no evidence either way; one it shows with certainty as absent must be absent there too."""
     card = clipped.card
-    if card is None or not (_words(card.course) and _words(card.title)):
+    if card is None or clipped.heading is None or not (_words(card.course) and _words(card.title)):
         return False
     marked = card.uncertain_fields
     if {"course", "title"} & marked:
@@ -624,6 +517,9 @@ def _walk_order(
         0 if portal.card == "assigned" else 1,
         _fold(card.instruction) or "",
         _fold(card.footer) or "",
+        # A card under a heading comes before an equal one with none, so the day it was read
+        # under is the one its words keep.
+        heading is None,
         _text(heading) or "",
         (card.instruction is None, card.footer is None, heading is None),
         tuple(sorted(marks)),
@@ -633,17 +529,29 @@ def _walk_order(
     )
 
 
-def _unread(item: _Seen) -> UnreadCard:
+def _reason(card: Card | None) -> ItemReason:
+    """Why a card couldn't be read as a row."""
+    if card is None:
+        return "card_unreadable"
+    if card.clipped:
+        return "clipped"
+    if not card.complete:
+        return "incomplete"
+    return "no_day"
+
+
+def _unread(item: _Seen, reason: ItemReason) -> UnreadCard:
     """A card that couldn't be read as a row, keyed by what was read of it, and by its
-    screenshot and place too when its course or title wasn't read."""
+    screenshot and place too when its course or title wasn't read or no heading is above it,
+    so two such cards in two screenshots stay two items."""
     card = item.card
     payload: dict[str, object] = {
         "unread": None if card is None else [*_as_read(card), card.clipped, _text(item.heading)],
         "marks": [] if card is None else sorted(_marks(card, item.heading)),
     }
-    if card is None or not (_words(card.course) and _words(card.title)):
+    if card is None or item.heading is None or not (_words(card.course) and _words(card.title)):
         payload |= {"image": item.sha256, "place": item.place}
-    return UnreadCard(_key(payload), item.sha256, item.place, card)
+    return UnreadCard(_key(payload), item.sha256, item.place, card, reason)
 
 
 def _written(reading: Reading, marks: frozenset[str]) -> dict[str, object]:
