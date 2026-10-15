@@ -55,11 +55,11 @@ from tests.support import (
     NOW,
     PAGE_HEADERS,
     PLAN_DATE,
+    Statements,
     capture_class,
     card_for,
     closed_world,
     confirm_current,
-    database_of,
     family_page,
     fixture_clock,
     grade_answers,
@@ -72,6 +72,7 @@ from tests.support import (
     school_said,
     sign_in_as,
     spoil,
+    state_of,
     status_of,
     store_of,
     without_columns,
@@ -535,18 +536,21 @@ def test_a_link_naming_homework_not_on_record_counts_nothing(
 
 
 def test_g3c_i1_a_read_of_check_together_writes_nothing(
-    store: ProjectStateStore, tmp_path: pathlib.Path
+    week: TestClient, tmp_path: pathlib.Path
 ) -> None:
+    """The household's three files, the record, the checkpoints and the traces, are the same
+    before and after two reads of Check together through the application's own store."""
+    store = store_of(week)
     linked_report(store)
     reported(store, "done", DIAGRAM_ID)
     handed(store, TURNED_IN)
-    world = closed_world([tmp_path / "blossom.sqlite3"], leaving_out=())
+    world = closed_world(household_files(tmp_path), leaving_out=())
 
     first, second = checks_in(store), checks_in(store)
 
     assert first == second
     assert first[DIAGRAM_ID][0] is COUNTED
-    assert closed_world([tmp_path / "blossom.sqlite3"], leaving_out=()) == world
+    assert closed_world(household_files(tmp_path), leaving_out=()) == world
 
 
 def test_g3c_i4_the_family_check_basis_is_the_same_with_and_without_a_grade_basis(
@@ -912,24 +916,115 @@ def test_a_homework_left_unknown_by_a_record_of_hers_says_the_count_can_t_be_wor
     assert "(0)" not in page
 
 
-def test_g3c_i1_her_week_with_the_line_or_the_problem_writes_nothing(week: TestClient) -> None:
-    store = store_of(week)
-    lab_missing_by_email(week)
-    reported(store, "done", DIAGRAM_ID)
-    _, result_id = linked_report(store)
-    world = closed_world([database_of(week)], leaving_out=())
-    counted = lines_of(her_week(week))
-    after_counted = closed_world([database_of(week)], leaving_out=())
-    undecodable(week, result_id)
-    failed_world = closed_world([database_of(week)], leaving_out=())
-    unknown = lines_of(her_week(week))
+def household_files(folder: pathlib.Path) -> list[pathlib.Path]:
+    """The household's three files under ``folder``: the record, the checkpoints and the
+    traces, each one there."""
+    files = [folder / name for name in ("blossom.sqlite3", "checkpoints.sqlite3", "traces.sqlite3")]
+    assert all(one.is_file() for one in files), files
+    return files
 
-    assert [said(line) for line in counted] == [
-        "2 assignments to check together: Lab Report, Cell Diagram."
+
+def made_unreadable(client: TestClient, result_id: str) -> None:
+    """Her hand-in set to still to turn in, then her update's note changed to bytes that are
+    not UTF-8 by the test's own SQL: "Cell Diagram" is left unknown."""
+    store = store_of(client)
+    handed(store, NEEDS_HAND_IN)
+    spoil(store, "student_reports", "note", NOT_UTF8, DIAGRAM_ID)
+
+
+I1_STATES = {"counted": None, "covered failure": undecodable, "unknown": made_unreadable}
+
+
+@pytest.mark.parametrize("state", I1_STATES)
+@pytest.mark.parametrize("reader", READERS)
+def test_g3c_i1_her_week_and_details_with_check_together_write_nothing(
+    reader: str, state: str, tmp_path: pathlib.Path
+) -> None:
+    """Her week and the counted homework's details, read for her, a signed-in parent and the
+    open household with the result counted, after a covered failure, and with the homework
+    unknown: the record, the checkpoints and the traces are the same byte for byte."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record(
+            [in_week(LAB_ID, "Lab Report", date(2026, 8, 19)), in_week(DIAGRAM_ID, DIAGRAM)], {}
+        )
+        lab_missing_by_email(client)
+        reported(store, "done", DIAGRAM_ID)
+        _, result_id = linked_report(store)
+        change = I1_STATES[state]
+        if change is not None:
+            change(client, result_id)
+        world = closed_world(household_files(tmp_path), leaving_out=())
+        week_page, details = her_week(client), details_of(client)
+        after = closed_world(household_files(tmp_path), leaving_out=())
+
+    shown = [said(line) for line in lines_of(week_page)]
+    if state == "counted":
+        assert shown == ["2 assignments to check together: Lab Report, Cell Diagram."]
+        assert explained(details) == [explanation(DIAGRAM, "Missing")]
+    else:
+        assert shown[-1] == CANT_WORK_OUT
+        assert explained(week_page + details) == []
+    assert after == world
+
+
+def masked(statements: list[str]) -> list[str]:
+    """Statements as a read asks them, with each generated ID and stored moment masked: what
+    two households seeded alike can't share."""
+    masked_ids = [
+        re.sub(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}",
+            "<id>",
+            one,
+        )
+        for one in statements
     ]
-    assert after_counted == world
-    assert unknown[-1] == CANT_WORK_OUT_LINE
-    assert closed_world([database_of(week)], leaving_out=()) == failed_world
+    return [
+        re.sub(r"\d{4}-\d{2}-\d{2}T[\d:.]+(?:[+-]\d{2}:\d{2})?", "<moment>", one)
+        for one in masked_ids
+    ]
+
+
+def asked_by(reader: str, folder: pathlib.Path, status: str) -> tuple[dict[str, list[str]], str]:
+    """The statements her week and "Cell Diagram"'s details each ask in a household whose
+    linked result the school reports with ``status``, and those two pages, joined."""
+    folder.mkdir()
+    with household_client(reader, folder) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        reported(store, "done", DIAGRAM_ID)
+        text = REPORT.replace(DIAGRAM_ROW, DIAGRAM_ROW.replace("Missing", status.ljust(7)))
+        class_id = saved(store, text)
+        decided(store, class_id, result_named(store, class_id))
+        state = state_of(client)
+        asked: dict[str, list[str]] = {}
+        pages = []
+        for name, read in (("her week", her_week), ("details", details_of)):
+            read(client)
+            with Statements(state) as seen:
+                pages.append(read(client))
+            asked[name] = masked(list(seen))
+    return asked, "".join(pages)
+
+
+@pytest.mark.parametrize("reader", READERS)
+def test_her_week_and_details_ask_the_same_statements_with_check_together_shown_or_not(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Two households seeded alike but for the linked result's Status, Valid or Missing: her
+    week and the details ask the same statements in the same order, generated IDs and moments
+    aside, whether Check together shows or not."""
+    without, plain = asked_by(reader, tmp_path / "valid", "Valid")
+    shown, counted = asked_by(reader, tmp_path / "missing", "Missing")
+
+    assert "to check together" not in plain
+    assert explained(plain) == []
+    assert "1 assignment to check together:" in counted
+    assert explained(counted) == [explanation(DIAGRAM, "Missing")] * 2
+    assert all(without.values())
+    assert shown == without
 
 
 # ------------------------------------------------------------- her cards, rows and details
