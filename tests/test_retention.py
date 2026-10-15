@@ -83,6 +83,7 @@ from tests.support import (
     Spending,
     accepting,
     ended_run,
+    family_plan_body,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
@@ -383,7 +384,7 @@ def test_a_restart_expires_a_stale_draft_and_the_page_says_so(tmp_path: pathlib.
         lambda: [fixture_week_plan()], lambda: [accepting()]
     )
     with TestClient(first, headers=SAME_ORIGIN) as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         assert started["waiting"] is True
 
     later = PLAN_DATE + timedelta(days=PAUSED_RETENTION_DAYS + 1)

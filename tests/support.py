@@ -1282,6 +1282,38 @@ def fresh_signal_fields(client: TestClient, **changed: str) -> dict[str, str]:
     return {**fields, "issued_at": issued, **changed}
 
 
+def her_plan_body(client: TestClient, **changed: str) -> dict[str, str]:
+    """A JSON request for today's plan as a caller makes one: a fresh run_id and issue time,
+    today's evening, and the newest plan published, with ``changed`` over them."""
+    return {**her_plan_request(state_of(client)), **changed}
+
+
+def her_plan_request(state: ApplicationState) -> dict[str, str]:
+    """``her_plan_body`` made from the state itself, for a caller with no test client."""
+    return {
+        "run_id": uuid4().hex,
+        "evening": state.clock.today().isoformat(),
+        "issued_at": state.real_clock.now().astimezone(UTC).strftime(ISSUED_AT_FORM),
+        "newest_plan": state.drafts.newest_published(),
+    }
+
+
+def family_plan_body(
+    client: TestClient, plan_date: date | str | None = None, **changed: str
+) -> dict[str, str]:
+    """A JSON request for an evening's plan as a caller makes one: a fresh run_id and issue
+    time, ``plan_date`` or today, and the newest plan published, with ``changed`` over them."""
+    state = state_of(client)
+    evening = state.clock.today() if plan_date is None else plan_date
+    body = {
+        "run_id": uuid4().hex,
+        "plan_date": evening if isinstance(evening, str) else evening.isoformat(),
+        "issued_at": state.real_clock.now().astimezone(UTC).strftime(ISSUED_AT_FORM),
+        "newest_plan": state.drafts.newest_published(),
+    }
+    return {**body, **changed}
+
+
 def signal_kept_before(
     client: TestClient,
     evening: date,

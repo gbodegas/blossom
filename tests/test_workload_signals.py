@@ -74,6 +74,7 @@ from tests.support import (
     changed_by_hand,
     declared_for,
     drafts_in_memory,
+    family_plan_body,
     fixture_clock,
     fixture_settings,
     fresh_signal_fields,
@@ -708,7 +709,7 @@ def test_try_again_after_an_unreadable_landing_says_the_removal_once(
 def test_a_press_on_her_page_reaches_the_parents_plan() -> None:
     with browser() as client:
         client.post("/student/actions/too-much", data=fresh_signal_fields(client))
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         page = client.get("/parent").text
 
     assert started["steps"][0]["found"].endswith(
@@ -733,7 +734,7 @@ def test_the_application_keeps_her_signals_in_the_drafts_file_swept_by_the_real_
 
 def test_a_press_after_a_draft_is_waiting_makes_it_stale() -> None:
     with browser() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         queue = client.get("/parent/approvals").json()["waiting"]
         page = client.get("/parent").text
@@ -752,7 +753,7 @@ def test_a_press_after_a_draft_is_waiting_makes_it_stale() -> None:
 
 def test_a_stale_draft_can_still_be_refused() -> None:
     with browser() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         refused = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": False})
 
@@ -765,7 +766,7 @@ def test_taking_the_signal_back_after_a_reduced_draft_makes_it_stale() -> None:
         signal_id = client.post(
             "/student/workload-signals", json=fresh_signal_fields(client)
         ).json()["signal"]["signal_id"]
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         client.delete(f"/student/workload-signals/{signal_id}")
         queue = client.get("/parent/approvals").json()["waiting"]
         approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
@@ -780,7 +781,7 @@ def test_taking_the_signal_back_after_a_reduced_draft_makes_it_stale() -> None:
 def test_a_plan_made_after_the_press_fits_and_can_be_approved() -> None:
     with browser() as client:
         client.post("/student/actions/too-much", data=fresh_signal_fields(client))
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         queue = client.get("/parent/approvals").json()["waiting"]
         approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
 
@@ -807,7 +808,7 @@ def test_reads_leave_out_a_signal_past_its_week_before_any_sweep() -> None:
 
 def test_a_decided_draft_is_not_measured_against_the_evening_again() -> None:
     with browser() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
         client.post("/student/actions/too-much", data=fresh_signal_fields(client))
         decided = client.get(f"/parent/approvals/{started['draft_id']}").json()

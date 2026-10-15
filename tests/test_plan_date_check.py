@@ -59,6 +59,7 @@ from tests.support import (
     browser,
     composed_plan,
     drafts_in_memory,
+    family_plan_body,
     fixture_clock,
     fixture_week_plan,
     good_plan,
@@ -307,7 +308,7 @@ def test_an_evening_a_parent_asks_for_is_the_one_the_plan_is_held_to() -> None:
             lambda: [accepting()],
             planners=planners,
         )
-        asked = client.post("/parent/plans", json={"plan_date": tomorrow.isoformat()})
+        asked = client.post("/parent/plans", json=family_plan_body(client, tomorrow.isoformat()))
         state = state_of(client)
         made = state.drafts.latest_for(tomorrow)
         todays = state.drafts.latest_for(PLAN_DATE)

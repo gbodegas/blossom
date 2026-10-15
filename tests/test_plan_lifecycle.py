@@ -65,6 +65,7 @@ from blossom.routes.runs import (
     ADMISSION_ALLOWANCE_SECONDS,
     AlreadyPlanning,
     CouldNotStart,
+    HerPlanRequest,
     NotSaved,
     PlanGraphs,
     PlanMade,
@@ -108,11 +109,14 @@ from tests.support import (
     accepting,
     due,
     every_row,
+    family_plan_body,
     files_in,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
     fresh_plan_fields,
+    her_plan_body,
+    her_plan_request,
     human_text,
     light_fixture_plan,
     model_graphs,
@@ -864,7 +868,9 @@ def test_her_json_answer_to_a_plan_published_inside_the_grace_comes_by_the_grace
 
         async def scenario() -> tuple[Any, float]:
             pressed = asyncio.ensure_future(
-                student_routes.make_todays_plan(her_json_press(), state, graphs)
+                student_routes.make_todays_plan(
+                    her_json_press(), state, graphs, HerPlanRequest(**her_plan_request(state))
+                )
             )
             if spent == "while it is read":
                 assert await asyncio.to_thread(reading.wait, 5)
@@ -1654,8 +1660,8 @@ def test_the_json_routes_name_another_evenings_running_run(tmp_path: pathlib.Pat
             )
             is None
         )
-        hers = client.post("/student/plans")
-        family = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        hers = client.post("/student/plans", json=her_plan_body(client))
+        family = client.post("/parent/plans", json=family_plan_body(client, PLAN_DATE.isoformat()))
         rows = rows_of(tmp_path)
 
     for answer in (hers, family):
@@ -2538,7 +2544,9 @@ async def stopped_while_a_settle_holds_the_writer(
     try:
         state: ApplicationState = getattr(old.state, STATE_ATTRIBUTE)
         async with served(old) as client:
-            assert (await client.post("/student/plans")).status_code == 201
+            assert (
+                await client.post("/student/plans", json=her_plan_request(state))
+            ).status_code == 201
             prior = state.drafts.latest_for(PLAN_DATE)
             assert prior is not None
             approval = {"approved": True, "reason": None}
@@ -2547,7 +2555,7 @@ async def stopped_while_a_settle_holds_the_writer(
             await settled_down(state)
             settles_then(state, hold)
             old.dependency_overrides[plan_graphs] = accepting_graphs(2.0)
-            pressed = await client.post("/student/plans")
+            pressed = await client.post("/student/plans", json=her_plan_request(state))
         held_at_the_stop = not held.is_set() and bool(state.detached)
     except BaseException:
         held.set()
@@ -2575,7 +2583,9 @@ async def stopped_while_a_settle_holds_the_writer(
             restarted: ApplicationState = getattr(new.state, STATE_ATTRIBUTE)
             async with served(new) as client:
                 checked = (await client.get(f"/student/plans/runs/{run_id}")).json()
-                second = (await client.post("/student/plans")).status_code
+                second = (
+                    await client.post("/student/plans", json=her_plan_request(restarted))
+                ).status_code
             await settled_down(restarted)
             run = restarted.drafts.run_status(run_id)
             kept = restarted.drafts.get(prior.draft_id)
@@ -2672,7 +2682,7 @@ def pressed_while_held(
     """Ask for her plan through the JSON route, and let ``meanwhile`` happen while the
     planner holds the run, before it answers."""
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pressed = pool.submit(client.post, "/student/plans")
+        pressed = pool.submit(client.post, "/student/plans", json=her_plan_body(client))
         try:
             assert planner.asked.wait(5), "the run never asked the planner"
             meanwhile()
@@ -2879,7 +2889,7 @@ def test_chosen_earlier_work_is_read_by_the_run_and_kept_with_the_plan_by_its_id
         state = state_of(client)
         state.project_state.upsert_assignments([EARLIER])
         choose_earlier(state)
-        made = client.post("/student/plans")
+        made = client.post("/student/plans", json=her_plan_body(client))
         published = state.drafts.latest_for(PLAN_DATE)
 
     assert made.status_code == 201
@@ -2932,8 +2942,10 @@ def test_an_evening_with_a_date_problem_ends_at_its_first_step_and_asks_no_model
         if route == "/student/actions/plan":
             # These settings name no key, so her week offers no button: a fresh form is sent.
             answer = client.post(route, data=fresh_plan_fields(client), headers=PAGE_HEADERS)
+        elif route == "/parent/plans":
+            answer = client.post(route, json=family_plan_body(client))
         else:
-            answer = client.post(route, json={})
+            answer = client.post(route, json=her_plan_body(client))
         run = state.drafts.latest_run()
         ended = state.drafts.runs_without_a_draft()
         plan = state.drafts.latest_for(PLAN_DATE)

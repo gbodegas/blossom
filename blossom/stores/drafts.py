@@ -801,6 +801,20 @@ class DraftsStore:
         ).fetchone()
         return None if row is None or row[0] is None else int(row[0])
 
+    def newest_published_from(self, day: date) -> list[tuple[date, str]]:
+        """The newest published plan of each evening from ``day`` on, last in the published
+        order for its evening, decided or not, earliest evening first."""
+        with self._session():
+            rows = self._connection.execute(
+                "SELECT plan_date, draft_id FROM drafts AS d "
+                "WHERE published=1 AND plan_date >= ? AND published_order = ("
+                "SELECT MAX(published_order) FROM drafts "
+                "WHERE plan_date=d.plan_date AND published=1) "
+                "ORDER BY plan_date",
+                (day.isoformat(),),
+            ).fetchall()
+        return [(date.fromisoformat(str(row[0])), str(row[1])) for row in rows]
+
     def newest_published(self) -> str:
         """The draft id last in the published order, of any evening; empty when none is."""
         with self._session():

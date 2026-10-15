@@ -8,6 +8,7 @@ that, with scripted models so nothing is ever sent.
 """
 
 import asyncio
+import json
 import pathlib
 import re
 import sqlite3
@@ -76,12 +77,14 @@ from tests.support import (
     client_for,
     drafts_in_memory,
     ended_run,
+    family_plan_body,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
     form_fields,
     fresh_plan_fields,
     fresh_signal_fields,
+    her_plan_body,
     light_fixture_plan,
     model_graphs,
     ok,
@@ -264,7 +267,7 @@ def test_the_plan_is_on_her_page_the_moment_it_is_made() -> None:
 
 def test_asking_over_json_answers_with_the_plan() -> None:
     with browser() as client:
-        made = client.post("/student/plans")
+        made = client.post("/student/plans", json=her_plan_body(client))
         today = client.get("/student/plans/today").json()
 
     assert made.status_code == 201
@@ -282,7 +285,7 @@ def test_without_a_plan_today_is_a_404() -> None:
 def test_without_a_key_the_page_says_so_and_keeps_working() -> None:
     with browser(key=False) as client:
         response = client.post("/student/actions/plan", data=fresh_plan_fields(client))
-        over_json = client.post("/student/plans")
+        over_json = client.post("/student/plans", json=her_plan_body(client))
 
     assert response.status_code == 503
     assert "Blossom could not make a plan:" in response.text
@@ -388,7 +391,7 @@ def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() ->
     )
     with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         response = client.post("/student/actions/plan", data=plan_form(client))
-        over_json = client.post("/student/plans")
+        over_json = client.post("/student/plans", json=her_plan_body(client))
 
     assert response.status_code == 409
     assert (
@@ -419,7 +422,7 @@ def test_a_failure_on_the_way_is_said_on_the_page_and_the_plan_stays() -> None:
         client.post("/student/actions/plan", data=plan_form(client))
         app.dependency_overrides[plan_graphs] = scripted_graphs(list, lambda: [accepting()])
         response = client.post("/student/actions/plan", data=plan_form(client))
-        over_json = client.post("/student/plans")
+        over_json = client.post("/student/plans", json=her_plan_body(client))
         today = client.get("/student/plans/today").json()
         ended = state_of(client).drafts.latest_run()
 
@@ -454,7 +457,7 @@ def test_a_held_review_that_cannot_be_read_is_said_as_a_plan_not_finished(
     monkeypatch.setattr(run_routes, "finish_held_reviews", unreadable)
     with browser() as client:
         page = client.post("/student/actions/plan", data=plan_form(client))
-        over_json = client.post("/student/plans")
+        over_json = client.post("/student/plans", json=her_plan_body(client))
         state = state_of(client)
         ended = state.drafts.latest_run()
         latest = state.drafts.latest_for(PLAN_DATE)
@@ -905,7 +908,7 @@ def test_with_nothing_left_to_plan_her_routes_refuse_before_any_run() -> None:
             state.project_state.report_status(
                 item.assignment_id, "done", None, expected_head=None, now=CREATED, today=PLAN_DATE
             )
-        over_json = client.post("/student/plans")
+        over_json = client.post("/student/plans", json=her_plan_body(client))
         from_the_page = client.post("/student/actions/plan", data=fresh_plan_fields(client))
         ended = state.drafts.runs_without_a_draft()
 
@@ -1120,7 +1123,7 @@ def test_a_press_while_a_plan_for_today_is_being_made_starts_nothing() -> None:
             inflight, plan_date=PLAN_DATE, deadline_mono=state.monotonic() + RUN_DEADLINE_SECONDS
         )
         page = ended_page(client)
-        over_json = client.post("/student/plans")
+        over_json = client.post("/student/plans", json=her_plan_body(client))
         runs = state.drafts.runs_without_a_draft()
         running = state.drafts.running_threads()
         latest = state.drafts.latest_for(PLAN_DATE)
@@ -1316,7 +1319,7 @@ def test_each_json_answer_to_a_press_says_her_updates_are_saved_in_the_readers_w
     with client:
         if parent:
             signed_in(client, THEIRS)
-        response = client.post("/student/plans")
+        response = client.post("/student/plans", json=her_plan_body(client))
 
     detail = response.json()["detail"]
     assert response.status_code == code
@@ -1349,7 +1352,11 @@ def test_a_week_that_cannot_be_read_before_a_press_is_a_plan_that_could_not_star
         if parent:
             signed_in(client, THEIRS)
         form = fresh_plan_fields(client) if parent else plan_form(client)
-        response = client.post(route, data=form if "actions" in route else None)
+        response = (
+            client.post(route, data=form)
+            if "actions" in route
+            else client.post(route, json=her_plan_body(client))
+        )
         newest = state_of(client).drafts.latest_run()
 
     said = (
@@ -1389,7 +1396,11 @@ def test_a_graph_that_cannot_be_built_before_a_press_is_a_plan_that_could_not_st
         if parent:
             signed_in(client, THEIRS)
         form = fresh_plan_fields(client) if parent else plan_form(client)
-        response = client.post(route, data=form if "actions" in route else None)
+        response = (
+            client.post(route, data=form)
+            if "actions" in route
+            else client.post(route, json=her_plan_body(client))
+        )
         newest = state_of(client).drafts.latest_run()
 
     said = (
@@ -1458,8 +1469,9 @@ def test_the_status_of_a_run_whose_record_cannot_be_read_is_unconfirmed(
 
 def test_the_api_schema_names_the_body_of_each_answer_to_a_press_and_to_a_runs_status() -> None:
     """Both JSON plan routes and both run status routes declare the body of every answer
-    they give: her 201 is her plan or its published run, and a 409 says why in a sentence or
-    names the run still running."""
+    they give in JSON: her 201 is her plan or its published run, a retry's 200 its run as it
+    stands, a 409 a coded refusal, a sentence or the run still running, and a 422 the one
+    coded refusal of a body that isn't a request."""
     with browser() as client:
         api = client.get("/openapi.json").json()
 
@@ -1471,21 +1483,24 @@ def test_the_api_schema_names_the_body_of_each_answer_to_a_press_and_to_a_runs_s
         return {
             code: named(answer["content"]["application/json"]["schema"])
             for code, answer in answers.items()
+            if "application/json" in answer.get("content", {})
         }
 
+    refused = {
+        "200": ["RunStatusView"],
+        "202": ["UnconfirmedRunView"],
+        "400": ["ProblemView"],
+        "401": ["ProblemView"],
+        "403": ["ProblemView"],
+        "409": ["PlanConflictView", "PlanRefusal"],
+        "422": ["PlanRefusal"],
+        "503": ["ProblemView"],
+    }
     assert bodies("/student/plans", "post") == {
         "201": ["StudentPlanView", "PublishedRunView"],
-        "202": ["UnconfirmedRunView"],
-        "409": ["PlanConflictView"],
-        "503": ["ProblemView"],
+        **refused,
     }
-    assert bodies("/parent/plans", "post") == {
-        "201": ["PlanRunView"],
-        "202": ["UnconfirmedRunView"],
-        "409": ["PlanConflictView"],
-        "422": ["ProblemView", "HTTPValidationError"],
-        "503": ["ProblemView"],
-    }
+    assert bodies("/parent/plans", "post") == {"201": ["PlanRunView"], **refused}
     for path in ("/student/plans/runs/{run_id}", "/parent/plans/runs/{run_id}"):
         assert bodies(path, "get") == {
             "200": ["RunStatusView"],
@@ -1531,55 +1546,27 @@ def fits(value: object, schema: dict[str, Any]) -> bool:
     return isinstance(value, JSON_TYPES[kind])
 
 
-def test_the_api_schema_declares_each_body_a_press_is_refused_with_422() -> None:
-    """The family's press answers 422 with a sentence for an evening that has passed or is
-    past the calendar's edge, and with a list of field errors for a body that isn't a plan
-    request, and its schema declares both. Her press reads no body, so one the family's route
-    refuses is answered as any press, and her schema declares no 422."""
-    sentences = {"passed": "2026-08-18", "beyond": "9999-12-31"}
-    not_requests: dict[str, dict[str, Any] | None] = {
-        "no body": None,
-        "not a date": {"plan_date": "not a date"},
-        "unknown field": {"plan_date": PLAN_DATE.isoformat(), "evening": "tonight"},
-    }
+def test_each_plan_route_sends_its_coded_refusals_as_it_declares_them() -> None:
+    """Both plan routes declare one 422 body, the not_valid refusal, and send it for a body that
+    isn't a request; the family's evening that has passed or is past the calendar's edge is a
+    409 with its code, and nothing runs for any of them."""
     with browser() as client:
         api = client.get("/openapi.json").json()
-        refused = {
-            name: client.post("/parent/plans", json={"plan_date": evening})
-            for name, evening in sentences.items()
-        } | {name: client.post("/parent/plans", json=body) for name, body in not_requests.items()}
-        hers = client.post("/student/plans", json=not_requests["not a date"])
+        passed = client.post("/parent/plans", json=family_plan_body(client, "2026-08-18"))
+        beyond = client.post("/parent/plans", json=family_plan_body(client, "9999-12-31"))
+        not_hers = client.post("/student/plans", json={"plan_date": "not a date"})
+        not_theirs = client.post("/parent/plans", json={"plan_date": "not a date"})
+        runs = runs_recorded(client)
 
-    schemas = api["components"]["schemas"]
-    family = api["paths"]["/parent/plans"]["post"]["responses"]["422"]
-    declared = family["content"]["application/json"]["schema"]
-    named = [part["$ref"].rsplit("/", 1)[-1] for part in declared.get("anyOf", [declared])]
-    assert named == ["ProblemView", "HTTPValidationError"]
-    sentence, field_errors = (schemas[name] for name in named)
-    assert sentence["properties"]["detail"]["type"] == "string"
-    assert sentence["required"] == ["detail"]
-    assert field_errors["properties"]["detail"]["type"] == "array"
-    error = schemas[field_errors["properties"]["detail"]["items"]["$ref"].rsplit("/", 1)[-1]]
-    for name, answer in refused.items():
-        assert answer.status_code == 422, name
-        assert set(answer.json()) == {"detail"}, name
-        detail = answer.json()["detail"]
-        if name in sentences:
-            assert isinstance(detail, str), name
-            continue
-        assert isinstance(detail, list), name
-        assert detail, name
-        for problem in detail:
-            assert set(error["required"]) <= set(problem) <= set(error["properties"]), name
-            for key, value in problem.items():
-                assert fits(value, error["properties"][key]), (name, key)
-    # The check can fail: a location given as a string, a message as a number, a type as null.
-    assert not fits("plan_date", error["properties"]["loc"])
-    assert not fits(["body", 1.5], error["properties"]["loc"])
-    assert not fits(3, error["properties"]["msg"])
-    assert not fits(None, error["properties"]["type"])
-    assert "422" not in api["paths"]["/student/plans"]["post"]["responses"]
-    assert hers.status_code == 201
+    for route in ("/student/plans", "/parent/plans"):
+        declared = api["paths"][route]["post"]["responses"]["422"]
+        schema = declared["content"]["application/json"]["schema"]
+        assert schema == {"$ref": "#/components/schemas/PlanRefusal"}
+    assert (passed.status_code, passed.json()["detail"]["code"]) == (409, "passed")
+    assert (beyond.status_code, beyond.json()["detail"]["code"]) == (409, "beyond_calendar")
+    assert (not_hers.status_code, not_hers.json()["detail"]["code"]) == (422, "not_valid")
+    assert (not_theirs.status_code, not_theirs.json()["detail"]["code"]) == (422, "not_valid")
+    assert runs == []
 
 
 def test_her_plan_is_answered_by_its_run_when_reading_it_back_does_not_finish(
@@ -1606,7 +1593,7 @@ def test_her_plan_is_answered_by_its_run_when_reading_it_back_does_not_finish(
     monkeypatch.setattr(student_routes, "STORE_WAIT_SECONDS", 0.2)
     with browser() as client:
         try:
-            answer = client.post("/student/plans")
+            answer = client.post("/student/plans", json=her_plan_body(client))
         finally:
             release.set()
         state = state_of(client)
@@ -1703,7 +1690,7 @@ def test_a_parent_reading_her_week_is_told_where_a_run_stands_in_her_words(
             asked, plan_date=PLAN_DATE, deadline_mono=state.monotonic() + RUN_DEADLINE_SECONDS
         )
         running = client.get(f"{PAGE}?run={asked}").text
-        refused = client.post("/student/plans")
+        refused = client.post("/student/plans", json=her_plan_body(client))
         state.drafts.end_run(asked, reason="timed_out")
         ended = client.get(f"{PAGE}?run={asked}").text
         found = client.get(PAGE).text
@@ -1921,9 +1908,9 @@ def test_a_parent_making_her_plan_reads_it_in_her_words(
     )
     with client:
         signed_in(client, THEIRS)
-        theirs = client.post("/student/plans")
+        theirs = client.post("/student/plans", json=her_plan_body(client))
     with browser() as client:
-        hers = client.post("/student/plans")
+        hers = client.post("/student/plans", json=her_plan_body(client))
 
     assert (theirs.status_code, hers.status_code) == (201, 201)
     assert readers == ["family", "student"]
@@ -2154,3 +2141,625 @@ def test_a_plan_published_while_her_page_is_read_leaves_its_button_behind_it(
     assert pressed.status_code == 409
     assert HER_NEWER_PLAN in the_line(pressed.text)
     assert [run for run, _, _ in runs] == ["plan:between"]
+
+
+# ------------------------------------------------------------ a JSON request carries its id
+
+PLANS = "/student/plans"
+NOT_HER_PLAN_SAID = (
+    "Blossom couldn't use that plan request. A plan request needs run_id, a new id of 32 "
+    "lowercase hexadecimal characters for each request; evening, the household's today as "
+    "YYYY-MM-DD; issued_at, the time the request was made, in ISO 8601 with its offset and no "
+    "more than five minutes ahead of the server's clock; and newest_plan, the draft_id of the "
+    "newest plan known for that evening, or an empty string for none. No plan was started."
+)
+A_WEEK = timedelta(days=7)
+
+
+def issued(instant: datetime) -> str:
+    """An issue time as a caller may write it."""
+    return instant.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def refused_with(code: str, message: str, **more: object) -> dict[str, object]:
+    """A plan refusal's body as the route sends it."""
+    return {"detail": {"code": code, "message": message, "today": None, "run": None, **more}}
+
+
+def test_a_json_request_runs_under_its_run_id() -> None:
+    with browser() as client:
+        body = her_plan_body(client)
+        made = client.post(PLANS, json=body)
+        runs = runs_recorded(client)
+
+    assert made.status_code == 201
+    assert [run[0] for run in runs] == [body["run_id"]]
+
+
+def test_a_json_retry_answers_its_run_as_it_stands_and_starts_nothing() -> None:
+    with browser() as client:
+        body = her_plan_body(client)
+        client.post(PLANS, json=body)
+        again = client.post(PLANS, json=body)
+        runs = runs_recorded(client)
+
+    assert again.status_code == 200
+    assert (again.json()["run_id"], again.json()["status"]) == (body["run_id"], "published")
+    assert len(runs) == 1
+
+
+def test_a_known_run_id_is_answered_a_week_and_more_after_its_request() -> None:
+    """Expiry stops an unused request from starting work; a used id still answers its run."""
+    real = FrozenClock(datetime(2026, 8, 19, 21, tzinfo=UTC), ZoneInfo(FIXTURE_TIMEZONE))
+    with browser(real_clock=real) as client:
+        body = her_plan_body(client)
+        client.post(PLANS, json=body)
+        real._instant += A_WEEK + timedelta(days=1)
+        again = client.post(PLANS, json=body)
+        fresh = client.post(PLANS, json={**body, "run_id": "c" * 32})
+        runs = runs_recorded(client)
+
+    assert again.status_code == 200
+    assert again.json()["run_id"] == body["run_id"]
+    assert fresh.status_code == 409
+    assert fresh.json()["detail"]["code"] == "expired"
+    assert len(runs) == 1
+
+
+@pytest.mark.parametrize("age", [A_WEEK, A_WEEK + timedelta(seconds=1)])
+def test_a_new_json_request_made_a_week_ago_or_more_starts_nothing(age: timedelta) -> None:
+    real = FrozenClock(datetime(2026, 8, 19, 21, tzinfo=UTC), ZoneInfo(FIXTURE_TIMEZONE))
+    with browser(real_clock=real) as client:
+        body = her_plan_body(client, issued_at=issued(real.now() - age))
+        answer = client.post(PLANS, json=body)
+        runs = runs_recorded(client)
+
+    assert answer.status_code == 409
+    assert answer.json() == refused_with(
+        "expired", "That request was made a week or more ago. No new plan was started."
+    )
+    assert runs == []
+
+
+def test_a_new_json_request_for_another_evening_starts_nothing_and_names_today() -> None:
+    with browser() as client:
+        answer = client.post(PLANS, json=her_plan_body(client, evening="2026-08-18"))
+        runs = runs_recorded(client)
+
+    assert answer.status_code == 409
+    assert answer.json() == refused_with(
+        "another_evening",
+        "That request was for 2026-08-18, not today, 2026-08-19. No new plan was started.",
+        today="2026-08-19",
+    )
+    assert runs == []
+
+
+def test_a_run_id_used_for_another_evening_is_refused_with_where_its_run_stands() -> None:
+    with browser() as client:
+        body = her_plan_body(client)
+        client.post(PLANS, json=body)
+        other = client.post(PLANS, json={**body, "evening": "2026-08-18"})
+        runs = runs_recorded(client)
+
+    assert other.status_code == 409
+    detail = other.json()["detail"]
+    assert (detail["code"], detail["message"]) == (
+        "used_for_another_evening",
+        "This run_id was used for 2026-08-19. No plan was started for 2026-08-18.",
+    )
+    assert (detail["run"]["run_id"], detail["run"]["plan_date"]) == (body["run_id"], "2026-08-19")
+    assert len(runs) == 1
+
+
+def test_a_json_request_behind_the_evenings_newest_plan_starts_nothing() -> None:
+    with browser() as client:
+        client.post(PLANS, json=her_plan_body(client))
+        behind = client.post(PLANS, json=her_plan_body(client, newest_plan=""))
+        runs = runs_recorded(client)
+
+    assert behind.status_code == 409
+    assert behind.json() == refused_with(
+        "newer_plan",
+        "A newer plan for 2026-08-19 was made than the one named in newest_plan. "
+        "No plan was started.",
+    )
+    assert len(runs) == 1
+
+
+NOT_A_PLAN_REQUEST: dict[str, object] = {
+    "no body": None,
+    "an empty object": {},
+    "no run_id": {"run_id": None},
+    "a run_id of another shape": {"run_id": "A" * 32},
+    "no evening": {"evening": None},
+    "an evening that isn't a date": {"evening": "tonight"},
+    "no issue time": {"issued_at": None},
+    "an issue time that isn't one": {"issued_at": "yesterday"},
+    "an issue time with no offset": {"issued_at": "2026-08-19T09:00:00"},
+    "an issue time far ahead": {"issued_at": "2099-01-01T00:00:00+00:00"},
+    "no newest_plan": {"newest_plan": None},
+    "a newest_plan that names no plan": {"newest_plan": "draft:no-such-plan"},
+    "a field no request sends": {"send": True},
+}
+
+
+@pytest.mark.parametrize("sent", [*NOT_A_PLAN_REQUEST, "a field twice"])
+def test_a_json_request_that_isnt_one_is_refused_with_its_code(sent: str) -> None:
+    with browser() as client:
+        body: dict[str, object] = dict(her_plan_body(client))
+        changed = NOT_A_PLAN_REQUEST.get(sent, {})
+        if sent == "no body":
+            answer = client.post(PLANS)
+        elif sent == "an empty object":
+            answer = client.post(PLANS, json={})
+        elif sent == "a field twice":
+            raw = json.dumps(body)[:-1] + f', "run_id": "{"b" * 32}"}}'
+            answer = client.post(
+                PLANS, content=raw.encode(), headers={"Content-Type": "application/json"}
+            )
+        else:
+            assert isinstance(changed, dict)
+            sent_body = {k: v for k, v in {**body, **changed}.items() if v is not None}
+            answer = client.post(PLANS, json=sent_body)
+        runs = runs_recorded(client)
+
+    assert answer.status_code == 422
+    assert answer.json() == refused_with("not_valid", NOT_HER_PLAN_SAID)
+    assert runs == []
+
+
+# ------------------------------------------------------------ the plan requests' declarations
+
+HER_PLAN_POST = {
+    "tags": ["student"],
+    "summary": "Make Todays Plan",
+    "description": "Ask for today's plan, once for each request. It is hers as soon as it is "
+    "made; a\n"
+    "parent's review comes after.\n"
+    "\n"
+    "The caller makes two values for each request: run_id, a new id of 32 "
+    "lowercase\n"
+    "hexadecimal characters such as uuid.uuid4().hex, and issued_at, the moment "
+    "the request\n"
+    "is made, in ISO 8601 with its offset. evening is the household's today, "
+    "YYYY-MM-DD, and\n"
+    "newest_plan is the draft_id GET /student/plans/today answers, or an empty "
+    "string when it\n"
+    "answers 404. A retry sends the same run_id and issued_at; a new request gets "
+    "new ones.\n"
+    "\n"
+    "A run_id already used answers its run as it stands now, 200, at any age, or, "
+    "for another\n"
+    "evening, used_for_another_evening, 409. A new request for an evening that "
+    "isn't today is\n"
+    "another_evening, 409, naming today; one made a week or more ago is expired, "
+    "409; and one\n"
+    "whose newest_plan is behind the evening's newest plan is newer_plan, 409. A "
+    "body that\n"
+    "isn't a plan request is not_valid, 422. None of these starts anything.\n"
+    "\n"
+    "A run that ends without a plan, because the checks never passed, the\n"
+    "model did not answer, or it failed on the way, is a 409 saying why in the\n"
+    "reader's words, and her page keeps whatever plan it had. An evening with\n"
+    "nothing left to plan is a 409 too, before any run is written or a model\n"
+    "asked for, and so is a request while the household's run is still running,\n"
+    "naming it. A plan whose saving couldn't be confirmed in time is a 202 with\n"
+    "its run's id, to check at ``plans/runs/{run_id}``; a plan not saved and a\n"
+    "run that couldn't start are 503s that say her updates are saved, in the\n"
+    "reader's words. The plan answered is the record its publication returned,\n"
+    "read for the reader on a worker thread by the run's deadline and its settle\n"
+    "grace; when that reading doesn't finish in time, or no time is left, the "
+    "plan\n"
+    "stands published and the 201 names its run instead.",
+    "operationId": "make_todays_plan_student_plans_post",
+    "requestBody": {
+        "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/HerPlanRequest"}}
+        },
+        "required": True,
+    },
+    "responses": {
+        "201": {
+            "description": "Successful Response",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "anyOf": [
+                            {"$ref": "#/components/schemas/StudentPlanView"},
+                            {"$ref": "#/components/schemas/PublishedRunView"},
+                        ],
+                        "title": "Response Make Todays Plan Student Plans Post",
+                    }
+                }
+            },
+        },
+        "200": {
+            "description": "A retry: the run_id names a run for this evening, and "
+            "this is where it stands now. Nothing was started.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/RunStatusView"}}
+            },
+        },
+        "202": {
+            "description": "Accepted",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/UnconfirmedRunView"}}
+            },
+        },
+        "400": {
+            "description": "A body the framework can't read as JSON at all, in its own answer.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
+            },
+        },
+        "401": {
+            "description": "No sign-in, with the household sign-in on. Nothing was read.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
+            },
+        },
+        "403": {
+            "description": "A reader this route isn't open to, before the body is "
+            "read; or, in plain text, a request from another "
+            "origin.",
+            "content": {
+                "text/plain": {"schema": {"type": "string"}},
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}},
+            },
+        },
+        "409": {
+            "description": "A refusal with a code, made before anything started: "
+            "another_evening, expired, used_for_another_evening, "
+            "newer_plan, passed or beyond_calendar. Or, as a "
+            "sentence, why a run made no plan, or the run still "
+            "running.",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "anyOf": [
+                            {"$ref": "#/components/schemas/PlanConflictView"},
+                            {"$ref": "#/components/schemas/PlanRefusal"},
+                        ],
+                        "title": "Response 409 Make Todays Plan Student Plans Post",
+                    }
+                }
+            },
+        },
+        "422": {
+            "description": "not_valid: a body that isn't a plan request. No plan was started.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/PlanRefusal"}}
+            },
+        },
+        "500": {
+            "description": "The server's own error, in plain text, as for any route.",
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+        },
+        "503": {
+            "description": "Service Unavailable",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
+            },
+        },
+    },
+}
+FAMILY_PLAN_POST = {
+    "tags": ["parent"],
+    "summary": "Start Plan",
+    "description": "Run the plan graph for one evening, once for each request, up to the gate or "
+    "to the\n"
+    "reason it stopped.\n"
+    "\n"
+    "The caller makes two values for each request: run_id, a new id of 32 "
+    "lowercase\n"
+    "hexadecimal characters such as uuid.uuid4().hex, and issued_at, the moment "
+    "the request\n"
+    "is made, in ISO 8601 with its offset. plan_date is the evening to plan, "
+    "YYYY-MM-DD, and\n"
+    "newest_plan is the draft_id newest_plans in GET /parent/approvals lists for "
+    "that evening,\n"
+    "or an empty string when it lists none. A retry sends the same run_id and "
+    "issued_at; a new\n"
+    "request gets new ones.\n"
+    "\n"
+    "A run_id already used answers its run as it stands now, 200, at any age, or, "
+    "for another\n"
+    "evening, used_for_another_evening, 409. A new request made a week or more "
+    "ago is expired,\n"
+    "409; one for an evening that has passed is passed, 409, and one past the "
+    "edge of the\n"
+    "calendar is beyond_calendar, 409, each naming today; one whose newest_plan "
+    "is behind the\n"
+    "evening's newest plan is newer_plan, 409. A body that isn't a plan request "
+    "is not_valid,\n"
+    "422. None of these starts anything.\n"
+    "\n"
+    "An evening with nothing left to plan is a 409, before and after the run: a "
+    "report of hers\n"
+    "can land between the question and the run's reading, and such a run made no "
+    "plan. Any\n"
+    "other run that ended without a plan is answered 201 with its record, since "
+    "the page lists\n"
+    "those, a run that ended on a date problem before any model was asked, or one "
+    "that failed\n"
+    "on the way, included. A request while the household's run is still running "
+    "is a 409\n"
+    "naming it, in a parent's words; a plan whose saving couldn't be confirmed in "
+    "time is a 202\n"
+    "with its run's id; and a plan not saved or a run that couldn't start is a "
+    "503 that says\n"
+    "her updates are saved.",
+    "operationId": "start_plan_parent_plans_post",
+    "requestBody": {
+        "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/FamilyPlanRequest"}}
+        },
+        "required": True,
+    },
+    "responses": {
+        "201": {
+            "description": "Successful Response",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/PlanRunView"}}
+            },
+        },
+        "200": {
+            "description": "A retry: the run_id names a run for this evening, and "
+            "this is where it stands now. Nothing was started.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/RunStatusView"}}
+            },
+        },
+        "202": {
+            "description": "Accepted",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/UnconfirmedRunView"}}
+            },
+        },
+        "400": {
+            "description": "A body the framework can't read as JSON at all, in its own answer.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
+            },
+        },
+        "401": {
+            "description": "No sign-in, with the household sign-in on. Nothing was read.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
+            },
+        },
+        "403": {
+            "description": "A reader this route isn't open to, before the body is "
+            "read; or, in plain text, a request from another "
+            "origin.",
+            "content": {
+                "text/plain": {"schema": {"type": "string"}},
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}},
+            },
+        },
+        "409": {
+            "description": "A refusal with a code, made before anything started: "
+            "another_evening, expired, used_for_another_evening, "
+            "newer_plan, passed or beyond_calendar. Or, as a "
+            "sentence, why a run made no plan, or the run still "
+            "running.",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "anyOf": [
+                            {"$ref": "#/components/schemas/PlanConflictView"},
+                            {"$ref": "#/components/schemas/PlanRefusal"},
+                        ],
+                        "title": "Response 409 Start Plan Parent Plans Post",
+                    }
+                }
+            },
+        },
+        "422": {
+            "description": "not_valid: a body that isn't a plan request. No plan was started.",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/PlanRefusal"}}
+            },
+        },
+        "500": {
+            "description": "The server's own error, in plain text, as for any route.",
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+        },
+        "503": {
+            "description": "Service Unavailable",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
+            },
+        },
+    },
+}
+PLAN_REQUEST_SCHEMAS = {
+    "HerPlanRequest": {
+        "properties": {
+            "run_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$",
+                "title": "Run Id",
+                "description": "A new id of 32 lowercase "
+                "hexadecimal characters, made by "
+                "the caller for each request, "
+                "for example uuid.uuid4().hex. A "
+                "retry sends the same id.",
+            },
+            "evening": {
+                "type": "string",
+                "title": "Evening",
+                "description": "The household's today, as YYYY-MM-DD.",
+            },
+            "issued_at": {
+                "type": "string",
+                "title": "Issued At",
+                "description": "When the request was made, "
+                "in ISO 8601 with its offset, "
+                "made once for each request "
+                "and sent unchanged on a "
+                "retry. A new request made a "
+                "week or more ago starts "
+                "nothing.",
+            },
+            "newest_plan": {
+                "type": "string",
+                "title": "Newest Plan",
+                "description": "The draft_id of today's "
+                "newest plan, from GET "
+                "/student/plans/today, or "
+                "an empty string when that "
+                "answers 404.",
+            },
+        },
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["run_id", "evening", "issued_at", "newest_plan"],
+        "title": "HerPlanRequest",
+        "description": "A request for today's plan sent as JSON: the id and issue "
+        "time the caller made for it,\n"
+        "the evening it is for, and the newest plan the caller "
+        "knows for that evening.",
+    },
+    "FamilyPlanRequest": {
+        "properties": {
+            "run_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$",
+                "title": "Run Id",
+                "description": "A new id of 32 lowercase "
+                "hexadecimal characters, made "
+                "by the caller for each "
+                "request, for example "
+                "uuid.uuid4().hex. A retry "
+                "sends the same id.",
+            },
+            "plan_date": {
+                "type": "string",
+                "title": "Plan Date",
+                "description": "The evening to plan, today or later, as YYYY-MM-DD.",
+            },
+            "issued_at": {
+                "type": "string",
+                "title": "Issued At",
+                "description": "When the request was "
+                "made, in ISO 8601 with "
+                "its offset, made once for "
+                "each request and sent "
+                "unchanged on a retry. A "
+                "new request made a week "
+                "or more ago starts "
+                "nothing.",
+            },
+            "newest_plan": {
+                "type": "string",
+                "title": "Newest Plan",
+                "description": "The draft_id listed for "
+                "that evening in "
+                "newest_plans from GET "
+                "/parent/approvals, or "
+                "an empty string when "
+                "the evening isn't "
+                "listed.",
+            },
+        },
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["run_id", "plan_date", "issued_at", "newest_plan"],
+        "title": "FamilyPlanRequest",
+        "description": "A request for an evening's plan sent as JSON: the id "
+        "and issue time the caller made for\n"
+        "it, the evening to plan, and the newest plan the "
+        "caller knows for that evening.",
+    },
+    "PlanRefusal": {
+        "properties": {"detail": {"$ref": "#/components/schemas/PlanRefusalView"}},
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["detail"],
+        "title": "PlanRefusal",
+        "description": "A JSON plan request refused, as its body carries it.",
+    },
+    "PlanRefusalView": {
+        "properties": {
+            "code": {
+                "type": "string",
+                "enum": [
+                    "not_valid",
+                    "another_evening",
+                    "expired",
+                    "used_for_another_evening",
+                    "newer_plan",
+                    "passed",
+                    "beyond_calendar",
+                ],
+                "title": "Code",
+            },
+            "message": {"type": "string", "title": "Message"},
+            "today": {
+                "anyOf": [{"type": "string", "format": "date"}, {"type": "null"}],
+                "title": "Today",
+            },
+            "run": {"anyOf": [{"$ref": "#/components/schemas/RunStatusView"}, {"type": "null"}]},
+        },
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["code", "message"],
+        "title": "PlanRefusalView",
+        "description": "Why a JSON plan request started nothing: a code from a "
+        "closed set, a sentence, the\n"
+        "household's today where the refusal turns on it, and, "
+        "for an id used for another evening,\n"
+        "where that id's run stands.",
+    },
+    "NewestPlanView": {
+        "properties": {
+            "plan_date": {"type": "string", "format": "date", "title": "Plan Date"},
+            "draft_id": {"type": "string", "title": "Draft Id"},
+        },
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["plan_date", "draft_id"],
+        "title": "NewestPlanView",
+        "description": "The newest plan made for one evening, decided or not.",
+    },
+}
+APPROVAL_QUEUE_SCHEMA = {
+    "properties": {
+        "generated_at": {"type": "string", "format": "date-time", "title": "Generated At"},
+        "waiting": {
+            "items": {"$ref": "#/components/schemas/ApprovalView"},
+            "type": "array",
+            "title": "Waiting",
+        },
+        "newest_plans": {
+            "items": {"$ref": "#/components/schemas/NewestPlanView"},
+            "type": "array",
+            "title": "Newest Plans",
+            "default": [],
+        },
+    },
+    "additionalProperties": False,
+    "type": "object",
+    "required": ["generated_at", "waiting"],
+    "title": "ApprovalQueueView",
+    "description": "What waits for a decision, oldest first, and the newest plan of each evening "
+    "from today\n"
+    "on that has one: the newest_plan a request for that evening sends. An "
+    "evening not listed\n"
+    "has none, and its request sends an empty string.",
+}
+"""Both plan routes' entries and the request and refusal bodies they declare, whole: every
+answer, its body, the closed set of refusal codes, and the words a caller reads."""
+
+
+def test_the_plan_requests_openapi_entries_are_pinned_whole() -> None:
+    with browser() as client:
+        declared = client.get("/openapi.json").json()
+    paths, schemas = declared["paths"], declared["components"]["schemas"]
+
+    assert paths["/student/plans"]["post"] == HER_PLAN_POST
+    assert paths["/parent/plans"]["post"] == FAMILY_PLAN_POST
+    assert {name: schemas[name] for name in PLAN_REQUEST_SCHEMAS} == PLAN_REQUEST_SCHEMAS
+    assert schemas["ApprovalQueueView"] == APPROVAL_QUEUE_SCHEMA

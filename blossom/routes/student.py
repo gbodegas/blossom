@@ -188,10 +188,12 @@ from blossom.routes.runs import (
     FORM_LIFETIME,
     ISSUED_AT,
     ISSUED_AT_FORM,
+    NOT_HER_PLAN,
     NOT_USED,
     OPENED_A_WEEK_AGO,
-    PLAN_ANSWERS,
     PLAN_FORM_FIELDS,
+    PLAN_REQUEST_ANSWERS,
+    REQUEST_A_WEEK_OLD,
     RUN_STATUS_ANSWERS,
     STORE_FAILURES,
     UNCONFIRMED,
@@ -199,6 +201,8 @@ from blossom.routes.runs import (
     Clause,
     CouldNotStart,
     Graphs,
+    HerPlanRequest,
+    HerPlanRoute,
     Needs,
     NotSaved,
     PlanAnswer,
@@ -208,23 +212,29 @@ from blossom.routes.runs import (
     SameRun,
     Sentences,
     Unconfirmed,
+    answered_by_its_run,
     being_made,
     ended_sentences,
     ended_without_a_plan,
     evening_named,
+    expired_request,
     fact,
     fresh_plan_form,
     graph_for_a_run,
     issue_time_from,
+    json_newer_plan,
     landed,
     make_plan,
     named_work,
+    not_her_evening,
     not_saved,
     not_saved_sentences,
     opening_and_rest,
     past_due_views,
     plan_form_from,
+    plan_refusal,
     planning_sentences,
+    repeats_a_field,
     require_model,
     require_work,
     run_check,
@@ -837,23 +847,6 @@ def signal_refusal(refused: SignalRefusalView) -> JSONResponse:
         else status.HTTP_409_CONFLICT
     )
     return JSONResponse(SignalRefusal(detail=refused).model_dump(mode="json"), status_code=code)
-
-
-def repeats_a_field(body: bytes) -> bool:
-    """Whether a JSON body names a field twice in one object, which a reader would take as its
-    last. A body that isn't JSON repeats nothing here; the framework refuses it."""
-    repeated = False
-
-    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        nonlocal repeated
-        repeated = repeated or len({name for name, _ in items}) != len(items)
-        return dict(items)
-
-    try:
-        json.loads(body, object_pairs_hook=pairs)
-    except (ValueError, RecursionError):
-        return False
-    return repeated
 
 
 def signal_view(state: ApplicationState, signal: WorkloadSignal) -> WorkloadSignalView:
@@ -1619,22 +1612,29 @@ def plan_for_today(state: State) -> StudentPlanView:
     return plan
 
 
-@router.post(
-    "/plans",
-    response_model=StudentPlanView | PublishedRunView,
-    status_code=status.HTTP_201_CREATED,
-    responses=PLAN_ANSWERS,
-)
 async def make_todays_plan(
-    request: Request, state: State, graphs: Graphs
+    request: Request, state: State, graphs: Graphs, plan: Annotated[HerPlanRequest, Body()]
 ) -> StudentPlanView | JSONResponse:
-    """Ask for today's plan. It is hers as soon as it is made; a parent's review comes after.
+    """Ask for today's plan, once for each request. It is hers as soon as it is made; a
+    parent's review comes after.
+
+    The caller makes two values for each request: run_id, a new id of 32 lowercase
+    hexadecimal characters such as uuid.uuid4().hex, and issued_at, the moment the request
+    is made, in ISO 8601 with its offset. evening is the household's today, YYYY-MM-DD, and
+    newest_plan is the draft_id GET /student/plans/today answers, or an empty string when it
+    answers 404. A retry sends the same run_id and issued_at; a new request gets new ones.
+
+    A run_id already used answers its run as it stands now, 200, at any age, or, for another
+    evening, used_for_another_evening, 409. A new request for an evening that isn't today is
+    another_evening, 409, naming today; one made a week or more ago is expired, 409; and one
+    whose newest_plan is behind the evening's newest plan is newer_plan, 409. A body that
+    isn't a plan request is not_valid, 422. None of these starts anything.
 
     A run that ends without a plan, because the checks never passed, the
     model did not answer, or it failed on the way, is a 409 saying why in the
     reader's words, and her page keeps whatever plan it had. An evening with
     nothing left to plan is a 409 too, before any run is written or a model
-    asked for, and so is a press while the household's run is still running,
+    asked for, and so is a request while the household's run is still running,
     naming it. A plan whose saving couldn't be confirmed in time is a 202 with
     its run's id, to check at ``plans/runs/{run_id}``; a plan not saved and a
     run that couldn't start are 503s that say her updates are saved, in the
@@ -1643,13 +1643,42 @@ async def make_todays_plan(
     grace; when that reading doesn't finish in time, or no time is left, the plan
     stands published and the 201 names its run instead.
     """
-    budget = graphs.budget()
+    now = state.real_clock.now()
+    try:
+        evening = date.fromisoformat(plan.evening)
+    except ValueError:
+        return plan_refusal(NOT_HER_PLAN)
+    issued_at = issue_time_from(plan.issued_at, now)
+    if issued_at is None:
+        return plan_refusal(NOT_HER_PLAN)
+    # A run_id already used is answered by its run, whatever its age or the evening's.
+    found = await run_of_the_form(state, plan.run_id)
+    if found is not None:
+        return await answered_by_its_run(state, found, evening)
     today = state.clock.today()
+    if evening != today:
+        return plan_refusal(not_her_evening(evening, today))
+    if expired_request(issued_at, now):
+        return plan_refusal(REQUEST_A_WEEK_OLD)
+    budget = graphs.budget()
     parent = parent_reads(request)
     try:
         await require_work(state, today, budget)
         require_model(graphs)
-        made = await make_plan(graph_for_a_run(graphs), today, state, budget=budget)
+        made = await make_plan(
+            graph_for_a_run(graphs),
+            today,
+            state,
+            budget=budget,
+            run_id=plan.run_id,
+            basis=plan.newest_plan,
+        )
+    except SameRun as same:
+        return await answered_by_its_run(state, same.run, evening)
+    except StaleBasis:
+        return plan_refusal(json_newer_plan(evening))
+    except UnknownBasis:
+        return plan_refusal(NOT_HER_PLAN)
     except AlreadyPlanning as error:
         raise AlreadyPlanning(error.run, parent=parent) from None
     except NotSaved as error:
@@ -1692,6 +1721,17 @@ async def make_todays_plan(
                 logger.warning("the plan of run %s could not be read: %s", record.thread_id, error)
     published = PublishedRunView(run_id=record.thread_id, plan_date=record.plan_date)
     return JSONResponse(published.model_dump(mode="json"), status_code=status.HTTP_201_CREATED)
+
+
+router.add_api_route(
+    "/plans",
+    make_todays_plan,
+    methods=["POST"],
+    response_model=StudentPlanView | PublishedRunView,
+    status_code=status.HTTP_201_CREATED,
+    responses=PLAN_REQUEST_ANSWERS,
+    route_class_override=HerPlanRoute,
+)
 
 
 @router.get("/plans/runs/{run_id}", response_model=RunStatusView, responses=RUN_STATUS_ANSWERS)

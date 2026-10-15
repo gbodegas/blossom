@@ -50,6 +50,7 @@ from tests.support import (
     Scripted,
     accepting,
     drafts_in_memory,
+    family_plan_body,
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
@@ -275,7 +276,7 @@ def test_the_application_traces_the_runs_its_routes_start(tmp_path: pathlib.Path
     )
 
     with TestClient(app, headers=SAME_ORIGIN) as running:
-        started = running.post("/parent/plans", json={}).json()
+        started = running.post("/parent/plans", json=family_plan_body(running)).json()
         state: ApplicationState = getattr(app.state, STATE_ATTRIBUTE)
         rows = state.traces.runs_for_thread(started["thread_id"])
 

@@ -516,7 +516,8 @@ draft is composed and once after the gate, each as an upsert keyed by a draft
 id derived from the thread, so a node that runs twice leaves one row. The table lives in its own file, under the
 same guard as saved state, with deleted rows overwritten. `GET
 /parent/approvals` reads the table and needs no model, so a parent can always
-see what is waiting. Starting a run needs the model seam and says so with a
+see what is waiting, and lists the newest plan of each evening from today on,
+which a JSON request for that evening names as its `newest_plan`. Starting a run needs the model seam and says so with a
 503 when there is no key. Deciding does not: nothing past the gate asks a
 model, so a graph built without a key can resume a paused thread and record
 the decision, and the table is consulted before the graph is built, so a
@@ -959,6 +960,14 @@ her and "Her homework updates are saved." to a parent, who after an interrupted
 run also reads "Family review shows what happened." Her JSON route's 503s for
 not saved and couldn't start carry the same sentence in the words of whoever is
 signed in, and the family route's in a parent's words.
+
+Each JSON request carries a `run_id` its caller made and an `issued_at`, the
+moment it was made, as the page forms carry theirs; a retry sends both again
+unchanged. The request's id is its run's id, so a retry finds its run and is
+answered with where it stands, after the gate has checked who is asking, at
+any age; only a request whose id names no run is held to its age, and one made
+a week or more ago starts nothing. A refusal made before anything starts
+carries a code and says no plan was started.
 
 The run ID is how a run is found again. `GET /student/plans/runs/{run_id}` and
 `GET /parent/plans/runs/{run_id}` read where it stands, after ending any run

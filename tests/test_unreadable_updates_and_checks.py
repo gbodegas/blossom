@@ -48,9 +48,11 @@ from tests.support import (
     browser,
     card_for,
     family_page,
+    family_plan_body,
     fixture_settings,
     fixture_week_plan,
     form_fields,
+    her_plan_body,
     hidden,
     human_text,
     lands_on,
@@ -845,8 +847,12 @@ def test_a_plan_counts_work_whose_updates_cannot_be_read_and_is_told_none_of_the
         if path.endswith("/actions/plan"):
             page = "/parent" if path.startswith("/parent") else HER_PAGE
             answer = client.post(path, data=plan_form(client, page), headers=PAGE_HEADERS)
+        elif path == "/parent/plans":
+            answer = client.request(
+                method, path, json=family_plan_body(client, **(body or {})), headers=PAGE_HEADERS
+            )
         else:
-            answer = client.request(method, path, json=body, headers=PAGE_HEADERS)
+            answer = client.request(method, path, json=her_plan_body(client), headers=PAGE_HEADERS)
 
     assert answer.status_code == made, answer.text[:300]
     brief = human_text(planners[0].briefs[0])
