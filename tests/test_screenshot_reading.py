@@ -737,18 +737,27 @@ def trickling_reader(
     return lambda png, timeout: read_screenshot(WITH_KEY, png, timeout=timeout, transport=transport)
 
 
+async def hold_the_loop() -> None:
+    """Keep the event loop from running across the press's 0.5 second deadline, so the late
+    calls end and are refused before the loop sees the deadline pass."""
+    await asyncio.sleep(0.48)
+    time.sleep(0.15)  # noqa: ASYNC251 (blocking the loop is the point)
+
+
+@pytest.mark.parametrize("held_loop", [False, True], ids=["as-it-runs", "loop-held-at-deadline"])
 def test_a_stop_waits_on_no_trickling_call_past_its_time_plus_one_read(
-    press: Press, monkeypatch: pytest.MonkeyPatch
+    press: Press, monkeypatch: pytest.MonkeyPatch, held_loop: bool
 ) -> None:
     """``asyncio.run`` waits for the executor's threads when it ends, as the server's stop does:
-    a press over trickling answers lets it end by the deadline and one more piece."""
+    a press over trickling answers lets it end by the deadline and one more piece. Each image
+    ends unfinished or dropped, whichever the loop saw first, and nothing late is kept."""
     short_deadline(monkeypatch)
     draft_id = press.draft("a", "b", "c", "d", "e")
     ids = list(press.ids(draft_id).values())
-    started = time.monotonic()
 
-    outcome = asyncio.run(
-        read_screenshots(
+    async def stop() -> ReadOutcome:
+        holding = asyncio.create_task(hold_the_loop()) if held_loop else None
+        outcome = await read_screenshots(
             press.store,
             WITH_KEY,
             press.student,
@@ -758,10 +767,19 @@ def test_a_stop_waits_on_no_trickling_call_past_its_time_plus_one_read(
             held=set(),
             reader=trickling_reader(),
         )
-    )
+        if holding is not None:
+            await holding
+        return outcome
+
+    started = time.monotonic()
+    outcome = asyncio.run(stop())
 
     assert time.monotonic() - started < 0.5 + 0.5
-    assert sorted(outcome.unfinished) == sorted(ids)
+    assert (outcome.read, outcome.failed, outcome.busy) == ((), (), ())
+    assert not set(outcome.unfinished) & set(outcome.dropped)
+    assert sorted(outcome.unfinished + outcome.dropped) == sorted(ids)
+    images = press.images(draft_id).values()
+    assert [(item.read, item.failure) for item in images] == [(False, None)] * len(ids)
 
 
 def test_with_every_worker_held_by_trickling_calls_later_reads_still_run(
