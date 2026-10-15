@@ -3528,6 +3528,8 @@ DROP_LINKS_INDEX = "DROP INDEX grade_homework_links_one_homework"
 HER_PAGES = [HER_PAGE, f"/student/assignments/{LOG_ID}"]
 TOGETHER_LINE = r'\n    <p class="confidence disagree to-check" role="status">.*?</p>\n  '
 """Her week's line of homework to check together, as the page writes it."""
+EXPLANATION = r'\n<p class="effect">Check together: .*?</p>'
+"""The explanation of one counted result on a card or row, as the page writes it."""
 
 
 def parent_links(
@@ -3685,8 +3687,8 @@ def test_each_place_shows_the_count_of_an_assignment_s_results_and_one_way_to_th
     """Seven places on her week, each for an assignment linked to a result in each of two terms,
     show the count and one link to the results on the row's own details. With the score blocks
     out, her week and each details page equal those with no class on record, but for the line
-    that lists her Done homework linked to a result the school reports Missing; reads write
-    nothing."""
+    that lists her Done homework linked to a result the school reports Missing and the
+    explanation of each such result on its row; reads write nothing."""
     rows = {LOG_ID: LOG, DIAGRAM_ID: DIAGRAM, PRACTICE_ID: PRACTICE, OSMOSIS_ID: OSMOSIS}
     addresses = [
         HER_PAGE,
@@ -3757,7 +3759,12 @@ def test_each_place_shows_the_count_of_an_assignment_s_results_and_one_way_to_th
     assert [" ".join(re.sub(r"<[^>]+>", "", line).split()) for line in together] == [
         f"1 assignment to check together: {DIAGRAM}."
     ]
-    assert without_results(re.sub(TOGETHER_LINE, "", done_linked, flags=re.S)) == done_bare
+    explained = re.findall(EXPLANATION, done_linked, re.S)
+    assert [" ".join(re.sub(r"<[^>]+>", "", line).split()) for line in explained] == [
+        f"Check together: the school's gradebook lists {DIAGRAM} as Missing."
+    ] * 2
+    plain = re.sub(EXPLANATION, "", re.sub(TOGETHER_LINE, "", done_linked, flags=re.S), flags=re.S)
+    assert without_results(plain) == done_bare
     assert after_reading == on_record
 
 

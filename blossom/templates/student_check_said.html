@@ -1,0 +1,8 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#-
+  What the school's gradebook says of one counted result, in its own words: the
+  result's title and Status as written, and the report that supplied them when a
+  newer report last showed it. ``said`` is the result's ``CheckSaid``.
+-#}
+<p class="effect">Check together: the school's gradebook lists {% if said.title is not none %}<span class="authored-text">{{ said.title }}</span>{% else %}a result{% endif %} as <span class="authored-text">{{ said.status }}</span>{% if said.source %}, from the {{ said.source }}{% endif %}.</p>

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """Check together: each homework's standing from her two accounts, what one read of the
-record and the gradebook counts, and her week's line.
+record and the gradebook counts, her week's line, and each counted result's explanation on her
+cards, rows and assignment details.
 
 The standing is stated as plain values. Every other case saves Wren's synthetic report through
 the gradebook's own save, decides links through its own write, keeps her updates and hand-ins
@@ -55,6 +56,7 @@ from tests.support import (
     PAGE_HEADERS,
     PLAN_DATE,
     capture_class,
+    card_for,
     closed_world,
     confirm_current,
     database_of,
@@ -772,7 +774,8 @@ def test_a_homework_on_both_bases_is_listed_once_and_mark_checked_leaves_it_list
     before = lines_of(her_week(week))
     family = family_page(week)
     marked = mark(week, DIAGRAM_ID)
-    after = lines_of(her_week(week))
+    after_page = her_week(week)
+    after = lines_of(after_page)
 
     assert [said(line) for line in before] == [f"1 assignment to check together: {DIAGRAM}."]
     assert "Worth checking together" in family
@@ -780,6 +783,7 @@ def test_a_homework_on_both_bases_is_listed_once_and_mark_checked_leaves_it_list
     assert marked.status_code == 303
     assert status_of(store, DIAGRAM_ID).checked
     assert after == before
+    assert explained(card_for(after_page, DIAGRAM_ID)) == [explanation(DIAGRAM, "Missing")]
 
 
 def test_a_grade_basis_alone_offers_no_mark_checked_on_her_week_or_the_family_page(
@@ -926,3 +930,357 @@ def test_g3c_i1_her_week_with_the_line_or_the_problem_writes_nothing(week: TestC
     assert after_counted == world
     assert unknown[-1] == CANT_WORK_OUT_LINE
     assert closed_world([database_of(week)], leaving_out=()) == failed_world
+
+
+# ------------------------------------------------------------- her cards, rows and details
+
+DIAGRAM_SCORE = "School score: 7.0 / 10.0 · 70.0%"
+LOG_SCORE = "School score: 18.0 / 20.0 · 90.0%"
+EXPLANATION = re.compile(r'<p class="effect">Check together: .*?</p>', re.S)
+PART = re.compile(
+    r'<h3 class="result-title">(.*?)</h3>'
+    r'|<p class="effect">((?:School score|School results|Check together).*?)</p>'
+    r'|<a class="assignment-link" href="[^"]*" aria-label="([^"]*)">'
+    r"(?:Grade details|See the results|Change or remove link)</a>",
+    re.S,
+)
+BLANK_DIAGRAM = REPORT.replace(DIAGRAM_ROW, DIAGRAM_ROW.replace("| 7.0     |", "|         |"))
+"""Wren's report with "Cell Diagram" reported Missing and its points left blank."""
+SECOND_TERM = REPORT.replace("**T1**", "**T2**")
+CANT_BE_READ = {
+    "student_reports": "Your updates on this assignment can't be read right now.",
+    "hand_in_events": "The hand-in record cannot be read right now.",
+}
+"""Each record's existing line on her card when it can't be read."""
+
+
+def explanation(title: str | None, status: str, source: str | None = None) -> str:
+    """An explanation as the proposal words it, for a result with ``title`` or none."""
+    named = "a result" if title is None else title
+    ending = "" if source is None else f", from the {source}"
+    return f"Check together: the school's gradebook lists {named} as {status}{ending}."
+
+
+def explained(fragment: str) -> list[str]:
+    """Each Check together explanation in a piece of a page, as it reads."""
+    return [said(one) for one in EXPLANATION.findall(fragment)]
+
+
+def parts_of(fragment: str) -> list[str]:
+    """The gradebook's parts of a piece of a page, in order: each result title, each quiet
+    line as it reads, and each link to a result or results by its accessible name."""
+    found = []
+    for title, line, name in PART.findall(fragment):
+        if title:
+            found.append(f"title: {said(title)}")
+        elif line:
+            found.append(said(line))
+        else:
+            found.append(f"link: {html.unescape(name)}")
+    return found
+
+
+def gradebook_block(page: str) -> str:
+    """Assignment details' gradebook block, from its heading to its section's end, or nothing."""
+    start = page.find("From the school's gradebook</h2>")
+    if start < 0:
+        return ""
+    head = page.rindex("<h2", 0, start)
+    return page[head : page.index("</section>", start)]
+
+
+def details_of(client: TestClient, assignment_id: str = DIAGRAM_ID) -> str:
+    answer = client.get(f"/student/assignments/{assignment_id}", headers=PAGE_HEADERS)
+    assert answer.status_code == 200
+    return answer.text
+
+
+def linked_from(store: ProjectStateStore, text: str, title: str, assignment_id: str) -> str:
+    """The report ``text`` saved, and its result ``title`` linked to ``assignment_id``: the
+    result."""
+    class_id = saved(store, text)
+    result_id = result_named_in(store, class_id, title, term_of(text))
+    decided_in(store, class_id, result_id, assignment_id, term_of(text))
+    return result_id
+
+
+def term_of(text: str) -> str:
+    return "T2" if "**T2**" in text else "T1"
+
+
+def result_named_in(store: ProjectStateStore, class_id: str, title: str, term: str) -> str:
+    (result_id,) = [
+        result_id
+        for result_id, value in store.class_term(class_id, term).current.results.items()
+        if value.cells["assignment"][1] == title
+    ]
+    return result_id
+
+
+def decided_in(
+    store: ProjectStateStore, class_id: str, result_id: str, assignment_id: str, term: str
+) -> None:
+    preview = store.delete_preview(class_id, term)
+    assert isinstance(preview, DeletePreview)
+    assert preview.revision is not None
+    outcome = store.decide_homework_link(
+        result_id, assignment_id, decision="link", revision=preview.revision, role="parent"
+    )
+    assert isinstance(outcome, HomeworkLinkWritten), outcome
+
+
+@pytest.mark.parametrize("reader", READERS)
+def test_a_counted_result_with_a_score_is_explained_after_its_line_and_link(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Her card: the score line, its Grade details, then the explanation, with no link of its
+    own. Details: the line, the explanation, then Grade details with the homework's title, and
+    for a signed-in parent the way to change the link."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store_of(client).put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        reported(store_of(client), "done", DIAGRAM_ID)
+        linked_report(store_of(client))
+        card = card_for(her_week(client), DIAGRAM_ID)
+        block = gradebook_block(details_of(client))
+
+    name = f"{DIAGRAM}, {BIOLOGY}"
+    assert parts_of(card) == [
+        DIAGRAM_SCORE,
+        f"link: Grade details: {name}",
+        explanation(DIAGRAM, "Missing"),
+    ]
+    assert parts_of(block) == [
+        DIAGRAM_SCORE,
+        explanation(DIAGRAM, "Missing"),
+        f"link: Grade details: {name}",
+        *([f"link: Change or remove link: {name}"] if reader == "parent" else []),
+    ]
+    assert 'id="school-results"' not in block
+    assert '<span class="authored-text">Cell Diagram</span>' in block
+    assert '<span class="authored-text">Missing</span>' in block
+
+
+def test_a_counted_result_with_blank_points_keeps_its_own_grade_details(week: TestClient) -> None:
+    """ "Cell Diagram", Missing with its points blank, linked to "Lab Report": no score line; the
+    card's explanation is followed by Grade details named for the result, and details name it
+    for the homework, as with one score."""
+    store = store_of(week)
+    reported(store, "done", LAB_ID)
+    linked_from(store, BLANK_DIAGRAM, DIAGRAM, LAB_ID)
+
+    card = card_for(her_week(week), LAB_ID)
+    block = gradebook_block(details_of(week, LAB_ID))
+
+    assert "School score" not in card + block
+    assert parts_of(card) == [
+        explanation(DIAGRAM, "Missing"),
+        f"link: Grade details: {DIAGRAM}, {BIOLOGY}",
+    ]
+    assert parts_of(block) == [
+        explanation(DIAGRAM, "Missing"),
+        f"link: Grade details: Lab Report, {BIOLOGY}",
+    ]
+
+
+def test_two_results_one_counted_are_explained_after_see_the_results(week: TestClient) -> None:
+    """One homework linked to "Cell Diagram" in T1, Missing, and in T2, Valid."""
+    store = store_of(week)
+    reported(store, "done", DIAGRAM_ID)
+    linked_from(store, REPORT, DIAGRAM, DIAGRAM_ID)
+    linked_from(
+        store,
+        SECOND_TERM.replace(DIAGRAM_ROW, DIAGRAM_ROW.replace("Missing", "Valid  ")),
+        DIAGRAM,
+        DIAGRAM_ID,
+    )
+
+    card = card_for(her_week(week), DIAGRAM_ID)
+
+    assert parts_of(card) == [
+        "School results (2)",
+        f"link: See the results: {DIAGRAM}, {BIOLOGY}",
+        explanation(DIAGRAM, "Missing"),
+    ]
+
+
+def test_one_homework_with_two_counted_results_is_explained_twice_and_listed_once(
+    week: TestClient,
+) -> None:
+    store = store_of(week)
+    reported(store, "done", DIAGRAM_ID)
+    linked_from(store, REPORT, DIAGRAM, DIAGRAM_ID)
+    linked_from(store, SECOND_TERM, DIAGRAM, DIAGRAM_ID)
+
+    page = her_week(week)
+
+    assert [said(line) for line in lines_of(page)] == [
+        f"1 assignment to check together: {DIAGRAM}."
+    ]
+    assert parts_of(card_for(page, DIAGRAM_ID)) == [
+        "School results (2)",
+        f"link: See the results: {DIAGRAM}, {BIOLOGY}",
+        explanation(DIAGRAM, "Missing"),
+        explanation(DIAGRAM, "Missing"),
+    ]
+
+
+def test_a_score_beside_a_counted_result_with_blank_points_keeps_both_links_apart(
+    tmp_path: pathlib.Path,
+) -> None:
+    """ "Lab Report" linked to the log, Valid 18/20, and to "Cell Diagram", Missing with its
+    points blank. Her card: the log's line and Grade details, then the explanation and its own
+    Grade details. Details, in the rules' order, the diagram (due later) first, each titled, with
+    the result's name on Grade details and, for a parent, the way to change each link."""
+    with household_client("parent", tmp_path) as client:
+        sign_in_as(client, "parent")
+        store = store_of(client)
+        store.put_on_record([in_week(LAB_ID, "Lab Report")], {})
+        reported(store, "done", LAB_ID)
+        linked_from(store, BLANK_DIAGRAM, LOG, LAB_ID)
+        class_id = capture_class(store, draft_of(BLANK_DIAGRAM))
+        decided_in(store, class_id, result_named_in(store, class_id, DIAGRAM, "T1"), LAB_ID, "T1")
+        card = card_for(her_week(client), LAB_ID)
+        block = gradebook_block(details_of(client, LAB_ID))
+
+    assert parts_of(card) == [
+        LOG_SCORE,
+        f"link: Grade details: Lab Report, {BIOLOGY}",
+        explanation(DIAGRAM, "Missing"),
+        f"link: Grade details: {DIAGRAM}, {BIOLOGY}",
+    ]
+    assert 'id="school-results"' in block
+    assert parts_of(block) == [
+        f"title: {DIAGRAM}",
+        explanation(DIAGRAM, "Missing"),
+        f"link: Grade details: {DIAGRAM}, {BIOLOGY}",
+        f"link: Change or remove link: {DIAGRAM}, {BIOLOGY}",
+        f"title: {LOG}",
+        LOG_SCORE,
+        f"link: Grade details: {LOG}, {BIOLOGY}",
+        f"link: Change or remove link: {LOG}, {BIOLOGY}",
+    ]
+
+
+def test_twins_with_blank_points_each_keep_their_own_grade_details(week: TestClient) -> None:
+    """ "Cell Diagram" in T1 and in T2, each Missing with its points blank: two explanations,
+    each followed by its own Grade details, their accessible names alike."""
+    store = store_of(week)
+    reported(store, "done", DIAGRAM_ID)
+    linked_from(store, BLANK_DIAGRAM, DIAGRAM, DIAGRAM_ID)
+    linked_from(store, BLANK_DIAGRAM.replace("**T1**", "**T2**"), DIAGRAM, DIAGRAM_ID)
+
+    card = card_for(her_week(week), DIAGRAM_ID)
+    hrefs = re.findall(r'href="([^"]*)" aria-label="Grade details', card)
+
+    assert parts_of(card) == [
+        explanation(DIAGRAM, "Missing"),
+        f"link: Grade details: {DIAGRAM}, {BIOLOGY}",
+        explanation(DIAGRAM, "Missing"),
+        f"link: Grade details: {DIAGRAM}, {BIOLOGY}",
+    ]
+    assert len(set(hrefs)) == 2
+
+
+def test_an_untitled_result_is_explained_as_a_result(week: TestClient) -> None:
+    """The diagram's title cell is left blank in the report."""
+    store = store_of(week)
+    reported(store, "done", LAB_ID)
+    untitled = REPORT.replace("| Cell Diagram             |", "|                          |")
+    class_id = saved(store, untitled)
+    (result_id,) = [
+        one
+        for one, value in store.class_term(class_id, "T1").current.results.items()
+        if value.cells["status"][1] == "Missing"
+    ]
+    decided_in(store, class_id, result_id, LAB_ID, "T1")
+
+    assert explained(card_for(her_week(week), LAB_ID)) == [explanation(None, "Missing")]
+
+
+def test_the_report_that_supplied_the_status_is_named_on_the_line_and_the_explanation(
+    week: TestClient,
+) -> None:
+    """Report A: Missing 7/10; a newer report B shows it Valid 9/10, left unticked."""
+    store = store_of(week)
+    reported(store, "done", DIAGRAM_ID)
+    class_id, result_id = linked_report(store)
+    newer = draft_of(VALID_NINE)
+    review = store.review_grade_report(newer, capture_key(newer), key=KEY)
+    (changed,) = [item.key for item in review.rows if item.result_id == result_id]
+    unticked = save_grade(store, newer, key=KEY, review=review, selection=review.ready - {changed})
+    assert isinstance(unticked, GradeReportSaved)
+
+    page = her_week(week)
+    block = gradebook_block(details_of(week))
+
+    source = "report added August 19"
+    assert parts_of(card_for(page, DIAGRAM_ID)) == [
+        f"{DIAGRAM_SCORE}, from the {source}",
+        f"link: Grade details: {DIAGRAM}, {BIOLOGY}",
+        explanation(DIAGRAM, "Missing", source),
+    ]
+    assert explained(block) == [explanation(DIAGRAM, "Missing", source)]
+
+
+def test_turned_in_earlier_work_is_explained_on_its_row_and_not_in_the_line(
+    week: TestClient,
+) -> None:
+    store = store_of(week)
+    store.put_on_record([in_week(OTHER_ID, "Lab Notebook", date(2026, 8, 12))], {})
+    incomplete = REPORT.replace(DIAGRAM_ROW, DIAGRAM_ROW.replace("Missing   ", "Incomplete"))
+    linked_from(store, incomplete, DIAGRAM, OTHER_ID)
+    handed(store, TURNED_IN, OTHER_ID)
+
+    page = her_week(week)
+    row = re.search(
+        r'<li id="earlier-[^"]*" tabindex="-1">\s*<strong>Lab Notebook</strong>.*?</li>',
+        page,
+        re.S,
+    )
+
+    assert row is not None
+    assert explained(row.group(0)) == [explanation(DIAGRAM, "Incomplete")]
+    assert lines_of(page) == []
+
+
+@pytest.mark.parametrize("failure", FAILURES)
+def test_a_covered_failure_leaves_no_explanation_anywhere(week: TestClient, failure: str) -> None:
+    store = store_of(week)
+    reported(store, "done", DIAGRAM_ID)
+    _, result_id = linked_report(store)
+    assert explained(her_week(week)) == [explanation(DIAGRAM, "Missing")]
+    FAILURES[failure](week, result_id)
+
+    assert explained(her_week(week)) == []
+    assert explained(details_of(week)) == []
+    assert gradebook_block(details_of(week)) == ""
+
+
+@pytest.mark.parametrize(
+    ("update", "hand_in", "spoiled"),
+    [
+        pytest.param("done", TURNED_IN, ("student_reports", "hand_in_events"), id="both"),
+        pytest.param("not_yet", TURNED_IN, ("hand_in_events",), id="hand-in, updates not yet"),
+        pytest.param("done", NEEDS_HAND_IN, ("student_reports",), id="updates, to hand in"),
+    ],
+)
+def test_a_homework_left_unknown_keeps_its_can_t_be_read_line_and_no_explanation(
+    week: TestClient, update: str, hand_in: str, spoiled: tuple[str, ...]
+) -> None:
+    """The named tables' notes are changed to bytes that are not UTF-8 by the test's own SQL."""
+    store = store_of(week)
+    linked_report(store)
+    reported(store, update, DIAGRAM_ID)
+    handed(store, hand_in)
+    for table in spoiled:
+        spoil(store, table, "note", NOT_UTF8, DIAGRAM_ID)
+
+    card = card_for(her_week(week), DIAGRAM_ID)
+    block = gradebook_block(details_of(week))
+
+    for table in spoiled:
+        assert CANT_BE_READ[table] in card
+    assert explained(card) == []
+    assert explained(block) == []
+    assert parts_of(card)[:2] == [DIAGRAM_SCORE, f"link: Grade details: {DIAGRAM}, {BIOLOGY}"]

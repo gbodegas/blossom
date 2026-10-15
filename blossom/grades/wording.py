@@ -202,6 +202,13 @@ def score_line(value: CurrentValue, names: Mapping[str, str]) -> str:
     """A result's whole school score line: its score, then the report that supplied it, by the
     name ``report_names`` gives it in ``names``, when a newer report last showed the result."""
     line = score_of(value)
-    if value.last_shown is not None and value.last_shown.report_id != value.report_id:
-        line += f", from the {names.get(value.report_id, 'report')}"
-    return line
+    source = supplied_by(value, names)
+    return line if source is None else f"{line}, from the {source}"
+
+
+def supplied_by(value: CurrentValue, names: Mapping[str, str]) -> str | None:
+    """The name ``report_names`` gives in ``names`` to the report that supplied a result's value,
+    when a newer report last showed the result; else None."""
+    if value.last_shown is None or value.last_shown.report_id == value.report_id:
+        return None
+    return names.get(value.report_id, "report")

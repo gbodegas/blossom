@@ -60,8 +60,11 @@ gives each homework with a result to check together, its standing from her own a
 those results. Her Done and her Turned in are each read literally and apart, so a record of
 hers that can't be read never cancels the other's evidence; when neither readable record says
 either and one can't be read, the standing is unknown. ``week_to_check`` makes her week's one
-line from that answer: each homework once, and whether the count is unknown. Nothing is stored
-or written.
+line from that answer: each homework once, and whether the count is unknown. ``page_scores``
+gives, from one run of the score rules, the score lines and each assignment's results in the
+rules' result order, those whose score shows and those counted to check together, each with its
+score line when it has one and the words that explain a counted one. Nothing is stored or
+written.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """
@@ -73,6 +76,7 @@ from datetime import date, tzinfo
 from enum import StrEnum
 from typing import Final, NamedTuple
 
+from blossom.assignment_status import AssignmentStatus
 from blossom.authored_text import TextRefused
 from blossom.grades.dates import due_date_of
 from blossom.grades.draft import Presence, folded
@@ -89,8 +93,8 @@ from blossom.grades.school_scores import (
     school_scores,
     waiting_results,
 )
-from blossom.grades.wording import presence_words, report_names, score_line
-from blossom.hand_in import TURNED_IN
+from blossom.grades.wording import presence_words, report_names, score_line, supplied_by
+from blossom.hand_in import TURNED_IN, HandInProjection
 from blossom.homework_search import ResultsPage, found, page_number, page_of, terms_of
 from blossom.noticing import Everything, read_date
 from blossom.reconciliation import SourceRecord
@@ -278,6 +282,32 @@ class ToCheck:
 
 
 @dataclass(frozen=True)
+class CheckSaid:
+    """Why a counted result is worth checking together, in the school's words: its title when
+    the school reported one, its Status as written, and the report that supplied them, by name,
+    when a newer report last showed the result."""
+
+    title: str | None
+    status: str
+    source: str | None
+
+
+@dataclass(frozen=True)
+class GradebookShown:
+    """One result in an assignment's part of a page: its score line when its points show, why it
+    is worth checking together when it is counted, the address of the result on class details,
+    its title as class details words it, whether a parent's link stands it, and the address of
+    its homework page, a parent's."""
+
+    line: str | None
+    check: CheckSaid | None
+    details: str
+    title: str
+    linked: bool
+    homework: str
+
+
+@dataclass(frozen=True)
 class WeekToCheck:
     """Her week's to-check line: the homework it lists together, in the week's order, when any
     has a grade basis, else none; and whether Check together's count can't be worked out."""
@@ -366,12 +396,25 @@ def title_of(value: CurrentValue) -> str:
 def account_of(everything: Everything, assignment_id: str) -> HerAccount:
     """Her account of the homework ``assignment_id`` from one reading of the record: her update
     and her hand-in, each read on its own."""
-    status = everything.statuses.get(assignment_id)
-    hand_in = everything.hand_ins.get(assignment_id)
+    return account_from(
+        everything.statuses.get(assignment_id),
+        everything.hand_ins.get(assignment_id),
+        hand_in_unreadable=assignment_id in everything.hand_ins_unavailable,
+    )
+
+
+def account_from(
+    status: AssignmentStatus | None,
+    hand_in: HandInProjection | None,
+    *,
+    hand_in_unreadable: bool,
+) -> HerAccount:
+    """Her account of one homework from what stands about her update and her hand-in, each read
+    on its own: none read for the update, or a hand-in that can't be read, is unknown."""
     return HerAccount(
         done=None if status is None or status.updates_unavailable else status.status == DONE,
         turned_in=None
-        if assignment_id in everything.hand_ins_unavailable
+        if hand_in_unreadable
         else hand_in is not None and hand_in.state == TURNED_IN,
     )
 
@@ -512,11 +555,31 @@ def scores_shown(
     ``base``, in the order of school year, term place, then class details' own. Given every
     assignment, each one's date claims, those with one unreadable, and a parent's links."""
     facts = tuple(years)
-    names = {
-        at: report_names(read.reports, zone) for year in facts for at, read in year.reads.items()
-    }
     rules = rule_values(assignments, claims, unreadable, facts)
+    return page_scores(rules, facts, links=links, checks={}, zone=zone, base=base)[0]
+
+
+def page_scores(
+    rules: RuleValues,
+    years: Iterable[YearRead],
+    *,
+    links: Collection[Link],
+    checks: Mapping[str, ToCheck],
+    zone: tzinfo,
+    base: str,
+) -> tuple[dict[str, tuple[ScoreShown, ...]], dict[str, tuple[GradebookShown, ...]]]:
+    """From one run of the score rules over what ``rule_values`` made of a page read of
+    ``years``, for a page under ``base``: each assignment's school scores, as ``scores_shown``
+    gives them, and its results whose score shows or that ``checks`` counts, in the rules'
+    order."""
+    names = {
+        at: report_names(read.reports, zone) for year in years for at, read in year.reads.items()
+    }
     ruled = school_scores(rules.homework, rules.results, rules.classes, decided=links)
+
+    def details(class_id: str, place: int, result_id: str) -> str:
+        return address(CLASS_AT.format(base=base, class_id=class_id, n=place), fragment=result_id)
+
     shown: dict[str, tuple[ScoreShown, ...]] = {}
     for assignment_id, several in ruled.items():
         scores = []
@@ -525,17 +588,47 @@ def scores_shown(
             scores.append(
                 ScoreShown(
                     line=score_line(value, names[(at.class_id, at.term)]),
-                    details=address(
-                        CLASS_AT.format(base=base, class_id=at.class_id, n=place),
-                        fragment=at.result_id,
-                    ),
+                    details=details(at.class_id, place, at.result_id),
                     title=title_of(value),
                     linked=at.linked,
                     homework=RESULT_HOMEWORK_AT.format(result_id=at.result_id),
                 )
             )
         shown[assignment_id] = tuple(scores)
-    return shown
+    gradebook: dict[str, tuple[GradebookShown, ...]] = {}
+    for one in rules.homework:
+        scored = {
+            (at.class_id, at.term, at.result_id): at.linked
+            for at in ruled.get(one.assignment_id, ())
+        }
+        check = checks.get(one.assignment_id)
+        counted = (
+            {(result.class_id, result.term, result.result_id) for result in check.results}
+            if check is not None and check.standing is CheckStanding.COUNTED
+            else set()
+        )
+        if not scored and not counted:
+            continue
+        entries = []
+        for result in rules.results:
+            key = (result.class_id, result.term, result.result_id)
+            if key not in scored and key not in counted:
+                continue
+            value, place = rules.found[key]
+            here = names[(result.class_id, result.term)]
+            said = CheckSaid(result.title, value.cells["status"][1], supplied_by(value, here))
+            entries.append(
+                GradebookShown(
+                    line=score_line(value, here) if key in scored else None,
+                    check=said if key in counted else None,
+                    details=details(result.class_id, place, result.result_id),
+                    title=title_of(value),
+                    linked=scored.get(key, True),
+                    homework=RESULT_HOMEWORK_AT.format(result_id=result.result_id),
+                )
+            )
+        gradebook[one.assignment_id] = tuple(entries)
+    return shown, gradebook
 
 
 def result_homework(
