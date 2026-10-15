@@ -328,7 +328,7 @@ ItemReason = Literal[
 reading, a card, or a card's label, course or title. ``clipped`` is a card partly cut off,
 whether or not a whole copy is read elsewhere. ``no_day`` is a card read whole whose date
 can't be told: no due line of its own and no day heading above it in its screenshot.
-``repeated`` is a second row that would write what another does."""
+``repeated`` is a later row of one layer that would write what another of that layer does."""
 
 
 class UnreadCard(NamedTuple):
@@ -382,12 +382,12 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     one included, is set aside for a copy read elsewhere.
 
     The cards read whole and dated are read as today's portal claims in layers. A card's layer
-    is how many such cards before it in its screenshot have its course and title, folded, its
-    kind and its date, so two matching cards of one screenshot are in two layers and never
-    join. Each layer is walked in an order fixed by content and read on its own, where cards
-    of different screenshots join as a paste's do, and a row's key holds its layer. Every other
-    card stays a visible item with its reason, never merged into another. ``now`` stamps the
-    claims and is in no key.
+    is how many such cards above it in its screenshot, by top edge and then place, have its
+    course and title, folded, its kind and its date, so two matching cards of one screenshot
+    are in two layers and never join. Each layer is walked in an order fixed by content and
+    read on its own, where cards of that layer join as a paste's do, from any screenshot, and
+    a row's key holds its layer. Every other card stays a visible item with its reason, never
+    merged into another. ``now`` stamps the claims and is in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
@@ -402,7 +402,7 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
             seen += _placed(sha, stored_key, reading)
     layers: dict[int, list[tuple[tuple[object, ...], PortalCard, frozenset[str]]]] = {}
     matching: dict[tuple[object, ...], int] = {}
-    for item in seen:
+    for item in sorted(seen, key=_top_down):
         card = item.card
         portal = None if card is None or card.clipped else _portal(card, item.heading)
         if card is None or portal is None:
@@ -465,6 +465,12 @@ def _placed(sha: str, stored: str, reading: HomeworkReading) -> list[_Seen]:
             above = next((h for h in reversed(headings) if h.y <= card.y_top), None)
         seen.append(_Seen(sha, stored, place, card, above))
     return seen
+
+
+def _top_down(item: _Seen) -> tuple[str, int, int]:
+    """A card's place in its screenshot from top to bottom: its image, its top edge, then its
+    place in the reading, so copies are numbered alike however a reading lists them."""
+    return item.sha256, -1 if item.card is None else item.card.y_top, item.place
 
 
 def _as_read(card: Card) -> tuple[object, ...]:
@@ -560,8 +566,9 @@ def _written(reading: Reading, marks: frozenset[str], layer: int) -> dict[str, o
     """Everything a row would write, as read, with its marks and its layer: never a name, a
     position, a correction or an instant. A round of a recurring name is told by its own
     dates; its occurrence, which changes when an earlier round's screenshot arrives, is left
-    out. Its layer, how many matching cards come before its own in their screenshot, is kept,
-    and no other screenshot changes it."""
+    out, and rows of different layers can share it and the new-row id drawn from it, so
+    nothing may tell rows apart by either. Its layer, how many matching cards are above its own
+    in their screenshot, is kept, and no other screenshot changes it."""
     return {
         "course": _fold(reading.course),
         "title": _fold(reading.title),

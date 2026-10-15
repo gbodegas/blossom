@@ -1702,6 +1702,30 @@ def test_two_matching_cards_in_one_screenshot_are_two_rows_in_every_capture() ->
     assert alone in two
 
 
+def test_copies_listed_out_of_top_to_bottom_order_pair_by_their_top_edges() -> None:
+    """A lists the Vocab Quiz with the first words above the one with the second; B shows the
+    same screen but lists the lower card first. Copies are numbered top to bottom, so each of
+    the two rows keeps its own words."""
+    first, second = "Study list one and two.", "Study list three and four."
+    upper, lower = due(*VQ, 200, instruction=first), due(*VQ, 300, instruction=second)
+    images = [
+        stored_homework("listed-top-down", homework(upper, lower, headings=[heading(THU, 150)])),
+        stored_homework("listed-bottom-up", homework(lower, upper, headings=[heading(THU, 150)])),
+    ]
+
+    found = {
+        tuple(
+            sorted(
+                tuple(sorted(seen.text for seen in row.reading.instructions))
+                for row in homework_assembly(list(order), now=NOW).rows
+            )
+        )
+        for order in itertools.permutations(images)
+    }
+
+    assert found == {((first,), (second,))}
+
+
 def test_an_assigned_card_elsewhere_joins_only_the_first_of_two_matching_due_cards() -> None:
     """Vocab Quiz assigned Monday and due Thursday, with two DUE cards under Thursday in one
     screenshot: the ASSIGNED card joins the first copy's row, and the second copy is a row of
@@ -1788,6 +1812,28 @@ def test_a_changed_reading_that_couldnt_be_decoded_gives_a_new_item_key() -> Non
     assert one.reason == other.reason == "reading_unreadable"
     assert one.key == again.key
     assert one.key != other.key
+
+
+def test_the_same_body_under_other_versions_gives_a_new_item_key() -> None:
+    """A reading's digest holds its prompt and schema versions with its body: the same body
+    stored under another prompt version or another schema version is another key."""
+    stored = StoredReading(
+        sha256=hashlib.sha256(b"synthetic-png-old").hexdigest(),
+        kind="homework_list",
+        prompt_version="v0",
+        schema_version="screenshot-reading/0",
+        body='{"cards": []}',
+    )
+    versions = [
+        stored,
+        stored._replace(prompt_version="v0a"),
+        stored._replace(schema_version="screenshot-reading/0a"),
+    ]
+
+    items = [homework_assembly([reading], now=NOW).unread for reading in versions]
+
+    assert [[item.reason for item in found] for found in items] == [["reading_unreadable"]] * 3
+    assert len({found[0].key for found in items}) == 3
 
 
 def test_chains_with_an_instruction_keeps_mondays_card_day() -> None:
