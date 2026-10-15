@@ -377,10 +377,12 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
 
     The cards of every reading are one set. A card takes a day only from its own due line or
     from a day heading above it in its own screenshot; no heading carries to another
-    screenshot, and no card's text is evidence of where another card is. A clipped card under
-    a heading goes when a whole copy under the same day is read. The rest are walked in an
-    order fixed by content and read as today's portal claims; every other card stays a visible
-    item with its reason, never merged into another. ``now`` stamps the claims and is in no key.
+    screenshot, and no card's text is evidence of where another card is. A clipped card goes
+    when a whole copy in another screenshot, under the same heading read as a day, is read. The
+    rest are walked in an order fixed by content and read as today's portal claims; every other
+    card stays a visible item with its reason, never merged into another, and only a recapture
+    of a card named with certainty under one day shares its item. ``now`` stamps the claims and
+    is in no key.
     """
     images: dict[str, HomeworkReading | None] = {}
     for stored in readings:
@@ -396,13 +398,18 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     seen = [seen for sha, (_, cards) in sorted(placed.items()) for seen in cards]
     whole = [item for item in seen if item.card is not None and not item.card.clipped]
     units: list[tuple[tuple[object, ...], PortalCard, frozenset[str]]] = []
+    copies: dict[tuple[str, str], int] = {}
     for item in seen:
         card = item.card
         if card is not None and card.clipped and _covered(item, whole):
             continue
         portal = None if card is None or card.clipped else _portal(card, item.heading)
         if card is None or portal is None:
-            found = _unread(item, _reason(card))
+            payload = _as_item(item)
+            same = (item.sha256, _key(payload))
+            copies[same] = copies.get(same, 0) + 1
+            found = _unread(item, _reason(card), payload, copies[same] - 1)
+            # Equal keys are one card recaptured, read with certainty under one day.
             unread.setdefault(found.key, found)
             continue
         marks = _marks(card, item.heading)
@@ -413,15 +420,16 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     for (_, _, marks), place in zip(units, cards_read.joined, strict=True):
         marks_of[place] |= marks
     rows: list[ScreenshotRow] = []
-    taken: set[str] = set()
+    taken: dict[str, int] = {}
     for written, marked in zip(cards_read.readings, marks_of, strict=True):
         key = _key(_written(written, frozenset(marked)))
         if key in taken:
-            # Two rows that would write the same: shown as not read, never merged.
-            repeat = _key({"repeated": key, "count": len(taken)})
+            # Two rows that would write the same: each later one shown as not read, never merged.
+            taken[key] += 1
+            repeat = _key({"repeated": key, "count": taken[key]})
             unread.setdefault(repeat, UnreadCard(repeat, "", None, None, "repeated"))
             continue
-        taken.add(key)
+        taken[key] = 0
         rows.append(ScreenshotRow(key, written, frozenset(marked)))
     return Assembly(
         rows=tuple(sorted(rows, key=lambda row: row.key)),
@@ -463,18 +471,23 @@ def _as_read(card: Card) -> tuple[object, ...]:
 
 
 def _covered(clipped: _Seen, whole: list[_Seen]) -> bool:
-    """Whether a card read whole under the same heading reads as everything a clipped card
-    read with certainty, its course and title among it. A field the clip marks uncertain is
-    no evidence either way; one it shows with certainty as absent must be absent there too."""
+    """Whether a whole card in another screenshot, under the same heading read with certainty
+    as a day, reads as everything the clip read with certainty, course and title among it: a
+    field the clip marks uncertain is no evidence, and one it shows as absent must be absent."""
     card = clipped.card
-    if card is None or clipped.heading is None or not (_words(card.course) and _words(card.title)):
+    if card is None or not _named(card) or _read_day(clipped.heading) is None:
         return False
     marked = card.uncertain_fields
-    if {"course", "title"} & marked:
-        return False
     for other in whole:
         full = other.card
-        if full is None or not full.certain or _text(other.heading) != _text(clipped.heading):
+        if (
+            full is None
+            or not full.certain
+            # A screenshot shows each card once, so a card in the clip's own is another card.
+            or other.sha256 == clipped.sha256
+            or _read_day(other.heading) is None
+            or _text(other.heading) != _text(clipped.heading)
+        ):
             continue
         if all(
             field in marked or _fold(getattr(card, field)) == _fold(getattr(full, field))
@@ -543,18 +556,26 @@ def _reason(card: Card | None) -> ItemReason:
     return "no_day"
 
 
-def _unread(item: _Seen, reason: ItemReason) -> UnreadCard:
-    """A card that couldn't be read as a row, keyed by what was read of it, and by its
-    screenshot and place too when its course or title wasn't read or no heading is above it,
-    so two such cards in two screenshots stay two items."""
+def _as_item(item: _Seen) -> dict[str, object]:
+    """What an item's key is made of: what was read of the card, and its screenshot and place
+    too unless its course and title were read with certainty under a heading read with
+    certainty as a day. Only a recapture of such a card can then share its key."""
     card = item.card
     payload: dict[str, object] = {
         "unread": None if card is None else [*_as_read(card), card.clipped, _text(item.heading)],
         "marks": [] if card is None else sorted(_marks(card, item.heading)),
     }
-    if card is None or item.heading is None or not (_words(card.course) and _words(card.title)):
+    if card is None or not _named(card) or _read_day(item.heading) is None:
         payload |= {"image": item.sha256, "place": item.place}
-    return UnreadCard(_key(payload), item.sha256, item.place, card, reason)
+    return payload
+
+
+def _unread(item: _Seen, reason: ItemReason, payload: dict[str, object], copy: int) -> UnreadCard:
+    """A card that couldn't be read as a row, keyed by its payload and by ``copy``, how many
+    cards before it in its screenshot have the same payload, so two cards of one screenshot
+    stay two items."""
+    key = _key({**payload, "copy": copy})
+    return UnreadCard(key, item.sha256, item.place, item.card, reason)
 
 
 def _written(reading: Reading, marks: frozenset[str]) -> dict[str, object]:
@@ -595,6 +616,17 @@ def _words(text: str | None) -> bool:
 
 def _text(heading: Heading | None) -> str | None:
     return None if heading is None else folded(heading.text)
+
+
+def _read_day(heading: Heading | None) -> date | None:
+    """The day a heading names when it was read with certainty, or ``None``."""
+    return None if heading is None or heading.uncertain is not None else heading.day
+
+
+def _named(card: Card) -> bool:
+    """Whether a card's course and title were both read, with words and with certainty."""
+    marked = {"course", "title"} & card.uncertain_fields
+    return _words(card.course) and _words(card.title) and not marked
 
 
 def _day(day: date | None) -> str:

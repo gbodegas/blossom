@@ -16,7 +16,7 @@ from typing import Any, get_args
 import pytest
 
 from blossom import screenshots
-from blossom.intake import DAY_HEADER, OWN_LINE, identity
+from blossom.intake import DAY_HEADER, OWN_LINE, CardsRead, PortalCard, identity, read_cards
 from blossom.screenshot_prompt import SCHEMA
 from blossom.screenshots import (
     Card,
@@ -1204,10 +1204,16 @@ def card(name: tuple[str, str], y_top: int, **fields: object) -> dict[str, objec
 
 
 def shot(*parts: object) -> dict[str, object]:
-    """A screenshot from its parts top to bottom: a card, or a heading's text with its place."""
+    """A screenshot from its parts top to bottom: a card, or a heading's text with its place
+    and, for a heading read with doubt, the reader's note."""
     cards = [part for part in parts if isinstance(part, dict)]
-    headings = [heading(text, y) for text, y in (part for part in parts if isinstance(part, tuple))]
+    headings = [heading(*part) for part in parts if isinstance(part, tuple)]
     return homework(*cards, headings=headings)
+
+
+def undated(name: tuple[str, str], y_top: int) -> dict[str, object]:
+    """An ASSIGNED card read whole with no due line, so it has no day of its own."""
+    return dict(card(name, y_top), badge="ASSIGNED")
 
 
 MON, TUE, WED, THU = (
@@ -1218,6 +1224,9 @@ MON, TUE, WED, THU = (
 )
 FRI, NEXT_MON = "Friday 10/9/2026", "Monday 10/12/2026"
 UNREAD = a_card(title=42)
+HIDDEN = [{"field": "instruction", "reason": "cut off"}, {"field": "footer", "reason": "cut off"}]
+UNSURE_NAME = [{"field": "course", "reason": "blurred"}, {"field": "title", "reason": "blurred"}]
+DOUBT = "partly hidden"
 
 SCENARIOS: dict[
     str, tuple[list[dict[str, object]], list[tuple[str, str]], list[tuple[str, str]]]
@@ -1448,6 +1457,71 @@ SCENARIOS: dict[
         [],
         [("", "incomplete")],
     ),
+    "a clip under a heading with no readable day is never covered": (
+        [
+            shot(("Monday", 150), assigned(*U1, "Due (10/", 920, clipped=True, uncertain=HIDDEN)),
+            shot(("Monday", 150), assigned(*U1, "Due (10/8/2026)", 200)),
+        ],
+        [("U1 Quiz 3", "10-08")],
+        [("U1 Quiz 3", "clipped")],
+    ),
+    "a clip is never covered by a card in its own screenshot": (
+        [shot((THU, 150), card(U1, 200), card(U1, 920, clipped=True, uncertain=HIDDEN))],
+        [("U1 Quiz 3", "10-08")],
+        [("U1 Quiz 3", "clipped")],
+    ),
+    "a clip under a heading read with doubt is never covered": (
+        [
+            shot((THU, 150, DOUBT), card(U1, 920, clipped=True, uncertain=HIDDEN)),
+            shot((THU, 150), card(U1, 200)),
+        ],
+        [("U1 Quiz 3", "10-08")],
+        [("U1 Quiz 3", "clipped")],
+    ),
+    "a clip is never covered by a card under a heading read with doubt": (
+        [
+            shot((THU, 150), card(U1, 920, clipped=True, uncertain=HIDDEN)),
+            shot((THU, 150, DOUBT), card(U1, 200)),
+        ],
+        [("U1 Quiz 3", "10-08")],
+        [("U1 Quiz 3", "clipped")],
+    ),
+    "two unlabeled cards with one name under one heading stay two items": (
+        [shot((THU, 150), card(PS, 200, badge=None), card(PS, 300, badge=None))],
+        [],
+        [("Practice set", "incomplete"), ("Practice set", "incomplete")],
+    ),
+    "clips with one uncertain name in two screenshots stay two items": (
+        [
+            shot((THU, 150), card(("Ma", "Prac"), 920, clipped=True, uncertain=UNSURE_NAME)),
+            shot((THU, 150), card(("Ma", "Prac"), 920, clipped=True, uncertain=UNSURE_NAME)),
+        ],
+        [],
+        [("Prac", "clipped"), ("Prac", "clipped")],
+    ),
+    "copies under a heading with no readable day in two screenshots stay two items": (
+        [shot(("Monday", 150), card(PS, 200)), shot(("Monday", 150), card(PS, 200))],
+        [],
+        [("Practice set", "no_day"), ("Practice set", "no_day")],
+    ),
+    "copies under a heading read with doubt in two screenshots stay two items": (
+        [shot((THU, 150, DOUBT), undated(PS, 200)), shot((THU, 150, DOUBT), undated(PS, 200))],
+        [],
+        [("Practice set", "no_day"), ("Practice set", "no_day")],
+    ),
+    "two copies in one screenshot stay two items, recaptured or not": (
+        [
+            shot((THU, 150), undated(PS, 200), undated(PS, 300)),
+            shot((THU, 150), undated(PS, 200), undated(PS, 300), card(U1, 400)),
+        ],
+        [("U1 Quiz 3", "10-08")],
+        [("Practice set", "no_day"), ("Practice set", "no_day")],
+    ),
+    "a card with no due line recaptured under its day is one item": (
+        [shot((THU, 150), undated(PS, 200)), shot((THU, 150), undated(PS, 200), card(U1, 300))],
+        [("U1 Quiz 3", "10-08")],
+        [("Practice set", "no_day")],
+    ),
 }
 
 
@@ -1480,6 +1554,25 @@ def test_cards_take_a_day_only_from_their_own_date_or_a_heading_above_them(name:
         )
 
     assert found == {(tuple(rows), tuple(items))}
+
+
+def test_each_row_that_would_write_what_another_does_is_its_own_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stand-in for the card reader gives three readings that would write the same: one is a
+    row, and each of the other two is a ``repeated`` item of its own."""
+
+    def three_the_same(cards: list[PortalCard], *, now: datetime) -> CardsRead:
+        first = read_cards(cards[:1], now=now).readings[0]
+        return CardsRead(readings=(first,) * len(cards), joined=tuple(range(len(cards))))
+
+    monkeypatch.setattr(screenshots, "read_cards", three_the_same)
+    three = shot((THU, 150), card(RL, 200), card(PS, 300), card(WS, 400))
+
+    assembly = homework_assembly([stored_homework("three", three)], now=NOW)
+
+    assert len(assembly.rows) == 1
+    assert [item.reason for item in assembly.unread] == ["repeated", "repeated"]
 
 
 def test_chains_with_an_instruction_keeps_mondays_card_day() -> None:
