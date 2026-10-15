@@ -318,7 +318,17 @@ TABLES: Final = (
 )
 
 DRAFT_OF: Final = "SELECT * FROM import_drafts WHERE draft_id = ? AND student_id = ?"
-IMAGES_OF: Final = "SELECT * FROM import_draft_images WHERE draft_id = ? ORDER BY position"
+IMAGES_OF: Final = (
+    "SELECT image_id, position, sha256, width, height, size, added_at, attempt_id, reading, "
+    "reading_kind, prompt_version, schema_version, failure FROM import_draft_images "
+    "WHERE draft_id = ? ORDER BY position"
+)
+"""A draft's image rows without their PNGs, which only ``image_png`` reads."""
+IMAGE_OF: Final = (
+    "SELECT image_id, sha256, attempt_id, reading FROM import_draft_images "
+    "WHERE draft_id = ? AND image_id = ?"
+)
+"""What a result is checked against: one image row's id, hash, attempt and reading."""
 RAISE_VERSION: Final = "UPDATE import_drafts SET version = version + 1 WHERE draft_id = ?"
 DELETE_DRAFT: Final = (
     "DELETE FROM import_draft_images WHERE draft_id = ?",
@@ -706,7 +716,7 @@ class ImportDraftsStore:
         if draft["attempt_id"] != attempt_id or self._current_ends(draft) is None:
             return None
         row = self._connection.execute(
-            "SELECT * FROM import_draft_images WHERE draft_id = ? AND image_id = ?",
+            IMAGE_OF,
             (draft_id, image_id),
         ).fetchone()
         if row is None or row["sha256"] != sha256 or row["attempt_id"] != attempt_id:

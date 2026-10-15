@@ -23,7 +23,7 @@ import threading
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Final, NamedTuple, NoReturn
 
-from PIL import Image, ImageMath, ImageOps, JpegImagePlugin, PngImagePlugin
+from PIL import Image, ImageFile, ImageMath, ImageOps, JpegImagePlugin, PngImagePlugin
 from python_multipart.exceptions import FormParserError
 from python_multipart.multipart import MultipartParser, parse_options_header
 
@@ -57,8 +57,15 @@ directly. The page doesn't say whether a megabyte is 10^6 or 2^20 bytes, so the 
 per image, above ``LONG_EDGE``. Each image goes in a call of its own, so the request limit
 isn't reached by an upload's images."""
 
-FORMATS: Final = ("PNG", "JPEG")
-"""The only plugins an image is opened with. A JPEG Pillow reads as MPO counts as a JPEG."""
+MOST_PART_HEADERS: Final = 8
+"""The most header lines one part may carry, which the parser enforces. A browser sends two."""
+
+MOST_PART_HEADER_BYTES: Final = 4_096
+"""The most bytes one part's header names and values may hold together."""
+
+MOST_DISPOSITION_BYTES: Final = 2_048
+"""The most bytes a part's Content-Disposition value may hold: room for a file name of 255
+characters of four bytes each, with its field name."""
 
 PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
 JPEG_SIGNATURE: Final = b"\xff\xd8\xff"
@@ -143,7 +150,12 @@ class _Stop(Exception):
 
 
 def quiet_the_image_library() -> None:
-    """Hold Pillow's loggers above DEBUG, where its lines describe the chunks it reads."""
+    """Hold Pillow's loggers above DEBUG, where its lines describe the chunks it reads and
+    repeat short EXIF values. Every one of its loggers is held, since a record passes a
+    parent's handlers without its level."""
+    for name in list(logging.root.manager.loggerDict):
+        if name.startswith(IMAGE_LOGGER + "."):
+            logging.getLogger(name).setLevel(logging.INFO)
     logging.getLogger(IMAGE_LOGGER).setLevel(logging.INFO)
 
 
@@ -176,7 +188,12 @@ async def read_upload(
         if not (content_length.isascii() and content_length.isdigit()):
             refusal = "unreadable"
             raise UploadRefused(refusal)
-        if int(content_length) > MOST_UPLOAD_BYTES:
+        # Leading zeros say nothing, and more digits than the limit has are past it, so no
+        # declaration is long enough to reach the integer conversion's own digit limit.
+        significant = content_length.lstrip("0")
+        if len(significant) > len(str(MOST_UPLOAD_BYTES)) or int(significant or "0") > (
+            MOST_UPLOAD_BYTES
+        ):
             refusal = "body_too_large"
             raise UploadRefused(refusal)
     reader = _Reader(fields, file_field)
@@ -222,6 +239,7 @@ class _Reader:
         self.parts = 0
         self.file_parts = 0
         self.headers: dict[bytes, bytes] = {}
+        self.header_bytes = 0
         self.header_field = bytearray()
         self.header_value = bytearray()
         self.name: str | None = None
@@ -245,6 +263,8 @@ class _Reader:
                     "on_part_end": self.part_end,
                     "on_end": self.end,
                 },
+                max_header_count=MOST_PART_HEADERS,
+                max_header_size=MOST_PART_HEADER_BYTES,
             )
         except FormParserError:
             failed = True
@@ -259,18 +279,30 @@ class _Reader:
         if self.parts > self.most_parts:
             self.refuse("too_many_parts")
         self.headers = {}
+        self.header_bytes = 0
         self.name = None
         self.is_file = self.skipped = False
         self.data = bytearray()
 
+    def counted(self, size: int) -> None:
+        """Count header bytes as they arrive, before any is kept."""
+        self.header_bytes += size
+        if self.header_bytes > MOST_PART_HEADER_BYTES:
+            self.refuse("unreadable")
+
     def header_field_data(self, data: bytes, start: int, end: int) -> None:
+        self.counted(end - start)
         self.header_field += data[start:end]
 
     def header_value_data(self, data: bytes, start: int, end: int) -> None:
+        self.counted(end - start)
         self.header_value += data[start:end]
 
     def header_end(self) -> None:
-        self.headers[bytes(self.header_field).lower()] = bytes(self.header_value)
+        name = bytes(self.header_field).lower()
+        if name == b"content-disposition" and len(self.header_value) > MOST_DISPOSITION_BYTES:
+            self.refuse("unreadable")
+        self.headers[name] = bytes(self.header_value)
         self.header_field = bytearray()
         self.header_value = bytearray()
 
@@ -391,8 +423,6 @@ def _prepared(data: bytes, limit: int) -> Prepared:
         prepared = _encoded(data, limit)
     except ImageRefused as refusal:
         kind = refusal.kind
-    except (Image.DecompressionBombError, Image.DecompressionBombWarning):
-        kind = "too_many_pixels"
     except Exception:
         kind = "undecodable"
     if kind is not None or prepared is None:
@@ -427,26 +457,37 @@ def declared_size(data: bytes) -> tuple[int, int] | None:
     return None
 
 
+def header_read(data: bytes) -> ImageFile.ImageFile:
+    """The image with its header read by Pillow's own PNG or JPEG plugin, and no pixel decoded.
+
+    The plugin is called directly, not through ``Image.open``, because ``Image.open`` runs
+    Pillow's size check, which writes a warning to stderr between its limit and twice it.
+    The size the plugin reads is the one checked here, so nothing is said and no process-wide
+    setting, such as a warning filter, is changed on the way: a call in one thread can't
+    change what another sees. A JPEG Pillow reads as MPO counts as a JPEG."""
+    if data.startswith(PNG_SIGNATURE):
+        return PngImagePlugin.PngImageFile(io.BytesIO(data))
+    return JpegImagePlugin.jpeg_factory(io.BytesIO(data))
+
+
 def _encoded(data: bytes, limit: int) -> Prepared:
-    # The declared size is checked before Pillow opens the image, since Pillow warns on its
-    # own past the same limit, on stderr, before a check after the open could refuse it.
+    # The size the file declares is the cheapest refusal, before Pillow reads anything; the
+    # size Pillow's plugin reads from the header is checked again before any pixel is decoded.
     declared = declared_size(data)
     if declared is not None and declared[0] * declared[1] > MOST_PIXELS:
         refusal = "too_many_pixels"
         raise ImageRefused(refusal)
-    with Image.open(io.BytesIO(data), formats=FORMATS) as opened:
+    with header_read(data) as opened:
         width, height = opened.size
         if width * height > MOST_PIXELS:
             refusal = "too_many_pixels"
             raise ImageRefused(refusal)
-        jpeg = isinstance(opened, JpegImagePlugin.JpegImageFile)
         if isinstance(opened, PngImagePlugin.PngImageFile) and opened.n_frames > 1:
             refusal = "several_frames"
             raise ImageRefused(refusal)
         opened.seek(0)
         opened.load()
-        if jpeg:
-            ImageOps.exif_transpose(opened, in_place=True)
+        ImageOps.exif_transpose(opened, in_place=True)
         upright: Image.Image = opened
         if upright.mode.startswith("I"):
             upright = narrowed(upright)

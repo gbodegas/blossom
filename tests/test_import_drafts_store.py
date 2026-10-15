@@ -298,6 +298,37 @@ def test_what_is_left_of_a_closed_draft_stays_in_the_file_until_a_sweep_after_ex
     assert swept == [0, 0]
 
 
+def test_only_reading_an_image_reads_its_bytes(world: World) -> None:
+    """Snapshots, uploads, Read, results, discards and the sweep work from the image rows
+    without their PNGs; only the image read itself takes the bytes."""
+    draft_id = world.draft("a", "b", "c")
+    world.store.close()
+    world.store = world.reopen()
+    reads: list[str] = []
+
+    def watch(action: int, table: str | None, column: str | None, *rest: object) -> int:
+        if action == sqlite3.SQLITE_READ and table == "import_draft_images":
+            reads.append(str(column))
+        return sqlite3.SQLITE_OK
+
+    world.store._connection.set_authorizer(watch)
+    world.read(draft_id, "a", "r1", "r2")
+    world.store.add_images(world.student, draft_id, [image("d")])
+    world.store.remove_image(world.student, draft_id, world.image_ids(draft_id)[sha("d")])
+    version = world.store.snapshot(world.student, draft_id).version
+    world.store.discard_rest(world.student, draft_id, version=version, keys=["0:r1"])
+    world.store.save_progress(world.student, draft_id, revision=0, progress="{}")
+    world.store.clean_up(world.student, draft_id)
+    world.store.sweep()
+    assert "sha256" in reads
+    assert "png" not in reads
+    before = len(reads)
+
+    world.store.image_png(world.student, draft_id, world.image_ids(draft_id)[sha("a")])
+
+    assert "png" in reads[before:]
+
+
 def test_a_draft_starts_at_version_one_with_its_fixed_expiry(world: World) -> None:
     draft_id = world.draft("a", "b")
     snapshot = world.store.snapshot(world.student, draft_id)
@@ -343,6 +374,7 @@ def test_the_same_readings_in_any_order_give_the_same_keys(world: World) -> None
     world.read(second, "b", "late")
 
     assert states(world, first) == states(world, second)
+    assert sorted(key.split(":", 1)[1] for key in states(world, first)) == ["early", "late"]
 
 
 def test_a_kind_with_no_rows_function_makes_no_draft(tmp_path: Path) -> None:

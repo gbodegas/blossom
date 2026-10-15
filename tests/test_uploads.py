@@ -49,6 +49,7 @@ from blossom.uploads import (
     MEGABYTE,
     MOST_FILES,
     MOST_IMAGE_BYTES,
+    MOST_PART_HEADERS,
     MOST_PIXELS,
     MOST_UPLOAD_BYTES,
     PROVIDER_IMAGE_LIMIT,
@@ -325,6 +326,57 @@ def test_a_declared_length_in_other_digits_is_unreadable() -> None:
         assert refused.value.__context__ is None
 
 
+def test_a_declared_length_of_many_digits_is_read_by_its_value() -> None:
+    body = body_of([("creation_token", None, b"abc")])
+
+    padded = read(body, length="0" * 5000 + str(len(body)))
+    for declared in ("9" * 5000, "1" + "0" * 4400, str(MOST_UPLOAD_BYTES + 1).zfill(9000)):
+        with pytest.raises(UploadRefused) as refused:
+            read(body, length=declared)
+        assert refused.value.kind == "body_too_large"
+        assert refused.value.__context__ is None
+
+    assert padded.fields == {"creation_token": "abc"}
+
+
+def part_with_headers(*lines: str) -> bytes:
+    """One text part whose headers are ``lines``, then the closing boundary."""
+    head = "\r\n".join(lines)
+    return f"--{BOUNDARY}\r\n{head}\r\n\r\nabc\r\n--{BOUNDARY}--\r\n".encode()
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ['Content-Disposition: form-data; name="creation_token"']
+        + [f"X-Synthetic-{n}: {'v' * 40}" for n in range(20_000)],
+        ['Content-Disposition: form-data; name="creation_token"']
+        + [f"X-Synthetic-{n}: {'v' * 1_500}" for n in range(3)],
+        [f'Content-Disposition: form-data; name="creation_token"; x="{"v" * 3_000}"'],
+        ['Content-Disposition: form-data; name="creation_token"']
+        + [f"X-{n}: v" for n in range(MOST_PART_HEADERS)],
+    ],
+    ids=[
+        "a flood of header lines",
+        "header bytes past the part's limit",
+        "a long disposition",
+        "short headers past the part's count",
+    ],
+)
+def test_a_part_whose_headers_pass_their_limits_is_unreadable(lines: list[str]) -> None:
+    body = part_with_headers(*lines)
+    assert len(body) < MOST_UPLOAD_BYTES
+
+    assert refusal(body) == "unreadable"
+
+
+def test_a_browser_sized_part_is_read() -> None:
+    long_name = "\u00e9" * 255 + ".png"
+    body = body_of([(FILE_FIELD, long_name, png())])
+
+    assert len(read(body).files) == 1
+
+
 def test_a_cut_off_or_malformed_body_is_unreadable() -> None:
     whole = body_of([(FILE_FIELD, "a.png", png())])
 
@@ -431,6 +483,37 @@ def test_the_declared_size_is_read_from_a_real_png_and_jpeg() -> None:
     assert uploads.declared_size(b"\xff\xd8\xff\xe0") is None
 
 
+def crafted_jpeg(*segments: bytes) -> bytes:
+    """A JPEG of ``segments`` between a JFIF header and a scan with no real data."""
+    app0 = b"\xff\xe0" + (16).to_bytes(2) + b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    scan = b"\xff\xda" + (12).to_bytes(2) + bytes([3, 1, 0, 2, 0x11, 3, 0x11, 0, 63, 0])
+    return b"\xff\xd8" + app0 + b"".join(segments) + scan + b"\x00" * 16 + b"\xff\xd9"
+
+
+def frame(width: int, height: int) -> bytes:
+    body = bytes([8]) + height.to_bytes(2) + width.to_bytes(2)
+    body += bytes([3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1])
+    return b"\xff\xc0" + (len(body) + 2).to_bytes(2) + body
+
+
+def test_crafted_jpeg_layouts_are_refused_with_no_warning() -> None:
+    layouts = [
+        crafted_jpeg(frame(64, 48), frame(8064, 6048)),
+        crafted_jpeg(b"\x00", frame(8064, 6048)),
+    ]
+    kinds = []
+
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        for layout in layouts:
+            with pytest.raises(ImageRefused) as refused:
+                prepare_image(layout)
+            kinds.append(refused.value.kind)
+
+    assert [str(warning.message) for warning in seen] == []
+    assert kinds == ["too_many_pixels", "too_many_pixels"]
+
+
 def test_a_sixteen_bit_gray_png_keeps_its_shade() -> None:
     buffer = io.BytesIO()
     Image.new("I;16", (8, 8), 32768).save(buffer, format="PNG")
@@ -515,6 +598,23 @@ def test_orientation_is_applied_and_no_metadata_or_sentinel_is_kept() -> None:
         assert b"Sentinel" not in prepared.png
     assert Image.open(io.BytesIO(clean.png)).mode == "RGBA"
     assert Image.open(io.BytesIO(upright.png)).mode == "RGB"
+
+
+def test_a_png_with_an_orientation_is_turned_upright() -> None:
+    sideways = Image.new("RGB", (40, 20), (250, 10, 10))
+    sideways.paste((10, 10, 250), (20, 0, 40, 20))
+    exif = Image.Exif()
+    exif[ExifTags.Base.Orientation] = 6
+    buffer = io.BytesIO()
+    sideways.save(buffer, format="PNG", exif=exif.tobytes())
+    assert b"eXIf" in buffer.getvalue()
+
+    upright = prepare_image(buffer.getvalue())
+
+    assert (upright.width, upright.height) == (20, 40)
+    assert pixel(upright.png, (10, 5))[0] > 200
+    assert pixel(upright.png, (10, 35))[2] > 200
+    assert chunks_of(upright.png) == [b"IHDR", b"IDAT", b"IEND"]
 
 
 def test_a_long_edge_past_the_limit_is_scaled_and_a_smaller_one_kept(
@@ -777,7 +877,8 @@ def test_no_sentinel_from_an_image_or_a_body_reaches_a_log_or_an_error(
 ) -> None:
     """Every logger set to DEBUG before the app starts, then the app's own holds, as a
     household that turned its logging up would have them."""
-    loggers = [logging.getLogger(name) for name in ("PIL", "python_multipart")]
+    names = ("PIL", "python_multipart", "PIL.TiffImagePlugin", "python_multipart.multipart")
+    loggers = [logging.getLogger(name) for name in names]
     levels = [logger.level for logger in loggers]
     # The synthetic files are made with Pillow's lines held, so only the app's own reads of
     # them could put a sentinel in the log.
@@ -820,6 +921,8 @@ def test_no_sentinel_from_an_image_or_a_body_reaches_a_log_or_an_error(
             logger.setLevel(level)
 
     assert "Sentinel" not in caplog.text
+    assert [r.name for r in caplog.records if r.name.startswith("PIL.") and r.levelno < 20] == []
+    assert [r.name for r in caplog.records if r.name.startswith("python_multipart")] == []
     for error in errors:
         assert "Sentinel" not in str(error)
         assert error.__context__ is None
