@@ -17,6 +17,8 @@ import struct
 import tempfile
 import threading
 import time
+import types
+import warnings
 import zlib
 from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
@@ -27,6 +29,7 @@ from PIL import ExifTags, Image, PngImagePlugin
 
 from blossom import uploads
 from blossom.app import create_app
+from blossom.stores import import_drafts
 from blossom.stores.gradebook import ADD_ACCEPTANCE
 from blossom.stores.import_drafts import (
     MOST_IMAGES_PRESENT,
@@ -54,7 +57,6 @@ from blossom.uploads import (
     base64_length,
     prepare_image,
     prepare_upload,
-    quiet_the_image_library,
     read_upload,
 )
 from tests.support import OBSERVED_AT, SAME_ORIGIN, fixture_clock, fixture_settings
@@ -146,6 +148,13 @@ def png_header(width: int, height: int) -> bytes:
         + chunk(b"IDAT", b"not pixel data")
         + chunk(b"IEND", b"")
     )
+
+
+def jpeg_header(width: int, height: int) -> bytes:
+    """A JPEG whose frame segment declares ``width`` x ``height``, with no image data."""
+    frame = bytes([8]) + height.to_bytes(2) + width.to_bytes(2)
+    frame += bytes([3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1])
+    return b"\xff\xd8\xff\xc0" + (len(frame) + 2).to_bytes(2) + frame + b"\xff\xd9"
 
 
 def chunks_of(data: bytes) -> list[bytes]:
@@ -305,6 +314,17 @@ def test_a_body_that_isnt_multipart_with_a_boundary_is_refused(content_type: str
     assert refusal(b"creation_token=x", content_type=content_type) == "not_multipart"
 
 
+def test_a_declared_length_in_other_digits_is_unreadable() -> None:
+    body = body_of([(FILE_FIELD, "a.png", png())])
+
+    for declared in ("\u00b9", "\u0661\u0662", "12 ", "-1"):
+        with pytest.raises(UploadRefused) as refused:
+            read(body, length=declared)
+        assert refused.value.kind == "unreadable"
+        assert declared not in str(refused.value)
+        assert refused.value.__context__ is None
+
+
 def test_a_cut_off_or_malformed_body_is_unreadable() -> None:
     whole = body_of([(FILE_FIELD, "a.png", png())])
 
@@ -384,6 +404,43 @@ def test_a_header_past_the_pixel_limit_is_refused_before_pixel_data_is_decoded()
     with pytest.raises(ImageRefused) as bomb:
         prepare_image(png_header(20_000, 20_000))
     assert bomb.value.kind == "too_many_pixels"
+
+
+def test_a_header_past_the_pixel_limit_is_refused_before_the_image_library_warns() -> None:
+    headers = [png_header(MOST_PIXELS + 1, 1), png_header(8064, 6048), jpeg_header(8064, 6048)]
+
+    kinds = []
+
+    with warnings.catch_warnings(record=True) as seen:
+        for header in headers:
+            with pytest.raises(ImageRefused) as refused:
+                prepare_image(header)
+            kinds.append(refused.value.kind)
+
+    assert [str(warning.message) for warning in seen] == []
+    assert kinds == ["too_many_pixels"] * 3
+
+
+def test_the_declared_size_is_read_from_a_real_png_and_jpeg() -> None:
+    exif = Image.Exif()
+    exif[ExifTags.Base.Artist] = "Wren"
+    photo = jpeg(Image.new("RGB", (70, 30), (1, 2, 3)), exif=exif.tobytes(), comment=b"x")
+
+    assert uploads.declared_size(png(64, 48)) == (64, 48)
+    assert uploads.declared_size(photo) == (70, 30)
+    assert uploads.declared_size(b"\xff\xd8\xff\xe0") is None
+
+
+def test_a_sixteen_bit_gray_png_keeps_its_shade() -> None:
+    buffer = io.BytesIO()
+    Image.new("I;16", (8, 8), 32768).save(buffer, format="PNG")
+    assert Image.open(io.BytesIO(buffer.getvalue())).mode.startswith("I")
+
+    prepared = prepare_image(buffer.getvalue())
+
+    red, green, blue = pixel(prepared.png, (4, 4))
+    assert red == green == blue
+    assert 120 <= red <= 135
 
 
 def test_broken_and_animated_images_are_refused_each_alone() -> None:
@@ -595,9 +652,7 @@ def test_an_upload_never_commits_into_a_finished_draft(household: Household, fir
         assert (after.finished, after.closed_at, len(after.images)) == (False, None, 2)
 
 
-def test_preparation_holds_no_writer_and_decodes_one_at_a_time(
-    household: Household, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_decodes_run_one_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     inside, most = 0, 0
     counting = threading.Lock()
     real = uploads._prepared
@@ -620,15 +675,45 @@ def test_preparation_holds_no_writer_and_decodes_one_at_a_time(
     ]
     for worker in workers:
         worker.start()
-    writer = sqlite3.connect(household.path, timeout=0)
-    with writer:
-        writer.execute("BEGIN IMMEDIATE")
-        writer.execute("CREATE TABLE IF NOT EXISTS synthetic_write (x)")
-    writer.close()
     for worker in workers:
         worker.join()
 
     assert most == 1
+
+
+def test_the_store_hashes_an_upload_before_it_takes_the_writer(
+    household: Household, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another connection can take the file's writer while the store hashes, so the store's
+    write transaction holds only the inserts."""
+    free: list[bool] = []
+    real = hashlib.sha256
+
+    def probing(data: bytes) -> "hashlib._Hash":
+        other = sqlite3.connect(household.path, timeout=0, isolation_level=None)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("ROLLBACK")
+            free.append(True)
+        except sqlite3.OperationalError:
+            free.append(False)
+        finally:
+            other.close()
+        return real(data)
+
+    monkeypatch.setattr(import_drafts, "hashlib", types.SimpleNamespace(sha256=probing))
+    images = [image for _, image in prepare_upload([png(color=(3, 3, 3))]).images]
+
+    made = household.store.create(
+        household.student,
+        kind="homework_screenshot",
+        made_by="parent",
+        creation_token=new_creation_token(),
+        images=images,
+    )
+
+    assert made is not None
+    assert free == [True]
 
 
 def test_two_uploads_racing_for_the_last_place_commit_one(household: Household) -> None:
@@ -673,8 +758,17 @@ def test_the_image_library_logger_is_held_above_debug_from_startup() -> None:
 def test_no_sentinel_from_an_image_or_a_body_reaches_a_log_or_an_error(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    quiet_the_image_library()
-    logging.getLogger("python_multipart").setLevel(logging.CRITICAL + 1)
+    """Every logger set to DEBUG before the app starts, then the app's own holds, as a
+    household that turned its logging up would have them."""
+    loggers = [logging.getLogger(name) for name in ("PIL", "python_multipart")]
+    levels = [logger.level for logger in loggers]
+    # The synthetic files are made with Pillow's lines held, so only the app's own reads of
+    # them could put a sentinel in the log.
+    loggers[0].setLevel(logging.INFO)
+    exif = Image.Exif()
+    exif[ExifTags.Base.Artist] = "Sentinel-Artist-W9"
+    exif[ExifTags.Base.Orientation] = 3
+    signed = jpeg(Image.new("RGB", (16, 16), (90, 90, 90)), exif=exif.tobytes())
     text = PngImagePlugin.PngInfo()
     text.add_text("Comment", "Sentinel-Text-T2")
     noted = io.BytesIO()
@@ -684,20 +778,29 @@ def test_no_sentinel_from_an_image_or_a_body_reaches_a_log_or_an_error(
     broken = bytearray(noted.getvalue())
     broken[-20] ^= 0xFF
     errors: list[BaseException] = []
-
-    with caplog.at_level(logging.DEBUG):
-        prepare_image(noted.getvalue())
-        for data in (bytes(broken), b"Sentinel-Text-T2 is not an image"):
-            with pytest.raises(ImageRefused) as refused:
-                prepare_image(data)
-            errors.append(refused.value)
-        for body in (
-            body_of([("page_version", None, b"Sentinel-\xff-U4")]),
-            b"--" + BOUNDARY.encode() + b"\r\nSentinel-Header-H5\r\n\r\n",
+    try:
+        for logger in loggers:
+            logger.setLevel(logging.DEBUG)
+        with (
+            TestClient(create_app(fixture_settings()), headers=SAME_ORIGIN),
+            caplog.at_level(logging.DEBUG),
         ):
-            with pytest.raises(UploadRefused) as refused_body:
-                read(body)
-            errors.append(refused_body.value)
+            prepare_image(signed)
+            prepare_image(noted.getvalue())
+            for data in (bytes(broken), b"Sentinel-Text-T2 is not an image"):
+                with pytest.raises(ImageRefused) as refused:
+                    prepare_image(data)
+                errors.append(refused.value)
+            for body in (
+                body_of([("page_version", None, b"Sentinel-\xff-U4")]),
+                b"--" + BOUNDARY.encode() + b"\r\nSentinel-Header-H5\r\n\r\n",
+            ):
+                with pytest.raises(UploadRefused) as refused_body:
+                    read(body)
+                errors.append(refused_body.value)
+    finally:
+        for logger, level in zip(loggers, levels, strict=True):
+            logger.setLevel(level)
 
     assert "Sentinel" not in caplog.text
     for error in errors:

@@ -13,9 +13,11 @@ at construction, one pure function per draft kind from those readings to the row
 A kind with no function can't make a draft, and the sweep applies expiry alone to it.
 
 Every call is one transaction. Expiry is 48 hours after creation on the real clock,
-never the household's pinned date, and every read treats a draft as expired from that
-instant. A Read attempt's deadline is an instant on the process's monotonic clock, so
-every start clears each attempt before anything is served.
+never the household's pinned date. Unavailable and removed are two steps: from the instant
+of expiry every call refuses the draft, by the cutoff each one applies, while its rows stay
+in the file until the first sweep after it, or the next start. A Read attempt's deadline is
+an instant on the process's monotonic clock, so every start clears each attempt before
+anything is served.
 """
 
 import hashlib
@@ -182,7 +184,8 @@ class Added(NamedTuple):
     added: tuple[str, ...]
     """The new images' ids, in upload order."""
     duplicates: tuple[int, ...]
-    """Places in the upload of images the draft already held, or that the upload repeated."""
+    """Places, in the list of images given to the store, of those the draft already held or
+    that the list repeated. A caller maps them back to places in its upload."""
     free: int
     """Places left for more images after this commit."""
 
@@ -338,12 +341,15 @@ class ImportDraftsStore:
     retention_policy = (
         "Keep a review's screenshots, what was read from them, and any progress saved for "
         "later until the review finishes or is discarded, and never past 48 hours from when "
-        "it was started; then they are removed from the file, at once or by the next hourly "
-        "sweep, or at the next start if Blossom was stopped. What is left of a closed review, "
-        "its ids, times, page key and the keys of rows set aside, is removed from the file at "
-        "the same 48 hours. Removal from the file is all that is promised: a backup or a disk "
-        "snapshot taken while the review was open may still hold earlier copies. What a save kept "
-        "lives in the record under its own rules, never here."
+        "it was started. Unavailable and removed are two steps. From the instant a review is "
+        "48 hours old, nothing of it can be read. When a review finishes or is discarded, its "
+        "screenshots, readings and progress are removed from the file at once, or by the next "
+        "hourly sweep or the next start. Whatever of a review is left at 48 hours, what is left "
+        "of a closed review included (its ids, times, page key and the keys of rows set "
+        "aside), is removed from the file by the first sweep after those 48 hours, or at the "
+        "next start if Blossom was stopped. Removal from the file is all that is promised: a "
+        "backup or a disk snapshot taken while the review was open may still hold earlier "
+        "copies. What a save kept lives in the record under its own rules, never here."
     )
 
     def __init__(
@@ -429,11 +435,11 @@ class ImportDraftsStore:
         hashed = digested(images)
         with self._writing(wait) as now:
             made = self._connection.execute(
-                "SELECT draft_id, student_id FROM import_drafts WHERE creation_token = ?",
+                "SELECT draft_id, student_id, kind FROM import_drafts WHERE creation_token = ?",
                 (creation_token,),
             ).fetchone()
             if made is not None:
-                if made["student_id"] != student_id:
+                if made["student_id"] != student_id or made["kind"] != kind:
                     raise DraftNotFound
                 return self._add(student_id, str(made["draft_id"]), hashed, now, raise_version=True)
             if not hashed:
@@ -806,7 +812,8 @@ class ImportDraftsStore:
 
     def sweep(self, wait: float = STORE_WAIT_SECONDS) -> Swept:
         """Delete every draft past its expiry, and close every finished one, one draft per
-        transaction, finished worked out inside each."""
+        transaction, finished worked out inside each. This is where an expired draft, refused
+        by every call since the instant it expired, is removed from the file."""
         with self._reading(wait):
             drafts = [
                 str(row["draft_id"])
@@ -835,7 +842,8 @@ class ImportDraftsStore:
     # ------------------------------------------------------------------ inside a transaction
 
     def _present(self, student_id: str, draft_id: str, now: datetime) -> sqlite3.Row:
-        """Checks 1 and 2: the draft exists, is hers, and hasn't expired."""
+        """Checks 1 and 2: the draft exists, is hers, and hasn't expired. An expired draft is
+        refused from that instant, whether or not a sweep has removed it yet."""
         draft = self._connection.execute(DRAFT_OF, (draft_id, student_id)).fetchone()
         if draft is None:
             raise DraftNotFound

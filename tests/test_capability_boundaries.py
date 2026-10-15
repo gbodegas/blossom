@@ -352,6 +352,10 @@ def test_the_tracer_base_is_open_to_one_file_and_closed_to_every_other() -> None
         "from urllib.request import urlopen",
         "import urllib.request",
         "from urllib import request",
+        "from PIL import ImageShow",
+        "import PIL.ImageGrab",
+        "from PIL.ImageShow import show",
+        "from PIL import Image, ImageGrab",
     ],
 )
 def test_the_closed_prefix_scan_flags_each_spelling(snippet: str) -> None:
@@ -375,6 +379,7 @@ def test_the_url_parser_is_open_to_the_gate_and_closed_to_every_other_file() -> 
 def test_the_closed_prefix_scan_leaves_the_permitted_paths_alone() -> None:
     assert not closed_hits(dotted_imports("from langgraph.graph import StateGraph"))
     assert not closed_hits(dotted_imports("from langchain_anthropic import ChatAnthropic"))
+    assert not closed_hits(dotted_imports("from PIL import Image, ImageOps"))
 
 
 def test_the_package_has_files_to_scan() -> None:

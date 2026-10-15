@@ -92,6 +92,9 @@ IMAGE_REFUSALS: Final = (
 IMAGE_LOGGER: Final = "PIL"
 """The logger Pillow writes through, with each of its modules' loggers beneath it."""
 
+SIZE_MARKERS: Final = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
+"""The JPEG markers whose segment gives the frame's height and width."""
+
 Image.MAX_IMAGE_PIXELS = MOST_PIXELS
 _decoding = threading.Lock()
 
@@ -170,7 +173,7 @@ async def read_upload(
         refusal = "not_multipart"
         raise UploadRefused(refusal)
     if content_length is not None:
-        if not content_length.isdigit():
+        if not (content_length.isascii() and content_length.isdigit()):
             refusal = "unreadable"
             raise UploadRefused(refusal)
         if int(content_length) > MOST_UPLOAD_BYTES:
@@ -397,7 +400,40 @@ def _prepared(data: bytes, limit: int) -> Prepared:
     return prepared
 
 
+def declared_size(data: bytes) -> tuple[int, int] | None:
+    """The width and height a PNG's header or a JPEG's frame segment declares, read before
+    Pillow opens it, or None when they can't be found; Pillow then reads the header itself."""
+    if data.startswith(PNG_SIGNATURE):
+        if data[12:16] != b"IHDR" or len(data) < 24:
+            return None
+        return int.from_bytes(data[16:20]), int.from_bytes(data[20:24])
+    at = 2
+    while at + 4 <= len(data) and data[at] == 0xFF:
+        marker = data[at + 1]
+        if marker == 0xFF:
+            at += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:
+            at += 2
+            continue
+        if marker in SIZE_MARKERS:
+            if at + 9 > len(data):
+                return None
+            return int.from_bytes(data[at + 7 : at + 9]), int.from_bytes(data[at + 5 : at + 7])
+        length = int.from_bytes(data[at + 2 : at + 4])
+        if marker in {0xD9, 0xDA} or length < 2:
+            return None
+        at += 2 + length
+    return None
+
+
 def _encoded(data: bytes, limit: int) -> Prepared:
+    # The declared size is checked before Pillow opens the image, since Pillow warns on its
+    # own past the same limit, on stderr, before a check after the open could refuse it.
+    declared = declared_size(data)
+    if declared is not None and declared[0] * declared[1] > MOST_PIXELS:
+        refusal = "too_many_pixels"
+        raise ImageRefused(refusal)
     with Image.open(io.BytesIO(data), formats=FORMATS) as opened:
         width, height = opened.size
         if width * height > MOST_PIXELS:
@@ -409,7 +445,12 @@ def _encoded(data: bytes, limit: int) -> Prepared:
             raise ImageRefused(refusal)
         opened.seek(0)
         opened.load()
-        upright = ImageOps.exif_transpose(opened) if jpeg else opened
+        if jpeg:
+            ImageOps.exif_transpose(opened, in_place=True)
+        upright: Image.Image = opened
+        if upright.mode.startswith("I"):
+            # Wide gray, 16 bits a pixel: scaled to 8 bits rather than clipped to white.
+            upright = upright.convert("I").point(lambda value: value * (1 / 257), "L")
         alpha = upright.mode in {"RGBA", "LA", "PA"} or "transparency" in upright.info
         pixels = upright.convert("RGBA" if alpha else "RGB")
     return stepped(pixels, limit)

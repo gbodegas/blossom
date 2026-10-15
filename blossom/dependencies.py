@@ -97,8 +97,9 @@ class ApplicationState:
     """Her requests for help and what a parent did with each, in the drafts file,
     kept until resolved and for two weeks after."""
     import_drafts: ImportDraftsStore
-    """Screenshot import drafts, in the drafts file, kept until the review finishes or for
-    48 hours. No rows function is wired, so no draft can be made yet."""
+    """Screenshot import drafts, in the drafts file, kept until the review finishes and never
+    past 48 hours: unavailable from that instant, and removed from the file by the first sweep
+    after it or the next start. No rows function is wired, so no draft can be made yet."""
     real_clock: Clock
     """The real clock, whatever day the household's is pinned to: the traces, her signals and
     her requests are stamped and swept by it, and a page's forms carry the instant it issued
