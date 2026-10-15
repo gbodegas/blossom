@@ -148,9 +148,7 @@ OUTCOMES = {
         "An answer from the planning model couldn't be read, so there's no plan to review. "
         "Planning again may work."
     ),
-    "interrupted": (
-        "The run stopped before its plan could wait for review, so the plan was set aside."
-    ),
+    "interrupted": "The run stopped, so there's no plan to review.",
     "nothing_to_schedule": "The run ended because nothing was left to schedule.",
     "date_problem": (
         "A due date on record comes before the evening being planned, so no plan could keep "
