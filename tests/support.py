@@ -18,6 +18,8 @@ makes the same file reachable under two module names, which mypy rejects.
 
 import asyncio
 import dataclasses
+import hashlib
+import json
 import pathlib
 import re
 import sqlite3
@@ -28,12 +30,13 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import unescape
 from html.parser import HTMLParser
-from time import monotonic
+from time import monotonic, sleep
 from typing import Annotated, Any, Protocol, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -99,6 +102,8 @@ from blossom.routes.runs import (
     make_plan,
     plan_graphs,
 )
+from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA_VERSION
+from blossom.screenshots import homework_reading
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
     DEFAULT_EVENING_MINUTES,
@@ -117,6 +122,7 @@ from blossom.stores.drafts import (
     Settled,
 )
 from blossom.stores.gradebook import CorrectionPage, new_correction_id
+from blossom.stores.import_drafts import StoredReading
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -3690,3 +3696,96 @@ def answers_in(rows: list[tuple[object, ...]]) -> list[tuple[str, ...]]:
         tuple("" if cell is None else cast(bytes, cell).decode() for cell in row[1:5])
         for row in rows
     ]
+
+
+# ------------------------------------------------------------------ screenshot readings
+
+
+def homework_card(**fields: object) -> dict[str, Any]:
+    """One homework card as the screenshot answer schema shapes it, every property present."""
+    card: dict[str, Any] = {
+        "badge": "ASSIGNED",
+        "course": "English 8",
+        "title": "Sentence Composing",
+        "instruction": "Complete pages 12 to 14.",
+        "footer": "Due (10/8/2026)",
+        "y_top": 210,
+        "y_bottom": 340,
+        "clipped": False,
+        "uncertain": [],
+    }
+    card.update(fields)
+    return card
+
+
+def homework_answer(**fields: object) -> dict[str, Any]:
+    """A homework list's answer, as a fake reader gives it: one heading and two cards, the
+    selected student Wren."""
+    answer: dict[str, Any] = {
+        "image_kind": "homework_list",
+        "active_student": {"name": "Wren", "uncertain": None},
+        "headings": [{"text": "Monday 10/5/2026", "y": 150, "uncertain": None}],
+        "cards": [
+            homework_card(),
+            homework_card(
+                badge="DUE",
+                course="Science 8",
+                title="Chains Reading Guide 6",
+                instruction=None,
+                footer=None,
+                y_top=360,
+                y_bottom=430,
+            ),
+        ],
+        "report": None,
+    }
+    answer.update(fields)
+    return answer
+
+
+def stored_homework(label: str, answer: object) -> StoredReading:
+    """A screenshot's validated reading as the draft store hands it on, under the SHA-256 of a
+    synthetic image named ``label``."""
+    checked = homework_reading(answer)
+    assert checked.reading is not None
+    return StoredReading(
+        sha256=hashlib.sha256(f"synthetic-png-{label}".encode()).hexdigest(),
+        kind=checked.reading.image_kind,
+        prompt_version=PROMPT_VERSION,
+        schema_version=SCHEMA_VERSION,
+        body=checked.reading.model_dump_json(),
+    )
+
+
+class _Trickle(httpx.SyncByteStream):
+    """A response body sent eight bytes at a time, one piece every ``every`` seconds."""
+
+    def __init__(self, body: bytes, every: float) -> None:
+        self.body = body
+        self.every = every
+
+    def __iter__(self) -> Iterator[bytes]:
+        for start in range(0, len(self.body), 8):
+            sleep(self.every)
+            yield self.body[start : start + 8]
+
+
+def trickling_answer(answer: object, seconds: float, every: float = 0.05) -> httpx.MockTransport:
+    """A mock service whose answer, a message holding ``answer`` as JSON text, trickles in
+    eight bytes at a time for about ``seconds``. Nothing leaves the machine."""
+    message = {
+        "id": "msg_synthetic",
+        "type": "message",
+        "model": "claude-opus-5-5",
+        "content": [{"type": "text", "text": json.dumps(answer)}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 1500, "output_tokens": 300},
+    }
+    body = json.dumps(message).encode()
+    body += b" " * max(0, int(seconds / every) * 8 - len(body))
+    return httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, headers={"content-type": "application/json"}, stream=_Trickle(body, every)
+        )
+    )

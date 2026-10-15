@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from blossom.screenshots import homework_assembly, homework_rows
 from blossom.stores.drafts import WriterBusy
 from blossom.stores.gradebook import ADD_ACCEPTANCE
 from blossom.stores.import_drafts import (
@@ -41,7 +42,14 @@ from blossom.stores.import_drafts import (
     new_creation_token,
 )
 from blossom.stores.project_state import ProjectStateStore
-from tests.support import OBSERVED_AT, SetClock, closed_world
+from tests.support import (
+    OBSERVED_AT,
+    SetClock,
+    closed_world,
+    homework_answer,
+    homework_card,
+    stored_homework,
+)
 
 HOMEWORK = "homework_screenshot"
 GRADES = "grade_screenshot"
@@ -129,6 +137,11 @@ class World:
     def read(self, draft_id: str, label: str, *keys: str, **more: object) -> bool:
         """Start an attempt over one image, after any earlier attempt's deadline, and store
         its reading."""
+        return self.read_as(draft_id, label, reading(*keys, **more))  # type: ignore[arg-type]
+
+    def read_as(self, draft_id: str, label: str, uploaded: UploadedReading) -> bool:
+        """Start an attempt over one image, after any earlier attempt's deadline, and store
+        the reading given."""
         self.ticks.at += READ_DEADLINE_SECONDS
         image_id = self.image_ids(draft_id)[sha(label)]
         attempt = self.store.start_attempt(self.student, draft_id, [image_id])
@@ -139,18 +152,19 @@ class World:
             attempt_id=attempt.attempt_id,
             image_id=image_id,
             sha256=sha(label),
-            reading=reading(*keys, **more),  # type: ignore[arg-type]
+            reading=uploaded,
             timing=TIMING,
         )
 
-    def accept(self, draft_id: str, *keys: str, kind: str = HOMEWORK) -> None:
-        """Plant an acceptance as a save of this draft writes it."""
+    def accept(self, draft_id: str, *keys: str, kind: str = HOMEWORK, replay: int = 0) -> None:
+        """Plant an acceptance as a save of this draft writes it; ``replay`` numbers another
+        copy of the same acceptance, as a save written again would leave."""
         connection = sqlite3.connect(self.path)
         with connection:
             connection.execute(
                 ADD_ACCEPTANCE,
                 (
-                    f"acceptance-{len(keys)}-{draft_id}-{keys}",
+                    f"acceptance-{len(keys)}-{draft_id}-{keys}-{replay}",
                     self.student,
                     kind,
                     draft_id,
@@ -404,6 +418,239 @@ def test_the_sweep_applies_expiry_alone_to_a_kind_with_no_rows_function(tmp_path
     assert world.store.sweep().expired == 1
     with pytest.raises(DraftNotFound):
         world.store.snapshot(world.student, draft_id)
+
+
+# ------------------------------------------------------------------ the homework rows function
+
+
+def uploaded(label: str, answer: object) -> UploadedReading:
+    """A homework screenshot's validated reading, as the reader stores it."""
+    stored = stored_homework(label, answer)
+    return UploadedReading(
+        kind=stored.kind,
+        prompt_version=stored.prompt_version,
+        schema_version=stored.schema_version,
+        body=stored.body,
+    )
+
+
+def real_keys(*images: tuple[str, object]) -> list[str]:
+    """The keys the homework rows function gives for the labeled answers, in key order."""
+    return [row.key for row in homework_rows([stored_homework(*image) for image in images])]
+
+
+@pytest.fixture
+def homework(tmp_path: Path) -> World:
+    """A household file whose homework drafts use the homework rows function itself."""
+    return World(
+        tmp_path / "blossom.sqlite3", homework_screenshot=homework_rows, grade_screenshot=fake_rows
+    )
+
+
+def due_on(day: str, title: str = "Vocab Quiz") -> dict[str, object]:
+    """One screenshot of a DUE card under the day heading named."""
+    card = homework_card(badge="DUE", title=title, footer=None, instruction=None)
+    return homework_answer(headings=[{"text": day, "y": 150, "uncertain": None}], cards=[card])
+
+
+def test_with_the_homework_function_finished_closing_and_the_sweep_follow_its_keys(
+    homework: World,
+) -> None:
+    draft_id = homework.draft("a")
+    assert homework.read_as(draft_id, "a", uploaded("a", homework_answer()))
+    first, second = real_keys(("a", homework_answer()))
+    assert states(homework, draft_id) == {first: "open", second: "open"}
+
+    homework.accept(draft_id, first)
+    assert states(homework, draft_id) == {first: "saved", second: "open"}
+    assert homework.store.clean_up(homework.student, draft_id) is False
+
+    homework.accept(draft_id, second)
+    assert homework.store.snapshot(homework.student, draft_id).finished is True
+    assert homework.store.sweep().closed == 1
+    assert homework.store.snapshot(homework.student, draft_id).images == ()
+
+
+def test_with_the_homework_function_the_same_readings_in_any_order_give_the_same_keys(
+    homework: World,
+) -> None:
+    one, two = due_on("Thursday 10/8/2026"), due_on("Thursday 10/22/2026")
+    forward = homework.draft("one", "two")
+    homework.read_as(forward, "one", uploaded("one", one))
+    homework.read_as(forward, "two", uploaded("two", two))
+    backward = homework.draft("two", "one")
+    homework.read_as(backward, "two", uploaded("two", two))
+    homework.read_as(backward, "one", uploaded("one", one))
+
+    assert states(homework, forward) == states(homework, backward)
+    assert len(states(homework, forward)) == 2
+
+
+def test_a_reading_of_another_kind_doesnt_hold_the_draft_open(homework: World) -> None:
+    draft_id = homework.draft("list", "message")
+    homework.read_as(draft_id, "list", uploaded("list", due_on("Monday 10/5/2026")))
+    homework.read_as(
+        draft_id, "message", uploaded("message", homework_answer(image_kind="unsupported"))
+    )
+    [key] = states(homework, draft_id)
+
+    homework.accept(draft_id, key)
+
+    assert homework.store.snapshot(homework.student, draft_id).finished is True
+
+
+def test_a_saved_row_stays_saved_however_its_images_come_and_go(homework: World) -> None:
+    """Vocab Quiz due 10/8 in image one and due 10/22 in image two, the 10/22 round saved. An
+    unrelated image comes, image two is recaptured, image one is removed and added again: after
+    every step, unread images and the 10/22 round alone included, its key is there and saved."""
+    one, two = due_on("Thursday 10/8/2026"), due_on("Thursday 10/22/2026")
+    draft_id = homework.draft("one", "two")
+    homework.read_as(draft_id, "one", uploaded("one", one))
+    homework.read_as(draft_id, "two", uploaded("two", two))
+    later = next(
+        key for key in real_keys(("one", one), ("two", two)) if key not in real_keys(("one", one))
+    )
+    homework.accept(draft_id, later)
+
+    def still_saved(after: str) -> None:
+        assert states(homework, draft_id).get(later) == "saved", f"after {after}"
+
+    still_saved("the save")
+    homework.store.add_images(homework.student, draft_id, [image("unrelated"), image("two-again")])
+    still_saved("two images added, neither read")
+    homework.read_as(
+        draft_id, "unrelated", uploaded("unrelated", due_on("Monday 10/5/2026", "U1 Quiz 3"))
+    )
+    still_saved("the unrelated image read")
+    homework.read_as(draft_id, "two-again", uploaded("two-again", two))
+    still_saved("image two recaptured")
+    homework.store.remove_image(
+        homework.student, draft_id, homework.image_ids(draft_id)[sha("one")]
+    )
+    still_saved("image one removed, the 10/22 round alone")
+    homework.store.add_images(homework.student, draft_id, [image("one")])
+    still_saved("image one added again, not read")
+    homework.read_as(draft_id, "one", uploaded("one", one))
+    still_saved("image one read again")
+
+    assert list(states(homework, draft_id).values()).count("saved") == 1
+
+
+THURSDAY = {"text": "Thursday 10/8/2026", "y": 150, "uncertain": None}
+
+
+def copies(*tops: int, badge: str = "DUE", title: str = "Vocab Quiz") -> dict[str, object]:
+    """One screenshot under Thursday of a matching card at each top edge given."""
+    card = homework_card(badge=badge, title=title, footer=None, instruction=None)
+    cards = [dict(card, y_top=top, y_bottom=top + 80) for top in tops]
+    return homework_answer(headings=[THURSDAY], cards=cards)
+
+
+def open_draft(world: World, *images: tuple[str, object]) -> str:
+    """A draft whose images, labeled, are read in the order given."""
+    draft_id = world.draft(*(label for label, _ in images))
+    for label, answer in images:
+        world.read_as(draft_id, label, uploaded(label, answer))
+    return draft_id
+
+
+def finished(world: World, draft_id: str) -> bool:
+    return world.store.snapshot(world.student, draft_id).finished
+
+
+def test_of_two_matching_rows_a_save_and_its_replay_leave_the_other_open(
+    homework: World,
+) -> None:
+    """Two DUE Vocab Quiz cards in one screenshot are two rows: saving one, and the same save
+    written again, never marks the other handled or closes the draft."""
+    draft_id = open_draft(homework, ("both", copies(200, 300)))
+    first, second = real_keys(("both", copies(200, 300)))
+
+    homework.accept(draft_id, first)
+    homework.accept(draft_id, first, replay=1)
+
+    assert states(homework, draft_id) == {first: "saved", second: "open"}
+    assert not finished(homework, draft_id)
+
+
+def test_of_two_matching_rows_a_discard_leaves_the_other_open(homework: World) -> None:
+    draft_id = open_draft(homework, ("both", copies(200, 300)))
+    first, second = real_keys(("both", copies(200, 300)))
+    version = homework.store.snapshot(homework.student, draft_id).version
+
+    homework.store.discard_rest(homework.student, draft_id, version=version, keys=[first])
+
+    assert states(homework, draft_id) == {first: "discarded", second: "open"}
+    assert not finished(homework, draft_id)
+
+
+def test_two_matching_rows_keep_their_decisions_in_any_order_and_after_reopening(
+    homework: World,
+) -> None:
+    """The first copy's row, which a screenshot of one copy also gives, is saved; read in
+    either order and reopened, the save stays on its own key and the other row stays open
+    until it is discarded, which finishes the draft."""
+    both, one = ("both", copies(200, 300)), ("one", copies(200))
+    [layer_0] = real_keys(one)
+    [layer_1] = set(real_keys(both)) - {layer_0}
+    drafts = [open_draft(homework, both, one), open_draft(homework, one, both)]
+    for draft_id in drafts:
+        assert states(homework, draft_id) == {layer_0: "open", layer_1: "open"}
+        homework.accept(draft_id, layer_0)
+
+    homework.store.close()
+    homework.store = homework.reopen()
+
+    for draft_id in drafts:
+        assert states(homework, draft_id) == {layer_0: "saved", layer_1: "open"}
+        assert not finished(homework, draft_id)
+        version = homework.store.snapshot(homework.student, draft_id).version
+        homework.store.discard_rest(homework.student, draft_id, version=version, keys=[layer_1])
+        assert finished(homework, draft_id)
+
+
+def test_discarding_one_item_never_handles_another(homework: World) -> None:
+    """Two screenshots each show an ASSIGNED Practice set with no due line under Thursday:
+    two items, and discarding one leaves the other open and the draft open."""
+    undated = copies(200, badge="ASSIGNED", title="Practice set")
+    draft_id = open_draft(homework, ("a", undated), ("b", undated))
+    first, second = sorted(states(homework, draft_id))
+    version = homework.store.snapshot(homework.student, draft_id).version
+
+    homework.store.discard_rest(homework.student, draft_id, version=version, keys=[first])
+
+    assert states(homework, draft_id) == {first: "discarded", second: "open"}
+    assert not finished(homework, draft_id)
+
+
+def test_a_read_again_that_changes_only_the_student_keeps_item_decisions(
+    homework: World,
+) -> None:
+    """Image one shows two ASSIGNED cards with no due line; one item is discarded and progress
+    naming the other is saved. Image one is removed, added again and read with only the
+    selected student's name and note changed: the discard stays, and the progress names keys
+    the draft still holds."""
+    items = copies(200, 300, badge="ASSIGNED", title="Practice set")
+    renamed = dict(items, active_student={"name": "Rowan", "uncertain": "partly hidden"})
+    draft_id = open_draft(homework, ("one", items), ("two", copies(200)))
+    [row] = real_keys(("two", copies(200)))
+    first, second = sorted(set(states(homework, draft_id)) - {row})
+    version = homework.store.snapshot(homework.student, draft_id).version
+    homework.store.discard_rest(homework.student, draft_id, version=version, keys=[first])
+    progress = json.dumps({second: "checked"})
+    revision = homework.store.snapshot(homework.student, draft_id).progress_revision
+    homework.store.save_progress(homework.student, draft_id, revision=revision, progress=progress)
+
+    homework.store.remove_image(
+        homework.student, draft_id, homework.image_ids(draft_id)[sha("one")]
+    )
+    homework.store.add_images(homework.student, draft_id, [image("one")])
+    homework.read_as(draft_id, "one", uploaded("one", renamed))
+
+    snapshot = homework.store.snapshot(homework.student, draft_id)
+    assert states(homework, draft_id) == {first: "discarded", second: "open", row: "open"}
+    assert snapshot.progress == progress
+    assert not snapshot.finished
 
 
 # ------------------------------------------------------------------ results the store drops
@@ -1095,3 +1342,89 @@ def test_the_last_place_goes_to_one_upload_whichever_connection_commits_first(
     second.close()
     assert full.value.free == 0
     assert len(world.image_ids(draft_id)) == MOST_IMAGES_PRESENT
+
+
+def test_a_grade_acceptance_naming_a_key_with_no_target_is_read(tmp_path: Path) -> None:
+    """The grade save writes a key with a null target for the term and each category; such a
+    draft stays readable, takes more screenshots, and isn't passed over by the sweep."""
+
+    def term_only(readings: Sequence[StoredReading]) -> list[DraftRow]:
+        return [DraftRow("term", True)]
+
+    world = World(
+        tmp_path / "blossom.sqlite3", homework_screenshot=fake_rows, grade_screenshot=term_only
+    )
+    draft_id = world.draft("a", kind=GRADES)
+    connection = sqlite3.connect(world.path)
+    with connection:
+        connection.execute(
+            ADD_ACCEPTANCE,
+            (
+                "acceptance-grade",
+                world.student,
+                GRADES,
+                draft_id,
+                None,
+                "class-synthetic",
+                "Fall 2026",
+                '[["term", null]]',
+                "matches",
+                "shown",
+                None,
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                1,
+                OBSERVED_AT.isoformat(),
+                "parent",
+            ),
+        )
+    connection.close()
+
+    assert world.store.snapshot(world.student, draft_id).saved == frozenset({"term"})
+    assert world.store.add_images(world.student, draft_id, [image("b")]) is not None
+    assert world.store.sweep().passed_over == 0
+
+
+def test_saved_and_discarded_rows_and_items_keep_their_keys_as_other_images_change(
+    homework: World,
+) -> None:
+    """A dated row under Thursday is saved, and the card above Thursday, with no heading of its
+    own in that screenshot, is an item and is discarded. A screenshot showing Wednesday with
+    the same card arrives and another is removed: the saved row, the discarded item and the
+    dated rows keep their keys and states."""
+    top = homework_card(badge="DUE", title="Reading log", footer=None, instruction=None)
+    top.update(y_top=20, y_bottom=100)
+    quiz = homework_card(
+        badge="DUE", course="Math 8", title="U1 Quiz 3", footer=None, instruction=None
+    )
+    quiz.update(y_top=300, y_bottom=380)
+    thursday = homework_answer(
+        headings=[{"text": "Thursday 10/8/2026", "y": 250, "uncertain": None}], cards=[top, quiz]
+    )
+    wednesday = homework_answer(
+        headings=[{"text": "Wednesday 10/7/2026", "y": 150, "uncertain": None}],
+        cards=[dict(top, y_top=200, y_bottom=280)],
+    )
+    draft_id = homework.draft("thu", "other")
+    homework.read_as(draft_id, "thu", uploaded("thu", thursday))
+    homework.read_as(draft_id, "other", uploaded("other", due_on("Monday 10/5/2026", "Lab Quiz")))
+    alone = homework_assembly([stored_homework("thu", thursday)], now=OBSERVED_AT)
+    [row] = alone.rows
+    [item] = alone.unread
+    homework.accept(draft_id, row.key)
+    version = homework.store.snapshot(homework.student, draft_id).version
+    homework.store.discard_rest(homework.student, draft_id, version=version, keys=[item.key])
+
+    homework.store.add_images(homework.student, draft_id, [image("wed")])
+    homework.read_as(draft_id, "wed", uploaded("wed", wednesday))
+    homework.store.remove_image(
+        homework.student, draft_id, homework.image_ids(draft_id)[sha("other")]
+    )
+
+    rows = {r.key: r for r in homework.store.snapshot(homework.student, draft_id).rows}
+    assert (rows[row.key].state, rows[row.key].readable) == ("saved", True)
+    assert (rows[item.key].state, rows[item.key].readable) == ("discarded", False)

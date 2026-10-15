@@ -10,6 +10,9 @@ Three properties are checked here:
 """
 
 import asyncio
+import hashlib
+import json
+import logging
 import pathlib
 import sqlite3
 import threading
@@ -33,13 +36,16 @@ from blossom.dependencies import (
     repeat,
     sweep_aged,
 )
+from blossom.screenshots import homework_rows
 from blossom.settings import (
     CHECKPOINT_PATH_VARIABLE,
     DATABASE_PATH_VARIABLE,
     TRACE_PATH_VARIABLE,
 )
+from blossom.stores import import_drafts
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore, WriterBusy
+from blossom.stores.gradebook import ADD_ACCEPTANCE
 from blossom.stores.import_drafts import (
     DRAFT_LIFETIME,
     DraftNotFound,
@@ -47,12 +53,25 @@ from blossom.stores.import_drafts import (
     ImportDraftsStore,
     KindNotWired,
     NewImage,
+    ReadTiming,
+    StoredReading,
+    UploadedReading,
+    instant,
     new_creation_token,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.workload_signals import SIGNAL_RETENTION_DAYS, WorkloadSignalsStore
-from tests.support import OBSERVED_AT, PLAN_DATE, SAME_ORIGIN, fixture_clock, fixture_settings
+from tests.support import (
+    OBSERVED_AT,
+    PLAN_DATE,
+    SAME_ORIGIN,
+    fixture_clock,
+    fixture_settings,
+    homework_answer,
+    homework_card,
+    stored_homework,
+)
 
 
 def test_stores_are_built_once_and_shared_across_requests() -> None:
@@ -377,15 +396,22 @@ def test_the_import_drafts_store_opens_with_the_state_and_closes_with_it(
         client.get("/student/due-this-week")
         state: ApplicationState = getattr(app.state, STATE_ATTRIBUTE)
         student = state.project_state.student_id()
-        for kind in ("homework_screenshot", "grade_screenshot"):
-            with pytest.raises(KindNotWired):
-                state.import_drafts.create(
-                    student,
-                    kind=kind,
-                    made_by="parent",
-                    creation_token=new_creation_token(),
-                    images=[NewImage(png=b"synthetic", width=1, height=1)],
-                )
+        made = state.import_drafts.create(
+            student,
+            kind="homework_screenshot",
+            made_by="parent",
+            creation_token=new_creation_token(),
+            images=[NewImage(png=b"synthetic", width=1, height=1)],
+        )
+        assert made is not None
+        with pytest.raises(KindNotWired):
+            state.import_drafts.create(
+                student,
+                kind="grade_screenshot",
+                made_by="parent",
+                creation_token=new_creation_token(),
+                images=[NewImage(png=b"synthetic", width=1, height=1)],
+            )
 
     with pytest.raises(sqlite3.ProgrammingError):
         state.import_drafts.snapshot(student, "0" * 32)
@@ -501,3 +527,346 @@ def test_a_scheduled_sweep_whose_draft_store_is_busy_still_runs_the_others(
                 state.close()
 
     assert asyncio.run(go()) == (1, 0)
+
+
+# ------------------------------------------------------------------ drafts it can't work out
+
+SENTINEL_ANSWER = homework_answer(
+    active_student={"name": "Sentinel-Name-N1", "uncertain": "Sentinel-Note-N2"},
+    cards=[homework_card(course="Sentinel-Course-C3", title="Sentinel-Title-T4")],
+)
+"""A reading whose name, note and school text are each a sentinel."""
+
+BROKEN_ACCEPTANCE = "Sentinel-Accept-A5 is not a list of pairs"
+"""An acceptance record's pairs that don't decode."""
+
+
+def plant_read_draft(path: pathlib.Path, student_id: str, made_at: datetime, answer: object) -> str:
+    """Make a homework draft at ``made_at`` with one screenshot and its stored reading."""
+    planter = ImportDraftsStore.open(
+        path,
+        FrozenClock(made_at, fixture_clock().zone),
+        lambda: 0.0,
+        rows={"homework_screenshot": homework_rows},
+    )
+    try:
+        png = f"synthetic-{made_at}".encode()
+        added = planter.create(
+            student_id,
+            kind="homework_screenshot",
+            made_by="parent",
+            creation_token=new_creation_token(),
+            images=[NewImage(png=png, width=4, height=3)],
+        )
+        assert added is not None
+        attempt = planter.start_attempt(student_id, added.draft_id, added.added)
+        assert attempt is not None
+        stored = stored_homework("planted", answer)
+        assert planter.store_reading(
+            student_id,
+            added.draft_id,
+            attempt_id=attempt.attempt_id,
+            image_id=added.added[0],
+            sha256=hashlib.sha256(png).hexdigest(),
+            reading=UploadedReading(
+                stored.kind, stored.prompt_version, stored.schema_version, stored.body
+            ),
+            timing=ReadTiming(1.0, 10, 5),
+        )
+        return added.draft_id
+    finally:
+        planter.close()
+
+
+def plant_acceptance(path: pathlib.Path, student_id: str, draft_id: str, accepted: str) -> None:
+    """An acceptance record of the draft as a save writes it, its pairs as given."""
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            ADD_ACCEPTANCE,
+            (
+                f"acceptance-{draft_id}",
+                student_id,
+                "homework_screenshot",
+                draft_id,
+                None,
+                None,
+                None,
+                accepted,
+                "matches",
+                "shown",
+                None,
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                1,
+                OBSERVED_AT.isoformat(),
+                "parent",
+            ),
+        )
+    connection.close()
+
+
+def keys_of(path: pathlib.Path, draft_id: str) -> list[str]:
+    """Every row key the homework rows function gives the draft's stored readings."""
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute(
+            "SELECT sha256, reading_kind, prompt_version, schema_version, reading "
+            "FROM import_draft_images WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchall()
+    connection.close()
+    return [row.key for row in homework_rows([StoredReading(*row) for row in rows])]
+
+
+def drafts_in_file(path: pathlib.Path) -> dict[str, tuple[object, int]]:
+    """Each draft in the file: whether it is closed, and how many images it holds."""
+    with sqlite3.connect(path) as connection:
+        found = {
+            str(draft_id): (closed_at, int(images))
+            for draft_id, closed_at, images in connection.execute(
+                "SELECT d.draft_id, d.closed_at, "
+                "(SELECT count(*) FROM import_draft_images i WHERE i.draft_id = d.draft_id) "
+                "FROM import_drafts d"
+            )
+        }
+    connection.close()
+    return found
+
+
+def echoing_rows(readings: object) -> object:
+    """A rows function that fails on a sentinel reading with an error quoting it, as a rows
+    function failing on a reading's text could; any other reading it reads as the real one."""
+    bodies = [reading.body for reading in readings]  # type: ignore[attr-defined]
+    if any("Sentinel" in body for body in bodies):
+        message = f"couldn't read {bodies[0]}"
+        raise ValueError(message)
+    return homework_rows(readings)  # type: ignore[arg-type]
+
+
+def plant_three(path: pathlib.Path, student_id: str, source: str) -> dict[str, str]:
+    """In the sweep's order: a draft that can't be worked out, then an expired one, then a
+    finished one. Drafts expire in the order they are made, so the expired draft's times are
+    set in the file to put it after the failing one."""
+    failing = plant_read_draft(path, student_id, REAL_NOW - timedelta(hours=2), SENTINEL_ANSWER)
+    if source == "acceptance":
+        plant_acceptance(path, student_id, failing, BROKEN_ACCEPTANCE)
+    expired = plant_draft(path, student_id, REAL_NOW - timedelta(minutes=30))
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE import_drafts SET expires_at = ? WHERE draft_id = ?",
+            (instant(REAL_NOW - timedelta(minutes=1)), expired),
+        )
+    connection.close()
+    finished = plant_read_draft(
+        path, student_id, REAL_NOW - timedelta(minutes=10), homework_answer()
+    )
+    pairs = [[key, f"assignment-{place}"] for place, key in enumerate(keys_of(path, finished))]
+    plant_acceptance(path, student_id, finished, json.dumps(pairs))
+    return {"failing": failing, "expired": expired, "finished": finished}
+
+
+SOURCES = ["acceptance", "rows"]
+KIND_OF = {"acceptance": "JSONDecodeError", "rows": "ValueError"}
+PASSED_OVER = "the import draft sweep left a draft it couldn't work out open: {}"
+
+
+def wired(monkeypatch: pytest.MonkeyPatch, source: str) -> None:
+    """For a failing rows function, the application's wiring takes the echoing one."""
+    if source == "rows":
+        monkeypatch.setattr(dependencies, "homework_rows", echoing_rows)
+
+
+def assert_swept_around(path: pathlib.Path, drafts: dict[str, str]) -> None:
+    found = drafts_in_file(path)
+    assert drafts["expired"] not in found
+    assert found[drafts["finished"]][0] is not None
+    assert found[drafts["finished"]][1] == 0
+    assert found[drafts["failing"]] == (None, 1)
+
+
+@pytest.mark.parametrize("source", SOURCES)
+def test_a_start_passes_over_a_draft_it_cant_work_out_and_sweeps_the_rest(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    source: str,
+) -> None:
+    """The draft after a failing one is still deleted at expiry, the finished one still
+    closes, and the start goes on; the failure is logged by its kind alone."""
+    settings = fixture_settings(**file_settings(tmp_path))
+    first = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    student = first.project_state.student_id()
+    first.close()
+    drafts = plant_three(settings.database_path, student, source)
+    wired(monkeypatch, source)
+
+    with caplog.at_level(logging.DEBUG):
+        state = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    state.close()
+
+    assert_swept_around(settings.database_path, drafts)
+    assert PASSED_OVER.format(KIND_OF[source]) in caplog.messages
+    assert "Sentinel" not in caplog.text
+
+
+@pytest.mark.parametrize("source", SOURCES)
+def test_the_hourly_sweep_passes_over_a_draft_it_cant_work_out_and_sweeps_the_rest(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    source: str,
+) -> None:
+    """Through the schedule itself: nothing reaches its failure log, and no sentinel any log."""
+    settings = fixture_settings(**file_settings(tmp_path))
+    wired(monkeypatch, source)
+
+    async def go() -> dict[str, str]:
+        async with open_checkpointer(settings.checkpoint_path) as checkpointer:
+            state = build_application_state(settings, checkpointer, real_clock=real_clock())
+            try:
+                student = state.project_state.student_id()
+                planted = plant_three(settings.database_path, student, source)
+                with caplog.at_level(logging.DEBUG):
+                    task = asyncio.create_task(repeat(0.01, lambda: sweep_aged(state)))
+                    await asyncio.sleep(0.2)
+                    task.cancel()
+                    await asyncio.wait([task])
+                return planted
+            finally:
+                state.close()
+
+    drafts = asyncio.run(go())
+
+    assert_swept_around(settings.database_path, drafts)
+    assert PASSED_OVER.format(KIND_OF[source]) in caplog.messages
+    assert not [record for record in caplog.records if record.exc_info]
+    assert "a scheduled sweep failed" not in caplog.text
+    assert "Sentinel" not in caplog.text
+
+
+def test_a_start_still_refuses_when_the_expiry_deletion_itself_fails(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Passing over a draft that can't be worked out never passes over a failed deletion."""
+    settings = fixture_settings(**file_settings(tmp_path))
+    first = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    student = first.project_state.student_id()
+    first.close()
+    plant_three(settings.database_path, student, "acceptance")
+    failing_delete = (*import_drafts.DELETE_DRAFT, "DELETE FROM no_such_table WHERE ? IS NULL")
+    monkeypatch.setattr(import_drafts, "DELETE_DRAFT", failing_delete)
+
+    with pytest.raises(sqlite3.OperationalError):
+        build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+
+
+def test_a_start_still_refuses_when_the_file_fails_while_a_draft_is_worked_out(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a rows function's or an acceptance record's failure is passed over."""
+    settings = fixture_settings(**file_settings(tmp_path))
+    first = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    student = first.project_state.student_id()
+    first.close()
+    plant_read_draft(
+        settings.database_path, student, REAL_NOW - timedelta(hours=2), homework_answer()
+    )
+
+    def failing_file(*args: object, **kwargs: object) -> object:
+        message = "synthetic"
+        raise sqlite3.DatabaseError(message)
+
+    monkeypatch.setattr(ImportDraftsStore, "_worked_out", failing_file)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+
+
+@pytest.mark.parametrize("column", ["acceptance", "reading"])
+def test_a_start_passes_over_a_draft_whose_text_isnt_utf_8(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture, column: str
+) -> None:
+    """Bytes that aren't UTF-8 in an acceptance record or a stored reading are a decoding
+    refusal, passed over by its kind like any other; the expired draft after it still goes."""
+    settings = fixture_settings(**file_settings(tmp_path))
+    first = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    student = first.project_state.student_id()
+    first.close()
+    path = settings.database_path
+    failing = plant_read_draft(path, student, REAL_NOW - timedelta(hours=2), homework_answer())
+    expired = plant_draft(path, student, REAL_NOW - timedelta(minutes=30))
+    if column == "acceptance":
+        plant_acceptance(path, student, failing, "[]")
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE import_drafts SET expires_at = ? WHERE draft_id = ?",
+            (instant(REAL_NOW - timedelta(minutes=1)), expired),
+        )
+        if column == "acceptance":
+            connection.execute(
+                "UPDATE grade_acceptances SET accepted = CAST(X'5B5B22FF22' AS TEXT) "
+                "WHERE source_key = ?",
+                (failing,),
+            )
+        else:
+            connection.execute(
+                "UPDATE import_draft_images SET reading = CAST(X'7BFF7D' AS TEXT) "
+                "WHERE draft_id = ?",
+                (failing,),
+            )
+    connection.close()
+
+    with caplog.at_level(logging.DEBUG):
+        state = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    state.close()
+
+    found = drafts_in_file(path)
+    assert expired not in found
+    assert found[failing] == (None, 1)
+    assert PASSED_OVER.format("TextNotUtf8") in caplog.messages
+    assert not [record for record in caplog.records if record.exc_info]
+
+
+@pytest.mark.parametrize(
+    "accepted",
+    [
+        '[["{key}"]]',
+        '[["{key}", 5]]',
+        '[["{key}", "assignment-0", "extra"]]',
+        '[{{"key": "{key}"}}]',
+        '{{"{key}": "assignment-0"}}',
+        '[["another-key", "assignment-1"], ["{key}"]]',
+    ],
+    ids=[
+        "one-element",
+        "number-target",
+        "three-elements",
+        "an-object-entry",
+        "not-a-list",
+        "a-pair-then-one-element",
+    ],
+)
+def test_an_acceptance_entry_that_isnt_a_pair_of_strings_closes_nothing(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture, accepted: str
+) -> None:
+    """A malformed entry naming the draft's only row is a decoding failure, passed over: the
+    draft isn't taken as finished, and its screenshot stays."""
+    settings = fixture_settings(**file_settings(tmp_path))
+    first = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    student = first.project_state.student_id()
+    first.close()
+    path = settings.database_path
+    one_card = homework_answer(cards=[homework_card()])
+    draft = plant_read_draft(path, student, REAL_NOW - timedelta(hours=2), one_card)
+    [key] = keys_of(path, draft)
+    plant_acceptance(path, student, draft, accepted.format(key=key))
+
+    with caplog.at_level(logging.DEBUG):
+        state = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    state.close()
+
+    assert drafts_in_file(path)[draft] == (None, 1)
+    assert PASSED_OVER.format("AcceptanceUnreadable") in caplog.messages

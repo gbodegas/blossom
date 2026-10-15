@@ -37,7 +37,7 @@ from typing import Final, Literal, NamedTuple, cast
 from blossom.clock import Clock
 from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.paths import refuse_unsafe_path
-from blossom.unreadable import text_or_refusal
+from blossom.unreadable import TextNotUtf8, text_or_named_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -199,10 +199,12 @@ class Attempt(NamedTuple):
 
 
 class Swept(NamedTuple):
-    """What one sweep did: drafts deleted at expiry, and finished drafts closed."""
+    """What one sweep did: drafts deleted at expiry, finished drafts closed, and drafts left
+    open because whether they were finished couldn't be worked out."""
 
     expired: int
     closed: int
+    passed_over: int = 0
 
 
 class DraftNotFound(LookupError):
@@ -373,7 +375,7 @@ class ImportDraftsStore:
     ) -> None:
         self._connection = connection
         self._connection.row_factory = sqlite3.Row
-        self._connection.text_factory = text_or_refusal
+        self._connection.text_factory = text_or_named_refusal
         self._clock = clock
         self._monotonic = monotonic
         self._rows = dict(rows)
@@ -824,7 +826,11 @@ class ImportDraftsStore:
     def sweep(self, wait: float = STORE_WAIT_SECONDS) -> Swept:
         """Delete every draft past its expiry, and close every finished one, one draft per
         transaction, finished worked out inside each. This is where an expired draft, refused
-        by every call since the instant it expired, is removed from the file."""
+        by every call since the instant it expired, is removed from the file.
+
+        A draft whose rows or acceptance records can't be worked out is left open, logged by
+        the kind of its failure alone, and the sweep goes on to the next. A failed deletion,
+        or a failure of the file itself, still ends it."""
         with self._reading(wait):
             drafts = [
                 str(row["draft_id"])
@@ -832,8 +838,9 @@ class ImportDraftsStore:
                     "SELECT draft_id FROM import_drafts ORDER BY created_at, draft_id"
                 )
             ]
-        expired = closed = 0
+        expired = closed = passed_over = 0
         for draft_id in drafts:
+            unworkable = ""
             with self._writing(wait) as now:
                 draft = self._connection.execute(
                     "SELECT * FROM import_drafts WHERE draft_id = ?", (draft_id,)
@@ -844,11 +851,22 @@ class ImportDraftsStore:
                     for statement in DELETE_DRAFT:
                         self._connection.execute(statement, (draft_id,))
                     expired += 1
-                elif draft["closed_at"] is None and self._close_if_finished(draft, now):
-                    closed += 1
+                elif draft["closed_at"] is None:
+                    finished = self._finished_or_failure(draft)
+                    if isinstance(finished, str):
+                        unworkable = finished
+                    elif finished:
+                        self._close(draft_id, now)
+                        closed += 1
+            if unworkable:
+                passed_over += 1
+                logger.warning(
+                    "the import draft sweep left a draft it couldn't work out open: %s",
+                    unworkable,
+                )
         if expired or closed:
             logger.info("the import draft sweep deleted %d and closed %d", expired, closed)
-        return Swept(expired, closed)
+        return Swept(expired, closed, passed_over)
 
     # ------------------------------------------------------------------ inside a transaction
 
@@ -918,8 +936,7 @@ class ImportDraftsStore:
         for (accepted,) in self._connection.execute(
             ACCEPTED_KEYS, (draft["student_id"], draft["kind"], draft_id)
         ):
-            for pair in json.loads(accepted):
-                saved.add(str(pair[0]))
+            saved.update(accepted_keys(accepted))
         discards = {
             str(key)
             for (key,) in self._connection.execute(
@@ -952,6 +969,22 @@ class ImportDraftsStore:
         return _Worked(
             images, readings, rows, frozenset(saved), frozenset(discards - saved), finished
         )
+
+    def _finished_or_failure(self, draft: sqlite3.Row) -> bool | str:
+        """Whether the draft is finished, worked out in this transaction; or, when its rows
+        function fails, or decoding its acceptance records or readings does, that failure's
+        kind alone, text that isn't UTF-8 included. Working it out writes nothing. A failure
+        of the file itself is raised."""
+        kind = ""
+        try:
+            return self._worked_out(draft).finished
+        except TextNotUtf8 as refused:
+            kind = type(refused).__name__
+        except sqlite3.Error:
+            raise
+        except Exception as error:
+            kind = type(error).__name__
+        return kind
 
     def _close_if_finished(self, draft: sqlite3.Row, now: datetime) -> bool:
         """Close the draft when this transaction finds it finished; whether it did."""
@@ -1094,6 +1127,30 @@ def instant(value: datetime) -> str:
 def moment(text: object) -> datetime:
     """A stored instant read back."""
     return datetime.fromisoformat(str(text))
+
+
+class AcceptanceUnreadable(ValueError):
+    """An acceptance record whose pairs aren't each a row key and its target."""
+
+    def __init__(self) -> None:
+        super().__init__("an acceptance record's pairs can't be read")
+
+
+def accepted_keys(accepted: str) -> list[str]:
+    """The row keys an acceptance record's pairs name. Each pair must be a list of exactly a
+    row key, as text, and its target: an assignment id as text, or ``null`` where a grade save
+    keeps no target, as for a term or a category. Anything else refuses the whole record, so
+    no malformed entry can mark a row saved."""
+    pairs = json.loads(accepted)
+    if not isinstance(pairs, list) or not all(
+        isinstance(pair, list)
+        and len(pair) == 2
+        and isinstance(pair[0], str)
+        and (pair[1] is None or isinstance(pair[1], str))
+        for pair in pairs
+    ):
+        raise AcceptanceUnreadable
+    return [pair[0] for pair in pairs]
 
 
 def log_dropped(what: str, timing: ReadTiming) -> None:
