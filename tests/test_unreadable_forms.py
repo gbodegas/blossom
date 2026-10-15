@@ -17,12 +17,14 @@ import pathlib
 import re
 from collections.abc import Buffer, Iterator
 from html import unescape
+from tempfile import SpooledTemporaryFile
 from typing import Final, cast
 from urllib.parse import urlencode
 from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI, Request
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from python_multipart.exceptions import (
     DecodeError,
@@ -40,6 +42,7 @@ from tests.support import (
     Answer,
     Statements,
     database_of,
+    every_route,
     every_row,
     household_client,
     main_of,
@@ -876,16 +879,13 @@ def part(disposition: str, content: bytes) -> bytes:
 UTF_7: Final = "multipart/form-data; charset=utf-7; boundary=synthetic"
 
 
-@pytest.mark.parametrize(
-    ("where", "unreadable_there"),
-    [("a field's name", True), ("a file's name", True), ("a file's bytes", False)],
-)
+@pytest.mark.parametrize("where", ["a field's name", "a file's name", "a file's bytes"])
 def test_half_a_character_in_any_text_the_parser_decodes_is_a_form_that_cannot_be_read(
-    where: str, unreadable_there: bool, tmp_path: pathlib.Path
+    where: str, tmp_path: pathlib.Path
 ) -> None:
-    """A name and a file's name are text the parser decodes, so half a character there is
-    the 400 page, through a handler and through a form of parameters alike; a file's bytes
-    are never decoded, and answer as the same file with plain bytes does."""
+    """A field's name is text the parser decodes, so half a character there is the 400 page,
+    through a handler and through a form of parameters alike; a file part is the 400 page
+    whatever its name or bytes hold, as the same file with plain bytes is."""
     plain = part('form-data; name="f"; filename="a.txt"', b"words")
     sent = {
         "a field's name": part(f'form-data; name="{HALF}"', b"1"),
@@ -901,14 +901,11 @@ def test_half_a_character_in_any_text_the_parser_decodes_is_a_form_that_cannot_b
                 press(client, path, note + sent + b"--synthetic--" + CR, UTF_7),
             )
 
-    for path, (control, answer) in answers.items():
-        if unreadable_there:
-            heading, said, back = expected(path, "open")
+    for path, control_and_answer in answers.items():
+        heading, said, back = expected(path, "open")
+        for answer in control_and_answer:
             main = store_free_page(answer, status=400, heading=heading, alert=said)
             assert ways_back_of(main) == back, path
-        else:
-            assert answer.status_code == control.status_code != 400, path
-            assert answer.headers["content-type"] == control.headers["content-type"], path
 
 
 UNKEPT: Final = "That has a character Blossom cannot keep."
@@ -945,3 +942,176 @@ def test_a_control_character_keeps_its_own_answer_and_half_a_character_is_the_pa
     assert UNKEPT in words(control.text)
     store_free_page(half, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
     assert after == before
+
+
+# ------------------------------------------------------------------ 9. a file among the fields
+
+
+FILE_NAME: Final = "Paper lanterns.txt"
+"""A file's name in a body that carries a file, which no answer and no log line may show."""
+MORE_FORMS: Final = (
+    "/student/actions/plan",
+    f"/student/actions/assignments/{ESSAY_ID}/earlier-work",
+    "/student/grades/view",
+    *[
+        f"/parent/grades/{rest}"
+        for rest in (
+            "add/edit",
+            "add/review",
+            "add/save",
+            "add/check",
+            "view",
+            "current-term",
+            "homework-classes",
+            f"results/{uuid4().hex}/homework",
+            f"results/{uuid4().hex}/homework/search",
+        )
+    ],
+)
+"""The form routes the tests above don't press: her plan, earlier work, and the grade pages."""
+EVERY_FORM_ROUTE: Final = (*EVERY_FORM, *MORE_FORMS)
+NOT_FORMS: Final = frozenset(
+    {
+        "/sign-out",
+        "/student/workload-signals",
+        "/student/workload-signals/{signal_id}",
+        "/student/help-requests",
+        "/student/help-requests/{request_id}",
+        "/student/plans",
+        "/student/actions/take-back-help/{request_id}",
+        "/student/actions/too-much",
+        "/student/actions/take-back/{signal_id}",
+        "/parent/plans",
+        "/parent/approvals/{draft_id}",
+        "/parent/help-requests/{request_id}/accept",
+        "/parent/help-requests/{request_id}/update",
+        "/parent/help-requests/{request_id}/resolve",
+    }
+)
+"""The routes that change something without reading a form: no body at all, or JSON."""
+
+
+def with_a_file(filename: str) -> tuple[bytes, str]:
+    """A multipart body of a typed note and one file part holding the typed words."""
+    filed = part(f'form-data; name="attachment"; filename="{filename}"', TYPED.encode())
+    note = part('form-data; name="note"', TYPED.encode())
+    return note + filed + b"--synthetic--" + CR, MULTIPART
+
+
+@pytest.fixture
+def files_made(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The size each temporary file the form parser makes for a file part may hold in
+    memory, recorded as the file is made."""
+    made: list[int] = []
+
+    def making(max_size: int) -> SpooledTemporaryFile[bytes]:
+        made.append(max_size)
+        return SpooledTemporaryFile(max_size=max_size)
+
+    monkeypatch.setattr("starlette.formparsers.SpooledTemporaryFile", making)
+    return made
+
+
+def test_every_route_that_changes_something_is_a_form_route_or_reads_no_form(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Each route but a read is pressed here as a form route or named as one that reads no
+    form, so a new route is one or the other before these tests pass."""
+    with household_client("open", tmp_path) as client:
+        routes = [
+            route
+            for route in every_route(cast(FastAPI, client.app).routes)
+            if isinstance(route, APIRoute) and (route.methods or set()) - {"GET", "HEAD"}
+        ]
+    pressed = {
+        route.path
+        for route in routes
+        for path in EVERY_FORM_ROUTE
+        if route.path_regex.fullmatch(path)
+    }
+
+    served = {route.path for route in routes}
+    assert served - NOT_FORMS == pressed
+    assert served >= NOT_FORMS
+    assert pressed.isdisjoint(NOT_FORMS)
+
+
+@pytest.mark.parametrize("filename", [FILE_NAME, ""], ids=["named", "unnamed"])
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_a_file_among_the_fields_is_a_form_that_cannot_be_read_and_no_file_is_made(
+    reader: str,
+    filename: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    files_made: list[int],
+) -> None:
+    """Every form route answers a body carrying a file part, named or with an empty name, as
+    a body the parser can't read: where the route refuses the reader before reading a body,
+    with that same refusal, and otherwise the 400 page with the route's ways back. No
+    temporary file is made, nothing is read from the store or written, no cookie is set, and
+    neither the typed words nor the file's name reach a page or a log line."""
+    caplog.set_level(logging.DEBUG)
+    body, kind = with_a_file(filename)
+    broken, broken_kind = unreadable()["multipart the parser rejects"]
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        state = state_of(client)
+        before = every_row(database_of(client))
+        calls: list[str] = []
+        spy_on_stores(monkeypatch, state, calls)
+        for path in EVERY_FORM_ROUTE:
+            refused_first = press(client, path, broken, broken_kind)
+            calls.clear()
+            with Statements(state) as seen:
+                answer = press(client, path, body, kind)
+            assert files_made == [], path
+            assert "set-cookie" not in answer.headers, path
+            assert TYPED not in answer.text, path
+            if refused_first.status_code != 400:
+                assert as_met(answer) == as_met(refused_first), path
+                continue
+            heading, said, back = expected(path, reader)
+            main = store_free_page(answer, status=400, heading=heading, alert=said)
+            assert ways_back_of(main) == back, path
+            assert calls == [], (path, calls)
+            assert seen == [], (path, seen[:3])
+        after = every_row(database_of(client))
+
+    assert after == before
+    logged = [r.getMessage() for r in caplog.records]
+    assert [line for line in logged if TYPED in line or (filename and filename in line)] == []
+    assert {r.getMessage() for r in caplog.records if r.name == "blossom.app"} == {
+        "a form could not be read: MultipartParseError",
+        "a form could not be read: MultiPartException",
+    }
+
+
+def test_a_text_form_answers_the_same_sent_either_way_and_makes_no_file(
+    tmp_path: pathlib.Path, files_made: list[int]
+) -> None:
+    """A form of text alone reads through a handler and through a form of parameters alike,
+    url-encoded or multipart: the right passphrase opens the door either way, and a note
+    answers as the same note sent the other way does."""
+    help_path = f"/parent/actions/help/{uuid4().hex}"
+    paths = (ASK, REPORT, PASTE, DECIDE, help_path, "/parent/actions/plan")
+    answers = {}
+    for encoding in ("url-encoded", "multipart"):
+
+        def sent(fields: list[tuple[str, str]], encoding: str = encoding) -> tuple[bytes, str]:
+            if encoding == "multipart":
+                return multipart(fields, "synthetic")
+            return urlencode(fields).encode(), URL_ENCODED
+
+        with household_client("her", tmp_path / encoding / "her") as client:
+            door = press(client, SIGN_IN, *sent([("passphrase", HERS)]))
+            week = client.get(WEEK, headers=PAGE_HEADERS).status_code
+        with household_client("open", tmp_path / encoding / "open") as client:
+            notes = {path: as_met(press(client, path, *sent([("note", SENT)]))) for path in paths}
+        answers[encoding] = ((door.status_code, "set-cookie" in door.headers, week), notes)
+
+    assert answers["multipart"] == answers["url-encoded"]
+    door_met, notes = answers["multipart"]
+    assert door_met == (303, True, 200)
+    assert {path: met[0] for path, met in notes.items()} == dict.fromkeys(paths, 422)
+    assert files_made == []

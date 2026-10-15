@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.app import create_app
+from blossom.app import NOTHING_SAVED, create_app
 from blossom.noticing import week_from
 from blossom.plan_reading import anchor_for
 from blossom.reconciliation import SourceChannel
@@ -64,6 +64,7 @@ from tests.support import (
     school_said,
     signed_in_household,
     state_of,
+    store_free_page,
     store_of,
     walkthrough,
 )
@@ -440,11 +441,12 @@ def test_a_parent_who_opens_the_details_her_new_done_landed_on_sees_no_petal(
 
 
 def test_a_refused_save_is_shown_on_the_details_with_what_she_typed() -> None:
-    """No choice, a note of 501 code points, a field twice, a field of another form's, an
-    uploaded file, a way back these pages do not make, and an update another tab saved first
-    are each answered on the details, with her words kept and a link from the top to the
-    update; a note of 500 code points with a character outside the basic plane saves; and
-    the form that comes back carries the head as it stands, so the next save lands."""
+    """No choice, a note of 501 code points, a field twice, a field of another form's, a way
+    back these pages do not make, and an update another tab saved first are each answered on
+    the details, with her words kept and a link from the top to the update; an uploaded file
+    is a form that could not be read; a note of 500 code points with a character outside the
+    basic plane saves; and the form that comes back carries the head as it stands, so the
+    next save lands."""
     long_enough = "\U0001f33c" * 500
     with browser() as client:
         page = client.get(f"{DETAILS}?return_to=week", headers=PAGE_HEADERS).text
@@ -477,8 +479,9 @@ def test_a_refused_save_is_shown_on_the_details_with_what_she_typed() -> None:
     assert too_long.status_code == 422
     assert NOTE_TOO_LONG in too_long.text
     assert 'aria-invalid="true" autofocus>' + "x" * 501 in too_long.text
-    assert (twice.status_code, stranger.status_code, uploaded.status_code) == (422, 422, 422)
-    assert all(BAD_FORM in answer.text for answer in (twice, stranger, uploaded))
+    assert (twice.status_code, stranger.status_code) == (422, 422)
+    assert all(BAD_FORM in answer.text for answer in (twice, stranger))
+    store_free_page(uploaded, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
     assert "words from a file" not in uploaded.text
     assert astray.status_code == 422
     assert BAD_RETURN in astray.text

@@ -5,8 +5,8 @@
 A page's form is a fixed set of fields, each sent once, each text, and all
 of them sent: a browser sends a hidden field and a text field whether or
 not anything is in them. A form that arrives otherwise, a field twice, a
-field of another form's, an uploaded file among the fields, or a field
-left out, is not the form the page made, and no handler writes for it;
+field of another form's, or a field left out, is not the form the page
+made, and no handler writes for it;
 what it did carry is still handed back, so the page that refuses can keep
 what was typed. The one field a browser leaves out of a form it made is a
 group of radio buttons with none chosen, so a caller names such a field
@@ -23,7 +23,9 @@ the refusal.
 
 A body the form parser can't read at all, multipart it rejects, a part it can't decode in
 the charset the body names, too many fields, or a field too long, is not a form, and no page
-can say what it held. Nor is one whose charset decodes a part into half of a character, text
+can say what it held. Nor is one with a file part among its fields: no page sends a file, and
+the parser refuses the part before it makes anything to hold it, so the text typed beside it
+is not kept either. Nor is one whose charset decodes a part into half of a character, text
 no page can show and no record keeps. Reading one raises
 ``FormUnreadable``, wherever the form is read: in a handler, through ``form_of``, or by the
 framework for a route whose fields are parameters, through ``FormRoute``. The application
@@ -35,7 +37,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import aclosing
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from fastapi import Depends, Request, Response
 from fastapi.routing import APIRoute
@@ -44,6 +46,11 @@ from starlette.datastructures import FormData, Headers
 from starlette.exceptions import HTTPException
 from starlette.formparsers import FormParser, MultiPartException
 from starlette.requests import ClientDisconnect
+
+if TYPE_CHECKING:
+    # The return type Starlette's own ``form`` declares. Its module is private, so it is
+    # read only by the type checker, never imported when the application runs.
+    from starlette._utils import AwaitableOrContextManager
 
 TOKEN_MAX_LENGTH: Final = 200
 """Longer than any id the store makes or a seed carries; a longer one is not looked up."""
@@ -57,6 +64,9 @@ URL_ENCODED: Final = "application/x-www-form-urlencoded"
 """The one kind of body a refused press's copy is read from: the kind a page's form sends."""
 PARSER_LOGGER: Final = "python_multipart"
 """The logger the form parser writes through, with each of its modules' loggers beneath it."""
+FILES_ALLOWED: Final = 0
+"""The files a form here may carry. The parser counts a part that names a file before it makes
+anything to hold it, so a file part, even one with an empty name, is refused unwritten."""
 
 
 def quiet_the_parser() -> None:
@@ -96,10 +106,11 @@ def written(form: FormData) -> FormData:
 
 
 async def form_of(request: Request) -> FormData:
-    """The request's form as the parser reads it, or ``FormUnreadable`` when the parser can't,
-    or when the text it read can't be written."""
+    """The request's form as the parser reads it, with no file allowed, or ``FormUnreadable``
+    when the parser can't, a file part among its fields included, or when the text it read
+    can't be written."""
     try:
-        return written(await request.form())
+        return written(await request.form(max_files=FILES_ALLOWED))
     except (FormParserError, UnicodeError) as error:
         raise FormUnreadable(type(error).__name__) from error
     except HTTPException as error:
@@ -114,10 +125,26 @@ async def form_read(request: Request) -> None:
     await form_of(request)
 
 
+class FormRequest(Request):
+    """A request whose form carries no file however it is read, the framework's own reading
+    of a route's form parameters included."""
+
+    def form(
+        self,
+        *,
+        max_files: int | float = FILES_ALLOWED,
+        max_fields: int | float = 1000,
+        max_part_size: int = 1024 * 1024,
+    ) -> "AwaitableOrContextManager[FormData]":
+        """The form, read with no file allowed unless a caller names a number."""
+        return super().form(max_files=max_files, max_fields=max_fields, max_part_size=max_part_size)
+
+
 class FormRoute(APIRoute):
     """A route whose form fields are parameters, so the framework reads the form before the
-    handler runs: a body the parser can't read is ``FormUnreadable`` here too, and so is text
-    in it that can't be written, before any other dependency of the route."""
+    handler runs, through ``FormRequest``: a body the parser can't read is ``FormUnreadable``
+    here too, a file part among its fields included, and so is text in it that can't be
+    written, before any other dependency of the route."""
 
     def __init__(
         self,
@@ -136,7 +163,7 @@ class FormRoute(APIRoute):
 
         async def read(request: Request) -> Response:
             try:
-                return await handle(request)
+                return await handle(FormRequest(request.scope, request.receive))
             except HTTPException as error:
                 if parser_refused(error):
                     raise FormUnreadable(type(error.__context__).__name__) from error
@@ -156,14 +183,14 @@ async def fields_of(
 
     Whole means every field is one this form sends, comes once, is text,
     and that every field the form sends came: a field sent twice, a field
-    of another form's, a channel among them, an uploaded file, or a field
-    left out makes it not whole, and nothing is written for such a form.
+    of another form's, a channel among them, or a field left out makes it
+    not whole, and nothing is written for such a form.
     ``may_be_absent`` names the fields a browser leaves out of the page's
     own form, a group of radio buttons with none chosen; the caller asks
     for the choice. A name ``ignored`` matches is passed over unread, as if
     it weren't sent. The first text value of each allowed field is still
     handed back, so the page that refuses can keep what was typed. A body the parser can't
-    read is ``FormUnreadable``.
+    read, a file part among its fields included, is ``FormUnreadable``.
     """
     form = await form_of(request)
     fields: dict[str, str] = {}

@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 from pydantic import ValidationError
 
-from blossom.app import create_app
+from blossom.app import NOTHING_SAVED, create_app
 from blossom.assignment_status import (
     Standing,
     basis_of,
@@ -100,6 +100,7 @@ from tests.support import (
     signed_in_household,
     state_of,
     status_of,
+    store_free_page,
 )
 
 HELPER = "This records your check here. It does not change her update or the school's report."
@@ -1112,8 +1113,7 @@ def test_the_check_form_is_read_whole_and_comes_back_with_the_words_kept() -> No
     assert BAD_CHECK_FORM in two_notes.text
     assert "First.</textarea>" in row_for(two_notes.text, ESSAY_ID)
     assert "Second." not in two_notes.text
-    assert uploaded.status_code == 422
-    assert BAD_CHECK_FORM in uploaded.text
+    store_free_page(uploaded, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
     assert "words from a file" not in uploaded.text
     assert stranger.status_code == 422
     assert BAD_CHECK_FORM in stranger.text
