@@ -31,6 +31,12 @@ For each result, ``candidate_homework`` gives every assignment that meets the cl
 and the date for it, whether or not a link takes the pair out of the count, and the assignment
 the rules stand it with.
 
+A result is one to check together for an assignment when a confirmed link names the pair, its
+class is one the assignment's name connects to, its class and term still show it, and the
+school reported its Status as "Missing" or "Incomplete", ends trimmed, each run of whitespace
+read as one space and case ignored. Its points, title and date are not read, and a pair the
+rules stand counts nothing.
+
 Everything arrives as plain values, hers alone: each side's day with whether it is fully
 resolved, the classes each assignment's name connects to, and a parent's standing links.
 Nothing here reads a store, a clock, a term in use or what is said about an assignment.
@@ -39,7 +45,7 @@ Nothing here reads a store, a clock, a term in use or what is said about an assi
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 from blossom.grades.draft import Presence, folded
 from blossom.grades.review import CurrentValue, HomeworkLinksConflict
@@ -60,7 +66,8 @@ class Homework:
 class Result:
     """A school result with a current value: its class, its own term and its ID, its title when
     the school reported one, its due day with whether that day is fully resolved, whether its
-    points are reported, and whether its class and term still show it."""
+    points are reported, whether its class and term still show it, and its Status as written
+    when the school reported one."""
 
     class_id: str
     term: str
@@ -70,6 +77,7 @@ class Result:
     resolved: bool
     scored: bool
     shown: bool
+    status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,7 +134,7 @@ def result_of(
     """A result of ``class_id`` and ``term`` as the rules read its current value, with the day
     its due date resolves to, if it does. Only the school's cells are read, never a parent's
     assertion."""
-    title, points = value.cells["assignment"], value.cells["points"]
+    title, points, status = value.cells["assignment"], value.cells["points"], value.cells["status"]
     return Result(
         class_id=class_id,
         term=term,
@@ -136,7 +144,18 @@ def result_of(
         resolved=day is not None,
         scored=points[0] is Presence.REPORTED,
         shown=value.not_shown is None,
+        status=status[1] if status[0] is Presence.REPORTED else None,
     )
+
+
+TO_CHECK: Final = frozenset({"missing", "incomplete"})
+"""The Statuses a result is checked together for, as ``status_to_check`` compares them."""
+
+
+def status_to_check(status: str | None) -> bool:
+    """Whether a Status the school reported is one to check together: "Missing" or
+    "Incomplete", its ends trimmed, each run of whitespace read as one space, case ignored."""
+    return status is not None and folded(status).casefold() in TO_CHECK
 
 
 def title_key(title: str) -> str:
@@ -258,6 +277,35 @@ def school_scores(
         if showing:
             shown[one.assignment_id] = showing
     return shown
+
+
+def results_to_check(
+    homework: Iterable[Homework],
+    results: Iterable[Result],
+    classes: Mapping[str, Collection[str]],
+    *,
+    decided: Collection[Link] = (),
+) -> dict[str, tuple[Result, ...]]:
+    """The results each assignment has to check together, by assignment ID, in the order
+    ``results`` gives them; one with none is left out. The parameters are those of
+    ``school_scores``, whose refusal of two confirmed links naming one result this shares."""
+    named = linked_results(decided)
+    school = list(results)
+    counted: dict[str, tuple[Result, ...]] = {}
+    for one in homework:
+        links = named.get(one.assignment_id, set())
+        connects = classes.get(one.assignment_id, ())
+        mine = tuple(
+            result
+            for result in school
+            if result.result_id in links
+            and result.class_id in connects
+            and result.shown
+            and status_to_check(result.status)
+        )
+        if mine:
+            counted[one.assignment_id] = mine
+    return counted
 
 
 def waiting_results(

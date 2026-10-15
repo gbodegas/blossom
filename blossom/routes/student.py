@@ -97,7 +97,7 @@ from blossom.evening import (
     staleness,
 )
 from blossom.grades.review import GradeValueUndecodable
-from blossom.grades.school_scores import Link
+from blossom.grades.school_scores import Link, results_to_check
 from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEXT_ACTION_MAX_LENGTH
 from blossom.noticing import (
     Everything,
@@ -131,12 +131,19 @@ from blossom.reconciliation import (
 )
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.homework_scores import (
+    GradebookShown,
     ScoreShown,
+    ToCheck,
     YearRead,
+    account_from,
+    check_standing,
+    page_scores,
     read_score_facts,
     results_read,
+    rule_values,
     scores_left_out,
-    scores_shown,
+    to_check,
+    week_to_check,
 )
 from blossom.routes.navigation import (
     DETAILS,
@@ -2209,25 +2216,38 @@ def student_page(
         # that name one result, leaves the page without any school score.
         grade_facts: tuple[YearRead, ...] = ()
         links: tuple[Link, ...] = ()
+        grades_failed = False
         try:
             grade_facts, links = read_score_facts(
                 state.project_state, (item.course for item in everything.assignments)
             )
         except GradeValueUndecodable as error:
             scores_left_out(error)
+            grades_failed = True
+    # The score lines and Check together's grade basis are made together and kept only when
+    # both are: a failure leaves neither, and the week's line says the count can't be worked
+    # out unless no homework it reaches could count. Each card and row explains its counted
+    # results from the same answer.
     school_scores: dict[str, tuple[ScoreShown, ...]] = {}
+    checks: dict[str, ToCheck] = {}
+    gradebook: dict[str, tuple[GradebookShown, ...]] = {}
     try:
-        school_scores = scores_shown(
-            everything.assignments,
-            everything.records,
-            everything.claims_unavailable,
+        rules = rule_values(
+            everything.assignments, everything.records, everything.claims_unavailable, grade_facts
+        )
+        counted = to_check(rules, links, everything)
+        shown, entries = page_scores(
+            rules,
             grade_facts,
             links=links,
+            checks=counted,
             zone=state.clock.zone,
             base=GRADES if parent_reads(request) else HER_GRADES,
         )
+        school_scores, checks, gradebook = shown, counted, entries
     except GradeValueUndecodable as error:
         scores_left_out(error)
+        grades_failed = True
     todays = (
         None
         if record is None
@@ -2255,6 +2275,19 @@ def student_page(
     )
     planned = in_todays_plan(view.earlier, record, None if todays is None else todays.reading)
     view = view.model_copy(update={"earlier": kept_in_place(planned, earlier_note)})
+    # Her week's one to-check line reaches the week's cards and the work given out for later,
+    # as the family-check count always has; earlier work is not in it. It counts each homework
+    # once: Check together's words when any it lists has a grade basis, whatever each one's
+    # basis, and the family check's own otherwise. When Check together's count can't be worked
+    # out, the family check's line stands alone for its homework and the problem follows it.
+    reach = [*view.assignments, *view.assigned_this_week]
+    line = week_to_check(
+        [(item.assignment_id, item.check_school) for item in reach],
+        checks,
+        everything,
+        failed=grades_failed,
+    )
+    together = list({item.assignment_id: item for item in reach}.values())
     problem_opening: tuple[str, str] | None = None
     if plan_answer is not None:
         # A press's line says a plan is shown, or names the button, only when this page does.
@@ -2309,6 +2342,11 @@ def student_page(
             # Each assignment's school score, made once for the page: every card and row
             # that lists the assignment reads this one mapping.
             "school_scores": school_scores,
+            # Each assignment's results in the rules' order, those counted to check together
+            # with the words that explain them.
+            "gradebook": gradebook,
+            "together": [item for item in together if item.assignment_id in line.together],
+            "together_unknown": line.unknown,
             "report_contexts": {
                 item.assignment_id: week_context(
                     item.assignment_id,
@@ -3111,14 +3149,30 @@ def detail_page(
     # Which of the school's instructions apply is the family's to choose: a parent's, or the
     # household's with the sign-in off when it came from the family's pages. She reads them.
     family_chooses = viewer == "parent" or (viewer == "anyone" and back.target == "family")
-    school_scores: dict[str, tuple[ScoreShown, ...]] = {}
+    # The gradebook's results for this assignment in the rules' order: those whose score shows,
+    # and those counted to check together, which her own account read above decides. A
+    # covered failure leaves none of either.
+    gradebook: dict[str, tuple[GradebookShown, ...]] = {}
     try:
-        school_scores = scores_shown(
+        rules = rule_values(
             everyone,
             {} if every_claim is None else every_claim.records,
             () if every_claim is None else every_claim.unreadable,
             grade_facts,
+        )
+        counted = results_to_check(rules.homework, rules.results, rules.classes, decided=links).get(
+            assignment_id, ()
+        )
+        account = account_from(
+            found[assignment_id],
+            turned_in.readable.get(assignment_id),
+            hand_in_unreadable=assignment_id in turned_in.unreadable,
+        )
+        _, gradebook = page_scores(
+            rules,
+            grade_facts,
             links=links,
+            checks={assignment_id: ToCheck(check_standing(account), counted)} if counted else {},
             zone=state.clock.zone,
             base=GRADES if parent_reads(request) else HER_GRADES,
         )
@@ -3129,7 +3183,7 @@ def detail_page(
         "student_assignment.html",
         {
             "assignment": view,
-            "school_scores": school_scores,
+            "gradebook": gradebook,
             "from_notes": [
                 (note, derived_assignment_id(note.capture_id) == assignment_id)
                 for note in notes.notes

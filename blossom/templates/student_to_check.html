@@ -1,0 +1,11 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#-
+  Each counted result of a card or row, after its score line and link or its
+  count of results: what the school's gradebook says of it, then, for one whose
+  points show no score line, its own way to the result. ``checks`` is those
+  results in the rules' order and ``about`` the row's assignment.
+-#}
+{% for entry in checks %}
+{% with said = entry.check %}{% include "student_check_said.html" %}{% endwith %}{% if entry.line is none %}
+<p class="details-link"><a class="assignment-link" href="{{ entry.details }}" aria-label="Grade details: {{ entry.title }}, {{ about.course }}">Grade details</a></p>{% endif %}{% endfor %}
