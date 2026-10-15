@@ -14,22 +14,24 @@ import re
 import sqlite3
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from time import monotonic
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import pytest
+from fastapi import Depends
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.agent.graph import MAX_REVISIONS, Ask, CompiledPlanGraph, ModelAnswer
-from blossom.agent.runs import MODEL_RETRIES, RUN_DEADLINE_SECONDS
+from blossom.agent.runs import MODEL_RETRIES, RUN_DEADLINE_SECONDS, RunBudget
 from blossom.anthropic_client import ServiceBusy, ServiceFailed
 from blossom.app import create_app
 from blossom.clock import FrozenClock, spoken_time
-from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
+from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.noticing import read_week
@@ -1486,21 +1488,26 @@ def test_the_api_schema_names_the_body_of_each_answer_to_a_press_and_to_a_runs_s
             if "application/json" in answer.get("content", {})
         }
 
-    refused = {
+    answered = {
         "200": ["RunStatusView"],
         "202": ["UnconfirmedRunView"],
         "400": ["ProblemView"],
         "401": ["ProblemView"],
-        "403": ["ProblemView"],
-        "409": ["PlanConflictView", "PlanRefusal"],
-        "422": ["PlanRefusal"],
         "503": ["ProblemView"],
     }
     assert bodies("/student/plans", "post") == {
         "201": ["StudentPlanView", "PublishedRunView"],
-        **refused,
+        **answered,
+        "409": ["PlanConflictView", "HerPlanRefusal"],
+        "422": ["HerPlanRefusal"],
     }
-    assert bodies("/parent/plans", "post") == {"201": ["PlanRunView"], **refused}
+    assert bodies("/parent/plans", "post") == {
+        "201": ["PlanRunView"],
+        **answered,
+        "403": ["ProblemView"],
+        "409": ["PlanConflictView", "FamilyPlanRefusal"],
+        "422": ["FamilyPlanRefusal"],
+    }
     for path in ("/student/plans/runs/{run_id}", "/parent/plans/runs/{run_id}"):
         assert bodies(path, "get") == {
             "200": ["RunStatusView"],
@@ -1558,10 +1565,13 @@ def test_each_plan_route_sends_its_coded_refusals_as_it_declares_them() -> None:
         not_theirs = client.post("/parent/plans", json={"plan_date": "not a date"})
         runs = runs_recorded(client)
 
-    for route in ("/student/plans", "/parent/plans"):
+    for route, refusal in (
+        ("/student/plans", "HerPlanRefusal"),
+        ("/parent/plans", "FamilyPlanRefusal"),
+    ):
         declared = api["paths"][route]["post"]["responses"]["422"]
         schema = declared["content"]["application/json"]["schema"]
-        assert schema == {"$ref": "#/components/schemas/PlanRefusal"}
+        assert schema == {"$ref": f"#/components/schemas/{refusal}"}
     assert (passed.status_code, passed.json()["detail"]["code"]) == (409, "passed")
     assert (beyond.status_code, beyond.json()["detail"]["code"]) == (409, "beyond_calendar")
     assert (not_hers.status_code, not_hers.json()["detail"]["code"]) == (422, "not_valid")
@@ -2335,9 +2345,15 @@ HER_PLAN_POST = {
     "isn't today is\n"
     "another_evening, 409, naming today; one made a week or more ago is expired, "
     "409; and one\n"
-    "whose newest_plan is behind the evening's newest plan is newer_plan, 409. A "
-    "body that\n"
-    "isn't a plan request is not_valid, 422. None of these starts anything.\n"
+    "whose newest_plan is behind the evening's newest plan is newer_plan, 409. "
+    "When the record\n"
+    "can't be read in time to say whether the run_id is used, a request one of "
+    "those two\n"
+    "refusals would meet answers 503 instead, since its run may exist. A body "
+    "that decodes but\n"
+    "isn't a plan request is not_valid, 422, the route's only 422; one the "
+    "framework can't\n"
+    "decode at all is its 400. None of these starts anything.\n"
     "\n"
     "A run that ends without a plan, because the checks never passed, the\n"
     "model did not answer, or it failed on the way, is a 409 saying why in the\n"
@@ -2388,7 +2404,10 @@ HER_PLAN_POST = {
             },
         },
         "400": {
-            "description": "A body the framework can't read as JSON at all, in its own answer.",
+            "description": "A body the framework can't decode at all, in its own "
+            "answer: one not in a JSON text encoding, or nested too "
+            "deeply. A body that decodes but isn't a request is "
+            "not_valid, 422. No plan was started.",
             "content": {
                 "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
             },
@@ -2400,26 +2419,20 @@ HER_PLAN_POST = {
             },
         },
         "403": {
-            "description": "A reader this route isn't open to, before the body is "
-            "read; or, in plain text, a request from another "
-            "origin.",
-            "content": {
-                "text/plain": {"schema": {"type": "string"}},
-                "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}},
-            },
+            "description": "A request from another origin, in plain text.",
+            "content": {"text/plain": {"schema": {"type": "string"}}},
         },
         "409": {
             "description": "A refusal with a code, made before anything started: "
-            "another_evening, expired, used_for_another_evening, "
-            "newer_plan, passed or beyond_calendar. Or, as a "
-            "sentence, why a run made no plan, or the run still "
-            "running.",
+            "another_evening, expired, used_for_another_evening or "
+            "newer_plan. Or, as a sentence, why a run made no plan, "
+            "or the run still running.",
             "content": {
                 "application/json": {
                     "schema": {
                         "anyOf": [
                             {"$ref": "#/components/schemas/PlanConflictView"},
-                            {"$ref": "#/components/schemas/PlanRefusal"},
+                            {"$ref": "#/components/schemas/HerPlanRefusal"},
                         ],
                         "title": "Response 409 Make Todays Plan Student Plans Post",
                     }
@@ -2429,7 +2442,7 @@ HER_PLAN_POST = {
         "422": {
             "description": "not_valid: a body that isn't a plan request. No plan was started.",
             "content": {
-                "application/json": {"schema": {"$ref": "#/components/schemas/PlanRefusal"}}
+                "application/json": {"schema": {"$ref": "#/components/schemas/HerPlanRefusal"}}
             },
         },
         "500": {
@@ -2437,7 +2450,13 @@ HER_PLAN_POST = {
             "content": {"text/plain": {"schema": {"type": "string"}}},
         },
         "503": {
-            "description": "Service Unavailable",
+            "description": "In a sentence: no model key, a run that couldn't "
+            "start, or a plan made but not saved. Or the "
+            "unconfirmed sentence when the record couldn't be read "
+            "in time to say whether the run_id names a run and a "
+            "new request's refusal would otherwise follow; its "
+            "outcome is unknown, so retry with the same run_id and "
+            "issued_at.",
             "content": {
                 "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
             },
@@ -2471,9 +2490,15 @@ FAMILY_PLAN_POST = {
     "edge of the\n"
     "calendar is beyond_calendar, 409, each naming today; one whose newest_plan "
     "is behind the\n"
-    "evening's newest plan is newer_plan, 409. A body that isn't a plan request "
-    "is not_valid,\n"
-    "422. None of these starts anything.\n"
+    "evening's newest plan is newer_plan, 409. When the record can't be read in "
+    "time to say\n"
+    "whether the run_id is used, a request one of the first three refusals would "
+    "meet answers\n"
+    "503 instead, since its run may exist. A body that decodes but isn't a plan "
+    "request is\n"
+    "not_valid, 422, the route's only 422; one the framework can't decode at all "
+    "is its 400.\n"
+    "None of these starts anything.\n"
     "\n"
     "An evening with nothing left to plan is a 409, before and after the run: a "
     "report of hers\n"
@@ -2518,7 +2543,10 @@ FAMILY_PLAN_POST = {
             },
         },
         "400": {
-            "description": "A body the framework can't read as JSON at all, in its own answer.",
+            "description": "A body the framework can't decode at all, in its own "
+            "answer: one not in a JSON text encoding, or nested too "
+            "deeply. A body that decodes but isn't a request is "
+            "not_valid, 422. No plan was started.",
             "content": {
                 "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
             },
@@ -2530,9 +2558,8 @@ FAMILY_PLAN_POST = {
             },
         },
         "403": {
-            "description": "A reader this route isn't open to, before the body is "
-            "read; or, in plain text, a request from another "
-            "origin.",
+            "description": "A student's sign-in, before the body is read; or, in "
+            "plain text, a request from another origin.",
             "content": {
                 "text/plain": {"schema": {"type": "string"}},
                 "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}},
@@ -2540,16 +2567,15 @@ FAMILY_PLAN_POST = {
         },
         "409": {
             "description": "A refusal with a code, made before anything started: "
-            "another_evening, expired, used_for_another_evening, "
-            "newer_plan, passed or beyond_calendar. Or, as a "
-            "sentence, why a run made no plan, or the run still "
-            "running.",
+            "expired, used_for_another_evening, newer_plan, passed "
+            "or beyond_calendar. Or, as a sentence, why a run made "
+            "no plan, or the run still running.",
             "content": {
                 "application/json": {
                     "schema": {
                         "anyOf": [
                             {"$ref": "#/components/schemas/PlanConflictView"},
-                            {"$ref": "#/components/schemas/PlanRefusal"},
+                            {"$ref": "#/components/schemas/FamilyPlanRefusal"},
                         ],
                         "title": "Response 409 Start Plan Parent Plans Post",
                     }
@@ -2559,7 +2585,7 @@ FAMILY_PLAN_POST = {
         "422": {
             "description": "not_valid: a body that isn't a plan request. No plan was started.",
             "content": {
-                "application/json": {"schema": {"$ref": "#/components/schemas/PlanRefusal"}}
+                "application/json": {"schema": {"$ref": "#/components/schemas/FamilyPlanRefusal"}}
             },
         },
         "500": {
@@ -2567,7 +2593,13 @@ FAMILY_PLAN_POST = {
             "content": {"text/plain": {"schema": {"type": "string"}}},
         },
         "503": {
-            "description": "Service Unavailable",
+            "description": "In a sentence: no model key, a run that couldn't "
+            "start, or a plan made but not saved. Or the "
+            "unconfirmed sentence when the record couldn't be read "
+            "in time to say whether the run_id names a run and a "
+            "new request's refusal would otherwise follow; its "
+            "outcome is unknown, so retry with the same run_id and "
+            "issued_at.",
             "content": {
                 "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
             },
@@ -2673,21 +2705,54 @@ PLAN_REQUEST_SCHEMAS = {
         "it, the evening to plan, and the newest plan the "
         "caller knows for that evening.",
     },
-    "PlanRefusal": {
-        "properties": {"detail": {"$ref": "#/components/schemas/PlanRefusalView"}},
+    "HerPlanRefusal": {
+        "properties": {"detail": {"$ref": "#/components/schemas/HerPlanRefusalView"}},
         "additionalProperties": False,
         "type": "object",
         "required": ["detail"],
-        "title": "PlanRefusal",
-        "description": "A JSON plan request refused, as its body carries it.",
+        "title": "HerPlanRefusal",
+        "description": "Her JSON plan request refused, as its body carries it.",
     },
-    "PlanRefusalView": {
+    "HerPlanRefusalView": {
         "properties": {
             "code": {
                 "type": "string",
                 "enum": [
                     "not_valid",
                     "another_evening",
+                    "expired",
+                    "used_for_another_evening",
+                    "newer_plan",
+                ],
+                "title": "Code",
+            },
+            "message": {"type": "string", "title": "Message"},
+            "today": {
+                "anyOf": [{"type": "string", "format": "date"}, {"type": "null"}],
+                "title": "Today",
+            },
+            "run": {"anyOf": [{"$ref": "#/components/schemas/RunStatusView"}, {"type": "null"}]},
+        },
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["code", "message"],
+        "title": "HerPlanRefusalView",
+        "description": "Why her JSON plan request started nothing, by one of her route's codes.",
+    },
+    "FamilyPlanRefusal": {
+        "properties": {"detail": {"$ref": "#/components/schemas/FamilyPlanRefusalView"}},
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["detail"],
+        "title": "FamilyPlanRefusal",
+        "description": "The family's JSON plan request refused, as its body carries it.",
+    },
+    "FamilyPlanRefusalView": {
+        "properties": {
+            "code": {
+                "type": "string",
+                "enum": [
+                    "not_valid",
                     "expired",
                     "used_for_another_evening",
                     "newer_plan",
@@ -2706,12 +2771,9 @@ PLAN_REQUEST_SCHEMAS = {
         "additionalProperties": False,
         "type": "object",
         "required": ["code", "message"],
-        "title": "PlanRefusalView",
-        "description": "Why a JSON plan request started nothing: a code from a "
-        "closed set, a sentence, the\n"
-        "household's today where the refusal turns on it, and, "
-        "for an id used for another evening,\n"
-        "where that id's run stands.",
+        "title": "FamilyPlanRefusalView",
+        "description": "Why the family's JSON plan request started "
+        "nothing, by one of its route's codes.",
     },
     "NewestPlanView": {
         "properties": {
@@ -2737,12 +2799,11 @@ APPROVAL_QUEUE_SCHEMA = {
             "items": {"$ref": "#/components/schemas/NewestPlanView"},
             "type": "array",
             "title": "Newest Plans",
-            "default": [],
         },
     },
     "additionalProperties": False,
     "type": "object",
-    "required": ["generated_at", "waiting"],
+    "required": ["generated_at", "waiting", "newest_plans"],
     "title": "ApprovalQueueView",
     "description": "What waits for a decision, oldest first, and the newest plan of each evening "
     "from today\n"
@@ -2763,3 +2824,116 @@ def test_the_plan_requests_openapi_entries_are_pinned_whole() -> None:
     assert paths["/parent/plans"]["post"] == FAMILY_PLAN_POST
     assert {name: schemas[name] for name in PLAN_REQUEST_SCHEMAS} == PLAN_REQUEST_SCHEMAS
     assert schemas["ApprovalQueueView"] == APPROVAL_QUEUE_SCHEMA
+
+
+# ------------------------------------------------------- a lookup that fails, and the budget
+
+
+def lookups_fail(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    """The plan routes' lookup of a run_id fails from here on; every other read works."""
+    drafts = state_of(client).drafts
+    real = drafts.run_status
+
+    def busy(run_id: str, *args: Any, reconcile: bool = True, **kwargs: Any) -> Any:  # noqa: ANN401
+        if not reconcile:
+            msg = "database is locked"
+            raise sqlite3.OperationalError(msg)
+        return real(run_id, *args, reconcile=reconcile, **kwargs)
+
+    monkeypatch.setattr(drafts, "run_status", busy)
+
+
+@pytest.mark.parametrize("route", ["/student/plans", "/parent/plans"])
+def test_a_used_id_whose_lookup_fails_a_week_later_is_never_refused_as_new(
+    route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan made, its request sent again eight days later while the lookup can't read the
+    record: 503, its outcome unknown, never expired, and nothing new starts."""
+    real = FrozenClock(datetime(2026, 8, 19, 21, tzinfo=UTC), ZoneInfo(FIXTURE_TIMEZONE))
+    with browser(real_clock=real) as client:
+        body = her_plan_body(client) if route == "/student/plans" else family_plan_body(client)
+        made = client.post(route, json=body)
+        real._instant += A_WEEK + timedelta(days=1)
+        lookups_fail(monkeypatch, client)
+        again = client.post(route, json=body)
+        runs = runs_recorded(client)
+
+    assert made.status_code == 201
+    assert again.status_code == 503
+    assert again.json() == {"detail": "Blossom couldn't confirm that the new plan was saved."}
+    assert len(runs) == 1
+
+
+def test_her_used_id_from_an_earlier_evening_whose_lookup_fails_is_never_another_evening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with browser() as client:
+        body = her_plan_body(client)
+        client.post(PLANS, json=body)
+        state = state_of(client)
+        midday = datetime(2026, 8, 20, 16, tzinfo=UTC)
+        monkeypatch.setattr(state.clock, "_instant", midday)
+        lookups_fail(monkeypatch, client)
+        again = client.post(PLANS, json=body)
+        runs = runs_recorded(client)
+
+    assert again.status_code == 503
+    assert len(runs) == 1
+
+
+@pytest.mark.parametrize("route", ["/student/plans", "/parent/plans"])
+def test_a_used_id_whose_lookup_fails_is_answered_by_admission_when_nothing_refuses_it(
+    route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry inside its week whose lookup fails goes on to admission, which reads the id in
+    its own transaction and answers its run: 200, one run."""
+    with browser() as client:
+        body = her_plan_body(client) if route == "/student/plans" else family_plan_body(client)
+        client.post(route, json=body)
+        lookups_fail(monkeypatch, client)
+        again = client.post(route, json=body)
+        runs = runs_recorded(client)
+
+    assert again.status_code == 200
+    assert again.json()["run_id"] == body["run_id"]
+    assert len(runs) == 1
+
+
+@pytest.mark.parametrize("route", ["/student/plans", "/parent/plans"])
+def test_a_json_requests_budget_starts_at_the_handlers_entry(
+    route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run's time is counted from the handler's entry, so a slow lookup spends it."""
+    from blossom.routes import parent as parent_routes
+
+    routes = student_routes if route == "/student/plans" else parent_routes
+    now = [1000.0]
+    real_lookup, real_make = routes.run_of_the_request, routes.make_plan
+    spent: list[float] = []
+
+    async def slow(state: Any, run_id: str) -> Any:  # noqa: ANN401
+        now[0] += 2.0
+        return await real_lookup(state, run_id)
+
+    async def watched(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        spent.append(kwargs["budget"].elapsed())
+        return await real_make(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "run_of_the_request", slow)
+    monkeypatch.setattr(routes, "make_plan", watched)
+    with browser(clock=lambda: now[0]) as client:
+        scripted = client.app.dependency_overrides[plan_graphs]  # type: ignore[attr-defined]
+
+        def timed(
+            state: Annotated[ApplicationState, Depends(get_application_state)],
+        ) -> PlanGraphs:
+            graphs: PlanGraphs = scripted(state)
+            return replace(graphs, budget=lambda: RunBudget(clock=lambda: now[0]))
+
+        client.app.dependency_overrides[plan_graphs] = timed  # type: ignore[attr-defined]
+        body = her_plan_body(client) if route == "/student/plans" else family_plan_body(client)
+        made = client.post(route, json=body)
+
+    assert made.status_code == 201
+    assert spent
+    assert spent[0] >= 2.0

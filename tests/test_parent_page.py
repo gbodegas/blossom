@@ -1187,7 +1187,8 @@ def test_an_evening_with_nothing_left_to_do_is_refused_before_any_run() -> None:
 
 def test_an_evening_past_the_calendars_edge_is_refused_by_the_form_as_by_the_route() -> None:
     """The last day the date type can hold has no week after it to read: the form says so
-    with 422, as the JSON route does, rather than fail on the way to reading the week."""
+    with 422, and the JSON route answers 409 beyond_calendar, rather than either failing on
+    the way to reading the week."""
     with browser() as client:
         refused = client.post("/parent/actions/plan", data=family_plan(client, "9999-12-31"))
         over_json = client.post("/parent/plans", json=family_plan_body(client, "9999-12-31"))

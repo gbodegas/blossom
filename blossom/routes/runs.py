@@ -1530,36 +1530,53 @@ class FamilyPlanRequest(BaseModel):
     )
 
 
-PlanRefusalCode = Literal[
-    "not_valid",
-    "another_evening",
-    "expired",
-    "used_for_another_evening",
-    "newer_plan",
-    "passed",
-    "beyond_calendar",
+HerPlanCode = Literal[
+    "not_valid", "another_evening", "expired", "used_for_another_evening", "newer_plan"
+]
+FamilyPlanCode = Literal[
+    "not_valid", "expired", "used_for_another_evening", "newer_plan", "passed", "beyond_calendar"
 ]
 
 
 class PlanRefusalView(BaseModel):
-    """Why a JSON plan request started nothing: a code from a closed set, a sentence, the
-    household's today where the refusal turns on it, and, for an id used for another evening,
-    where that id's run stands."""
+    """Why a JSON plan request started nothing: a code, a sentence, the household's today where
+    the refusal turns on it, and, for an id used for another evening, where that id's run
+    stands. Each route declares its own codes."""
 
     model_config = ConfigDict(extra="forbid")
 
-    code: PlanRefusalCode
+    code: str
     message: str
     today: date | None = None
     run: RunStatusView | None = None
 
 
-class PlanRefusal(BaseModel):
-    """A JSON plan request refused, as its body carries it."""
+class HerPlanRefusalView(PlanRefusalView):
+    """Why her JSON plan request started nothing, by one of her route's codes."""
+
+    code: HerPlanCode
+
+
+class FamilyPlanRefusalView(PlanRefusalView):
+    """Why the family's JSON plan request started nothing, by one of its route's codes."""
+
+    code: FamilyPlanCode
+
+
+class HerPlanRefusal(BaseModel):
+    """Her JSON plan request refused, as its body carries it."""
 
     model_config = ConfigDict(extra="forbid")
 
-    detail: PlanRefusalView
+    detail: HerPlanRefusalView
+
+
+class FamilyPlanRefusal(BaseModel):
+    """The family's JSON plan request refused, as its body carries it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: FamilyPlanRefusalView
 
 
 REQUEST_FIELDS: Final = (
@@ -1567,7 +1584,7 @@ REQUEST_FIELDS: Final = (
     "five minutes ahead of the server's clock; and newest_plan, the draft_id of the newest plan "
     "known for that evening, or an empty string for none."
 )
-NOT_HER_PLAN: Final = PlanRefusalView(
+NOT_HER_PLAN: Final = HerPlanRefusalView(
     code="not_valid",
     message=(
         "Blossom couldn't use that plan request. A plan request needs run_id, a new id of 32 "
@@ -1575,7 +1592,7 @@ NOT_HER_PLAN: Final = PlanRefusalView(
         f"YYYY-MM-DD; {REQUEST_FIELDS} No plan was started."
     ),
 )
-NOT_A_FAMILY_PLAN: Final = PlanRefusalView(
+NOT_A_FAMILY_PLAN: Final = FamilyPlanRefusalView(
     code="not_valid",
     message=(
         "Blossom couldn't use that plan request. A plan request needs run_id, a new id of 32 "
@@ -1583,17 +1600,18 @@ NOT_A_FAMILY_PLAN: Final = PlanRefusalView(
         f"YYYY-MM-DD; {REQUEST_FIELDS} No plan was started."
     ),
 )
-REQUEST_A_WEEK_OLD: Final = PlanRefusalView(
-    code="expired",
-    message="That request was made a week or more ago. No new plan was started.",
-)
-"""The JSON refusals of a plan request that need no value: a body that isn't one, on her route
-and the family's, and a new request made ``FORM_LIFETIME`` or more before it was handled."""
+A_WEEK_OLD: Final = "That request was made a week or more ago. No new plan was started."
+"""The JSON refusal of a new request made ``FORM_LIFETIME`` or more before it was handled."""
 
 
-def not_her_evening(evening: date, today: date) -> PlanRefusalView:
+def a_week_old[Refusal: PlanRefusalView](kind: type[Refusal]) -> Refusal:
+    """A new JSON request made a week or more ago, refused in ``kind``, its route's own."""
+    return kind(code="expired", message=A_WEEK_OLD)
+
+
+def not_her_evening(evening: date, today: date) -> HerPlanRefusalView:
     """Her JSON request for an evening that isn't today, naming today."""
-    return PlanRefusalView(
+    return HerPlanRefusalView(
         code="another_evening",
         message=(
             f"That request was for {evening.isoformat()}, not today, {today.isoformat()}. "
@@ -1605,16 +1623,16 @@ def not_her_evening(evening: date, today: date) -> PlanRefusalView:
 
 def evening_refused(
     code: Literal["passed", "beyond_calendar"], said: Sentences, today: date
-) -> PlanRefusalView:
+) -> FamilyPlanRefusalView:
     """The family's JSON request for an evening that has passed or is past the calendar's edge."""
-    return PlanRefusalView(
+    return FamilyPlanRefusalView(
         code=code, message=" ".join((*said, "No plan was started.")), today=today
     )
 
 
-def json_newer_plan(evening: date) -> PlanRefusalView:
+def json_newer_plan[Refusal: PlanRefusalView](evening: date, kind: type[Refusal]) -> Refusal:
     """A JSON request whose newest_plan isn't the evening's newest, refused at admission."""
-    return PlanRefusalView(
+    return kind(
         code="newer_plan",
         message=(
             f"A newer plan for {evening.isoformat()} was made than the one named in newest_plan. "
@@ -1630,7 +1648,7 @@ def plan_refusal(refused: PlanRefusalView) -> JSONResponse:
         if refused.code == "not_valid"
         else status.HTTP_409_CONFLICT
     )
-    return JSONResponse(PlanRefusal(detail=refused).model_dump(mode="json"), status_code=code)
+    return JSONResponse({"detail": refused.model_dump(mode="json")}, status_code=code)
 
 
 class PlanRoute(APIRoute):
@@ -1668,16 +1686,42 @@ class FamilyPlanRoute(PlanRoute):
     not_a_request = NOT_A_FAMILY_PLAN
 
 
+class RunUnread(Exception):
+    """The record couldn't be read in time to say whether a JSON request's run_id names a
+    run."""
+
+
+async def run_of_the_request(state: ApplicationState, run_id: str) -> RunState | None:
+    """The run a JSON request's id names, read without ending anything, on a worker thread for
+    at most the store's wait; ``None`` when no run has that id. ``RunUnread`` when the read
+    fails or runs late, so the route never takes a used id for an unused one."""
+    try:
+        return await bounded(
+            partial(state.drafts.run_status, run_id, STORE_WAIT_SECONDS, reconcile=False),
+            STORE_WAIT_SECONDS,
+        )
+    except Exception as error:
+        logger.warning("run %s could not be read for a request: %s", run_id, type(error).__name__)
+        raise RunUnread(run_id) from error
+
+
+def unread_outcome() -> HTTPException:
+    """What a JSON request answers when its run_id couldn't be looked up and it would otherwise
+    be refused as a new request: 503, unconfirmed, since the id may name a run."""
+    return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=UNCONFIRMED)
+
+
 async def answered_by_its_run(
-    state: ApplicationState, run: RunState, evening: date
+    state: ApplicationState, run: RunState, evening: date, kind: type[PlanRefusalView]
 ) -> JSONResponse:
     """A JSON request whose id names a run: that run's current status, read again from the
     record, 200, when the request is for the run's evening, at any age; the id-conflict
-    refusal, naming the run's evening and where it stands, when it is for another."""
+    refusal, in ``kind``, naming the run's evening and where it stands, when it is for
+    another."""
     stands = await run_status_view(state, run.run_id)
     if run.plan_date != evening:
         return plan_refusal(
-            PlanRefusalView(
+            kind(
                 code="used_for_another_evening",
                 message=(
                     f"This run_id was used for {run.plan_date.isoformat()}. No plan was started "
@@ -1694,48 +1738,82 @@ def expired_request(issued_at: datetime, now: datetime) -> bool:
     return now - issued_at >= FORM_LIFETIME
 
 
-PLAN_REQUEST_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
-    status.HTTP_200_OK: {
-        "model": RunStatusView,
-        "description": (
-            "A retry: the run_id names a run for this evening, and this is where it stands now. "
-            "Nothing was started."
-        ),
-    },
-    status.HTTP_202_ACCEPTED: {"model": UnconfirmedRunView},
-    status.HTTP_400_BAD_REQUEST: {
-        "model": ProblemView,
-        "description": "A body the framework can't read as JSON at all, in its own answer.",
-    },
-    status.HTTP_401_UNAUTHORIZED: {
-        "model": ProblemView,
-        "description": "No sign-in, with the household sign-in on. Nothing was read.",
-    },
-    status.HTTP_403_FORBIDDEN: {
-        "model": ProblemView,
-        "description": (
-            "A reader this route isn't open to, before the body is read; or, in plain text, a "
-            "request from another origin."
-        ),
-        "content": {"text/plain": {"schema": {"type": "string"}}},
-    },
-    status.HTTP_409_CONFLICT: {
-        "model": PlanConflictView | PlanRefusal,
-        "description": (
-            "A refusal with a code, made before anything started: another_evening, expired, "
-            "used_for_another_evening, newer_plan, passed or beyond_calendar. Or, as a "
-            "sentence, why a run made no plan, or the run still running."
-        ),
-    },
-    status.HTTP_422_UNPROCESSABLE_CONTENT: {
-        "model": PlanRefusal,
-        "description": "not_valid: a body that isn't a plan request. No plan was started.",
-    },
-    status.HTTP_500_INTERNAL_SERVER_ERROR: {
-        "description": "The server's own error, in plain text, as for any route.",
-        "content": {"text/plain": {"schema": {"type": "string"}}},
-    },
-    status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ProblemView},
+UNDECODABLE: Final = (
+    "A body the framework can't decode at all, in its own answer: one not in a JSON text "
+    "encoding, or nested too deeply. A body that decodes but isn't a request is not_valid, 422."
+)
+"""The 400 every JSON route here declares, the signal's included."""
+
+
+def plan_request_answers(
+    refusal: type[BaseModel], codes: str, forbidden: dict[str, Any]
+) -> dict[int | str, dict[str, Any]]:
+    """Every body one JSON plan route answers with besides a new plan: ``refusal`` is its
+    refusal body, ``codes`` names its 409 codes, and ``forbidden`` is its 403."""
+    return {
+        status.HTTP_200_OK: {
+            "model": RunStatusView,
+            "description": (
+                "A retry: the run_id names a run for this evening, and this is where it stands "
+                "now. Nothing was started."
+            ),
+        },
+        status.HTTP_202_ACCEPTED: {"model": UnconfirmedRunView},
+        status.HTTP_400_BAD_REQUEST: {
+            "model": ProblemView,
+            "description": f"{UNDECODABLE} No plan was started.",
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "model": ProblemView,
+            "description": "No sign-in, with the household sign-in on. Nothing was read.",
+        },
+        status.HTTP_403_FORBIDDEN: forbidden,
+        status.HTTP_409_CONFLICT: {
+            "model": PlanConflictView | refusal,
+            "description": (
+                f"A refusal with a code, made before anything started: {codes}. Or, as a "
+                "sentence, why a run made no plan, or the run still running."
+            ),
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": refusal,
+            "description": "not_valid: a body that isn't a plan request. No plan was started.",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "The server's own error, in plain text, as for any route.",
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+        },
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "model": ProblemView,
+            "description": (
+                "In a sentence: no model key, a run that couldn't start, or a plan made but not "
+                "saved. Or the unconfirmed sentence when the record couldn't be read in time to "
+                "say whether the run_id names a run and a new request's refusal would otherwise "
+                "follow; its outcome is unknown, so retry with the same run_id and issued_at."
+            ),
+        },
+    }
+
+
+ANOTHER_ORIGIN: Final = {
+    "description": "A request from another origin, in plain text.",
+    "content": {"text/plain": {"schema": {"type": "string"}}},
 }
-"""Every body a JSON plan request answers with besides a new plan, as both plan routes
-declare them."""
+HER_PLAN_ANSWERS: Final = plan_request_answers(
+    HerPlanRefusal,
+    "another_evening, expired, used_for_another_evening or newer_plan",
+    ANOTHER_ORIGIN,
+)
+FAMILY_PLAN_ANSWERS: Final = plan_request_answers(
+    FamilyPlanRefusal,
+    "expired, used_for_another_evening, newer_plan, passed or beyond_calendar",
+    {
+        "model": ProblemView,
+        "description": (
+            "A student's sign-in, before the body is read; or, in plain text, a request from "
+            "another origin."
+        ),
+        "content": {"text/plain": {"schema": {"type": "string"}}},
+    },
+)
+"""Every body each JSON plan route answers with besides a new plan."""

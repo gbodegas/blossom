@@ -993,7 +993,7 @@ class ApprovalQueueView(BaseModel):
 
     generated_at: AwareDatetime
     waiting: list[ApprovalView]
-    newest_plans: list[NewestPlanView] = []
+    newest_plans: list[NewestPlanView]
 
 
 class DecisionView(BaseModel):

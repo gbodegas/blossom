@@ -967,7 +967,13 @@ unchanged. The request's id is its run's id, so a retry finds its run and is
 answered with where it stands, after the gate has checked who is asking, at
 any age; only a request whose id names no run is held to its age, and one made
 a week or more ago starts nothing. A refusal made before anything starts
-carries a code and says no plan was started.
+carries a code and says no plan was started. When the record can't be read in
+time to say whether the id names a run, a request that would be refused as a
+new one answers 503 instead, since its run may exist. On each plan route
+`not_valid` is the only 422 body; a body the framework can't decode at all gets
+its own 400. The page forms' presses, whose design PR 1 settled, take a failed
+read as no run: their evening and age checks can then refuse a used form, and
+otherwise admission decides again.
 
 The run ID is how a run is found again. `GET /student/plans/runs/{run_id}` and
 `GET /parent/plans/runs/{run_id}` read where it stands, after ending any run
@@ -1117,8 +1123,9 @@ shape, extra or sent twice; `another_evening` (409), which names today;
 `expired` (409) for a press made a week or more ago; and `other_words` (409)
 for an id sent again with other words while the signal it recorded is kept.
 These are the only 422 and 409 bodies
-the route sends. A body the framework can't read as JSON at all gets the
-framework's own 400.
+the route sends. A body that decodes but isn't a signal is `not_valid`; one the
+framework can't decode at all, not in a JSON text encoding or nested too deeply,
+gets the framework's own 400.
 
 A press records that today, by the household's clock, is too much, in
 `WorkloadSignalsStore`, `blossom/stores/workload_signals.py`. Three things

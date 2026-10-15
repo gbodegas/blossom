@@ -101,18 +101,18 @@ from blossom.routes.runs import (
     COULD_NOT_START,
     COULD_NOT_START_SENTENCES,
     EVENING,
+    FAMILY_PLAN_ANSWERS,
     NOT_A_FAMILY_PLAN,
     NOT_USED,
     OPENED_A_WEEK_AGO,
     PLAN_FORM_FIELDS,
-    PLAN_REQUEST_ANSWERS,
-    REQUEST_A_WEEK_OLD,
     RUN_STATUS_ANSWERS,
     STORE_FAILURES,
     UNCONFIRMED,
     AlreadyPlanning,
     Clause,
     CouldNotStart,
+    FamilyPlanRefusalView,
     FamilyPlanRequest,
     FamilyPlanRoute,
     Graphs,
@@ -123,9 +123,11 @@ from blossom.routes.runs import (
     PlanRow,
     RunCheck,
     RunNotice,
+    RunUnread,
     SameRun,
     Sentences,
     Unconfirmed,
+    a_week_old,
     answered_by_its_run,
     being_made,
     ended_sentences,
@@ -151,11 +153,13 @@ from blossom.routes.runs import (
     run_check,
     run_notice,
     run_of_the_form,
+    run_of_the_request,
     run_replaced,
     run_status_view,
     saved_sentence,
     tidy_later,
     tidy_thread,
+    unread_outcome,
 )
 from blossom.routes.student import (
     FAMILY_HELP,
@@ -629,8 +633,11 @@ async def start_plan(
     evening, used_for_another_evening, 409. A new request made a week or more ago is expired,
     409; one for an evening that has passed is passed, 409, and one past the edge of the
     calendar is beyond_calendar, 409, each naming today; one whose newest_plan is behind the
-    evening's newest plan is newer_plan, 409. A body that isn't a plan request is not_valid,
-    422. None of these starts anything.
+    evening's newest plan is newer_plan, 409. When the record can't be read in time to say
+    whether the run_id is used, a request one of the first three refusals would meet answers
+    503 instead, since its run may exist. A body that decodes but isn't a plan request is
+    not_valid, 422, the route's only 422; one the framework can't decode at all is its 400.
+    None of these starts anything.
 
     An evening with nothing left to plan is a 409, before and after the run: a report of hers
     can land between the question and the run's reading, and such a run made no plan. Any
@@ -641,6 +648,7 @@ async def start_plan(
     with its run's id; and a plan not saved or a run that couldn't start is a 503 that says
     her updates are saved.
     """
+    budget = graphs.budget()
     now = state.real_clock.now()
     try:
         evening = date.fromisoformat(request.plan_date)
@@ -650,17 +658,27 @@ async def start_plan(
     if issued_at is None:
         return plan_refusal(NOT_A_FAMILY_PLAN)
     # A run_id already used is answered by its run, whatever its age or the evening's.
-    found = await run_of_the_form(state, request.run_id)
+    try:
+        found, unread = await run_of_the_request(state, request.run_id), False
+    except RunUnread:
+        found, unread = None, True
     if found is not None:
-        return await answered_by_its_run(state, found, evening)
-    if expired_request(issued_at, now):
-        return plan_refusal(REQUEST_A_WEEK_OLD)
+        return await answered_by_its_run(state, found, evening, FamilyPlanRefusalView)
     today = state.clock.today()
-    if evening < today:
-        return plan_refusal(evening_refused("passed", passed(evening), today))
-    if evening > date.max - CALENDAR_MARGIN:
-        return plan_refusal(evening_refused("beyond_calendar", beyond(evening), today))
-    budget = graphs.budget()
+    refused = (
+        a_week_old(FamilyPlanRefusalView)
+        if expired_request(issued_at, now)
+        else evening_refused("passed", passed(evening), today)
+        if evening < today
+        else evening_refused("beyond_calendar", beyond(evening), today)
+        if evening > date.max - CALENDAR_MARGIN
+        else None
+    )
+    if refused is not None:
+        # An id that couldn't be looked up may name a run, so it gets no new request's refusal.
+        if unread:
+            raise unread_outcome()
+        return plan_refusal(refused)
     could_not_start = f"{COULD_NOT_START} {saved_sentence(parent=True)}"
     try:
         await require_work(state, evening, budget)
@@ -678,9 +696,9 @@ async def start_plan(
             basis=request.newest_plan,
         )
     except SameRun as same:
-        return await answered_by_its_run(state, same.run, evening)
+        return await answered_by_its_run(state, same.run, evening, FamilyPlanRefusalView)
     except StaleBasis:
-        return plan_refusal(json_newer_plan(evening))
+        return plan_refusal(json_newer_plan(evening, FamilyPlanRefusalView))
     except UnknownBasis:
         return plan_refusal(NOT_A_FAMILY_PLAN)
     except AlreadyPlanning as error:
@@ -719,7 +737,7 @@ router.add_api_route(
     methods=["POST"],
     response_model=PlanRunView,
     status_code=status.HTTP_201_CREATED,
-    responses=PLAN_REQUEST_ANSWERS,
+    responses=FAMILY_PLAN_ANSWERS,
     route_class_override=FamilyPlanRoute,
 )
 

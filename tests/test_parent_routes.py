@@ -46,6 +46,7 @@ from tests.support import (
     scripted_graphs,
     signed_in,
     signed_in_household,
+    state_of,
 )
 
 PLAN_DATE = date(2026, 8, 19)
@@ -558,17 +559,42 @@ def test_a_json_family_request_that_isnt_one_is_refused_with_its_code(
     assert runs == []
 
 
-def test_the_queue_lists_the_newest_plan_of_each_evening_from_today() -> None:
-    with app_with() as client:
+def test_the_queue_lists_the_newest_plan_of_each_evening_from_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One entry per evening from today on, the evening's newest plan, decided or not: a plan
+    replaced for an evening gives way to its replacement, an approved plan stays listed, and
+    an evening that has passed leaves the list. A request naming the listed id is admitted."""
+    asked = [PLAN_DATE]
+
+    def plan_for_the_evening_asked() -> list[DailyPlan]:
+        return [fixture_week_plan().model_copy(update={"plan_date": asked[0]})]
+
+    with app_with(planner=plan_for_the_evening_asked) as client:
         before = client.get("/parent/approvals").json()["newest_plans"]
-        made = client.post(PLANS, json=family_plan_body(client)).json()
-        after = client.get("/parent/approvals").json()["newest_plans"]
+        today = client.post(PLANS, json=family_plan_body(client)).json()
+        asked[0] = date(2026, 8, 20)
+        first = client.post(PLANS, json=family_plan_body(client, "2026-08-20")).json()
+        second = client.post(PLANS, json=family_plan_body(client, "2026-08-20")).json()
+        approved = client.post(f"/parent/approvals/{today['draft_id']}", json={"approved": True})
+        listed = client.get("/parent/approvals").json()["newest_plans"]
+        midday = datetime(2026, 8, 20, 16, tzinfo=UTC)
+        monkeypatch.setattr(state_of(client).clock, "_instant", midday)
+        later = client.get("/parent/approvals").json()["newest_plans"]
 
     assert before == []
-    assert after == [{"plan_date": "2026-08-19", "draft_id": made["draft_id"]}]
+    assert first["draft_id"] != second["draft_id"]
+    assert approved.status_code == 200
+    assert listed == [
+        {"plan_date": "2026-08-19", "draft_id": today["draft_id"]},
+        {"plan_date": "2026-08-20", "draft_id": second["draft_id"]},
+    ]
+    assert later == [{"plan_date": "2026-08-20", "draft_id": second["draft_id"]}]
 
 
-def test_a_replay_meets_the_door_before_its_run_is_read(tmp_path: pathlib.Path) -> None:
+def test_a_replay_meets_the_door_before_its_run_is_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A family request sent again from her sign-in is refused 403 before its id is looked up,
     and once signed out it is asked to sign in; neither names the run or starts another."""
     settings = replace(signed_in_household(tmp_path), anthropic_api_key="not-a-key-and-never-sent")
@@ -580,6 +606,10 @@ def test_a_replay_meets_the_door_before_its_run_is_read(tmp_path: pathlib.Path) 
         signed_in(client, THEIRS)
         body = family_plan_body(client)
         made = client.post(PLANS, json=body)
+        looked_up: list[str] = []
+        monkeypatch.setattr(
+            state_of(client).drafts, "run_status", lambda run_id, *a, **k: looked_up.append(run_id)
+        )
         client.post("/sign-out")
         signed_in(client, HERS)
         hers = client.post(PLANS, json=body)
@@ -593,4 +623,5 @@ def test_a_replay_meets_the_door_before_its_run_is_read(tmp_path: pathlib.Path) 
     assert nobody.status_code == 401
     assert nobody.json() == {"detail": "Sign in first."}
     assert body["run_id"] not in hers.text + nobody.text
+    assert looked_up == []
     assert runs == [body["run_id"]]

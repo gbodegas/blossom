@@ -66,8 +66,11 @@ With the app running as the README describes:
   ago, for an evening that isn't today, or behind the evening's newest plan
   starts nothing and answers 409 with a code (`expired`, `another_evening`,
   `newer_plan`); a `run_id` used for another evening answers 409
-  `used_for_another_evening`; and a body that isn't a request answers 422
-  `not_valid`. The POST answers 201 with her plan in the
+  `used_for_another_evening`; when the record can't be read in time to say
+  whether the `run_id` is used, a request that would be refused as a new one
+  answers 503, since its run may exist; and a body that decodes but isn't a
+  request answers 422 `not_valid`, the only 422 body, while one that can't be
+  decoded at all gets the framework's 400. The POST answers 201 with her plan in the
   shape `GET /student/plans/today` gives, worded for whoever is signed in,
   or, when that reading doesn't finish in time after the plan is published,
   201 with `{"run_id", "plan_date", "status": "published"}`; 202 with
@@ -91,8 +94,9 @@ With the app running as the README describes:
   are saved.". Its body names `plan_date`, the evening to plan, in place of
   `evening`, and its `newest_plan` is the `draft_id` that `newest_plans` in
   `GET /parent/approvals` lists for that evening, or an empty string when it
-  lists none. An evening that has passed or is past the calendar answers 409
-  with the code `passed` or `beyond_calendar`.
+  lists none. A new request for an evening that has passed or is past the
+  calendar answers 409 with the code `passed` or `beyond_calendar`; a `run_id`
+  already used for that evening answers its run.
 - <http://127.0.0.1:8000/student/homework-notes> is her homework notes, with
   the ones she put away under `/archived`, the ones in homework under
   `/added`, the form for a new one under `/new`, and each note on a page of

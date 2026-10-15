@@ -186,21 +186,22 @@ from blossom.routes.runs import (
     COULD_NOT_START_SENTENCES,
     EVENING,
     FORM_LIFETIME,
+    HER_PLAN_ANSWERS,
     ISSUED_AT,
     ISSUED_AT_FORM,
     NOT_HER_PLAN,
     NOT_USED,
     OPENED_A_WEEK_AGO,
     PLAN_FORM_FIELDS,
-    PLAN_REQUEST_ANSWERS,
-    REQUEST_A_WEEK_OLD,
     RUN_STATUS_ANSWERS,
     STORE_FAILURES,
     UNCONFIRMED,
+    UNDECODABLE,
     AlreadyPlanning,
     Clause,
     CouldNotStart,
     Graphs,
+    HerPlanRefusalView,
     HerPlanRequest,
     HerPlanRoute,
     Needs,
@@ -209,9 +210,11 @@ from blossom.routes.runs import (
     PlanRow,
     RunCheck,
     RunNotice,
+    RunUnread,
     SameRun,
     Sentences,
     Unconfirmed,
+    a_week_old,
     answered_by_its_run,
     being_made,
     ended_sentences,
@@ -240,9 +243,11 @@ from blossom.routes.runs import (
     run_check,
     run_notice,
     run_of_the_form,
+    run_of_the_request,
     run_replaced,
     run_status_view,
     saved_sentence,
+    unread_outcome,
 )
 from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
@@ -1037,7 +1042,8 @@ async def register_workload_signal(
     Refusals record nothing and carry a code: not_valid, 422, for a body that isn't a
     signal; another_evening, 409; expired, 409, for a press made a week or more ago; and
     other_words, 409, for an id sent again with other words while the signal it recorded
-    is kept. A body the framework can't read as JSON at all is its own 400.
+    is kept. A body the framework can't decode at all, one not in a JSON text encoding or
+    nested too deeply, is its own 400; one that decodes but isn't a signal is not_valid.
     """
     now = state.real_clock.now()
     try:
@@ -1082,10 +1088,7 @@ SIGNAL_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
     },
     status.HTTP_400_BAD_REQUEST: {
         "model": ProblemView,
-        "description": (
-            "A body the framework can't read as JSON at all, in its own answer. Nothing was "
-            "recorded."
-        ),
+        "description": f"{UNDECODABLE} Nothing was recorded.",
     },
     status.HTTP_401_UNAUTHORIZED: {
         "model": ProblemView,
@@ -1627,8 +1630,11 @@ async def make_todays_plan(
     A run_id already used answers its run as it stands now, 200, at any age, or, for another
     evening, used_for_another_evening, 409. A new request for an evening that isn't today is
     another_evening, 409, naming today; one made a week or more ago is expired, 409; and one
-    whose newest_plan is behind the evening's newest plan is newer_plan, 409. A body that
-    isn't a plan request is not_valid, 422. None of these starts anything.
+    whose newest_plan is behind the evening's newest plan is newer_plan, 409. When the record
+    can't be read in time to say whether the run_id is used, a request one of those two
+    refusals would meet answers 503 instead, since its run may exist. A body that decodes but
+    isn't a plan request is not_valid, 422, the route's only 422; one the framework can't
+    decode at all is its 400. None of these starts anything.
 
     A run that ends without a plan, because the checks never passed, the
     model did not answer, or it failed on the way, is a 409 saying why in the
@@ -1643,6 +1649,7 @@ async def make_todays_plan(
     grace; when that reading doesn't finish in time, or no time is left, the plan
     stands published and the 201 names its run instead.
     """
+    budget = graphs.budget()
     now = state.real_clock.now()
     try:
         evening = date.fromisoformat(plan.evening)
@@ -1652,15 +1659,25 @@ async def make_todays_plan(
     if issued_at is None:
         return plan_refusal(NOT_HER_PLAN)
     # A run_id already used is answered by its run, whatever its age or the evening's.
-    found = await run_of_the_form(state, plan.run_id)
+    try:
+        found, unread = await run_of_the_request(state, plan.run_id), False
+    except RunUnread:
+        found, unread = None, True
     if found is not None:
-        return await answered_by_its_run(state, found, evening)
+        return await answered_by_its_run(state, found, evening, HerPlanRefusalView)
     today = state.clock.today()
-    if evening != today:
-        return plan_refusal(not_her_evening(evening, today))
-    if expired_request(issued_at, now):
-        return plan_refusal(REQUEST_A_WEEK_OLD)
-    budget = graphs.budget()
+    refused = (
+        not_her_evening(evening, today)
+        if evening != today
+        else a_week_old(HerPlanRefusalView)
+        if expired_request(issued_at, now)
+        else None
+    )
+    if refused is not None:
+        # An id that couldn't be looked up may name a run, so it gets no new request's refusal.
+        if unread:
+            raise unread_outcome()
+        return plan_refusal(refused)
     parent = parent_reads(request)
     try:
         await require_work(state, today, budget)
@@ -1674,9 +1691,9 @@ async def make_todays_plan(
             basis=plan.newest_plan,
         )
     except SameRun as same:
-        return await answered_by_its_run(state, same.run, evening)
+        return await answered_by_its_run(state, same.run, evening, HerPlanRefusalView)
     except StaleBasis:
-        return plan_refusal(json_newer_plan(evening))
+        return plan_refusal(json_newer_plan(evening, HerPlanRefusalView))
     except UnknownBasis:
         return plan_refusal(NOT_HER_PLAN)
     except AlreadyPlanning as error:
@@ -1729,7 +1746,7 @@ router.add_api_route(
     methods=["POST"],
     response_model=StudentPlanView | PublishedRunView,
     status_code=status.HTTP_201_CREATED,
-    responses=PLAN_REQUEST_ANSWERS,
+    responses=HER_PLAN_ANSWERS,
     route_class_override=HerPlanRoute,
 )
 

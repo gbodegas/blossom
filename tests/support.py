@@ -1284,32 +1284,46 @@ def fresh_signal_fields(client: TestClient, **changed: str) -> dict[str, str]:
 
 def her_plan_body(client: TestClient, **changed: str) -> dict[str, str]:
     """A JSON request for today's plan as a caller makes one: a fresh run_id and issue time,
-    today's evening, and the newest plan published, with ``changed`` over them."""
+    today's evening, and today's newest plan, with ``changed`` over them."""
     return {**her_plan_request(state_of(client)), **changed}
 
 
 def her_plan_request(state: ApplicationState) -> dict[str, str]:
     """``her_plan_body`` made from the state itself, for a caller with no test client."""
+    today = state.clock.today()
     return {
         "run_id": uuid4().hex,
-        "evening": state.clock.today().isoformat(),
+        "evening": today.isoformat(),
         "issued_at": state.real_clock.now().astimezone(UTC).strftime(ISSUED_AT_FORM),
-        "newest_plan": state.drafts.newest_published(),
+        "newest_plan": newest_plan_for(state, today),
     }
+
+
+def newest_plan_for(state: ApplicationState, evening: date | str) -> str:
+    """The newest_plan a caller sends for ``evening``: the draft_id the queue's newest_plans
+    lists for it, which is today's plan's on her route, or empty when none is listed."""
+    try:
+        day = evening if isinstance(evening, date) else date.fromisoformat(evening)
+    except ValueError:
+        return ""
+    return next(
+        (draft_id for listed, draft_id in state.drafts.newest_published_from(day) if listed == day),
+        "",
+    )
 
 
 def family_plan_body(
     client: TestClient, plan_date: date | str | None = None, **changed: str
 ) -> dict[str, str]:
     """A JSON request for an evening's plan as a caller makes one: a fresh run_id and issue
-    time, ``plan_date`` or today, and the newest plan published, with ``changed`` over them."""
+    time, ``plan_date`` or today, and that evening's newest plan, with ``changed`` over them."""
     state = state_of(client)
     evening = state.clock.today() if plan_date is None else plan_date
     body = {
         "run_id": uuid4().hex,
         "plan_date": evening if isinstance(evening, str) else evening.isoformat(),
         "issued_at": state.real_clock.now().astimezone(UTC).strftime(ISSUED_AT_FORM),
-        "newest_plan": state.drafts.newest_published(),
+        "newest_plan": newest_plan_for(state, evening),
     }
     return {**body, **changed}
 

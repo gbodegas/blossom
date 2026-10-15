@@ -132,32 +132,34 @@ SIGNAL_POST = {
     "summary": "Register Workload Signal",
     "description": "Record that today is too much, once for each press.\n"
     "\n"
-    "The caller makes two values for each deliberate "
-    "press: signal_id, a new id of 32\n"
-    "lowercase hexadecimal characters such as "
-    "uuid.uuid4().hex, and issued_at, the moment\n"
-    "the press is made, in ISO 8601 with its offset. "
-    "evening is the household's today,\n"
-    "YYYY-MM-DD; a press for another evening is refused "
-    "with today named. A retry of the same\n"
-    "press sends the same signal_id and issued_at; a "
-    "new press gets new ones. Each press\n"
-    "records at most once: a new signal is 201, and a "
-    "press whose id was already handled is\n"
-    "200 and records nothing, with the signal standing "
-    "for the evening, or none after it was\n"
-    "taken back. A new id while a signal stands is 200 "
-    "with that signal too; it records no\n"
-    "signal, and its id is kept as handled. A parent is "
-    "answered 403 before the body is read.\n"
-    "Refusals record nothing and carry a code: "
-    "not_valid, 422, for a body that isn't a\n"
-    "signal; another_evening, 409; expired, 409, for a "
-    "press made a week or more ago; and\n"
-    "other_words, 409, for an id sent again with other "
-    "words while the signal it recorded\n"
-    "is kept. A body the framework can't read as JSON "
-    "at all is its own 400.",
+    "The caller makes two values for each deliberate press: signal_id, a new id "
+    "of 32\n"
+    "lowercase hexadecimal characters such as uuid.uuid4().hex, and issued_at, "
+    "the moment\n"
+    "the press is made, in ISO 8601 with its offset. evening is the household's "
+    "today,\n"
+    "YYYY-MM-DD; a press for another evening is refused with today named. A retry "
+    "of the same\n"
+    "press sends the same signal_id and issued_at; a new press gets new ones. "
+    "Each press\n"
+    "records at most once: a new signal is 201, and a press whose id was already "
+    "handled is\n"
+    "200 and records nothing, with the signal standing for the evening, or none "
+    "after it was\n"
+    "taken back. A new id while a signal stands is 200 with that signal too; it "
+    "records no\n"
+    "signal, and its id is kept as handled. A parent is answered 403 before the "
+    "body is read.\n"
+    "Refusals record nothing and carry a code: not_valid, 422, for a body that "
+    "isn't a\n"
+    "signal; another_evening, 409; expired, 409, for a press made a week or more "
+    "ago; and\n"
+    "other_words, 409, for an id sent again with other words while the signal it "
+    "recorded\n"
+    "is kept. A body the framework can't decode at all, one not in a JSON text "
+    "encoding or\n"
+    "nested too deeply, is its own 400; one that decodes but isn't a signal is "
+    "not_valid.",
     "operationId": "register_workload_signal_student_workload_signals_post",
     "requestBody": {
         "content": {
@@ -185,8 +187,10 @@ SIGNAL_POST = {
             },
         },
         "400": {
-            "description": "A body the framework can't read as JSON at all, in its "
-            "own answer. Nothing was recorded.",
+            "description": "A body the framework can't decode at all, in its own "
+            "answer: one not in a JSON text encoding, or nested too "
+            "deeply. A body that decodes but isn't a request is "
+            "not_valid, 422. Nothing was recorded.",
             "content": {
                 "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
             },
