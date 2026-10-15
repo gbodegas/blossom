@@ -11,11 +11,17 @@ refuses to exist without a key.
 """
 
 import ast
+import base64
 import dataclasses
+import hashlib
+import io
+import json
+import logging
 import os
 import pathlib
 import re
 from collections.abc import Iterator
+from typing import Any, get_args
 
 import anthropic
 import httpx
@@ -27,6 +33,7 @@ from langchain_core.callbacks.manager import CallbackManager
 from langchain_core.messages import HumanMessage
 from langchain_core.tracers.context import tracing_v2_enabled
 from langsmith import utils as langsmith_utils
+from PIL import Image
 from pydantic import SecretStr
 
 from blossom import anthropic_client
@@ -50,7 +57,8 @@ from blossom.settings import (
     Settings,
     enforce_local_only_tracing,
 )
-from tests.support import SAME_ORIGIN, hosted_tracer_attached
+from blossom.stores.import_drafts import FAILURES
+from tests.support import SAME_ORIGIN, fixture_settings, hosted_tracer_attached
 
 # Variables the model library or the HTTP client beneath it reads to pick an
 # endpoint, a proxy, or a certificate store. Each alone changes a client built
@@ -365,3 +373,345 @@ def test_a_refused_request_is_a_failure_not_asked_again(code: int) -> None:
 
 def test_an_error_the_service_did_not_raise_is_not_the_services() -> None:
     assert service_failure(ValueError("a fault in the caller")) is None
+
+
+# ------------------------------------------------------------ the screenshot reader
+
+PROMPT_V1B_SHA256 = "e85ede52600be9d0276324198f37cb1e1737e81664b58e586ccfd21aafebe2fc"
+"""The system prompt the reader was measured with: prompt v1b, its schema as JSON text."""
+
+SDK_LOGGERS = (
+    "anthropic",
+    "anthropic._base_client",
+    "httpx",
+    "httpcore",
+    "httpcore.connection",
+    "httpcore.http11",
+)
+"""The SDK's and its HTTP clients' loggers, a parent and its children."""
+
+AN_ANSWER: dict[str, Any] = {
+    "image_kind": "homework_list",
+    "active_student": {"name": "Wren", "uncertain": None},
+    "headings": [{"text": "Monday 10/5/2026", "y": 120, "uncertain": None}],
+    "cards": [],
+    "report": None,
+}
+
+
+def synthetic_png() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (40, 30), (20, 120, 200)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def message(text: str | None, *, stop: str = "end_turn") -> httpx.Response:
+    """A Messages API answer as the service sends it, with one text block or none."""
+    content = [] if text is None else [{"type": "thinking", "thinking": "", "signature": ""}]
+    content += [] if text is None else [{"type": "text", "text": text}]
+    return httpx.Response(
+        200,
+        json={
+            "id": "msg_synthetic",
+            "type": "message",
+            "model": MODEL,
+            "content": content,
+            "stop_reason": stop,
+            "stop_sequence": None,
+            "usage": {"input_tokens": 1500, "output_tokens": 300},
+        },
+    )
+
+
+class Service:
+    """A mock transport that answers each request from a queue and keeps what was sent."""
+
+    def __init__(self, *answers: httpx.Response | Exception) -> None:
+        self.answers = list(answers)
+        self.sent: list[httpx.Request] = []
+        self.transport = httpx.MockTransport(self.handle)
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.sent.append(request)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def read(
+    service: Service, png: bytes | None = None, timeout: float = 30.0
+) -> anthropic_client.ScreenshotAnswer:
+    """One reading through the real SDK on the mock transport, so nothing leaves the machine."""
+    return anthropic_client.read_screenshot(
+        settings_with_key(),
+        synthetic_png() if png is None else png,
+        timeout=timeout,
+        transport=service.transport,
+    )
+
+
+def test_a_reading_sends_the_request_the_reader_was_measured_with() -> None:
+    png = synthetic_png()
+    service = Service(message(json.dumps(AN_ANSWER)))
+
+    read(service, png)
+
+    [sent] = service.sent
+    body = json.loads(sent.content)
+    assert sent.method == "POST"
+    assert str(sent.url) == f"{ENDPOINT}/v1/messages"
+    assert set(body) == {"model", "max_tokens", "system", "output_config", "messages"}
+    assert body["model"] == MODEL
+    assert body["max_tokens"] == 6_000
+    assert body["output_config"] == {"effort": "low"}
+    assert hashlib.sha256(body["system"].encode("utf-8")).hexdigest() == PROMPT_V1B_SHA256
+    assert body["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": base64.standard_b64encode(png).decode("ascii"),
+                    },
+                },
+                {"type": "text", "text": "Read this screenshot."},
+            ],
+        }
+    ]
+    assert "anthropic-beta" not in sent.headers
+
+
+@pytest.mark.parametrize("variable", ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"])
+def test_a_reading_goes_to_the_public_endpoint_whatever_the_shell_names(
+    variable: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(variable, REROUTING_VARIABLES[variable])
+    service = Service(message(json.dumps(AN_ANSWER)))
+
+    read(service)
+
+    assert str(service.sent[0].url) == f"{ENDPOINT}/v1/messages"
+
+
+def test_the_reader_client_ignores_the_environment_and_never_retries_on_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for variable, value in REROUTING_VARIABLES.items():
+        monkeypatch.setenv(variable, value)
+
+    with anthropic_client._reader_client("sk-test-value", 12.5, None) as client:
+        assert str(client.base_url).rstrip("/") == ENDPOINT
+        assert client.max_retries == 0
+        assert client.timeout == 12.5
+        assert client._client._trust_env is False
+        assert client._client._mounts == {}
+
+
+def test_a_reading_waits_only_the_time_it_is_given() -> None:
+    service = Service(message(json.dumps(AN_ANSWER)))
+
+    read(service, timeout=7.5)
+
+    assert service.sent[0].extensions["timeout"] == dict.fromkeys(
+        ("connect", "read", "write", "pool"), 7.5
+    )
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0])
+def test_a_reading_with_no_time_left_is_not_sent(timeout: float) -> None:
+    service = Service()
+
+    with pytest.raises(ValueError, match="positive"):
+        read(service, timeout=timeout)
+
+    assert service.sent == []
+
+
+def test_a_reading_needs_a_key_and_sends_nothing_without_one() -> None:
+    service = Service()
+
+    with pytest.raises(ModelUnavailable, match="ANTHROPIC_API_KEY"):
+        anthropic_client.read_screenshot(
+            Settings.from_environment({}),
+            synthetic_png(),
+            timeout=30.0,
+            transport=service.transport,
+        )
+
+    assert service.sent == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        json.dumps(AN_ANSWER),
+        f"  {json.dumps(AN_ANSWER, indent=2)}\n",
+        f"```json\n{json.dumps(AN_ANSWER)}\n```",
+        f"```\n{json.dumps(AN_ANSWER)}\n```",
+    ],
+    ids=["plain", "spaced", "json-fence", "bare-fence"],
+)
+def test_an_answer_parses_with_or_without_a_code_fence(text: str) -> None:
+    answer = read(Service(message(text)))
+
+    assert answer.failure is None
+    assert answer.answer == AN_ANSWER
+    assert (answer.input_tokens, answer.output_tokens) == (1500, 300)
+
+
+@pytest.mark.parametrize(
+    ("stop", "failure"),
+    [
+        ("max_tokens", "cut_off"),
+        ("model_context_window_exceeded", "cut_off"),
+        ("refusal", "model_refused"),
+    ],
+)
+def test_a_stopped_or_refused_answer_is_a_failed_read_even_when_it_parses(
+    stop: str, failure: str
+) -> None:
+    answer = read(Service(message(json.dumps(AN_ANSWER), stop=stop)))
+
+    assert answer.failure == failure
+    assert answer.answer is None
+    assert (answer.input_tokens, answer.output_tokens) == (1500, 300)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"Here is what the screenshot shows: {json.dumps(AN_ANSWER)}",
+        "",
+        '```json\n{"image_kind": \n```',
+        "```",
+        "[" * 100_000,
+        "1" * 5_000,
+        None,
+    ],
+    ids=["prose", "empty", "broken-fence", "fence-alone", "too-deep", "long-number", "no-text"],
+)
+def test_an_answer_that_is_not_json_is_a_failed_read(text: str | None) -> None:
+    answer = read(Service(message(text)))
+
+    assert answer.failure == "not_json"
+    assert answer.answer is None
+
+
+BUSY = [
+    *(httpx.Response(code, json={"type": "error"}) for code in (408, 409, 429, 500, 503, 529)),
+    httpx.ConnectError("synthetic refusal to connect"),
+    httpx.ReadTimeout("synthetic timeout"),
+]
+
+
+@pytest.mark.parametrize(
+    "outcome", BUSY, ids=["408", "409", "429", "500", "503", "529", "connect", "timeout"]
+)
+def test_a_busy_service_is_named_busy_and_asked_once(outcome: httpx.Response | Exception) -> None:
+    service = Service(outcome)
+
+    answer = read(service)
+
+    assert answer.failure == "service_busy"
+    assert len(service.sent) == 1
+    assert (answer.answer, answer.input_tokens, answer.output_tokens) == (None, 0, 0)
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404, 413, 422])
+def test_a_refused_request_is_named_refused_and_asked_once(code: int) -> None:
+    service = Service(httpx.Response(code, json={"type": "error"}))
+
+    answer = read(service)
+
+    assert answer.failure == "service_refused"
+    assert len(service.sent) == 1
+
+
+@pytest.mark.parametrize(
+    "body", [b"Sentinel-Body-B1 is not JSON", b'{"content": "\xff"}'], ids=["not-json", "not-utf-8"]
+)
+def test_a_response_the_sdk_cannot_decode_is_named_refused(body: bytes) -> None:
+    """The SDK raises the decoder's own error for such a body, which holds the body."""
+    service = Service(
+        httpx.Response(200, headers={"content-type": "application/json"}, content=body)
+    )
+
+    answer = read(service)
+
+    assert answer.failure == "service_refused"
+    assert "Sentinel" not in repr(answer)
+
+
+def test_every_failure_a_reading_names_is_one_the_draft_store_keeps() -> None:
+    named = {"service_busy", "service_refused", "model_refused", "cut_off", "not_json"}
+
+    assert named <= set(FAILURES)
+    assert set(get_args(anthropic_client.ReadFailure)) == named
+
+
+def test_the_model_client_loggers_are_held_above_debug_from_startup() -> None:
+    loggers = [logging.getLogger(name) for name in SDK_LOGGERS]
+    levels = [logger.level for logger in loggers]
+    try:
+        for logger in loggers:
+            logger.setLevel(logging.DEBUG)
+        with TestClient(create_app(fixture_settings()), headers=SAME_ORIGIN):
+            held = {logger.name: logger.getEffectiveLevel() for logger in loggers}
+    finally:
+        for logger, level in zip(loggers, levels, strict=True):
+            logger.setLevel(level)
+
+    assert all(level > logging.DEBUG for level in held.values()), held
+
+
+def test_no_screenshot_answer_or_error_body_reaches_a_log_with_the_sdk_at_debug(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ANTHROPIC_LOG=debug`` and the SDK's loggers at DEBUG with a root handler before the
+    app starts, as a household that turned its logging up would have them. The SDK reads the
+    variable at its import, so its levels are set here as that read sets them."""
+    monkeypatch.setenv("ANTHROPIC_LOG", "debug")
+    png = synthetic_png()
+    image = base64.standard_b64encode(png).decode("ascii")
+    named = dict(AN_ANSWER, active_student={"name": "Sentinel-N1", "uncertain": "Sentinel-U2"})
+    refused = {"type": "error", "error": {"type": "invalid_request", "message": "Sentinel-E3"}}
+    service = Service(
+        message(json.dumps(named)),
+        httpx.Response(400, json=refused),
+        httpx.Response(200, headers={"content-type": "application/json"}, content=b"Sentinel-B4"),
+        message(f"Sentinel-P5 {json.dumps(named)}"),
+    )
+    loggers = [logging.getLogger(name) for name in SDK_LOGGERS]
+    levels = [logger.level for logger in loggers]
+    try:
+        for logger in loggers:
+            logger.setLevel(logging.DEBUG)
+        with (
+            TestClient(create_app(fixture_settings()), headers=SAME_ORIGIN),
+            caplog.at_level(logging.DEBUG),
+        ):
+            answers = [read(service, png) for _ in range(4)]
+    finally:
+        for logger, level in zip(loggers, levels, strict=True):
+            logger.setLevel(level)
+
+    assert [answer.failure for answer in answers] == [
+        None,
+        "service_refused",
+        "service_refused",
+        "not_json",
+    ]
+    assert answers[0].answer["active_student"]["name"] == "Sentinel-N1"
+    assert "Sentinel" not in caplog.text
+    assert image not in caplog.text
+    assert image[:64] not in caplog.text
+    assert not [
+        record.name
+        for record in caplog.records
+        if record.name.split(".")[0] in {"anthropic", "httpx", "httpcore"}
+        and record.levelno <= logging.DEBUG
+    ]

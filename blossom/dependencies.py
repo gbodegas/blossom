@@ -33,6 +33,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from blossom.agent.retention import sweep_saved_state
 from blossom.agent.trace import LocalRunTracer
+from blossom.anthropic_client import quiet_the_model_client
 from blossom.clock import Clock, SystemClock, clock_from
 from blossom.grades.identity import name_form_key
 from blossom.household import SignInAttempts, keys_for, secret_beside
@@ -296,6 +297,9 @@ def create_lifespan(
         quiet_the_parser()
         # Pillow's debug lines describe the chunks of an image it reads; they stay out too.
         quiet_the_image_library()
+        # The SDK's debug lines hold a whole request, a screenshot or a plan's prompt included,
+        # whatever ANTHROPIC_LOG set at its import; they stay out too.
+        quiet_the_model_client()
         # One process serves a household. The claim covers both files that
         # make up its state, is taken before either is opened, so a second
         # process is refused with a sentence rather than left to share state

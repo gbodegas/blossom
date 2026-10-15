@@ -38,6 +38,10 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "aiosqlite": "async SQLite driver for the checkpoint store; local files only, see LOCAL_STORES",
     "anthropic": "model access; confined to the model seam, see NETWORK_CAPABLE",
     "asyncio": "standard library; the lock around decisions and her signals; the sweep schedule",
+    "base64": (
+        "standard library; encodes a prepared screenshot for the one request that sends it to "
+        "be read, in the model seam"
+    ),
     "blossom": "the package itself",
     "collections": "standard library containers and ABCs",
     "contextlib": "standard library context managers",
@@ -56,7 +60,8 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "httpx": "the HTTP client under the SDK; confined to the model seam, see NETWORK_CAPABLE",
     "json": (
         "standard library; reads fixture files from disk, writes a grade report's canonical "
-        "form, and keeps the keys of the values a grade save accepted"
+        "form, keeps the keys of the values a grade save accepted, and parses the answer a "
+        "screenshot reading gives"
     ),
     "langchain": "agent middleware; the tool backstop is confined, see TOOL_CONSTRUCTION",
     "langchain_anthropic": "the model client; confined to the model seam, see NETWORK_CAPABLE",
@@ -445,3 +450,77 @@ def test_the_image_library_is_admitted_with_its_viewer_and_screen_capture_closed
     assert "io" in ALLOWED_IMPORTS
     assert set(CLOSED_PREFIXES) >= {"PIL.ImageShow", "PIL.ImageGrab"}
     assert not any(path.startswith("PIL") for path in OPENED_PATHS)
+
+
+CLIENT_CONSTRUCTORS = frozenset(
+    {
+        "anthropic.Anthropic",
+        "anthropic.AsyncAnthropic",
+        "anthropic.Client",
+        "anthropic.AsyncClient",
+        "httpx.Client",
+        "httpx.AsyncClient",
+    }
+)
+"""Every way the SDK and its HTTP library build a client, as the model seam spells them."""
+
+
+def client_constructions(source: str) -> set[tuple[str, str]]:
+    """Each SDK or HTTP client a source builds, as (enclosing function, constructor)."""
+    found: set[tuple[str, str]] = set()
+
+    def visit(node: ast.AST, where: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+                visit(child, f"{where}.{child.name}" if where else child.name)
+                continue
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+                owner = child.func.value
+                if isinstance(owner, ast.Name):
+                    dotted = f"{owner.id}.{child.func.attr}"
+                    if dotted in CLIENT_CONSTRUCTORS:
+                        found.add((where, dotted))
+            visit(child, where)
+
+    visit(ast.parse(source), "")
+    return found
+
+
+def test_the_sdk_client_is_constructed_only_in_the_model_seam() -> None:
+    """Closed-world: the planner's two clients and the screenshot reader's one, nowhere else,
+    each reached through the module itself so no alias can hide a construction."""
+    built = {
+        relative: hits
+        for relative, hits in (
+            (path.relative_to(PACKAGE_ROOT).as_posix(), client_constructions(path.read_text()))
+            for path in sorted(PACKAGE_ROOT.rglob("*.py"))
+        )
+        if hits
+    }
+
+    assert built == {
+        "anthropic_client.py": {
+            ("PinnedChatAnthropic._client", "httpx.Client"),
+            ("PinnedChatAnthropic._client", "anthropic.Client"),
+            ("PinnedChatAnthropic._async_client", "httpx.AsyncClient"),
+            ("PinnedChatAnthropic._async_client", "anthropic.AsyncClient"),
+            ("_reader_client", "httpx.Client"),
+            ("_reader_client", "anthropic.Anthropic"),
+        }
+    }
+    seam = dotted_imports_by_file()["anthropic_client.py"]
+    assert {name for name in seam if name.split(".")[0] in {"anthropic", "httpx"}} == {
+        "anthropic",
+        "httpx",
+    }
+    assert "base64" in seam
+
+
+def test_the_construction_scan_sees_each_spelling_of_a_client() -> None:
+    """Positive control for the scan above."""
+    source = "def f():\n    return anthropic.Anthropic(), httpx.AsyncClient()\n"
+
+    assert client_constructions(source) == {
+        ("f", "anthropic.Anthropic"),
+        ("f", "httpx.AsyncClient"),
+    }
