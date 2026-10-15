@@ -201,7 +201,7 @@ class WorkloadSignalsStore:
         self, form: str, evening: date, issued_at: datetime, detail: str | None
     ) -> SignalOutcome:
         """``record_once``'s work inside its transaction, which it ends."""
-        now = self._clock.now()
+        now = self._clock.now().astimezone(UTC)
         if now - issued_at >= PRESS_LIFETIME:
             self._connection.rollback()
             return SignalExpired()
@@ -292,7 +292,7 @@ class WorkloadSignalsStore:
 
     def _cutoff(self) -> str:
         """The oldest instant still within retention, by the store's clock."""
-        return (self._clock.now() - PRESS_LIFETIME).isoformat()
+        return (self._clock.now().astimezone(UTC) - PRESS_LIFETIME).isoformat()
 
 
 def signal_from(row: sqlite3.Row) -> WorkloadSignal:

@@ -1043,8 +1043,8 @@ async def register_workload_signal(
     signal, and its id is kept as handled. A parent is answered 403 before the body is read.
     Refusals record nothing and carry a code: not_valid, 422, for a body that isn't a
     signal; another_evening, 409; expired, 409, for a press made a week or more ago; and
-    other_words, 409, for an id sent again with other words. A body the framework can't
-    read as JSON at all is its own 400.
+    other_words, 409, for an id sent again with other words while the signal it recorded
+    is kept. A body the framework can't read as JSON at all is its own 400.
     """
     now = state.real_clock.now()
     try:

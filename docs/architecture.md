@@ -1106,7 +1106,8 @@ carries a code from a closed set:
 `not_valid` (422) for a body that isn't a signal, a field missing, of another
 shape, extra or sent twice; `another_evening` (409), which names today;
 `expired` (409) for a press made a week or more ago; and `other_words` (409)
-for an id sent again with other words. These are the only 422 and 409 bodies
+for an id sent again with other words while the signal it recorded is kept.
+These are the only 422 and 409 bodies
 the route sends. A body the framework can't read as JSON at all gets the
 framework's own 400.
 

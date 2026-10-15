@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from time import monotonic
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -1343,10 +1343,9 @@ def problem_line(page: str) -> str:
     return said(re.sub(r"<[^>]+>", "", found.group(1)))
 
 
-def test_a_press_is_known_for_as_long_as_its_form_can_be_sent() -> None:
-    """A used id is due for removal only once more than a form's lifetime has passed since its
-    kept time, which is never earlier than its form's issue time, so no form that can still
-    be sent has lost its id."""
+def test_the_press_lifetime_is_the_form_lifetime() -> None:
+    """A press and its form share one lifetime, a week. The expiry and sweep tests exercise it
+    at its boundaries."""
     assert PRESS_LIFETIME == FORM_LIFETIME == WEEK
 
 
@@ -1463,6 +1462,46 @@ def test_used_ids_are_swept_with_the_signals_at_seven_days() -> None:
 
     assert [form for form, _ in ids_kept(later)] == ["b" * 32]
     assert later.held() == []
+
+
+class AnOffsetClock:
+    """A clock that answers its instant at a fixed offset from UTC, as a clock may."""
+
+    def __init__(self, instant: datetime, hours: int) -> None:
+        self._at = instant.astimezone(timezone(timedelta(hours=hours)))
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return ZONE
+
+    def now(self) -> datetime:
+        return self._at
+
+    def today(self) -> date:
+        return self._at.astimezone(ZONE).date()
+
+
+@pytest.mark.parametrize("hours", [5, -7])
+def test_ids_are_swept_by_the_instant_whatever_offset_the_clock_answers_in(hours: int) -> None:
+    """The kept time and the sweep's cutoff are compared as UTC instants, so an id stays until
+    more than seven days have passed and goes after, whatever offset the clock reads in."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    WorkloadSignalsStore(connection, AnOffsetClock(OBSERVED_AT, hours)).record_once(
+        "a" * 32, PLAN_DATE, OBSERVED_AT, None
+    )
+    almost = WorkloadSignalsStore(
+        connection, AnOffsetClock(OBSERVED_AT + WEEK - timedelta(minutes=1), hours)
+    )
+    almost.sweep()
+    kept_almost = [form for form, _ in ids_kept(almost)]
+    past = WorkloadSignalsStore(
+        connection, AnOffsetClock(OBSERVED_AT + WEEK + timedelta(seconds=1), hours)
+    )
+    past.sweep()
+
+    assert kept_almost == ["a" * 32]
+    assert ids_kept(past) == []
+    assert past.held() == []
 
 
 def test_a_file_from_before_marks_every_signal_id_used_once_opened() -> None:
@@ -1732,6 +1771,22 @@ def test_a_json_retry_with_other_words_is_refused_and_records_nothing() -> None:
     assert [(signal.signal_id, signal.detail) for signal in kept] == [
         (body["signal_id"], "a long day")
     ]
+
+
+def test_a_json_retry_with_other_words_after_undo_records_nothing_and_answers_none() -> None:
+    """Once the signal an id recorded is taken back, the same id with other words is a retry
+    like any other: 200, no signal, and nothing recorded."""
+    with browser() as client:
+        body = fresh_signal_fields(client, detail="a long day")
+        client.post(SIGNALS, json=body)
+        client.delete(f"{SIGNALS}/{body['signal_id']}")
+        other = client.post(SIGNALS, json={**body, "detail": "something else"})
+        kept = state_of(client).workload_signals.held()
+
+    assert other.status_code == 200
+    assert other.json()["signal"] is None
+    assert other.json()["recorded"] is False
+    assert kept == []
 
 
 def test_a_second_json_id_while_a_signal_stands_answers_that_signal() -> None:

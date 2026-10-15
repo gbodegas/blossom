@@ -155,9 +155,9 @@ SIGNAL_POST = {
     "signal; another_evening, 409; expired, 409, for a "
     "press made a week or more ago; and\n"
     "other_words, 409, for an id sent again with other "
-    "words. A body the framework can't\n"
-    "read as JSON at all is its "
-    "own 400.",
+    "words while the signal it recorded\n"
+    "is kept. A body the framework can't read as JSON "
+    "at all is its own 400.",
     "operationId": "register_workload_signal_student_workload_signals_post",
     "requestBody": {
         "content": {
