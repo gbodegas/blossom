@@ -220,6 +220,12 @@ HAND_IN_EVENTS_NAMED: Final = """
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY sequence
 """
+HOMEWORK_NAMED: Final = """
+    SELECT assignment_id, course, title, due_date
+    FROM assignments
+    WHERE assignment_id IN (SELECT value FROM json_each(?))
+    ORDER BY due_date IS NULL, due_date, course, title
+"""
 HAND_IN_CHAIN: Final = """
     SELECT event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
         reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
@@ -540,6 +546,26 @@ class HandInReadings:
     in the second is never shown as having said nothing."""
 
     readable: dict[str, HandInProjection]
+    unreadable: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ListedHomework:
+    """One homework as a list of it shows it: its ID, its class name, its title and its due
+    date, if it has one."""
+
+    assignment_id: str
+    course: str
+    title: str
+    due_date: date | None
+
+
+@dataclass(frozen=True)
+class HomeworkReadings:
+    """The homework a read by ID finds, in the record's order, each row decoded by itself, and
+    the IDs whose row can't be read, named apart. An ID not on record is in neither."""
+
+    readable: tuple[ListedHomework, ...]
     unreadable: frozenset[str]
 
 
@@ -1674,6 +1700,36 @@ class ProjectStateStore(
         for row in rows:
             chains.setdefault(str(row[1]), []).append(hand_in_event_from(row))
         return chains
+
+    def homework_readings(self, assignment_ids: Iterable[str]) -> HomeworkReadings:
+        """The homework named, by ID, with only its class name, title and due date, in the
+        record's order: due date, class name, title, undated last. One read, as
+        ``_rows_by_assignment`` makes; a row whose values can't be decoded is named apart and
+        logged by its ID and the kind of fault, and a failed read of the file raises."""
+        wanted = list(dict.fromkeys(assignment_ids))
+        if not wanted:
+            return HomeworkReadings((), frozenset())
+        with self._lock:
+            kept = self._connection.text_factory
+            self._connection.text_factory = HeldText
+            try:
+                rows = self._connection.execute(
+                    HOMEWORK_NAMED, (json.dumps(sorted(wanted)),)
+                ).fetchall()
+            finally:
+                self._connection.text_factory = kept
+        readable: list[ListedHomework] = []
+        unreadable: set[str] = set()
+        for row in rows:
+            name = held_name(row[0])
+            try:
+                readable.append(listed_homework_from(decoded_row(row)))
+            except (ValueError, TypeError) as fault:
+                logger.warning(
+                    "the homework record of %s cannot be read (%s)", name, type(fault).__name__
+                )
+                unreadable.add(name)
+        return HomeworkReadings(tuple(readable), frozenset(unreadable))
 
     def hand_in_readings(self, assignment_ids: Iterable[str]) -> HandInReadings:
         """What stands about turning each assignment named in, for a page: the readings that
@@ -2904,6 +2960,24 @@ def assignment_from(row: tuple[object, ...]) -> Assignment:
 def new_hand_in_id() -> str:
     """A stable id for one hand-in event, drawn once and never reused."""
     return f"hand-in-{uuid.uuid4().hex[:12]}"
+
+
+def listed_homework_from(row: tuple[object, ...]) -> ListedHomework:
+    """One homework from a row in the order ``HOMEWORK_NAMED`` selects: each column must be
+    text, the due date none or a calendar day, or it raises ``TypeError`` or ``ValueError``."""
+    assignment_id, course, title, due = row
+    if not all(isinstance(one, str) for one in (assignment_id, course, title)):
+        msg = "a homework row holds a value that is not text"
+        raise TypeError(msg)
+    if due is not None and not isinstance(due, str):
+        msg = "a homework row holds a due date that is not text"
+        raise TypeError(msg)
+    return ListedHomework(
+        assignment_id=cast(str, assignment_id),
+        course=cast(str, course),
+        title=cast(str, title),
+        due_date=None if due is None else date.fromisoformat(due),
+    )
 
 
 class HeldText(bytes):

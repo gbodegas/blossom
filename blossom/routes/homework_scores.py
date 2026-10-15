@@ -63,14 +63,15 @@ either and one can't be read, the standing is unknown. ``week_to_check`` makes h
 line from that answer: each homework once, and whether the count is unknown. ``page_scores``
 gives, from one run of the score rules, the score lines and each assignment's results in the
 rules' result order, those whose score shows and those counted to check together, each with its
-score line when it has one and the words that explain a counted one. Nothing is stored or
-written.
+score line when it has one and the words that explain a counted one. ``grades_to_check`` gives
+Grades' lists, each reported class's homework to check together in the record's order, or none
+at all when a homework that could count can't be read whole. Nothing is stored or written.
 
 Nothing a plan is made from reads this module or holds what it returns.
 """
 
 import logging
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, tzinfo
 from enum import StrEnum
@@ -88,9 +89,11 @@ from blossom.grades.school_scores import (
     Result,
     Waiting,
     candidate_homework,
+    linked_results,
     result_of,
     results_to_check,
     school_scores,
+    status_to_check,
     waiting_results,
 )
 from blossom.grades.wording import presence_words, report_names, score_line, supplied_by
@@ -107,7 +110,7 @@ from blossom.stores.gradebook import (
     HomeworkClasses,
     class_for,
 )
-from blossom.stores.project_state import DONE, Assignment
+from blossom.stores.project_state import DONE, Assignment, HomeworkReadings, ListedHomework
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +311,16 @@ class GradebookShown:
 
 
 @dataclass(frozen=True)
+class GradesToCheck:
+    """Check together on Grades: each reported class's homework to check together, by class ID,
+    in the record's order, for each class with any; or none, with ``unknown``, when the count
+    can't be worked out."""
+
+    lists: Mapping[str, tuple[ListedHomework, ...]]
+    unknown: bool
+
+
+@dataclass(frozen=True)
 class WeekToCheck:
     """Her week's to-check line: the homework it lists together, in the week's order, when any
     has a grade basis, else none; and whether Check together's count can't be worked out."""
@@ -467,6 +480,54 @@ def week_to_check(
     if unknown or not counted:
         return WeekToCheck((), unknown)
     return WeekToCheck(tuple(one for one in said if one in email or one in counted), False)
+
+
+def grades_to_check(
+    reads: Mapping[str, ClassTermRead],
+    links: Collection[Link],
+    mapping: HomeworkClasses,
+    homework: HomeworkReadings,
+    account: Callable[[str], HerAccount],
+) -> GradesToCheck:
+    """Grades' lists from each reported class's read of the open term, by class ID; her links;
+    the year's homework class names; the homework her confirmed links name; and her account of
+    each. Two confirmed links that name one result raise ``HomeworkLinksConflict``."""
+    holder = {
+        result_id: assignment_id
+        for assignment_id, results in linked_results(links).items()
+        for result_id in results
+    }
+    on_record = {one.assignment_id: one for one in homework.readable}
+    counted: dict[str, set[str]] = {}
+    for class_id, read in reads.items():
+        for result_id, value in read.current.results.items():
+            assignment_id = holder.get(result_id)
+            presence, status = value.cells["status"]
+            reported = presence is Presence.REPORTED and status_to_check(status)
+            if assignment_id is None or value.not_shown is not None or not reported:
+                continue
+            # A linked row that can't be read could be this class's: its count is unknown.
+            if assignment_id in homework.unreadable:
+                return GradesToCheck({}, True)
+            item = on_record.get(assignment_id)
+            if item is None or class_for(item.course, mapping) != class_id:
+                continue
+            standing = check_standing(account(assignment_id))
+            if standing is CheckStanding.INDETERMINATE:
+                return GradesToCheck({}, True)
+            if standing is CheckStanding.COUNTED:
+                counted.setdefault(class_id, set()).add(assignment_id)
+    lists = {
+        class_id: tuple(one for one in homework.readable if one.assignment_id in ids)
+        for class_id, ids in counted.items()
+    }
+    return GradesToCheck(lists, False)
+
+
+def checks_left_out(error: GradeValueUndecodable) -> None:
+    """Records that Grades shows no Check together count, by the failure's type alone:
+    nothing the gradebook holds is written."""
+    logger.warning("Grades shows no Check together count: %s", type(error).__name__)
 
 
 def scores_left_out(error: GradeValueUndecodable) -> None:
