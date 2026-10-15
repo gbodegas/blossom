@@ -684,7 +684,7 @@ still answers the structured side for one that would.
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, as its text and, in a nullable versioned column, the plan as data; every decision about it; and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
-| `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her; each press's id is kept with one time, the later of its handling and its page's issue, until a cleanup once more than seven days have passed since that time |
+| `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her; each press's id is kept with one time, the later of its handling and its issue, until a cleanup once more than seven days have passed since that time |
 | `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, a parent's updates, and the id of the homework note a request is about, never the note's words | Wired and tested; in the drafts file, kept until resolved and swept two weeks after; each request's id alone is kept for good |
 
 They are separate because their retention and access rules differ, not for
@@ -1097,15 +1097,18 @@ signal matters most. Words may be attached, and are never asked for.
 `uuid.uuid4().hex`; `evening`, the household's today as YYYY-MM-DD; and
 `issued_at`, when the press was made, in ISO 8601 with its offset. A caller
 makes a fresh `signal_id` and `issued_at` for each deliberate press and sends
-both unchanged on a retry. A new signal answers 201. A retry answers 200 with
-the signal it recorded, the signal standing for the evening, or none after it
-was taken back, and records nothing; a new id while a signal stands does the
-same. Every refusal records nothing and carries a code from a closed set:
+both unchanged on a retry. Each press records at most once: a new signal
+answers 201, and a press whose id was already handled answers 200 with the
+signal standing for the evening, or none after it was taken back, and records
+nothing. A new id while a signal stands answers the same way; it records no
+signal, and its id is kept as handled. Every refusal records nothing and
+carries a code from a closed set:
 `not_valid` (422) for a body that isn't a signal, a field missing, of another
 shape, extra or sent twice; `another_evening` (409), which names today;
 `expired` (409) for a press made a week or more ago; and `other_words` (409)
 for an id sent again with other words. These are the only 422 and 409 bodies
-the route sends. A body that isn't UTF-8 keeps the framework's 400.
+the route sends. A body the framework can't read as JSON at all gets the
+framework's own 400.
 
 A press records that today, by the household's clock, is too much, in
 `WorkloadSignalsStore`, `blossom/stores/workload_signals.py`. Three things

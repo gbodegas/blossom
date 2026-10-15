@@ -132,29 +132,32 @@ SIGNAL_POST = {
     "summary": "Register Workload Signal",
     "description": "Record that today is too much, once for each press.\n"
     "\n"
-    "The caller makes two values for each deliberate press: signal_id, a new id "
-    "of 32\n"
-    "lowercase hexadecimal characters such as uuid.uuid4().hex, and issued_at, "
-    "the moment\n"
-    "the press is made, in ISO 8601 with its offset. evening is the household's "
-    "today,\n"
-    "YYYY-MM-DD; a press for another evening is refused with today named. A retry "
-    "of the same\n"
-    "press sends the same signal_id and issued_at and records nothing again; a "
-    "new press gets\n"
-    "new ones. A new signal is 201. A retry is 200, with the signal it recorded "
-    "while that is\n"
-    "kept, the signal standing for the evening, or none after the signal was "
-    "taken back; so\n"
-    "is a new id while a signal stands. A parent is answered 403 before the body "
-    "is read.\n"
-    "Refusals record nothing and carry a code: not_valid, 422, for a body that "
-    "isn't a\n"
-    "signal; another_evening, 409; expired, 409, for a press made a week or more "
-    "ago; and\n"
-    "other_words, 409, for an id sent again with other words. A body that isn't "
-    "UTF-8 is\n"
-    "400.",
+    "The caller makes two values for each deliberate "
+    "press: signal_id, a new id of 32\n"
+    "lowercase hexadecimal characters such as "
+    "uuid.uuid4().hex, and issued_at, the moment\n"
+    "the press is made, in ISO 8601 with its offset. "
+    "evening is the household's today,\n"
+    "YYYY-MM-DD; a press for another evening is refused "
+    "with today named. A retry of the same\n"
+    "press sends the same signal_id and issued_at; a "
+    "new press gets new ones. Each press\n"
+    "records at most once: a new signal is 201, and a "
+    "press whose id was already handled is\n"
+    "200 and records nothing, with the signal standing "
+    "for the evening, or none after it was\n"
+    "taken back. A new id while a signal stands is 200 "
+    "with that signal too; it records no\n"
+    "signal, and its id is kept as handled. A parent is "
+    "answered 403 before the body is read.\n"
+    "Refusals record nothing and carry a code: "
+    "not_valid, 422, for a body that isn't a\n"
+    "signal; another_evening, 409; expired, 409, for a "
+    "press made a week or more ago; and\n"
+    "other_words, 409, for an id sent again with other "
+    "words. A body the framework can't\n"
+    "read as JSON at all is its "
+    "own 400.",
     "operationId": "register_workload_signal_student_workload_signals_post",
     "requestBody": {
         "content": {
@@ -172,7 +175,9 @@ SIGNAL_POST = {
             },
         },
         "200": {
-            "description": "A retry, or a new id while a signal stands: nothing was recorded.",
+            "description": "A press whose id was already handled, which records "
+            "nothing, or a new id while a signal stands, which "
+            "records no signal and keeps its id as handled.",
             "content": {
                 "application/json": {
                     "schema": {"$ref": "#/components/schemas/WorkloadSignalResponse"}
@@ -180,7 +185,8 @@ SIGNAL_POST = {
             },
         },
         "400": {
-            "description": "A body that isn't UTF-8. Nothing was recorded.",
+            "description": "A body the framework can't read as JSON at all, in its "
+            "own answer. Nothing was recorded.",
             "content": {
                 "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
             },
@@ -276,32 +282,36 @@ SIGNAL_SCHEMAS = {
             "principal": {"$ref": "#/components/schemas/Principal"},
             "signal": {
                 "anyOf": [{"$ref": "#/components/schemas/WorkloadSignalView"}, {"type": "null"}],
-                "description": "The signal this press "
-                "recorded, the one it "
-                "recorded before, or the "
-                "one standing for the "
-                "evening; null when none "
-                "is kept, as after it "
-                "was taken back.",
+                "description": "The signal standing for "
+                "the evening after this "
+                "request: the one it "
+                "recorded, or the one "
+                "already standing; null "
+                "when none stands, as "
+                "after it was taken "
+                "back.",
             },
             "recorded": {
                 "type": "boolean",
                 "title": "Recorded",
                 "description": "Whether this request "
-                "wrote the signal. A "
-                "retry, or a press "
-                "while a signal "
-                "stands, writes "
-                "nothing.",
+                "recorded the signal. "
+                "A press whose id was "
+                "already handled records "
+                "nothing. A new id "
+                "while a signal stands "
+                "records no signal, "
+                "and its id is kept as "
+                "handled.",
             },
         },
         "additionalProperties": False,
         "type": "object",
         "required": ["principal", "signal", "recorded"],
         "title": "WorkloadSignalResponse",
-        "description": "What one press did: the signal it is about, "
-        "exactly as kept, words included, and whether\n"
-        "this request recorded it.",
+        "description": "What one press did: the signal standing for the "
+        "evening, exactly as kept, words included,\n"
+        "and whether this request recorded it.",
     },
     "SignalRefusal": {
         "properties": {"detail": {"$ref": "#/components/schemas/SignalRefusalView"}},
@@ -729,6 +739,7 @@ def test_her_presses_wait_while_a_decision_holds_the_lock(tmp_path: pathlib.Path
         finally:
             portal.call(state.decision_lock.release)
         statuses = [each.result(timeout=10).status_code for each in presses]
+        created = presses[2].result().json()
         after = [row[0] for row in rows(client)]
 
     assert still_waiting == set(presses)
@@ -739,7 +750,12 @@ def test_her_presses_wait_while_a_decision_holds_the_lock(tmp_path: pathlib.Path
     assert statuses[2] in {200, 201}
     assert first not in after
     assert second not in after
-    assert len(after) <= 1
+    if statuses[2] == 201:
+        # Nothing stood at its turn, so the page's press, before or after it, recorded none.
+        assert after == [created["signal"]["signal_id"]]
+    else:
+        # Which of the page's press and the removals came first is the event loop's.
+        assert len(after) <= 1
 
 
 # ------------------------------------------------------------- a shared device

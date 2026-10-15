@@ -1436,7 +1436,7 @@ def test_an_id_issued_ahead_is_still_found_until_its_form_expires() -> None:
     ids=["just under seven days", "exactly seven days", "more than seven days"],
 )
 def test_an_id_issued_ahead_is_kept_by_its_issue_time(after_issue: timedelta, kept: bool) -> None:
-    """An id handled five minutes before its page's issue time is kept by that later time: a
+    """An id handled five minutes before its issue time is kept by that later time: a
     cleanup keeps it until more than seven days have passed since the issue time, seven days
     and five minutes after it was handled, and removes it after that."""
     connection = sqlite3.connect(":memory:", check_same_thread=False)
@@ -1858,12 +1858,99 @@ def test_a_json_press_that_isnt_a_signal_is_refused_with_its_code(sent: str) -> 
     assert ids == 0
 
 
-def test_a_json_body_that_isnt_utf_8_keeps_the_parsers_400() -> None:
+@pytest.mark.parametrize(
+    "body",
+    [b"\xff\xfe{", b"[" * 200_000],
+    ids=["bytes in no encoding JSON allows", "nesting past the reader's depth"],
+)
+def test_a_body_the_framework_cant_read_as_json_keeps_its_400(body: bytes) -> None:
     with browser() as client:
-        answer = client.post(
-            SIGNALS, content=b"\xff\xfe{", headers={"Content-Type": "application/json"}
-        )
+        answer = client.post(SIGNALS, content=body, headers={"Content-Type": "application/json"})
         held = tonight(client)
 
     assert answer.status_code == 400
+    assert answer.json() == {"detail": "There was an error parsing the body"}
     assert held == []
+
+
+def test_a_json_body_in_utf_16_is_read_and_records_one_signal() -> None:
+    """JSON may come in UTF-16 as well as UTF-8, and the framework reads it as JSON."""
+    with browser() as client:
+        body = fresh_signal_fields(client)
+        answer = client.post(
+            SIGNALS,
+            content=json.dumps(body).encode("utf-16"),
+            headers={"Content-Type": "application/json"},
+        )
+        held = tonight(client)
+
+    assert answer.status_code == 201
+    assert held == [body["signal_id"]]
+
+
+def test_a_json_retry_answers_the_signal_standing_for_the_evening() -> None:
+    """A retry answers the evening's standing signal, which a file from before can keep beside
+    the press's own, and records nothing."""
+    with browser() as client:
+        body = fresh_signal_fields(client)
+        client.post(SIGNALS, json=body)
+        later = signal_kept_before(client, PLAN_DATE)
+        again = client.post(SIGNALS, json=body)
+        held = tonight(client)
+
+    assert again.status_code == 200
+    assert again.json()["signal"]["signal_id"] == later
+    assert again.json()["recorded"] is False
+    assert held == [body["signal_id"], later]
+
+
+@pytest.mark.parametrize("route", ["page", "JSON"])
+def test_the_evening_is_read_under_the_lock_the_write_holds(
+    route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press that waits on a decision while the evening turns is held to the new evening, so
+    it records nothing for the evening that has just ended."""
+    with browser() as client, ThreadPoolExecutor(max_workers=1) as pool:
+        state = state_of(client)
+        form = signal_form(client) if route == "page" else fresh_signal_fields(client)
+        portal = client.portal
+        assert portal is not None
+        portal.call(state.decision_lock.acquire)
+        try:
+            pressing = (
+                pool.submit(client.post, TOO_MUCH, data=form)
+                if route == "page"
+                else pool.submit(client.post, SIGNALS, json=form)
+            )
+            _, waiting = wait([pressing], timeout=0.3)
+            midday = datetime.combine(PLAN_DATE + timedelta(days=1), time(12), tzinfo=ZONE)
+            # The household clock is pinned to the fixture day; the evening turns while she waits.
+            monkeypatch.setattr(state.clock, "_instant", midday.astimezone(UTC))
+        finally:
+            portal.call(state.decision_lock.release)
+        answer = pressing.result(timeout=10)
+        kept = state.workload_signals.held()
+
+    assert pressing in waiting
+    assert answer.status_code == 409
+    assert kept == []
+
+
+def test_a_signal_the_file_refuses_after_its_id_leaves_the_id_unused() -> None:
+    """The id and the signal are one write: when the signal can't be written, the id is not
+    kept either, so the same press sent again records."""
+    store = store_in_memory()
+    now = store._clock.now()
+    store._connection.execute(
+        "CREATE TRIGGER refused BEFORE INSERT ON workload_signals "
+        "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+    )
+    with pytest.raises(sqlite3.Error):
+        store.record_once("a" * 32, PLAN_DATE, now, None)
+    left = ids_kept(store)
+    store._connection.execute("DROP TRIGGER refused")
+
+    store.record_once("a" * 32, PLAN_DATE, now, None)
+
+    assert left == []
+    assert [signal.signal_id for signal in store.for_evening(PLAN_DATE)] == ["a" * 32]

@@ -294,7 +294,7 @@ Three files under `.local/` outlive a restart:
   published over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
   any words she added, kept for a week and removable from her page. The id of
   each press is kept with one time, the later of when it was handled and when
-  its page issued it, and nothing else of it, so a press sent again records
+  it was issued, and nothing else of it, so a press sent again records
   nothing; a cleanup removes it once more than seven days have passed since
   that time, which can be up to seven days and five minutes after the press was
   handled. Her requests for help live here too, with what a parent did with

@@ -489,7 +489,7 @@ class WorkloadSignalView(BaseModel):
 
     This is the whole of what the store keeps about a signal, so what she can see on her
     page and the signals kept are the same thing. Beside them, the store keeps the id of each
-    press with one time, the later of when it was handled and when its page issued it, until
+    press with one time, the later of when it was handled and when it was issued, until
     a cleanup removes it once more than seven days have passed since that time, so a press
     sent again records nothing; that id is no signal, and is not shown.
     """

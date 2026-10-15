@@ -8,7 +8,7 @@ system, not an inference about her, so the store keeps each signal for a short
 time, shows her every signal it holds, and lets her take one back.
 
 Each press carries the id its page gave it, and the store keeps that id with one time,
-the later of when the press was handled and when its page issued it, and nothing else of
+the later of when the press was handled and when it was issued, and nothing else of
 it. That is how a press sent again, from the same page or another tab, is known: it records
 nothing, and a signal she took back stays gone. The id becomes due for removal once more
 than seven days have passed since its time, which can be up to seven days and five minutes
@@ -40,7 +40,7 @@ SIGNAL_RETENTION_DAYS: Final = 7
 PRESS_LIFETIME: Final = timedelta(days=SIGNAL_RETENTION_DAYS)
 """Seven days: a press issued this long ago or more is expired, and a press's id is due for
 removal once more than this has passed since its one kept time, the later of when it was
-handled and when its page issued it. So no press that can still be sent has lost its id."""
+handled and when it was issued. So no press that can still be sent has lost its id."""
 IDS_TABLE: Final = """
     CREATE TABLE IF NOT EXISTS workload_signal_ids (
         signal_id TEXT PRIMARY KEY,
@@ -111,7 +111,7 @@ class WorkloadSignalsStore:
         "Keep a signal for seven days, so she can see what she told the system and take "
         "it back; past that it is left out of every read and the next cleanup removes it, and "
         "nothing is ever derived from the pattern of them. The id of each press is kept with "
-        "one time, the later of when it was handled and when its page issued it, and nothing "
+        "one time, the later of when it was handled and when it was issued, and nothing "
         "else of it, so a press sent again records nothing, even after its signal is taken "
         "back. The id is due for removal once more than seven days have passed since that "
         "time, which can be up to seven days and five minutes after the press was handled, "
@@ -272,7 +272,7 @@ class WorkloadSignalsStore:
 
     def sweep(self) -> int:
         """Delete every signal past retention, and every id whose kept time, the later of its
-        handling and its page's issue, is more than that long past, in one transaction by one
+        handling and its issue, is more than that long past, in one transaction by one
         cutoff; return how many signals went."""
         with self._lock:
             cutoff = self._cutoff()

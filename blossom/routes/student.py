@@ -33,7 +33,7 @@ from before can hold more than one signal for an evening, and the evening stays 
 while any is left, so after an Undo the page says what still stands and never promises the
 usual evening. The page also lists every signal still kept, each with a way to remove it,
 because the record is hers. Removing one removes the signal; the id of the press that asked
-for it stays, with one time, the later of when it was handled and when its page issued it,
+for it stays, with one time, the later of when it was handled and when it was issued,
 and nothing else, until a cleanup removes it once more than seven days have passed since
 that time.
 
@@ -748,22 +748,23 @@ class WorkloadSignalRequest(BaseModel):
 
 
 class WorkloadSignalResponse(BaseModel):
-    """What one press did: the signal it is about, exactly as kept, words included, and whether
-    this request recorded it."""
+    """What one press did: the signal standing for the evening, exactly as kept, words included,
+    and whether this request recorded it."""
 
     model_config = ConfigDict(extra="forbid")
 
     principal: Principal
     signal: WorkloadSignalView | None = Field(
         description=(
-            "The signal this press recorded, the one it recorded before, or the one standing "
-            "for the evening; null when none is kept, as after it was taken back."
+            "The signal standing for the evening after this request: the one it recorded, or "
+            "the one already standing; null when none stands, as after it was taken back."
         )
     )
     recorded: bool = Field(
         description=(
-            "Whether this request wrote the signal. A retry, or a press while a signal "
-            "stands, writes nothing."
+            "Whether this request recorded the signal. A press whose id was already handled "
+            "records nothing. A new id while a signal stands records no signal, and its id is "
+            "kept as handled."
         )
     )
 
@@ -815,12 +816,11 @@ OTHER_WORDS: Final = SignalRefusalView(
     ),
 )
 """The JSON refusals of a press, each the same fact the page says in its own words: a body
-that isn't a signal (W-7), a press made a week or more ago (W-8b), and an id that recorded
-other words."""
+that isn't a signal, a press made a week or more ago, and an id that recorded other words."""
 
 
 def not_tonight(evening: date, today: date) -> SignalRefusalView:
-    """A JSON press about an evening that isn't today (W-8), naming today."""
+    """A JSON press about an evening that isn't today, naming today."""
     return SignalRefusalView(
         code="another_evening",
         message=f"The evening {evening.isoformat()} is not today, {today.isoformat()}, so nothing "
@@ -1036,14 +1036,15 @@ async def register_workload_signal(
     lowercase hexadecimal characters such as uuid.uuid4().hex, and issued_at, the moment
     the press is made, in ISO 8601 with its offset. evening is the household's today,
     YYYY-MM-DD; a press for another evening is refused with today named. A retry of the same
-    press sends the same signal_id and issued_at and records nothing again; a new press gets
-    new ones. A new signal is 201. A retry is 200, with the signal it recorded while that is
-    kept, the signal standing for the evening, or none after the signal was taken back; so
-    is a new id while a signal stands. A parent is answered 403 before the body is read.
+    press sends the same signal_id and issued_at; a new press gets new ones. Each press
+    records at most once: a new signal is 201, and a press whose id was already handled is
+    200 and records nothing, with the signal standing for the evening, or none after it was
+    taken back. A new id while a signal stands is 200 with that signal too; it records no
+    signal, and its id is kept as handled. A parent is answered 403 before the body is read.
     Refusals record nothing and carry a code: not_valid, 422, for a body that isn't a
     signal; another_evening, 409; expired, 409, for a press made a week or more ago; and
-    other_words, 409, for an id sent again with other words. A body that isn't UTF-8 is
-    400.
+    other_words, 409, for an id sent again with other words. A body the framework can't
+    read as JSON at all is its own 400.
     """
     now = state.real_clock.now()
     try:
@@ -1064,9 +1065,9 @@ async def register_workload_signal(
             return signal_answer(state, signal, recorded=True)
         case SignalUsed(own=WorkloadSignal() as own) if own.detail != payload.detail:
             return signal_refusal(OTHER_WORDS)
-        case SignalUsed(standing=standing, own=own):
+        case SignalUsed(standing=standing):
             response.status_code = status.HTTP_200_OK
-            return signal_answer(state, own or standing, recorded=False)
+            return signal_answer(state, standing, recorded=False)
 
 
 def signal_answer(
@@ -1081,11 +1082,17 @@ def signal_answer(
 SIGNAL_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_200_OK: {
         "model": WorkloadSignalResponse,
-        "description": "A retry, or a new id while a signal stands: nothing was recorded.",
+        "description": (
+            "A press whose id was already handled, which records nothing, or a new id while a "
+            "signal stands, which records no signal and keeps its id as handled."
+        ),
     },
     status.HTTP_400_BAD_REQUEST: {
         "model": ProblemView,
-        "description": "A body that isn't UTF-8. Nothing was recorded.",
+        "description": (
+            "A body the framework can't read as JSON at all, in its own answer. Nothing was "
+            "recorded."
+        ),
     },
     status.HTTP_401_UNAUTHORIZED: {
         "model": ProblemView,
