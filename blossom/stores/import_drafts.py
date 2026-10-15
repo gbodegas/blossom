@@ -199,10 +199,12 @@ class Attempt(NamedTuple):
 
 
 class Swept(NamedTuple):
-    """What one sweep did: drafts deleted at expiry, and finished drafts closed."""
+    """What one sweep did: drafts deleted at expiry, finished drafts closed, and drafts left
+    open because whether they were finished couldn't be worked out."""
 
     expired: int
     closed: int
+    passed_over: int = 0
 
 
 class DraftNotFound(LookupError):
@@ -824,7 +826,11 @@ class ImportDraftsStore:
     def sweep(self, wait: float = STORE_WAIT_SECONDS) -> Swept:
         """Delete every draft past its expiry, and close every finished one, one draft per
         transaction, finished worked out inside each. This is where an expired draft, refused
-        by every call since the instant it expired, is removed from the file."""
+        by every call since the instant it expired, is removed from the file.
+
+        A draft whose rows or acceptance records can't be worked out is left open, logged by
+        the kind of its failure alone, and the sweep goes on to the next. A failed deletion,
+        or a failure of the file itself, still ends it."""
         with self._reading(wait):
             drafts = [
                 str(row["draft_id"])
@@ -832,8 +838,9 @@ class ImportDraftsStore:
                     "SELECT draft_id FROM import_drafts ORDER BY created_at, draft_id"
                 )
             ]
-        expired = closed = 0
+        expired = closed = passed_over = 0
         for draft_id in drafts:
+            unworkable = ""
             with self._writing(wait) as now:
                 draft = self._connection.execute(
                     "SELECT * FROM import_drafts WHERE draft_id = ?", (draft_id,)
@@ -844,11 +851,22 @@ class ImportDraftsStore:
                     for statement in DELETE_DRAFT:
                         self._connection.execute(statement, (draft_id,))
                     expired += 1
-                elif draft["closed_at"] is None and self._close_if_finished(draft, now):
-                    closed += 1
+                elif draft["closed_at"] is None:
+                    finished = self._finished_or_failure(draft)
+                    if isinstance(finished, str):
+                        unworkable = finished
+                    elif finished:
+                        self._close(draft_id, now)
+                        closed += 1
+            if unworkable:
+                passed_over += 1
+                logger.warning(
+                    "the import draft sweep left a draft it couldn't work out open: %s",
+                    unworkable,
+                )
         if expired or closed:
             logger.info("the import draft sweep deleted %d and closed %d", expired, closed)
-        return Swept(expired, closed)
+        return Swept(expired, closed, passed_over)
 
     # ------------------------------------------------------------------ inside a transaction
 
@@ -952,6 +970,19 @@ class ImportDraftsStore:
         return _Worked(
             images, readings, rows, frozenset(saved), frozenset(discards - saved), finished
         )
+
+    def _finished_or_failure(self, draft: sqlite3.Row) -> bool | str:
+        """Whether the draft is finished, worked out in this transaction; or, when its rows
+        function or the decoding of its acceptance records fails, that failure's kind alone.
+        Working it out writes nothing. A failure of the file itself is raised."""
+        kind = ""
+        try:
+            return self._worked_out(draft).finished
+        except sqlite3.Error:
+            raise
+        except Exception as error:
+            kind = type(error).__name__
+        return kind
 
     def _close_if_finished(self, draft: sqlite3.Row, now: datetime) -> bool:
         """Close the draft when this transaction finds it finished; whether it did."""

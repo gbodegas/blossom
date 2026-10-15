@@ -39,6 +39,7 @@ from blossom.grades.identity import name_form_key
 from blossom.household import SignInAttempts, keys_for, secret_beside
 from blossom.routes.forms import quiet_the_parser
 from blossom.sample_notes import plant_notes
+from blossom.screenshots import homework_rows
 from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource, read_whole
 from blossom.stores.checkpoints import open_checkpointer
@@ -100,7 +101,8 @@ class ApplicationState:
     import_drafts: ImportDraftsStore
     """Screenshot import drafts, in the drafts file, kept until the review finishes and never
     past 48 hours: unavailable from that instant, and removed from the file by the first sweep
-    after it or the next start. No rows function is wired, so no draft can be made yet."""
+    after it or the next start. Homework drafts read their rows with ``homework_rows``; no
+    grade rows function is wired, so no grade draft can be made yet."""
     real_clock: Clock
     """The real clock, whatever day the household's is pinned to: the traces, her signals and
     her requests are stamped and swept by it, and a page's forms carry the instant it issued
@@ -214,7 +216,12 @@ def build_application_state(
         # open after the record. Expiry runs on the real clock and a Read attempt's deadline
         # on ``monotonic``: an attempt left by a stopped process can't be current, so every
         # attempt is cleared before anything is served, then the sweep runs.
-        import_drafts = ImportDraftsStore.open(settings.database_path, real, monotonic, rows={})
+        import_drafts = ImportDraftsStore.open(
+            settings.database_path,
+            real,
+            monotonic,
+            rows={"homework_screenshot": homework_rows},
+        )
         opened.append(import_drafts)
         import_drafts.clear_attempts()
         import_drafts.sweep()
