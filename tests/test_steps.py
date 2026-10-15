@@ -147,9 +147,7 @@ def test_an_outcome_reads_as_plain_sentences_for_the_family_page() -> None:
         "An answer from the planning model couldn't be read, so there's no plan to review. "
         "Planning again may work."
     )
-    assert describe_outcome("interrupted") == (
-        "The run stopped before its plan could wait for review, so the plan was set aside."
-    )
+    assert describe_outcome("interrupted") == "The run stopped, so there's no plan to review."
     assert describe_outcome("something_new") == "The run ended with something_new."
     assert "_" not in describe_outcome("checks_failed")
 
