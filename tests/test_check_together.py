@@ -45,9 +45,14 @@ from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
     UNCONNECTED,
     ClassTermDeleted,
+    ContextChanged,
     DeletePreview,
+    GradeReportNotSaved,
+    GradeTransactionLost,
     HomeworkLinkWritten,
     LinkDecision,
+    TermNotOnRecord,
+    ViewNotOnRecord,
 )
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from tests.support import (
@@ -58,6 +63,7 @@ from tests.support import (
     PAGE_HEADERS,
     PLAN_DATE,
     ZONE,
+    Answer,
     Statements,
     capture_class,
     card_for,
@@ -1747,3 +1753,256 @@ def test_g3c_i9_the_guard_catches_nothing_wider(
 
     with pytest.raises(type(error)):
         on_grades(store)
+
+
+# ------------------------------------------------------------- Grades' page
+
+GRADE_PAGES = {"her": "/student/grades", "parent": "/parent/grades"}
+CLASS_ROW_OR_PROBLEM = re.compile(
+    r'<section class="panel grade-card"[^>]*>(.*?)</section>|'
+    r'<p class="problem">Check together can\'t be worked out right now\.</p>',
+    re.S,
+)
+ROW_PART = re.compile(
+    r"<h3[^>]*>(.*?)</h3>"
+    r'|<p(?! class="details-link")[^>]*>(.*?)</p>'
+    r"|<a\b([^>]*)>(.*?)</a>",
+    re.S,
+)
+"""A part of a class row: its heading, a line, or a link, in the page's order."""
+TERM_GRADE = "School-reported grade 81.9% · B-"
+SUPPLIED = "Report added August 19"
+NO_TERM_GRADE = "\n".join(line for line in REPORT.split("\n") if "**Term Grade**" not in line)
+"""Wren's report with no term grade row, so its current report supplies no term grade."""
+
+
+def grades_of(reader: str, client: TestClient) -> str:
+    answer = client.get(GRADE_PAGES[reader], headers=PAGE_HEADERS)
+    assert answer.status_code == 200
+    return answer.text
+
+
+def grade_rows(page: str) -> list[object]:
+    """Grades' class rows in order, each as its parts: the name, each line as it reads and each
+    link by its accessible name or words, with the line that the count can't be worked out
+    where it stands."""
+    found: list[object] = []
+    for one in CLASS_ROW_OR_PROBLEM.finditer(page):
+        row = one.group(1)
+        if row is None:
+            found.append(CANT_WORK_OUT)
+            continue
+        parts = []
+        for heading, line, attributes, words in ROW_PART.findall(row):
+            if heading:
+                parts.append(said(heading))
+            elif attributes or words:
+                name = re.search(r'aria-label="([^"]*)"', attributes)
+                parts.append(f"link: {html.unescape(name.group(1)) if name else said(words)}")
+            else:
+                parts.append(said(line))
+        found.append(parts)
+    return found
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_grades_shows_check_together_with_its_list_after_the_term_grade_and_before_see(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        reported(store, "done", DIAGRAM_ID)
+        linked_report(store)
+        page = grades_of(reader, client)
+        (href,) = re.findall(r'href="([^"]*)" aria-label="[^"]*: to check together"', page)
+        details = client.get(html.unescape(href), headers=PAGE_HEADERS)
+
+    (row,) = grade_rows(page)
+    assert row == [
+        BIOLOGY,
+        TERM_GRADE,
+        SUPPLIED,
+        "Check together (1)",
+        f"link: {DIAGRAM}, {BIOLOGY}: to check together",
+        f"link: See {BIOLOGY}",
+    ]
+    assert html.unescape(href) == f"/student/assignments/{DIAGRAM_ID}"
+    assert details.status_code == 200
+    back = "Back to family review" if reader == "parent" else "Back to the week"
+    assert re.search(rf'<p class="return"><a href="[^"]*">{back}</a>', details.text)
+    assert CANT_WORK_OUT not in page
+
+
+def test_a_row_with_no_term_grade_shows_check_together_before_see(week: TestClient) -> None:
+    """The open household's Grades, its one report holding no term grade row."""
+    store = store_of(week)
+    reported(store, "done", DIAGRAM_ID)
+    class_id = saved(store, NO_TERM_GRADE)
+    decided(store, class_id, result_named(store, class_id))
+
+    (row,) = grade_rows(grades_of("her", week))
+
+    assert row == [
+        BIOLOGY,
+        "Check together (1)",
+        f"link: {DIAGRAM}, {BIOLOGY}: to check together",
+        f"link: See {BIOLOGY}",
+    ]
+
+
+def test_grades_with_nothing_to_check_shows_no_count_and_no_problem(week: TestClient) -> None:
+    store = store_of(week)
+    reported(store, "not_yet", DIAGRAM_ID)
+    linked_report(store)
+
+    page = grades_of("her", week)
+
+    assert "Check together" not in page
+    assert grade_rows(page) == [[BIOLOGY, TERM_GRADE, SUPPLIED, f"link: See {BIOLOGY}"]]
+
+
+def link_index_dropped(client: TestClient, result_id: str) -> None:
+    """The links index is dropped and a second confirmed link naming the result is stored for
+    "Lab Report", by the test's own SQL."""
+    conflicting(client, result_id)
+
+
+def link_not_utf8(client: TestClient, _: str) -> None:
+    """Each link's homework ID stored as bytes that are not UTF-8, by the test's own SQL."""
+    store = store_of(client)
+    with store._lock, store._connection:
+        store._connection.execute(
+            "UPDATE grade_homework_links SET assignment_id = CAST(X'5A45425241FF80' AS TEXT)"
+        )
+
+
+def homework_row_not_utf8(client: TestClient, _: str) -> None:
+    spoil(store_of(client), "assignments", "title", NOT_UTF8, DIAGRAM_ID)
+
+
+GRADES_FAILURES = {
+    "undecodable link": (link_not_utf8, "GradeValueUndecodable"),
+    "conflicting confirmations": (link_index_dropped, "HomeworkLinksConflict"),
+    "unreadable homework row": (homework_row_not_utf8, None),
+    "unknown homework": (made_unreadable, None),
+}
+
+
+@pytest.mark.parametrize("failure", GRADES_FAILURES)
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_grades_with_a_count_it_can_t_work_out_is_the_ordinary_page_with_c4_once(
+    reader: str, failure: str, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each failure is written by the test's own SQL, as its helper says. The page is Grades as
+    with no link, but for the one line before the first class row; a covered failure writes one
+    record naming its type, and nothing else is recorded but the homework read's own record."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record(
+            [in_week(LAB_ID, "Lab Report", date(2026, 8, 19)), in_week(DIAGRAM_ID, DIAGRAM)], {}
+        )
+        reported(store, "done", DIAGRAM_ID)
+        class_id = saved(store)
+        plain = grades_of(reader, client)
+        result_id = result_named(store, class_id)
+        decided(store, class_id, result_id)
+        change, named = GRADES_FAILURES[failure]
+        change(client, result_id)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            page = grades_of(reader, client)
+
+    rows = grade_rows(page)
+    assert rows[0] == CANT_WORK_OUT
+    assert rows[1:] == grade_rows(plain)
+    assert page.count(CANT_WORK_OUT) == 1
+    assert "Check together (" not in page
+    assert page.replace(f'\n      <p class="problem">{CANT_WORK_OUT}</p>', "") == plain
+    if named is not None:
+        assert records(caplog) == [CHECKS_LEFT_OUT + named]
+    elif failure == "unreadable homework row":
+        assert records(caplog) == [
+            f"the homework record of {DIAGRAM_ID} cannot be read (UnicodeDecodeError)"
+        ]
+    assert "ZEBRA" not in caplog.text
+
+
+def view_refused(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+    return client.post("/student/grades/view", data={"view": "not a term"}, headers=PAGE_HEADERS)
+
+
+def view_not_on_record(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+    def refused(*_: object) -> None:
+        raise ViewNotOnRecord
+
+    monkeypatch.setattr(store_of(client), "choose_view", refused)
+    return client.post("/student/grades/view", data={"view": "2026-2027 T1"}, headers=PAGE_HEADERS)
+
+
+def current_refused(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+    return client.post("/parent/grades/current-term", data={"shown": "x"}, headers=PAGE_HEADERS)
+
+
+def current_failing(error: Exception) -> Callable[[TestClient, pytest.MonkeyPatch], Answer]:
+    def answer(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+        def failing(*_: object) -> None:
+            raise error
+
+        monkeypatch.setattr(store_of(client), "set_current_context", failing)
+        return client.post(
+            "/parent/grades/current-term",
+            data={"shown": "2026-2027 T1", "term": "2026-2027 T1"},
+            headers=PAGE_HEADERS,
+        )
+
+    return answer
+
+
+def current_changed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+    monkeypatch.setattr(
+        store_of(client), "set_current_context", lambda *_: ContextChanged(("2026-2027", "T2"))
+    )
+    return client.post(
+        "/parent/grades/current-term",
+        data={"shown": "2026-2027 T1", "term": "2026-2027 T1"},
+        headers=PAGE_HEADERS,
+    )
+
+
+CALLERS = {
+    "her view refused": ("her", view_refused, 422),
+    "her view not on record": ("her", view_not_on_record, 422),
+    "current term refused": ("parent", current_refused, 422),
+    "current term not on record": ("parent", current_failing(TermNotOnRecord()), 422),
+    "current term not saved": ("parent", current_failing(GradeReportNotSaved("no")), 500),
+    "current term lost": ("parent", current_failing(GradeTransactionLost("lost")), 500),
+    "current term changed": ("parent", current_changed, 409),
+}
+
+
+@pytest.mark.parametrize("failure", ["undecodable link", "conflicting confirmations"])
+@pytest.mark.parametrize("caller", CALLERS)
+def test_every_answer_grades_gives_shows_what_its_get_shows(
+    caller: str, failure: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each answer of the term forms, with a covered failure stored as its helper says: its
+    class rows, and the line that the count can't be worked out, are those of that reader's
+    own read of Grades."""
+    reader, answered, code = CALLERS[caller]
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record(
+            [in_week(LAB_ID, "Lab Report", date(2026, 8, 19)), in_week(DIAGRAM_ID, DIAGRAM)], {}
+        )
+        reported(store, "done", DIAGRAM_ID)
+        _, result_id = linked_report(store)
+        GRADES_FAILURES[failure][0](client, result_id)
+        read = grades_of(reader, client)
+        answer = answered(client, monkeypatch)
+
+    assert answer.status_code == code
+    assert grade_rows(read)[0] == CANT_WORK_OUT
+    assert grade_rows(answer.text) == grade_rows(read)

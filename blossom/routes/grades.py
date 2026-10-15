@@ -1925,13 +1925,14 @@ def term_summary(values: CurrentValues, names: dict[str, str]) -> TermSummary | 
 
 @dataclass(frozen=True)
 class ClassRow:
-    """A class on Grades: its name, its details' address when the term is on record, and its
-    term grade when a current report supplied one."""
+    """A class on Grades: its name, its details' address when the term is on record, its term
+    grade when a current report supplied one, and its ID."""
 
     name: str
     link: str | None
     reported: bool
     summary: TermSummary | None
+    class_id: str
 
 
 def class_rows(store: GradebookRecords, term: Term, base: str, zone: tzinfo) -> list[ClassRow]:
@@ -1957,7 +1958,7 @@ def class_reads(
         if one.reported:
             read = reads[one.class_id] = store.class_term(one.class_id, label)
             summary = term_summary(read.current, report_names(read.reports, zone))
-        rows.append(ClassRow(one.name, link, one.reported, summary))
+        rows.append(ClassRow(one.name, link, one.reported, summary, one.class_id))
     return rows, reads
 
 
@@ -2007,7 +2008,8 @@ def grades_page(
     request: Request, state: ApplicationState, *, said: str | None = None, status_code: int = 200
 ) -> Response:
     """Grades for whoever reads: the term the viewer chose, else the current one, each class's
-    term grade in it, the chooser, and a parent's controls in a parent's voice. A read alone."""
+    term grade and homework to check together in it, the chooser, and a parent's controls in a
+    parent's voice. A read alone."""
     store = state.project_state
     contexts = store.grade_contexts()
     view = store.view_of(cast(Viewer, viewer_of(request)))
@@ -2017,7 +2019,12 @@ def grades_page(
     terms = list(contexts.terms)
     if contexts.current is not None and contexts.current not in terms:
         terms.append(contexts.current)
-    rows = class_rows(store, open_term, base, state.clock.zone) if open_term else []
+    read = (
+        grades_read(store, open_term, base, state.clock.zone)
+        if open_term
+        else GradesRead([], GradesToCheck({}, False))
+    )
+    rows = read.rows
     make_current = None
     if (
         family
@@ -2044,6 +2051,7 @@ def grades_page(
             "said": said,
             "open_term": term_named(open_term) if open_term else None,
             "rows": rows,
+            "to_check": read.to_check,
             "reported": any(row.reported for row in rows),
             "chooser": chooser,
             "following": view is None,
