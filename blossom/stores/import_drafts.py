@@ -936,8 +936,7 @@ class ImportDraftsStore:
         for (accepted,) in self._connection.execute(
             ACCEPTED_KEYS, (draft["student_id"], draft["kind"], draft_id)
         ):
-            for pair in json.loads(accepted):
-                saved.add(str(pair[0]))
+            saved.update(accepted_keys(accepted))
         discards = {
             str(key)
             for (key,) in self._connection.execute(
@@ -1128,6 +1127,26 @@ def instant(value: datetime) -> str:
 def moment(text: object) -> datetime:
     """A stored instant read back."""
     return datetime.fromisoformat(str(text))
+
+
+class AcceptanceUnreadable(ValueError):
+    """An acceptance record whose pairs aren't each a row key and an assignment id, as text."""
+
+    def __init__(self) -> None:
+        super().__init__("an acceptance record's pairs can't be read")
+
+
+def accepted_keys(accepted: str) -> list[str]:
+    """The row keys an acceptance record's pairs name. Each pair must be a list of exactly a
+    row key and an assignment id, both text; anything else refuses the whole record, so no
+    malformed entry can mark a row saved."""
+    pairs = json.loads(accepted)
+    if not isinstance(pairs, list) or not all(
+        isinstance(pair, list) and len(pair) == 2 and all(isinstance(part, str) for part in pair)
+        for pair in pairs
+    ):
+        raise AcceptanceUnreadable
+    return [pair[0] for pair in pairs]
 
 
 def log_dropped(what: str, timing: ReadTiming) -> None:

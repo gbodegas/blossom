@@ -602,7 +602,7 @@ def wednesday_and_after() -> tuple[StoredReading, StoredReading]:
     whole card under Wednesday, then goes on past the first's bottom edge."""
     first = homework(
         due("English 8", "Vocab 4", 300),
-        due("Science 8", "Spelling List 5", 940, clipped=True),
+        due("Science 8", "Spelling List 5", 920, clipped=True),
         headings=[heading("Wednesday 10/7/2026", 250)],
     )
     second = homework(
@@ -852,7 +852,7 @@ def test_a_clip_is_covered_only_by_a_whole_copy_under_the_same_heading() -> None
     """A recurring card, whole under next Wednesday, never covers its clip under this one."""
     clipped = homework(
         due("English 8", "Vocab 4", 300),
-        due("Science 8", "Spelling List 5", 940, clipped=True),
+        due("Science 8", "Spelling List 5", 920, clipped=True),
         headings=[heading("Wednesday 10/7/2026", 250)],
     )
     next_week = homework(
@@ -870,7 +870,7 @@ def test_a_clip_is_covered_only_by_a_whole_copy_under_the_same_heading() -> None
 
 def test_an_item_whose_course_and_title_were_read_keeps_its_key_in_any_capture() -> None:
     """Its image and its place enter its key only when the course or title wasn't read."""
-    clip = due("Science 8", "Spelling List 5", 940, clipped=True)
+    clip = due("Science 8", "Spelling List 5", 920, clipped=True)
     first = homework(clip, headings=[heading("Wednesday 10/7/2026", 250)])
     second = homework(
         due("English 8", "Vocab 4", 300), clip, headings=[heading("Wednesday 10/7/2026", 250)]
@@ -977,3 +977,197 @@ def test_a_card_not_read_whole_takes_no_part_in_proving_an_overlap() -> None:
     titles = sorted(str(item.card.title) for item in assembly.unread if item.card)
     assert titles == ["None", "None", "Vocab 4"]
     assert {row.reading.title for row in assembly.rows} == {"Vocab 4", "U1 Quiz 3"}
+
+
+# ------------------------------------------------------------------ the overlap rule, case by case
+
+
+def test_a_card_that_couldnt_be_read_inside_a_section_breaks_a_proof() -> None:
+    """Case 1: A's Wednesday is [Reading log, a card that couldn't be typed, Worksheet 3];
+    B's top is [Reading log, Worksheet 3, Spelling List 5]. The unread card matches nothing, so
+    B continues nothing, and its Spelling List 5 gets no day."""
+    a = homework(
+        due("English 8", "Reading log", 150, instruction=LOG_WORDS),
+        a_card(title=42),
+        due("Math 8", "Worksheet 3", 400),
+        headings=[heading("Wednesday 10/7/2026", 100)],
+    )
+    b = homework(
+        due("English 8", "Reading log", 20, instruction=LOG_WORDS),
+        due("Math 8", "Worksheet 3", 120),
+        due("Science 8", "Spelling List 5", 220),
+        due("Math 8", "U1 Quiz 3", 450),
+        headings=[heading("Thursday 10/8/2026", 400)],
+    )
+
+    assembly = homework_assembly([stored_homework("a", a), stored_homework("b", b)], now=NOW)
+
+    assert "Spelling List 5" in {item.card.title for item in assembly.unread if item.card}
+    assert "Spelling List 5" not in {row.reading.title for row in assembly.rows}
+
+
+def test_a_clipped_card_inside_a_compared_run_breaks_a_proof() -> None:
+    """Case 2: a clip inside A's Wednesday, not at an edge, is no part of a run to match."""
+    a = homework(
+        due("English 8", "Reading log", 150, instruction=LOG_WORDS),
+        due("Science 8", "Vocab 4", 250, clipped=True),
+        due("Math 8", "Worksheet 3", 400),
+        headings=[heading("Wednesday 10/7/2026", 100)],
+    )
+    b = homework(
+        due("English 8", "Reading log", 20, instruction=LOG_WORDS),
+        due("Math 8", "Worksheet 3", 120),
+        due("Science 8", "Spelling List 5", 220),
+        due("Math 8", "U1 Quiz 3", 450),
+        headings=[heading("Thursday 10/8/2026", 400)],
+    )
+
+    assembly = homework_assembly([stored_homework("a", a), stored_homework("b", b)], now=NOW)
+
+    assert "Spelling List 5" not in {row.reading.title for row in assembly.rows}
+
+
+def test_a_clip_at_the_edges_still_lets_a_scroll_prove_itself() -> None:
+    """A clip at A's bottom edge and one at B's top edge are set aside, so an ordinary scroll
+    still stitches."""
+    a = homework(
+        due("English 8", "Vocab 4", 300),
+        due("Science 8", "Spelling List 5", 920, clipped=True),
+        headings=[heading("Wednesday 10/7/2026", 250)],
+    )
+    b = homework(
+        due("Art 8", "Sketch 2", 0, clipped=True),
+        due("English 8", "Vocab 4", 90),
+        due("Science 8", "Spelling List 5", 190),
+        due("Math 8", "U1 Quiz 3", 420),
+        headings=[heading("Thursday 10/8/2026", 380)],
+    )
+
+    assembly = homework_assembly([stored_homework("a", a), stored_homework("b", b)], now=NOW)
+
+    due_on = {row.reading.title: row.reading.due_date for row in assembly.rows}
+    assert due_on["Spelling List 5"] == date(2026, 10, 7)
+
+
+def test_an_uncertain_field_is_no_evidence_that_two_cards_are_one() -> None:
+    """Case 3: two equal partial titles, each marked uncertain, prove nothing."""
+    partial = [{"field": "title", "reason": "covered by an overlay"}]
+    a = homework(
+        due("English 8", "Reading lo", 200, uncertain=partial),
+        headings=[heading("Wednesday 10/7/2026", 150)],
+    )
+    b = homework(
+        due("English 8", "Reading lo", 20, uncertain=partial),
+        due("Science 8", "Spelling List 5", 120),
+        due("Math 8", "U1 Quiz 3", 420),
+        headings=[heading("Thursday 10/8/2026", 380)],
+    )
+
+    assembly = homework_assembly([stored_homework("a", a), stored_homework("b", b)], now=NOW)
+
+    assert "Spelling List 5" not in {row.reading.title for row in assembly.rows}
+
+
+def test_a_clip_is_covered_only_by_certain_evidence() -> None:
+    """Case 3, coverage: a whole copy with a field marked uncertain covers nothing, and a due
+    line the clip shows with certainty as absent is no wildcard."""
+
+    def clip(**fields: object) -> dict[str, object]:
+        return homework(
+            due("Science 8", "Spelling List 5", 920, clipped=True, **fields),
+            headings=[heading("Wednesday 10/7/2026", 250)],
+        )
+
+    blurred = [{"field": "instruction", "reason": "blurred"}]
+    uncertain_copy = homework(
+        due("Science 8", "Spelling List 5", 300, instruction="Study", uncertain=blurred),
+        headings=[heading("Wednesday 10/7/2026", 250)],
+    )
+    footed_copy = homework(
+        due("Science 8", "Spelling List 5", 300, footer="Due (10/7/2026)"),
+        headings=[heading("Wednesday 10/7/2026", 250)],
+    )
+
+    for clipped, whole in ((clip(), uncertain_copy), (clip(), footed_copy)):
+        assembly = homework_assembly(
+            [stored_homework("clip", clipped), stored_homework("whole", whole)], now=NOW
+        )
+        assert [item.card.clipped for item in assembly.unread if item.card] == [True]
+
+
+def test_a_heading_is_carried_only_when_no_proof_names_another() -> None:
+    """Case 4: Monday [Y] and Tuesday [Z], then headingless [Z, Y], [Y, W] and [W, V]. [Y, W]
+    continues Monday directly and Tuesday through [Z, Y], so it carries neither, and [W, V],
+    which continues it, carries nothing either: W and V get no day."""
+    monday = homework(
+        due("Math 8", "Worksheet 3", 200), headings=[heading("Monday 10/5/2026", 100)]
+    )
+    tuesday = homework(due("Science 8", "Lab 2", 200), headings=[heading("Tuesday 10/6/2026", 100)])
+    z_y = homework(due("Science 8", "Lab 2", 20), due("Math 8", "Worksheet 3", 120), headings=[])
+    y_w = homework(due("Math 8", "Worksheet 3", 20), due("English 8", "Vocab 4", 120), headings=[])
+    w_v = homework(due("English 8", "Vocab 4", 20), due("Art 8", "Sketch 2", 120), headings=[])
+    images = [
+        stored_homework(label, answer)
+        for label, answer in (
+            ("mon", monday),
+            ("tue", tuesday),
+            ("zy", z_y),
+            ("yw", y_w),
+            ("wv", w_v),
+        )
+    ]
+
+    found = set()
+    for order in itertools.permutations(images):
+        assembly = homework_assembly(list(order), now=NOW)
+        found.add(
+            (
+                frozenset(row.reading.title for row in assembly.rows),
+                frozenset(item.card.title for item in assembly.unread if item.card),
+            )
+        )
+
+    [(rows, unread)] = found
+    assert {"Vocab 4", "Sketch 2"} <= unread
+    assert not {"Vocab 4", "Sketch 2"} & rows
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"y_top": -5}, {"y_bottom": 1001}, {"y_top": 300, "y_bottom": 250}],
+    ids=["top-above-the-image", "bottom-below-the-image", "bottom-above-top"],
+)
+def test_a_card_with_positions_outside_the_image_couldnt_be_read(fields: dict[str, int]) -> None:
+    """Case 5: such a card is one that couldn't be read, at its place."""
+    reading = checked(an_answer(cards=[a_card(**fields), a_card(title="Vocab Quiz")]))
+
+    assert reading.cards[0] is None
+    assert reading.cards[1] is not None
+
+
+@pytest.mark.parametrize("y", [-1, 1001])
+def test_a_heading_outside_the_image_makes_the_answer_not_valid(y: int) -> None:
+    """Case 5: a heading's place decides every card's day, so a bad one fails the read."""
+    answer = an_answer(headings=[{"text": "Monday 10/5/2026", "y": y, "uncertain": None}])
+
+    assert homework_reading(answer) == (None, "not_valid")
+
+
+def test_a_rounds_key_stays_when_an_earlier_round_of_its_name_arrives() -> None:
+    """Case 6: Vocab Quiz due 10/22, read alone, then with an image of the 10/8 round."""
+    later = stored_homework(
+        "two",
+        homework(
+            due("English 8", "Vocab Quiz", 200), headings=[heading("Thursday 10/22/2026", 150)]
+        ),
+    )
+    earlier = stored_homework(
+        "one",
+        homework(
+            due("English 8", "Vocab Quiz", 200), headings=[heading("Thursday 10/8/2026", 150)]
+        ),
+    )
+
+    [alone] = keys(later)
+
+    assert alone in keys(later, earlier)

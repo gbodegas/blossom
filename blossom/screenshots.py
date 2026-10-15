@@ -22,11 +22,11 @@ the parent sees and the keys the store keeps can't disagree.
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
-from typing import Annotated, Final, Literal, NamedTuple
+from typing import Annotated, Final, Literal, NamedTuple, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 from blossom.grades.draft import folded
 from blossom.intake import DAY_LINE, PortalCard, Reading, a_date, read_cards
@@ -47,6 +47,8 @@ INSTRUCTION_MOST: Final = 4_000
 CELL_MOST: Final = 300
 """The most characters of one cell of a grade report."""
 MOST_HEADINGS: Final = 40
+POSITION_MOST: Final = 1_000
+"""The bottom edge of the image, in the thousandths of its height positions are given in."""
 MOST_CARDS: Final = 60
 MOST_MARKS: Final = 20
 """The most uncertain fields one item may list."""
@@ -73,6 +75,7 @@ Line = Annotated[str, Field(strict=True, max_length=LINE_MOST)]
 Title = Annotated[str, Field(strict=True, max_length=TITLE_MOST)]
 Instruction = Annotated[str, Field(strict=True, max_length=INSTRUCTION_MOST)]
 Cell = Annotated[str, Field(strict=True, max_length=CELL_MOST)]
+Position = Annotated[int, Field(strict=True, ge=0, le=POSITION_MOST)]
 
 FOOTER: Final = re.compile(
     r"^Due\s*\(\s*(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\s*\)$", re.IGNORECASE
@@ -101,10 +104,17 @@ class Card(_Closed):
     title: Title | None
     instruction: Instruction | None
     footer: Line | None
-    y_top: StrictInt
-    y_bottom: StrictInt
+    y_top: Position
+    y_bottom: Position
     clipped: StrictBool
     uncertain: Annotated[tuple[CardMark, ...], Field(max_length=MOST_MARKS)]
+
+    @model_validator(mode="after")
+    def _edges_in_order(self) -> Self:
+        if self.y_bottom < self.y_top:
+            message = "a card's bottom edge is above its top"
+            raise ValueError(message)
+        return self
 
     @property
     def due(self) -> date | None:
@@ -122,12 +132,18 @@ class Card(_Closed):
         """Whether its label, course and title were all read, the course and title with words."""
         return self.badge is not None and _words(self.course) and _words(self.title)
 
+    @property
+    def certain(self) -> bool:
+        """Whether it is read whole: complete, unclipped, and with no field marked uncertain,
+        so it can stand as evidence that it is the same card as another."""
+        return self.complete and not self.clipped and not self.uncertain
+
 
 class Heading(_Closed):
     """One day heading as read, with the reader's note when it is uncertain."""
 
     text: Line
-    y: StrictInt
+    y: Position
     uncertain: Note | None
 
     @property
@@ -413,83 +429,130 @@ def _orphan(seen: _Seen) -> bool:
 
 def _carried(placed: dict[str, tuple[HomeworkReading, list[_Seen]]]) -> dict[str, Heading]:
     """For each screenshot whose top cards sit under no heading it shows, the heading they sit
-    under in another screenshot, when the run of whole cards proves the overlap. A screenshot
-    with no proof, or with proofs naming more than one heading, gets none."""
-    carried: dict[str, Heading] = {}
-    for _ in range(len(placed)):
-        found: dict[str, Heading] = {}
-        for sha, (own, cards) in placed.items():
-            orphans = _in_order(item for item in cards if _orphan(item))
-            if sha in carried or not orphans:
+    under in another screenshot, when the overlap is proven and no proof names another.
+
+    Every screenshot's candidates are worked out together, adding only, until nothing more is
+    added: a proof from a section under a heading gives that heading, and one from another
+    screenshot's top cards gives every candidate that screenshot has. Only a screenshot left
+    with one candidate carries it, so a conflict found late undoes what rested on it.
+    """
+    shaped = {sha: _slots(reading, cards) for sha, (reading, cards) in placed.items()}
+    candidates: dict[str, dict[str, list[Heading]]] = {sha: {} for sha in placed}
+    added = True
+    while added:
+        added = False
+        for sha, (headings, slots) in shaped.items():
+            top = slots.get(_TOP, [])
+            if not any(card is not None for card in top):
                 continue
-            first = min(own.headings, key=lambda heading: heading.y, default=None)
-            proofs: dict[str, list[Heading]] = {}
-            for other, (reading, other_cards) in placed.items():
+            first = headings[0] if headings else None
+            for other, (other_headings, other_slots) in shaped.items():
                 if other == sha:
                     continue
-                for heading, section, after in _sections(reading, other_cards, carried.get(other)):
-                    if _continues(orphans, first, section, after):
-                        proofs.setdefault(folded(heading.text), []).append(heading)
-            if len(proofs) == 1:
-                [named] = proofs.values()
-                found[sha] = min(named, key=lambda h: (h.uncertain is not None, h.y))
-        if not found:
-            break
-        carried.update(found)
-    return carried
+                for heading, section, after in _sections(other_headings, other_slots):
+                    if not _continues(top, first, section, after):
+                        continue
+                    named = (
+                        [heading]
+                        if heading is not None
+                        else [h for found in candidates[other].values() for h in found]
+                    )
+                    for proven in named:
+                        bucket = candidates[sha].setdefault(folded(proven.text), [])
+                        if proven not in bucket:
+                            bucket.append(proven)
+                            added = True
+    return {
+        sha: min(found, key=lambda h: (h.uncertain is not None, h.y, h.text))
+        for sha, named in candidates.items()
+        if len(named) == 1
+        for found in named.values()
+    }
 
 
-def _in_order(cards: Iterable[_Seen]) -> list[Card]:
-    """The whole cards among ``cards``, top to bottom."""
-    whole = [item.card for item in cards if item.card is not None and not item.card.clipped]
-    return sorted(whole, key=lambda card: card.y_top)
+_TOP: Final = -1
+"""Where a screenshot's top cards sit: above every heading it shows."""
+
+
+def _slots(
+    reading: HomeworkReading, cards: list[_Seen]
+) -> tuple[list[Heading], dict[int, list[Card | None]]]:
+    """A screenshot's headings, top to bottom, and the cards under each in the order read,
+    by the heading's place, ``_TOP`` for the cards above them all. A card that couldn't be
+    read has no position, so it is put under every heading it could sit under between the
+    cards read before and after it."""
+    headings = sorted(reading.headings, key=lambda heading: heading.y)
+    under = [
+        None
+        if item.card is None
+        else _TOP
+        if item.heading is None
+        else headings.index(item.heading)
+        for item in cards
+    ]
+    last = len(headings) - 1
+    found: dict[int, list[Card | None]] = {}
+    for place, item in enumerate(cards):
+        label = under[place]
+        if label is None:
+            before = next((at for at in reversed(under[:place]) if at is not None), _TOP)
+            after = next((at for at in under[place + 1 :] if at is not None), last)
+            spans = list(range(before, max(before, after) + 1))
+        else:
+            spans = [label]
+        for span in spans:
+            found.setdefault(span, []).append(item.card)
+    return headings, found
 
 
 def _sections(
-    reading: HomeworkReading, cards: list[_Seen], carried: Heading | None
-) -> list[tuple[Heading, list[Card], Heading | None]]:
-    """Each heading of a screenshot with the whole cards under it and the heading that closes
-    its section, ``None`` when it runs to the screenshot's bottom; its top cards' section too,
-    when a heading was carried, closed by the screenshot's first heading."""
-    headings = sorted(reading.headings, key=lambda heading: heading.y)
-    sections = [
-        (
-            heading,
-            _in_order(item for item in cards if item.heading == heading),
-            headings[place + 1] if place + 1 < len(headings) else None,
-        )
+    headings: list[Heading], slots: dict[int, list[Card | None]]
+) -> list[tuple[Heading | None, list[Card | None], Heading | None]]:
+    """Each heading of a screenshot with the cards under it and the heading that closes its
+    section, ``None`` when it runs to the screenshot's bottom; then its top cards, under no
+    heading of its own (``None``), closed by its first heading."""
+    sections: list[tuple[Heading | None, list[Card | None], Heading | None]] = [
+        (heading, slots.get(place, []), headings[place + 1] if place + 1 < len(headings) else None)
         for place, heading in enumerate(headings)
     ]
-    if carried is not None:
-        top = _in_order(item for item in cards if _orphan(item))
-        sections.append((carried, top, headings[0] if headings else None))
+    sections.append((None, slots.get(_TOP, []), headings[0] if headings else None))
     return sections
 
 
 def _continues(
-    orphans: list[Card], first: Heading | None, section: list[Card], after: Heading | None
+    top: list[Card | None], first: Heading | None, section: list[Card | None], after: Heading | None
 ) -> bool:
     """Whether a screenshot's top cards, above its first heading ``first``, continue a section
-    closed by ``after``: they repeat a run of its whole cards from one of them to the section's
-    end, then either stop there, before no heading or before the one that closes the section,
-    or run on past it, only when the section runs to its screenshot's bottom."""
-    for start, card in enumerate(section):
+    closed by ``after`` (``None``: running to its screenshot's bottom). They repeat the
+    section's cards card for card, each read whole, from one of them to the section's end,
+    then stop there, before no heading or before the one closing the section, or run on past
+    it only when the section runs to its screenshot's bottom. A clip at the top screenshot's
+    top edge, or at the section's bottom edge, is set aside; anything else not read whole,
+    a card that couldn't be read included, matches nothing."""
+    if top and top[0] is not None and top[0].clipped:
+        top = top[1:]
+    if after is None and section and section[-1] is not None and section[-1].clipped:
+        section = section[:-1]
+    for start in range(len(section)):
         run = section[start:]
-        repeated = _same(card, orphans[0]) and all(
-            _same(one, other) for one, other in zip(orphans, run, strict=False)
-        )
-        if not repeated or len(orphans) < len(run):
+        if len(top) < len(run) or not all(map(_same, run, top)):
             continue
         if after is None:
             return True
-        if len(orphans) == len(run) and (first is None or _text(first) == _text(after)):
+        if len(top) == len(run) and (first is None or _text(first) == _text(after)):
             return True
     return False
 
 
-def _same(one: Card, other: Card) -> bool:
-    """Two whole cards that read the same, field for field."""
-    return one.complete and _as_read(one) == _as_read(other)
+def _same(one: Card | None, other: Card | None) -> bool:
+    """Two cards each read whole that read the same, field for field."""
+    return (
+        one is not None
+        and other is not None
+        and one.certain
+        and other.certain
+        and _as_read(one) == _as_read(other)
+    )
 
 
 def _as_read(card: Card) -> tuple[object, ...]:
@@ -504,24 +567,22 @@ def _as_read(card: Card) -> tuple[object, ...]:
 
 
 def _covered(clipped: _Seen, whole: list[_Seen]) -> bool:
-    """Whether a whole card under the same heading reads as everything a clipped card shows."""
+    """Whether a card read whole under the same heading reads as everything a clipped card
+    read with certainty, its course and title among it. A field the clip marks uncertain is
+    no evidence either way; one it shows with certainty as absent must be absent there too."""
     card = clipped.card
     if card is None or not (_words(card.course) and _words(card.title)):
         return False
+    marked = card.uncertain_fields
+    if {"course", "title"} & marked:
+        return False
     for other in whole:
         full = other.card
-        if full is None or not full.complete or _text(other.heading) != _text(clipped.heading):
-            continue
-        if (_fold(card.course), _fold(card.title)) != (_fold(full.course), _fold(full.title)):
-            continue
-        if card.badge is not None and card.badge != full.badge:
+        if full is None or not full.certain or _text(other.heading) != _text(clipped.heading):
             continue
         if all(
-            part is None or (_fold(whole_part) or "").startswith(_fold(part) or "")
-            for part, whole_part in (
-                (card.instruction, full.instruction),
-                (card.footer, full.footer),
-            )
+            field in marked or _fold(getattr(card, field)) == _fold(getattr(full, field))
+            for field in ("badge", "course", "title", "instruction", "footer")
         ):
             return True
     return False
@@ -587,11 +648,11 @@ def _unread(item: _Seen) -> UnreadCard:
 
 def _written(reading: Reading, marks: frozenset[str]) -> dict[str, object]:
     """Everything a row would write, as read, with its marks: never a name, a position, a
-    correction or an instant."""
+    correction or an instant. A round of a recurring name is told by its own dates; its
+    occurrence, which changes when an earlier round's screenshot arrives, is left out."""
     return {
         "course": _fold(reading.course),
         "title": _fold(reading.title),
-        "occurrence": reading.occurrence,
         "due_date": _day(reading.due_date),
         "assigned_on": _day(reading.assigned_on),
         "claims": sorted(

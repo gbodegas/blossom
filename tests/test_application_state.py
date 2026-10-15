@@ -828,3 +828,45 @@ def test_a_start_passes_over_a_draft_whose_text_isnt_utf_8(
     assert found[failing] == (None, 1)
     assert PASSED_OVER.format("TextNotUtf8") in caplog.messages
     assert not [record for record in caplog.records if record.exc_info]
+
+
+@pytest.mark.parametrize(
+    "accepted",
+    [
+        '[["{key}"]]',
+        '[["{key}", 5]]',
+        '[["{key}", "assignment-0", "extra"]]',
+        '[{{"key": "{key}"}}]',
+        '{{"{key}": "assignment-0"}}',
+        '[["another-key", "assignment-1"], ["{key}"]]',
+    ],
+    ids=[
+        "one-element",
+        "number-target",
+        "three-elements",
+        "an-object-entry",
+        "not-a-list",
+        "a-pair-then-one-element",
+    ],
+)
+def test_an_acceptance_entry_that_isnt_a_pair_of_strings_closes_nothing(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture, accepted: str
+) -> None:
+    """A malformed entry naming the draft's only row is a decoding failure, passed over: the
+    draft isn't taken as finished, and its screenshot stays."""
+    settings = fixture_settings(**file_settings(tmp_path))
+    first = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    student = first.project_state.student_id()
+    first.close()
+    path = settings.database_path
+    one_card = homework_answer(cards=[homework_card()])
+    draft = plant_read_draft(path, student, REAL_NOW - timedelta(hours=2), one_card)
+    [key] = keys_of(path, draft)
+    plant_acceptance(path, student, draft, accepted.format(key=key))
+
+    with caplog.at_level(logging.DEBUG):
+        state = build_application_state(settings, InMemorySaver(), real_clock=real_clock())
+    state.close()
+
+    assert drafts_in_file(path)[draft] == (None, 1)
+    assert PASSED_OVER.format("AcceptanceUnreadable") in caplog.messages

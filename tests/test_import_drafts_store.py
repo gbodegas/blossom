@@ -501,7 +501,7 @@ def test_a_reading_of_another_kind_doesnt_hold_the_draft_open(homework: World) -
 def test_a_saved_row_stays_saved_however_its_images_come_and_go(homework: World) -> None:
     """Vocab Quiz due 10/8 in image one and due 10/22 in image two. The 10/22 round is saved;
     an unrelated image comes, image two is recaptured, and image one is removed and added
-    again after the rest: the 10/22 round is saved throughout the same set of images."""
+    again after the rest: the 10/22 round is saved throughout, even while it is the only round."""
     one, two = due_on("Thursday 10/8/2026"), due_on("Thursday 10/22/2026")
     draft_id = homework.draft("one", "two")
     homework.read_as(draft_id, "one", uploaded("one", one))
@@ -521,7 +521,7 @@ def test_a_saved_row_stays_saved_however_its_images_come_and_go(homework: World)
     homework.store.remove_image(
         homework.student, draft_id, homework.image_ids(draft_id)[sha("one")]
     )
-    assert later not in states(homework, draft_id), "alone, the 10/22 round is the first"
+    assert states(homework, draft_id)[later] == "saved", "alone, the 10/22 round keeps its key"
     homework.store.add_images(homework.student, draft_id, [image("one")])
     homework.read_as(draft_id, "one", uploaded("one", one))
 
