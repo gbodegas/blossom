@@ -1001,9 +1001,11 @@ class Planning:
             # Nobody waits for this ending, so its steps are never read.
             in_the_background(self.state, ending, f"ending run {self.run_id}")
             return None
-        waited = partial(self.ended_out_of_time, ending, reason=reason)
+        # One allowance for the ending and, when it is seen converted, the read of its steps.
+        loop = asyncio.get_running_loop()
+        allowance_ends = loop.time() + min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS)
         try:
-            kept = await bounded(waited, min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS))
+            ended = await bounded(ending, allowance_ends - loop.time())
         except Unfinished as unfinished:
             detach(self.state, unfinished.work, f"ending run {self.run_id}")
             logger.warning("run %s not seen ended in time; its deadline ends it", self.run_id)
@@ -1011,25 +1013,9 @@ class Planning:
         except Exception:
             logger.exception("run %s could not be ended; its deadline ends it", self.run_id)
             return None
-        return None if kept is None else self.ended_view(TIMED_OUT, kept)
-
-    def ended_out_of_time(
-        self, ending: Callable[[], RunState | None], *, reason: str
-    ) -> list[StepRecord] | None:
-        """Run ``ending``, on a worker thread, and the steps the record keeps when the run is
-        found ended ``timed_out`` in place of ``reason``, by this ending or one before it;
-        ``None`` otherwise. Steps that can't be read are none, so a read that fails after
-        the ending is never taken for a failed ending."""
-        ended = ending()
         if reason == TIMED_OUT or ended is None or ended.reason != TIMED_OUT:
             return None
-        try:
-            return self.state.drafts.steps_for(self.run_id)
-        except Exception as error:
-            logger.warning(
-                "run %s could not be read for a press: %s", self.run_id, type(error).__name__
-            )
-            return []
+        return self.ended_view(TIMED_OUT, await self.stored_steps(allowance_ends - loop.time()))
 
     def ended_view(
         self, reason: str, steps: Sequence[StepRecord], past_due: Sequence[PastDueView] = ()
@@ -1237,16 +1223,15 @@ class Planning:
             raise self.not_saved(kept=kept)
         return self.as_settled(found, view.steps)
 
-    async def stored_steps(self) -> list[StepRecord]:
-        """The steps the run's record keeps, read on a worker thread within what is left of
-        the run's time and its grace; none when the read fails or doesn't finish."""
-        left = self.budget.remaining()
+    async def stored_steps(self, wait: float) -> list[StepRecord]:
+        """The steps the run's record keeps, read on a worker thread for at most ``wait``
+        seconds; none when the read fails or doesn't finish, and a read still going is left
+        to end on its own. Never taken for the ending's own failure."""
         try:
-            return await bounded(
-                partial(self.state.drafts.steps_for, self.run_id),
-                min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS),
-            )
+            return await bounded(partial(self.state.drafts.steps_for, self.run_id), wait)
         except Exception as error:
+            if isinstance(error, Unfinished):
+                detach(self.state, error.work, f"reading back run {self.run_id}")
             logger.warning(
                 "run %s could not be read for a press: %s", self.run_id, type(error).__name__
             )
@@ -1293,7 +1278,10 @@ class Planning:
             reason = str(committed["reason"])
             steps = run_view(self.run_id, self.plan_date, {**result, "outcome": ""}).steps
             if reason == TIMED_OUT and result.get("outcome") != TIMED_OUT:
-                steps = await self.stored_steps()
+                left = self.budget.remaining()
+                steps = await self.stored_steps(
+                    min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS)
+                )
             kept = committed.get("past_due")
             return self.ended_view(
                 reason,

@@ -4540,3 +4540,102 @@ def test_an_ending_nobody_waits_for_never_reads_the_runs_steps(
     assert answered(answer) == ("raised", "the saved state could not be read")
     assert ended == ("timed_out", TIME_LIMIT, "timeout")
     assert reads == []
+
+
+def test_steps_read_too_slowly_after_an_out_of_time_ending_leave_it_answered_out_of_time(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failure of the run's own whose ending is recorded past the deadline, and the read of
+    the record's steps then outlasts what is left of the ending's allowance: the press
+    answers out of time with no steps, and the log names the read, never the ending."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+
+        async def scenario() -> tuple[object, str]:
+            loop = asyncio.get_running_loop()
+            ending = Gated(state.drafts.end_run, loop)
+            monkeypatch.setattr(state.drafts, "end_run", ending)
+            reading = Gated(state.drafts.steps_for, loop)
+            monkeypatch.setattr(state.drafts, "steps_for", reading)
+            request = asyncio.ensure_future(
+                make_plan(
+                    plan_graph_for(state, planner=raising(RuntimeError("boom")), critic=critic()),
+                    PLAN_DATE,
+                    state,
+                    budget=fake.budget(0.2),
+                )
+            )
+            await asyncio.wait_for(ending.began.wait(), timeout=5)
+            run = state.drafts.latest_run()
+            assert run is not None
+            fake.advance(0.5)
+            ending.go.set()
+            await asyncio.wait_for(reading.began.wait(), timeout=5)
+            # Past what is left of the allowance, inside nothing else's wait.
+            fake.advance(1.0)
+            (answer,) = await asyncio.gather(request, return_exceptions=True)
+            reading.go.set()
+            await asyncio.wait_for(reading.returned.wait(), timeout=5)
+            await settled_down(state)
+            monkeypatch.undo()
+            return answer, run.run_id
+
+        with caplog.at_level(logging.WARNING, logger="blossom.routes.runs"):
+            answer, run_id = fake.run(scenario())
+        ended = account(state, run_id)
+    finally:
+        state.close()
+
+    assert isinstance(answer, PlanMade)
+    assert (answer.view.outcome, answer.view.steps) == ("timed_out", [])
+    assert ended == ("timed_out", TIME_LIMIT, "timeout")
+    said = [record.getMessage() for record in caplog.records]
+    assert f"run {run_id} could not be read for a press: Unfinished" in said
+    assert not any("not seen ended in time" in line for line in said)
+    assert not any("could not be ended" in line for line in said)
+
+
+def test_steps_that_cant_be_read_for_a_run_its_last_node_ended_out_of_time_leave_it_answered(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The store's deadline passes while the route's has not, the run's own last node ends
+    it, and the record's steps then can't be read: the press answers out of time with no
+    steps, and the log names the read that failed."""
+    route = FakeTime()
+    store_clock = FakeTime()
+    state = application_on(tmp_path, store_clock)
+    refusal: ModelAnswer[DailyPlan] = ModelAnswer(
+        parsed=None, stop_reason="refusal", parsing_error=None
+    )
+    try:
+        graph = plan_graph_for(
+            state, planner=Spending(store_clock, (1.0, refusal)), critic=critic()
+        )
+
+        def busy(run_id: str) -> list[StepRecord]:
+            raise StoreBusy
+
+        async def scenario() -> object:
+            monkeypatch.setattr(state.drafts, "steps_for", busy)
+            (answer,) = await asyncio.gather(
+                make_plan(graph, PLAN_DATE, state, budget=route.budget(0.5)),
+                return_exceptions=True,
+            )
+            await settled_down(state)
+            monkeypatch.undo()
+            return answer
+
+        with caplog.at_level(logging.WARNING, logger="blossom.routes.runs"):
+            answer = route.run(scenario())
+        run = state.drafts.latest_run()
+        assert run is not None
+        ended = account(state, run.run_id)
+    finally:
+        state.close()
+
+    assert isinstance(answer, PlanMade)
+    assert (answer.view.outcome, answer.view.steps) == ("timed_out", [])
+    assert ended == ("timed_out", TIME_LIMIT, "timeout")
+    said = [record.getMessage() for record in caplog.records]
+    assert f"run {run.run_id} could not be read for a press: StoreBusy" in said
