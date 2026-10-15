@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """Check together: each homework's standing from her two accounts, what one read of the
-record and the gradebook counts, her week's line, and each counted result's explanation on her
-cards, rows and assignment details.
+record and the gradebook counts, her week's line, each counted result's explanation on her
+cards, rows and assignment details, and Grades' reads and counts.
 
 The standing is stated as plain values. Every other case saves Wren's synthetic report through
 the gradebook's own save, decides links through its own write, keeps her updates and hand-ins
@@ -16,8 +16,9 @@ import itertools
 import logging
 import pathlib
 import re
-from collections.abc import Iterator
-from datetime import date
+import sqlite3
+from collections.abc import Callable, Iterable, Iterator
+from datetime import date, tzinfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,15 +26,18 @@ from fastapi.testclient import TestClient
 from blossom.grades.draft import GradeReportDraft, Presence, capture_key
 from blossom.grades.identity import name_form_key
 from blossom.grades.projection import MadeCurrent
-from blossom.grades.review import GradeReportSaved
+from blossom.grades.review import GradeReportSaved, GradeValueUndecodable
 from blossom.grades.text_reader import read_grade_report
 from blossom.hand_in import NEEDS_HAND_IN, NOT_REQUIRED, TURNED_IN, UNKNOWN
 from blossom.noticing import canonical_active_input, planning_digest, read_everything, week_from
 from blossom.reconciliation import SourceChannel
+from blossom.routes.grades import GradesRead, class_reads, grades_read
 from blossom.routes.homework_scores import (
     CheckStanding,
+    GradesToCheck,
     HerAccount,
     account_of,
+    account_read,
     check_standing,
     read_score_facts,
     rule_values,
@@ -43,11 +47,21 @@ from blossom.stores.gradebook import (
     GRADEBOOK_TABLES,
     UNCONNECTED,
     ClassTermDeleted,
+    ContextChanged,
     DeletePreview,
+    GradeReportNotSaved,
+    GradeTransactionLost,
     HomeworkLinkWritten,
     LinkDecision,
+    TermNotOnRecord,
+    ViewNotOnRecord,
 )
-from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
+from blossom.stores.project_state import (
+    Assignment,
+    AssignmentKind,
+    ListedHomework,
+    ProjectStateStore,
+)
 from tests.support import (
     FIXTURES,
     HER_PAGE,
@@ -55,6 +69,8 @@ from tests.support import (
     NOW,
     PAGE_HEADERS,
     PLAN_DATE,
+    ZONE,
+    Answer,
     Statements,
     capture_class,
     card_for,
@@ -1379,3 +1395,1102 @@ def test_a_homework_left_unknown_keeps_its_can_t_be_read_line_and_no_explanation
     assert explained(card) == []
     assert explained(block) == []
     assert parts_of(card)[:2] == [DIAGRAM_SCORE, f"link: Grade details: {DIAGRAM}, {BIOLOGY}"]
+
+
+# ------------------------------------------------------------- Grades' reads and counts
+
+TERM = (YEAR, "T1")
+SECOND = (YEAR, "T2")
+FOUR_MISSING = (
+    REPORT.replace(LOG_ROW, LOG_ROW.replace("Valid  ", "Missing"))
+    .replace(
+        "| Microscope Practice                | 27.0    | 30.0    | 90.0    | Valid      |",
+        "| Microscope Practice                | 27.0    | 30.0    | 90.0    | Missing    |",
+    )
+    .replace(
+        "| Osmosis with Potato Slices         | 31.0    | 40.0    | 77.5    | Valid      |",
+        "| Osmosis with Potato Slices         | 31.0    | 40.0    | 77.5    | Missing    |",
+    )
+)
+"""Wren's report with each of its four Biology results reported Missing."""
+CHECKS_LEFT_OUT = "Grades shows no Check together count: "
+
+
+def on_grades(store: ProjectStateStore, term: tuple[str, str] = TERM) -> GradesRead:
+    """Grades' reads for ``term``, as her tree reads them."""
+    return grades_read(store, term, "/student/grades", ZONE)
+
+
+def listed(read: GradesRead) -> dict[str, list[str]]:
+    """Each class's homework to check together on Grades, by title, in the listed order."""
+    return {class_id: [one.title for one in ones] for class_id, ones in read.to_check.lists.items()}
+
+
+def records(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        one.getMessage()
+        for one in caplog.records
+        if one.name.startswith("blossom") and one.levelno >= logging.WARNING
+    ]
+
+
+def test_grades_lists_her_done_homework_linked_to_a_missing_result_under_its_class(
+    store: ProjectStateStore,
+) -> None:
+    """Grades' class rows are as they read alone, and the counted homework is listed under the
+    class of the open term its result is in."""
+    reported(store, "done", DIAGRAM_ID)
+    class_id, _ = linked_report(store)
+
+    read = on_grades(store)
+
+    assert read.rows == class_reads(store, TERM, "/student/grades", ZONE)[0]
+    assert read.to_check.unknown is False
+    assert listed(read) == {class_id: [DIAGRAM]}
+    (one,) = read.to_check.lists[class_id]
+    assert (one.assignment_id, one.course, one.title, one.due_date) == (
+        DIAGRAM_ID,
+        BIOLOGY,
+        DIAGRAM,
+        date(2026, 9, 18),
+    )
+
+
+@pytest.mark.parametrize(
+    ("update", "hand_in", "counted"),
+    [
+        pytest.param(None, TURNED_IN, True, id="turned in alone"),
+        pytest.param("done", NEEDS_HAND_IN, True, id="done, still to hand in"),
+        pytest.param("not_yet", None, False, id="not yet"),
+        pytest.param(None, NOT_REQUIRED, False, id="nothing to turn in"),
+        pytest.param(None, None, False, id="nothing said"),
+    ],
+)
+def test_grades_counts_by_her_done_or_turned_in_read_literally(
+    store: ProjectStateStore, update: str | None, hand_in: str | None, counted: bool
+) -> None:
+    class_id, _ = linked_report(store)
+    if update is not None:
+        reported(store, update, DIAGRAM_ID)
+    if hand_in is not None:
+        handed(store, hand_in)
+
+    read = on_grades(store)
+
+    assert read.to_check.unknown is False
+    assert listed(read) == ({class_id: [DIAGRAM]} if counted else {})
+
+
+def test_a_homework_counted_in_two_terms_is_listed_once_in_each_term_s_row(
+    store: ProjectStateStore,
+) -> None:
+    """ "Cell Diagram" linked to its result in T1 and in T2, both Missing: one entry in the
+    row of whichever term is open."""
+    reported(store, "done", DIAGRAM_ID)
+    class_id, _ = linked_report(store)
+    second = saved(store, SECOND_TERM)
+    decided_in(store, second, result_named_in(store, second, DIAGRAM, "T2"), DIAGRAM_ID, "T2")
+
+    assert second == class_id
+    assert listed(on_grades(store)) == {class_id: [DIAGRAM]}
+    assert listed(on_grades(store, SECOND)) == {class_id: [DIAGRAM]}
+
+
+def test_a_result_counted_in_another_term_is_not_in_the_open_term_s_lists(
+    store: ProjectStateStore,
+) -> None:
+    """Only T2 holds the linked Missing result: T1 lists nothing, T2 lists it."""
+    reported(store, "done", DIAGRAM_ID)
+    saved(store, VALID)
+    class_id = saved(store, SECOND_TERM)
+    decided_in(store, class_id, result_named_in(store, class_id, DIAGRAM, "T2"), DIAGRAM_ID, "T2")
+
+    assert listed(on_grades(store)) == {}
+    assert listed(on_grades(store, SECOND)) == {class_id: [DIAGRAM]}
+
+
+@pytest.mark.parametrize(
+    ("update", "hand_in", "spoiled"),
+    [
+        pytest.param("done", TURNED_IN, ("student_reports", "hand_in_events"), id="both"),
+        pytest.param("not_yet", TURNED_IN, ("hand_in_events",), id="hand-in, updates not yet"),
+        pytest.param("done", NEEDS_HAND_IN, ("student_reports",), id="updates, to hand in"),
+    ],
+)
+def test_a_homework_left_unknown_leaves_every_grades_count_unknown(
+    store: ProjectStateStore, update: str, hand_in: str, spoiled: tuple[str, ...]
+) -> None:
+    """The named tables' notes are changed to bytes that are not UTF-8 by the test's own SQL."""
+    linked_report(store)
+    reported(store, update, DIAGRAM_ID)
+    handed(store, hand_in)
+    for table in spoiled:
+        spoil(store, table, "note", NOT_UTF8, DIAGRAM_ID)
+
+    read = on_grades(store)
+
+    assert read.to_check.unknown is True
+    assert read.to_check.lists == {}
+
+
+def test_grades_own_class_read_fails_as_itself_and_the_new_reads_never_run(
+    store: ProjectStateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result's points presence set to text no save writes, by the test's own SQL, alone and
+    with a second confirmed link naming the result stored the same way."""
+    reported(store, "done", DIAGRAM_ID)
+    _, result_id = linked_report(store)
+    asked: list[str] = []
+
+    def links() -> tuple[()]:
+        asked.append("links")
+        return ()
+
+    monkeypatch.setattr(store, "homework_links", links)
+    with store._lock, store._connection:
+        store._connection.execute(
+            "UPDATE grade_result_observations SET points_presence = 'smudged' WHERE result_id = ?",
+            (result_id,),
+        )
+
+    with pytest.raises(GradeValueUndecodable):
+        on_grades(store)
+    with store._lock, store._connection:
+        store._connection.execute("DROP INDEX grade_homework_links_one_homework")
+        store._connection.execute(
+            LINK_ROW, (store.student_id(), result_id, OTHER_ID, "2026-08-19T12:00:00+00:00")
+        )
+    with pytest.raises(GradeValueUndecodable) as raised:
+        on_grades(store)
+
+    assert type(raised.value) is GradeValueUndecodable
+    assert asked == []
+
+
+@pytest.mark.parametrize("failure", ["undecodable link", "conflicting confirmations"])
+def test_a_covered_failure_in_the_new_reads_leaves_every_count_unknown_with_one_record(
+    store: ProjectStateStore, caplog: pytest.LogCaptureFixture, failure: str
+) -> None:
+    """A link's homework ID stored as bytes that are not UTF-8, holding the word ZEBRA, or a
+    second confirmed link naming the result with the index dropped, each by the test's own SQL.
+    Grades' rows are as they read alone; no count, one record naming the type, no ZEBRA."""
+    reported(store, "done", DIAGRAM_ID)
+    _, result_id = linked_report(store)
+    rows = class_reads(store, TERM, "/student/grades", ZONE)[0]
+    with store._lock, store._connection:
+        if failure == "undecodable link":
+            store._connection.execute(
+                "UPDATE grade_homework_links SET assignment_id = CAST(X'5A45425241FF80' AS TEXT)"
+            )
+        else:
+            store._connection.execute("DROP INDEX grade_homework_links_one_homework")
+            store._connection.execute(
+                LINK_ROW, (store.student_id(), result_id, OTHER_ID, "2026-08-19T12:00:00+00:00")
+            )
+    with caplog.at_level(logging.WARNING, logger="blossom"):
+        read = on_grades(store)
+
+    named = "GradeValueUndecodable" if failure == "undecodable link" else "HomeworkLinksConflict"
+    assert read.rows == rows
+    assert read.to_check.unknown is True
+    assert read.to_check.lists == {}
+    assert records(caplog) == [CHECKS_LEFT_OUT + named]
+    assert "ZEBRA" not in caplog.text
+
+
+def test_a_linked_homework_row_that_can_t_be_read_leaves_every_count_unknown(
+    store: ProjectStateStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ "Cell Diagram"'s title changed to bytes that are not UTF-8 by the test's own SQL: its
+    class name and title are unknown, so the count is. The read names the row apart, and
+    Grades writes no record of its own."""
+    reported(store, "done", DIAGRAM_ID)
+    linked_report(store)
+    spoil(store, "assignments", "title", NOT_UTF8, DIAGRAM_ID)
+    with caplog.at_level(logging.WARNING, logger="blossom"):
+        read = on_grades(store)
+
+    assert read.to_check.unknown is True
+    assert read.to_check.lists == {}
+    assert records(caplog) == [
+        f"the homework record of {DIAGRAM_ID} cannot be read (UnicodeDecodeError)"
+    ]
+
+
+def test_an_unreadable_homework_row_no_link_names_is_never_read(
+    store: ProjectStateStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ "Lab Notebook"'s title changed to bytes that are not UTF-8 by the test's own SQL; no
+    link names it. Grades counts as with no such row, and nothing is recorded."""
+    reported(store, "done", DIAGRAM_ID)
+    class_id, _ = linked_report(store)
+    spoil(store, "assignments", "title", NOT_UTF8, OTHER_ID)
+    with caplog.at_level(logging.WARNING, logger="blossom"):
+        read = on_grades(store)
+
+    assert listed(read) == {class_id: [DIAGRAM]}
+    assert records(caplog) == []
+
+
+def test_a_linked_row_that_can_t_be_read_beside_a_result_that_never_counts_changes_nothing(
+    store: ProjectStateStore,
+) -> None:
+    """ "Cell Diagram"'s title changed to bytes that are not UTF-8 by the test's own SQL, its
+    link naming a result the school reports Valid: no count could hold it."""
+    reported(store, "done", DIAGRAM_ID)
+    class_id = saved(store, VALID)
+    decided(store, class_id, result_named(store, class_id))
+    spoil(store, "assignments", "title", NOT_UTF8, DIAGRAM_ID)
+
+    read = on_grades(store)
+
+    assert read.to_check.unknown is False
+    assert read.to_check.lists == {}
+
+
+def spied(asked: list[str], name: str, real: Callable[..., object]) -> Callable[..., object]:
+    """``real``, noting ``name`` in ``asked`` each time it is called."""
+
+    def call(*args: object) -> object:
+        asked.append(name)
+        return real(*args)
+
+    return call
+
+
+READS_SPIED = (
+    "homework_links",
+    "homework_classes",
+    "homework_readings",
+    "update_readings",
+    "hand_in_readings",
+    "status_reports_by_assignment",
+    "check_readings",
+)
+"""Every reader Check together could reach on Grades. With a report it asks the first five,
+in order, and never the school's reports or the family's checks."""
+
+
+def test_with_no_report_in_the_open_term_nothing_more_is_asked(
+    store: ProjectStateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A report of T2 alone, read with T1 open: the class rows only. With T2 open, the new
+    reads are asked, in order."""
+    reported(store, "done", DIAGRAM_ID)
+    saved(store, SECOND_TERM)
+    asked: list[str] = []
+    for name in READS_SPIED:
+        monkeypatch.setattr(store, name, spied(asked, name, getattr(store, name)))
+
+    read = on_grades(store)
+
+    assert read.rows == class_reads(store, TERM, "/student/grades", ZONE)[0]
+    assert read.to_check.unknown is False
+    assert read.to_check.lists == {}
+    assert asked == []
+    assert on_grades(store, SECOND).rows
+    assert asked == list(READS_SPIED[:5])
+
+
+def test_g3c_i2_grades_never_counts_a_result_reported_valid_or_a_pair_kept_apart(
+    store: ProjectStateStore,
+) -> None:
+    reported(store, "done", DIAGRAM_ID)
+    class_id = saved(store, VALID)
+    result_id = result_named(store, class_id)
+    decided(store, class_id, result_id)
+    with_valid = on_grades(store)
+    saved(store)
+    with_missing = on_grades(store)
+    decided(store, class_id, result_id, decision="apart")
+    kept_apart = on_grades(store)
+
+    assert listed(with_valid) == {}
+    assert listed(with_missing) == {class_id: [DIAGRAM]}
+    assert listed(kept_apart) == {}
+    assert not any(one.to_check.unknown for one in (with_valid, with_missing, kept_apart))
+
+
+def test_grades_lists_counted_homework_in_the_record_s_order(store: ProjectStateStore) -> None:
+    """Four counted homework in Biology: two due on one day, "Zeta" under the report code and
+    "Alpha" under the class's name, one due earlier, one undated. Listed by due date, then
+    class name, then title, the undated one last: class name before title puts "Zeta" first."""
+    made = [
+        ("07 BIO - C", "assignment-zeta", "Zeta", date(2026, 9, 20)),
+        (BIOLOGY, "assignment-alpha", "Alpha", date(2026, 9, 20)),
+        (BIOLOGY, "assignment-early", "Early", date(2026, 9, 10)),
+        (BIOLOGY, "assignment-undated", "Undated", None),
+    ]
+    store.put_on_record(
+        [
+            homework_named(course, assignment_id, title).model_copy(update={"due_date": due})
+            for course, assignment_id, title, due in made
+        ],
+        {},
+    )
+    class_id = saved(store, FOUR_MISSING)
+    pairs = {
+        "Seed Germination Log": "assignment-zeta",
+        "Cell Diagram": "assignment-alpha",
+        "Microscope Practice": "assignment-early",
+        "Osmosis with Potato Slices": "assignment-undated",
+    }
+    for title, assignment_id in pairs.items():
+        decided(store, class_id, result_named(store, class_id, title), assignment_id)
+        reported(store, "done", assignment_id)
+
+    assert listed(on_grades(store)) == {class_id: ["Early", "Zeta", "Alpha", "Undated"]}
+
+
+@pytest.mark.parametrize(
+    "error", [ValueError("synthetic"), sqlite3.OperationalError("disk I/O error")]
+)
+def test_g3c_i9_the_guard_catches_nothing_wider(
+    store: ProjectStateStore, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """A failure of the homework read that is no grade value's raises as itself."""
+    reported(store, "done", DIAGRAM_ID)
+    linked_report(store)
+
+    def failing(*_: object) -> None:
+        raise error
+
+    monkeypatch.setattr(store, "homework_readings", failing)
+
+    with pytest.raises(type(error)):
+        on_grades(store)
+
+
+# ------------------------------------------------------------- Grades' page
+
+GRADE_PAGES = {"her": "/student/grades", "parent": "/parent/grades", "open": "/student/grades"}
+CLASS_ROW_OR_PROBLEM = re.compile(
+    r'<section class="panel grade-card"[^>]*>(.*?)</section>|'
+    r'<p class="problem">Check together can\'t be worked out right now\.</p>',
+    re.S,
+)
+ROW_PART = re.compile(
+    r"<h3[^>]*>(.*?)</h3>"
+    r'|<p(?! class="details-link")[^>]*>(.*?)</p>'
+    r"|<a\b([^>]*)>(.*?)</a>",
+    re.S,
+)
+"""A part of a class row: its heading, a line, or a link, in the page's order."""
+TERM_GRADE = "School-reported grade 81.9% · B-"
+SUPPLIED = "Report added August 19"
+NO_TERM_GRADE = "\n".join(line for line in REPORT.split("\n") if "**Term Grade**" not in line)
+"""Wren's report with no term grade row, so its current report supplies no term grade."""
+
+
+def grades_of(reader: str, client: TestClient) -> str:
+    answer = client.get(GRADE_PAGES[reader], headers=PAGE_HEADERS)
+    assert answer.status_code == 200
+    return answer.text
+
+
+def grade_rows(page: str) -> list[object]:
+    """Grades' class rows in order, each as its parts: the name, each line as it reads and each
+    link by its accessible name or words, with the line that the count can't be worked out
+    where it stands."""
+    found: list[object] = []
+    for one in CLASS_ROW_OR_PROBLEM.finditer(page):
+        row = one.group(1)
+        if row is None:
+            found.append(CANT_WORK_OUT)
+            continue
+        parts = []
+        for heading, line, attributes, words in ROW_PART.findall(row):
+            if heading:
+                parts.append(said(heading))
+            elif attributes or words:
+                name = re.search(r'aria-label="([^"]*)"', attributes)
+                parts.append(f"link: {html.unescape(name.group(1)) if name else said(words)}")
+            else:
+                parts.append(said(line))
+        found.append(parts)
+    return found
+
+
+@pytest.mark.parametrize("reader", READERS)
+def test_grades_shows_check_together_with_its_list_after_the_term_grade_and_before_see(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        reported(store, "done", DIAGRAM_ID)
+        linked_report(store)
+        page = grades_of(reader, client)
+        (href,) = re.findall(r'href="([^"]*)" aria-label="[^"]*: to check together"', page)
+        details = client.get(html.unescape(href), headers=PAGE_HEADERS)
+
+    (row,) = grade_rows(page)
+    assert row == [
+        BIOLOGY,
+        TERM_GRADE,
+        SUPPLIED,
+        "Check together (1)",
+        f"link: {DIAGRAM}, {BIOLOGY}: to check together",
+        f"link: See {BIOLOGY}",
+    ]
+    assert html.unescape(href) == f"/student/assignments/{DIAGRAM_ID}"
+    assert details.status_code == 200
+    back = "Back to family review" if reader == "parent" else "Back to the week"
+    assert re.search(rf'<p class="return"><a href="[^"]*">{back}</a>', details.text)
+    assert CANT_WORK_OUT not in page
+
+
+def test_a_row_with_no_term_grade_shows_check_together_before_see(week: TestClient) -> None:
+    """The open household's Grades, its one report holding no term grade row."""
+    store = store_of(week)
+    reported(store, "done", DIAGRAM_ID)
+    class_id = saved(store, NO_TERM_GRADE)
+    decided(store, class_id, result_named(store, class_id))
+
+    (row,) = grade_rows(grades_of("her", week))
+
+    assert row == [
+        BIOLOGY,
+        "Check together (1)",
+        f"link: {DIAGRAM}, {BIOLOGY}: to check together",
+        f"link: See {BIOLOGY}",
+    ]
+
+
+def test_grades_with_nothing_to_check_shows_no_count_and_no_problem(week: TestClient) -> None:
+    store = store_of(week)
+    reported(store, "not_yet", DIAGRAM_ID)
+    linked_report(store)
+
+    page = grades_of("her", week)
+
+    assert "Check together" not in page
+    assert grade_rows(page) == [[BIOLOGY, TERM_GRADE, SUPPLIED, f"link: See {BIOLOGY}"]]
+
+
+def link_index_dropped(client: TestClient, result_id: str) -> None:
+    """The links index is dropped and a second confirmed link naming the result is stored for
+    "Lab Report", by the test's own SQL."""
+    conflicting(client, result_id)
+
+
+def link_not_utf8(client: TestClient, _: str) -> None:
+    """Each link's homework ID stored as bytes that are not UTF-8, by the test's own SQL."""
+    store = store_of(client)
+    with store._lock, store._connection:
+        store._connection.execute(
+            "UPDATE grade_homework_links SET assignment_id = CAST(X'5A45425241FF80' AS TEXT)"
+        )
+
+
+def homework_row_not_utf8(client: TestClient, _: str) -> None:
+    spoil(store_of(client), "assignments", "title", NOT_UTF8, DIAGRAM_ID)
+
+
+GRADES_FAILURES = {
+    "undecodable link": (link_not_utf8, "GradeValueUndecodable"),
+    "conflicting confirmations": (link_index_dropped, "HomeworkLinksConflict"),
+    "unreadable homework row": (homework_row_not_utf8, None),
+    "unknown homework": (made_unreadable, None),
+}
+
+
+@pytest.mark.parametrize("failure", GRADES_FAILURES)
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_grades_with_a_count_it_can_t_work_out_is_the_ordinary_page_with_c4_once(
+    reader: str, failure: str, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each failure is written by the test's own SQL, as its helper says. The page is Grades as
+    with no link, but for the one line before the first class row; a covered failure writes one
+    record naming its type, and nothing else is recorded but the homework read's own record."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record(
+            [in_week(LAB_ID, "Lab Report", date(2026, 8, 19)), in_week(DIAGRAM_ID, DIAGRAM)], {}
+        )
+        reported(store, "done", DIAGRAM_ID)
+        class_id = saved(store)
+        plain = grades_of(reader, client)
+        result_id = result_named(store, class_id)
+        decided(store, class_id, result_id)
+        change, named = GRADES_FAILURES[failure]
+        change(client, result_id)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            page = grades_of(reader, client)
+
+    rows = grade_rows(page)
+    assert rows[0] == CANT_WORK_OUT
+    assert rows[1:] == grade_rows(plain)
+    assert page.count(CANT_WORK_OUT) == 1
+    assert "Check together (" not in page
+    assert page.replace(f'\n      <p class="problem">{CANT_WORK_OUT}</p>', "") == plain
+    if named is not None:
+        assert records(caplog) == [CHECKS_LEFT_OUT + named]
+    elif failure == "unreadable homework row":
+        assert records(caplog) == [
+            f"the homework record of {DIAGRAM_ID} cannot be read (UnicodeDecodeError)"
+        ]
+    else:
+        assert records(caplog) == [
+            f"the update record of {DIAGRAM_ID} cannot be read (UnicodeDecodeError)"
+        ]
+    assert "ZEBRA" not in caplog.text
+
+
+def view_refused(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+    return client.post("/student/grades/view", data={"view": "not a term"}, headers=PAGE_HEADERS)
+
+
+def view_not_on_record(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+    def refused(*_: object) -> None:
+        raise ViewNotOnRecord
+
+    monkeypatch.setattr(store_of(client), "choose_view", refused)
+    return client.post("/student/grades/view", data={"view": "2026-2027 T1"}, headers=PAGE_HEADERS)
+
+
+def current_refused(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+    return client.post("/parent/grades/current-term", data={"shown": "x"}, headers=PAGE_HEADERS)
+
+
+def current_failing(error: Exception) -> Callable[[TestClient, pytest.MonkeyPatch], Answer]:
+    def answer(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+        def failing(*_: object) -> None:
+            raise error
+
+        monkeypatch.setattr(store_of(client), "set_current_context", failing)
+        return client.post(
+            "/parent/grades/current-term",
+            data={"shown": "2026-2027 T1", "term": "2026-2027 T1"},
+            headers=PAGE_HEADERS,
+        )
+
+    return answer
+
+
+def current_changed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Answer:
+    monkeypatch.setattr(
+        store_of(client), "set_current_context", lambda *_: ContextChanged(("2026-2027", "T2"))
+    )
+    return client.post(
+        "/parent/grades/current-term",
+        data={"shown": "2026-2027 T1", "term": "2026-2027 T1"},
+        headers=PAGE_HEADERS,
+    )
+
+
+CALLERS = {
+    "her view refused": ("her", view_refused, 422),
+    "her view not on record": ("her", view_not_on_record, 422),
+    "current term refused": ("parent", current_refused, 422),
+    "current term not on record": ("parent", current_failing(TermNotOnRecord()), 422),
+    "current term not saved": ("parent", current_failing(GradeReportNotSaved("no")), 500),
+    "current term lost": ("parent", current_failing(GradeTransactionLost("lost")), 500),
+    "current term changed": ("parent", current_changed, 409),
+}
+
+
+@pytest.mark.parametrize("failure", ["undecodable link", "conflicting confirmations"])
+@pytest.mark.parametrize("caller", CALLERS)
+def test_every_answer_grades_gives_shows_what_its_get_shows(
+    caller: str, failure: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each answer of the term forms, with a covered failure stored as its helper says: its
+    class rows, and the line that the count can't be worked out, are those of that reader's
+    own read of Grades."""
+    reader, answered, code = CALLERS[caller]
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record(
+            [in_week(LAB_ID, "Lab Report", date(2026, 8, 19)), in_week(DIAGRAM_ID, DIAGRAM)], {}
+        )
+        reported(store, "done", DIAGRAM_ID)
+        _, result_id = linked_report(store)
+        GRADES_FAILURES[failure][0](client, result_id)
+        read = grades_of(reader, client)
+        answer = answered(client, monkeypatch)
+
+    assert answer.status_code == code
+    assert grade_rows(read)[0] == CANT_WORK_OUT
+    assert grade_rows(answer.text) == grade_rows(read)
+
+
+CHECK_TOGETHER_READS = [
+    "grade_student",
+    "grade_homework_links",
+    "grade_student",
+    "grade_classes",
+    "grade_class_aliases",
+    "grade_homework_classes",
+    "assignments",
+    "student_reports",
+    "hand_in_events",
+]
+"""What Check together asks on Grades after the class reads, by the table each statement reads
+first: her record, her links, her record, the year's classes, their aliases and the homework
+class names, the linked homework, then her two chains for those homework: her updates and her
+hand-ins. Never the school's reports or the family's checks."""
+
+
+def grades_asked(reader: str, folder: pathlib.Path, status: str) -> tuple[list[str], str]:
+    """The statements Grades asks in a household whose linked result the school reports with
+    ``status``, beside her Done and two homework no link names, masked as ``masked`` does, and
+    the page."""
+    folder.mkdir()
+    with household_client(reader, folder) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record(
+            [
+                in_week(DIAGRAM_ID, DIAGRAM),
+                in_week(LAB_ID, "Lab Report", date(2026, 8, 19)),
+                in_week(OTHER_ID, "Lab Notebook"),
+            ],
+            {},
+        )
+        reported(store, "done", DIAGRAM_ID)
+        reported(store, "done", LAB_ID)
+        text = REPORT.replace(DIAGRAM_ROW, DIAGRAM_ROW.replace("Missing", status.ljust(7)))
+        class_id = saved(store, text)
+        decided(store, class_id, result_named(store, class_id))
+        grades_of(reader, client)
+        with Statements(state_of(client)) as seen:
+            page = grades_of(reader, client)
+    return masked(list(seen)), page
+
+
+def first_table(statement: str) -> str:
+    """The table a statement reads first."""
+    found = re.search(r"\bFROM\s+(\w+)", statement)
+    return found.group(1) if found else statement.split()[0]
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_grades_asks_the_same_statements_with_check_together_shown_or_not(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Two households seeded alike but for the linked result's Status, Valid or Missing: Grades
+    asks the same statements in the same order, generated IDs and moments aside. Check together
+    adds its reads after the class reads, inside the one hold, and nothing else."""
+    without, plain = grades_asked(reader, tmp_path / "valid", "Valid")
+    shown, counted = grades_asked(reader, tmp_path / "missing", "Missing")
+
+    assert "Check together" not in plain
+    assert "Check together (1)" in counted
+    assert shown == without
+    links = next(at for at, one in enumerate(shown) if "FROM grade_homework_links" in one)
+    added = shown[links - 1 : shown.index("COMMIT")]
+    assert [first_table(one) for one in added] == CHECK_TOGETHER_READS
+    named = [one for one in added if "json_each(" in one]
+    assert [first_table(one) for one in named] == [
+        "assignments",
+        "student_reports",
+        "hand_in_events",
+    ]
+    assert all(f"json_each('[\"{DIAGRAM_ID}\"]')" in one for one in named)
+    assert shown.count("BEGIN DEFERRED") == 1
+    assert [first_table(one) for one in shown].count("grade_homework_links") == 1
+
+
+@pytest.mark.parametrize("state", ["counted", "unknown", "covered failure"])
+@pytest.mark.parametrize("reader", READERS)
+def test_g3c_i1_a_read_of_grades_writes_nothing(
+    reader: str, state: str, tmp_path: pathlib.Path
+) -> None:
+    """The first read of Grades, with no read before it, for her, a signed-in parent and the
+    open household, with the homework counted, left unknown, or after a covered failure stored
+    by the test's own SQL: the record, the checkpoints and the traces are as they were."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        reported(store, "done", DIAGRAM_ID)
+        _, result_id = linked_report(store)
+        if state == "unknown":
+            made_unreadable(client, result_id)
+        elif state == "covered failure":
+            link_not_utf8(client, result_id)
+        world = closed_world(household_files(tmp_path), leaving_out=())
+        page = grades_of(reader, client)
+        after = closed_world(household_files(tmp_path), leaving_out=())
+
+    assert ("Check together (1)" in page) == (state == "counted")
+    assert (CANT_WORK_OUT in page) == (state != "counted")
+    assert after == world
+
+
+SCHOOL_REPORT_DAMAGES = {
+    "text that is not UTF-8": ("dated_by", NOT_UTF8),
+    "a channel that is none": ("channel", "bogus"),
+}
+
+
+@pytest.mark.parametrize("whose", [LAB_ID, DIAGRAM_ID], ids=["unlinked", "linked"])
+@pytest.mark.parametrize("damage", SCHOOL_REPORT_DAMAGES)
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_a_school_report_row_that_can_t_be_read_never_touches_grades(
+    reader: str, damage: str, whose: str, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The school's Missing email on "Lab Report" or on the linked "Cell Diagram", one column of
+    its row then changed by the test's own SQL. Grades never reads the school's reports: it
+    answers as before, its count included, and records nothing."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record(
+            [in_week(LAB_ID, "Lab Report", date(2026, 8, 19)), in_week(DIAGRAM_ID, DIAGRAM)], {}
+        )
+        store.record_status_reports(
+            whose, [school_said("missing", SourceChannel.EMAIL, date(2026, 8, 18))]
+        )
+        reported(store, "done", DIAGRAM_ID)
+        linked_report(store)
+        before = grades_of(reader, client)
+        spoil(store, "status_reports", *SCHOOL_REPORT_DAMAGES[damage], whose)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            after = grades_of(reader, client)
+
+    assert "Check together (1)" in before
+    assert after == before
+    assert records(caplog) == []
+
+
+@pytest.mark.parametrize("whose", [LAB_ID, DIAGRAM_ID], ids=["unlinked", "linked"])
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_a_family_check_that_can_t_be_read_never_touches_grades(
+    reader: str, whose: str, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Her Done beside the school's Missing email, marked checked, then the check's note
+    changed to bytes that are not UTF-8 by the test's own SQL, on "Lab Report" or on the linked
+    "Cell Diagram". Grades never reads the family's checks: it answers as before and records
+    nothing."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record(
+            [in_week(LAB_ID, "Lab Report", date(2026, 8, 19)), in_week(DIAGRAM_ID, DIAGRAM)], {}
+        )
+        store.record_status_reports(
+            whose, [school_said("missing", SourceChannel.EMAIL, date(2026, 8, 18))]
+        )
+        reported(store, "done", whose)
+        if whose != DIAGRAM_ID:
+            reported(store, "done", DIAGRAM_ID)
+        basis = status_of(store, whose).check_basis
+        assert basis is not None
+        store.mark_checked(
+            whose,
+            basis,
+            None,
+            expected_check=None,
+            basis_now=lambda: status_of(store, whose).check_basis,
+            now=NOW,
+            today=PLAN_DATE,
+        )
+        linked_report(store)
+        before = grades_of(reader, client)
+        spoil(store, "family_checks", "note", NOT_UTF8, whose)
+        with caplog.at_level(logging.WARNING, logger="blossom"):
+            after = grades_of(reader, client)
+
+    assert "Check together (1)" in before
+    assert after == before
+    assert records(caplog) == []
+
+
+GEOMETRY_REPORT = REPORT.replace("07 BIO - C", "08 GEO - A").replace("Biology", "Geometry")
+"""Wren's report as a second class, Geometry, its "Cell Diagram" reported Missing."""
+GEOMETRY_ID = "assignment-geometry-diagram"
+
+
+def unknown_by(kind: str, store: ProjectStateStore, assignment_id: str) -> None:
+    """The homework left unknown: her Done in updates whose note is changed to bytes that are not
+    UTF-8, beside a hand-in still to turn in; or its own row's title changed so; each by the
+    test's own SQL."""
+    reported(store, "done", assignment_id)
+    if kind == "indeterminate":
+        handed(store, NEEDS_HAND_IN, assignment_id)
+        spoil(store, "student_reports", "note", NOT_UTF8, assignment_id)
+    else:
+        spoil(store, "assignments", "title", NOT_UTF8, assignment_id)
+
+
+@pytest.mark.parametrize("kind", ["indeterminate", "unreadable row"])
+@pytest.mark.parametrize("unknown_in", ["Biology", "Geometry"])
+def test_one_homework_left_unknown_blanks_a_counted_homework_s_row_too(
+    store: ProjectStateStore, unknown_in: str, kind: str
+) -> None:
+    """Biology and Geometry, each with a linked Missing result: the homework of one counts,
+    the homework of the other is left unknown. No row keeps its count, whichever class is read
+    first."""
+    store.put_on_record([homework_named("08 GEO - A", GEOMETRY_ID, "Geometry diagram")], {})
+    biology = saved(store)
+    geometry = saved(store, GEOMETRY_REPORT)
+    decided(store, biology, result_named(store, biology))
+    decided(store, geometry, result_named(store, geometry), GEOMETRY_ID)
+    counted, unknown = (
+        (DIAGRAM_ID, GEOMETRY_ID) if unknown_in == "Geometry" else (GEOMETRY_ID, DIAGRAM_ID)
+    )
+    reported(store, "done", counted)
+    alone = on_grades(store)
+    unknown_by(kind, store, unknown)
+
+    read = on_grades(store)
+
+    assert list(alone.to_check.lists) == [geometry if counted == GEOMETRY_ID else biology]
+    assert read.to_check.unknown is True
+    assert read.to_check.lists == {}
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_a_counted_class_beside_an_unknown_homework_shows_no_count_on_the_page(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """ "Cell Diagram" counts in Biology; Geometry's homework is left unknown by its updates,
+    changed by the test's own SQL. The page says the count can't be worked out, once, and no
+    row shows a count."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        geometry_homework = in_week(GEOMETRY_ID, "Geometry diagram")
+        store.put_on_record(
+            [
+                in_week(DIAGRAM_ID, DIAGRAM),
+                geometry_homework.model_copy(update={"course": "08 GEO - A"}),
+            ],
+            {},
+        )
+        reported(store, "done", DIAGRAM_ID)
+        linked_report(store)
+        geometry = saved(store, GEOMETRY_REPORT)
+        decided(store, geometry, result_named(store, geometry), GEOMETRY_ID)
+        counted = grades_of(reader, client)
+        unknown_by("indeterminate", store, GEOMETRY_ID)
+        page = grades_of(reader, client)
+
+    assert "Check together (1)" in counted
+    assert page.count(CANT_WORK_OUT) == 1
+    assert grade_rows(page)[0] == CANT_WORK_OUT
+    assert "Check together (" not in page
+
+
+def test_the_viewer_s_chosen_term_is_the_one_grades_counts(tmp_path: pathlib.Path) -> None:
+    """T1 is current, with nothing to check; T2 holds the counted result. Her choice of T2 on
+    Grades' own form shows its count."""
+    with household_client("her", tmp_path) as client:
+        sign_in_as(client, "her")
+        store = store_of(client)
+        store.put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        reported(store, "done", DIAGRAM_ID)
+        saved(store, VALID)
+        second = saved(store, SECOND_TERM)
+        decided_in(store, second, result_named_in(store, second, DIAGRAM, "T2"), DIAGRAM_ID, "T2")
+        current = grades_of("her", client)
+        chose = client.post(
+            "/student/grades/view", data={"view": "2026-2027 T2"}, headers=PAGE_HEADERS
+        )
+        chosen = grades_of("her", client)
+
+    assert "Check together (" not in current
+    assert chose.status_code == 303
+    assert grade_rows(chosen) == [
+        [
+            BIOLOGY,
+            TERM_GRADE,
+            SUPPLIED,
+            "Check together (1)",
+            f"link: {DIAGRAM}, {BIOLOGY}: to check together",
+            f"link: See {BIOLOGY}",
+        ]
+    ]
+
+
+ACCOUNT_STATES = {
+    "Done": (("done",), (), (), HerAccount(done=True, turned_in=False)),
+    "Done, then its Undo": (("done", "undo"), (), (), HerAccount(done=False, turned_in=False)),
+    "Done, then Not yet": (("done", "not_yet"), (), (), HerAccount(done=False, turned_in=False)),
+    "Not yet, Done, then its Undo": (
+        ("not_yet", "done", "undo"),
+        (),
+        (),
+        HerAccount(done=False, turned_in=False),
+    ),
+    "Done, Not yet, then its Undo": (
+        ("done", "not_yet", "undo"),
+        (),
+        (),
+        HerAccount(done=True, turned_in=False),
+    ),
+    "Done, its Undo, then Done": (
+        ("done", "undo", "done"),
+        (),
+        (),
+        HerAccount(done=True, turned_in=False),
+    ),
+    "Turned in": ((), (TURNED_IN,), (), HerAccount(done=False, turned_in=True)),
+    "Turned in, then its undo": (
+        (),
+        (TURNED_IN, "undo"),
+        (),
+        HerAccount(done=False, turned_in=False),
+    ),
+    "still to hand in, Turned in, then its undo": (
+        (),
+        (NEEDS_HAND_IN, TURNED_IN, "undo"),
+        (),
+        HerAccount(done=False, turned_in=False),
+    ),
+    "Turned in, still to hand in, then its undo": (
+        (),
+        (TURNED_IN, NEEDS_HAND_IN, "undo"),
+        (),
+        HerAccount(done=False, turned_in=True),
+    ),
+    "updates that can't be read": (
+        ("done",),
+        (TURNED_IN, "undo"),
+        ("student_reports",),
+        HerAccount(done=None, turned_in=False),
+    ),
+    "a hand-in that can't be read": (
+        ("done", "undo"),
+        (TURNED_IN,),
+        ("hand_in_events",),
+        HerAccount(done=False, turned_in=None),
+    ),
+    "both can't be read": (
+        ("done",),
+        (TURNED_IN,),
+        ("student_reports", "hand_in_events"),
+        HerAccount(done=None, turned_in=None),
+    ),
+}
+"""Her two chains, each made by the record's own writes, the tables whose notes are then made
+unreadable, and her account as Done or Turned in stands after them."""
+
+
+@pytest.mark.parametrize("state", ACCOUNT_STATES)
+def test_grades_reads_her_account_as_her_pages_do_from_what_stands(
+    store: ProjectStateStore, state: str
+) -> None:
+    """Grades' reader of her two chains gives the Done and Turned in that stand after every
+    report, Undo and Not yet, never one said and since taken back, and unknown for a chain that
+    can't be read, each note made so by the test's own SQL. Her pages' reader agrees, and so
+    does the standing."""
+    updates, hand_ins, spoiled, expected = ACCOUNT_STATES[state]
+    for said in updates:
+        if said == "undo":
+            store.undo_report(
+                DIAGRAM_ID,
+                store.student_reports(DIAGRAM_ID)[-1].report_id,
+                now=NOW,
+                today=PLAN_DATE,
+            )
+        else:
+            reported(store, said, DIAGRAM_ID)
+    for said in hand_ins:
+        if said == "undo":
+            head = store.hand_in_readings([DIAGRAM_ID]).readable[DIAGRAM_ID].head_id
+            assert head is not None
+            store.undo_hand_in(DIAGRAM_ID, head, now=NOW, today=PLAN_DATE)
+        else:
+            handed(store, said)
+    for table in spoiled:
+        spoil(store, table, "note", NOT_UTF8, DIAGRAM_ID)
+
+    with store.reading():
+        on_grades_reads = account_read(
+            store.update_readings([DIAGRAM_ID]),
+            store.hand_in_readings([DIAGRAM_ID]),
+            DIAGRAM_ID,
+        )
+        on_her_pages = account_of(read_everything(store, store), DIAGRAM_ID)
+
+    assert on_grades_reads == expected
+    assert on_her_pages == expected
+    assert check_standing(on_grades_reads) is check_standing(on_her_pages)
+
+
+def test_grades_reads_only_the_linked_homework_and_her_chains_for_them(
+    store: ProjectStateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Cell Diagram" linked and Done beside "Lab Notebook", Done and on record with no link:
+    the homework read and both of her chain readers are each handed the linked homework alone."""
+    reported(store, "done", DIAGRAM_ID)
+    reported(store, "done", OTHER_ID)
+    class_id, _ = linked_report(store)
+    handed_to: list[tuple[str, list[str]]] = []
+    for name in ("homework_readings", "update_readings", "hand_in_readings"):
+        monkeypatch.setattr(store, name, noting(handed_to, name, getattr(store, name)))
+
+    read = on_grades(store)
+
+    assert listed(read) == {class_id: [DIAGRAM]}
+    assert handed_to == [
+        ("homework_readings", [DIAGRAM_ID]),
+        ("update_readings", [DIAGRAM_ID]),
+        ("hand_in_readings", [DIAGRAM_ID]),
+    ]
+
+
+def noting(
+    handed_to: list[tuple[str, list[str]]], name: str, real: Callable[..., object]
+) -> Callable[[Iterable[str]], object]:
+    """``real``, noting in ``handed_to`` the IDs each call hands it, under ``name``."""
+
+    def call(ids: Iterable[str]) -> object:
+        wanted = list(ids)
+        handed_to.append((name, wanted))
+        return real(wanted)
+
+    return call
+
+
+@pytest.mark.parametrize("reader", ["her", "parent"])
+def test_a_list_beside_a_count_that_can_t_be_worked_out_is_never_shown(
+    reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Grades handed lists and an unknown count together, built by hand: the page says the
+    count can't be worked out, once, and shows no count and no list."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        store.put_on_record([in_week(DIAGRAM_ID, DIAGRAM)], {})
+        reported(store, "done", DIAGRAM_ID)
+        class_id, _ = linked_report(store)
+        real = grades_read
+
+        def both(
+            store: ProjectStateStore, term: tuple[str, str], base: str, zone: tzinfo
+        ) -> GradesRead:
+            read = real(store, term, base, zone)
+            item = ListedHomework(DIAGRAM_ID, BIOLOGY, DIAGRAM, date(2026, 8, 20))
+            return GradesRead(read.rows, GradesToCheck({class_id: (item,)}, True))
+
+        monkeypatch.setattr("blossom.routes.grades.grades_read", both)
+        page = grades_of(reader, client)
+
+    assert page.count(CANT_WORK_OUT) == 1
+    assert grade_rows(page)[0] == CANT_WORK_OUT
+    assert "Check together (" not in page
+    assert ": to check together" not in page
+
+
+def test_a_listed_title_is_written_as_the_homework_s_own_text(week: TestClient) -> None:
+    """A title as on record sits in the authored-text span her other titles use, so a long
+    word in it wraps within the line."""
+    store = store_of(week)
+    reported(store, "done", DIAGRAM_ID)
+    linked_report(store)
+
+    page = grades_of("her", week)
+
+    assert re.search(
+        r'<a class="assignment-link" href="/student/assignments/assignment-cell-diagram" '
+        r'aria-label="Cell Diagram, Biology: to check together">'
+        r'<span class="authored-text">Cell Diagram</span></a>',
+        page,
+    )

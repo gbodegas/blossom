@@ -113,6 +113,7 @@ from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes.forms import fields_of
 from blossom.routes.homework_scores import (
     FoundState,
+    GradesToCheck,
     HomeworkFound,
     HomeworkRow,
     NoList,
@@ -120,7 +121,10 @@ from blossom.routes.homework_scores import (
     PairStanding,
     ResultHomework,
     Withheld,
+    account_read,
+    checks_left_out,
     cues_left_out,
+    grades_to_check,
     homework_found,
     other_results,
     read_grade_facts,
@@ -1920,38 +1924,80 @@ def term_summary(values: CurrentValues, names: dict[str, str]) -> TermSummary | 
 
 @dataclass(frozen=True)
 class ClassRow:
-    """A class on Grades: its name, its details' address when the term is on record, and its
-    term grade when a current report supplied one."""
+    """A class on Grades: its name, its details' address when the term is on record, its term
+    grade when a current report supplied one, and its ID."""
 
     name: str
     link: str | None
     reported: bool
     summary: TermSummary | None
+    class_id: str
 
 
-def class_rows(store: GradebookRecords, term: Term, base: str, zone: tzinfo) -> list[ClassRow]:
-    """Each class of the open term's year, by name, with its term grade in that term."""
+def class_reads(
+    store: GradebookRecords, term: Term, base: str, zone: tzinfo
+) -> tuple[list[ClassRow], dict[str, ClassTermRead]]:
+    """Each class of the open term's year, by name, with its term grade in that term, and each
+    reported class's read of the term, by class ID: the same reads, made once."""
     year, label = term
     terms = store.terms_of_year(year)
     position = terms.index(label) + 1 if label in terms else None
     rows = []
+    reads: dict[str, ClassTermRead] = {}
     for one in store.classes_in(year, label):
         link = None
         if position is not None:
             link = CLASS_AT.format(base=base, class_id=one.class_id, n=position)
         summary = None
         if one.reported:
-            read = store.class_term(one.class_id, label)
+            read = reads[one.class_id] = store.class_term(one.class_id, label)
             summary = term_summary(read.current, report_names(read.reports, zone))
-        rows.append(ClassRow(one.name, link, one.reported, summary))
-    return rows
+        rows.append(ClassRow(one.name, link, one.reported, summary, one.class_id))
+    return rows, reads
+
+
+@dataclass(frozen=True)
+class GradesRead:
+    """What Grades reads for its open term: its class rows, and Check together's lists."""
+
+    rows: list[ClassRow]
+    to_check: GradesToCheck
+
+
+def grades_read(store: ProjectStateStore, term: Term, base: str, zone: tzinfo) -> GradesRead:
+    """Grades' reads of ``term`` in one hold of the record, in order: its class rows, unguarded;
+    then, when a class of it holds a report, Check together's reads and lists, which a covered
+    failure leaves unknown with one record. Nothing else is caught."""
+    with store.reading():
+        rows, reads = class_reads(store, term, base, zone)
+        if not reads:
+            return GradesRead(rows, GradesToCheck({}, False))
+        try:
+            links = read_links(store)
+            with store.strict_text():
+                mapping = store.homework_classes(term[0])
+            named = [link.assignment_id for link in links if link.confirmed]
+            homework = store.homework_readings(named)
+            ids = [one.assignment_id for one in homework.readable]
+            # Her two chains for those homework and nothing else: never the school's reports or
+            # the family's checks, so a row of theirs that can't be read never reaches Grades.
+            updates = store.update_readings(ids)
+            hand_ins = store.hand_in_readings(ids)
+            to_check = grades_to_check(
+                reads, links, mapping, homework, lambda one: account_read(updates, hand_ins, one)
+            )
+        except GradeValueUndecodable as error:
+            checks_left_out(error)
+            return GradesRead(rows, GradesToCheck({}, True))
+    return GradesRead(rows, to_check)
 
 
 def grades_page(
     request: Request, state: ApplicationState, *, said: str | None = None, status_code: int = 200
 ) -> Response:
     """Grades for whoever reads: the term the viewer chose, else the current one, each class's
-    term grade in it, the chooser, and a parent's controls in a parent's voice. A read alone."""
+    term grade and homework to check together in it, the chooser, and a parent's controls in a
+    parent's voice. A read alone."""
     store = state.project_state
     contexts = store.grade_contexts()
     view = store.view_of(cast(Viewer, viewer_of(request)))
@@ -1961,7 +2007,12 @@ def grades_page(
     terms = list(contexts.terms)
     if contexts.current is not None and contexts.current not in terms:
         terms.append(contexts.current)
-    rows = class_rows(store, open_term, base, state.clock.zone) if open_term else []
+    read = (
+        grades_read(store, open_term, base, state.clock.zone)
+        if open_term
+        else GradesRead([], GradesToCheck({}, False))
+    )
+    rows = read.rows
     make_current = None
     if (
         family
@@ -1988,6 +2039,7 @@ def grades_page(
             "said": said,
             "open_term": term_named(open_term) if open_term else None,
             "rows": rows,
+            "to_check": read.to_check,
             "reported": any(row.reported for row in rows),
             "chooser": chooser,
             "following": view is None,

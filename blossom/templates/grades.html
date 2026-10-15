@@ -5,7 +5,10 @@
 {% block title %}Blossom - Grades{% endblock %}
 {#
   Grades for whoever reads: the term the reader chose, else the current one, and each class of
-  its year with the term grade the school reported and the report that supplied it. A reader
+  its year with the term grade the school reported and the report that supplied it, then its
+  homework to check together, each linking to its details; when that count can't be worked
+  out, one line says so before the first class and no class shows a count or a list, whatever
+  lists were worked out beside it. A reader
   who chose another term is told which term is current, with a press that follows it again. A
   parent's voice adds the way to add a report and, on a term other than the current one, the
   choice of it as the current term, a form of its own. No name appears here.
@@ -51,7 +54,8 @@
   {% endif %}
   {% if open_term %}
     <h2>{{ open_term }}</h2>
-    {% if reported %}
+    {% if reported %}{% if to_check.unknown %}
+      <p class="problem">Check together can't be worked out right now.</p>{% endif %}
       {% for row in rows %}
         <section class="panel grade-card" aria-labelledby="class-{{ loop.index }}">
           <h3 id="class-{{ loop.index }}"><span class="authored-text">{{ row.name }}</span></h3>
@@ -60,7 +64,11 @@
             <p class="note">{{ row.summary.supplied_by }}</p>
           {% elif not row.reported %}
             <p class="note">{{ no_report_added }}</p>
-          {% endif %}
+          {% endif %}{% with listed = () if to_check.unknown else to_check.lists.get(row.class_id, ()) %}{% if listed %}
+          <p class="note">Check together ({{ listed|length }})</p>
+          <ul class="details-link">{% for item in listed %}
+            <li><a class="assignment-link" href="{{ details_href(item.assignment_id) }}" aria-label="{{ item.title }}, {{ item.course }}: to check together"><span class="authored-text">{{ item.title }}</span></a></li>{% endfor %}
+          </ul>{% endif %}{% endwith %}
           {% if row.link %}
             <p class="details-link"><a href="{{ row.link }}"><span class="authored-text">See {{ row.name }}</span></a></p>
           {% endif %}
