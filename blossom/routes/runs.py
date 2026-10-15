@@ -762,6 +762,16 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
 
 
 @dataclass(frozen=True)
+class SeenEnding:
+    """What a press has seen of its run's ended record when it holds no ``RunState``: the
+    graph's ``committed`` result, as its status, its reason and the past-due work it kept."""
+
+    status: str
+    reason: str
+    past_due: tuple[PastDueWork, ...] | None = None
+
+
+@dataclass(frozen=True)
 class PlanMade:
     """How a planning request ended: the run as the parent reads it, and the record
     ``settle_run`` returned when its plan was published."""
@@ -1001,9 +1011,9 @@ class Planning:
             # Nobody waits for this ending, so its steps are never read.
             in_the_background(self.state, ending, f"ending run {self.run_id}")
             return None
-        # One allowance for the ending and, when it is seen converted, the read of its steps.
+        # One allowance for the ending and, when it is seen out of time, the read of its steps.
         loop = asyncio.get_running_loop()
-        allowance_ends = loop.time() + min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS)
+        allowance_ends = loop.time() + self.ending_wait()
         try:
             ended = await bounded(ending, allowance_ends - loop.time())
         except Unfinished as unfinished:
@@ -1013,9 +1023,35 @@ class Planning:
         except Exception:
             logger.exception("run %s could not be ended; its deadline ends it", self.run_id)
             return None
-        if reason == TIMED_OUT or ended is None or ended.reason != TIMED_OUT:
+        return await self.as_recorded(ended, asked=reason, wait=allowance_ends - loop.time())
+
+    def ending_wait(self) -> float:
+        """How long a press waits on the store as its run ends: what is left of the run's
+        time and the settle grace, at most the store's own wait."""
+        return min(STORE_WAIT_SECONDS, self.budget.remaining() + SETTLE_GRACE_SECONDS)
+
+    async def as_recorded(
+        self, run: RunState | SeenEnding | None, *, asked: str, wait: float
+    ) -> PlanMade | None:
+        """The answer when the press has seen its run's ended record and it says
+        ``timed_out``: that reason, the steps it keeps, read for at most ``wait`` seconds,
+        and the past-due work it kept. A run ended ``timed_out`` may be another writer's
+        account, so it is followed whatever ``asked`` was.
+
+        ``None``, and the caller answers for ``asked``, when the press saw no ended record,
+        or its own ending as asked under a reason only it records, or another in-time
+        reason, which is answered as asked."""
+        if run is None or run.status != "ended":
             return None
-        return self.ended_view(TIMED_OUT, await self.stored_steps(allowance_ends - loop.time()))
+        if run.reason == asked and asked != TIMED_OUT:
+            return None
+        # An in-time reason other than the one asked, as when the graph committed its own
+        # ending and the route then ended the run interrupted, is answered as asked.
+        if run.reason not in (TIMED_OUT, asked):
+            return None
+        return self.ended_view(
+            run.reason, await self.stored_steps(wait), past_due_views(run.past_due or ())
+        )
 
     def ended_view(
         self, reason: str, steps: Sequence[StepRecord], past_due: Sequence[PastDueView] = ()
@@ -1245,6 +1281,11 @@ class Planning:
             if error.run is None:
                 raise
             tidy_later(self.run_id, self.state)
+            made = await self.as_recorded(
+                error.run, asked=error.run.reason, wait=self.ending_wait()
+            )
+            if made is not None:
+                return made
             return self.ended_view(
                 error.run.reason, self.budget.steps, past_due_views(error.run.past_due or ())
             )
@@ -1272,22 +1313,21 @@ class Planning:
         committed = result.get("committed")
         if committed is not None:
             # The record's own reason and past-due work, as it committed them, never ones
-            # worked out here; and, when it ended out of time in place of the graph's own
-            # ending, the steps it keeps, never the graph's.
+            # worked out here; and, when it ended out of time, the steps it keeps.
             tidy_later(self.run_id, self.state)
-            reason = str(committed["reason"])
-            steps = run_view(self.run_id, self.plan_date, {**result, "outcome": ""}).steps
-            if reason == TIMED_OUT and result.get("outcome") != TIMED_OUT:
-                left = self.budget.remaining()
-                steps = await self.stored_steps(
-                    min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS)
-                )
             kept = committed.get("past_due")
-            return self.ended_view(
-                reason,
-                steps,
-                past_due_views(() if kept is None else PAST_DUE_WORK.validate_json(str(kept))),
+            seen = SeenEnding(
+                status=str(committed["status"]),
+                reason=str(committed["reason"]),
+                past_due=None if kept is None else PAST_DUE_WORK.validate_json(str(kept)),
             )
+            made = await self.as_recorded(
+                seen, asked=str(result.get("outcome")), wait=self.ending_wait()
+            )
+            if made is not None:
+                return made
+            ended = run_view(self.run_id, self.plan_date, {**result, "outcome": ""})
+            return self.ended_view(seen.reason, ended.steps, past_due_views(seen.past_due or ()))
         view = run_view(self.run_id, self.plan_date, result)
         if not view.waiting:
             made = await self.end(INTERRUPTED)
@@ -1321,7 +1361,8 @@ async def make_plan(
     its draft is settled by ``settle_run`` alone, which publishes only while the
     run is running, before its deadline and with the evening's plan unchanged.
 
-    The answer follows the record. A settle refused before it began is
+    When the press has seen its run's record, the answer follows it; an ending it
+    goes on without is answered as asked. A settle refused before it began is
     ``NotSaved``; any other failure is read back by the run's id before the
     deadline, and past it, or when the reading doesn't finish, the answer is
     ``Unconfirmed``. A canceled request cancels its graph without waiting for it to
