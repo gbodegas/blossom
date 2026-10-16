@@ -968,8 +968,9 @@ answered with where it stands, after the gate has checked who is asking, at
 any age; only a request whose id names no run is held to its age, and one made
 a week or more ago starts nothing. A refusal made before anything starts
 carries a code and says no plan was started. When the record can't be read in
-time to say whether the id names a run, a request that would be refused before
-admission, which reads the id again, answers 503 instead, since its run may
+time to say whether the id names a run, a request that ends before admission
+has read the id again and given its answer, refused or stopped on the way by
+any failure, admission's own included, answers 503 instead, since its run may
 exist. On each plan route `not_valid` is the only 422 body: it
 covers a date not written exactly YYYY-MM-DD and a nonempty `newest_plan` that
 names no published plan of the evening asked for, which admission checks in

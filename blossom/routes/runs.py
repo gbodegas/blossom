@@ -47,6 +47,7 @@ from blossom.agent.runs import (
     Unfinished,
     bounded,
     run_config,
+    settled_quietly,
     time_limit_step,
 )
 from blossom.agent.steps import (
@@ -829,6 +830,22 @@ def in_the_background(state: ApplicationState, call: Callable[[], Any], what: st
     detach(state, asyncio.get_running_loop().run_in_executor(None, call), what)
 
 
+def end_if_inserted(state: ApplicationState, run_id: str, admission: "asyncio.Future[Any]") -> None:
+    """Once a canceled admission's thread ends: end the run it inserted for this request, which
+    no graph will run, and nothing else. An admission that found a run under the id, or another
+    running, or refused, or failed, inserted nothing."""
+    inserted = False
+    with contextlib.suppress(BaseException):
+        inserted = admission.result() is None
+    if not inserted:
+        return
+    in_the_background(
+        state,
+        partial(state.drafts.end_run, run_id, reason=INTERRUPTED),
+        f"ending the canceled run {run_id}",
+    )
+
+
 async def tidy_thread(thread_id: str, state: ApplicationState) -> None:
     """Clear a thread nothing will resume, or log why not and leave it to the sweep.
 
@@ -920,22 +937,24 @@ async def admit(
         basis=basis,
         basis_of_the_evening=basis_of_the_evening,
     )
+    work = asyncio.get_running_loop().run_in_executor(None, admission)
     try:
-        blocking = await bounded(admission, wait + ADMISSION_ALLOWANCE_SECONDS)
+        done, _ = await asyncio.wait({work}, timeout=wait + ADMISSION_ALLOWANCE_SECONDS)
+        if work not in done:
+            raise Unfinished(work)
+        blocking = work.result()
     except (StaleBasis, UnknownBasis):
         raise
     except Exception as error:
-        if not isinstance(error, Unfinished | StoreBusy | WriterBusy):
+        if isinstance(error, Unfinished):
+            work.add_done_callback(settled_quietly)
+        elif not isinstance(error, StoreBusy | WriterBusy):
             logger.exception("run %s could not be admitted", run_id)
         raise CouldNotStart from error
     except BaseException:
-        # A cancel. The insert may still land after it; ending it now leaves at most a
-        # row with no graph behind it, which ends at its own deadline.
-        in_the_background(
-            state,
-            partial(state.drafts.end_run, run_id, reason=INTERRUPTED),
-            f"ending the canceled run {run_id}",
-        )
+        # A cancel. The admission goes on in its thread; once it ends, a run it inserted for
+        # this request is ended interrupted, and a run the id already named is left alone.
+        work.add_done_callback(partial(end_if_inserted, state, run_id))
         raise
     if blocking is not None:
         if blocking.run_id == run_id:
@@ -1412,6 +1431,19 @@ async def make_plan(
     budget = RunBudget(clock=state.monotonic) if budget is None else budget
     run_id = thread_for(plan_date) if run_id is None else run_id
     await admit(state, run_id, plan_date, budget, basis, basis_of_the_evening=basis_of_the_evening)
+    return await run_admitted(graph, plan_date, state, budget, run_id)
+
+
+async def run_admitted(
+    graph: CompiledPlanGraph,
+    plan_date: date,
+    state: ApplicationState,
+    budget: RunBudget,
+    run_id: str,
+) -> PlanMade:
+    """Run the graph for a run ``admit`` has just recorded, and settle it, inside ``budget``:
+    ``make_plan`` after its admission. Nothing may wait between the admission and this call,
+    so a cancel always finds the run here to end."""
     planning = Planning(state, run_id, plan_date, budget)
     try:
         return await planning.run(graph)
@@ -1711,6 +1743,48 @@ async def run_of_the_request(state: ApplicationState, run_id: str) -> RunState |
         raise RunUnread(run_id) from error
 
 
+DEFINITE_AT_ADMISSION: Final = (SameRun, AlreadyPlanning, StaleBasis, UnknownBasis)
+"""What ``admit`` raises only after it read the run_id again inside its write transaction: the
+answers that stay definite when a JSON request's own lookup of that id couldn't be read."""
+
+
+class AnsweredAtAdmission(Exception):
+    """One of ``DEFINITE_AT_ADMISSION``, raised by ``admit`` itself, carried as such so a route
+    tells it apart from the same type raised anywhere else before admission."""
+
+    def __init__(self, answer: Exception) -> None:
+        super().__init__(type(answer).__name__)
+        self.answer = answer
+
+
+class NewRequestRefused(Exception):
+    """A JSON request refused as a new one before anything starts, with its refusal."""
+
+    def __init__(self, refusal: PlanRefusalView) -> None:
+        super().__init__(refusal.code)
+        self.refusal = refusal
+
+
+async def admitted(
+    state: ApplicationState, run_id: str, plan_date: date, budget: RunBudget, basis: str
+) -> None:
+    """``admit`` for a JSON request, whose basis must be a plan of ``plan_date``, with what it
+    raises after its own read of the run_id carried as ``AnsweredAtAdmission``."""
+    try:
+        await admit(state, run_id, plan_date, budget, basis, basis_of_the_evening=True)
+    except DEFINITE_AT_ADMISSION as answer:
+        raise AnsweredAtAdmission(answer) from answer
+
+
+def unknown_outcome(error: Exception) -> HTTPException:
+    """What a JSON request answers when its run_id couldn't be looked up and it stopped before
+    admission read that id again: the unconfirmed 503. An exception no step announces is logged
+    by its kind."""
+    if not isinstance(error, NewRequestRefused | HTTPException):
+        logger.error("a plan request stopped before admission on %s", type(error).__name__)
+    return unread_outcome()
+
+
 def unread_outcome() -> HTTPException:
     """What a JSON request answers when its run_id couldn't be looked up and it would otherwise
     be refused as a new request: 503, unconfirmed, since the id may name a run."""
@@ -1808,9 +1882,9 @@ def plan_request_answers(
             "description": (
                 "In a sentence: no model key, a run that couldn't start, or a plan made but not "
                 "saved. Or the unconfirmed sentence when the record couldn't be read in time to "
-                "say whether the run_id names a run and the request would otherwise be refused "
-                "before admission, which reads the id again; its outcome is unknown, so retry "
-                "with the same run_id and issued_at."
+                "say whether the run_id names a run and the request ended before admission had "
+                "read the id again and given its answer, refused or stopped on the way; its "
+                "outcome is unknown, so retry with the same run_id and issued_at."
             ),
         },
     }

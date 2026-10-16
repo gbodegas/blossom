@@ -9,10 +9,12 @@ that, with scripted models so nothing is ever sent.
 
 import asyncio
 import json
+import logging
 import pathlib
 import re
 import sqlite3
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
@@ -43,11 +45,13 @@ from blossom.reconciliation import SourceChannel
 from blossom.routes import runs as run_routes
 from blossom.routes import student as student_routes
 from blossom.routes.runs import (
+    ADMISSION_ALLOWANCE_SECONDS,
     NOTHING_TO_SCHEDULE,
     AlreadyPlanning,
     CouldNotStart,
     NotSaved,
     PlanGraphs,
+    SameRun,
     Unconfirmed,
     already_planning,
     ended_sentences,
@@ -55,7 +59,14 @@ from blossom.routes.runs import (
     plan_graphs,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
-from blossom.stores.drafts import DraftRecord, DraftsStore, RunState, StoreBusy
+from blossom.stores.drafts import (
+    DraftRecord,
+    DraftsStore,
+    RunState,
+    StaleBasis,
+    StoreBusy,
+    UnknownBasis,
+)
 from blossom.stores.project_state import Assignment
 from blossom.views import PastDueView
 from tests.support import (
@@ -135,9 +146,11 @@ def browser(
     critic: Callable[[], CriticVerdict] = accepting,
     clock: Callable[[], float] = monotonic,
     real_clock: FrozenClock | None = None,
+    raise_server_exceptions: bool = True,
 ) -> TestClient:
     """Her page with scripted models. ``key`` false is a household without an API key;
-    ``clock`` is the monotonic clock its runs are timed on, and ``real_clock`` pins real time."""
+    ``clock`` is the monotonic clock its runs are timed on, and ``real_clock`` pins real time.
+    With ``raise_server_exceptions`` false, an exception that reaches the framework is its 500."""
     environ = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"} if key else {}
     app = create_app(
         fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **environ),
@@ -148,7 +161,12 @@ def browser(
         app.dependency_overrides[plan_graphs] = scripted_graphs(
             lambda: [plan()], lambda: [critic()]
         )
-    return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
+    return TestClient(
+        app,
+        follow_redirects=False,
+        headers=SAME_ORIGIN,
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 SHOWN = f"{PAGE}?show_plan=1"
@@ -1312,7 +1330,12 @@ def test_each_json_answer_to_a_press_says_her_updates_are_saved_in_the_readers_w
     async def refused(*args: object, **kwargs: object) -> object:
         raise error()
 
-    monkeypatch.setattr(student_routes, "make_plan", refused)
+    async def admitted(*args: object, **kwargs: object) -> None:
+        return None
+
+    # The JSON route admits its run and then runs it; the run is what answers here.
+    monkeypatch.setattr(student_routes, "admitted", admitted)
+    monkeypatch.setattr(student_routes, "run_admitted", refused)
     parent = reader == "a parent"
     client = client_for(signed_in_household(tmp_path)) if parent else browser()
     client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
@@ -2348,20 +2371,26 @@ HER_PLAN_POST = {
     "another_evening, 409, naming today; one made a week or more ago is expired, "
     "409; and one\n"
     "whose newest_plan is behind the evening's newest plan is newer_plan, 409. "
-    "When the\n"
-    "record can't be read in time to say whether the run_id is used, a request "
-    "that would be\n"
-    "refused before admission, by those two refusals, an evening with nothing "
-    "left to plan, a\n"
-    "week that couldn't be read or no model key, answers 503 instead, since its "
-    "run may\n"
-    "exist. A body that decodes but isn't a plan request is not_valid, 422, the "
-    "route's only\n"
-    "422: evening must be written YYYY-MM-DD, and a nonempty newest_plan must "
-    "name a\n"
-    "published plan for that evening. One the framework can't decode at all is "
-    "its 400. None\n"
-    "of these starts anything.\n"
+    "When the record\n"
+    "can't be read in time to say whether the run_id is used, a request that ends "
+    "before\n"
+    "admission has read the run_id again and given its answer is a 503 instead, "
+    "since its run may\n"
+    "exist: one refused by those two refusals or for an evening with nothing left "
+    "to plan, and\n"
+    "one stopped on the way by a week that couldn't be read, no model key, a "
+    "graph that couldn't\n"
+    "be built, an admission that failed, ran late or couldn't commit, or any "
+    "other failure. A\n"
+    "body that decodes but isn't a plan request is not_valid, 422, the route's "
+    "only 422: evening\n"
+    "must be written YYYY-MM-DD, and a nonempty newest_plan must name a published "
+    "plan for that\n"
+    "evening. One the framework can't decode at all is its 400. None of these "
+    "starts a run,\n"
+    "though an admission that ran late can still record one, which refuses "
+    "presses until its\n"
+    "deadline.\n"
     "\n"
     "A run that ends without a plan, because the checks never passed, the\n"
     "model did not answer, or it failed on the way, is a 409 saying why in the\n"
@@ -2462,9 +2491,10 @@ HER_PLAN_POST = {
             "start, or a plan made but not saved. Or the "
             "unconfirmed sentence when the record couldn't be read "
             "in time to say whether the run_id names a run and the "
-            "request would otherwise be refused before admission, "
-            "which reads the id again; its outcome is unknown, so "
-            "retry with the same run_id and issued_at.",
+            "request ended before admission had read the id again "
+            "and given its answer, refused or stopped on the way; "
+            "its outcome is unknown, so retry with the same run_id "
+            "and issued_at.",
             "content": {
                 "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
             },
@@ -2493,26 +2523,30 @@ FAMILY_PLAN_POST = {
     "A run_id already used answers its run as it stands now, 200, at any age, or, "
     "for another\n"
     "evening, used_for_another_evening, 409. A new request made a week or more "
-    "ago is\n"
-    "expired, 409; one for an evening that has passed is passed, 409, and one "
-    "past the edge\n"
-    "of the calendar is beyond_calendar, 409, each naming today; one whose "
-    "newest_plan is\n"
-    "behind the evening's newest plan is newer_plan, 409. When the record can't "
-    "be read in\n"
-    "time to say whether the run_id is used, a request that would be refused "
-    "before\n"
-    "admission, by the first three refusals, an evening with nothing left to "
-    "plan, a week\n"
-    "that couldn't be read or no model key, answers 503 instead, since its run "
-    "may exist. A\n"
-    "body that decodes but isn't a plan request is not_valid, 422, the route's "
-    "only 422:\n"
-    "plan_date must be written YYYY-MM-DD, and a nonempty newest_plan must name a "
-    "published\n"
-    "plan for that evening. One the framework can't decode at all is its 400. "
-    "None of these\n"
-    "starts anything.\n"
+    "ago is expired,\n"
+    "409; one for an evening that has passed is passed, 409, and one past the "
+    "edge of the\n"
+    "calendar is beyond_calendar, 409, each naming today; one whose newest_plan "
+    "is behind the\n"
+    "evening's newest plan is newer_plan, 409. When the record can't be read in "
+    "time to say\n"
+    "whether the run_id is used, a request that ends before admission has read "
+    "the run_id again\n"
+    "and given its answer is a 503 instead, since its run may exist: one refused "
+    "by the first\n"
+    "three refusals or for an evening with nothing left to plan, and one stopped "
+    "on the way by a\n"
+    "week that couldn't be read, no model key, a graph that couldn't be built, an "
+    "admission that\n"
+    "failed, ran late or couldn't commit, or any other failure. A body that "
+    "decodes but isn't a\n"
+    "plan request is not_valid, 422, the route's only 422: plan_date must be "
+    "written YYYY-MM-DD,\n"
+    "and a nonempty newest_plan must name a published plan for that evening. One "
+    "the framework\n"
+    "can't decode at all is its 400. None of these starts a run, though an "
+    "admission that ran\n"
+    "late can still record one, which refuses presses until its deadline.\n"
     "\n"
     "An evening with nothing left to plan is a 409, before and after the run: a "
     "report of hers\n"
@@ -2611,9 +2645,10 @@ FAMILY_PLAN_POST = {
             "start, or a plan made but not saved. Or the "
             "unconfirmed sentence when the record couldn't be read "
             "in time to say whether the run_id names a run and the "
-            "request would otherwise be refused before admission, "
-            "which reads the id again; its outcome is unknown, so "
-            "retry with the same run_id and issued_at.",
+            "request ended before admission had read the id again "
+            "and given its answer, refused or stopped on the way; "
+            "its outcome is unknown, so retry with the same run_id "
+            "and issued_at.",
             "content": {
                 "application/json": {"schema": {"$ref": "#/components/schemas/ProblemView"}}
             },
@@ -2922,19 +2957,20 @@ def test_a_json_requests_budget_starts_at_the_handlers_entry(
 
     routes = student_routes if route == "/student/plans" else parent_routes
     now = [1000.0]
-    real_lookup, real_make = routes.run_of_the_request, routes.make_plan
+    real_lookup, real_admitted = routes.run_of_the_request, routes.admitted
     spent: list[float] = []
 
     async def slow(state: Any, run_id: str) -> Any:  # noqa: ANN401
         now[0] += 2.0
         return await real_lookup(state, run_id)
 
-    async def watched(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        spent.append(kwargs["budget"].elapsed())
-        return await real_make(*args, **kwargs)
+    async def watched(*args: Any) -> Any:  # noqa: ANN401
+        state, run_id, plan_date, budget, basis = args
+        spent.append(budget.elapsed())
+        return await real_admitted(state, run_id, plan_date, budget, basis)
 
     monkeypatch.setattr(routes, "run_of_the_request", slow)
-    monkeypatch.setattr(routes, "make_plan", watched)
+    monkeypatch.setattr(routes, "admitted", watched)
     with browser(clock=lambda: now[0]) as client:
         scripted = client.app.dependency_overrides[plan_graphs]  # type: ignore[attr-defined]
 
@@ -3017,6 +3053,295 @@ def test_a_used_id_whose_lookup_fails_is_never_refused_before_admission(
     assert again.status_code == 503
     assert again.json() == {"detail": "Blossom couldn't confirm that the new plan was saved."}
     assert len(runs) == 1
+
+
+NOT_CONFIRMED = {"detail": "Blossom couldn't confirm that the new plan was saved."}
+FAMILY_PLANS = "/parent/plans"
+COULD_NOT_START_SAID = {
+    PLANS: "Blossom couldn't start a plan this time. Try again in a moment. "
+    "Your homework updates are saved.",
+    FAMILY_PLANS: "Blossom couldn't start a plan this time. Try again in a moment. "
+    "Her homework updates are saved.",
+}
+
+
+def plan_routes(route: str) -> Any:  # noqa: ANN401
+    """The module whose handler answers ``route``."""
+    from blossom.routes import parent as parent_routes
+
+    return student_routes if route == PLANS else parent_routes
+
+
+def plan_body(client: TestClient, route: str) -> dict[str, str]:
+    return her_plan_body(client) if route == PLANS else family_plan_body(client)
+
+
+ADMISSION_UNKNOWN = ["the graph can't be built", "the store is busy", "admission runs late"]
+
+
+def admission_fails(
+    how: str, monkeypatch: pytest.MonkeyPatch, client: TestClient, finished: threading.Event
+) -> None:
+    """Admission fails, ``how``, before it reads the run_id; ``finished`` is set once an
+    admission's thread has ended. Running late, the thread sleeps past the store's wait and the
+    allowance the route gives it, then admits as the store would."""
+    drafts = state_of(client).drafts
+    real = drafts.admit_run
+    if how == "the graph can't be built":
+        scripted = client.app.dependency_overrides[plan_graphs]  # type: ignore[attr-defined]
+
+        def unbuildable(
+            state: Annotated[ApplicationState, Depends(get_application_state)],
+        ) -> PlanGraphs:
+            def build() -> CompiledPlanGraph:
+                msg = "the graph couldn't be built"
+                raise RuntimeError(msg)
+
+            graphs: PlanGraphs = scripted(state)
+            return replace(graphs, build=build)
+
+        client.app.dependency_overrides[plan_graphs] = unbuildable  # type: ignore[attr-defined]
+        return
+
+    def busy(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        finished.set()
+        raise StoreBusy
+
+    def late(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        try:
+            time.sleep(0.5 + ADMISSION_ALLOWANCE_SECONDS + 0.5)
+            return real(*args, **kwargs)
+        finally:
+            finished.set()
+
+    if how == "admission runs late":
+        monkeypatch.setattr(run_routes, "STORE_WAIT_SECONDS", 0.5)
+    monkeypatch.setattr(drafts, "admit_run", busy if how == "the store is busy" else late)
+
+
+@pytest.mark.parametrize("how", ADMISSION_UNKNOWN)
+@pytest.mark.parametrize("route", [PLANS, FAMILY_PLANS])
+def test_a_used_id_whose_lookup_fails_is_unconfirmed_when_admission_fails_before_its_read(
+    route: str, how: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry inside its week whose lookup can't read the record, and whose graph can't be
+    built, or whose admission meets a busy store or runs past the route's wait, before
+    admission has read the id: 503, its outcome unknown, and nothing new recorded."""
+    finished = threading.Event()
+    with browser() as client:
+        body = plan_body(client, route)
+        client.post(route, json=body)
+        lookups_fail(monkeypatch, client)
+        admission_fails(how, monkeypatch, client, finished)
+        again = client.post(route, json=body)
+        assert how == "the graph can't be built" or finished.wait(5)
+        runs = runs_recorded(client)
+
+    assert again.status_code == 503
+    assert again.json() == NOT_CONFIRMED
+    assert len(runs) == 1
+
+
+@pytest.mark.parametrize("route", [PLANS, FAMILY_PLANS])
+def test_a_new_requests_admission_that_runs_late_still_records_its_run_after_the_answer(
+    route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An admission the route stopped waiting for goes on in its thread: the request answers
+    that the run couldn't start, and the run it admits afterwards is recorded running."""
+    finished = threading.Event()
+    with browser() as client:
+        body = plan_body(client, route)
+        admission_fails("admission runs late", monkeypatch, client, finished)
+        made = client.post(route, json=body)
+        answered = runs_recorded(client)
+        assert finished.wait(5)
+        later = runs_recorded(client)
+
+    assert made.status_code == 503
+    assert made.json() == {"detail": COULD_NOT_START_SAID[route]}
+    assert answered == []
+    assert later == [(body["run_id"], PLAN_DATE.isoformat(), "running")]
+
+
+@pytest.mark.parametrize("answer", ["SameRun", "AlreadyPlanning", "StaleBasis", "UnknownBasis"])
+@pytest.mark.parametrize("route", [PLANS, FAMILY_PLANS])
+def test_a_used_id_whose_lookup_fails_gets_no_admission_answer_from_a_step_before_it(
+    route: str, answer: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Admission's own answers count only when admission gives them: a step before it that
+    raises one of them, with the lookup unread, leaves the outcome unknown, 503."""
+    with browser() as client:
+        body = plan_body(client, route)
+        client.post(route, json=body)
+        run = state_of(client).drafts.run_status(body["run_id"], reconcile=False)
+        assert run is not None
+        raised = {
+            "SameRun": SameRun(run),
+            "AlreadyPlanning": AlreadyPlanning(run),
+            "StaleBasis": StaleBasis(PLAN_DATE.isoformat()),
+            "UnknownBasis": UnknownBasis(body["newest_plan"]),
+        }[answer]
+
+        def answering(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+            raise raised
+
+        lookups_fail(monkeypatch, client)
+        monkeypatch.setattr(plan_routes(route), "require_model", answering)
+        again = client.post(route, json=body)
+        runs = runs_recorded(client)
+
+    assert again.status_code == 503
+    assert again.json() == NOT_CONFIRMED
+    assert len(runs) == 1
+
+
+@pytest.mark.parametrize("route", [PLANS, FAMILY_PLANS])
+def test_a_retry_whose_admission_finds_its_run_and_cant_commit_is_unconfirmed(
+    route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The household's run is running under the id. A retry whose lookup fails reaches
+    admission, which reads the id, finds that run, and can't commit: 503, its outcome unknown,
+    and the run still running."""
+    with browser() as client:
+        drafts = state_of(client).drafts
+        body = plan_body(client, route)
+        deadline = state_of(client).monotonic() + 60
+        assert drafts.admit_run(body["run_id"], plan_date=PLAN_DATE, deadline_mono=deadline) is None
+        real_admit, real_wait = drafts.admit_run, drafts._wait_until
+        waits: list[float] = []
+
+        def failing_commit(ends: float) -> None:
+            # The session's second wait is the one before its commit.
+            waits.append(ends)
+            if len(waits) == 2:
+                msg = "disk I/O error"
+                raise sqlite3.OperationalError(msg)
+            real_wait(ends)
+
+        def admitting(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            setattr(drafts, "_wait_until", failing_commit)  # noqa: B010
+            try:
+                return real_admit(*args, **kwargs)
+            finally:
+                delattr(drafts, "_wait_until")
+
+        lookups_fail(monkeypatch, client)
+        monkeypatch.setattr(drafts, "admit_run", admitting)
+        again = client.post(route, json=body)
+        runs = runs_recorded(client)
+
+    assert len(waits) == 2
+    assert again.status_code == 503
+    assert again.json() == NOT_CONFIRMED
+    assert runs == [(body["run_id"], PLAN_DATE.isoformat(), "running")]
+
+
+class NotYetKnown(Exception):
+    """An exception no step of a plan request announces."""
+
+
+BEFORE_ADMISSIONS_READ = [
+    "the refusal",
+    "require_work",
+    "require_model",
+    "graph_for_a_run",
+    "admission before its read",
+]
+
+
+def step_fails(step: str, route: str, monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    """``step`` raises ``NotYetKnown``: a route's own step, or admission's store call before it
+    reads the run_id."""
+
+    def raising(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        raise NotYetKnown
+
+    async def raising_later(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        raise NotYetKnown
+
+    if step == "admission before its read":
+        monkeypatch.setattr(state_of(client).drafts, "_reconciled", raising)
+    elif step == "the refusal":
+        monkeypatch.setattr(plan_routes(route), "expired_request", raising)
+    else:
+        monkeypatch.setattr(
+            plan_routes(route), step, raising_later if step == "require_work" else raising
+        )
+
+
+@pytest.mark.parametrize("step", BEFORE_ADMISSIONS_READ)
+@pytest.mark.parametrize("route", [PLANS, FAMILY_PLANS])
+def test_a_used_id_whose_lookup_fails_is_unconfirmed_whichever_step_before_the_read_fails(
+    route: str, step: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With the lookup unread, an exception no step announces, from any step up to admission's
+    own read of the run_id, is 503, its outcome unknown. One that reaches the route is logged
+    by its kind alone; admission logs its own."""
+    with browser() as client:
+        body = plan_body(client, route)
+        client.post(route, json=body)
+        lookups_fail(monkeypatch, client)
+        step_fails(step, route, monkeypatch, client)
+        with caplog.at_level(logging.ERROR, logger="blossom.routes.runs"):
+            again = client.post(route, json=body)
+        runs = runs_recorded(client)
+    said = [
+        (record.getMessage(), record.exc_info is None)
+        for record in caplog.records
+        if record.name == "blossom.routes.runs" and record.levelno >= logging.ERROR
+    ]
+
+    assert again.status_code == 503
+    assert again.json() == NOT_CONFIRMED
+    assert len(runs) == 1
+    if step == "admission before its read":
+        assert said == [(f"run {body['run_id']} could not be admitted", False)]
+    else:
+        assert said == [("a plan request stopped before admission on NotYetKnown", True)]
+
+
+FAILED_ON_THE_WAY = {
+    "detail": "Blossom couldn't finish a reliable plan this time. Your homework updates are saved."
+}
+
+
+@pytest.mark.parametrize("step", BEFORE_ADMISSIONS_READ)
+@pytest.mark.parametrize("route", [PLANS, FAMILY_PLANS])
+def test_a_new_request_whose_step_before_admissions_read_fails_is_answered_as_it_was(
+    route: str, step: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the lookup read and the run_id new, the same failures keep each route's answers:
+    hers is a 500 from the refusal, a 409 that the plan couldn't be finished from the checks
+    and the graph's build, and a 503 that it couldn't start from admission; the family's is a
+    500 from the refusal and the checks, the run's interrupted record from the graph's build,
+    and the 503 from admission. Nothing is recorded."""
+    with browser(raise_server_exceptions=False) as client:
+        body = plan_body(client, route)
+        step_fails(step, route, monkeypatch, client)
+        made = client.post(route, json=body)
+        runs = runs_recorded(client)
+
+    hers = route == PLANS
+    if step == "the refusal" or (not hers and step in {"require_work", "require_model"}):
+        assert made.status_code == 500
+    elif step == "admission before its read":
+        assert made.status_code == 503
+        assert made.json() == {"detail": COULD_NOT_START_SAID[route]}
+    elif hers:
+        assert made.status_code == 409
+        assert made.json() == FAILED_ON_THE_WAY
+    else:
+        assert made.status_code == 201
+        assert made.json() == {
+            "thread_id": body["run_id"],
+            "plan_date": PLAN_DATE.isoformat(),
+            "outcome": "interrupted",
+            "draft_id": None,
+            "waiting": False,
+            "steps": [],
+            "past_due": [],
+        }
+    assert runs == []
 
 
 def test_the_queue_reads_what_waits_and_each_evenings_newest_plan_in_one_reading(

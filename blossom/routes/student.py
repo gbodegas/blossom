@@ -198,6 +198,7 @@ from blossom.routes.runs import (
     UNCONFIRMED,
     UNDECODABLE,
     AlreadyPlanning,
+    AnsweredAtAdmission,
     Clause,
     CouldNotStart,
     Graphs,
@@ -205,6 +206,7 @@ from blossom.routes.runs import (
     HerPlanRequest,
     HerPlanRoute,
     Needs,
+    NewRequestRefused,
     NotSaved,
     PlanAnswer,
     PlanRow,
@@ -215,6 +217,7 @@ from blossom.routes.runs import (
     Sentences,
     Unconfirmed,
     a_week_old,
+    admitted,
     answered_by_its_run,
     being_made,
     calendar_date,
@@ -241,6 +244,7 @@ from blossom.routes.runs import (
     repeats_a_field,
     require_model,
     require_work,
+    run_admitted,
     run_check,
     run_notice,
     run_of_the_form,
@@ -248,7 +252,7 @@ from blossom.routes.runs import (
     run_replaced,
     run_status_view,
     saved_sentence,
-    unread_outcome,
+    unknown_outcome,
 )
 from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
@@ -1615,6 +1619,43 @@ def plan_for_today(state: State) -> StudentPlanView:
     return plan
 
 
+async def her_press_answered(
+    error: Exception, state: ApplicationState, evening: date, *, parent: bool
+) -> JSONResponse:
+    """What her JSON route answers when a step from ``require_work`` to the end of the run
+    raises ``error``, or when admission answers the press: an answer the error names, the
+    error itself when it is one, and otherwise a 409 saying the run failed on the way."""
+    try:
+        raise error
+    except SameRun as same:
+        return await answered_by_its_run(state, same.run, evening, HerPlanRefusalView)
+    except StaleBasis:
+        return plan_refusal(json_newer_plan(evening, HerPlanRefusalView))
+    except UnknownBasis:
+        return plan_refusal(NOT_HER_PLAN)
+    except AlreadyPlanning as planning:
+        raise AlreadyPlanning(planning.run, parent=parent) from None
+    except NotSaved as refused:
+        raise HTTPException(
+            refused.status_code, detail=not_saved(parent=parent, kept=refused.kept)
+        ) from None
+    except CouldNotStart as stopped:
+        raise HTTPException(
+            stopped.status_code, detail=f"{COULD_NOT_START} {saved_sentence(parent=parent)}"
+        ) from None
+    except Unconfirmed as unconfirmed:
+        return JSONResponse(
+            unconfirmed.view().model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
+        )
+    except HTTPException:
+        raise
+    except Exception as failed:
+        logger.exception("today's plan failed on the way")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail=ended_without_a_plan(INTERRUPTED, parent=parent)
+        ) from failed
+
+
 async def make_todays_plan(
     request: Request, state: State, graphs: Graphs, plan: Annotated[HerPlanRequest, Body()]
 ) -> StudentPlanView | JSONResponse:
@@ -1630,14 +1671,17 @@ async def make_todays_plan(
     A run_id already used answers its run as it stands now, 200, at any age, or, for another
     evening, used_for_another_evening, 409. A new request for an evening that isn't today is
     another_evening, 409, naming today; one made a week or more ago is expired, 409; and one
-    whose newest_plan is behind the evening's newest plan is newer_plan, 409. When the
-    record can't be read in time to say whether the run_id is used, a request that would be
-    refused before admission, by those two refusals, an evening with nothing left to plan, a
-    week that couldn't be read or no model key, answers 503 instead, since its run may
-    exist. A body that decodes but isn't a plan request is not_valid, 422, the route's only
-    422: evening must be written YYYY-MM-DD, and a nonempty newest_plan must name a
-    published plan for that evening. One the framework can't decode at all is its 400. None
-    of these starts anything.
+    whose newest_plan is behind the evening's newest plan is newer_plan, 409. When the record
+    can't be read in time to say whether the run_id is used, a request that ends before
+    admission has read the run_id again and given its answer is a 503 instead, since its run may
+    exist: one refused by those two refusals or for an evening with nothing left to plan, and
+    one stopped on the way by a week that couldn't be read, no model key, a graph that couldn't
+    be built, an admission that failed, ran late or couldn't commit, or any other failure. A
+    body that decodes but isn't a plan request is not_valid, 422, the route's only 422: evening
+    must be written YYYY-MM-DD, and a nonempty newest_plan must name a published plan for that
+    evening. One the framework can't decode at all is its 400. None of these starts a run,
+    though an admission that ran late can still record one, which refuses presses until its
+    deadline.
 
     A run that ends without a plan, because the checks never passed, the
     model did not answer, or it failed on the way, is a 409 saying why in the
@@ -1660,6 +1704,8 @@ async def make_todays_plan(
     issued_at = issue_time_from(plan.issued_at, now)
     if issued_at is None:
         return plan_refusal(NOT_HER_PLAN)
+    today = state.clock.today()
+    parent = parent_reads(request)
     # A run_id already used is answered by its run, whatever its age or the evening's.
     try:
         found, unread = await run_of_the_request(state, plan.run_id), False
@@ -1667,65 +1713,38 @@ async def make_todays_plan(
         found, unread = None, True
     if found is not None:
         return await answered_by_its_run(state, found, evening, HerPlanRefusalView)
-    today = state.clock.today()
-    refused = (
-        not_her_evening(evening, today)
-        if evening != today
-        else a_week_old(HerPlanRefusalView)
-        if expired_request(issued_at, now)
-        else None
-    )
-    if refused is not None:
-        # An id that couldn't be looked up may name a run, so it gets no new request's refusal.
-        if unread:
-            raise unread_outcome()
-        return plan_refusal(refused)
-    parent = parent_reads(request)
+    checked = False
     try:
-        try:
-            await require_work(state, today, budget)
-            require_model(graphs)
-        except HTTPException:
-            # Admission would have read the id again; without it, the outcome is unknown.
-            if unread:
-                raise unread_outcome() from None
-            raise
-        made = await make_plan(
-            graph_for_a_run(graphs),
-            today,
-            state,
-            budget=budget,
-            run_id=plan.run_id,
-            basis=plan.newest_plan,
-            basis_of_the_evening=True,
+        # Up to admission's own read of the run_id. With the lookup unread, every way out of
+        # here but an answer admission gives after that read leaves the outcome unknown.
+        refused = (
+            not_her_evening(evening, today)
+            if evening != today
+            else a_week_old(HerPlanRefusalView)
+            if expired_request(issued_at, now)
+            else None
         )
-    except SameRun as same:
-        return await answered_by_its_run(state, same.run, evening, HerPlanRefusalView)
-    except StaleBasis:
-        return plan_refusal(json_newer_plan(evening, HerPlanRefusalView))
-    except UnknownBasis:
-        return plan_refusal(NOT_HER_PLAN)
-    except AlreadyPlanning as error:
-        raise AlreadyPlanning(error.run, parent=parent) from None
-    except NotSaved as error:
-        raise HTTPException(
-            error.status_code, detail=not_saved(parent=parent, kept=error.kept)
-        ) from None
-    except CouldNotStart as error:
-        raise HTTPException(
-            error.status_code, detail=f"{COULD_NOT_START} {saved_sentence(parent=parent)}"
-        ) from None
-    except Unconfirmed as unconfirmed:
-        return JSONResponse(
-            unconfirmed.view().model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
-        )
-    except HTTPException:
-        raise
+        if refused is not None:
+            raise NewRequestRefused(refused)
+        checked = True
+        await require_work(state, today, budget)
+        require_model(graphs)
+        graph = graph_for_a_run(graphs)
+        await admitted(state, plan.run_id, today, budget, plan.newest_plan)
+    except AnsweredAtAdmission as answered:
+        return await her_press_answered(answered.answer, state, evening, parent=parent)
     except Exception as error:
-        logger.exception("today's plan failed on the way")
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, detail=ended_without_a_plan(INTERRUPTED, parent=parent)
-        ) from error
+        if unread:
+            raise unknown_outcome(error) from None
+        if isinstance(error, NewRequestRefused):
+            return plan_refusal(error.refusal)
+        if not checked:
+            raise
+        return await her_press_answered(error, state, evening, parent=parent)
+    try:
+        made = await run_admitted(graph, today, state, budget, plan.run_id)
+    except Exception as error:
+        return await her_press_answered(error, state, evening, parent=parent)
     if made.record is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,

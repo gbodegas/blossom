@@ -249,7 +249,7 @@ class Unfinished(TimeoutError):
         self.work = work
 
 
-def _settled_quietly(work: "asyncio.Future[Any]") -> None:
+def settled_quietly(work: "asyncio.Future[Any]") -> None:
     """Read how an abandoned call ended, so its failure is not reported as unhandled."""
     with contextlib.suppress(BaseException):
         work.exception()
@@ -266,10 +266,10 @@ async def bounded[T](call: Callable[[], T], wait: float) -> T:
     try:
         done, _ = await asyncio.wait({work}, timeout=max(0.0, wait))
     except BaseException:
-        work.add_done_callback(_settled_quietly)
+        work.add_done_callback(settled_quietly)
         raise
     if work not in done:
-        work.add_done_callback(_settled_quietly)
+        work.add_done_callback(settled_quietly)
         raise Unfinished(work)
     return work.result()
 

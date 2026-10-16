@@ -1577,7 +1577,12 @@ def test_each_503_from_the_family_json_route_says_her_updates_are_saved(
     async def refused(*args: object, **kwargs: object) -> object:
         raise error()
 
-    monkeypatch.setattr(parent_routes, "make_plan", refused)
+    async def admitted(*args: object, **kwargs: object) -> None:
+        return None
+
+    # The JSON route admits its run and then runs it; the run is what answers here.
+    monkeypatch.setattr(parent_routes, "admitted", admitted)
+    monkeypatch.setattr(parent_routes, "run_admitted", refused)
     with browser() as client:
         response = client.post(
             "/parent/plans", json=family_plan_body(client, PLAN_DATE.isoformat())

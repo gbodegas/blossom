@@ -67,10 +67,12 @@ With the app running as the README describes:
   starts nothing and answers 409 with a code (`expired`, `another_evening`,
   `newer_plan`); a `run_id` used for another evening answers 409
   `used_for_another_evening`; when the record can't be read in time to say
-  whether the `run_id` is used, a request that would be refused before
-  admission, by one of those codes, an evening with nothing left to plan, a
-  week that couldn't be read or no model key, answers 503, since its run may
-  exist; and a body that decodes but
+  whether the `run_id` is used, a request that ends before admission has read
+  the `run_id` again and given its answer, refused by one of those codes or
+  for an evening with nothing left to plan, or stopped on the way by a week
+  that couldn't be read, no model key, a graph that couldn't be built, an
+  admission that failed, ran late or couldn't commit, or any other failure,
+  answers 503, since its run may exist; and a body that decodes but
   isn't a request answers 422 `not_valid`, the only 422 body, while one that
   can't be decoded at all gets the framework's 400. `not_valid` covers an
   evening not written exactly YYYY-MM-DD and a nonempty `newest_plan` that
