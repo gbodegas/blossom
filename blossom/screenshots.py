@@ -21,12 +21,12 @@ cards of one layer, one name and one effective due date, so two cards of one scr
 rows unless one is an assigned card and the other the due card of its due date. A row can hold
 cards that aren't copies of one card, such as two assigned cards due on one date under
 different days in different screenshots; such a row keeps every assigned date with the cards
-that show it and, when they disagree, settles on none. Every card that is clipped or can't be
-dated or read stays a visible item with its reason, keyed by its screenshot, its reading's
-digest and its place. A decoded reading's digest leaves out the selected student, name and
-note, so a reading that differs only there keeps its items' keys; a reading that doesn't
-decode is digested whole, text that can hold a name included. A digest is a hash of that
-text, not an anonymized form of it.
+that show it and, when they disagree, settles on none, keeping its instructions once for each
+day. Every card that is clipped or can't be dated or read stays a visible item with its
+reason, keyed by its screenshot, its reading's digest and its place. A decoded reading's digest
+leaves out the selected student, name and note, so a reading that differs only there keeps its
+items' keys; a reading that doesn't decode is digested whole, text that can hold a name
+included. A digest is a hash of that text, not an anonymized form of it.
 ``homework_rows`` gives the draft store each row's key from the same assembly, so the rows
 the parent sees and the keys the store keeps can't disagree.
 """
@@ -43,7 +43,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_
 
 from blossom.grades.draft import folded
 from blossom.intake import ANOTHER_OCCURRENCE, DAY_LINE, PortalCard, Reading, a_date, read_cards
-from blossom.school_instructions import instruction_words
+from blossom.reconciliation import SourceChannel
+from blossom.school_instructions import InstructionSeen, instruction_words
 from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA_VERSION
 from blossom.stores.import_drafts import DraftRow, StoredReading
 
@@ -342,7 +343,7 @@ class ScreenshotRow(NamedTuple):
     key: str
     reading: Reading
     marks: frozenset[str]
-    assigned: tuple[AssignedDay, ...] = ()
+    assigned: tuple[AssignedDay, ...]
 
     @property
     def assigned_dates_disagree(self) -> bool:
@@ -429,9 +430,10 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     row's content and key can depend on the other cards in its group. A row's key holds its
     layer, and its occurrence follows a paste's rounds over the name's rows, met in the order
     of each row's first card's walk, then layer. A row keeps every date its assigned cards were
-    read under, with their places; when the dates disagree it settles on none, and its key holds
-    the dates. Every other card stays a visible item with its reason, never merged into
-    another. ``now`` stamps the claims and is in no key.
+    read under, with their places; when the dates disagree it settles on none, keeps its
+    instructions once for each day, and its key holds the dates. Every other card stays a
+    visible item with its reason, never merged into another. ``now`` stamps the claims and is
+    in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
@@ -484,7 +486,7 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
             marks_of[joined] |= marks
         in_layer = taken.setdefault(layer, {})
         for read, marked in zip(cards_read.readings, marks_of, strict=True):
-            written = _in_round(_unsettled(read, assigned), rounds)
+            written = _in_round(_unsettled(read, assigned, members), rounds)
             key = _key(_written(written, frozenset(marked), layer, assigned))
             if key in in_layer:
                 # Two rows of one layer that would write the same: each later one shown as not
@@ -522,13 +524,32 @@ def _assigned_days(members: list[_Unit]) -> tuple[AssignedDay, ...]:
     return tuple(AssignedDay(day, tuple(sorted(days[day]))) for day in sorted(days))
 
 
-def _unsettled(reading: Reading, assigned: tuple[AssignedDay, ...]) -> Reading:
+def _unsettled(
+    reading: Reading, assigned: tuple[AssignedDay, ...], members: list[_Unit]
+) -> Reading:
     """The reading as the row writes it: with assigned cards read under more than one date, it
-    settles on none, so its assigned date is left empty, never the date read first."""
+    settles on none, so its assigned date is left empty, never the date read first, and its
+    instructions are kept once for each day, so no day is chosen by the order cards are read."""
     if len(assigned) < 2:
         return reading
     origins = {name: by for name, by in reading.field_origins.items() if name != "assigned_on"}
-    return dataclasses.replace(reading, assigned_on=None, field_origins=origins)
+    return dataclasses.replace(
+        reading, assigned_on=None, field_origins=origins, instructions=_each_day(members)
+    )
+
+
+def _each_day(members: list[_Unit]) -> tuple[InstructionSeen, ...]:
+    """A group's instructions once for each words and day they were read under, as the paste
+    writes them (an assigned card's day is its heading's, a due card's its date), by day."""
+    found: dict[tuple[str, date | None], InstructionSeen] = {}
+    for _, portal, _, _ in members:
+        if portal.instruction is None:
+            continue
+        day = portal.when if portal.card == "due" else portal.day
+        seen = InstructionSeen(portal.instruction, SourceChannel.LMS, portal.card, day)
+        found.setdefault((portal.instruction, day), seen)
+    order = sorted(found, key=lambda words_day: (words_day[1] or date.min, words_day[0]))
+    return tuple(found[words_day] for words_day in order)
 
 
 def _in_round(
@@ -668,7 +689,7 @@ def _unread(item: _Seen, reason: ItemReason) -> UnreadCard:
 
 
 def _written(
-    reading: Reading, marks: frozenset[str], layer: int, assigned: tuple[AssignedDay, ...] = ()
+    reading: Reading, marks: frozenset[str], layer: int, assigned: tuple[AssignedDay, ...]
 ) -> dict[str, object]:
     """Everything a row would write, as read, with its marks and its layer: never a name, a
     position, a correction or an instant. A round of a recurring name is told by its own

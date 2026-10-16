@@ -2372,7 +2372,7 @@ def test_a_new_assigned_date_gives_the_row_a_new_key() -> None:
 
 def test_a_row_with_one_assigned_date_keeps_its_reading_and_key() -> None:
     """One assigned date, as one screenshot shows it: the row settles on it, with one source,
-    and its key is the key such a row has always had."""
+    and its key is the pinned key of a single-date row."""
     alone = assigned_on(MON, "single-assigned")
 
     row = the_row(alone)
@@ -2383,3 +2383,44 @@ def test_a_row_with_one_assigned_date_keeps_its_reading_and_key() -> None:
         screenshots.AssignedDay(date(2026, 10, 5), (screenshots.CardPlace(alone.sha256, 0),)),
     )
     assert not row.assigned_dates_disagree
+
+
+READ_CHAPTER = "Read chapter 3."
+
+
+def worded_on(day: str, label: str) -> StoredReading:
+    """One screenshot of an ASSIGNED Q due 10/8, with the teacher's words, under the day given."""
+    worded = dict(handed(Q, THU, 150), instruction=READ_CHAPTER)
+    return stored_homework(label, shot((day, 100), worded))
+
+
+def instruction_days(row: screenshots.ScreenshotRow) -> list[tuple[str, str | None, date | None]]:
+    return [(seen.text, seen.card, seen.card_day) for seen in row.reading.instructions]
+
+
+def test_on_a_row_whose_assigned_dates_disagree_each_day_keeps_its_instruction() -> None:
+    """The same words under 9/29 and 10/5, then under 9/30 too: the row keeps the words once
+    for each day, so no day is chosen by the order the cards are read in."""
+    first, second = worded_on(TUE_29, "worded-first"), worded_on(MON, "worded-second")
+    third = worded_on(WED_30, "worded-third")
+
+    two, three = the_row(first, second), the_row(first, second, third)
+
+    assert instruction_days(two) == [
+        (READ_CHAPTER, "assigned", date(2026, 9, 29)),
+        (READ_CHAPTER, "assigned", date(2026, 10, 5)),
+    ]
+    assert instruction_days(three) == [
+        (READ_CHAPTER, "assigned", date(2026, 9, 29)),
+        (READ_CHAPTER, "assigned", date(2026, 9, 30)),
+        (READ_CHAPTER, "assigned", date(2026, 10, 5)),
+    ]
+    assert two.key != three.key
+
+
+def test_a_row_with_one_assigned_date_keeps_its_instruction_and_key() -> None:
+    """One date, its words read twice: one instruction with that day, and the pinned key."""
+    row = the_row(worded_on(TUE_29, "worded-once"), worded_on(TUE_29, "worded-again"))
+
+    assert instruction_days(row) == [(READ_CHAPTER, "assigned", date(2026, 9, 29))]
+    assert row.key == "85317a0ae62e78896891191304d4da42c6e0a6dd1515ed48073df9c850cf225e"
