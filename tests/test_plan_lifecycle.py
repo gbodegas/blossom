@@ -110,6 +110,7 @@ from tests.support import (
     Spending,
     Turn,
     accepting,
+    admissions_refused,
     due,
     every_row,
     family_plan_body,
@@ -4306,6 +4307,73 @@ def test_a_json_press_canceled_as_its_admission_returns_ends_the_run_it_admitted
     assert stopped
     assert run is not None
     assert (run.status, run.reason) == ("ended", "interrupted")
+
+
+def test_a_press_whose_admission_is_refused_its_worker_thread_couldnt_start(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page routes' path: an admission refused its worker thread, as when none can be
+    started, is ``CouldNotStart``, and no run is recorded."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+        refused = admissions_refused(monkeypatch)
+
+        async def scenario() -> object:
+            (answer,) = await asyncio.gather(
+                make_plan(accepted_graph(state), PLAN_DATE, state, budget=fake.budget()),
+                return_exceptions=True,
+            )
+            return answer
+
+        answer = fake.run(scenario())
+        latest = state.drafts.latest_run()
+    finally:
+        state.close()
+
+    assert len(refused) == 1
+    assert isinstance(answer, CouldNotStart)
+    assert isinstance(answer.__cause__, RuntimeError)
+    assert latest is None
+
+
+class StoreCallReached(Exception):
+    """The store call an admission makes, reached."""
+
+
+@pytest.mark.parametrize(
+    "spent", [0.0, 0.2, 1.2], ids=["time left", "no time left", "past its deadline"]
+)
+def test_admit_reaches_its_store_call_before_it_gives_any_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, spent: float
+) -> None:
+    """Admission's answers come from its store call, or after it: with time left, none left,
+    or its deadline past, ``admit`` raises none of them on the way to that call, and a call
+    that fails is ``CouldNotStart``."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+
+        def reached(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+            raise StoreCallReached
+
+        monkeypatch.setattr(state.drafts, "admit_run", reached)
+        budget = fake.budget(0.2)
+        fake.advance(spent)
+
+        async def scenario() -> object:
+            admission = admit(
+                state, "plan:reached", PLAN_DATE, budget, "", basis_of_the_evening=True
+            )
+            (answer,) = await asyncio.gather(admission, return_exceptions=True)
+            return answer
+
+        answer = fake.run(scenario())
+    finally:
+        state.close()
+
+    assert isinstance(answer, CouldNotStart)
+    assert isinstance(answer.__cause__, StoreCallReached)
 
 
 def test_a_run_the_store_ends_first_is_answered_with_the_steps_its_record_keeps(

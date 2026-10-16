@@ -1624,7 +1624,8 @@ async def her_press_answered(
 ) -> JSONResponse:
     """What her JSON route answers when a step from ``require_work`` to the end of the run
     raises ``error``, or when admission answers the press: an answer the error names, the
-    error itself when it is one, and otherwise a 409 saying the run failed on the way."""
+    error itself when it is one, and otherwise a 409 saying a reliable plan couldn't be
+    finished."""
     try:
         raise error
     except SameRun as same:

@@ -631,7 +631,7 @@ async def family_press_answered(
 ) -> PlanRunView | JSONResponse:
     """What the family's JSON route answers when a step from the graph's build to the end of
     the run raises ``error``, or when admission answers the press: an answer the error names,
-    the error itself when it is one, and otherwise the run's record, ended interrupted."""
+    the error itself when it is one, and otherwise the run's record, interrupted."""
     try:
         raise error
     except SameRun as same:
@@ -655,8 +655,8 @@ async def family_press_answered(
     except HTTPException:
         raise
     except Exception:
-        # The run was admitted and has been ended interrupted: its record, like any run
-        # that ended without a plan.
+        # The run's record, interrupted, like any run that ended without a plan. A run that
+        # was admitted has been ended interrupted; a failure before admission left no run.
         logger.exception("the plan for %s failed on the way", evening)
         return PlanRunView(
             thread_id=run_id,

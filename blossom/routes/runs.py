@@ -937,8 +937,10 @@ async def admit(
         basis=basis,
         basis_of_the_evening=basis_of_the_evening,
     )
-    work = asyncio.get_running_loop().run_in_executor(None, admission)
+    work: asyncio.Future[RunState | None] | None = None
     try:
+        # A worker thread refused, as when none can be started, is a failure like any other.
+        work = asyncio.get_running_loop().run_in_executor(None, admission)
         done, _ = await asyncio.wait({work}, timeout=wait + ADMISSION_ALLOWANCE_SECONDS)
         if work not in done:
             raise Unfinished(work)
@@ -947,14 +949,15 @@ async def admit(
         raise
     except Exception as error:
         if isinstance(error, Unfinished):
-            work.add_done_callback(settled_quietly)
+            error.work.add_done_callback(settled_quietly)
         elif not isinstance(error, StoreBusy | WriterBusy):
             logger.exception("run %s could not be admitted", run_id)
         raise CouldNotStart from error
     except BaseException:
         # A cancel. The admission goes on in its thread; once it ends, a run it inserted for
         # this request is ended interrupted, and a run the id already named is left alone.
-        work.add_done_callback(partial(end_if_inserted, state, run_id))
+        if work is not None:
+            work.add_done_callback(partial(end_if_inserted, state, run_id))
         raise
     if blocking is not None:
         if blocking.run_id == run_id:
@@ -1744,8 +1747,10 @@ async def run_of_the_request(state: ApplicationState, run_id: str) -> RunState |
 
 
 DEFINITE_AT_ADMISSION: Final = (SameRun, AlreadyPlanning, StaleBasis, UnknownBasis)
-"""What ``admit`` raises only after it read the run_id again inside its write transaction: the
-answers that stay definite when a JSON request's own lookup of that id couldn't be read."""
+"""The answers that stay definite when a JSON request's own lookup of its run_id couldn't be
+read, since ``admit`` gives them after reading that id again inside its write transaction.
+They count as definite whenever ``admit`` raises them; nothing ``admit`` does before its store
+call raises any of them."""
 
 
 class AnsweredAtAdmission(Exception):
@@ -1777,17 +1782,17 @@ async def admitted(
 
 
 def unknown_outcome(error: Exception) -> HTTPException:
-    """What a JSON request answers when its run_id couldn't be looked up and it stopped before
-    admission read that id again: the unconfirmed 503. An exception no step announces is logged
-    by its kind."""
+    """What a JSON request answers when its run_id couldn't be looked up and it ended before
+    admission had read that id again and given its answer, a commit that failed after the read
+    included: the unconfirmed 503. An exception no step announces is logged by its kind."""
     if not isinstance(error, NewRequestRefused | HTTPException):
         logger.error("a plan request stopped before admission on %s", type(error).__name__)
     return unread_outcome()
 
 
 def unread_outcome() -> HTTPException:
-    """What a JSON request answers when its run_id couldn't be looked up and it would otherwise
-    be refused as a new request: 503, unconfirmed, since the id may name a run."""
+    """The unconfirmed 503, for a JSON request whose run_id couldn't be looked up and whose
+    outcome is unknown, since the id may name a run."""
     return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=UNCONFIRMED)
 
 

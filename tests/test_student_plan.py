@@ -86,6 +86,7 @@ from tests.support import (
     Scripted,
     Spending,
     accepting,
+    admissions_refused,
     changed_by_hand,
     client_for,
     drafts_in_memory,
@@ -3234,6 +3235,33 @@ def test_a_retry_whose_admission_finds_its_run_and_cant_commit_is_unconfirmed(
     assert again.status_code == 503
     assert again.json() == NOT_CONFIRMED
     assert runs == [(body["run_id"], PLAN_DATE.isoformat(), "running")]
+
+
+@pytest.mark.parametrize("lookup", ["read", "unread"])
+@pytest.mark.parametrize("route", [PLANS, FAMILY_PLANS])
+def test_an_admission_refused_its_worker_thread_is_a_run_that_couldnt_start(
+    route: str, lookup: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker thread admission asks for is refused, as when none can be started. With the
+    lookup read and a new run_id, the run couldn't start, 503, in the reader's words; with a
+    used run_id whose lookup fails, the outcome is unknown, 503. Nothing new is recorded."""
+    with browser() as client:
+        body = plan_body(client, route)
+        if lookup == "unread":
+            client.post(route, json=body)
+            lookups_fail(monkeypatch, client)
+        before = runs_recorded(client)
+        refused = admissions_refused(monkeypatch)
+        made = client.post(route, json=body)
+        after = runs_recorded(client)
+
+    assert refused == [body["run_id"]]
+    assert made.status_code == 503
+    if lookup == "read":
+        assert made.json() == {"detail": COULD_NOT_START_SAID[route]}
+    else:
+        assert made.json() == NOT_CONFIRMED
+    assert after == before
 
 
 class NotYetKnown(Exception):

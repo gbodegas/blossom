@@ -23,9 +23,11 @@ import re
 import sqlite3
 import sys
 import threading
+import types
 from collections.abc import Callable, Collection, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from functools import partial
 from html import unescape
 from html.parser import HTMLParser
 from time import monotonic
@@ -733,6 +735,33 @@ class Awaited:
             raise
         msg = "a request that never answers answered"
         raise AssertionError(msg)
+
+
+def admissions_refused(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """From here on, the worker thread an admission asks for is refused, as an executor that
+    can't start a thread refuses it; every other call gets its thread. The list names each
+    run_id whose admission was refused. Both modules that hand work to a thread see it."""
+    refused: list[str] = []
+
+    class Refusing:
+        def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+            self.loop = loop
+
+        def run_in_executor(self, executor: Any, call: Callable[..., Any], *args: Any) -> Any:  # noqa: ANN401
+            if isinstance(call, partial) and getattr(call.func, "__name__", "") == "admit_run":
+                refused.append(str(call.args[0]))
+                msg = "can't start new thread"
+                raise RuntimeError(msg)
+            return self.loop.run_in_executor(executor, call, *args)
+
+        def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+            return getattr(self.loop, name)
+
+    shim = types.SimpleNamespace(**vars(asyncio))
+    shim.get_running_loop = lambda: Refusing(asyncio.get_running_loop())
+    for module in ("blossom.routes.runs", "blossom.agent.runs"):
+        monkeypatch.setattr(f"{module}.asyncio", shim)
+    return refused
 
 
 class Gated:
