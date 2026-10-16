@@ -948,6 +948,36 @@ def test_an_entered_date_is_called_entered_in_the_effect(tmp_path: pathlib.Path)
     assert "The pasted date is added as evidence beside the saved date" in pasted[0].effect
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [("Monday 9/7/2026", "Tuesday 9/8/2026"), ("Tuesday 9/8/2026", "Monday 9/7/2026")],
+    ids=["earlier-day-first", "later-day-first"],
+)
+def test_an_assigned_line_under_two_days_of_one_text_keeps_the_first_days_date(
+    first: str, second: str
+) -> None:
+    """Pasted text keeps its rule: an assigned line repeated under two days is one assignment,
+    assigned on the day the text names first."""
+    line = "Math\nAssigned: Practice: (Due:09/10/2026)\n"
+    [read] = readings(f"{first}\n{line}{second}\n{line}")
+
+    assert read.assigned_on == date(2026, 9, int(first.split("/")[1]))
+    assert read.due_date == date(2026, 9, 10)
+    assert [claim.asserted_value for claim in read.claims] == ["2026-09-10"]
+
+
+def test_a_card_under_two_days_of_one_text_is_one_reading_with_both_dates() -> None:
+    """Pasted text keeps its rule: one name under two days within a week is one assignment,
+    dated by the first day, with a claim for each."""
+    [read] = readings(
+        "Tuesday 9/8/2026\nMath\nDue: Practice:\nWednesday 9/9/2026\nMath\nDue: Practice:\n"
+    )
+
+    assert read.due_date == date(2026, 9, 8)
+    assert sorted(claim.asserted_value for claim in read.claims) == ["2026-09-08", "2026-09-09"]
+    assert read.occurrence is None
+
+
 def test_a_card_repeated_in_one_text_is_one_claim_and_a_report_repeated_is_one_report(
     tmp_path: pathlib.Path,
 ) -> None:
