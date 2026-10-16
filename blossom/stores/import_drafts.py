@@ -176,6 +176,17 @@ class DraftSnapshot(NamedTuple):
     finished: bool
 
 
+class OpenDraft(NamedTuple):
+    """One open review as a list of them shows it: its id, kind, times and how many images it
+    holds. Nothing read from an image, and no row, is in it."""
+
+    draft_id: str
+    kind: str
+    created_at: datetime
+    expires_at: datetime
+    images: int
+
+
 class Added(NamedTuple):
     """What an upload's commit did."""
 
@@ -320,6 +331,14 @@ TABLES: Final = (
 )
 
 DRAFT_OF: Final = "SELECT * FROM import_drafts WHERE draft_id = ? AND student_id = ?"
+OPEN_DRAFTS: Final = (
+    "SELECT d.draft_id, d.kind, d.created_at, d.expires_at, "
+    "(SELECT COUNT(*) FROM import_draft_images AS i WHERE i.draft_id = d.draft_id) AS images "
+    "FROM import_drafts AS d WHERE d.student_id = ? AND d.closed_at IS NULL "
+    "ORDER BY d.created_at, d.draft_id"
+)
+"""Her drafts not closed, each with its image count, read without a rows function, an
+acceptance record or a reading."""
 IMAGES_OF: Final = (
     "SELECT image_id, position, sha256, width, height, size, added_at, attempt_id, reading, "
     "reading_kind, prompt_version, schema_version, failure FROM import_draft_images "
@@ -690,6 +709,30 @@ class ImportDraftsStore:
             )
             return True
 
+    def end_attempt(
+        self, student_id: str, draft_id: str, attempt_id: str, wait: float = STORE_WAIT_SECONDS
+    ) -> bool:
+        """End a Read attempt whose calls have all ended: while it is still the draft's current
+        attempt, its deadline moves to now, so another press can start one at once. Its id stays
+        on the draft and its images, and a result for it is dropped from now on. Whether it did;
+        another attempt, one already past its deadline, or a draft not hers, closed or expired
+        changes nothing."""
+        with self._writing(wait) as now:
+            draft = self._connection.execute(DRAFT_OF, (draft_id, student_id)).fetchone()
+            if (
+                draft is None
+                or now >= moment(draft["expires_at"])
+                or draft["closed_at"] is not None
+                or draft["attempt_id"] != attempt_id
+                or self._current_ends(draft) is None
+            ):
+                return False
+            self._connection.execute(
+                "UPDATE import_drafts SET attempt_ends = ? WHERE draft_id = ? AND attempt_id = ?",
+                (self._monotonic(), draft_id, attempt_id),
+            )
+            return True
+
     def clear_attempts(self, wait: float = STORE_WAIT_SECONDS) -> int:
         """End every attempt, for a process starting before it serves; how many drafts had one."""
         with self._writing(wait):
@@ -794,6 +837,32 @@ class ImportDraftsStore:
             ).rowcount
             if removed:
                 self._connection.execute(RAISE_VERSION, (draft_id,))
+            self._close_if_finished(draft, now)
+            return self._version(draft_id)
+
+    def set_aside(
+        self,
+        student_id: str,
+        draft_id: str,
+        *,
+        version: int,
+        key: str,
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> int:
+        """Set one row or item aside at the page's version: its key is discarded and no image is
+        removed, so the version stays, unless nothing is left open, when the draft closes in the
+        same transaction. A key already saved is skipped. The version after."""
+        with self._writing(wait) as now:
+            draft = self._at_version(student_id, draft_id, version, now)
+            worked = self._worked_out(draft)
+            if key not in {row.key for row in worked.rows}:
+                raise ReviewChanged
+            if key not in worked.saved:
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO import_draft_discards (draft_id, row_key, discarded_at) "
+                    "VALUES (?, ?, ?)",
+                    (draft_id, key, instant(now)),
+                )
             self._close_if_finished(draft, now)
             return self._version(draft_id)
 
@@ -1049,6 +1118,25 @@ class ImportDraftsStore:
             discarded=worked.discarded,
             finished=worked.finished,
         )
+
+    def open_drafts(
+        self, student_id: str, wait: float = STORE_WAIT_SECONDS
+    ) -> tuple[OpenDraft, ...]:
+        """Her reviews still open, unexpired and not closed, in the order they were started. It
+        works out no rows and reads no reading or acceptance record, so no draft's content can
+        make the list fail."""
+        with self._reading(wait) as now:
+            return tuple(
+                OpenDraft(
+                    draft_id=str(row["draft_id"]),
+                    kind=str(row["kind"]),
+                    created_at=moment(row["created_at"]),
+                    expires_at=moment(row["expires_at"]),
+                    images=int(row["images"]),
+                )
+                for row in self._connection.execute(OPEN_DRAFTS, (student_id,))
+                if now < moment(row["expires_at"])
+            )
 
     # ------------------------------------------------------------------ sessions
 

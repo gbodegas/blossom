@@ -2424,3 +2424,76 @@ def test_a_row_with_one_assigned_date_keeps_its_instruction_and_key() -> None:
 
     assert instruction_days(row) == [(READ_CHAPTER, "assigned", date(2026, 9, 29))]
     assert row.key == "85317a0ae62e78896891191304d4da42c6e0a6dd1515ed48073df9c850cf225e"
+
+
+# ------------------------------------------------------------------ what a row names beside its key
+
+
+def layered() -> tuple[StoredReading, StoredReading, StoredReading]:
+    """Two DUE Vocab Quiz cards under Thursday, another screenshot of the first alone, and the
+    ASSIGNED card under Monday due that Thursday."""
+    return (
+        stored_homework(
+            "layered-both", homework(due(*VQ, 200), due(*VQ, 300), headings=[heading(THU, 150)])
+        ),
+        stored_homework("layered-one", homework(due(*VQ, 200), headings=[heading(THU, 150)])),
+        stored_homework(
+            "layered-assigned",
+            homework(assigned(*VQ, "Due (10/8/2026)", 200), headings=[heading(MON, 150)]),
+        ),
+    )
+
+
+def test_a_row_names_its_layer_and_every_card_it_came_from() -> None:
+    """The first copy's row is layer 0 and came from both copies of that card and the ASSIGNED
+    card; the second copy's row is layer 1 and came from its own card alone. The same in every
+    order of the images."""
+    both, one, on_monday = layered()
+
+    found = {
+        tuple(
+            sorted((row.layer, row.sources) for row in homework_assembly(list(order), now=NOW).rows)
+        )
+        for order in itertools.permutations([both, one, on_monday])
+    }
+
+    first = sorted(
+        [
+            screenshots.CardPlace(both.sha256, 0),
+            screenshots.CardPlace(one.sha256, 0),
+            screenshots.CardPlace(on_monday.sha256, 0),
+        ]
+    )
+    assert found == {((0, tuple(first)), (1, (screenshots.CardPlace(both.sha256, 1),)))}
+
+
+def test_a_row_with_assigned_dates_that_disagree_names_every_card_it_came_from() -> None:
+    """ASSIGNED Q under 9/29 in one screenshot and under 10/5 in another: one row, layer 0,
+    from both cards, each at its place."""
+    first, second = assigned_on(TUE_29, "named-first"), assigned_on(MON, "named-second")
+
+    row = the_row(first, second)
+
+    assert row.layer == 0
+    assert row.sources == tuple(
+        sorted([screenshots.CardPlace(first.sha256, 0), screenshots.CardPlace(second.sha256, 0)])
+    )
+
+
+PINNED_ROW_KEYS = (
+    "476d9d2696b48bee43f54b36df057955c5b5a01fde92174ac51b9fddccee5a40",
+    "963da1c1dd585fbe0b1296ea99ad57a19305e3453087ed9296b68c571e65b977",
+    "afacd3b6018d7da2f5b4df18aa46c9eac4fbd3e3aa4e1d625a968330699028db",
+)
+"""The keys these screenshots gave before a row named its layer and cards."""
+
+
+def test_a_rows_layer_and_cards_are_in_no_key() -> None:
+    """Naming the layer and the cards changes no key: the rows function gives the keys it gave
+    before, and every row's key is among them."""
+    images = [*layered(), assigned_on(TUE_29, "pinned-first"), assigned_on(MON, "pinned-second")]
+
+    given = homework_rows(images)
+
+    assert tuple(row.key for row in given) == PINNED_ROW_KEYS
+    assert {row.key for row in homework_assembly(images, now=NOW).rows} <= set(PINNED_ROW_KEYS)
