@@ -16,16 +16,20 @@ fits, and none is kept. Dates are kept as the text shown and read as dates here.
 A draft's readings are put together into rows by their content alone, never by the order
 the screenshots came in, and read as today's portal claims through ``intake.read_cards``. A
 card is dated only by its own due line or by a day heading above it in its own screenshot; no
-heading carries from one screenshot to another. Two matching cards of one screenshot are two
-rows, and every card that is clipped or can't be dated or read stays a visible item with its
-reason, keyed by its screenshot, its reading's digest and its place. A decoded reading's digest
-leaves out the selected student, name and note, so a reading that differs only there keeps
-its items' keys; a reading that doesn't decode is digested whole, text that can hold a name
-included. A digest is a hash of that text, not an anonymized form of it.
+heading carries from one screenshot to another. Different dates stay separate: a row holds
+one card with its copies in other screenshots, and an assigned card's row also holds the one
+due card of its name and due date it pairs with, so two cards of one screenshot are two rows
+unless they are that pair. Every card that is clipped or can't be dated or read stays a
+visible item with its reason, keyed by its screenshot, its reading's digest and its place. A
+decoded reading's digest leaves out the selected student, name and note, so a reading that
+differs only there keeps its items' keys; a reading that doesn't decode is digested whole,
+text that can hold a name included. A digest is a hash of that text, not an anonymized form
+of it.
 ``homework_rows`` gives the draft store each row's key from the same assembly, so the rows
 the parent sees and the keys the store keeps can't disagree.
 """
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -36,7 +40,7 @@ from typing import Annotated, Final, Literal, NamedTuple, Self
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 from blossom.grades.draft import folded
-from blossom.intake import DAY_LINE, PortalCard, Reading, a_date, read_cards
+from blossom.intake import ANOTHER_OCCURRENCE, DAY_LINE, PortalCard, Reading, a_date, read_cards
 from blossom.school_instructions import instruction_words
 from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA_VERSION
 from blossom.stores.import_drafts import DraftRow, StoredReading
@@ -331,15 +335,17 @@ ItemReason = Literal[
 reading, a card, or a card's label, course or title. ``clipped`` is a card partly cut off,
 whether or not a whole copy is read elsewhere. ``no_day`` is a card read whole whose date
 can't be told: no due line of its own and no day heading above it in its screenshot.
-``repeated`` is a later row of one layer that would write what another of that layer does."""
+``repeated`` is a later row of one layer that would write what another row of that layer
+does."""
 
 
 class UnreadCard(NamedTuple):
     """A card that couldn't be read as a row, keyed by its image's SHA-256, its reading's
     digest (``_digest``), its place and what was read of it; a stored reading that couldn't be
     decoded (``place`` and ``card`` then ``None``), keyed by its image's SHA-256 and its
-    digest; or a later row of one layer that would write what another does (``sha256`` empty),
-    keyed by that row's key, its layer and how many came before it. Each with its reason."""
+    digest; or a later row of one layer that would write what another row of that layer does
+    (``sha256`` empty), keyed by that row's key, its layer and how many came before it. Each
+    with its reason."""
 
     key: str
     sha256: str
@@ -366,6 +372,11 @@ class _Seen(NamedTuple):
     heading: Heading | None
 
 
+_Unit = tuple[tuple[object, ...], PortalCard, frozenset[str]]
+"""A dated whole card as the assembly walks it: its place in the content-fixed order, the card
+as a portal card, and its marks."""
+
+
 def homework_rows(readings: Sequence[StoredReading]) -> tuple[DraftRow, ...]:
     """The homework rows function: every row key a draft's readings give, each a row or a
     "couldn't read" item. It reads nothing but the readings, and gives the same keys for the
@@ -384,13 +395,15 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     screenshot, and no card's text is evidence of where another card is, so no card, a clipped
     one included, is set aside for a copy read elsewhere.
 
-    The cards read whole and dated are read as today's portal claims in layers. A card's layer
-    is how many such cards above it in its screenshot, by top edge and then place, have its
-    course and title, folded, its kind and its date, so two matching cards of one screenshot
-    are in two layers and never join. Each layer is walked in an order fixed by content and
-    read on its own, where cards of that layer join as a paste's do, from any screenshot, and
-    a row's key holds its layer. Every other card stays a visible item with its reason, never
-    merged into another. ``now`` stamps the claims and is in no key.
+    The cards read whole and dated are read as today's portal claims, and different dates stay
+    separate. A card's layer is how many such cards above it in its screenshot, by top edge and
+    then place, have its course and title, folded, its kind and its date. A row is the cards of
+    one layer, one name and one date, read on their own: copies of one card in several
+    screenshots, and one assigned card with the due card of its due date. A card's row depends
+    on it and its own screenshot alone, so no other screenshot joins two cards one screenshot
+    keeps apart. A row's key holds its layer, and its occurrence follows a paste's rounds over
+    the name's rows. Every other card stays a visible item with its reason, never merged into
+    another. ``now`` stamps the claims and is in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
@@ -404,7 +417,7 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
             unread[key] = UnreadCard(key, sha, None, None, "reading_unreadable")
         elif not reading.wrong_kind:
             seen += _placed(sha, digest, reading)
-    layers: dict[int, list[tuple[tuple[object, ...], PortalCard, frozenset[str]]]] = {}
+    layers: dict[int, list[_Unit]] = {}
     matching: dict[tuple[object, ...], int] = {}
     for item in sorted(seen, key=_top_down):
         card = item.card
@@ -419,24 +432,38 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
         matching[same] = layer + 1
         unit = (_walk_order(portal, card, item.heading, marks), portal, marks)
         layers.setdefault(layer, []).append(unit)
-    rows: list[ScreenshotRow] = []
+    groups: list[tuple[tuple[object, ...], int, list[_Unit]]] = []
     for layer, units in sorted(layers.items()):
-        units.sort(key=lambda unit: unit[0])
-        cards_read = read_cards([portal for _, portal, _ in units], now=now)
+        by_card: dict[tuple[object, ...], list[_Unit]] = {}
+        for unit in units:
+            portal = unit[1]
+            by_card.setdefault((_fold(portal.course), _fold(portal.title), portal.when), []).append(
+                unit
+            )
+        for members in by_card.values():
+            members.sort(key=lambda unit: unit[0])
+            groups.append((members[0][0], layer, members))
+    groups.sort(key=lambda group: (group[0], group[1]))
+    rows: list[ScreenshotRow] = []
+    rounds: dict[tuple[str, str], list[tuple[date, str | None]]] = {}
+    taken: dict[int, dict[str, int]] = {}
+    for _, layer, members in groups:
+        cards_read = read_cards([portal for _, portal, _ in members], now=now)
         marks_of: list[set[str]] = [set() for _ in cards_read.readings]
-        for (_, _, marks), place in zip(units, cards_read.joined, strict=True):
+        for (_, _, marks), place in zip(members, cards_read.joined, strict=True):
             marks_of[place] |= marks
-        taken: dict[str, int] = {}
-        for written, marked in zip(cards_read.readings, marks_of, strict=True):
+        in_layer = taken.setdefault(layer, {})
+        for read, marked in zip(cards_read.readings, marks_of, strict=True):
+            written = _in_round(read, rounds)
             key = _key(_written(written, frozenset(marked), layer))
-            if key in taken:
+            if key in in_layer:
                 # Two rows of one layer that would write the same: each later one shown as not
                 # read, never merged.
-                taken[key] += 1
-                repeat = _key({"repeated": key, "layer": layer, "count": taken[key]})
+                in_layer[key] += 1
+                repeat = _key({"repeated": key, "layer": layer, "count": in_layer[key]})
                 unread[repeat] = UnreadCard(repeat, "", None, None, "repeated")
                 continue
-            taken[key] = 0
+            in_layer[key] = 0
             rows.append(ScreenshotRow(key, written, frozenset(marked)))
     return Assembly(
         rows=tuple(sorted(rows, key=lambda row: row.key)),
@@ -453,6 +480,24 @@ def _digest(stored: StoredReading, decoded: HomeworkReading | None) -> str:
     if decoded is None:
         return _key([*versions, stored.body])
     return _key([*versions, decoded.model_dump(mode="json", exclude={"student"})])
+
+
+def _in_round(
+    reading: Reading, rounds: dict[tuple[str, str], list[tuple[date, str | None]]]
+) -> Reading:
+    """The reading with the occurrence a paste's rounds give it, its name's rows met in walk
+    order: within a week of a round already met, that round's; otherwise a new round, ``None``
+    for the name's first and its due date for each later one."""
+    held = rounds.setdefault(reading.pair, [])
+    day = reading.due_date
+    if day is None:
+        return reading
+    for start, occurrence in held:
+        if abs(start - day) < ANOTHER_OCCURRENCE:
+            return dataclasses.replace(reading, occurrence=occurrence)
+    occurrence = None if not held else day.isoformat()
+    held.append((day, occurrence))
+    return dataclasses.replace(reading, occurrence=occurrence)
 
 
 def _decoded(stored: StoredReading) -> HomeworkReading | None:
@@ -577,9 +622,10 @@ def _written(reading: Reading, marks: frozenset[str], layer: int) -> dict[str, o
     """Everything a row would write, as read, with its marks and its layer: never a name, a
     position, a correction or an instant. A round of a recurring name is told by its own
     dates; its occurrence, which changes when an earlier round's screenshot arrives, is left
-    out, and rows of different layers can share it and the new-row id drawn from it, so
-    nothing may tell rows apart by either. Its layer, how many matching cards are above its own
-    in their screenshot, is kept, and no other screenshot changes it."""
+    out. Rows of one round share an occurrence, and the new-row id drawn from it, so nothing
+    may tell rows apart by either; rows a week or more apart are never in one round.
+    Its layer, how many matching cards are above its own in their screenshot, is kept, and no
+    other screenshot changes it."""
     return {
         "course": _fold(reading.course),
         "title": _fold(reading.title),

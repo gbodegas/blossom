@@ -609,6 +609,59 @@ def test_two_matching_rows_keep_their_decisions_in_any_order_and_after_reopening
         assert finished(homework, draft_id)
 
 
+def under_days(*cards: tuple[str, str, str | None]) -> dict[str, object]:
+    """One screenshot of Practice set cards, each (day heading, badge, due line), each card
+    under its own heading."""
+    headings, found = [], []
+    for place, (day, badge, footer) in enumerate(cards):
+        headings.append({"text": day, "y": 100 + 200 * place, "uncertain": None})
+        card = homework_card(badge=badge, title="Practice set", footer=footer, instruction=None)
+        found.append(dict(card, y_top=150 + 200 * place, y_bottom=230 + 200 * place))
+    return homework_answer(headings=headings, cards=found)
+
+
+DIFFERENT_DATES = {
+    "two days of one screenshot": (
+        ("Monday 10/5/2026", "DUE", None),
+        ("Tuesday 10/6/2026", "DUE", None),
+    ),
+    "a due card and the next round's assigned card": (
+        ("Thursday 10/8/2026", "DUE", None),
+        ("Thursday 10/8/2026", "ASSIGNED", "Due (10/12/2026)"),
+    ),
+}
+
+
+@pytest.mark.parametrize("dates", DIFFERENT_DATES)
+@pytest.mark.parametrize("decision", ["save", "discard"])
+def test_of_two_rows_with_different_dates_deciding_one_leaves_the_other_open(
+    homework: World, dates: str, decision: str
+) -> None:
+    """Different dates stay separate: the two cards of one screenshot are two rows. Read with
+    a recapture of the first in either order and reopened, saving or discarding one leaves the
+    other open and the draft open."""
+    both = ("both", under_days(*DIFFERENT_DATES[dates]))
+    first_again = ("first-again", under_days(DIFFERENT_DATES[dates][0]))
+    [first] = real_keys(first_again)
+    [second] = set(real_keys(both)) - {first}
+    drafts = [open_draft(homework, both, first_again), open_draft(homework, first_again, both)]
+    for draft_id in drafts:
+        assert states(homework, draft_id) == {first: "open", second: "open"}
+        if decision == "save":
+            homework.accept(draft_id, first)
+        else:
+            version = homework.store.snapshot(homework.student, draft_id).version
+            homework.store.discard_rest(homework.student, draft_id, version=version, keys=[first])
+
+    homework.store.close()
+    homework.store = homework.reopen()
+
+    done = "saved" if decision == "save" else "discarded"
+    for draft_id in drafts:
+        assert states(homework, draft_id) == {first: done, second: "open"}
+        assert not finished(homework, draft_id)
+
+
 def test_discarding_one_item_never_handles_another(homework: World) -> None:
     """Two screenshots each show an ASSIGNED Practice set with no due line under Thursday:
     two items, and discarding one leaves the other open and the draft open."""

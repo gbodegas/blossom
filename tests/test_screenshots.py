@@ -17,7 +17,15 @@ from typing import Any, get_args
 import pytest
 
 from blossom import screenshots
-from blossom.intake import DAY_HEADER, OWN_LINE, CardsRead, PortalCard, identity, read_cards
+from blossom.intake import (
+    DAY_HEADER,
+    OWN_LINE,
+    CardsRead,
+    PortalCard,
+    Reading,
+    identity,
+    read_cards,
+)
 from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA, SCHEMA_VERSION
 from blossom.screenshots import (
     Card,
@@ -1313,7 +1321,12 @@ SCENARIOS: dict[
             shot(card(RL, 20), card(PS, 120), (MON, 250), card(RL, 300), card(PS, 400)),
             shot((TUE, 150), card(RL, 200), card(PS, 300)),
         ],
-        [("Practice set", "10-05"), ("Reading log", "10-05")],
+        [
+            ("Practice set", "10-05"),
+            ("Practice set", "10-06"),
+            ("Reading log", "10-05"),
+            ("Reading log", "10-06"),
+        ],
         [("Practice set", "no_day"), ("Reading log", "no_day")],
     ),
     "c5 a top clip": (
@@ -1649,14 +1662,17 @@ def test_a_clip_with_its_label_and_due_line_cut_stays_an_item() -> None:
 def test_each_row_that_would_write_what_another_does_is_its_own_item(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stand-in for the card reader gives three readings that would write the same: one is a
-    row, and each of the other two is a ``repeated`` item of its own."""
+    """A stand-in for the card reader reads every card as one fixed reading, so three cards of
+    one layer would write the same: one is a row, and each of the other two is a ``repeated``
+    item of its own, however the layer's cards are handed to the reader."""
+    fixed: list[Reading] = []
 
-    def three_the_same(cards: list[PortalCard], *, now: datetime) -> CardsRead:
-        first = read_cards(cards[:1], now=now).readings[0]
-        return CardsRead(readings=(first,) * len(cards), joined=tuple(range(len(cards))))
+    def all_the_same(cards: list[PortalCard], *, now: datetime) -> CardsRead:
+        if not fixed:
+            fixed.append(read_cards(cards[:1], now=now).readings[0])
+        return CardsRead(readings=(fixed[0],) * len(cards), joined=tuple(range(len(cards))))
 
-    monkeypatch.setattr(screenshots, "read_cards", three_the_same)
+    monkeypatch.setattr(screenshots, "read_cards", all_the_same)
     three = shot((THU, 150), card(RL, 200), card(PS, 300), card(WS, 400))
 
     assembly = homework_assembly([stored_homework("three", three)], now=NOW)
@@ -1953,3 +1969,332 @@ def test_a_card_with_no_height_couldnt_be_read(edge: int, clipped: bool) -> None
     assert in_every_order(f"no-height-{edge}-{clipped}", shots) == {
         ((("Worksheet 3", "10-05"),), (("", "card_unreadable"),))
     }
+
+
+# ------------------------------------------------------------------ different dates stay separate
+
+THU_15 = "Thursday 10/15/2026"
+Q, CRG, SC = ("English 8", "Q"), ("Science 8", "Chains Reading Guide 6"), ("English 8", "SC")
+
+
+def due_line(day: str) -> str:
+    return f"Due ({day.split()[1]})"
+
+
+def handed(name: tuple[str, str], due: str, y_top: int) -> dict[str, object]:
+    """An ASSIGNED card whose due line names the day given."""
+    return assigned(name[0], name[1], due_line(due), y_top)
+
+
+def day_list(*days: str, names: tuple[tuple[str, str], ...] = (RL, PS)) -> dict[str, object]:
+    """One screenshot of the days given, each heading followed by a DUE card of each name."""
+    parts: list[object] = []
+    top = 20
+    for day in days:
+        parts.append((day, top))
+        top += 30
+        for name in names:
+            parts.append(card(name, top))
+            top += 90
+    return shot(*parts)
+
+
+Written = tuple[str, str, str, tuple[str, ...]]
+
+
+def rows_in_every_order(label: str, shots: list[dict[str, object]]) -> set[tuple[Written, ...]]:
+    """Each row as its title, assigned day, due date and sorted date claims, sorted, once for
+    every order of the images; the reasons of any items are asserted to be the same too."""
+    images = [stored_homework(f"{label}-{place}", answer) for place, answer in enumerate(shots)]
+    found: set[tuple[Written, ...]] = set()
+    items: set[tuple[str, ...]] = set()
+    for order in itertools.permutations(images):
+        assembly = homework_assembly(list(order), now=NOW)
+        found.add(
+            tuple(
+                sorted(
+                    (
+                        row.reading.title,
+                        str(row.reading.assigned_on),
+                        str(row.reading.due_date),
+                        tuple(sorted(claim.asserted_value for claim in row.reading.claims)),
+                    )
+                    for row in assembly.rows
+                )
+            )
+        )
+        items.add(tuple(sorted(item.reason for item in assembly.unread)))
+    assert items == {()}
+    return found
+
+
+def due_row(title: str, day: str, *claims: str) -> Written:
+    return (title, "None", day, claims or (day,))
+
+
+DATES: dict[str, tuple[list[dict[str, object]], list[Written]]] = {
+    "P4: one name under two days of one screenshot": (
+        [shot((MON, 100), card(VQ, 150), (TUE, 300), card(VQ, 350))],
+        [due_row("Vocab Quiz", "2026-10-05"), due_row("Vocab Quiz", "2026-10-06")],
+    ),
+    "P15: a due card and the next round's assigned card under one day": (
+        [shot((THU, 100), card(PS, 150), handed(PS, "Monday 10/12/2026", 250))],
+        [
+            due_row("Practice set", "2026-10-08"),
+            ("Practice set", "2026-10-08", "2026-10-12", ("2026-10-12",)),
+        ],
+    ),
+    "P15 with the next round's due card in another screenshot": (
+        [
+            shot((THU, 100), card(PS, 150), handed(PS, "Monday 10/12/2026", 250)),
+            shot((NEXT_MON, 100), card(PS, 150)),
+        ],
+        [
+            due_row("Practice set", "2026-10-08"),
+            ("Practice set", "2026-10-08", "2026-10-12", ("2026-10-12", "2026-10-12")),
+        ],
+    ),
+    "an assigned card elsewhere pairs with one of two matching due cards": (
+        [
+            shot((THU, 100), card(VQ, 150), card(VQ, 250)),
+            shot((MON, 100), handed(VQ, THU, 150)),
+        ],
+        [
+            ("Vocab Quiz", "2026-10-05", "2026-10-08", ("2026-10-08", "2026-10-08")),
+            due_row("Vocab Quiz", "2026-10-08"),
+        ],
+    ),
+    "an assigned card and its due card in one screenshot are one row": (
+        [shot((MON, 100), handed(CRG, THU, 150), (THU, 300), card(CRG, 350))],
+        [("Chains Reading Guide 6", "2026-10-05", "2026-10-08", ("2026-10-08", "2026-10-08"))],
+    ),
+    "one assigned card and two due cards: the first due card pairs": (
+        [shot((MON, 100), handed(Q, THU, 150), (THU, 300), card(Q, 350), card(Q, 450))],
+        [
+            ("Q", "2026-10-05", "2026-10-08", ("2026-10-08", "2026-10-08")),
+            due_row("Q", "2026-10-08"),
+        ],
+    ),
+    "two assigned cards and one due card: the first assigned card pairs": (
+        [shot((MON, 100), handed(Q, THU, 150), handed(Q, THU, 250), (THU, 400), card(Q, 450))],
+        [
+            ("Q", "2026-10-05", "2026-10-08", ("2026-10-08",)),
+            ("Q", "2026-10-05", "2026-10-08", ("2026-10-08", "2026-10-08")),
+        ],
+    ),
+    "an assigned card and its due card in two screenshots are one row": (
+        [shot((TUE, 100), handed(SC, WED, 150)), shot((WED, 100), card(SC, 150))],
+        [("SC", "2026-10-06", "2026-10-07", ("2026-10-07", "2026-10-07"))],
+    ),
+    "a recapture of one day joins that day's card": (
+        [
+            shot((MON, 100), card(RL, 150), (TUE, 300), card(RL, 350)),
+            shot((TUE, 100), card(RL, 150)),
+        ],
+        [due_row("Reading log", "2026-10-05"), due_row("Reading log", "2026-10-06")],
+    ),
+    "two days in two screenshots and both in a third": (
+        [
+            shot((MON, 100), card(RL, 150)),
+            shot((TUE, 100), card(RL, 150)),
+            shot((MON, 100), card(RL, 150), (TUE, 300), card(RL, 350)),
+        ],
+        [due_row("Reading log", "2026-10-05"), due_row("Reading log", "2026-10-06")],
+    ),
+    "two days in two screenshots": (
+        [shot((MON, 100), card(RL, 150)), shot((TUE, 100), card(RL, 150))],
+        [due_row("Reading log", "2026-10-05"), due_row("Reading log", "2026-10-06")],
+    ),
+    "a chain through both kinds": (
+        [
+            shot((THU, 100), card(PS, 150), handed(PS, "Monday 10/12/2026", 250)),
+            shot((NEXT_MON, 100), card(PS, 150)),
+            shot((MON, 100), handed(PS, THU, 150)),
+        ],
+        [
+            ("Practice set", "2026-10-05", "2026-10-08", ("2026-10-08", "2026-10-08")),
+            ("Practice set", "2026-10-08", "2026-10-12", ("2026-10-12", "2026-10-12")),
+        ],
+    ),
+    "a chain of three days, two of them in one screenshot": (
+        [
+            shot((MON, 100), card(RL, 150)),
+            shot((TUE, 100), card(RL, 150)),
+            shot((WED, 100), card(RL, 150)),
+            shot((MON, 100), card(RL, 150), (WED, 300), card(RL, 350)),
+        ],
+        [
+            due_row("Reading log", "2026-10-05"),
+            due_row("Reading log", "2026-10-06"),
+            due_row("Reading log", "2026-10-07"),
+        ],
+    ),
+    "an assigned card's due line and a due card's day that differ": (
+        [shot((MON, 100), handed(Q, THU, 150)), shot((FRI, 100), card(Q, 150))],
+        [("Q", "2026-10-05", "2026-10-08", ("2026-10-08",)), due_row("Q", "2026-10-09")],
+    ),
+    "the ordinary scroll, Monday and Tuesday then Tuesday and Wednesday": (
+        [day_list(MON, TUE, names=(RL,)), day_list(TUE, WED, names=(RL,))],
+        [
+            due_row("Reading log", "2026-10-05"),
+            due_row("Reading log", "2026-10-06"),
+            due_row("Reading log", "2026-10-07"),
+        ],
+    ),
+    "a longer scroll, Monday to Wednesday then Wednesday to Friday": (
+        [day_list(MON, TUE, WED, names=(RL,)), day_list(WED, THU, FRI, names=(RL,))],
+        [
+            due_row("Reading log", "2026-10-05"),
+            due_row("Reading log", "2026-10-06"),
+            due_row("Reading log", "2026-10-07"),
+            due_row("Reading log", "2026-10-08"),
+            due_row("Reading log", "2026-10-09"),
+        ],
+    ),
+}
+
+EIGHT_DAILY = sorted(
+    due_row(title, day)
+    for title in ("Reading log", "Practice set")
+    for day in ("2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08")
+)
+CUTS: dict[str, list[dict[str, object]]] = {
+    "one tall screenshot": [day_list(MON, TUE, WED, THU)],
+    "two, without overlap": [day_list(MON, TUE), day_list(WED, THU)],
+    "two, overlapping": [day_list(MON, TUE, WED), day_list(WED, THU)],
+    "four single days": [day_list(MON), day_list(TUE), day_list(WED), day_list(THU)],
+}
+
+
+@pytest.mark.parametrize("name", DATES)
+def test_different_dates_stay_separate_and_same_date_copies_join(name: str) -> None:
+    """Cards of one name with different due dates are separate rows, in one screenshot or
+    several; a same-date recapture joins, and an assigned card pairs one-to-one with a due
+    card of its due date."""
+    shots, rows = DATES[name]
+
+    assert rows_in_every_order(name, shots) == {tuple(sorted(rows))}
+
+
+@pytest.mark.parametrize("name", CUTS)
+def test_one_list_gives_the_same_rows_however_it_is_cut_into_screenshots(name: str) -> None:
+    """Four days with a daily Reading log and Practice set: eight rows, captured whole, in two
+    screenshots with or without overlap, or one day at a time."""
+    assert rows_in_every_order(name, CUTS[name]) == {tuple(EIGHT_DAILY)}
+
+
+def marked(
+    name: tuple[str, str], y_top: int, words: str, *, due: str | None = None
+) -> dict[str, object]:
+    """A DUE card, or with ``due`` an ASSIGNED card due that day, carrying its own words."""
+    found = card(name, y_top) if due is None else handed(name, due, y_top)
+    return dict(found, instruction=words)
+
+
+def test_no_set_of_screenshots_changes_how_one_screenshots_cards_are_grouped() -> None:
+    """Every card carries its own words. For each screenshot, which of its cards share a row is
+    the same in every set of screenshots that holds it, and every card is in one row."""
+    batch = {
+        "a": shot(
+            (MON, 100),
+            marked(RL, 150, "Card a1."),
+            (TUE, 300),
+            marked(RL, 350, "Card a2."),
+            marked(RL, 450, "Card a3."),
+        ),
+        "b": shot((TUE, 100), marked(RL, 150, "Card b1."), (WED, 300), marked(RL, 350, "Card b2.")),
+        "c": shot(
+            (MON, 100),
+            marked(Q, 150, "Card c1.", due=THU),
+            (THU, 300),
+            marked(Q, 350, "Card c2."),
+            marked(Q, 450, "Card c3."),
+        ),
+        "d": shot((THU, 100), marked(Q, 150, "Card d1."), (FRI, 300), marked(RL, 350, "Card d2.")),
+    }
+    stored = {
+        label: stored_homework(f"grouping-{label}", answer) for label, answer in batch.items()
+    }
+    count = {"a": 3, "b": 2, "c": 3, "d": 2}
+    words = {label: {f"Card {label}{n}." for n in range(1, count[label] + 1)} for label in batch}
+
+    def grouping(labels: tuple[str, ...]) -> dict[str, frozenset[frozenset[str]]]:
+        rows = homework_assembly([stored[label] for label in labels], now=NOW).rows
+        held = [{seen.text for seen in row.reading.instructions} for row in rows]
+        every = [text for texts in held for text in texts]
+        assert len(every) == len(set(every))
+        assert set(every) == set().union(*(words[label] for label in labels))
+        return {
+            label: frozenset(
+                frozenset(texts & words[label]) for texts in held if texts & words[label]
+            )
+            for label in labels
+        }
+
+    alone = {label: grouping((label,))[label] for label in batch}
+    assert alone == {
+        "a": {frozenset({"Card a1."}), frozenset({"Card a2."}), frozenset({"Card a3."})},
+        "b": {frozenset({"Card b1."}), frozenset({"Card b2."})},
+        "c": {frozenset({"Card c1.", "Card c2."}), frozenset({"Card c3."})},
+        "d": {frozenset({"Card d1."}), frozenset({"Card d2."})},
+    }
+    for size in range(2, len(batch) + 1):
+        for labels in itertools.combinations(sorted(batch), size):
+            for order in itertools.permutations(labels):
+                found = grouping(order)
+                assert {label: found[label] for label in labels} == {
+                    label: alone[label] for label in labels
+                }
+
+
+def occurrences(*images: StoredReading) -> set[tuple[tuple[str, str, str], ...]]:
+    """Each row's due date, occurrence (empty for none) and new-row id, sorted, once for every
+    order."""
+    return {
+        tuple(
+            sorted(
+                (str(row.reading.due_date), row.reading.occurrence or "", row.reading.assignment_id)
+                for row in homework_assembly(list(order), now=NOW).rows
+            )
+        )
+        for order in itertools.permutations(images)
+    }
+
+
+def test_rows_a_week_or_more_apart_have_their_own_occurrence_in_every_layer() -> None:
+    """Vocab Quiz once under 10/8 and twice under 10/15: both 10/15 rows take the later
+    round's occurrence, and so a new-row id that isn't the 10/8 row's."""
+    eighth = stored_homework("eighth", shot((THU, 100), card(VQ, 150)))
+    fifteenth = stored_homework("fifteenth", shot((THU_15, 100), card(VQ, 150), card(VQ, 250)))
+
+    [found] = occurrences(eighth, fifteenth)
+
+    assert [(day, occurrence) for day, occurrence, _ in found] == [
+        ("2026-10-08", ""),
+        ("2026-10-15", "2026-10-15"),
+        ("2026-10-15", "2026-10-15"),
+    ]
+    assert found[0][2] != found[1][2] == found[2][2]
+
+
+def test_occurrences_follow_the_rounds_of_a_name_in_every_order() -> None:
+    """Reading log under 10/5, 10/9 and 10/13 in one screenshot and under 10/1 in another: a
+    row within a week of a round takes its occurrence, a later one starts a round."""
+    days = shot(
+        ("Monday 10/5/2026", 100),
+        card(RL, 150),
+        ("Friday 10/9/2026", 300),
+        card(RL, 350),
+        ("Tuesday 10/13/2026", 500),
+        card(RL, 550),
+    )
+    first = shot(("Thursday 10/1/2026", 100), card(RL, 150))
+
+    [found] = occurrences(stored_homework("days", days), stored_homework("first", first))
+
+    assert [(day, occurrence) for day, occurrence, _ in found] == [
+        ("2026-10-01", ""),
+        ("2026-10-05", ""),
+        ("2026-10-09", "2026-10-09"),
+        ("2026-10-13", "2026-10-09"),
+    ]
