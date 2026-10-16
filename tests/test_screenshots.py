@@ -2298,3 +2298,88 @@ def test_occurrences_follow_the_rounds_of_a_name_in_every_order() -> None:
         ("2026-10-09", "2026-10-09"),
         ("2026-10-13", "2026-10-09"),
     ]
+
+
+# ------------------------------------------------------------------ assigned dates that disagree
+
+TUE_29, WED_30 = "Tuesday 9/29/2026", "Wednesday 9/30/2026"
+
+
+def assigned_on(day: str, label: str) -> StoredReading:
+    """One screenshot of an ASSIGNED Q due 10/8 under the day given."""
+    return stored_homework(label, shot((day, 100), handed(Q, THU, 150)))
+
+
+def the_row(*images: StoredReading) -> screenshots.ScreenshotRow:
+    """The one row the screenshots give, the same in every order of their images."""
+    found = [
+        homework_assembly(list(order), now=NOW).rows for order in itertools.permutations(images)
+    ]
+    assert all(rows == found[0] for rows in found)
+    [row] = found[0]
+    return row
+
+
+def test_two_assigned_dates_of_one_row_are_both_kept_with_their_sources() -> None:
+    """ASSIGNED Q due 10/8 under 9/29 in one screenshot and under 10/5 in another: one row that
+    keeps both assigned dates, each with its image and place, and settles on neither."""
+    first, second = assigned_on(TUE_29, "first-day"), assigned_on(MON, "second-day")
+
+    row = the_row(first, second)
+
+    assert row.assigned == (
+        screenshots.AssignedDay(date(2026, 9, 29), (screenshots.CardPlace(first.sha256, 0),)),
+        screenshots.AssignedDay(date(2026, 10, 5), (screenshots.CardPlace(second.sha256, 0),)),
+    )
+    assert row.assigned_dates_disagree
+    assert row.reading.assigned_on is None
+    assert "assigned_on" not in row.reading.field_origins
+    assert row.reading.due_date == date(2026, 10, 8)
+
+
+def test_an_identical_recapture_keeps_the_row_and_its_key() -> None:
+    """A recapture of the 9/29 screenshot as new bytes adds a source to 9/29 and nothing else."""
+    first, second = assigned_on(TUE_29, "first-day"), assigned_on(MON, "second-day")
+    again = assigned_on(TUE_29, "first-day-again")
+
+    before, after = the_row(first, second), the_row(first, second, again)
+
+    assert after.key == before.key
+    assert after.reading == before.reading
+    assert [day for day, _ in after.assigned] == [date(2026, 9, 29), date(2026, 10, 5)]
+    assert set(after.assigned[0].sources) == {
+        screenshots.CardPlace(first.sha256, 0),
+        screenshots.CardPlace(again.sha256, 0),
+    }
+
+
+def test_a_new_assigned_date_gives_the_row_a_new_key() -> None:
+    """A second assigned date makes a new key, and so does a third: a decision on the row as it
+    was never covers a date it didn't show."""
+    first, second = assigned_on(TUE_29, "first-day"), assigned_on(MON, "second-day")
+    third, again = assigned_on(WED_30, "third-day"), assigned_on(TUE_29, "first-day-again")
+
+    keys_seen = [
+        the_row(first, again).key,
+        the_row(first, second).key,
+        the_row(first, second, third).key,
+    ]
+
+    assert len(set(keys_seen)) == 3
+    assert the_row(first, again).reading.assigned_on == date(2026, 9, 29)
+    assert not the_row(first, again).assigned_dates_disagree
+
+
+def test_a_row_with_one_assigned_date_keeps_its_reading_and_key() -> None:
+    """One assigned date, as one screenshot shows it: the row settles on it, with one source,
+    and its key is the key such a row has always had."""
+    alone = assigned_on(MON, "single-assigned")
+
+    row = the_row(alone)
+
+    assert row.key == "0295c30bb83f9480a2262bed4aad401d8813ab9369bf64a7a308d06ae12016aa"
+    assert row.reading.assigned_on == date(2026, 10, 5)
+    assert row.assigned == (
+        screenshots.AssignedDay(date(2026, 10, 5), (screenshots.CardPlace(alone.sha256, 0),)),
+    )
+    assert not row.assigned_dates_disagree

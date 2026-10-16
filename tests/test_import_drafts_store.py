@@ -662,6 +662,43 @@ def test_of_two_rows_with_different_dates_deciding_one_leaves_the_other_open(
         assert not finished(homework, draft_id)
 
 
+def assigned_under(day: str) -> dict[str, object]:
+    """One screenshot of an ASSIGNED Practice set due 10/12 under the day given."""
+    return under_days((day, "ASSIGNED", "Due (10/12/2026)"))
+
+
+@pytest.mark.parametrize("decision", ["save", "discard"])
+def test_a_decided_row_stays_decided_after_a_recapture_and_reopens_with_another_assigned_date(
+    homework: World, decision: str
+) -> None:
+    """A row assigned 10/5 is saved or discarded; an identical recapture keeps it decided, and a
+    screenshot of the same card under 10/6 makes a new open row that no decision covers."""
+    first, keep_open = ("first", assigned_under("Monday 10/5/2026")), ("keep-open", copies(200))
+    [decided] = real_keys(first)
+    [other] = real_keys(keep_open)
+    draft_id = open_draft(homework, first, keep_open)
+    if decision == "save":
+        homework.accept(draft_id, decided)
+    else:
+        version = homework.store.snapshot(homework.student, draft_id).version
+        homework.store.discard_rest(homework.student, draft_id, version=version, keys=[decided])
+    done = "saved" if decision == "save" else "discarded"
+
+    homework.store.add_images(homework.student, draft_id, [image("again")])
+    homework.read_as(draft_id, "again", uploaded("again", assigned_under("Monday 10/5/2026")))
+    assert states(homework, draft_id) == {decided: done, other: "open"}
+
+    homework.store.add_images(homework.student, draft_id, [image("other-day")])
+    homework.read_as(
+        draft_id, "other-day", uploaded("other-day", assigned_under("Tuesday 10/6/2026"))
+    )
+    reopened = set(states(homework, draft_id)) - {decided, other}
+
+    assert len(reopened) == 1
+    assert states(homework, draft_id) == dict.fromkeys(reopened | {other}, "open")
+    assert not finished(homework, draft_id)
+
+
 def test_discarding_one_item_never_handles_another(homework: World) -> None:
     """Two screenshots each show an ASSIGNED Practice set with no due line under Thursday:
     two items, and discarding one leaves the other open and the draft open."""

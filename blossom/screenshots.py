@@ -20,12 +20,13 @@ heading carries from one screenshot to another. Different dates stay separate: a
 cards of one layer, one name and one effective due date, so two cards of one screenshot are two
 rows unless one is an assigned card and the other the due card of its due date. A row can hold
 cards that aren't copies of one card, such as two assigned cards due on one date under
-different days in different screenshots. Every card that is clipped or can't be dated or read
-stays a visible item with its reason, keyed by its screenshot, its reading's digest and its place. A
-decoded reading's digest leaves out the selected student, name and note, so a reading that
-differs only there keeps its items' keys; a reading that doesn't decode is digested whole,
-text that can hold a name included. A digest is a hash of that text, not an anonymized form
-of it.
+different days in different screenshots; such a row keeps every assigned date with the cards
+that show it and, when they disagree, settles on none. Every card that is clipped or can't be
+dated or read stays a visible item with its reason, keyed by its screenshot, its reading's
+digest and its place. A decoded reading's digest leaves out the selected student, name and
+note, so a reading that differs only there keeps its items' keys; a reading that doesn't
+decode is digested whole, text that can hold a name included. A digest is a hash of that
+text, not an anonymized form of it.
 ``homework_rows`` gives the draft store each row's key from the same assembly, so the rows
 the parent sees and the keys the store keeps can't disagree.
 """
@@ -319,14 +320,35 @@ KEY_INSTANT: Final = datetime(1970, 1, 1, tzinfo=UTC)
 so the keys never read the clock."""
 
 
+class CardPlace(NamedTuple):
+    """Where a card was read: its image's SHA-256 and its place in that image's reading."""
+
+    sha256: str
+    place: int
+
+
+class AssignedDay(NamedTuple):
+    """One assigned date a row's assigned cards were read under, and every card that shows it."""
+
+    day: date
+    sources: tuple[CardPlace, ...]
+
+
 class ScreenshotRow(NamedTuple):
     """One row the screenshots read as: its key (what it would write and its layer), the
-    reading it would write, and the fields marked uncertain on any card it came from, the day
-    heading among them."""
+    reading it would write, the fields marked uncertain on any card it came from, the day
+    heading among them, and every distinct assigned date its assigned cards were read under."""
 
     key: str
     reading: Reading
     marks: frozenset[str]
+    assigned: tuple[AssignedDay, ...] = ()
+
+    @property
+    def assigned_dates_disagree(self) -> bool:
+        """Whether its assigned cards were read under more than one date, so that its reading
+        settles on none of them."""
+        return len(self.assigned) > 1
 
 
 ItemReason = Literal[
@@ -373,9 +395,9 @@ class _Seen(NamedTuple):
     heading: Heading | None
 
 
-_Unit = tuple[tuple[object, ...], PortalCard, frozenset[str]]
+_Unit = tuple[tuple[object, ...], PortalCard, frozenset[str], CardPlace]
 """A dated whole card as the assembly walks it: its place in the content-fixed order, the card
-as a portal card, and its marks."""
+as a portal card, its marks, and where it was read."""
 
 
 def homework_rows(readings: Sequence[StoredReading]) -> tuple[DraftRow, ...]:
@@ -406,8 +428,10 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     screenshot alone, so no other screenshot joins two cards one screenshot keeps apart; the
     row's content and key can depend on the other cards in its group. A row's key holds its
     layer, and its occurrence follows a paste's rounds over the name's rows, met in the order
-    of each row's first card's walk, then layer. Every other card stays a visible item with its
-    reason, never merged into another. ``now`` stamps the claims and is in no key.
+    of each row's first card's walk, then layer. A row keeps every date its assigned cards were
+    read under, with their places; when the dates disagree it settles on none, and its key holds
+    the dates. Every other card stays a visible item with its reason, never merged into
+    another. ``now`` stamps the claims and is in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
@@ -434,7 +458,8 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
         same = (item.sha256, _fold(portal.course), _fold(portal.title), portal.card, portal.when)
         layer = matching.get(same, 0)
         matching[same] = layer + 1
-        unit = (_walk_order(portal, card, item.heading, marks), portal, marks)
+        place = CardPlace(item.sha256, item.place)
+        unit = (_walk_order(portal, card, item.heading, marks), portal, marks, place)
         layers.setdefault(layer, []).append(unit)
     groups: list[tuple[tuple[object, ...], int, list[_Unit]]] = []
     for layer, units in sorted(layers.items()):
@@ -452,14 +477,15 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     rounds: dict[tuple[str, str], list[tuple[date, str | None]]] = {}
     taken: dict[int, dict[str, int]] = {}
     for _, layer, members in groups:
-        cards_read = read_cards([portal for _, portal, _ in members], now=now)
+        assigned = _assigned_days(members)
+        cards_read = read_cards([portal for _, portal, _, _ in members], now=now)
         marks_of: list[set[str]] = [set() for _ in cards_read.readings]
-        for (_, _, marks), place in zip(members, cards_read.joined, strict=True):
-            marks_of[place] |= marks
+        for (_, _, marks, _), joined in zip(members, cards_read.joined, strict=True):
+            marks_of[joined] |= marks
         in_layer = taken.setdefault(layer, {})
         for read, marked in zip(cards_read.readings, marks_of, strict=True):
-            written = _in_round(read, rounds)
-            key = _key(_written(written, frozenset(marked), layer))
+            written = _in_round(_unsettled(read, assigned), rounds)
+            key = _key(_written(written, frozenset(marked), layer, assigned))
             if key in in_layer:
                 # Two rows of one layer that would write the same: each later one shown as not
                 # read, never merged.
@@ -468,7 +494,7 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
                 unread[repeat] = UnreadCard(repeat, "", None, None, "repeated")
                 continue
             in_layer[key] = 0
-            rows.append(ScreenshotRow(key, written, frozenset(marked)))
+            rows.append(ScreenshotRow(key, written, frozenset(marked), assigned))
     return Assembly(
         rows=tuple(sorted(rows, key=lambda row: row.key)),
         unread=tuple(sorted(unread.values(), key=lambda item: item.key)),
@@ -484,6 +510,25 @@ def _digest(stored: StoredReading, decoded: HomeworkReading | None) -> str:
     if decoded is None:
         return _key([*versions, stored.body])
     return _key([*versions, decoded.model_dump(mode="json", exclude={"student"})])
+
+
+def _assigned_days(members: list[_Unit]) -> tuple[AssignedDay, ...]:
+    """Every distinct date a group's assigned cards were read under, earliest first, each with
+    the places of the cards that show it, so no date is lost to the order the cards are read."""
+    days: dict[date, set[CardPlace]] = {}
+    for _, portal, _, place in members:
+        if portal.card == "assigned" and portal.day is not None:
+            days.setdefault(portal.day, set()).add(place)
+    return tuple(AssignedDay(day, tuple(sorted(days[day]))) for day in sorted(days))
+
+
+def _unsettled(reading: Reading, assigned: tuple[AssignedDay, ...]) -> Reading:
+    """The reading as the row writes it: with assigned cards read under more than one date, it
+    settles on none, so its assigned date is left empty, never the date read first."""
+    if len(assigned) < 2:
+        return reading
+    origins = {name: by for name, by in reading.field_origins.items() if name != "assigned_on"}
+    return dataclasses.replace(reading, assigned_on=None, field_origins=origins)
 
 
 def _in_round(
@@ -622,15 +667,18 @@ def _unread(item: _Seen, reason: ItemReason) -> UnreadCard:
     return UnreadCard(_key(_as_item(item)), item.sha256, item.place, item.card, reason)
 
 
-def _written(reading: Reading, marks: frozenset[str], layer: int) -> dict[str, object]:
+def _written(
+    reading: Reading, marks: frozenset[str], layer: int, assigned: tuple[AssignedDay, ...] = ()
+) -> dict[str, object]:
     """Everything a row would write, as read, with its marks and its layer: never a name, a
     position, a correction or an instant. A round of a recurring name is told by its own
     dates; its occurrence, which changes when an earlier round's screenshot arrives, is left
     out. Rows of one round share an occurrence, and the new-row id drawn from it, so nothing
     may tell rows apart by either; rows a week or more apart are never in one round.
     Its layer, how many matching cards are above its own in their screenshot, is kept, and no
-    other screenshot changes it."""
-    return {
+    other screenshot changes it. Assigned dates that disagree are kept as their set of dates,
+    never their cards' places, so a new date gives a new key and a recapture doesn't."""
+    written: dict[str, object] = {
         "course": _fold(reading.course),
         "title": _fold(reading.title),
         "due_date": _day(reading.due_date),
@@ -647,6 +695,9 @@ def _written(reading: Reading, marks: frozenset[str], layer: int) -> dict[str, o
         "marks": sorted(marks),
         "layer": layer,
     }
+    if len(assigned) > 1:
+        written["assigned_dates"] = [_day(found.day) for found in assigned]
+    return written
 
 
 def _key(payload: object) -> str:
