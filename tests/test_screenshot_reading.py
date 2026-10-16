@@ -193,8 +193,11 @@ def press(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Press]:
 
 
 def short_deadline(monkeypatch: pytest.MonkeyPatch, seconds: float = 0.5) -> None:
-    """A press's deadline, made short so a test can wait it out."""
+    """A press's deadline, made short so a test can wait it out, with no least time left for a
+    call: in use a call needs 15 s, which ``test_a_first_call_starts_only_with_15_seconds_left``
+    checks."""
     monkeypatch.setattr(import_drafts, "READ_DEADLINE_SECONDS", seconds)
+    monkeypatch.setattr(screenshot_reading, "MIN_CALL_SECONDS", 0.0)
 
 
 # ------------------------------------------------------------------ a press that reads
@@ -826,3 +829,132 @@ def test_with_every_worker_held_by_trickling_calls_later_reads_still_run(
     assert planned == "planned"
     assert later.read == (press.ids(other)["x"],)
     assert took < 1.0
+
+
+# ------------------------------------------------------------------ the least time left for a call
+
+
+class Frozen:
+    """A monotonic clock that moves only when a test moves it."""
+
+    def __init__(self) -> None:
+        self.at = 5000.0
+
+    def __call__(self) -> float:
+        return self.at
+
+
+@pytest.mark.parametrize(("deadline", "called"), [(15.0, True), (14.9, False)])
+def test_a_first_call_starts_only_with_15_seconds_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deadline: float, called: bool
+) -> None:
+    """The benchmark's slowest call took 14.6 s: with 15.0 s left a call starts, with 14.9 s
+    none does and the image stays unread for this press."""
+    monkeypatch.setattr(import_drafts, "READ_DEADLINE_SECONDS", deadline)
+    frozen = Frozen()
+    record = ProjectStateStore.open(
+        tmp_path / "blossom.sqlite3", SetClock(date(2026, 10, 9), OBSERVED_AT)
+    )
+    student = record.student_id()
+    record.close()
+    store = ImportDraftsStore.open(
+        tmp_path / "blossom.sqlite3",
+        SetClock(date(2026, 10, 9), OBSERVED_AT),
+        frozen,
+        rows={HOMEWORK: homework_rows},
+    )
+    made = store.create(
+        student,
+        kind=HOMEWORK,
+        made_by="parent",
+        creation_token=new_creation_token(),
+        images=[image("a")],
+    )
+    assert made is not None
+    calls: list[float] = []
+
+    def reader(png: bytes, timeout: float) -> ScreenshotAnswer:
+        calls.append(timeout)
+        return ANSWERED
+
+    outcome = asyncio.run(
+        read_screenshots(
+            store,
+            WITH_KEY,
+            student,
+            made.draft_id,
+            made.added,
+            monotonic=frozen,
+            held=set(),
+            reader=reader,
+        )
+    )
+    store.close()
+
+    assert bool(calls) is called
+    assert outcome.read == (made.added if called else ())
+    assert outcome.unfinished == (() if called else made.added)
+
+
+def test_a_retry_starts_only_with_15_seconds_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A busy first answer that leaves 14.8 s gets no retry."""
+    monkeypatch.setattr(import_drafts, "READ_DEADLINE_SECONDS", 15.0)
+    monkeypatch.setattr(screenshot_reading, "RETRY_PAUSE_SECONDS", 0.0)
+    frozen = Frozen()
+    record = ProjectStateStore.open(
+        tmp_path / "blossom.sqlite3", SetClock(date(2026, 10, 9), OBSERVED_AT)
+    )
+    student = record.student_id()
+    record.close()
+    store = ImportDraftsStore.open(
+        tmp_path / "blossom.sqlite3",
+        SetClock(date(2026, 10, 9), OBSERVED_AT),
+        frozen,
+        rows={HOMEWORK: homework_rows},
+    )
+    made = store.create(
+        student,
+        kind=HOMEWORK,
+        made_by="parent",
+        creation_token=new_creation_token(),
+        images=[image("a")],
+    )
+    assert made is not None
+    calls: list[float] = []
+
+    def reader(png: bytes, timeout: float) -> ScreenshotAnswer:
+        calls.append(timeout)
+        frozen.at += 0.2
+        return ScreenshotAnswer(None, "service_busy", 0, 0)
+
+    asyncio.run(
+        read_screenshots(
+            store,
+            WITH_KEY,
+            student,
+            made.draft_id,
+            made.added,
+            monotonic=frozen,
+            held=set(),
+            reader=reader,
+        )
+    )
+    store.close()
+
+    assert len(calls) == 1
+
+
+def test_a_press_whose_calls_all_ended_ends_its_attempt(press: Press) -> None:
+    """A refused answer ends the press's only call, so the attempt ends with it and Read again
+    reads the image at once; a press with a call still open leaves its attempt as it is."""
+    draft_id = press.draft("a")
+    press.answer("a", ScreenshotAnswer(None, "service_refused", 0, 0))
+
+    first = press.press(draft_id, "a")
+    again = press.press(draft_id, "a")
+
+    assert first.failed == ((press.ids(draft_id)["a"], "service_refused"),)
+    assert again.started
+    assert again.read == (press.ids(draft_id)["a"],)

@@ -1,0 +1,758 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
+"""Homework screenshots in Family review, through their routes: the upload, the images and a
+Read press, with a fake reader and synthetic images only.
+
+Every route serves a parent alone, checked before any body is read, and every answer is marked
+no-store. Nothing on Family review offers the upload yet.
+"""
+
+import io
+import pathlib
+import re
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+from markupsafe import escape
+from PIL import Image
+
+from blossom import screenshot_reading
+from blossom.anthropic_client import ScreenshotAnswer
+from blossom.app import create_app
+from blossom.routes import imports
+from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, Settings
+from blossom.stores.import_drafts import DRAFT_LIFETIME, FAILURES, new_creation_token
+from blossom.uploads import as_new_image, prepare_image
+from tests.support import (
+    HERS,
+    PLAN_DATE,
+    THEIRS,
+    Answer,
+    fixture_settings,
+    homework_answer,
+    signed_in,
+    signed_in_household,
+    state_of,
+)
+
+LOOPBACK = "127.0.0.1:8781"
+KEY = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"}
+ANSWERED = ScreenshotAnswer(homework_answer(), None, 1500, 300)
+
+
+def says(page: str, text: str) -> bool:
+    """Whether a page shows these words, as its template escapes them."""
+    return str(escape(text)) in page
+
+
+def png(width: int = 64, height: int = 48, color: tuple[int, int, int] = (200, 40, 40)) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def gif() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(buffer, format="GIF")
+    return buffer.getvalue()
+
+
+RED, BLUE, GREEN = png(color=(200, 40, 40)), png(color=(40, 40, 200)), png(color=(40, 200, 40))
+
+
+def open_settings(tmp_path: pathlib.Path, *, key: bool = True) -> Settings:
+    return fixture_settings(
+        BLOSSOM_TODAY=PLAN_DATE.isoformat(),
+        BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
+        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
+        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+        **(KEY if key else {}),
+    )
+
+
+@contextmanager
+def here(settings: Settings, *, client: str = "127.0.0.1") -> Iterator[TestClient]:
+    """The app as this computer's browser reaches it with the sign-in off."""
+    with TestClient(
+        create_app(settings),
+        follow_redirects=False,
+        headers={"Host": LOOPBACK, "Origin": f"http://{LOOPBACK}"},
+        client=(client, 50000),
+    ) as browser:
+        yield browser
+
+
+class Reader:
+    """A fake reader: each image's answer by its color, counted per call."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.answers: dict[bytes, ScreenshotAnswer] = {}
+        self.calls: list[bytes] = []
+        monkeypatch.setattr(screenshot_reading, "read_screenshot", self.read)
+
+    def read(self, settings: Settings, png_bytes: bytes, *, timeout: float) -> ScreenshotAnswer:
+        self.calls.append(png_bytes)
+        return self.answers.get(png_bytes, ANSWERED)
+
+
+def now_of(browser: TestClient) -> datetime:
+    return state_of(browser).real_clock.now()
+
+
+def first_form(browser: TestClient, issued: datetime | None = None) -> dict[str, str]:
+    return {
+        "token": new_creation_token(),
+        "issued": (issued or now_of(browser)).isoformat(),
+    }
+
+
+def upload(
+    browser: TestClient,
+    *images: bytes,
+    form: dict[str, str] | None = None,
+    to: str = "/parent/imports",
+) -> Answer:
+    files = [("screenshots", (f"shot-{n}.png", data, "image/png")) for n, data in enumerate(images)]
+    return browser.post(to, data=form if form is not None else first_form(browser), files=files)
+
+
+def made(browser: TestClient, *images: bytes) -> str:
+    """A first upload that commits: the draft its redirect names."""
+    sent = upload(browser, *images)
+    assert sent.status_code == 303, sent.text
+    found = re.fullmatch(r"/parent/imports/([0-9a-f]{32})", sent.headers["location"])
+    assert found is not None
+    return found.group(1)
+
+
+def drafts(browser: TestClient) -> int:
+    connection = state_of(browser).import_drafts._connection
+    return int(connection.execute("SELECT COUNT(*) FROM import_drafts").fetchone()[0])
+
+
+def images_of(browser: TestClient, draft_id: str) -> list[str]:
+    student = state_of(browser).project_state.student_id()
+    return [
+        item.image_id for item in state_of(browser).import_drafts.snapshot(student, draft_id).images
+    ]
+
+
+def read_form(page: str) -> dict[str, str]:
+    """The Read form's fields, as the review page signs them."""
+    found = re.search(r'<form method="post" action="([^"]+/read)".*?</form>', page, re.S)
+    assert found is not None, page
+    fields = dict(re.findall(r'name="([^"]+)" value="([^"]*)"', found.group(0)))
+    return fields
+
+
+# ------------------------------------------------------------------ uploads
+
+
+def test_a_first_upload_makes_a_review_and_answers_with_a_redirect(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        page = browser.get(f"/parent/imports/{draft_id}")
+
+    assert page.status_code == 200
+    assert page.text.count('alt="Screenshot ') == 2
+    assert "Available until " in page.text
+    assert says(page.text, imports.LABELS["unread"])
+    assert page.headers["cache-control"] == "no-store"
+
+
+def test_a_declared_length_past_the_limit_is_refused_and_nothing_is_stored(
+    tmp_path: pathlib.Path,
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        refused = browser.post(
+            "/parent/imports",
+            content=b"",
+            headers={
+                "content-type": "multipart/form-data; boundary=x",
+                "content-length": str(40_000_001),
+            },
+        )
+        assert drafts(browser) == 0
+
+    assert refused.status_code == 413
+    assert says(refused.text, imports.UPLOAD_SAID["body_too_large"])
+
+
+def test_a_body_without_a_length_is_refused_once_it_passes_the_limit(
+    tmp_path: pathlib.Path,
+) -> None:
+    def body() -> Iterator[bytes]:
+        yield b"--x\r\n"
+        for _ in range(41):
+            yield b"0" * 1_000_000
+
+    with here(open_settings(tmp_path)) as browser:
+        refused = browser.post(
+            "/parent/imports",
+            content=body(),
+            headers={"content-type": "multipart/form-data; boundary=x"},
+        )
+        assert drafts(browser) == 0
+
+    assert refused.status_code == 413
+
+
+def test_an_eleventh_file_or_one_past_12_mb_refuses_the_upload(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        eleven = upload(browser, *[png(color=(n, 0, 0)) for n in range(11)])
+        large = upload(browser, b"\x89PNG" + b"0" * 12_000_001)
+        assert drafts(browser) == 0
+
+    assert eleven.status_code == 413
+    assert says(eleven.text, imports.UPLOAD_SAID["too_many_files"])
+    assert large.status_code == 413
+    assert says(large.text, imports.UPLOAD_SAID["file_too_large"])
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        {"token": "a" * 32, "issued": "x", "other": "1"},
+        {"token": "a" * 33, "issued": "2026-10-15T12:00:00+00:00"},
+    ],
+    ids=["an unknown field", "a field past its limit"],
+)
+def test_a_field_out_of_its_rules_refuses_the_upload(
+    tmp_path: pathlib.Path, form: dict[str, str]
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        refused = upload(browser, RED, form=form)
+        assert drafts(browser) == 0
+
+    assert refused.status_code == 400
+
+
+def test_a_body_that_isnt_multipart_is_refused(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        refused = browser.post("/parent/imports", data={"token": "a" * 32})
+        assert drafts(browser) == 0
+
+    assert refused.status_code == 400
+    assert says(refused.text, imports.UPLOAD_SAID["unreadable"])
+
+
+def test_each_image_is_refused_by_its_place_and_the_others_are_kept(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, gif(), RED, b"plain text, not a picture")
+        page = browser.get(f"/parent/imports/{draft_id}")
+        again = browser.get(f"/parent/imports/{draft_id}")
+
+    assert says(page.text, imports.image_refusal(1, "not_png_or_jpeg"))
+    assert says(page.text, imports.image_refusal(3, "not_png_or_jpeg"))
+    assert page.text.count('alt="Screenshot ') == 1
+    assert not says(again.text, imports.image_refusal(1, "not_png_or_jpeg"))
+
+
+def test_a_first_upload_with_no_valid_image_makes_no_review(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        refused = upload(browser, gif())
+        form = first_form(browser)
+        body = (
+            "--b\r\n"
+            'Content-Disposition: form-data; name="token"\r\n\r\n'
+            f"{form['token']}\r\n"
+            "--b\r\n"
+            'Content-Disposition: form-data; name="issued"\r\n\r\n'
+            f"{form['issued']}\r\n"
+            "--b\r\n"
+            'Content-Disposition: form-data; name="screenshots"; filename=""\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n\r\n"
+            "--b--\r\n"
+        )
+        empty = browser.post(
+            "/parent/imports",
+            content=body.encode(),
+            headers={"content-type": "multipart/form-data; boundary=b"},
+        )
+        assert drafts(browser) == 0
+
+    assert refused.status_code == 422
+    assert says(refused.text, imports.image_refusal(1, "not_png_or_jpeg"))
+    assert empty.status_code == 422
+
+
+def test_an_upload_writes_no_temporary_file(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "temporary"
+    folder.mkdir()
+    with here(open_settings(tmp_path)) as browser:
+        monkeypatch.setattr(tempfile, "tempdir", str(folder))
+
+        def refused(*_: object, **__: object) -> object:
+            msg = "no temporary file"
+            raise OSError(msg)
+
+        for name in ("NamedTemporaryFile", "TemporaryFile", "SpooledTemporaryFile", "mkstemp"):
+            monkeypatch.setattr(tempfile, name, refused)
+        made(browser, RED)
+
+    assert list(folder.iterdir()) == []
+
+
+def test_the_same_first_upload_sent_again_finds_its_review_and_adds_nothing_twice(
+    tmp_path: pathlib.Path,
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        form = first_form(browser)
+        first = upload(browser, RED, form=form)
+        second = upload(browser, RED, form=form)
+        assert drafts(browser) == 1
+        draft_id = first.headers["location"].rsplit("/", 1)[1]
+        page = browser.get(f"/parent/imports/{draft_id}")
+
+    assert second.headers["location"] == first.headers["location"]
+    assert says(page.text, imports.image_refusal(1, "duplicate"))
+    assert page.text.count('alt="Screenshot ') == 1
+
+
+def test_adding_to_an_open_review_and_never_past_ten(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, *[png(color=(n, 1, 1)) for n in range(9)])
+        to = f"/parent/imports/{draft_id}/images"
+        too_many = upload(browser, BLUE, GREEN, form={}, to=to)
+        one = upload(browser, BLUE, form={}, to=to)
+        repeated = upload(browser, BLUE, form={}, to=to)
+        count = len(images_of(browser, draft_id))
+
+    assert too_many.status_code == 409
+    assert says(too_many.text, imports.too_many(1))
+    assert one.status_code == 303
+    assert repeated.status_code == 303
+    assert count == 10
+
+
+def test_adding_to_a_closed_review_is_refused_and_to_an_emptied_one_accepted(
+    tmp_path: pathlib.Path,
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        emptied = made(browser, RED)
+        [image_id] = images_of(browser, emptied)
+        removed = browser.post(f"/parent/imports/{emptied}/images/{image_id}/remove")
+        again = upload(browser, BLUE, form={}, to=f"/parent/imports/{emptied}/images")
+        closed = made(browser, GREEN)
+        student = state_of(browser).project_state.student_id()
+        store = state_of(browser).import_drafts
+        store.discard_review(student, closed, version=store.snapshot(student, closed).version)
+        refused = upload(browser, BLUE, form={}, to=f"/parent/imports/{closed}/images")
+
+    assert removed.status_code == 303
+    assert again.status_code == 303
+    assert refused.status_code == 409
+    assert says(refused.text, imports.SAID["closed"])
+
+
+@pytest.mark.parametrize(
+    ("moved", "allowed"),
+    [
+        (timedelta(0), True),
+        (DRAFT_LIFETIME - timedelta(seconds=1), True),
+        (DRAFT_LIFETIME, False),
+        (-timedelta(seconds=5), False),
+    ],
+    ids=["now", "just under 48 hours", "48 hours", "later than now"],
+)
+def test_a_first_upload_form_is_used_only_within_48_hours_of_its_making(
+    tmp_path: pathlib.Path, moved: timedelta, allowed: bool
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        form = first_form(browser, now_of(browser) - moved)
+        sent = upload(browser, RED, form=form)
+        unreadable = upload(browser, RED, form={**first_form(browser), "issued": "yesterday"})
+        count = drafts(browser)
+
+    assert (sent.status_code == 303) is allowed
+    if not allowed:
+        assert says(sent.text, imports.SAID["too_old"])
+    assert unreadable.status_code == 400
+    assert count == (1 if allowed else 0)
+
+
+def test_a_form_from_before_a_restart_still_uploads(tmp_path: pathlib.Path) -> None:
+    settings = open_settings(tmp_path)
+    with here(settings) as browser:
+        form = first_form(browser)
+        first = upload(browser, RED, form=form)
+    with here(settings) as browser:
+        again = upload(browser, RED, BLUE, form=form)
+        count = drafts(browser)
+
+    assert again.headers["location"] == first.headers["location"]
+    assert count == 1
+
+
+def test_a_resent_upload_after_a_removal_adds_the_image_again_unread(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+        [image_id] = images_of(browser, draft_id)
+        browser.post(f"/parent/imports/{draft_id}/images/{image_id}/remove")
+        resent = upload(browser, RED, form={}, to=f"/parent/imports/{draft_id}/images")
+        shown = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert resent.status_code == 303
+    assert says(shown, imports.LABELS["unread"])
+    assert len(reader.calls) == 1
+
+
+# ------------------------------------------------------------------ images
+
+
+def test_view_screenshot_serves_the_prepared_png_and_a_removal_takes_it_out(
+    tmp_path: pathlib.Path,
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        [image_id] = images_of(browser, draft_id)
+        shown = browser.get(f"/parent/imports/{draft_id}/images/{image_id}")
+        removed = browser.post(f"/parent/imports/{draft_id}/images/{image_id}/remove")
+        gone = browser.get(f"/parent/imports/{draft_id}/images/{image_id}")
+        again = browser.post(f"/parent/imports/{draft_id}/images/{image_id}/remove")
+        page = browser.get(f"/parent/imports/{draft_id}")
+
+    assert shown.status_code == 200
+    assert shown.headers["content-type"] == "image/png"
+    assert shown.headers["cache-control"] == "no-store"
+    assert shown.content.startswith(b"\x89PNG")
+    assert removed.status_code == 303
+    assert gone.status_code == 404
+    assert again.status_code == 303
+    assert says(page.text, imports.SAID["image_gone"])
+
+
+def test_another_students_or_an_unknown_review_is_not_found(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        store = state_of(browser).import_drafts
+        added = store.create(
+            "another-student",
+            kind="homework_screenshot",
+            made_by="parent",
+            creation_token=new_creation_token(),
+            images=[],
+        )
+        assert added is None
+        theirs = store.create(
+            "another-student",
+            kind="homework_screenshot",
+            made_by="parent",
+            creation_token=new_creation_token(),
+            images=[as_new_image(prepare_image(RED))],
+        )
+        assert theirs is not None
+        answers = [
+            browser.get(f"/parent/imports/{theirs.draft_id}"),
+            browser.get(f"/parent/imports/{'f' * 32}"),
+            browser.get("/parent/imports/not-an-id"),
+            browser.get(f"/parent/imports/{theirs.draft_id}/images/{theirs.added[0]}"),
+        ]
+
+    assert [answer.status_code for answer in answers] == [404, 404, 404, 404]
+    assert all(says(answer.text, imports.SAID["absent"]) for answer in answers[:3])
+
+
+# ------------------------------------------------------------------ reading
+
+
+def test_a_read_press_reads_the_shown_images_and_the_page_says_how_each_stands(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    reader.answers[GREEN] = ScreenshotAnswer(homework_answer(image_kind="unsupported"), None, 9, 4)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE, GREEN)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        assert says(page, imports.DISCLOSED)
+        pressed = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+
+    assert pressed.status_code == 200
+    assert len(reader.calls) == 3
+    assert says(pressed.text, imports.LABELS["read"])
+    assert says(pressed.text, imports.FAILED["not_json"])
+    assert says(pressed.text, imports.LABELS["wrong_kind"])
+
+
+def test_read_again_reads_only_unread_images_failed_ones_included(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+        reader.answers[BLUE] = ANSWERED
+        again = browser.get(f"/parent/imports/{draft_id}").text
+        browser.post(f"/parent/imports/{draft_id}/read", data=read_form(again))
+
+    assert sorted(reader.calls[:2]) == sorted([RED, BLUE])
+    assert reader.calls[2:] == [BLUE]
+
+
+def test_a_read_form_names_only_the_images_its_page_showed_and_is_checked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
+        upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
+        tampered = browser.post(
+            f"/parent/imports/{draft_id}/read", data={**form, "images": form["images"] + ",x"}
+        )
+        assert reader.calls == []
+        pressed = browser.post(f"/parent/imports/{draft_id}/read", data=form)
+
+    assert says(tampered.text, imports.SAID["unchecked"])
+    assert reader.calls == [RED]
+    assert says(pressed.text, imports.LABELS["unread"])
+
+
+def test_a_press_while_an_attempt_is_current_starts_no_call(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
+        student = state_of(browser).project_state.student_id()
+        [image_id] = images_of(browser, draft_id)
+        state_of(browser).import_drafts.start_attempt(student, draft_id, [image_id])
+        pressed = browser.post(f"/parent/imports/{draft_id}/read", data=form)
+
+    assert reader.calls == []
+    assert "Reading is under way until " in pressed.text
+
+
+def test_a_press_whose_calls_all_ended_lets_read_again_start_at_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(None, "service_refused", 0, 0)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        browser.post(
+            f"/parent/imports/{draft_id}/read",
+            data=read_form(browser.get(f"/parent/imports/{draft_id}").text),
+        )
+        reader.answers[RED] = ANSWERED
+        browser.post(
+            f"/parent/imports/{draft_id}/read",
+            data=read_form(browser.get(f"/parent/imports/{draft_id}").text),
+        )
+
+    assert reader.calls == [RED, RED]
+
+
+def test_with_no_key_no_read_is_offered_and_none_is_made(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path, key=False)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        pressed = browser.post(f"/parent/imports/{draft_id}/read", data={"images": "", "check": ""})
+
+    assert "/read" not in page
+    assert says(page, imports.SAID["no_key"])
+    assert reader.calls == []
+    assert says(pressed.text, imports.SAID["no_key"])
+
+
+def test_after_a_restart_an_unread_image_and_a_read_form_from_before_still_work(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    settings = open_settings(tmp_path)
+    with here(settings) as browser:
+        draft_id = made(browser, RED)
+        form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
+        student = state_of(browser).project_state.student_id()
+        [image_id] = images_of(browser, draft_id)
+        state_of(browser).import_drafts.start_attempt(student, draft_id, [image_id])
+    with here(settings) as browser:
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        pressed = browser.post(f"/parent/imports/{draft_id}/read", data=form)
+
+    assert says(page, imports.LABELS["unread"])
+    assert reader.calls == [RED]
+    assert says(pressed.text, imports.LABELS["read"])
+
+
+def test_a_reading_the_busy_file_couldnt_keep_is_named_on_the_press_page(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
+        store = state_of(browser).import_drafts
+
+        def busy(*_: object, **__: object) -> bool:
+            from blossom.stores.drafts import WriterBusy
+
+            raise WriterBusy
+
+        monkeypatch.setattr(store, "store_reading", busy)
+        pressed = browser.post(f"/parent/imports/{draft_id}/read", data=form)
+
+    assert says(pressed.text, imports.busy_reading(1))
+    assert says(pressed.text, imports.LABELS["ended"])
+
+
+def test_each_image_label_is_one_of_the_closed_set() -> None:
+    assert imports.LABELS == {
+        "unread": "Not read yet. Read again.",
+        "ended": "Not read in time. Read again.",
+        "read": "Read.",
+        "wrong_kind": "This doesn't look like the school's homework list.",
+    }
+    assert set(imports.FAILED) == set(FAILURES)
+
+
+# ------------------------------------------------------------------ who may, and no-store
+
+
+def every_route(draft_id: str, image_id: str) -> list[tuple[str, str]]:
+    return [
+        ("POST", "/parent/imports"),
+        ("GET", f"/parent/imports/{draft_id}"),
+        ("POST", f"/parent/imports/{draft_id}/images"),
+        ("GET", f"/parent/imports/{draft_id}/images/{image_id}"),
+        ("POST", f"/parent/imports/{draft_id}/images/{image_id}/remove"),
+        ("POST", f"/parent/imports/{draft_id}/read"),
+    ]
+
+
+def test_every_import_route_is_one_this_module_names() -> None:
+    found = {
+        (method, route.path)  # type: ignore[attr-defined]
+        for route in imports.router.routes
+        for method in route.methods  # type: ignore[attr-defined]
+    }
+    assert found == {
+        ("POST", "/parent/imports"),
+        ("GET", "/parent/imports/{draft_id}"),
+        ("POST", "/parent/imports/{draft_id}/images"),
+        ("GET", "/parent/imports/{draft_id}/images/{image_id}"),
+        ("POST", "/parent/imports/{draft_id}/images/{image_id}/remove"),
+        ("POST", "/parent/imports/{draft_id}/read"),
+    }
+
+
+def test_with_the_sign_in_off_another_computer_is_refused_before_any_body(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = open_settings(tmp_path)
+    with here(settings) as browser:
+        draft_id = made(browser, RED)
+        [image_id] = images_of(browser, draft_id)
+    with here(settings, client="192.168.1.20") as elsewhere:
+        answers = {
+            (method, path): elsewhere.request(method, path, content=b"--unread body")
+            for method, path in every_route(draft_id, image_id)
+        }
+        count = drafts(elsewhere)
+
+    assert {key: answer.status_code for key, answer in answers.items()} == dict.fromkeys(
+        answers, 403
+    )
+    assert all(says(answer.text, imports.SAID["only_here"]) for answer in answers.values())
+    assert all(answer.headers["cache-control"] == "no-store" for answer in answers.values())
+    assert count == 1
+
+
+def test_with_the_sign_in_on_her_and_no_one_are_refused_and_a_parent_is_served(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = signed_in_household(tmp_path)
+    with TestClient(
+        create_app(settings), follow_redirects=False, headers={"Origin": "http://testserver"}
+    ) as parent:
+        signed_in(parent, THEIRS)
+        draft_id = made(parent, RED)
+        [image_id] = images_of(parent, draft_id)
+        served = parent.get(f"/parent/imports/{draft_id}")
+        image = parent.get(f"/parent/imports/{draft_id}/images/{image_id}")
+    with TestClient(
+        create_app(settings), follow_redirects=False, headers={"Origin": "http://testserver"}
+    ) as her:
+        signed_in(her, HERS)
+        hers = {
+            route: her.request(route[0], route[1], content=b"--unread body")
+            for route in every_route(draft_id, image_id)
+        }
+    with TestClient(
+        create_app(settings), follow_redirects=False, headers={"Origin": "http://testserver"}
+    ) as nobody:
+        nobodys = {
+            route: nobody.request(route[0], route[1], content=b"--unread body")
+            for route in every_route(draft_id, image_id)
+        }
+
+    assert served.status_code == 200
+    assert served.headers["cache-control"] == "no-store"
+    assert image.headers["cache-control"] == "no-store"
+    assert {answer.status_code for answer in hers.values()} == {403}
+    assert {answer.status_code for answer in nobodys.values()} <= {303, 401}
+
+
+def test_every_import_answer_is_no_store_with_the_sign_in_off(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        [image_id] = images_of(browser, draft_id)
+        form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
+        answers = [
+            upload(browser, RED),
+            upload(browser, gif()),
+            browser.get(f"/parent/imports/{draft_id}"),
+            browser.get(f"/parent/imports/{'f' * 32}"),
+            browser.get(f"/parent/imports/{draft_id}/images/{image_id}"),
+            browser.post(f"/parent/imports/{draft_id}/read", data=form),
+            browser.post(f"/parent/imports/{draft_id}/images/{image_id}/remove"),
+        ]
+
+    assert [answer.headers["cache-control"] for answer in answers] == ["no-store"] * len(answers)
+
+
+def test_family_review_offers_no_screenshot_upload_yet(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        page = browser.get("/parent")
+
+    assert page.status_code == 200
+    assert "/parent/imports" not in page.text
+    assert "Add screenshots" not in page.text
+
+
+def test_an_expired_review_says_so_and_takes_nothing(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        clock = state_of(browser).import_drafts._clock
+        later = clock.now() + DRAFT_LIFETIME
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(clock, "now", lambda: later)
+        try:
+            page = browser.get(f"/parent/imports/{draft_id}")
+            refused = upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
+        finally:
+            monkey.undo()
+
+    assert page.status_code == 410
+    assert says(page.text, imports.SAID["expired"])
+    assert refused.status_code == 410

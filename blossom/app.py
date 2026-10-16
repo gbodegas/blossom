@@ -29,6 +29,7 @@ from blossom.routes import (
     grades,
     hand_in,
     household,
+    imports,
     inbox,
     note_details,
     note_links,
@@ -142,9 +143,12 @@ def create_app(
     app.include_router(school_instructions.router)
     app.include_router(parent.router)
     app.include_router(inbox.router)
+    app.include_router(imports.router)
     app.include_router(verifier.router)
     app.add_exception_handler(FormUnreadable, unreadable_form(resolved.page_marks))
     app.add_exception_handler(grades.NotOnThisComputer, grades.refused_here(resolved.page_marks))
+    app.add_exception_handler(imports.ScreenshotsNotHere, imports.refused_here(resolved.page_marks))
+    app.add_middleware(imports.NoStoreForImports)
     # The gate wraps everything above: with two passphrases set, a page or a
     # route answers only someone who has signed in and may open it.
     app.add_middleware(HouseholdGate, settings=resolved)

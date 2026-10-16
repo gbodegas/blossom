@@ -986,9 +986,16 @@ NO_BODY: Final = frozenset(
         "/student/help-requests/{request_id}",
         "/student/actions/take-back-help/{request_id}",
         "/student/actions/take-back/{signal_id}",
+        "/parent/imports/{draft_id}/images/{image_id}/remove",
     }
 )
 """The routes that change something and read no body at all."""
+READS_ITS_OWN_BODY: Final = frozenset(
+    {"/parent/imports", "/parent/imports/{draft_id}/images", "/parent/imports/{draft_id}/read"}
+)
+"""The import routes that take no form parameter and read their body themselves once their
+parent-only check has passed: an upload's multipart body within its limits, and a Read press's
+two fields. ``tests/test_import_routes.py`` presses them."""
 READS: Final = frozenset({"GET", "HEAD"})
 PARENT_MAY_PRESS: Final = frozenset({"/student/actions/plan", "/student/grades/view"})
 """Her routes that read the body of a parent's press rather than refusing it first: the plan
@@ -1115,10 +1122,10 @@ def test_every_route_that_changes_something_is_a_form_route_or_reads_no_form(
     for route in api:
         if route.body_field is not None and isinstance(route.body_field.field_info, FormParameter):
             assert isinstance(route, FormRoute), route.path
-        if route.path in NO_BODY:
+        if route.path in NO_BODY | READS_ITS_OWN_BODY:
             assert route.body_field is None, route.path
-    assert {route.path for route in api} - json_bodies - NO_BODY == pressed
-    assert {route.path for route in api} >= NO_BODY
+    assert {route.path for route in api} - json_bodies - NO_BODY - READS_ITS_OWN_BODY == pressed
+    assert {route.path for route in api} >= NO_BODY | READS_ITS_OWN_BODY
     assert pressed.isdisjoint(json_bodies | NO_BODY)
 
 
