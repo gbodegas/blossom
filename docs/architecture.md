@@ -516,7 +516,8 @@ draft is composed and once after the gate, each as an upsert keyed by a draft
 id derived from the thread, so a node that runs twice leaves one row. The table lives in its own file, under the
 same guard as saved state, with deleted rows overwritten. `GET
 /parent/approvals` reads the table and needs no model, so a parent can always
-see what is waiting. Starting a run needs the model seam and says so with a
+see what is waiting, and lists the newest plan of each evening from today on,
+which a JSON request for that evening names as its `newest_plan`. Starting a run needs the model seam and says so with a
 503 when there is no key. Deciding does not: nothing past the gate asks a
 model, so a graph built without a key can resume a paused thread and record
 the decision, and the table is consulted before the graph is built, so a
@@ -960,6 +961,23 @@ run also reads "Family review shows what happened." Her JSON route's 503s for
 not saved and couldn't start carry the same sentence in the words of whoever is
 signed in, and the family route's in a parent's words.
 
+Each JSON request carries a `run_id` its caller made and an `issued_at`, the
+moment it was made, as the page forms carry theirs; a retry sends both again
+unchanged. The request's id is its run's id, so a retry finds its run and is
+answered with where it stands, after the gate has checked who is asking, at
+any age; only a request whose id names no run is held to its age, and one made
+a week or more ago starts nothing. A refusal made before anything starts
+carries a code and says no plan was started. When the record can't be read in
+time to say whether the id names a run, a request that ends before admission
+has read the id again and given its answer, refused or stopped on the way by
+any failure, admission's own included, answers 503 instead, since its run may
+exist. On each plan route `not_valid` is the only 422 body: it
+covers a date not written exactly YYYY-MM-DD and a nonempty `newest_plan` that
+names no published plan of the evening asked for, which admission checks in
+its transaction. A body the framework can't decode at all gets its own 400. The page forms' presses, whose design PR 1 settled, take a failed
+read as no run: their evening and age checks can then refuse a used form, and
+otherwise admission decides again.
+
 The run ID is how a run is found again. `GET /student/plans/runs/{run_id}` and
 `GET /parent/plans/runs/{run_id}` read where it stands, after ending any run
 past its deadline, and answer 503, unconfirmed, when the record can't be read
@@ -1108,8 +1126,9 @@ shape, extra or sent twice; `another_evening` (409), which names today;
 `expired` (409) for a press made a week or more ago; and `other_words` (409)
 for an id sent again with other words while the signal it recorded is kept.
 These are the only 422 and 409 bodies
-the route sends. A body the framework can't read as JSON at all gets the
-framework's own 400.
+the route sends. A body that decodes but isn't a signal is `not_valid`; one the
+framework can't decode at all, not in a JSON text encoding or nested too deeply,
+gets the framework's own 400.
 
 A press records that today, by the household's clock, is too much, in
 `WorkloadSignalsStore`, `blossom/stores/workload_signals.py`. Three things

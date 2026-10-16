@@ -108,12 +108,14 @@ from tests.support import (
     client_for,
     due,
     family_plan,
+    family_plan_body,
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
     form_fields,
     fresh_signal_fields,
+    her_plan_body,
     hidden,
     human_text,
     landing_in,
@@ -2133,13 +2135,13 @@ def test_work_finished_between_the_routes_question_and_the_runs_reading_ends_the
     app.dependency_overrides[plan_graphs] = override
     with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         state = state_of(client)
-        first = client.post("/student/plans")
+        first = client.post("/student/plans", json=her_plan_body(client))
         kept = state.drafts.latest_for(PLAN_DATE)
         for item in state.project_state.all_assignments():
             report(client, item.assignment_id, "done")
         asked_before = sum(planner.calls for planner in planners)
         monkeypatch.setattr(student_routes, "require_work", work_is_left)
-        late = client.post("/student/plans")
+        late = client.post("/student/plans", json=her_plan_body(client))
         asked_after = sum(planner.calls for planner in planners)
         ended = state.drafts.runs_without_a_draft()
         still = state.drafts.latest_for(PLAN_DATE)
@@ -3068,7 +3070,9 @@ def test_the_familys_planning_routes_refuse_a_run_that_found_nothing_left_to_pla
         state = state_of(client)
         finish_everything(client)
         monkeypatch.setattr(parent_routes, "require_work", work_is_left)
-        over_json = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        over_json = client.post(
+            "/parent/plans", json=family_plan_body(client, PLAN_DATE.isoformat())
+        )
         from_the_form = client.post(
             "/parent/actions/plan", data=family_plan(client, PLAN_DATE.isoformat())
         )
@@ -3081,7 +3085,9 @@ def test_the_familys_planning_routes_refuse_a_run_that_found_nothing_left_to_pla
             DailyPlan(plan_date=PLAN_DATE, blocks=[], deferred=[]),
             DailyPlan(plan_date=PLAN_DATE, blocks=[], deferred=[]),
         ]
-        checks_failed = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        checks_failed = client.post(
+            "/parent/plans", json=family_plan_body(client, PLAN_DATE.isoformat())
+        )
 
     assert over_json.status_code == 409
     assert over_json.json()["detail"] == NOTHING_TO_SCHEDULE

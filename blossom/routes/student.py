@@ -186,53 +186,73 @@ from blossom.routes.runs import (
     COULD_NOT_START_SENTENCES,
     EVENING,
     FORM_LIFETIME,
+    HER_PLAN_ANSWERS,
     ISSUED_AT,
     ISSUED_AT_FORM,
+    NOT_HER_PLAN,
     NOT_USED,
     OPENED_A_WEEK_AGO,
-    PLAN_ANSWERS,
     PLAN_FORM_FIELDS,
     RUN_STATUS_ANSWERS,
     STORE_FAILURES,
     UNCONFIRMED,
+    UNDECODABLE,
     AlreadyPlanning,
+    AnsweredAtAdmission,
     Clause,
     CouldNotStart,
     Graphs,
+    HerPlanRefusalView,
+    HerPlanRequest,
+    HerPlanRoute,
     Needs,
+    NewRequestRefused,
     NotSaved,
     PlanAnswer,
     PlanRow,
     RunCheck,
     RunNotice,
+    RunUnread,
     SameRun,
     Sentences,
     Unconfirmed,
+    a_week_old,
+    admitted,
+    answered_by_its_run,
     being_made,
+    calendar_date,
     ended_sentences,
     ended_without_a_plan,
     evening_named,
+    expired_request,
     fact,
     fresh_plan_form,
     graph_for_a_run,
     issue_time_from,
+    json_newer_plan,
     landed,
     make_plan,
     named_work,
+    not_her_evening,
     not_saved,
     not_saved_sentences,
     opening_and_rest,
     past_due_views,
     plan_form_from,
+    plan_refusal,
     planning_sentences,
+    repeats_a_field,
     require_model,
     require_work,
+    run_admitted,
     run_check,
     run_notice,
     run_of_the_form,
+    run_of_the_request,
     run_replaced,
     run_status_view,
     saved_sentence,
+    unknown_outcome,
 )
 from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
@@ -839,23 +859,6 @@ def signal_refusal(refused: SignalRefusalView) -> JSONResponse:
     return JSONResponse(SignalRefusal(detail=refused).model_dump(mode="json"), status_code=code)
 
 
-def repeats_a_field(body: bytes) -> bool:
-    """Whether a JSON body names a field twice in one object, which a reader would take as its
-    last. A body that isn't JSON repeats nothing here; the framework refuses it."""
-    repeated = False
-
-    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        nonlocal repeated
-        repeated = repeated or len({name for name, _ in items}) != len(items)
-        return dict(items)
-
-    try:
-        json.loads(body, object_pairs_hook=pairs)
-    except (ValueError, RecursionError):
-        return False
-    return repeated
-
-
 def signal_view(state: ApplicationState, signal: WorkloadSignal) -> WorkloadSignalView:
     """Her projection of a signal, with the time in the household's zone.
 
@@ -1044,12 +1047,12 @@ async def register_workload_signal(
     Refusals record nothing and carry a code: not_valid, 422, for a body that isn't a
     signal; another_evening, 409; expired, 409, for a press made a week or more ago; and
     other_words, 409, for an id sent again with other words while the signal it recorded
-    is kept. A body the framework can't read as JSON at all is its own 400.
+    is kept. A body the framework can't decode at all, one not in a JSON text encoding or
+    nested too deeply, is its own 400; one that decodes but isn't a signal is not_valid.
     """
     now = state.real_clock.now()
-    try:
-        evening = date.fromisoformat(payload.evening)
-    except ValueError:
+    evening = calendar_date(payload.evening)
+    if evening is None:
         return signal_refusal(NOT_A_SIGNAL)
     issued_at = issue_time_from(payload.issued_at, now)
     if issued_at is None:
@@ -1089,10 +1092,7 @@ SIGNAL_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
     },
     status.HTTP_400_BAD_REQUEST: {
         "model": ProblemView,
-        "description": (
-            "A body the framework can't read as JSON at all, in its own answer. Nothing was "
-            "recorded."
-        ),
+        "description": f"{UNDECODABLE} Nothing was recorded.",
     },
     status.HTTP_401_UNAUTHORIZED: {
         "model": ProblemView,
@@ -1619,22 +1619,76 @@ def plan_for_today(state: State) -> StudentPlanView:
     return plan
 
 
-@router.post(
-    "/plans",
-    response_model=StudentPlanView | PublishedRunView,
-    status_code=status.HTTP_201_CREATED,
-    responses=PLAN_ANSWERS,
-)
+async def her_press_answered(
+    error: Exception, state: ApplicationState, evening: date, *, parent: bool
+) -> JSONResponse:
+    """What her JSON route answers when a step from ``require_work`` to the end of the run
+    raises ``error``, or when admission answers the press: an answer the error names, the
+    error itself when it is one, and otherwise a 409 saying a reliable plan couldn't be
+    finished."""
+    try:
+        raise error
+    except SameRun as same:
+        return await answered_by_its_run(state, same.run, evening, HerPlanRefusalView)
+    except StaleBasis:
+        return plan_refusal(json_newer_plan(evening, HerPlanRefusalView))
+    except UnknownBasis:
+        return plan_refusal(NOT_HER_PLAN)
+    except AlreadyPlanning as planning:
+        raise AlreadyPlanning(planning.run, parent=parent) from None
+    except NotSaved as refused:
+        raise HTTPException(
+            refused.status_code, detail=not_saved(parent=parent, kept=refused.kept)
+        ) from None
+    except CouldNotStart as stopped:
+        raise HTTPException(
+            stopped.status_code, detail=f"{COULD_NOT_START} {saved_sentence(parent=parent)}"
+        ) from None
+    except Unconfirmed as unconfirmed:
+        return JSONResponse(
+            unconfirmed.view().model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
+        )
+    except HTTPException:
+        raise
+    except Exception as failed:
+        logger.exception("today's plan failed on the way")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail=ended_without_a_plan(INTERRUPTED, parent=parent)
+        ) from failed
+
+
 async def make_todays_plan(
-    request: Request, state: State, graphs: Graphs
+    request: Request, state: State, graphs: Graphs, plan: Annotated[HerPlanRequest, Body()]
 ) -> StudentPlanView | JSONResponse:
-    """Ask for today's plan. It is hers as soon as it is made; a parent's review comes after.
+    """Ask for today's plan, once for each request. It is hers as soon as it is made; a
+    parent's review comes after.
+
+    The caller makes two values for each request: run_id, a new id of 32 lowercase
+    hexadecimal characters such as uuid.uuid4().hex, and issued_at, the moment the request
+    is made, in ISO 8601 with its offset. evening is the household's today, YYYY-MM-DD, and
+    newest_plan is the draft_id GET /student/plans/today answers, or an empty string when it
+    answers 404. A retry sends the same run_id and issued_at; a new request gets new ones.
+
+    A run_id already used answers its run as it stands now, 200, at any age, or, for another
+    evening, used_for_another_evening, 409. A new request for an evening that isn't today is
+    another_evening, 409, naming today; one made a week or more ago is expired, 409; and one
+    whose newest_plan is behind the evening's newest plan is newer_plan, 409. When the record
+    can't be read in time to say whether the run_id is used, a request that ends before
+    admission has read the run_id again and given its answer is a 503 instead, since its run may
+    exist: one refused by those two refusals or for an evening with nothing left to plan, and
+    one stopped on the way by a week that couldn't be read, no model key, a graph that couldn't
+    be built, an admission that failed, ran late or couldn't commit, or any other failure. A
+    body that decodes but isn't a plan request is not_valid, 422, the route's only 422: evening
+    must be written YYYY-MM-DD, and a nonempty newest_plan must name a published plan for that
+    evening. One the framework can't decode at all is its 400. None of these starts a run,
+    though an admission that ran late can still record one, which refuses presses until its
+    deadline.
 
     A run that ends without a plan, because the checks never passed, the
     model did not answer, or it failed on the way, is a 409 saying why in the
     reader's words, and her page keeps whatever plan it had. An evening with
     nothing left to plan is a 409 too, before any run is written or a model
-    asked for, and so is a press while the household's run is still running,
+    asked for, and so is a request while the household's run is still running,
     naming it. A plan whose saving couldn't be confirmed in time is a 202 with
     its run's id, to check at ``plans/runs/{run_id}``; a plan not saved and a
     run that couldn't start are 503s that say her updates are saved, in the
@@ -1644,33 +1698,54 @@ async def make_todays_plan(
     stands published and the 201 names its run instead.
     """
     budget = graphs.budget()
+    now = state.real_clock.now()
+    evening = calendar_date(plan.evening)
+    if evening is None:
+        return plan_refusal(NOT_HER_PLAN)
+    issued_at = issue_time_from(plan.issued_at, now)
+    if issued_at is None:
+        return plan_refusal(NOT_HER_PLAN)
     today = state.clock.today()
     parent = parent_reads(request)
+    # A run_id already used is answered by its run, whatever its age or the evening's.
     try:
+        found, unread = await run_of_the_request(state, plan.run_id), False
+    except RunUnread:
+        found, unread = None, True
+    if found is not None:
+        return await answered_by_its_run(state, found, evening, HerPlanRefusalView)
+    checked = False
+    try:
+        # Up to admission's own read of the run_id. With the lookup unread, every way out of
+        # here but an answer admission gives after that read leaves the outcome unknown.
+        refused = (
+            not_her_evening(evening, today)
+            if evening != today
+            else a_week_old(HerPlanRefusalView)
+            if expired_request(issued_at, now)
+            else None
+        )
+        if refused is not None:
+            raise NewRequestRefused(refused)
+        checked = True
         await require_work(state, today, budget)
         require_model(graphs)
-        made = await make_plan(graph_for_a_run(graphs), today, state, budget=budget)
-    except AlreadyPlanning as error:
-        raise AlreadyPlanning(error.run, parent=parent) from None
-    except NotSaved as error:
-        raise HTTPException(
-            error.status_code, detail=not_saved(parent=parent, kept=error.kept)
-        ) from None
-    except CouldNotStart as error:
-        raise HTTPException(
-            error.status_code, detail=f"{COULD_NOT_START} {saved_sentence(parent=parent)}"
-        ) from None
-    except Unconfirmed as unconfirmed:
-        return JSONResponse(
-            unconfirmed.view().model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
-        )
-    except HTTPException:
-        raise
+        graph = graph_for_a_run(graphs)
+        await admitted(state, plan.run_id, today, budget, plan.newest_plan)
+    except AnsweredAtAdmission as answered:
+        return await her_press_answered(answered.answer, state, evening, parent=parent)
     except Exception as error:
-        logger.exception("today's plan failed on the way")
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, detail=ended_without_a_plan(INTERRUPTED, parent=parent)
-        ) from error
+        if unread:
+            raise unknown_outcome(error) from None
+        if isinstance(error, NewRequestRefused):
+            return plan_refusal(error.refusal)
+        if not checked:
+            raise
+        return await her_press_answered(error, state, evening, parent=parent)
+    try:
+        made = await run_admitted(graph, today, state, budget, plan.run_id)
+    except Exception as error:
+        return await her_press_answered(error, state, evening, parent=parent)
     if made.record is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -1692,6 +1767,17 @@ async def make_todays_plan(
                 logger.warning("the plan of run %s could not be read: %s", record.thread_id, error)
     published = PublishedRunView(run_id=record.thread_id, plan_date=record.plan_date)
     return JSONResponse(published.model_dump(mode="json"), status_code=status.HTTP_201_CREATED)
+
+
+router.add_api_route(
+    "/plans",
+    make_todays_plan,
+    methods=["POST"],
+    response_model=StudentPlanView | PublishedRunView,
+    status_code=status.HTTP_201_CREATED,
+    responses=HER_PLAN_ANSWERS,
+    route_class_override=HerPlanRoute,
+)
 
 
 @router.get("/plans/runs/{run_id}", response_model=RunStatusView, responses=RUN_STATUS_ANSWERS)

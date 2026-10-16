@@ -66,6 +66,7 @@ from tests.support import (
     family_line,
     family_line_focused,
     family_plan,
+    family_plan_body,
     fixture_settings,
     forgetful_fixture_plan,
     form_fields,
@@ -757,7 +758,9 @@ def test_a_failure_on_the_way_is_said_on_the_page_and_the_queue_stays() -> None:
             "/parent/actions/plan", data=fresh_plan_fields(client, plan_date=PLAN_DATE.isoformat())
         )
         queue = client.get("/parent/approvals").json()["waiting"]
-        over_json = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        over_json = client.post(
+            "/parent/plans", json=family_plan_body(client, PLAN_DATE.isoformat())
+        )
         ended = state_of(client).drafts.latest_run()
 
     assert response.status_code == 409
@@ -1169,7 +1172,9 @@ def test_an_evening_with_nothing_left_to_do_is_refused_before_any_run() -> None:
         posted = client.post(
             "/parent/actions/plan", data=family_plan(client, PLAN_DATE.isoformat())
         )
-        over_json = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        over_json = client.post(
+            "/parent/plans", json=family_plan_body(client, PLAN_DATE.isoformat())
+        )
         ended = state.drafts.runs_without_a_draft()
 
     assert len(window.assignments) == 7
@@ -1182,17 +1187,20 @@ def test_an_evening_with_nothing_left_to_do_is_refused_before_any_run() -> None:
 
 def test_an_evening_past_the_calendars_edge_is_refused_by_the_form_as_by_the_route() -> None:
     """The last day the date type can hold has no week after it to read: the form says so
-    with 422, as the JSON route does, rather than fail on the way to reading the week."""
+    with 422, and the JSON route answers 409 beyond_calendar, rather than either failing on
+    the way to reading the week."""
     with browser() as client:
         refused = client.post("/parent/actions/plan", data=family_plan(client, "9999-12-31"))
-        over_json = client.post("/parent/plans", json={"plan_date": "9999-12-31"})
+        over_json = client.post("/parent/plans", json=family_plan_body(client, "9999-12-31"))
         state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
         ended = state.drafts.runs_without_a_draft()
 
     assert refused.status_code == 422
     assert "The evening of 9999-12-31 is past the edge of the calendar." in refused.text
-    assert over_json.status_code == 422
-    assert over_json.json()["detail"].startswith("The evening of 9999-12-31 is past the edge")
+    assert over_json.status_code == 409
+    assert over_json.json()["detail"]["message"].startswith(
+        "The evening of 9999-12-31 is past the edge"
+    )
     assert ended == []
 
 
@@ -1569,9 +1577,16 @@ def test_each_503_from_the_family_json_route_says_her_updates_are_saved(
     async def refused(*args: object, **kwargs: object) -> object:
         raise error()
 
-    monkeypatch.setattr(parent_routes, "make_plan", refused)
+    async def admitted(*args: object, **kwargs: object) -> None:
+        return None
+
+    # The JSON route admits its run and then runs it; the run is what answers here.
+    monkeypatch.setattr(parent_routes, "admitted", admitted)
+    monkeypatch.setattr(parent_routes, "run_admitted", refused)
     with browser() as client:
-        response = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        response = client.post(
+            "/parent/plans", json=family_plan_body(client, PLAN_DATE.isoformat())
+        )
 
     assert response.status_code == 503
     assert response.json()["detail"] == said
@@ -1675,7 +1690,7 @@ def test_a_week_that_cannot_be_read_before_a_family_press_is_a_plan_that_could_n
     evening = {"plan_date": PLAN_DATE.isoformat()}
     with browser() as client:
         if route == "/parent/plans":
-            response = client.post(route, json=evening)
+            response = client.post(route, json=family_plan_body(client, evening["plan_date"]))
         else:
             response = client.post(route, data=family_plan(client, evening["plan_date"]))
         newest = state_of(client).drafts.latest_run()
@@ -1713,7 +1728,7 @@ def test_a_graph_that_cannot_be_built_before_a_family_press_is_a_plan_that_could
     with browser() as client:
         client.app.dependency_overrides[plan_graphs] = graphs  # type: ignore[attr-defined]
         if route == "/parent/plans":
-            response = client.post(route, json=evening)
+            response = client.post(route, json=family_plan_body(client, evening["plan_date"]))
         else:
             response = client.post(route, data=family_plan(client, evening["plan_date"]))
         newest = state_of(client).drafts.latest_run()

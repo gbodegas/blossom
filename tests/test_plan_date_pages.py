@@ -72,6 +72,7 @@ from tests.support import (
     changed_by_hand,
     composed_plan,
     control_names,
+    family_plan_body,
     files_in,
     fixture_settings,
     lands_on,
@@ -817,7 +818,7 @@ def plan_for(client: TestClient, namesake: str, evening: date) -> DraftRecord:
         lambda: [walkthrough_plan(namesake).model_copy(update={"plan_date": evening})],
         lambda: [accepting()],
     )
-    made = client.post("/parent/plans", json={"plan_date": evening.isoformat()})
+    made = client.post("/parent/plans", json=family_plan_body(client, evening.isoformat()))
     assert made.status_code == 201, made.text[:300]
     found = state_of(client).drafts.get(made.json()["draft_id"])
     assert found is not None

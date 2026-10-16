@@ -10,7 +10,7 @@ import pathlib
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -65,13 +65,17 @@ from blossom.routes.runs import (
     ADMISSION_ALLOWANCE_SECONDS,
     AlreadyPlanning,
     CouldNotStart,
+    FamilyPlanRequest,
+    HerPlanRequest,
     NotSaved,
     PlanGraphs,
     PlanMade,
     Unconfirmed,
+    admit,
     make_plan,
     plan_graphs,
     require_work,
+    run_admitted,
     seconds_to_wait,
 )
 from blossom.settings import Settings
@@ -106,13 +110,17 @@ from tests.support import (
     Spending,
     Turn,
     accepting,
+    admissions_refused,
     due,
     every_row,
+    family_plan_body,
     files_in,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
     fresh_plan_fields,
+    her_plan_body,
+    her_plan_request,
     human_text,
     light_fixture_plan,
     model_graphs,
@@ -845,7 +853,7 @@ def test_her_json_answer_to_a_plan_published_inside_the_grace_comes_by_the_grace
     graphs = PlanGraphs(build=lambda: accepted_graph(state), may_start=True, budget=fake.budget)
     reading = threading.Event()
     release = threading.Event()
-    planned = make_plan
+    planned = run_admitted
 
     def held(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
         reading.set()
@@ -858,13 +866,15 @@ def test_her_json_answer_to_a_plan_published_inside_the_grace_comes_by_the_grace
 
     monkeypatch.setattr(student_routes, "plan_view", held)
     if spent == "before it is read":
-        monkeypatch.setattr(student_routes, "make_plan", then_spent)
+        monkeypatch.setattr(student_routes, "run_admitted", then_spent)
     try:
         calls = settles_then(state, lambda: fake.advance(RUN_DEADLINE_SECONDS + 0.5))
 
         async def scenario() -> tuple[Any, float]:
             pressed = asyncio.ensure_future(
-                student_routes.make_todays_plan(her_json_press(), state, graphs)
+                student_routes.make_todays_plan(
+                    her_json_press(), state, graphs, HerPlanRequest(**her_plan_request(state))
+                )
             )
             if spent == "while it is read":
                 assert await asyncio.to_thread(reading.wait, 5)
@@ -1654,8 +1664,8 @@ def test_the_json_routes_name_another_evenings_running_run(tmp_path: pathlib.Pat
             )
             is None
         )
-        hers = client.post("/student/plans")
-        family = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        hers = client.post("/student/plans", json=her_plan_body(client))
+        family = client.post("/parent/plans", json=family_plan_body(client, PLAN_DATE.isoformat()))
         rows = rows_of(tmp_path)
 
     for answer in (hers, family):
@@ -2538,7 +2548,9 @@ async def stopped_while_a_settle_holds_the_writer(
     try:
         state: ApplicationState = getattr(old.state, STATE_ATTRIBUTE)
         async with served(old) as client:
-            assert (await client.post("/student/plans")).status_code == 201
+            assert (
+                await client.post("/student/plans", json=her_plan_request(state))
+            ).status_code == 201
             prior = state.drafts.latest_for(PLAN_DATE)
             assert prior is not None
             approval = {"approved": True, "reason": None}
@@ -2547,7 +2559,7 @@ async def stopped_while_a_settle_holds_the_writer(
             await settled_down(state)
             settles_then(state, hold)
             old.dependency_overrides[plan_graphs] = accepting_graphs(2.0)
-            pressed = await client.post("/student/plans")
+            pressed = await client.post("/student/plans", json=her_plan_request(state))
         held_at_the_stop = not held.is_set() and bool(state.detached)
     except BaseException:
         held.set()
@@ -2575,7 +2587,9 @@ async def stopped_while_a_settle_holds_the_writer(
             restarted: ApplicationState = getattr(new.state, STATE_ATTRIBUTE)
             async with served(new) as client:
                 checked = (await client.get(f"/student/plans/runs/{run_id}")).json()
-                second = (await client.post("/student/plans")).status_code
+                second = (
+                    await client.post("/student/plans", json=her_plan_request(restarted))
+                ).status_code
             await settled_down(restarted)
             run = restarted.drafts.run_status(run_id)
             kept = restarted.drafts.get(prior.draft_id)
@@ -2672,7 +2686,7 @@ def pressed_while_held(
     """Ask for her plan through the JSON route, and let ``meanwhile`` happen while the
     planner holds the run, before it answers."""
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pressed = pool.submit(client.post, "/student/plans")
+        pressed = pool.submit(client.post, "/student/plans", json=her_plan_body(client))
         try:
             assert planner.asked.wait(5), "the run never asked the planner"
             meanwhile()
@@ -2879,7 +2893,7 @@ def test_chosen_earlier_work_is_read_by_the_run_and_kept_with_the_plan_by_its_id
         state = state_of(client)
         state.project_state.upsert_assignments([EARLIER])
         choose_earlier(state)
-        made = client.post("/student/plans")
+        made = client.post("/student/plans", json=her_plan_body(client))
         published = state.drafts.latest_for(PLAN_DATE)
 
     assert made.status_code == 201
@@ -2932,8 +2946,10 @@ def test_an_evening_with_a_date_problem_ends_at_its_first_step_and_asks_no_model
         if route == "/student/actions/plan":
             # These settings name no key, so her week offers no button: a fresh form is sent.
             answer = client.post(route, data=fresh_plan_fields(client), headers=PAGE_HEADERS)
+        elif route == "/parent/plans":
+            answer = client.post(route, json=family_plan_body(client))
         else:
-            answer = client.post(route, json={})
+            answer = client.post(route, json=her_plan_body(client))
         run = state.drafts.latest_run()
         ended = state.drafts.runs_without_a_draft()
         plan = state.drafts.latest_for(PLAN_DATE)
@@ -4195,6 +4211,169 @@ def test_a_press_canceled_while_it_is_admitted_ends_with_no_history(
     assert (ended.status, ended.reason) == ("ended", "timed_out" if crossed else "interrupted")
     assert steps == []
     assert timing is None
+
+
+@pytest.mark.parametrize("named", [True, False], ids=["a running run's id", "a new id"])
+def test_a_canceled_admission_ends_only_the_run_it_inserted(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, named: bool
+) -> None:
+    """An admission canceled while its thread waits for the store goes on in that thread. Once
+    it ends, a run it inserted for the request is ended interrupted; a run the id already
+    named, still running, is left running."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    run_id = f"plan:{PLAN_DATE.isoformat()}:asked-again"
+    try:
+        if named:
+            standing = state.drafts.admit_run(
+                run_id, plan_date=PLAN_DATE, deadline_mono=fake() + 60
+            )
+            assert standing is None
+
+        async def scenario() -> tuple[bool, RunState | None]:
+            admission = Gated(state.drafts.admit_run, asyncio.get_running_loop())
+            monkeypatch.setattr(state.drafts, "admit_run", admission)
+            request = asyncio.ensure_future(admit(state, run_id, PLAN_DATE, fake.budget()))
+            await asyncio.wait_for(admission.began.wait(), timeout=5)
+            request.cancel()
+            stopped = await ends_stopped(request)
+            admission.go.set()
+            await asyncio.wait_for(admission.returned.wait(), timeout=5)
+            # The admission's future is done once its thread has handed back; what it calls
+            # then runs on the loop.
+            await asyncio.to_thread(time.sleep, 0.1)
+            await settled_down(state)
+            monkeypatch.undo()
+            return stopped, run_of(state, run_id)
+
+        stopped, run = fake.run(scenario())
+    finally:
+        state.close()
+
+    assert stopped
+    assert run is not None
+    if named:
+        assert (run.status, run.reason) == ("running", "running")
+    else:
+        assert (run.status, run.reason) == ("ended", "interrupted")
+
+
+@pytest.mark.parametrize("route", ["hers", "the family's"])
+def test_a_json_press_canceled_as_its_admission_returns_ends_the_run_it_admitted(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """A cancel asked for the moment admission returns lands at the press's next wait, which is
+    inside the part of the run that ends a canceled run: the run is ended interrupted, never
+    left running with nothing behind it."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    graphs = PlanGraphs(build=lambda: accepted_graph(state), may_start=True, budget=fake.budget)
+    routes = student_routes if route == "hers" else parent_routes
+    admitted = routes.admitted
+
+    async def then_canceled(*args: Any) -> None:  # noqa: ANN401
+        await admitted(*args)
+        running = asyncio.current_task()
+        assert running is not None
+        running.cancel()
+
+    monkeypatch.setattr(routes, "admitted", then_canceled)
+    try:
+
+        async def scenario() -> tuple[bool, str]:
+            asked = her_plan_request(state)
+            pressed: Coroutine[Any, Any, object]
+            if route == "hers":
+                pressed = student_routes.make_todays_plan(
+                    her_json_press(), state, graphs, HerPlanRequest(**asked)
+                )
+            else:
+                family = FamilyPlanRequest(
+                    run_id=asked["run_id"],
+                    plan_date=asked["evening"],
+                    issued_at=asked["issued_at"],
+                    newest_plan=asked["newest_plan"],
+                )
+                pressed = parent_routes.start_plan(family, state, graphs)
+            stopped = await ends_stopped(asyncio.ensure_future(pressed))
+            await settled_down(state)
+            return stopped, asked["run_id"]
+
+        stopped, run_id = fake.run(scenario())
+        run = run_of(state, run_id)
+    finally:
+        state.close()
+
+    assert stopped
+    assert run is not None
+    assert (run.status, run.reason) == ("ended", "interrupted")
+
+
+def test_a_press_whose_admission_is_refused_its_worker_thread_couldnt_start(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page routes' path: an admission refused its worker thread, as when none can be
+    started, is ``CouldNotStart``, and no run is recorded."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+        refused = admissions_refused(monkeypatch)
+
+        async def scenario() -> object:
+            (answer,) = await asyncio.gather(
+                make_plan(accepted_graph(state), PLAN_DATE, state, budget=fake.budget()),
+                return_exceptions=True,
+            )
+            return answer
+
+        answer = fake.run(scenario())
+        latest = state.drafts.latest_run()
+    finally:
+        state.close()
+
+    assert len(refused) == 1
+    assert isinstance(answer, CouldNotStart)
+    assert isinstance(answer.__cause__, RuntimeError)
+    assert latest is None
+
+
+class StoreCallReached(Exception):
+    """The store call an admission makes, reached."""
+
+
+@pytest.mark.parametrize(
+    "spent", [0.0, 0.2, 1.2], ids=["time left", "no time left", "past its deadline"]
+)
+def test_admit_reaches_its_store_call_before_it_gives_any_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, spent: float
+) -> None:
+    """Admission's answers come from its store call, or after it: with time left, none left,
+    or its deadline past, ``admit`` raises none of them on the way to that call, and a call
+    that fails is ``CouldNotStart``."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    try:
+
+        def reached(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+            raise StoreCallReached
+
+        monkeypatch.setattr(state.drafts, "admit_run", reached)
+        budget = fake.budget(0.2)
+        fake.advance(spent)
+
+        async def scenario() -> object:
+            admission = admit(
+                state, "plan:reached", PLAN_DATE, budget, "", basis_of_the_evening=True
+            )
+            (answer,) = await asyncio.gather(admission, return_exceptions=True)
+            return answer
+
+        answer = fake.run(scenario())
+    finally:
+        state.close()
+
+    assert isinstance(answer, CouldNotStart)
+    assert isinstance(answer.__cause__, StoreCallReached)
 
 
 def test_a_run_the_store_ends_first_is_answered_with_the_steps_its_record_keeps(

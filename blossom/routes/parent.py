@@ -56,7 +56,6 @@ from functools import partial
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response, status
-from fastapi.openapi.constants import REF_PREFIX
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
@@ -64,6 +63,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from blossom.agent.retention import unresumable_threads
 from blossom.agent.runs import (
     DURABILITY,
+    RunBudget,
     StaleGraphVersion,
     Unfinished,
     bounded,
@@ -102,52 +102,70 @@ from blossom.routes.runs import (
     COULD_NOT_START,
     COULD_NOT_START_SENTENCES,
     EVENING,
+    FAMILY_PLAN_ANSWERS,
+    NOT_A_FAMILY_PLAN,
     NOT_USED,
     OPENED_A_WEEK_AGO,
-    PLAN_ANSWERS,
     PLAN_FORM_FIELDS,
     RUN_STATUS_ANSWERS,
     STORE_FAILURES,
     UNCONFIRMED,
     AlreadyPlanning,
+    AnsweredAtAdmission,
     Clause,
     CouldNotStart,
+    FamilyPlanRefusalView,
+    FamilyPlanRequest,
+    FamilyPlanRoute,
     Graphs,
     Needs,
+    NewRequestRefused,
     NotSaved,
     PlanAnswer,
     PlanGraphBuilder,
     PlanRow,
     RunCheck,
     RunNotice,
+    RunUnread,
     SameRun,
     Sentences,
     Unconfirmed,
+    a_week_old,
+    admitted,
+    answered_by_its_run,
     being_made,
+    calendar_date,
     ended_sentences,
     ended_without_a_plan,
     evening_named,
+    evening_refused,
+    expired_request,
     fact,
     fresh_plan_form,
     graph_for_a_run,
+    issue_time_from,
+    json_newer_plan,
     landed,
     make_plan,
     not_saved,
     not_saved_sentences,
     plan_form_from,
+    plan_refusal,
     planning_sentences,
     refuse_an_empty_run,
     require_model,
     require_work,
+    run_admitted,
     run_check,
     run_notice,
     run_of_the_form,
+    run_of_the_request,
     run_replaced,
     run_status_view,
     saved_sentence,
-    thread_for,
     tidy_later,
     tidy_thread,
+    unknown_outcome,
 )
 from blossom.routes.student import (
     FAMILY_HELP,
@@ -211,10 +229,10 @@ from blossom.views import (
     HandInView,
     HelpRequestView,
     NamedAssignmentView,
+    NewestPlanView,
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
-    ProblemView,
     RunStatusView,
     RunView,
     SchoolStatementView,
@@ -228,14 +246,6 @@ router = APIRouter(prefix="/parent", tags=["parent"])
 templates = page_templates()
 
 State = Annotated[ApplicationState, Depends(get_application_state)]
-
-
-class PlanRequest(BaseModel):
-    """Which evening to plan. Defaults to today in the household's zone."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    plan_date: date | None = None
 
 
 REFRESH_REQUESTS: Final = address(FAMILY_PAGE, fragment=HELP_SHE_ASKED_FOR, refreshed="1")
@@ -612,76 +622,32 @@ def beyond(evening: date) -> Sentences:
     )
 
 
-FAMILY_PLAN_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
-    **PLAN_ANSWERS,
-    status.HTTP_422_UNPROCESSABLE_CONTENT: {
-        "description": "An evening refused in a sentence, or a body that isn't a plan request",
-        "content": {
-            "application/json": {
-                "schema": {
-                    "anyOf": [
-                        {"$ref": f"{REF_PREFIX}{ProblemView.__name__}"},
-                        {"$ref": f"{REF_PREFIX}HTTPValidationError"},
-                    ]
-                }
-            }
-        },
-    },
-}
-"""The family's press answers besides its plan: both plan routes' answers, and its 422, a
-sentence for an evening that has passed or is past the calendar's edge, or FastAPI's list of
-field errors for a body that isn't a plan request. A 422 declared here replaces FastAPI's own."""
+COULD_NOT_START_FOR_A_PARENT: Final = f"{COULD_NOT_START} {saved_sentence(parent=True)}"
+"""What the family's JSON route answers, 503, when a run couldn't start."""
 
 
-@router.post(
-    "/plans",
-    response_model=PlanRunView,
-    status_code=status.HTTP_201_CREATED,
-    responses=FAMILY_PLAN_ANSWERS,
-)
-async def start_plan(
-    request: PlanRequest, state: State, graphs: Graphs
+async def family_press_answered(
+    error: Exception, state: ApplicationState, evening: date, run_id: str, budget: RunBudget
 ) -> PlanRunView | JSONResponse:
-    """Run the plan graph for one evening, up to the gate or to the reason it stopped.
-
-    An evening that has passed, or one past the edge of the calendar, is
-    refused with 422 in a sentence before anything runs, and a body that isn't
-    a plan request is a 422 with FastAPI's list of field errors. An evening with
-    nothing left to plan is a 409, before and after the run: a report of hers
-    can land between the question and the run's reading, and such a run made
-    no plan. Any other run that ended without a plan is answered 201 with its
-    record, since the page lists those, a run that ended on a date problem
-    before any model was asked, or one that failed on the way, included. A
-    press while the household's run is still running is a 409 naming it, in a
-    parent's words; a plan whose saving couldn't be confirmed in time is a 202
-    with its run's id; and a plan not saved or a run that couldn't start is a
-    503 that says her updates are saved.
-    """
-    budget = graphs.budget()
-    evening = request.plan_date or state.clock.today()
-    if evening < state.clock.today():
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=" ".join(passed(evening)))
-    if evening > date.max - CALENDAR_MARGIN:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=" ".join(beyond(evening)))
-    could_not_start = f"{COULD_NOT_START} {saved_sentence(parent=True)}"
+    """What the family's JSON route answers when a step from the graph's build to the end of
+    the run raises ``error``, or when admission answers the press: an answer the error names,
+    the error itself when it is one, and otherwise the run's record, interrupted."""
     try:
-        await require_work(state, evening, budget)
-    except CouldNotStart as error:
-        raise HTTPException(error.status_code, detail=could_not_start) from None
-    require_model(graphs)
-    run_id = thread_for(evening)
-    try:
-        made = await make_plan(
-            graph_for_a_run(graphs), evening, state, budget=budget, run_id=run_id
-        )
-    except AlreadyPlanning as error:
-        raise AlreadyPlanning(error.run, parent=True) from None
-    except NotSaved as error:
+        raise error
+    except SameRun as same:
+        return await answered_by_its_run(state, same.run, evening, FamilyPlanRefusalView)
+    except StaleBasis:
+        return plan_refusal(json_newer_plan(evening, FamilyPlanRefusalView))
+    except UnknownBasis:
+        return plan_refusal(NOT_A_FAMILY_PLAN)
+    except AlreadyPlanning as planning:
+        raise AlreadyPlanning(planning.run, parent=True) from None
+    except NotSaved as refused:
         raise HTTPException(
-            error.status_code, detail=not_saved(parent=True, kept=error.kept)
+            refused.status_code, detail=not_saved(parent=True, kept=refused.kept)
         ) from None
-    except CouldNotStart as error:
-        raise HTTPException(error.status_code, detail=could_not_start) from None
+    except CouldNotStart as stopped:
+        raise HTTPException(stopped.status_code, detail=COULD_NOT_START_FOR_A_PARENT) from None
     except Unconfirmed as unconfirmed:
         return JSONResponse(
             unconfirmed.view().model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
@@ -689,8 +655,8 @@ async def start_plan(
     except HTTPException:
         raise
     except Exception:
-        # The run was admitted and has been ended interrupted: its record, like any run
-        # that ended without a plan.
+        # The run's record, interrupted, like any run that ended without a plan. A run that
+        # was admitted has been ended interrupted; a failure before admission left no run.
         logger.exception("the plan for %s failed on the way", evening)
         return PlanRunView(
             thread_id=run_id,
@@ -700,8 +666,113 @@ async def start_plan(
             waiting=False,
             steps=list(budget.steps),
         )
+
+
+async def start_plan(
+    request: Annotated[FamilyPlanRequest, Body()], state: State, graphs: Graphs
+) -> PlanRunView | JSONResponse:
+    """Run the plan graph for one evening, once for each request, up to the gate or to the
+    reason it stopped.
+
+    The caller makes two values for each request: run_id, a new id of 32 lowercase
+    hexadecimal characters such as uuid.uuid4().hex, and issued_at, the moment the request
+    is made, in ISO 8601 with its offset. plan_date is the evening to plan, YYYY-MM-DD, and
+    newest_plan is the draft_id newest_plans in GET /parent/approvals lists for that evening,
+    or an empty string when it lists none. A retry sends the same run_id and issued_at; a new
+    request gets new ones.
+
+    A run_id already used answers its run as it stands now, 200, at any age, or, for another
+    evening, used_for_another_evening, 409. A new request made a week or more ago is expired,
+    409; one for an evening that has passed is passed, 409, and one past the edge of the
+    calendar is beyond_calendar, 409, each naming today; one whose newest_plan is behind the
+    evening's newest plan is newer_plan, 409. When the record can't be read in time to say
+    whether the run_id is used, a request that ends before admission has read the run_id again
+    and given its answer is a 503 instead, since its run may exist: one refused by the first
+    three refusals or for an evening with nothing left to plan, and one stopped on the way by a
+    week that couldn't be read, no model key, a graph that couldn't be built, an admission that
+    failed, ran late or couldn't commit, or any other failure. A body that decodes but isn't a
+    plan request is not_valid, 422, the route's only 422: plan_date must be written YYYY-MM-DD,
+    and a nonempty newest_plan must name a published plan for that evening. One the framework
+    can't decode at all is its 400. None of these starts a run, though an admission that ran
+    late can still record one, which refuses presses until its deadline.
+
+    An evening with nothing left to plan is a 409, before and after the run: a report of hers
+    can land between the question and the run's reading, and such a run made no plan. Any
+    other run that ended without a plan is answered 201 with its record, since the page lists
+    those, a run that ended on a date problem before any model was asked, or one that failed
+    on the way, included. A request while the household's run is still running is a 409
+    naming it, in a parent's words; a plan whose saving couldn't be confirmed in time is a 202
+    with its run's id; and a plan not saved or a run that couldn't start is a 503 that says
+    her updates are saved.
+    """
+    budget = graphs.budget()
+    now = state.real_clock.now()
+    evening = calendar_date(request.plan_date)
+    if evening is None:
+        return plan_refusal(NOT_A_FAMILY_PLAN)
+    issued_at = issue_time_from(request.issued_at, now)
+    if issued_at is None:
+        return plan_refusal(NOT_A_FAMILY_PLAN)
+    today = state.clock.today()
+    run_id = request.run_id
+    # A run_id already used is answered by its run, whatever its age or the evening's.
+    try:
+        found, unread = await run_of_the_request(state, run_id), False
+    except RunUnread:
+        found, unread = None, True
+    if found is not None:
+        return await answered_by_its_run(state, found, evening, FamilyPlanRefusalView)
+    checking = admitting = False
+    try:
+        # Up to admission's own read of the run_id. With the lookup unread, every way out of
+        # here but an answer admission gives after that read leaves the outcome unknown.
+        refused = (
+            a_week_old(FamilyPlanRefusalView)
+            if expired_request(issued_at, now)
+            else evening_refused("passed", passed(evening), today)
+            if evening < today
+            else evening_refused("beyond_calendar", beyond(evening), today)
+            if evening > date.max - CALENDAR_MARGIN
+            else None
+        )
+        if refused is not None:
+            raise NewRequestRefused(refused)
+        checking = True
+        await require_work(state, evening, budget)
+        require_model(graphs)
+        admitting = True
+        graph = graph_for_a_run(graphs)
+        await admitted(state, run_id, evening, budget, request.newest_plan)
+    except AnsweredAtAdmission as answered:
+        return await family_press_answered(answered.answer, state, evening, run_id, budget)
+    except Exception as error:
+        if unread:
+            raise unknown_outcome(error) from None
+        if isinstance(error, NewRequestRefused):
+            return plan_refusal(error.refusal)
+        if admitting:
+            return await family_press_answered(error, state, evening, run_id, budget)
+        if checking and isinstance(error, CouldNotStart):
+            raise HTTPException(error.status_code, detail=COULD_NOT_START_FOR_A_PARENT) from None
+        # The checks' other failures reach the framework.
+        raise
+    try:
+        made = await run_admitted(graph, evening, state, budget, run_id)
+    except Exception as error:
+        return await family_press_answered(error, state, evening, run_id, budget)
     refuse_an_empty_run(made.view)
     return made.view
+
+
+router.add_api_route(
+    "/plans",
+    start_plan,
+    methods=["POST"],
+    response_model=PlanRunView,
+    status_code=status.HTTP_201_CREATED,
+    responses=FAMILY_PLAN_ANSWERS,
+    route_class_override=FamilyPlanRoute,
+)
 
 
 @router.get("/plans/runs/{run_id}", response_model=RunStatusView, responses=RUN_STATUS_ANSWERS)
@@ -712,10 +783,16 @@ async def plan_run(run_id: str, state: State) -> RunStatusView:
 
 @router.get("/approvals", response_model=ApprovalQueueView)
 def approvals(state: State) -> ApprovalQueueView:
-    """Every draft waiting for a decision, oldest first. Needs no model to read."""
+    """Every draft waiting for a decision, oldest first, and the newest plan of each evening
+    from today on that has one, which a request for that evening names as newest_plan. Needs
+    no model to read."""
+    waiting, newest = state.drafts.queue_from(state.clock.today())
     return ApprovalQueueView(
         generated_at=state.clock.now(),
-        waiting=[approval_view(state, record) for record in state.drafts.waiting()],
+        waiting=[approval_view(state, record) for record in waiting],
+        newest_plans=[
+            NewestPlanView(plan_date=evening, draft_id=draft_id) for evening, draft_id in newest
+        ],
     )
 
 

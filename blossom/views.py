@@ -975,13 +975,25 @@ class ApprovalView(BaseModel):
         )
 
 
+class NewestPlanView(BaseModel):
+    """The newest plan made for one evening, decided or not."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_date: date
+    draft_id: str
+
+
 class ApprovalQueueView(BaseModel):
-    """What waits for a decision, oldest first."""
+    """What waits for a decision, oldest first, and the newest plan of each evening from today
+    on that has one: the newest_plan a request for that evening sends. An evening not listed
+    has none, and its request sends an empty string."""
 
     model_config = ConfigDict(extra="forbid")
 
     generated_at: AwareDatetime
     waiting: list[ApprovalView]
+    newest_plans: list[NewestPlanView]
 
 
 class DecisionView(BaseModel):

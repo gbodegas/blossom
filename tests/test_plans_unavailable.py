@@ -46,6 +46,7 @@ from tests.support import (
     browser,
     composed_plan,
     drafts_in_memory,
+    family_plan_body,
     files_in,
     fixture_settings,
     fresh_plan_fields,
@@ -330,7 +331,7 @@ def later_plan(
         lambda: [walkthrough_plan(namesake).model_copy(update={"plan_date": day})],
         lambda: [accepting()],
     )
-    made = client.post("/parent/plans", json={"plan_date": evening})
+    made = client.post("/parent/plans", json=family_plan_body(client, evening))
     assert made.status_code == 201, made.text[:300]
     found = state_of(client).drafts.get(made.json()["draft_id"])
     assert found is not None

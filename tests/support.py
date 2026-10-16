@@ -25,9 +25,11 @@ import re
 import sqlite3
 import sys
 import threading
+import types
 from collections.abc import Callable, Collection, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from functools import partial
 from html import unescape
 from html.parser import HTMLParser
 from time import monotonic, sleep
@@ -741,6 +743,33 @@ class Awaited:
         raise AssertionError(msg)
 
 
+def admissions_refused(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """From here on, the worker thread an admission asks for is refused, as an executor that
+    can't start a thread refuses it; every other call gets its thread. The list names each
+    run_id whose admission was refused. Both modules that hand work to a thread see it."""
+    refused: list[str] = []
+
+    class Refusing:
+        def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+            self.loop = loop
+
+        def run_in_executor(self, executor: Any, call: Callable[..., Any], *args: Any) -> Any:  # noqa: ANN401
+            if isinstance(call, partial) and getattr(call.func, "__name__", "") == "admit_run":
+                refused.append(str(call.args[0]))
+                msg = "can't start new thread"
+                raise RuntimeError(msg)
+            return self.loop.run_in_executor(executor, call, *args)
+
+        def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+            return getattr(self.loop, name)
+
+    shim = types.SimpleNamespace(**vars(asyncio))
+    shim.get_running_loop = lambda: Refusing(asyncio.get_running_loop())
+    for module in ("blossom.routes.runs", "blossom.agent.runs"):
+        monkeypatch.setattr(f"{module}.asyncio", shim)
+    return refused
+
+
 class Gated:
     """Wraps one store method: each call says it began, then waits on its worker thread
     until the test lets it go, and says when it returned.
@@ -1286,6 +1315,52 @@ def fresh_signal_fields(client: TestClient, **changed: str) -> dict[str, str]:
     issued = state.real_clock.now().astimezone(UTC).strftime(ISSUED_AT_FORM)
     fields = {"signal_id": uuid4().hex, "evening": state.clock.today().isoformat()}
     return {**fields, "issued_at": issued, **changed}
+
+
+def her_plan_body(client: TestClient, **changed: str) -> dict[str, str]:
+    """A JSON request for today's plan as a caller makes one: a fresh run_id and issue time,
+    today's evening, and today's newest plan, with ``changed`` over them."""
+    return {**her_plan_request(state_of(client)), **changed}
+
+
+def her_plan_request(state: ApplicationState) -> dict[str, str]:
+    """``her_plan_body`` made from the state itself, for a caller with no test client."""
+    today = state.clock.today()
+    return {
+        "run_id": uuid4().hex,
+        "evening": today.isoformat(),
+        "issued_at": state.real_clock.now().astimezone(UTC).strftime(ISSUED_AT_FORM),
+        "newest_plan": newest_plan_for(state, today),
+    }
+
+
+def newest_plan_for(state: ApplicationState, evening: date | str) -> str:
+    """The newest_plan a caller sends for ``evening``: the draft_id the queue's newest_plans
+    lists for it, which is today's plan's on her route, or empty when none is listed."""
+    try:
+        day = evening if isinstance(evening, date) else date.fromisoformat(evening)
+    except ValueError:
+        return ""
+    return next(
+        (draft_id for listed, draft_id in state.drafts.newest_published_from(day) if listed == day),
+        "",
+    )
+
+
+def family_plan_body(
+    client: TestClient, plan_date: date | str | None = None, **changed: str
+) -> dict[str, str]:
+    """A JSON request for an evening's plan as a caller makes one: a fresh run_id and issue
+    time, ``plan_date`` or today, and that evening's newest plan, with ``changed`` over them."""
+    state = state_of(client)
+    evening = state.clock.today() if plan_date is None else plan_date
+    body = {
+        "run_id": uuid4().hex,
+        "plan_date": evening if isinstance(evening, str) else evening.isoformat(),
+        "issued_at": state.real_clock.now().astimezone(UTC).strftime(ISSUED_AT_FORM),
+        "newest_plan": newest_plan_for(state, evening),
+    }
+    return {**body, **changed}
 
 
 def signal_kept_before(

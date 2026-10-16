@@ -55,7 +55,28 @@ With the app running as the README describes:
   update, or Undo gets 403 on her week before the form is read. There is no
   JSON route for it.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
-  to `/student/plans` makes one. The POST answers 201 with her plan in the
+  to `/student/plans` makes one. Its body is `run_id`, a new id of 32
+  lowercase hexadecimal characters such as `uuid.uuid4().hex`; `evening`,
+  the household's today as YYYY-MM-DD; `issued_at`, the time of the request
+  in ISO 8601 with its offset; and `newest_plan`, the `draft_id`
+  `GET /student/plans/today` answers, or an empty string when that answers
+  404. Make a fresh `run_id` and `issued_at` for each request, and send both
+  unchanged to retry it: a `run_id` already used answers 200 with its run as
+  it stands, at any age, and starts nothing. A new request made a week or more
+  ago, for an evening that isn't today, or behind the evening's newest plan
+  starts nothing and answers 409 with a code (`expired`, `another_evening`,
+  `newer_plan`); a `run_id` used for another evening answers 409
+  `used_for_another_evening`; when the record can't be read in time to say
+  whether the `run_id` is used, a request that ends before admission has read
+  the `run_id` again and given its answer, refused by one of those codes or
+  for an evening with nothing left to plan, or stopped on the way by a week
+  that couldn't be read, no model key, a graph that couldn't be built, an
+  admission that failed, ran late or couldn't commit, or any other failure,
+  answers 503, since its run may exist; and a body that decodes but
+  isn't a request answers 422 `not_valid`, the only 422 body, while one that
+  can't be decoded at all gets the framework's 400. `not_valid` covers an
+  evening not written exactly YYYY-MM-DD and a nonempty `newest_plan` that
+  names no published plan for that evening. The POST answers 201 with her plan in the
   shape `GET /student/plans/today` gives, worded for whoever is signed in,
   or, when that reading doesn't finish in time after the plan is published,
   201 with `{"run_id", "plan_date", "status": "published"}`; 202 with
@@ -75,9 +96,13 @@ With the app running as the README describes:
   `POST /parent/plans` and `GET /parent/plans/runs/{run_id}` answer the same
   way, its 201 being the run's record (`PlanRunView`), which is also its
   answer to a run it admitted that ended without a plan, one interrupted on
-  the way included, its 409 and 503 messages saying "Her homework updates
-  are saved.", and 422 for an evening that has passed or is past the
-  calendar.
+  the way included, and its 409 and 503 messages saying "Her homework updates
+  are saved.". Its body names `plan_date`, the evening to plan, in place of
+  `evening`, and its `newest_plan` is the `draft_id` that `newest_plans` in
+  `GET /parent/approvals` lists for that evening, or an empty string when it
+  lists none. A new request for an evening that has passed or is past the
+  calendar answers 409 with the code `passed` or `beyond_calendar`; a `run_id`
+  already used for that evening answers its run.
 - <http://127.0.0.1:8000/student/homework-notes> is her homework notes, with
   the ones she put away under `/archived`, the ones in homework under
   `/added`, the form for a new one under `/new`, and each note on a page of

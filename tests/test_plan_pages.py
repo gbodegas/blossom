@@ -36,6 +36,7 @@ from tests.support import (
     accepting,
     browser,
     changed_by_hand,
+    family_plan_body,
     finding,
     fixture_settings,
     fixture_week_plan,
@@ -379,7 +380,7 @@ def test_an_earlier_plan_for_today_and_a_future_plan_carry_no_marks() -> None:
             ],
             lambda: [accepting()],
         )
-        tomorrow = client.post("/parent/plans", json={"plan_date": "2026-08-20"})
+        tomorrow = client.post("/parent/plans", json=family_plan_body(client, "2026-08-20"))
         report(client, ESSAY_ID, "done")
         hers = client.get(HER_PAGE, headers=PAGE_HEADERS).text
         family = client.get("/parent", headers=PAGE_HEADERS).text

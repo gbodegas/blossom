@@ -18,16 +18,22 @@ request stops waiting for goes on detached without deciding anything.
 
 import asyncio
 import contextlib
+import json
 import logging
+import re
 import sqlite3
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
-from typing import Annotated, Any, Final, Literal
+from typing import Annotated, Any, ClassVar, Final, Literal
 from uuid import uuid4
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import URL
 from starlette.responses import Response
 
@@ -41,6 +47,7 @@ from blossom.agent.runs import (
     Unfinished,
     bounded,
     run_config,
+    settled_quietly,
     time_limit_step,
 )
 from blossom.agent.steps import (
@@ -823,6 +830,22 @@ def in_the_background(state: ApplicationState, call: Callable[[], Any], what: st
     detach(state, asyncio.get_running_loop().run_in_executor(None, call), what)
 
 
+def end_if_inserted(state: ApplicationState, run_id: str, admission: "asyncio.Future[Any]") -> None:
+    """Once a canceled admission's thread ends: end the run it inserted for this request, which
+    no graph will run, and nothing else. An admission that found a run under the id, or another
+    running, or refused, or failed, inserted nothing."""
+    inserted = False
+    with contextlib.suppress(BaseException):
+        inserted = admission.result() is None
+    if not inserted:
+        return
+    in_the_background(
+        state,
+        partial(state.drafts.end_run, run_id, reason=INTERRUPTED),
+        f"ending the canceled run {run_id}",
+    )
+
+
 async def tidy_thread(thread_id: str, state: ApplicationState) -> None:
     """Clear a thread nothing will resume, or log why not and leave it to the sweep.
 
@@ -891,6 +914,8 @@ async def admit(
     plan_date: date,
     budget: RunBudget,
     basis: str | None = None,
+    *,
+    basis_of_the_evening: bool = False,
 ) -> None:
     """Record the run as the household's one running run, or refuse the press.
 
@@ -910,23 +935,29 @@ async def admit(
         deadline_mono=state.monotonic() + budget.remaining(),
         wait=wait,
         basis=basis,
+        basis_of_the_evening=basis_of_the_evening,
     )
+    work: asyncio.Future[RunState | None] | None = None
     try:
-        blocking = await bounded(admission, wait + ADMISSION_ALLOWANCE_SECONDS)
+        # A worker thread refused, as when none can be started, is a failure like any other.
+        work = asyncio.get_running_loop().run_in_executor(None, admission)
+        done, _ = await asyncio.wait({work}, timeout=wait + ADMISSION_ALLOWANCE_SECONDS)
+        if work not in done:
+            raise Unfinished(work)
+        blocking = work.result()
     except (StaleBasis, UnknownBasis):
         raise
     except Exception as error:
-        if not isinstance(error, Unfinished | StoreBusy | WriterBusy):
+        if isinstance(error, Unfinished):
+            error.work.add_done_callback(settled_quietly)
+        elif not isinstance(error, StoreBusy | WriterBusy):
             logger.exception("run %s could not be admitted", run_id)
         raise CouldNotStart from error
     except BaseException:
-        # A cancel. The insert may still land after it; ending it now leaves at most a
-        # row with no graph behind it, which ends at its own deadline.
-        in_the_background(
-            state,
-            partial(state.drafts.end_run, run_id, reason=INTERRUPTED),
-            f"ending the canceled run {run_id}",
-        )
+        # A cancel. The admission goes on in its thread; once it ends, a run it inserted for
+        # this request is ended interrupted, and a run the id already named is left alone.
+        if work is not None:
+            work.add_done_callback(partial(end_if_inserted, state, run_id))
         raise
     if blocking is not None:
         if blocking.run_id == run_id:
@@ -1375,12 +1406,14 @@ async def make_plan(
     budget: RunBudget | None = None,
     run_id: str | None = None,
     basis: str | None = None,
+    basis_of_the_evening: bool = False,
 ) -> PlanMade:
     """Admit a run for one evening, run the graph, and settle it, inside ``budget``.
 
     ``budget`` starts at handler entry, after the form body is read; without one, the run's
     time starts now. ``run_id`` names the run, a new thread for the evening unless given,
-    and ``basis`` is the newest plan the pressing page knew, checked at admission.
+    and ``basis`` is the newest plan the pressing page knew, checked at admission; with
+    ``basis_of_the_evening``, as a JSON request sends it, it must be a plan of ``plan_date``.
     The household has one running
     run at a time: a press while one runs is ``AlreadyPlanning``, naming it, and
     an admission that can't be made in time is ``CouldNotStart``. The graph runs
@@ -1400,7 +1433,20 @@ async def make_plan(
     """
     budget = RunBudget(clock=state.monotonic) if budget is None else budget
     run_id = thread_for(plan_date) if run_id is None else run_id
-    await admit(state, run_id, plan_date, budget, basis)
+    await admit(state, run_id, plan_date, budget, basis, basis_of_the_evening=basis_of_the_evening)
+    return await run_admitted(graph, plan_date, state, budget, run_id)
+
+
+async def run_admitted(
+    graph: CompiledPlanGraph,
+    plan_date: date,
+    state: ApplicationState,
+    budget: RunBudget,
+    run_id: str,
+) -> PlanMade:
+    """Run the graph for a run ``admit`` has just recorded, and settle it, inside ``budget``:
+    ``make_plan`` after its admission. Nothing may wait between the admission and this call,
+    so a cancel always finds the run here to end."""
     planning = Planning(state, run_id, plan_date, budget)
     try:
         return await planning.run(graph)
@@ -1428,14 +1474,6 @@ async def make_plan(
         raise
 
 
-PLAN_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
-    status.HTTP_202_ACCEPTED: {"model": UnconfirmedRunView},
-    status.HTTP_409_CONFLICT: {"model": PlanConflictView},
-    status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ProblemView},
-}
-"""The bodies a JSON press answers with besides its plan, as both plan routes declare them:
-the run to check, why no plan was made, and why none could be."""
-
 RUN_STATUS_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_404_NOT_FOUND: {"model": ProblemView},
     status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ProblemView},
@@ -1462,3 +1500,420 @@ async def run_status_view(state: ApplicationState, run_id: str) -> RunStatusView
         reason=None if found.status == "running" else found.reason,
         draft_id=None if found.draft is None else found.draft.draft_id,
     )
+
+
+# ------------------------------------------------------------------ the JSON plan requests
+
+
+def repeats_a_field(body: bytes) -> bool:
+    """Whether a JSON body names a field twice in one object, which a reader would take as its
+    last. A body that isn't JSON repeats nothing here; the framework refuses it."""
+    repeated = False
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal repeated
+        repeated = repeated or len({name for name, _ in items}) != len(items)
+        return dict(items)
+
+    try:
+        json.loads(body, object_pairs_hook=pairs)
+    except (ValueError, RecursionError):
+        return False
+    return repeated
+
+
+RUN_ID_FIELD: Final = Field(
+    pattern=r"^[0-9a-f]{32}$",
+    description=(
+        "A new id of 32 lowercase hexadecimal characters, made by the caller for each request, "
+        "for example uuid.uuid4().hex. A retry sends the same id."
+    ),
+)
+ISSUED_AT_FIELD: Final = Field(
+    description=(
+        "When the request was made, in ISO 8601 with its offset, made once for each request "
+        "and sent unchanged on a retry. A new request made a week or more ago starts nothing."
+    )
+)
+
+
+class HerPlanRequest(BaseModel):
+    """A request for today's plan sent as JSON: the id and issue time the caller made for it,
+    the evening it is for, and the newest plan the caller knows for that evening."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = RUN_ID_FIELD
+    evening: str = Field(description="The household's today, as YYYY-MM-DD.")
+    issued_at: str = ISSUED_AT_FIELD
+    newest_plan: str = Field(
+        description=(
+            "The draft_id of today's newest plan, from GET /student/plans/today, or an empty "
+            "string when that answers 404."
+        )
+    )
+
+
+class FamilyPlanRequest(BaseModel):
+    """A request for an evening's plan sent as JSON: the id and issue time the caller made for
+    it, the evening to plan, and the newest plan the caller knows for that evening."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = RUN_ID_FIELD
+    plan_date: str = Field(description="The evening to plan, today or later, as YYYY-MM-DD.")
+    issued_at: str = ISSUED_AT_FIELD
+    newest_plan: str = Field(
+        description=(
+            "The draft_id listed for that evening in newest_plans from GET /parent/approvals, "
+            "or an empty string when the evening isn't listed."
+        )
+    )
+
+
+HerPlanCode = Literal[
+    "not_valid", "another_evening", "expired", "used_for_another_evening", "newer_plan"
+]
+FamilyPlanCode = Literal[
+    "not_valid", "expired", "used_for_another_evening", "newer_plan", "passed", "beyond_calendar"
+]
+
+
+class PlanRefusalView(BaseModel):
+    """Why a JSON plan request started nothing: a code, a sentence, the household's today where
+    the refusal turns on it, and, for an id used for another evening, where that id's run
+    stands. Each route declares its own codes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+    today: date | None = None
+    run: RunStatusView | None = None
+
+
+class HerPlanRefusalView(PlanRefusalView):
+    """Why her JSON plan request started nothing, by one of her route's codes."""
+
+    code: HerPlanCode
+
+
+class FamilyPlanRefusalView(PlanRefusalView):
+    """Why the family's JSON plan request started nothing, by one of its route's codes."""
+
+    code: FamilyPlanCode
+
+
+class HerPlanRefusal(BaseModel):
+    """Her JSON plan request refused, as its body carries it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: HerPlanRefusalView
+
+
+class FamilyPlanRefusal(BaseModel):
+    """The family's JSON plan request refused, as its body carries it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: FamilyPlanRefusalView
+
+
+REQUEST_FIELDS: Final = (
+    "issued_at, the time the request was made, in ISO 8601 with its offset and no more than "
+    "five minutes ahead of the server's clock; and newest_plan, the draft_id of the newest plan "
+    "known for that evening, or an empty string for none."
+)
+NOT_HER_PLAN: Final = HerPlanRefusalView(
+    code="not_valid",
+    message=(
+        "Blossom couldn't use that plan request. A plan request needs run_id, a new id of 32 "
+        "lowercase hexadecimal characters for each request; evening, the household's today as "
+        f"YYYY-MM-DD; {REQUEST_FIELDS} No plan was started."
+    ),
+)
+NOT_A_FAMILY_PLAN: Final = FamilyPlanRefusalView(
+    code="not_valid",
+    message=(
+        "Blossom couldn't use that plan request. A plan request needs run_id, a new id of 32 "
+        "lowercase hexadecimal characters for each request; plan_date, the evening to plan as "
+        f"YYYY-MM-DD; {REQUEST_FIELDS} No plan was started."
+    ),
+)
+A_WEEK_OLD: Final = "That request was made a week or more ago. No new plan was started."
+"""The JSON refusal of a new request made ``FORM_LIFETIME`` or more before it was handled."""
+
+
+def a_week_old[Refusal: PlanRefusalView](kind: type[Refusal]) -> Refusal:
+    """A new JSON request made a week or more ago, refused in ``kind``, its route's own."""
+    return kind(code="expired", message=A_WEEK_OLD)
+
+
+def not_her_evening(evening: date, today: date) -> HerPlanRefusalView:
+    """Her JSON request for an evening that isn't today, naming today."""
+    return HerPlanRefusalView(
+        code="another_evening",
+        message=(
+            f"That request was for {evening.isoformat()}, not today, {today.isoformat()}. "
+            "No new plan was started."
+        ),
+        today=today,
+    )
+
+
+def evening_refused(
+    code: Literal["passed", "beyond_calendar"], said: Sentences, today: date
+) -> FamilyPlanRefusalView:
+    """The family's JSON request for an evening that has passed or is past the calendar's edge."""
+    return FamilyPlanRefusalView(
+        code=code, message=" ".join((*said, "No plan was started.")), today=today
+    )
+
+
+def json_newer_plan[Refusal: PlanRefusalView](evening: date, kind: type[Refusal]) -> Refusal:
+    """A JSON request whose newest_plan isn't the evening's newest, refused at admission."""
+    return kind(
+        code="newer_plan",
+        message=(
+            f"A newer plan for {evening.isoformat()} was made than the one named in newest_plan. "
+            "No plan was started."
+        ),
+    )
+
+
+def plan_refusal(refused: PlanRefusalView) -> JSONResponse:
+    """A JSON plan request that started nothing: 422 for a body that isn't one, 409 otherwise."""
+    code = (
+        status.HTTP_422_UNPROCESSABLE_CONTENT
+        if refused.code == "not_valid"
+        else status.HTTP_409_CONFLICT
+    )
+    return JSONResponse({"detail": refused.model_dump(mode="json")}, status_code=code)
+
+
+class PlanRoute(APIRoute):
+    """A JSON plan route: a body that isn't one of its requests, a field missing, of another
+    shape, extra or sent twice, is answered with its one refusal, 422, never the framework's
+    list of errors. Who may press is the household gate's to say, before this reads anything."""
+
+    not_a_request: ClassVar[PlanRefusalView]
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        """The framework's handler, with a body that isn't a request refused as one."""
+        handle = super().get_route_handler()
+        refused = self.not_a_request
+
+        async def coded(request: Request) -> Response:
+            if repeats_a_field(await request.body()):
+                return plan_refusal(refused)
+            try:
+                return await handle(request)
+            except RequestValidationError:
+                return plan_refusal(refused)
+
+        return coded
+
+
+class HerPlanRoute(PlanRoute):
+    """``POST /student/plans``."""
+
+    not_a_request = NOT_HER_PLAN
+
+
+class FamilyPlanRoute(PlanRoute):
+    """``POST /parent/plans``."""
+
+    not_a_request = NOT_A_FAMILY_PLAN
+
+
+class RunUnread(Exception):
+    """The record couldn't be read in time to say whether a JSON request's run_id names a
+    run."""
+
+
+async def run_of_the_request(state: ApplicationState, run_id: str) -> RunState | None:
+    """The run a JSON request's id names, read without ending anything, on a worker thread for
+    at most the store's wait; ``None`` when no run has that id. ``RunUnread`` when the read
+    fails or runs late, so the route never takes a used id for an unused one."""
+    try:
+        return await bounded(
+            partial(state.drafts.run_status, run_id, STORE_WAIT_SECONDS, reconcile=False),
+            STORE_WAIT_SECONDS,
+        )
+    except Exception as error:
+        logger.warning("run %s could not be read for a request: %s", run_id, type(error).__name__)
+        raise RunUnread(run_id) from error
+
+
+DEFINITE_AT_ADMISSION: Final = (SameRun, AlreadyPlanning, StaleBasis, UnknownBasis)
+"""The answers that stay definite when a JSON request's own lookup of its run_id couldn't be
+read, since ``admit`` gives them after reading that id again inside its write transaction.
+They count as definite whenever ``admit`` raises them; nothing ``admit`` does before its store
+call raises any of them."""
+
+
+class AnsweredAtAdmission(Exception):
+    """One of ``DEFINITE_AT_ADMISSION``, raised by ``admit`` itself, carried as such so a route
+    tells it apart from the same type raised anywhere else before admission."""
+
+    def __init__(self, answer: Exception) -> None:
+        super().__init__(type(answer).__name__)
+        self.answer = answer
+
+
+class NewRequestRefused(Exception):
+    """A JSON request refused as a new one before anything starts, with its refusal."""
+
+    def __init__(self, refusal: PlanRefusalView) -> None:
+        super().__init__(refusal.code)
+        self.refusal = refusal
+
+
+async def admitted(
+    state: ApplicationState, run_id: str, plan_date: date, budget: RunBudget, basis: str
+) -> None:
+    """``admit`` for a JSON request, whose basis must be a plan of ``plan_date``, with what it
+    raises after its own read of the run_id carried as ``AnsweredAtAdmission``."""
+    try:
+        await admit(state, run_id, plan_date, budget, basis, basis_of_the_evening=True)
+    except DEFINITE_AT_ADMISSION as answer:
+        raise AnsweredAtAdmission(answer) from answer
+
+
+def unknown_outcome(error: Exception) -> HTTPException:
+    """What a JSON request answers when its run_id couldn't be looked up and it ended before
+    admission had read that id again and given its answer, a commit that failed after the read
+    included: the unconfirmed 503. An exception no step announces is logged by its kind."""
+    if not isinstance(error, NewRequestRefused | HTTPException):
+        logger.error("a plan request stopped before admission on %s", type(error).__name__)
+    return unread_outcome()
+
+
+def unread_outcome() -> HTTPException:
+    """The unconfirmed 503, for a JSON request whose run_id couldn't be looked up and whose
+    outcome is unknown, since the id may name a run."""
+    return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=UNCONFIRMED)
+
+
+async def answered_by_its_run(
+    state: ApplicationState, run: RunState, evening: date, kind: type[PlanRefusalView]
+) -> JSONResponse:
+    """A JSON request whose id names a run: that run's current status, read again from the
+    record, 200, when the request is for the run's evening, at any age; the id-conflict
+    refusal, in ``kind``, naming the run's evening and where it stands, when it is for
+    another."""
+    stands = await run_status_view(state, run.run_id)
+    if run.plan_date != evening:
+        return plan_refusal(
+            kind(
+                code="used_for_another_evening",
+                message=(
+                    f"This run_id was used for {run.plan_date.isoformat()}. No plan was started "
+                    f"for {evening.isoformat()}."
+                ),
+                run=stands,
+            )
+        )
+    return JSONResponse(stands.model_dump(mode="json"), status_code=status.HTTP_200_OK)
+
+
+CALENDAR_DATE: Final = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def calendar_date(text: str) -> date | None:
+    """A date written exactly YYYY-MM-DD, as every JSON route here takes one; ``None`` for any
+    other spelling ISO 8601 allows, or a day no calendar has."""
+    if CALENDAR_DATE.fullmatch(text) is None:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def expired_request(issued_at: datetime, now: datetime) -> bool:
+    """Whether a JSON request was made ``FORM_LIFETIME`` or more before ``now``."""
+    return now - issued_at >= FORM_LIFETIME
+
+
+UNDECODABLE: Final = (
+    "A body the framework can't decode at all, in its own answer: one not in a JSON text "
+    "encoding, or nested too deeply. A body that decodes but isn't a request is not_valid, 422."
+)
+"""The 400 every JSON route here declares, the signal's included."""
+
+
+def plan_request_answers(
+    refusal: type[BaseModel], codes: str, forbidden: dict[str, Any]
+) -> dict[int | str, dict[str, Any]]:
+    """Every body one JSON plan route answers with besides a new plan: ``refusal`` is its
+    refusal body, ``codes`` names its 409 codes, and ``forbidden`` is its 403."""
+    return {
+        status.HTTP_200_OK: {
+            "model": RunStatusView,
+            "description": (
+                "A retry: the run_id names a run for this evening, and this is where it stands "
+                "now. Nothing was started."
+            ),
+        },
+        status.HTTP_202_ACCEPTED: {"model": UnconfirmedRunView},
+        status.HTTP_400_BAD_REQUEST: {
+            "model": ProblemView,
+            "description": f"{UNDECODABLE} No plan was started.",
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "model": ProblemView,
+            "description": "No sign-in, with the household sign-in on. Nothing was read.",
+        },
+        status.HTTP_403_FORBIDDEN: forbidden,
+        status.HTTP_409_CONFLICT: {
+            "model": PlanConflictView | refusal,
+            "description": (
+                f"A refusal with a code, made before anything started: {codes}. Or, as a "
+                "sentence, why a run made no plan, or the run still running."
+            ),
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": refusal,
+            "description": "not_valid: a body that isn't a plan request. No plan was started.",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "The server's own error, in plain text, as for any route.",
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+        },
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "model": ProblemView,
+            "description": (
+                "In a sentence: no model key, a run that couldn't start, or a plan made but not "
+                "saved. Or the unconfirmed sentence when the record couldn't be read in time to "
+                "say whether the run_id names a run and the request ended before admission had "
+                "read the id again and given its answer, refused or stopped on the way; its "
+                "outcome is unknown, so retry with the same run_id and issued_at."
+            ),
+        },
+    }
+
+
+ANOTHER_ORIGIN: Final = {
+    "description": "A request from another origin, in plain text.",
+    "content": {"text/plain": {"schema": {"type": "string"}}},
+}
+HER_PLAN_ANSWERS: Final = plan_request_answers(
+    HerPlanRefusal,
+    "another_evening, expired, used_for_another_evening or newer_plan",
+    ANOTHER_ORIGIN,
+)
+FAMILY_PLAN_ANSWERS: Final = plan_request_answers(
+    FamilyPlanRefusal,
+    "expired, used_for_another_evening, newer_plan, passed or beyond_calendar",
+    {
+        "model": ProblemView,
+        "description": (
+            "A student's sign-in, before the body is read; or, in plain text, a request from "
+            "another origin."
+        ),
+        "content": {"text/plain": {"schema": {"type": "string"}}},
+    },
+)
+"""Every body each JSON plan route answers with besides a new plan."""

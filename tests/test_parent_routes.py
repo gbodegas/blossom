@@ -8,9 +8,13 @@ saved-state store, with only the two model calls scripted.
 """
 
 import asyncio
+import pathlib
 from collections.abc import Callable
-from datetime import date
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
@@ -18,23 +22,31 @@ from langgraph.checkpoint.memory import InMemorySaver
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, run_config
 from blossom.app import create_app
+from blossom.clock import FrozenClock
 from blossom.dependencies import build_application_state
 from blossom.drafts import DraftStatus
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.plans import DailyPlan
 from blossom.routes.parent import REASON_MAX_LENGTH, DecisionRequest, decide_draft
 from blossom.routes.runs import plan_graphs
-from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
+from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, CALENDAR_MARGIN
 from blossom.views import DecisionView
 from tests.support import (
+    HERS,
     SAME_ORIGIN,
+    THEIRS,
     Scripted,
     accepting,
+    family_plan_body,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
     ok,
+    runs_recorded,
     scripted_graphs,
+    signed_in,
+    signed_in_household,
+    state_of,
 )
 
 PLAN_DATE = date(2026, 8, 19)
@@ -54,18 +66,19 @@ def app_with(
 
 def test_a_run_pauses_at_the_gate_and_reports_the_draft() -> None:
     with app_with() as client:
-        response = client.post("/parent/plans", json={})
+        sent = family_plan_body(client)
+        response = client.post("/parent/plans", json=sent)
 
     assert response.status_code == 201
     body = response.json()
     assert body["plan_date"] == "2026-08-19"
     assert body["outcome"] == "accepted"
     assert body["waiting"] is True
-    assert body["thread_id"].startswith("plan:2026-08-19:")
+    assert body["thread_id"] == sent["run_id"]
     assert body["draft_id"] == f"draft:{body['thread_id']}"
 
 
-def test_the_evening_defaults_to_today_in_the_household_zone_and_can_be_named() -> None:
+def test_each_run_is_for_the_evening_its_request_names() -> None:
     """Each run is answered with a plan for the evening it was asked about: a draft and the
     plan saved beside it are for one evening, and a plan for another composes nothing."""
     evenings = iter([PLAN_DATE, date(2026, 8, 20)])
@@ -74,8 +87,8 @@ def test_the_evening_defaults_to_today_in_the_household_zone_and_can_be_named() 
         return [fixture_week_plan().model_copy(update={"plan_date": next(evenings)})]
 
     with app_with(planner=plan_for_the_evening_asked) as client:
-        today = client.post("/parent/plans", json={}).json()
-        named = client.post("/parent/plans", json={"plan_date": "2026-08-20"}).json()
+        today = client.post("/parent/plans", json=family_plan_body(client)).json()
+        named = client.post("/parent/plans", json=family_plan_body(client, "2026-08-20")).json()
 
     assert today["plan_date"] == "2026-08-19"
     assert named["plan_date"] == "2026-08-20"
@@ -83,14 +96,16 @@ def test_the_evening_defaults_to_today_in_the_household_zone_and_can_be_named() 
 
 def test_a_request_with_an_unknown_field_is_refused() -> None:
     with app_with() as client:
-        response = client.post("/parent/plans", json={"plan_date": "2026-08-19", "send": True})
+        response = client.post(
+            "/parent/plans", json={**family_plan_body(client, "2026-08-19"), "send": True}
+        )
 
     assert response.status_code == 422
 
 
 def test_a_run_that_never_passes_the_checks_queues_nothing() -> None:
     with app_with(planner=lambda: [forgetful_fixture_plan()] * 3, critic=list) as client:
-        response = client.post("/parent/plans", json={})
+        response = client.post("/parent/plans", json=family_plan_body(client))
         queue = client.get("/parent/approvals").json()
 
     body = response.json()
@@ -106,7 +121,7 @@ def test_a_run_that_never_passes_the_checks_queues_nothing() -> None:
 
 def test_the_queue_shows_the_waiting_draft_with_its_text() -> None:
     with app_with() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         queue = client.get("/parent/approvals").json()
         detail = client.get(f"/parent/approvals/{started['draft_id']}").json()
 
@@ -123,25 +138,28 @@ def test_the_queue_shows_the_waiting_draft_with_its_text() -> None:
 def test_an_evening_past_the_edge_of_the_calendar_is_refused_before_anything_runs() -> None:
     """The week after such an evening cannot be read, so nothing is started for it."""
     with app_with() as client:
-        response = client.post("/parent/plans", json={"plan_date": "9999-12-25"})
+        response = client.post("/parent/plans", json=family_plan_body(client, "9999-12-25"))
         queue = client.get("/parent/approvals").json()["waiting"]
 
-    assert response.status_code == 422
-    assert response.json()["detail"] == (
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "beyond_calendar"
+    assert response.json()["detail"]["message"] == (
         "The evening of 9999-12-25 is past the edge of the calendar. "
-        "Plans reach no later than 9999-12-24."
+        "Plans reach no later than 9999-12-24. No plan was started."
     )
     assert queue == []
 
 
 def test_an_evening_that_has_passed_is_refused_before_anything_runs() -> None:
     with app_with() as client:
-        response = client.post("/parent/plans", json={"plan_date": "2026-08-18"})
+        response = client.post("/parent/plans", json=family_plan_body(client, "2026-08-18"))
         queue = client.get("/parent/approvals").json()["waiting"]
 
-    assert response.status_code == 422
-    assert response.json()["detail"] == (
-        "The evening of 2026-08-18 has passed. Plans are for today or a later evening."
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "passed"
+    assert response.json()["detail"]["message"] == (
+        "The evening of 2026-08-18 has passed. Plans are for today or a later evening. "
+        "No plan was started."
     )
     assert queue == []
 
@@ -149,8 +167,8 @@ def test_an_evening_that_has_passed_is_refused_before_anything_runs() -> None:
 def test_a_second_run_for_the_evening_takes_the_place_of_the_first() -> None:
     """One plan waits per evening: the one she sees is the one a review can land on."""
     with app_with() as client:
-        first = client.post("/parent/plans", json={}).json()
-        second = client.post("/parent/plans", json={}).json()
+        first = client.post("/parent/plans", json=family_plan_body(client)).json()
+        second = client.post("/parent/plans", json=family_plan_body(client)).json()
         queue = client.get("/parent/approvals").json()
         earlier = client.get(f"/parent/approvals/{first['draft_id']}").json()
         review = client.post(f"/parent/approvals/{first['draft_id']}", json={"approved": True})
@@ -175,7 +193,7 @@ def test_an_unknown_draft_is_not_found() -> None:
 
 def test_approving_marks_the_draft_for_manual_send_and_clears_the_queue() -> None:
     with app_with() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         decided = client.post(
             f"/parent/approvals/{started['draft_id']}",
             json={"approved": True, "reason": "looks right"},
@@ -196,7 +214,7 @@ def test_approving_marks_the_draft_for_manual_send_and_clears_the_queue() -> Non
 
 def test_a_reason_over_the_cap_is_refused_and_the_draft_still_waits() -> None:
     with app_with() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         over = client.post(
             f"/parent/approvals/{started['draft_id']}",
             json={"approved": True, "reason": "r" * (REASON_MAX_LENGTH + 1)},
@@ -215,7 +233,7 @@ def test_a_reason_over_the_cap_is_refused_and_the_draft_still_waits() -> None:
 
 def test_refusing_leaves_the_draft_a_draft_and_records_why() -> None:
     with app_with() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         decided = client.post(
             f"/parent/approvals/{started['draft_id']}",
             json={"approved": False, "reason": "too late in the evening"},
@@ -229,7 +247,7 @@ def test_refusing_leaves_the_draft_a_draft_and_records_why() -> None:
 def test_only_a_literal_true_approves() -> None:
     """The gate reads exactly ``True``; the request model makes anything else a 422."""
     with app_with() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         response = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": "yes"})
 
     assert response.status_code == 422
@@ -237,7 +255,7 @@ def test_only_a_literal_true_approves() -> None:
 
 def test_a_draft_cannot_be_decided_twice() -> None:
     with app_with() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
         again = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": False})
 
@@ -249,13 +267,13 @@ def test_the_table_answers_before_a_model_is_needed() -> None:
     """A dependency resolves before the handler, so the graph is built inside it:
     without a key, an unknown draft is still a 404 and a decided one a 409."""
     with app_with() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
         client.app.dependency_overrides.clear()  # type: ignore[attr-defined]
 
         unknown = client.post("/parent/approvals/draft:nobody", json={"approved": True})
         decided = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": False})
-        fresh = client.post("/parent/plans", json={})
+        fresh = client.post("/parent/plans", json=family_plan_body(client))
 
     assert unknown.status_code == 404
     assert decided.status_code == 409
@@ -265,7 +283,7 @@ def test_the_table_answers_before_a_model_is_needed() -> None:
 def test_deciding_needs_no_key_because_nothing_past_the_gate_asks_a_model() -> None:
     """A thread paused on a machine with a key can be decided on one without."""
     with app_with() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         client.app.dependency_overrides.clear()  # type: ignore[attr-defined]
 
         decided = client.post(
@@ -339,7 +357,7 @@ def test_the_queue_reads_without_a_model_and_a_run_says_why_it_cannot_start() ->
 
     with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         queue = client.get("/parent/approvals")
-        started = client.post("/parent/plans", json={})
+        started = client.post("/parent/plans", json=family_plan_body(client))
 
     assert queue.status_code == 200
     assert queue.json()["waiting"] == []
@@ -352,7 +370,7 @@ def test_the_queue_reads_without_a_model_and_a_run_says_why_it_cannot_start() ->
 
 def test_a_run_answers_with_its_steps_and_the_queue_carries_them() -> None:
     with app_with() as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         detail = client.get(f"/parent/approvals/{started['draft_id']}").json()
         queue = client.get("/parent/approvals").json()
 
@@ -367,7 +385,7 @@ def test_a_run_answers_with_its_steps_and_the_queue_carries_them() -> None:
 
 def test_a_run_that_produced_nothing_still_leaves_its_record() -> None:
     with app_with(planner=lambda: [forgetful_fixture_plan()] * 3, critic=list) as client:
-        started = client.post("/parent/plans", json={}).json()
+        started = client.post("/parent/plans", json=family_plan_body(client)).json()
         page = client.get("/parent").text
 
     assert started["outcome"] == "checks_failed"
@@ -386,3 +404,251 @@ def test_a_run_that_produced_nothing_still_leaves_its_record() -> None:
         "review. Planning again may work, since each try writes a fresh plan." in page
     )
     assert "How this run went" in page
+
+
+# ------------------------------------------------------------ a JSON request carries its id
+
+PLANS = "/parent/plans"
+NOT_A_FAMILY_PLAN_SAID = (
+    "Blossom couldn't use that plan request. A plan request needs run_id, a new id of 32 "
+    "lowercase hexadecimal characters for each request; plan_date, the evening to plan as "
+    "YYYY-MM-DD; issued_at, the time the request was made, in ISO 8601 with its offset and no "
+    "more than five minutes ahead of the server's clock; and newest_plan, the draft_id of the "
+    "newest plan known for that evening, or an empty string for none. No plan was started."
+)
+A_WEEK = timedelta(days=7)
+
+
+def refused_with(code: str, message: str, **more: object) -> dict[str, object]:
+    """A plan refusal's body as the route sends it."""
+    return {"detail": {"code": code, "message": message, "today": None, "run": None, **more}}
+
+
+def runs_of(client: TestClient) -> list[str]:
+    """Every run's id the drafts file records."""
+    return [run[0] for run in runs_recorded(client)]
+
+
+def with_a_real_clock(real: FrozenClock) -> TestClient:
+    """The family's app with the real clock pinned, so a request's age can be moved."""
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()), real_clock=real)
+    app.dependency_overrides[plan_graphs] = scripted_graphs(
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
+    return TestClient(app, headers=SAME_ORIGIN)
+
+
+def test_a_json_family_request_runs_under_its_run_id() -> None:
+    with app_with() as client:
+        body = family_plan_body(client)
+        made = client.post(PLANS, json=body)
+        runs = runs_of(client)
+
+    assert made.status_code == 201
+    assert made.json()["thread_id"] == body["run_id"]
+    assert runs == [body["run_id"]]
+
+
+def test_a_json_family_retry_answers_its_run_and_starts_nothing() -> None:
+    with app_with() as client:
+        body = family_plan_body(client)
+        client.post(PLANS, json=body)
+        again = client.post(PLANS, json=body)
+        runs = runs_of(client)
+
+    assert again.status_code == 200
+    assert again.json()["run_id"] == body["run_id"]
+    assert runs == [body["run_id"]]
+
+
+def test_a_known_family_run_id_is_answered_a_week_and_more_later() -> None:
+    real = FrozenClock(datetime(2026, 8, 19, 21, tzinfo=UTC), ZoneInfo("America/New_York"))
+    with with_a_real_clock(real) as client:
+        body = family_plan_body(client)
+        client.post(PLANS, json=body)
+        real._instant += A_WEEK + timedelta(days=1)
+        again = client.post(PLANS, json=body)
+        other = client.post(PLANS, json={**body, "plan_date": "2026-08-20"})
+        fresh = client.post(PLANS, json={**body, "run_id": "c" * 32})
+        runs = runs_of(client)
+
+    assert again.status_code == 200
+    assert other.status_code == 409
+    assert other.json()["detail"]["code"] == "used_for_another_evening"
+    assert other.json()["detail"]["message"] == (
+        "This run_id was used for 2026-08-19. No plan was started for 2026-08-20."
+    )
+    assert fresh.status_code == 409
+    assert fresh.json() == refused_with(
+        "expired", "That request was made a week or more ago. No new plan was started."
+    )
+    assert runs == [body["run_id"]]
+
+
+def test_a_new_family_request_for_an_evening_that_passed_is_409_and_starts_nothing() -> None:
+    with app_with() as client:
+        answer = client.post(PLANS, json=family_plan_body(client, "2026-08-18"))
+        runs = runs_of(client)
+
+    assert answer.status_code == 409
+    assert answer.json() == refused_with(
+        "passed",
+        "The evening of 2026-08-18 has passed. Plans are for today or a later evening. "
+        "No plan was started.",
+        today="2026-08-19",
+    )
+    assert runs == []
+
+
+def test_a_new_family_request_past_the_calendar_is_409_and_starts_nothing() -> None:
+    edge = (date.max - CALENDAR_MARGIN).isoformat()
+    with app_with() as client:
+        answer = client.post(PLANS, json=family_plan_body(client, date.max.isoformat()))
+        runs = runs_of(client)
+
+    assert answer.status_code == 409
+    assert answer.json() == refused_with(
+        "beyond_calendar",
+        f"The evening of {date.max.isoformat()} is past the edge of the calendar. Plans reach "
+        f"no later than {edge}. No plan was started.",
+        today="2026-08-19",
+    )
+    assert runs == []
+
+
+def test_a_new_family_request_behind_the_evenings_newest_plan_starts_nothing() -> None:
+    with app_with() as client:
+        client.post(PLANS, json=family_plan_body(client))
+        behind = client.post(PLANS, json=family_plan_body(client, newest_plan=""))
+        runs = runs_of(client)
+
+    assert behind.status_code == 409
+    assert behind.json()["detail"]["code"] == "newer_plan"
+    assert len(runs) == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"plan_date": None},
+        {"plan_date": "tomorrow"},
+        {"issued_at": None},
+        {"run_id": "z" * 32},
+        {"newest_plan": None},
+        {"send": True},
+        {"plan_date": "20260819"},
+        {"plan_date": "2026-W34-3"},
+    ],
+    ids=[
+        "no plan_date",
+        "a plan_date that isn't one",
+        "no issue time",
+        "a bad run_id",
+        "no newest_plan",
+        "a field no request sends",
+        "a plan_date in ISO's basic form",
+        "a plan_date as an ISO week date",
+    ],
+)
+def test_a_json_family_request_that_isnt_one_is_refused_with_its_code(
+    changed: dict[str, object],
+) -> None:
+    with app_with() as client:
+        body = {**family_plan_body(client), **changed}
+        answer = client.post(PLANS, json={k: v for k, v in body.items() if v is not None})
+        runs = runs_of(client)
+
+    assert answer.status_code == 422
+    assert answer.json() == refused_with("not_valid", NOT_A_FAMILY_PLAN_SAID)
+    assert runs == []
+
+
+def test_the_queue_lists_the_newest_plan_of_each_evening_from_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One entry per evening from today on, the evening's newest plan, decided or not: a plan
+    replaced for an evening gives way to its replacement, an approved plan stays listed, and
+    an evening that has passed leaves the list. A request naming the listed id is admitted."""
+    asked = [PLAN_DATE]
+
+    def plan_for_the_evening_asked() -> list[DailyPlan]:
+        return [fixture_week_plan().model_copy(update={"plan_date": asked[0]})]
+
+    with app_with(planner=plan_for_the_evening_asked) as client:
+        before = client.get("/parent/approvals").json()["newest_plans"]
+        today = client.post(PLANS, json=family_plan_body(client)).json()
+        asked[0] = date(2026, 8, 20)
+        first = client.post(PLANS, json=family_plan_body(client, "2026-08-20")).json()
+        second = client.post(PLANS, json=family_plan_body(client, "2026-08-20")).json()
+        approved = client.post(f"/parent/approvals/{today['draft_id']}", json={"approved": True})
+        listed = client.get("/parent/approvals").json()["newest_plans"]
+        midday = datetime(2026, 8, 20, 16, tzinfo=UTC)
+        monkeypatch.setattr(state_of(client).clock, "_instant", midday)
+        later = client.get("/parent/approvals").json()["newest_plans"]
+
+    assert before == []
+    assert first["draft_id"] != second["draft_id"]
+    assert approved.status_code == 200
+    assert listed == [
+        {"plan_date": "2026-08-19", "draft_id": today["draft_id"]},
+        {"plan_date": "2026-08-20", "draft_id": second["draft_id"]},
+    ]
+    assert later == [{"plan_date": "2026-08-20", "draft_id": second["draft_id"]}]
+
+
+def test_a_replay_meets_the_door_before_its_run_is_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A family request sent again from her sign-in is refused 403 before its id is looked up,
+    and once signed out it is asked to sign in; neither names the run or starts another."""
+    settings = replace(signed_in_household(tmp_path), anthropic_api_key="not-a-key-and-never-sent")
+    app = create_app(settings)
+    app.dependency_overrides[plan_graphs] = scripted_graphs(
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        signed_in(client, THEIRS)
+        body = family_plan_body(client)
+        made = client.post(PLANS, json=body)
+        looked_up: list[str] = []
+        monkeypatch.setattr(
+            state_of(client).drafts, "run_status", lambda run_id, *a, **k: looked_up.append(run_id)
+        )
+        client.post("/sign-out")
+        signed_in(client, HERS)
+        hers = client.post(PLANS, json=body)
+        client.post("/sign-out")
+        nobody = client.post(PLANS, json=body)
+        runs = runs_of(client)
+
+    assert made.status_code == 201
+    assert hers.status_code == 403
+    assert hers.json() == {"detail": "This page is for a parent."}
+    assert nobody.status_code == 401
+    assert nobody.json() == {"detail": "Sign in first."}
+    assert body["run_id"] not in hers.text + nobody.text
+    assert looked_up == []
+    assert runs == [body["run_id"]]
+
+
+def test_a_family_request_naming_another_evenings_plan_is_not_valid_and_starts_nothing() -> None:
+    """2026-08-19's plan and then 2026-08-20's are published; a request for 2026-08-19 naming
+    2026-08-20's plan names no plan of its evening and replaces nothing."""
+    asked = [PLAN_DATE]
+
+    def plan_for_the_evening_asked() -> list[DailyPlan]:
+        return [fixture_week_plan().model_copy(update={"plan_date": asked[0]})]
+
+    with app_with(planner=plan_for_the_evening_asked) as client:
+        today = client.post(PLANS, json=family_plan_body(client)).json()
+        asked[0] = date(2026, 8, 20)
+        tomorrow = client.post(PLANS, json=family_plan_body(client, "2026-08-20")).json()
+        asked[0] = PLAN_DATE
+        named = client.post(PLANS, json=family_plan_body(client, newest_plan=tomorrow["draft_id"]))
+        listed = client.get("/parent/approvals").json()["newest_plans"]
+        runs = runs_of(client)
+
+    assert named.status_code == 422
+    assert named.json() == refused_with("not_valid", NOT_A_FAMILY_PLAN_SAID)
+    assert listed[0] == {"plan_date": "2026-08-19", "draft_id": today["draft_id"]}
+    assert len(runs) == 2

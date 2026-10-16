@@ -984,7 +984,6 @@ NO_BODY: Final = frozenset(
         "/sign-out",
         "/student/workload-signals/{signal_id}",
         "/student/help-requests/{request_id}",
-        "/student/plans",
         "/student/actions/take-back-help/{request_id}",
         "/student/actions/take-back/{signal_id}",
     }
