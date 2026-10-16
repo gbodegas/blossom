@@ -16,11 +16,12 @@ fits, and none is kept. Dates are kept as the text shown and read as dates here.
 A draft's readings are put together into rows by their content alone, never by the order
 the screenshots came in, and read as today's portal claims through ``intake.read_cards``. A
 card is dated only by its own due line or by a day heading above it in its own screenshot; no
-heading carries from one screenshot to another. Different dates stay separate: a row holds
-one card with its copies in other screenshots, and an assigned card's row also holds the one
-due card of its name and due date it pairs with, so two cards of one screenshot are two rows
-unless they are that pair. Every card that is clipped or can't be dated or read stays a
-visible item with its reason, keyed by its screenshot, its reading's digest and its place. A
+heading carries from one screenshot to another. Different dates stay separate: a row holds the
+cards of one layer, one name and one effective due date, so two cards of one screenshot are two
+rows unless one is an assigned card and the other the due card of its due date. A row can hold
+cards that aren't copies of one card, such as two assigned cards due on one date under
+different days in different screenshots. Every card that is clipped or can't be dated or read
+stays a visible item with its reason, keyed by its screenshot, its reading's digest and its place. A
 decoded reading's digest leaves out the selected student, name and note, so a reading that
 differs only there keeps its items' keys; a reading that doesn't decode is digested whole,
 text that can hold a name included. A digest is a hash of that text, not an anonymized form
@@ -398,12 +399,15 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     The cards read whole and dated are read as today's portal claims, and different dates stay
     separate. A card's layer is how many such cards above it in its screenshot, by top edge and
     then place, have its course and title, folded, its kind and its date. A row is the cards of
-    one layer, one name and one date, read on their own: copies of one card in several
-    screenshots, and one assigned card with the due card of its due date. A card's row depends
-    on it and its own screenshot alone, so no other screenshot joins two cards one screenshot
-    keeps apart. A row's key holds its layer, and its occurrence follows a paste's rounds over
-    the name's rows. Every other card stays a visible item with its reason, never merged into
-    another. ``now`` stamps the claims and is in no key.
+    one layer, one name and one effective date, read on their own: copies of one card in
+    several screenshots, one assigned card with the due card of its due date, and any other
+    cards of that layer, name and date, such as assigned cards due on one date under different
+    days in different screenshots. Which row a card lands in depends on it and its own
+    screenshot alone, so no other screenshot joins two cards one screenshot keeps apart; the
+    row's content and key can depend on the other cards in its group. A row's key holds its
+    layer, and its occurrence follows a paste's rounds over the name's rows, met in the order
+    of each row's first card's walk, then layer. Every other card stays a visible item with its
+    reason, never merged into another. ``now`` stamps the claims and is in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
@@ -485,9 +489,9 @@ def _digest(stored: StoredReading, decoded: HomeworkReading | None) -> str:
 def _in_round(
     reading: Reading, rounds: dict[tuple[str, str], list[tuple[date, str | None]]]
 ) -> Reading:
-    """The reading with the occurrence a paste's rounds give it, its name's rows met in walk
-    order: within a week of a round already met, that round's; otherwise a new round, ``None``
-    for the name's first and its due date for each later one."""
+    """The reading with the occurrence a paste's rounds give it, its name's rows met in the
+    order of each row's first card's walk, then layer: within a week of a round already met,
+    that round's; otherwise a new round, ``None`` for the name's first, its due date after."""
     held = rounds.setdefault(reading.pair, [])
     day = reading.due_date
     if day is None:

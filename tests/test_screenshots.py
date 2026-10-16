@@ -2033,18 +2033,18 @@ def due_row(title: str, day: str, *claims: str) -> Written:
 
 
 DATES: dict[str, tuple[list[dict[str, object]], list[Written]]] = {
-    "P4: one name under two days of one screenshot": (
+    "one name under two days of one screenshot": (
         [shot((MON, 100), card(VQ, 150), (TUE, 300), card(VQ, 350))],
         [due_row("Vocab Quiz", "2026-10-05"), due_row("Vocab Quiz", "2026-10-06")],
     ),
-    "P15: a due card and the next round's assigned card under one day": (
+    "a due card and the next round's assigned card under one day": (
         [shot((THU, 100), card(PS, 150), handed(PS, "Monday 10/12/2026", 250))],
         [
             due_row("Practice set", "2026-10-08"),
             ("Practice set", "2026-10-08", "2026-10-12", ("2026-10-12",)),
         ],
     ),
-    "P15 with the next round's due card in another screenshot": (
+    "a due card and the next round's assigned card, with that round's due card elsewhere": (
         [
             shot((THU, 100), card(PS, 150), handed(PS, "Monday 10/12/2026", 250)),
             shot((NEXT_MON, 100), card(PS, 150)),
