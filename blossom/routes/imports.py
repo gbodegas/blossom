@@ -953,12 +953,14 @@ async def with_typing(
 ) -> Response:
     """A press that saved nothing answers with the review as it stands now, the corrections it
     typed and the groups it ticked still in the form, so nothing typed is lost and an answer
-    just kept stays matched to the corrections it was given with."""
+    just kept stays matched to the corrections it was given with. A press that posts no ticks,
+    an offer or a found row, is ticked as a plain load would tick the page."""
     after = await snapshot_or_page(request, state, draft_id)
     if isinstance(after, Response):
         return after
     lines = list(said)
-    rows = await rows_of(request, state, after, lines, typed=post.corrections, ticked=post.units)
+    ticked = post.units if post.ticked else None
+    rows = await rows_of(request, state, after, lines, typed=post.corrections, ticked=ticked)
     return review_page(request, state, after, lines, status, rows=rows)
 
 

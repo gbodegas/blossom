@@ -57,6 +57,7 @@ from tests.support import (
     fixture_settings,
     homework_answer,
     homework_card,
+    homework_from_a_note,
     selector,
     signed_in,
     signed_in_household,
@@ -2384,6 +2385,238 @@ def test_clearing_every_instruction_box_withdraws_the_instructions_chosen(
     assert ("instructions", subject) not in answers
     assert field not in checked_names(cleared)
     assert says(cleared, screenshot_page.OPEN_NAMES["instructions"])
+
+
+def test_an_unticked_these_are_her_homework_is_withdrawn(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unnamed = homework_answer(
+        active_student={"name": None, "uncertain": None}, cards=[homework_card()]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unnamed))
+        field = "answer:name:missing"
+        kept = followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={field: "confirmed"}))
+        )
+        held = stored_answers(browser, draft_id)
+        units = units_on(kept)
+        unticked = [f for f in page_post(kept, "save", tick=units) if f[0] != field]
+        before = assignment_count(browser)
+        saved = followed(browser, send(browser, draft_id, unticked))
+        after = assignment_count(browser)
+        answers = stored_answers(browser, draft_id)
+
+    assert held[("name", "missing")] == "confirmed"
+    assert units
+    assert after == before
+    assert ("name", "missing") not in answers
+    assert field not in checked_names(saved)
+    assert units_on(saved) == []
+
+
+# ------------------------------------------------------------------ counts, names and her note
+
+
+def acceptance_counts(browser: TestClient, page: str) -> tuple[int, int, int, int] | None:
+    return state_of(browser).project_state.homework_counts(acceptance_of(page))
+
+
+def test_two_cards_in_one_assignment_count_once_added_and_once_already_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def two_parts() -> dict[str, object]:
+        return homework_answer(
+            cards=[
+                homework_card(badge="DUE", footer=None, instruction="Read chapter 1."),
+                homework_card(
+                    badge="DUE", footer=None, instruction="Read chapter 2.", y_top=360, y_bottom=450
+                ),
+            ]
+        )
+
+    with here(open_settings(tmp_path)) as browser:
+        first, page = read_review(browser, monkeypatch, (RED, two_parts()))
+        page = her_name_answered(browser, first, page)
+        pieces = fields_named(review_form(page), "answer:destination:")
+        slot = json.dumps({"new": 1}, separators=(",", ":"))
+        kept = followed(
+            browser,
+            send(
+                browser,
+                first,
+                page_post(page, "keep", choose={f"answer:destination:{p}": slot for p in pieces}),
+            ),
+        )
+        before = assignment_count(browser)
+        added = followed(
+            browser, send(browser, first, page_post(kept, "save", tick=units_on(kept)))
+        )
+        made = assignment_count(browser) - before
+        added_counts = acceptance_counts(browser, kept)
+        [row] = [
+            a
+            for a in state_of(browser).project_state.all_assignments()
+            if a.title == "Sentence Composing"
+        ]
+        again, page = read_review(browser, monkeypatch, (BLUE, two_parts()))
+        pieces = fields_named(review_form(page), "answer:destination:")
+        onto = json.dumps({"existing": row.assignment_id}, separators=(",", ":"))
+        kept = followed(
+            browser,
+            send(
+                browser,
+                again,
+                page_post(page, "keep", choose={f"answer:destination:{p}": onto for p in pieces}),
+            ),
+        )
+        send(browser, again, page_post(kept, "save", tick=units_on(kept)))
+        unchanged_counts = acceptance_counts(browser, kept)
+
+    assert len(pieces) == 2
+    assert made == 1
+    assert says(added, "1 assignment added. 0 updated.")
+    assert added_counts is not None
+    assert added_counts[0] == 1
+    assert unchanged_counts is not None
+    assert unchanged_counts[:3] == (0, 0, 1)
+
+
+def test_two_cards_of_other_names_found_onto_one_row_count_once_and_each_name_is_kept(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    cards = [
+        homework_card(title="Vocab Test", instruction="Study list one."),
+        homework_card(
+            title="Spelling List", instruction="Study list two.", y_top=360, y_bottom=450
+        ),
+    ]
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([target])
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=cards)))
+        page = her_name_answered(browser, draft_id, page)
+        for piece in fields_named(review_form(page), "answer:destination:"):
+            finding = browser.get(
+                f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "grammar"}
+            ).text
+            choice = re.search(
+                r'<form method="post" action="[^"]+/review" class="choice">.*?</form>',
+                finding,
+                re.S,
+            )
+            assert choice is not None
+            fields = [
+                (html.unescape(n), html.unescape(v))
+                for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
+            ]
+            page = followed(browser, send(browser, draft_id, fields))
+        [field] = fields_named(review_form(page), "answer:instructions:")
+        name = f"answer:instructions:{field}"
+        texts = ["Study list one.", "Study list two."]
+        page = followed(
+            browser, send(browser, draft_id, page_post(page, "keep") + [(name, t) for t in texts])
+        )
+        saved = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        )
+        counts = acceptance_counts(browser, page)
+        decided = state_of(browser).project_state.intake_decisions(
+            [("English 8", "Vocab Test"), ("English 8", "Spelling List")]
+        )
+
+    assert says(saved, "0 assignments added. 1 updated.")
+    assert counts is not None
+    assert counts[:3] == (0, 1, 0)
+    landed = {
+        pair: [d.lands_on for d in found if d.kind == "renamed"] for pair, found in decided.items()
+    }
+    assert landed == {
+        ("English 8", "Vocab Test"): [target.assignment_id],
+        ("English 8", "Spelling List"): [target.assignment_id],
+    }
+
+
+def test_homework_made_from_her_note_saves_in_one_press_when_chosen_as_the_destination(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        record = state_of(browser).project_state
+        made = homework_from_a_note(
+            record, course="English 8", title="Sentence Composing", due_date=date(2026, 10, 8)
+        )
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        page = her_name_answered(browser, draft_id, page)
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        value = json.dumps({"existing": made}, separators=(",", ":"))
+        kept = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(page, "keep", choose={f"answer:destination:{piece}": value}),
+            ),
+        )
+        saved = followed(
+            browser, send(browser, draft_id, page_post(kept, "save", tick=units_on(kept)))
+        )
+        pairs = record.homework_acceptance(acceptance_of(kept))
+        decided = record.intake_decisions([("English 8", "Sentence Composing")])
+
+    assert value in html.unescape(review_form(page))
+    assert not says(saved, imports.PRESS_SAID["changed"])
+    assert pairs == ((piece, made),)
+    assert not [d for found in decided.values() for d in found if d.kind != "renamed"]
+
+
+def test_a_found_row_s_page_is_ticked_as_a_plain_load_would_tick_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="Science 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([other])
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        pieces = fields_named(review_form(page), "answer:destination:")
+        chains = next(p for p in pieces if f"answer:destination:{p}" in page)
+        finding = browser.get(
+            f"/parent/imports/{draft_id}/find",
+            params={"piece": pieces[-1], "words": "grammar"},
+        ).text
+        choice = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
+        )
+        assert choice is not None
+        fields = [
+            (html.unescape(n), html.unescape(v))
+            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
+        ]
+        found_page = followed(browser, send(browser, draft_id, fields))
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert chains
+    assert units_ticked(reloaded)
+    assert units_ticked(found_page) == units_ticked(reloaded)
 
 
 # ------------------------------------------------------------------ after the first save

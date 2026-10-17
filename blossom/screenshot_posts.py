@@ -60,12 +60,16 @@ class ReviewPost:
     digests: dict[str, tuple[str, ...]]
     defaults: dict[str, str]
     withdrawn: tuple[tuple[str, str], ...] = ()
-    """Each confirmation or instruction choice the page asked for and the press left blank, by
-    kind and subject: a box left unticked takes back the answer it held."""
+    """Each confirmation, instruction choice or "These are her homework" the page asked for and
+    the press left blank, by kind and subject: a box left unticked takes back the answer it
+    held."""
+    ticked: bool = True
+    """Whether the press posted the page's ticks; an offer or a found row posts none."""
 
 
-WITHDRAWABLE: Final = frozenset({"confirm", "instructions"})
-"""The answer kinds a press takes back when it posts none of their boxes."""
+WITHDRAWABLE: Final = ("answer:confirm:", "answer:instructions:", "answer:name:missing")
+"""The answer fields, by prefix, a press takes back when it posts none of their boxes: each is
+a set of checkboxes, so a box left unticked sends nothing."""
 
 
 def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
@@ -147,19 +151,13 @@ def read_change(
     if not answers:
         raise PostRefused
     typed = {key: dict(fields) for key, fields in corrections.items()}
-    return ReviewPost("keep", version, "", 0, tuple(answers), typed, (), {}, {})
+    return ReviewPost("keep", version, "", 0, tuple(answers), typed, (), {}, {}, ticked=False)
 
 
 def _number(text: str) -> int:
     if not text.isdigit() or len(text) > 12:
         raise PostRefused
     return int(text)
-
-
-def _kind(name: str) -> str:
-    """An answer field's kind, or "" for a field of no answer kind."""
-    parts = name.split(":", 2)
-    return parts[1] if len(parts) == 3 and parts[0] == "answer" else ""
 
 
 def _field(name: str) -> tuple[str, str]:
@@ -228,7 +226,7 @@ def read_review(
     for name, values in chosen.items():
         kind, subject = _field(name)
         if kind == "instructions":
-            texts = sorted(v for v in values if v)
+            texts = sorted({v for v in values if v})
             if texts and "" in values:
                 raise PostRefused
             value = json.dumps(texts)
@@ -239,7 +237,7 @@ def read_review(
         answers.append(_answer(state, kind, subject, value, corrections))
     withdrawn = tuple(
         sorted(
-            _field(name) for name in offered if name not in chosen and _kind(name) in WITHDRAWABLE
+            _field(name) for name in offered if name not in chosen and name.startswith(WITHDRAWABLE)
         )
     )
     return ReviewPost(

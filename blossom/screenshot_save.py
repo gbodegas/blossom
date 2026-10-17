@@ -26,7 +26,16 @@ from typing import Any, Final, cast
 from blossom import intake
 from blossom.candidates import readings_for
 from blossom.captures import candidate_basis
-from blossom.intake import KNOWN, UPDATE, Change, Kept, Reading, changes_for, keep
+from blossom.intake import (
+    KNOWN,
+    UPDATE,
+    Change,
+    IdentityAnswer,
+    Kept,
+    Reading,
+    changes_for,
+    keep,
+)
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionChoice
 from blossom.screenshot_review import (
@@ -182,6 +191,12 @@ class OneTarget:
         """The shown assignment alone, or nothing."""
         return [a for a in self._store.all_assignments() if a.assignment_id == self._shown]
 
+    def record_intake_decision(self, *_: object, **__: object) -> None:
+        """Nothing: the parent's choice of the shown assignment answers the record's question of
+        which homework a card is about only to land the card there. A review of screenshots
+        keeps no such answer as a decision; its only decisions are the ``renamed`` ones the
+        save writes itself."""
+
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - the store's own members
         return getattr(self._store, name)
 
@@ -189,6 +204,24 @@ class OneTarget:
 def _view(store: ProjectStateStore, shown: str | None) -> ProjectStateStore:
     """The record as ``keep`` and ``changes_for`` read it, with one assignment shown."""
     return cast("ProjectStateStore", OneTarget(store, shown))
+
+
+def chosen_answers(
+    readings: tuple[Reading, ...],
+    view: ProjectStateStore,
+    target: str | None,
+    kinds: Mapping[int, AssignmentKind] | None = None,
+) -> dict[int, IdentityAnswer]:
+    """The parent's choice of ``target`` as the answer to each card's question of which
+    homework it is about, where the record asks one that lists it, as it asks before landing a
+    card on homework made from her note."""
+    if target is None:
+        return {}
+    return {
+        change.key: IdentityAnswer(target, change.identity_shown, change.identity_basis)
+        for change in changes_for(readings, view, kinds=kinds)
+        if change.identity_asked and target in change.identity_shown
+    }
 
 
 def saved_rows(record: ProjectStateStore) -> dict[str, SavedRow]:
@@ -247,7 +280,9 @@ def writes_nothing_test(
             return False
         chosen = {0: AssignmentKind(kinds[piece.name])} if piece.name in kinds else None
         view = _view(record, target)
-        [change] = changes_for((landing(record, piece.reading, target),), view, kinds=chosen)
+        readings = (landing(record, piece.reading, target),)
+        answers = chosen_answers(readings, view, target, chosen)
+        [change] = changes_for(readings, view, kinds=chosen, identities=answers or None)
         return (
             change.on_record is not None
             and change.on_record.assignment_id == target
@@ -269,10 +304,12 @@ def instruction_question(
         for p in sorted(members, key=lambda q: q.name)
         if p.reading
     )
+    view = _view(record, dest[1])
     changes = changes_for(
         readings,
-        _view(record, dest[1]),
+        view,
         occurrences=dict.fromkeys(range(len(readings)), UPDATE),
+        identities=chosen_answers(readings, view, dest[1]) or None,
     )
     return next((c for c in changes if c.instructions_asked), None)
 
@@ -622,11 +659,11 @@ def _homework_transaction(
             pairs += [(n, target) for n in sorted(names)]
             entry = by_entry[dest]
             if dest[0] == "new":
-                added += len(names)
+                added += 1
             elif entry.nothing_new:
-                unchanged += len(names)
+                unchanged += 1
             else:
-                updated += len(names)
+                updated += 1
     status, answer, form = identity
     if answer == "hers":
         line = next(
@@ -762,8 +799,9 @@ def _write(
     hooks: SaveHooks,
 ) -> str:
     """One destination's homework, through ``keep``: a new slot's row made under its id, or the
-    existing row updated, with the chosen dates, kind and instructions; then the earlier-pick
-    decision for a row of another name, unless one for that name already lands there."""
+    existing row updated, with the chosen dates, kind and instructions; then, for each class
+    and title of its cards that isn't the row's, the earlier-pick decision, unless one for that
+    name already lands there."""
     by_name = state.by_name
     members = sorted((by_name[n] for n in names), key=lambda p: p.name)
     row = state.rows.get(dest[1]) if dest[0] != "new" else None
@@ -807,29 +845,31 @@ def _write(
     dates = dict.fromkeys(range(len(readings)), (due, assigned))
     _keep(record, target, readings, choice, dates, kinds(len(readings)), now, today)
     hooks.after_keep(target)
-    lead = members[0]
-    if lead.reading is not None and row is not None and lead.pair != row.pair:
-        landed = any(
-            p.pair == lead.pair and p.assignment_id == target for p in earlier_picks(record, [lead])
+    named = {p.pair: p for p in members if p.reading is not None}
+    for pair, piece in sorted(named.items()):
+        if row is None or pair == row.pair:
+            continue
+        if any(
+            p.pair == pair and p.assignment_id == target for p in earlier_picks(record, [piece])
+        ):
+            continue
+        current = next(a for a in record.all_assignments() if a.assignment_id == target)
+        record.record_intake_decision(
+            DecisionToKeep(
+                kind="renamed",
+                course=pair[0],
+                title=pair[1],
+                due_date=due,
+                lands_on=target,
+                shown=(target,),
+                basis=candidate_basis(readings_for(record, [current])),
+            ),
+            authored_by="parent",
+            channel=SourceChannel.PARENT_ENTRY,
+            now=now,
+            today=today,
         )
-        if not landed:
-            current = next(a for a in record.all_assignments() if a.assignment_id == target)
-            record.record_intake_decision(
-                DecisionToKeep(
-                    kind="renamed",
-                    course=lead.pair[0],
-                    title=lead.pair[1],
-                    due_date=due,
-                    lands_on=target,
-                    shown=(target,),
-                    basis=candidate_basis(readings_for(record, [current])),
-                ),
-                authored_by="parent",
-                channel=SourceChannel.PARENT_ENTRY,
-                now=now,
-                today=today,
-            )
-            hooks.after_renamed(target)
+        hooks.after_renamed(target)
     return target
 
 
@@ -844,20 +884,32 @@ def _keep(
     today: date,
 ) -> None:
     """``keep`` on the record with only ``target`` shown (or nothing, for a new slot), joined to
-    the save's transaction: as written, then with each card's occurrence answered ``update`` and
-    the instruction choice when the record asks. Anything but a save is a changed effect."""
+    the save's transaction, with the parent's choice of ``target`` as the answer where the
+    record asks which homework a card is about: as written, then with each card's occurrence
+    answered ``update`` and the instruction choice when the record asks. Anything but a save
+    is a changed effect."""
     view = _view(record, target)
+    answers = chosen_answers(readings, view, target, kinds or None) or None
     kept = keep(
-        readings, view, kinds=kinds or None, dates=dates, imported_by="parent", now=now, today=today
+        readings,
+        view,
+        kinds=kinds or None,
+        identities=answers,
+        dates=dates,
+        imported_by="parent",
+        now=now,
+        today=today,
     )
     if not isinstance(kept, Kept):
         occurrences = dict.fromkeys(range(len(readings)), UPDATE)
-        changes = changes_for(readings, view, occurrences=occurrences, kinds=kinds or None)
-        answers: dict[int, InstructionChoice] = {}
+        changes = changes_for(
+            readings, view, occurrences=occurrences, kinds=kinds or None, identities=answers
+        )
+        chosen: dict[int, InstructionChoice] = {}
         carrier = next((c for c in changes if c.instructions_asked), None)
         if carrier is not None:
             shown = tuple(s.text for s in carrier.instructions_shown)
-            answers = {
+            chosen = {
                 carrier.key: choice
                 or InstructionChoice(carrier.instructions_revision, shown, frozenset(shown))
             }
@@ -866,7 +918,8 @@ def _keep(
             view,
             occurrences=occurrences,
             kinds=kinds or None,
-            instruction_answers=answers,
+            instruction_answers=chosen,
+            identities=answers,
             dates=dates,
             imported_by="parent",
             now=now,
