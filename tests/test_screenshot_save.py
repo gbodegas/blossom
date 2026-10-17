@@ -10,6 +10,7 @@ Every review is read from synthetic screenshots of Wren's homework list.
 
 import dataclasses
 import hashlib
+import json
 import pathlib
 import sqlite3
 import threading
@@ -19,7 +20,7 @@ from datetime import date
 import pytest
 
 from blossom import intake
-from blossom.screenshot_review import carry, piece_names, value_json
+from blossom.screenshot_review import carry, piece_names, unit_name, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
     NotSaved,
@@ -28,6 +29,7 @@ from blossom.screenshot_save import (
     Saved,
     SaveHooks,
     SavePress,
+    instruction_subject,
     review_state,
     save_homework,
     unit_digests,
@@ -329,6 +331,40 @@ def test_the_save_counts_what_it_did_on_the_acceptance(house: House) -> None:
     assert row == ("matches", "shown", 1, 1, 0, 0, 2, 3, 1, 0)
 
 
+def instruction_choice_review(house: House) -> str:
+    """A Vocab Quiz saved with "Study list two.", then a second review whose card, with "Study
+    list one.", goes to it: the record asks which instructions apply, and only the new one is
+    chosen, so the earlier one is kept as history."""
+    first = read_review(
+        house, screenshot("Friday 8/21/2026", card("Vocab Quiz", "Study list two.", 200))
+    )
+    [piece] = state_of(house, first).pieces
+    keep_destinations(house, first, {piece.name: {"new": 1}})
+    saved = save(house, press_of(house, first, "7" * 32))
+    assert isinstance(saved, Saved)
+    [(_, target)] = saved.pairs
+    second = read_review(
+        house, screenshot("Friday 8/21/2026", card("Vocab Quiz", "Study list one.", 300))
+    )
+    [piece] = state_of(house, second).pieces
+    keep_destinations(house, second, {piece.name: {"existing": target}})
+    state = state_of(house, second)
+    [(dest, change)] = [(d, c) for d, c in state.asked.items() if c is not None]
+    assert change is not None
+    subject = instruction_subject(dest, [piece.name], change.instructions_revision)
+    chosen = json.dumps(["Study list one."], separators=(",", ":"))
+    version = house.drafts.snapshot(house.student, second).version
+    house.drafts.keep_answers(
+        house.student,
+        second,
+        version=version,
+        answers=[
+            AnswerToKeep("instructions", subject, chosen, correction_digest_none(), (piece.name,))
+        ],
+    )
+    return second
+
+
 # ------------------------------------------------------------------ the transaction boundary
 
 SITES: tuple[tuple[int, str], ...] = (
@@ -342,13 +378,45 @@ SITES: tuple[tuple[int, str], ...] = (
     (sqlite3.SQLITE_UPDATE, "grade_acceptances"),
     (sqlite3.SQLITE_DELETE, "import_draft_answers"),
 )
-"""Every write site of the homework transaction: what the record writes, the decision, the
-acceptance and the answer deletes."""
+"""The write sites of a save of a new slot and a found row of another name: what the record
+writes, the decision, the acceptance and the answer deletes."""
+INSTRUCTION_SITES: tuple[tuple[int, str], ...] = (
+    (sqlite3.SQLITE_UPDATE, "assignments"),
+    (sqlite3.SQLITE_INSERT, "school_instructions"),
+    (sqlite3.SQLITE_UPDATE, "school_instructions"),
+    (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+    (sqlite3.SQLITE_UPDATE, "grade_acceptances"),
+    (sqlite3.SQLITE_DELETE, "import_draft_answers"),
+)
+"""The write sites of a save onto an existing assignment with an answered instruction question:
+the new instruction, the earlier one kept as history, the acceptance and the answer deletes."""
+SHAPES: dict[str, tuple[Callable[[House], str], tuple[tuple[int, str], ...]]] = {
+    "new slot and found row": (two_row_review, SITES),
+    "instruction choice": (instruction_choice_review, INSTRUCTION_SITES),
+}
+ALL_SITES = frozenset(
+    {
+        (sqlite3.SQLITE_INSERT, "assignments"),
+        (sqlite3.SQLITE_UPDATE, "assignments"),
+        (sqlite3.SQLITE_INSERT, "date_claims"),
+        (sqlite3.SQLITE_INSERT, "status_reports"),
+        (sqlite3.SQLITE_INSERT, "school_instructions"),
+        (sqlite3.SQLITE_UPDATE, "school_instructions"),
+        (sqlite3.SQLITE_INSERT, "intake_decisions"),
+        (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+        (sqlite3.SQLITE_UPDATE, "grade_acceptances"),
+        (sqlite3.SQLITE_DELETE, "import_draft_answers"),
+    }
+)
+"""The closed list: every write site the homework transaction makes, across the shapes."""
+REFUSALS = [(shape, site) for shape, (_, sites) in SHAPES.items() for site in sites]
 
 
-def test_a_full_save_writes_exactly_the_named_statements(house: House) -> None:
-    draft_id = two_row_review(house)
-    press = press_of(house, draft_id)
+@pytest.mark.parametrize("shape", sorted(SHAPES))
+def test_a_full_save_writes_exactly_the_named_statements(house: House, shape: str) -> None:
+    build, expected = SHAPES[shape]
+    draft_id = build(house)
+    press = press_of(house, draft_id, "6" * 32)
     seen: set[tuple[int, str]] = set()
 
     def note(action: int, table: str | None, *_: object) -> int:
@@ -361,17 +429,26 @@ def test_a_full_save_writes_exactly_the_named_statements(house: House) -> None:
     house.record._connection.set_authorizer(None)
 
     assert isinstance(outcome, Saved)
-    assert seen == set(SITES)
+    assert seen == set(expected)
 
 
-@pytest.mark.parametrize("site", SITES, ids=[f"{action}-{table}" for action, table in SITES])
+def test_the_closed_list_is_every_shapes_sites() -> None:
+    assert {site for _, sites in SHAPES.values() for site in sites} == ALL_SITES
+    assert (sqlite3.SQLITE_UPDATE, "school_instructions") in ALL_SITES
+
+
+@pytest.mark.parametrize(
+    ("shape", "site"),
+    REFUSALS,
+    ids=[f"{shape}-{action}-{table}" for shape, (action, table) in REFUSALS],
+)
 def test_a_refused_write_at_any_statement_leaves_the_file_as_it_was(
-    house: House, site: tuple[int, str]
+    house: House, shape: str, site: tuple[int, str]
 ) -> None:
     """Refused at one write site, the save writes nothing, the acceptance pairs don't exist
     without the homework, and lifted, the same press saves once."""
-    draft_id = two_row_review(house)
-    press = press_of(house, draft_id)
+    draft_id = SHAPES[shape][0](house)
+    press = press_of(house, draft_id, "6" * 32)
     before = world(house)
 
     def refusing(action: int, table: str | None, *_: object) -> int:
@@ -562,6 +639,34 @@ def test_a_stale_page_a_closed_gate_and_a_changed_effect_save_nothing(house: Hou
     gated = world(house)
     assert save(house, unread) == NotSaved("gate")
     assert world(house) == gated
+
+
+def test_a_press_with_a_unit_saved_elsewhere_and_a_changed_one_is_not_already_saved(
+    house: House,
+) -> None:
+    """One pressed unit was saved by another press and the other's effect changed: the press is
+    refused as changed, naming both, and writes nothing."""
+    draft_id = two_row_review(house)
+    state = state_of(house, draft_id)
+    quiz, log = (
+        next(
+            unit_name(u.unit)
+            for u in state.validation.units
+            if any(state.by_name[n].title == title for n in u.unit)
+        )
+        for title in ("Vocab Quiz", "Reading Log")
+    )
+    first = save(house, press_of(house, draft_id, "4" * 32, units=[quiz]))
+    assert isinstance(first, Saved)
+    assert first.saved_units == (quiz,)
+    press = press_of(house, draft_id, "5" * 32, units=[log])
+    mixed = dataclasses.replace(press, units=(quiz, log), digests={log: ("0" * 64,)})
+    before = world(house)
+
+    outcome = save(house, mixed)
+
+    assert outcome == NotSaved("changed", (log,), (quiz,))
+    assert world(house) == before
 
 
 # ------------------------------------------------------------------ concurrent writers
