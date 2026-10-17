@@ -43,6 +43,7 @@ from blossom.screenshot_page import (
     page_check,
     piece_text,
     rows_shown,
+    signed_action,
 )
 from blossom.screenshot_posts import (
     PostRefused,
@@ -676,8 +677,9 @@ def review_page(
     rows: RowsShown | None = None,
 ) -> Response:
     """The review: its images with their labels, the Read press for the unread ones when a key
-    is set and no attempt is current, the form that adds more, and once anything is read, the
-    rows with their destinations, questions and the group preview."""
+    is set and no attempt is current, the form that adds more, "Discard the review" whatever
+    is read, and once anything is read, the rows with their destinations, questions and the
+    group preview."""
     keyed = model_configured(state.settings)
     unread = [image.image_id for image in snapshot.images if not image.read]
     ends = snapshot.attempt_ends
@@ -705,6 +707,7 @@ def review_page(
                 else None
             ),
             "frozen": SAID["frozen"] if snapshot.frozen else None,
+            "discard": signed_action("discard", snapshot.page_key, snapshot.version),
             "read_check": read_check(snapshot.page_key, unread),
             "no_key": None if keyed else SAID["no_key"],
             "disclosed": DISCLOSED,
@@ -1175,17 +1178,25 @@ async def saved_page(
 
 MOST_FOUND: Final = 20
 """The most assignments one search shows."""
+MOST_WORDS: Final = 200
+"""The most characters of a search's words read."""
 
 
-@router.get("/{draft_id}/find")
+@router.post("/{draft_id}/find")
 async def find(request: Request, draft_id: str, state: State) -> Response:
     """Find under another name for one open card: saved assignments whose class and title hold
-    every word typed, each a whole change posted as Keep these answers."""
+    every word typed, each a whole change posted as Keep these answers. The card and the words
+    come in the body, so the address holds only the review's id."""
     found = await snapshot_or_page(request, state, draft_id)
     if isinstance(found, Response):
         return found
-    piece_name = request.query_params.get("piece", "")
-    words = request.query_params.get("words", "")[:200]
+    posted, whole = await fields_of(
+        request, frozenset({"piece", "words"}), may_be_absent=frozenset({"words"})
+    )
+    if not whole:
+        return said_page(request, marks_of(state), FIND_SAID["gone"], 400)
+    piece_name = posted.get("piece", "")
+    words = posted.get("words", "")[:MOST_WORDS]
     review = await state_of_review(state, found, corrections_of(found.progress))
     piece = None if review is None else review.by_name.get(piece_name)
     if review is None or piece is None or piece.name in review.saved:

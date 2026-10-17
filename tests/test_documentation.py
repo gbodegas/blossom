@@ -72,3 +72,32 @@ def test_every_public_symbol_has_a_docstring(path: pathlib.Path) -> None:
         f"{path.relative_to(PACKAGE_ROOT.parent)} has undocumented public symbols: "
         f"{', '.join(undocumented)}"
     )
+
+
+GUIDE = pathlib.Path(__file__).resolve().parent.parent / "docs" / "development.md"
+"""The household guide, in the repository."""
+
+WHAT_A_REVIEW_KEEPS = (
+    "In grade records the student and teacher lines are never kept as text; only the keyed form "
+    "of her name is. While a screenshot review is open, Blossom keeps the student name it read "
+    "from the screenshots, as text, with the screenshots, and removes it with them when the "
+    "review finishes, is discarded or expires. That removal can wait for the next hourly "
+    "cleanup, or the next start. A teacher's name is never kept.",
+    "A review's screenshots, what Blossom read from them, and any progress saved for later are "
+    "removed from Blossom's database file when the review finishes, is discarded, or expires.",
+    "This removes them from the file; it doesn't guarantee they are erased from the disk, and a "
+    "backup or a disk snapshot taken while the review was open may still hold earlier copies.",
+    "the first grade report or the first homework screenshot review makes `household.secret`",
+)
+"""What the guide says a screenshot review keeps and removes, and when the household secret is
+made, word for word."""
+
+
+def test_the_household_guide_says_what_a_screenshot_review_keeps() -> None:
+    text = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    planner = text.split("## What the planner shares", 1)[1].split("## ", 1)[0]
+
+    assert [line for line in WHAT_A_REVIEW_KEEPS if line not in text] == []
+    assert "The student and teacher lines are never kept as text" not in text
+    assert WHAT_A_REVIEW_KEEPS[1] in planner
+    assert WHAT_A_REVIEW_KEEPS[2] in planner

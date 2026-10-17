@@ -426,6 +426,7 @@ class PieceControl:
     legend: str
     choices: tuple[Choice, ...]
     find: str
+    """The id of the small form its "Find under another name…" button posts."""
     preselected: bool
     stale: bool
     read: str = ""
@@ -797,6 +798,14 @@ def _offer_shown(
     return OfferShown(moves, tuple(lines), form.id), form
 
 
+def signed_action(action: str, page_key: bytes, version: int) -> OutsideForm:
+    """A small signed form for a press on the whole review, "Discard the review" or "Not
+    hers", at the page's version: its id is its action."""
+    signed = [("version", str(version))]
+    signed.append(("check", page_check(page_key, [*signed, ("action", action)])))
+    return OutsideForm(action, action, tuple(signed))
+
+
 def _names(
     images: Sequence[ImageName], values: Mapping[tuple[str, str], str], frozen: bool = False
 ) -> tuple[list[NameQuestion], set[str]]:
@@ -936,13 +945,14 @@ def rows_shown(
     ] + [(q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in splits]
     shown_groups = []
     asked_dests: set[tuple[str, ...]] = set()
+    finds = {piece.name: f"find-{number}" for number, piece in enumerate(open_pieces, 1)}
     for pieces in groups.values():
         controls = tuple(
             PieceControl(
                 p.name,
                 piece_text(places, p),
                 _choices(state, p, p.name in state.defaulted, labels),
-                p.name,
+                finds[p.name],
                 p.name in state.defaults and p.name not in state.stored,
                 p.name in state.validation.of(p.name).stale,
                 piece_read(p, pieces[0].course),
@@ -1056,7 +1066,7 @@ def rows_shown(
             GroupShown(f"{pieces[0].course}: {pieces[0].title}", controls, tuple(questions))
         )
     digests = unit_digests(state)
-    forms: list[OutsideForm] = []
+    forms = [OutsideForm(form_id, "find", (("piece", name),)) for name, form_id in finds.items()]
     shown_units = []
     ordered = sorted(
         state.validation.units, key=lambda u: min(first_card(state.by_name[n]) for n in u.unit)
@@ -1143,10 +1153,7 @@ def rows_shown(
     ]
     finishing.append(("check", page_check(page_key, [*finishing, ("action", "finish")])))
     forms.append(OutsideForm("finish", "finish", tuple(finishing)))
-    for action in ("discard", "not-hers"):
-        signed = [("version", str(version))]
-        signed.append(("check", page_check(page_key, [*signed, ("action", action)])))
-        forms.append(OutsideForm(action, action, tuple(signed)))
+    forms.append(signed_action("not-hers", page_key, version))
     return RowsShown(
         tuple(names),
         splits,

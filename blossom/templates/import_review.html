@@ -27,6 +27,7 @@
         </li>
       {% endfor %}
     </ul>
+    {% set reads_here = read_ids and not frozen and not under_way and not no_key %}
     {% if frozen %}
       <p class="note">{{ frozen }}</p>
     {% elif under_way %}
@@ -40,8 +41,12 @@
         <input type="hidden" name="check" value="{{ read_check }}">
         <div class="actions">
           <button type="submit" class="primary" aria-describedby="read-disclosed">Read</button>
+          {% if not rows %}<button type="submit" class="secondary" form="{{ discard.id }}">Discard the review</button>{% endif %}
         </div>
       </form>
+    {% endif %}
+    {% if not rows and not reads_here %}
+      <div class="actions"><button type="submit" class="secondary" form="{{ discard.id }}">Discard the review</button></div>
     {% endif %}
   </section>
   {% if rows %}{% include "import_rows.html" %}{% endif %}
@@ -58,6 +63,9 @@
       </form>
     </section>
   {% endif %}
+  <form method="post" action="/parent/imports/{{ draft_id }}/{{ discard.action }}" id="{{ discard.id }}">
+    {% for name, value in discard.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  </form>
   </div>
   <p class="return"><a href="/parent">Back to Family review</a></p>
 {% endblock %}

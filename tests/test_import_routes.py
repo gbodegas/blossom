@@ -7,21 +7,28 @@ Every route serves a parent alone, checked before any body is read, and every an
 no-store. Nothing on Family review offers the upload yet.
 """
 
+import ast
 import asyncio
 import dataclasses
 import html
+import http.client
 import io
 import json
 import logging
 import pathlib
 import re
+import socket
 import tempfile
+import threading
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from typing import Final
 from urllib.parse import urlencode
 
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 from markupsafe import escape
 from PIL import Image
@@ -1362,13 +1369,13 @@ def test_find_under_another_name_lists_saved_work_by_its_words_and_keeps_the_one
         state_of(browser).project_state.upsert_assignments([other])
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         piece = fields_named(review_form(page), "answer:destination:")[0]
-        found = browser.get(
-            f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "grammar"}
+        found = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
         )
-        nothing = browser.get(
-            f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "zzzz"}
+        nothing = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "zzzz"}
         )
-        gone = browser.get(f"/parent/imports/{draft_id}/find", params={"piece": "x", "words": "a"})
+        gone = browser.post(f"/parent/imports/{draft_id}/find", data={"piece": "x", "words": "a"})
         chosen = re.search(
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', found.text, re.S
         )
@@ -2509,8 +2516,8 @@ def test_two_cards_of_other_names_found_onto_one_row_count_once_and_each_name_is
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=cards)))
         page = her_name_answered(browser, draft_id, page)
         for piece in fields_named(review_form(page), "answer:destination:"):
-            finding = browser.get(
-                f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "grammar"}
+            finding = browser.post(
+                f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
             ).text
             choice = re.search(
                 r'<form method="post" action="[^"]+/review" class="choice">.*?</form>',
@@ -2574,8 +2581,8 @@ def two_names_found_onto_one_row(
     draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=cards)))
     page = her_name_answered(browser, draft_id, page)
     for piece in fields_named(review_form(page), "answer:destination:"):
-        finding = browser.get(
-            f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "grammar"}
+        finding = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
         ).text
         choice = re.search(
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
@@ -2687,9 +2694,8 @@ def test_a_found_row_s_page_is_ticked_as_a_plain_load_would_tick_it(
         page = her_name_answered(browser, draft_id, page)
         pieces = fields_named(review_form(page), "answer:destination:")
         chains = next(p for p in pieces if f"answer:destination:{p}" in page)
-        finding = browser.get(
-            f"/parent/imports/{draft_id}/find",
-            params={"piece": pieces[-1], "words": "grammar"},
+        finding = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": pieces[-1], "words": "grammar"}
         ).text
         choice = re.search(
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
@@ -2789,8 +2795,8 @@ def test_a_found_row_or_an_offer_returns_the_page_with_the_corrections_saved_for
             send(browser, draft_id, page_post(page, "later", typed={f"correct:{box}": same_words})),
         )
         [piece] = fields_named(review_form(page), "answer:destination:")
-        finding = browser.get(
-            f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "grammar"}
+        finding = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
         ).text
         choice = re.search(
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
@@ -3340,7 +3346,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
 
     assert css.count("import-review") == 8
     assert css.count(IMPORT_REVIEW_RULES) == 1
-    assert carriers == ["import_review.html", "parent_review.html"]
+    assert carriers == ["import_find.html", "import_review.html", "parent_review.html"]
 
 
 # ------------------------------------------------------------------ the cascade at 320 px
@@ -3514,7 +3520,7 @@ def every_route(draft_id: str, image_id: str) -> list[tuple[str, str]]:
         ("POST", f"/parent/imports/{draft_id}/images/{image_id}/remove"),
         ("POST", f"/parent/imports/{draft_id}/read"),
         ("POST", f"/parent/imports/{draft_id}/review"),
-        ("GET", f"/parent/imports/{draft_id}/find"),
+        ("POST", f"/parent/imports/{draft_id}/find"),
         ("POST", f"/parent/imports/{draft_id}/set-aside"),
         ("POST", f"/parent/imports/{draft_id}/finish"),
         ("POST", f"/parent/imports/{draft_id}/discard"),
@@ -3536,7 +3542,7 @@ def test_every_import_route_is_one_this_module_names() -> None:
         ("POST", "/parent/imports/{draft_id}/images/{image_id}/remove"),
         ("POST", "/parent/imports/{draft_id}/read"),
         ("POST", "/parent/imports/{draft_id}/review"),
-        ("GET", "/parent/imports/{draft_id}/find"),
+        ("POST", "/parent/imports/{draft_id}/find"),
         ("POST", "/parent/imports/{draft_id}/set-aside"),
         ("POST", "/parent/imports/{draft_id}/finish"),
         ("POST", "/parent/imports/{draft_id}/discard"),
@@ -3868,3 +3874,268 @@ def test_a_recorded_acceptance_answers_only_for_its_own_review(
     assert says(to_open, imports.PRESS_SAID["save_invalid"])
     assert says(again, outcome)
     assert after == before
+
+
+# ------------------------------------------------------------------ addresses carry only ids
+
+IMPORT_TEMPLATES: Final = pathlib.Path(imports.__file__).resolve().parent.parent / "templates"
+
+
+def test_no_import_address_carries_anything_but_ids() -> None:
+    """Closed-world: the module reads no query string, no import page has a form that isn't a
+    post or a link with a query, and the only reads are the review and its images."""
+    tree = ast.parse(pathlib.Path(imports.__file__).read_text(encoding="utf-8"))
+    names = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    names |= {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    names |= {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    pages = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted(IMPORT_TEMPLATES.glob("import_*.html"))
+    }
+    forms = {name: re.findall(r"<form\b[^>]*>", text) for name, text in pages.items()}
+    reads = sorted(
+        route.path  # type: ignore[attr-defined]
+        for route in imports.router.routes
+        for method in route.methods  # type: ignore[attr-defined]
+        if method == "GET"
+    )
+
+    assert "query_params" not in names
+    assert sorted(pages) == [
+        "import_find.html",
+        "import_review.html",
+        "import_rows.html",
+        "import_said.html",
+    ]
+    assert [(n, f) for n, found in forms.items() for f in found if 'method="post"' not in f] == []
+    assert [n for n, text in pages.items() if re.search(r'href="[^"]*\?', text)] == []
+    assert reads == ["/parent/imports/{draft_id}", "/parent/imports/{draft_id}/images/{image_id}"]
+
+
+def find_button(page: str, piece: str) -> str:
+    """The id of the small form a card's "Find under another name…" button posts."""
+    found = re.search(
+        rf'<form method="post" action="[^"]+/find" id="([^"]+)">\s*'
+        rf'<input type="hidden" name="piece" value="{re.escape(str(escape(piece)))}">',
+        page,
+    )
+    assert found is not None
+    return found.group(1)
+
+
+def test_a_live_access_log_holds_no_search_text(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel = "SYNTHETIC_PRIVATE_HOMEWORK_SEARCH"
+    monday, tuesday = split_answers()
+    records: list[str] = []
+
+    class Kept(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record.getMessage())
+
+    access = logging.getLogger("uvicorn.access")
+    handler = Kept()
+    access.addHandler(handler)
+    level = access.level
+    access.setLevel(logging.INFO)
+    try:
+        with here(open_settings(tmp_path)) as browser:
+            draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+            page = her_name_answered(browser, draft_id, page)
+            [split] = fields_named(review_form(page), "answer:split:")
+            apart = next(
+                v
+                for v in re.findall(r'name="answer:split:[^"]+" value="([^"]*)"', page)
+                if "split" in html.unescape(v)
+            )
+            choose = {f"answer:split:{split}": html.unescape(apart)}
+            page = followed(
+                browser, send(browser, draft_id, page_post(page, "keep", choose=choose))
+            )
+            pieces = fields_named(review_form(page), "answer:destination:")
+            _, fields = outside(page, find_button(page, pieces[0]))
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            server = uvicorn.Server(
+                uvicorn.Config(
+                    browser.app,
+                    host="127.0.0.1",
+                    port=port,
+                    log_level="info",
+                    access_log=True,
+                    log_config=None,
+                    lifespan="off",
+                    ws="none",
+                )
+            )
+            thread = threading.Thread(target=server.run, daemon=True)
+            thread.start()
+            for _ in range(200):
+                if server.started:
+                    break
+                time.sleep(0.05)
+            body = urlencode([*fields, ("words", sentinel)])
+            headers = {
+                "Host": LOOPBACK,
+                "Origin": f"http://{LOOPBACK}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            }
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            connection.request("GET", f"/parent/imports/{draft_id}", headers={"Host": LOOPBACK})
+            connection.getresponse().read()
+            connection.request(
+                "POST", f"/parent/imports/{draft_id}/find", body=body, headers=headers
+            )
+            answer = connection.getresponse()
+            shown = answer.read().decode()
+            connection.close()
+            server.should_exit = True
+            thread.join(timeout=10)
+    finally:
+        access.removeHandler(handler)
+        access.setLevel(level)
+
+    assert any("|" in piece and "2026-10-0" in piece for piece in pieces)
+    assert answer.status == 200
+    assert sentinel in shown
+    assert any("/find" in line for line in records)
+    assert not [line for line in records if sentinel in line or "2026-10-0" in line]
+
+
+def test_find_under_another_name_is_a_button_whose_search_posts_and_whose_choice_is_kept(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([other])
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        piece = fields_named(review_form(page), "answer:destination:")[0]
+        form_id = find_button(page, piece)
+        opened = press_outside(browser, page, form_id)
+        search = re.search(
+            r'<form method="post" action="([^"]+/find)">(.*?)</form>', opened.text, re.S
+        )
+        assert search is not None
+        hidden = re.findall(
+            r'<input type="hidden" name="([^"]+)" value="([^"]*)">', search.group(2)
+        )
+        results = browser.post(
+            search.group(1),
+            data={**{html.unescape(n): html.unescape(v) for n, v in hidden}, "words": "grammar"},
+        )
+        chosen = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>',
+            results.text,
+            re.S,
+        )
+        assert chosen is not None
+        fields = [
+            (html.unescape(n), html.unescape(v))
+            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', chosen.group(0))
+        ]
+        after = followed(browser, send(browser, draft_id, fields))
+
+    assert f'form="{form_id}">Find under another name' in page
+    assert opened.status_code == 200
+    assert 'name="words"' in search.group(2)
+    assert results.status_code == 200
+    assert says(results.text, "English 8: Grammar Practice, due Thu 10/8")
+    assert "Found under another name: Grammar Practice, due Thu 10/8" in html.unescape(after)
+
+
+# ------------------------------------------------------------------ discard on every open review
+
+
+def read_as(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, answer: ScreenshotAnswer
+) -> tuple[str, str]:
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = answer
+    draft_id = made(browser, RED)
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    return draft_id, browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+
+
+def unread_with_a_key(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    return made(browser, RED)
+
+
+def a_failed_read(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    return read_as(browser, monkeypatch, ScreenshotAnswer(None, "not_json", 10, 5))[0]
+
+
+def wrong_kind_only(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    unsupported = homework_answer(image_kind="unsupported")
+    return read_as(browser, monkeypatch, ScreenshotAnswer(unsupported, None, 10, 5))[0]
+
+
+def a_list_with_no_cards(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    empty = homework_answer(cards=[])
+    return read_as(browser, monkeypatch, ScreenshotAnswer(empty, None, 10, 5))[0]
+
+
+def emptied(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    draft_id = made(browser, RED)
+    [image_id] = images_of(browser, draft_id)
+    browser.post(f"/parent/imports/{draft_id}/images/{image_id}/remove")
+    return draft_id
+
+
+def a_read_review(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    return read_review(browser, monkeypatch, (RED, homework_answer()))[0]
+
+
+def frozen_after_a_partial_save(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+    page = her_name_answered(browser, draft_id, page)
+    send(browser, draft_id, page_post(page, "save", tick=units_on(page)[:1]))
+    return draft_id
+
+
+OPEN_REVIEWS: Final = {
+    "unread with a key": (unread_with_a_key, True),
+    "no key": (unread_with_a_key, False),
+    "a failed read": (a_failed_read, True),
+    "wrong kind only": (wrong_kind_only, True),
+    "a list with no cards": (a_list_with_no_cards, True),
+    "emptied of its only image": (emptied, True),
+    "a read review": (a_read_review, True),
+    "frozen after a partial save": (frozen_after_a_partial_save, True),
+}
+
+
+@pytest.mark.parametrize("case", list(OPEN_REVIEWS))
+def test_every_open_review_offers_discard_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    build, key = OPEN_REVIEWS[case]
+    with here(open_settings(tmp_path, key=key)) as browser:
+        draft_id = build(browser, monkeypatch)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        gone = press_outside(browser, page, "discard")
+        student = state_of(browser).project_state.student_id()
+        after = state_of(browser).import_drafts.snapshot(student, draft_id)
+        again = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert page.count(">Discard the review</button>") == 1
+    assert gone.status_code == 200
+    assert says(gone.text, imports.AFTER_SAID["discarded"])
+    assert after.closed_at is not None
+    assert after.images == ()
+    assert says(again, imports.SAID["closed"])
+    assert "Discard the review" not in again
