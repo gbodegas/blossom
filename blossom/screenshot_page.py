@@ -12,7 +12,7 @@ import dataclasses
 import hashlib
 import hmac
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from typing import Final
 
@@ -180,18 +180,72 @@ def row_label(row: SavedRow) -> str:
     return f"{row.title}, {due}, {assigned}, {words_text(row)}"
 
 
-def labels_for(rows: Sequence[SavedRow]) -> dict[str, str]:
-    """Each assignment's label, with its reference wherever two would read the same."""
+def labels_for(rows: Sequence[SavedRow], always: Iterable[str] = ()) -> dict[str, str]:
+    """Each assignment's label, with its reference wherever two would read the same and for
+    every assignment in ``always``, worked out among those that read the same."""
     plain = {r.assignment_id: row_label(r) for r in rows}
+    always = frozenset(always)
     out = {}
     for row in rows:
         twins = [i for i, text in plain.items() if text == plain[row.assignment_id]]
         out[row.assignment_id] = (
             plain[row.assignment_id]
-            if len(twins) == 1
+            if len(twins) == 1 and row.assignment_id not in always
             else f"{plain[row.assignment_id]}, {reference(row.assignment_id, twins)}"
         )
     return out
+
+
+def page_labels(
+    state: ReviewState, reworked: Iterable[tuple[Offer, Sequence[PreviewEntry]]] = ()
+) -> dict[str, str]:
+    """One label per assignment the review page names, used by every part of it: each open
+    piece's entries and their facts, a found destination, a refusal's offered holder, the
+    preview's destinations and the assignments it says also hold a card's words, the
+    refusals, and each offer's moves and preview. Two of these that would read the same each
+    show their reference, and an assignment a refusal names always shows it, wherever it is
+    named on the page."""
+    named: set[str] = set()
+    always: set[str] = set()
+    for unit in state.validation.units:
+        for refusal in unit.refusals:
+            if refusal.kind == "copy":
+                always.update(refusal.named)
+    for piece in state.open:
+        here = {
+            str(e.stands_for)
+            for e in state.entries.get(piece.name, [])
+            if e.kind not in ("find", "new_slot") and e.stands_for
+        }
+        chosen = state.mapping.get(piece.name)
+        if chosen is not None and dest_kind(chosen) == "found":
+            here.add(str(chosen["found"]))
+        for refusal in state.validation.of(piece.name).refusals:
+            if refusal.kind == "copy" and piece.name in refusal.pieces:
+                here.add(refusal.named[1])
+        for assignment_id in here & state.rows.keys():
+            named.add(assignment_id)
+            named.update(
+                str(f.about)
+                for f in facts(piece, state.rows[assignment_id], state.rows, state.picks)
+                if f.about
+            )
+    previews = [state.preview]
+    for offer, shown in reworked:
+        previews.append(tuple(shown))
+        for value in [v for _, v in offer.changes] + [v for _, v in offer.moved_from]:
+            if value is not None:
+                chosen = value_of(value)
+                kind = dest_kind(chosen)
+                if kind != "new":
+                    named.add(str(chosen[kind]))
+    for entries in previews:
+        for entry in entries:
+            if entry.stands_for is not None:
+                named.add(entry.stands_for)
+            named.update(entry.overlap)
+    named |= always
+    return labels_for([state.rows[i] for i in sorted(named) if i in state.rows], always)
 
 
 def dates_said(piece: Piece, places: Mapping[str, int]) -> tuple[str, ...]:
@@ -530,16 +584,14 @@ def answer_field(kind: str, subject: str) -> str:
 # ------------------------------------------------------------------ the parts
 
 
-def _choices(state: ReviewState, piece: Piece, defaulted: bool) -> tuple[Choice, ...]:
-    """A piece's radios in its list's order. Two entries that would read the same each show
-    their reference, worked out among the entries listed here."""
+def _choices(
+    state: ReviewState, piece: Piece, defaulted: bool, labels: Mapping[str, str]
+) -> tuple[Choice, ...]:
+    """A piece's radios in its list's order, each assignment named as the whole page names
+    it."""
     chosen = state.mapping.get(piece.name)
     picked = None if chosen is None else value_json(chosen)
     entries = state.entries.get(piece.name, [])
-    shown_ids = {str(e.stands_for) for e in entries if e.stands_for in state.rows}
-    if chosen is not None and dest_kind(chosen) == "found":
-        shown_ids.add(str(chosen["found"]))
-    labels = labels_for([state.rows[i] for i in sorted(shown_ids) if i in state.rows])
     out = []
     for entry in entries:
         if entry.kind == "find":
@@ -576,7 +628,7 @@ def _choices(state: ReviewState, piece: Piece, defaulted: bool) -> tuple[Choice,
             fact_text(f.kind, f.entry_date, f.piece_date, labels.get(str(f.about), ""))
             for f in facts(piece, state.rows[holder], state.rows, state.picks)
         )
-        out.append(Choice(str(offered), with_reference(state, holder), shown, offered == picked))
+        out.append(Choice(str(offered), labels[holder], shown, offered == picked))
     if picked is not None and all(c.value != picked for c in out) and chosen is not None:
         target = str(chosen.get("found", ""))
         if dest_kind(chosen) == "found" and target in state.rows:
@@ -689,27 +741,22 @@ def _preview_lines(
     return lines
 
 
-def with_reference(state: ReviewState, assignment_id: str) -> str:
-    """An assignment's label with its reference always shown, as a refusal names its cause."""
-    row = state.rows.get(assignment_id)
-    if row is None:
-        return assignment_id
-    return f"{row_label(row)}, {reference(assignment_id, list(state.rows))}"
-
-
-def _refusal_text(refusal: Refusal, state: ReviewState, places: Mapping[str, int]) -> str:
+def _refusal_text(
+    refusal: Refusal, state: ReviewState, places: Mapping[str, int], labels: Mapping[str, str]
+) -> str:
     cards = " and ".join(piece_text(places, state.by_name[n]) for n in refusal.pieces)
     if refusal.kind == "split_siblings":
         return f"{cards} are different days of one row, so they can't go to the same assignment."
     dest, holder = refusal.named
     return (
-        f"{cards} would copy the words of {with_reference(state, holder)} into "
-        f"{with_reference(state, dest)}, so this group isn't saved."
+        f"{cards} would copy the words of {labels.get(holder, holder)} into "
+        f"{labels.get(dest, dest)}, so this group isn't saved."
     )
 
 
 def _offer_shown(
     offer: Offer,
+    shown: Sequence[PreviewEntry],
     state: ReviewState,
     places: Mapping[str, int],
     labels: Mapping[str, str],
@@ -732,8 +779,6 @@ def _offer_shown(
         f" to {where(v, state.by_name[n])}"
         for n, v in offer.changes
     )
-    changed = {**state.mapping, **{n: value_of(v) for n, v in offer.changes}}
-    _, shown = state.rework(changed)
     moved = {n for n, _ in offer.changes}
     lines = []
     for entry in shown:
@@ -849,8 +894,25 @@ def rows_shown(
     by name group, each destination's questions, and the group preview with its refusals and
     offers, plus the signed fields the review form carries."""
     values = dict(state.values)
-    rows = list(state.rows.values())
-    labels = labels_for(rows)
+    reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
+    for unit in state.validation.units:
+        if not unit.refusals:
+            continue
+        entry_values = {
+            n: [e.value for e in state.entries.get(n, []) if e.kind != "find"] for n in unit.unit
+        }
+
+        def recheck(mapping: Mapping[str, Destination]) -> Validation:
+            return state.rework(mapping)[0]
+
+        reworked[unit.unit] = [
+            (
+                offer,
+                state.rework({**state.mapping, **{n: value_of(v) for n, v in offer.changes}})[1],
+            )
+            for offer in offers(state.pieces, state.mapping, unit, entry_values, recheck)
+        ]
+    labels = page_labels(state, [pair for found in reworked.values() for pair in found])
     names, waiting = _names(images, values)
     splits = tuple(_split_question(r, places, values) for r in state.asking)
 
@@ -872,7 +934,7 @@ def rows_shown(
             PieceControl(
                 p.name,
                 piece_text(places, p),
-                _choices(state, p, p.name in state.defaulted),
+                _choices(state, p, p.name in state.defaulted, labels),
                 p.name,
                 p.name in state.defaults and p.name not in state.stored,
                 p.name in state.validation.of(p.name).stale,
@@ -1013,24 +1075,14 @@ def rows_shown(
                     else "Still to answer: " + ", ".join(OPEN_NAMES[q] for q in still) + ".",
                 )
             )
-        refusals = tuple(_refusal_text(r, state, places) for r in unit.refusals)
+        refusals = tuple(_refusal_text(r, state, places, labels) for r in unit.refusals)
         shown_offers: list[OfferShown] = []
-        if unit.refusals:
-            entry_values = {
-                n: [e.value for e in state.entries.get(n, []) if e.kind != "find"]
-                for n in unit.unit
-            }
-
-            def recheck(mapping: Mapping[str, Destination]) -> Validation:
-                return state.rework(mapping)[0]
-
-            found = offers(state.pieces, state.mapping, unit, entry_values, recheck)
-            for index, offer in enumerate(found, 1):
-                shown, form = _offer_shown(
-                    offer, state, places, labels, page_key, version, f"{number}-{index}"
-                )
-                shown_offers.append(shown)
-                forms.append(form)
+        for index, (offer, reshown) in enumerate(reworked.get(unit.unit, []), 1):
+            shown, form = _offer_shown(
+                offer, reshown, state, places, labels, page_key, version, f"{number}-{index}"
+            )
+            shown_offers.append(shown)
+            forms.append(form)
         keys = json.dumps(sorted({state.by_name[n].key for n in unit.unit}), separators=(",", ":"))
         leave = [("version", str(version)), ("keys", keys)]
         leave.append(("check", page_check(page_key, leave)))

@@ -2216,6 +2216,97 @@ def test_a_refusal_s_holder_outside_the_card_s_list_is_offered_as_its_destinatio
     assert answers[("destination", piece)] == offered
 
 
+def preview_labels(page: str) -> list[str]:
+    """The destination each entry of the group preview names, as the page reads."""
+    found = re.search(r'aria-labelledby="saving-heading">.*?</section>', page, re.S)
+    assert found is not None
+    return [html.unescape(h) for h in re.findall(r"<h3>(.*?)</h3>", found.group(0))]
+
+
+def test_an_assignment_reads_the_same_in_its_control_and_in_the_preview(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another class's assignment reads like the one listed here, but the page never names it,
+    so neither the control nor the preview tells the listed one apart from it."""
+
+    def saved(course: str, tail: str) -> Assignment:
+        return Assignment(
+            assignment_id=f"assignment-sentence-composing-{tail}",
+            course=course,
+            title="Sentence Composing",
+            due_date=date(2026, 10, 8),
+            dependencies=[],
+            reported_submission_status="not_reported",
+            assigned_on=None,
+            kind=AssignmentKind.HOMEWORK,
+        )
+
+    plain = "Sentence Composing, due Thu 10/8, no assigned date, no instructions"
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments(
+            [saved("English 8", "aaaa1111"), saved("Science 8", "bbbb1111")]
+        )
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        listed = json.dumps(
+            {"existing": "assignment-sentence-composing-aaaa1111"}, separators=(",", ":")
+        )
+        kept = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(page, "keep", choose={f"answer:destination:{piece}": listed}),
+            ),
+        )
+
+    [card] = destination_cards(kept)
+    shown = re.search(rf'value="{re.escape(str(escape(listed)))}" checked> <span>([^<]*)', card)
+    assert shown is not None
+    assert shown.group(1).strip() == plain
+    assert plain in preview_labels(kept)
+
+
+def test_a_refused_destination_reads_the_same_in_the_refusal_its_control_and_the_preview(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    later_card = homework_answer(cards=[homework_card(footer="Due (10/30/2026)")])
+    found_row = Assignment(
+        assignment_id="assignment-grammar-practice-hhhh7777",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 30),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        first, page = read_review(browser, monkeypatch, (BLUE, later_card))
+        page = her_name_answered(browser, first, page)
+        send(browser, first, page_post(page, "save", tick=units_on(page)))
+        state_of(browser).project_state.upsert_assignments([found_row])
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        found = json.dumps({"found": found_row.assignment_id}, separators=(",", ":"))
+        keep(browser, draft_id, ("destination", piece, found))
+        refused = browser.get(f"/parent/imports/{draft_id}").text
+
+    form = html.unescape(review_form(refused))
+    said = re.search(r"would copy the words of (.*?) into (.*?), so this group isn't saved\.", form)
+    assert said is not None
+    holder, destination = said.groups()
+    [card] = destination_cards(refused)
+    radios = [html.unescape(label).strip() for label in re.findall(r"> <span>([^<]*)", card)]
+    assert f"Found under another name: {destination}" in radios
+    assert holder in radios
+    assert f"Found under another name: {destination}" in preview_labels(refused)
+
+
 def test_each_card_s_own_line_shows_its_instructions_whole(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
