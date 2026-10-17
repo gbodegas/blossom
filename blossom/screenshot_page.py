@@ -50,7 +50,7 @@ SAID: Final = {
     ),
     "preselected": "Preselected; kept when you press a button below.",
     "find": "Find under another name\u2026",
-    "no_words": "No instructions",
+    "no_words": "no instructions",
     "no_assigned": "no assigned date",
     "no_due": "no due date",
     "has_words": "Has this card's words",
@@ -113,13 +113,19 @@ def piece_text(places: Mapping[str, int], piece: Piece) -> str:
     return f"{piece.title} ({where}{day})"
 
 
+def words_line(first: str | None, more: int) -> str:
+    """Instructions as an entry and a card show them: the first, shortened, and how many
+    more; "no instructions" when there are none."""
+    if first is None:
+        return SAID["no_words"]
+    shown = first if len(first) <= 60 else first[:57] + "..."
+    rest = f" and {more} more" if more else ""
+    return f"\u201c{shown}\u201d{rest}"
+
+
 def words_text(row: SavedRow) -> str:
     """An assignment's first instruction, shortened, and how many more."""
-    if row.first_words is None:
-        return SAID["no_words"]
-    first = row.first_words if len(row.first_words) <= 60 else row.first_words[:57] + "..."
-    more = f" and {row.more_words} more" if row.more_words else ""
-    return f"\u201c{first}\u201d{more}"
+    return words_line(row.first_words, row.more_words)
 
 
 def row_label(row: SavedRow) -> str:
@@ -150,12 +156,7 @@ def piece_read(piece: Piece, course: str) -> str:
     due = f"due {day_text(piece.due)}" if piece.due else SAID["no_due"]
     assigned = f"assigned {day_text(piece.assigned)}" if piece.assigned else SAID["no_assigned"]
     texts = list(dict.fromkeys(i.text for i in piece.reading.instructions)) if piece.reading else []
-    if texts:
-        first = texts[0] if len(texts[0]) <= 60 else texts[0][:57] + "..."
-        more = f" and {len(texts) - 1} more" if len(texts) > 1 else ""
-        words = f"\u201c{first}\u201d{more}"
-    else:
-        words = SAID["no_words"]
+    words = words_line(texts[0] if texts else None, max(0, len(texts) - 1))
     return f"This card: {title}, {due}, {assigned}, {words}"
 
 
@@ -322,8 +323,9 @@ class UnitShown:
     entries: tuple[EntryShown, ...]
     tick: bool
     ticked: bool
-    """Ticked on the page, for display only: with saved progress, when it names the group and
-    the group is still open and can be ticked; with none, every group that can be ticked."""
+    """Ticked on the page, for display only: with saved progress, when its selection names every
+    row of the group and the group is still open and can be ticked; with none, every group that
+    can be ticked."""
     waits: tuple[str, ...]
     refusals: tuple[str, ...]
     offers: tuple[OfferShown, ...]
@@ -895,7 +897,10 @@ def rows_shown(
                 unit_name(unit.unit),
                 tuple(entries_shown),
                 tickable,
-                tickable and (selected is None or unit_name(unit.unit) in selected),
+                tickable
+                and (
+                    selected is None or {state.by_name[name].key for name in unit.unit} <= selected
+                ),
                 _waits(unit),
                 refusals,
                 tuple(shown_offers),

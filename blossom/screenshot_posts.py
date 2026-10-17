@@ -11,8 +11,8 @@ A post that doesn't match what its page signed is refused whole, so nothing of i
 import dataclasses
 import hmac
 import json
-from collections.abc import Mapping, Sequence
-from typing import Final
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Final, NamedTuple
 
 from blossom.screenshot_page import page_check
 from blossom.screenshot_review import answer_names, dest_kind, value_json, value_of
@@ -223,3 +223,59 @@ def read_review(
         digests,
         defaults,
     )
+
+
+# ------------------------------------------------------------------ saved progress
+
+PROGRESS_KEYS: Final = frozenset({"v", "corrected", "selected"})
+PROGRESS_SHAPE: Final = 3
+
+
+class SavedProgress(NamedTuple):
+    """What Save review for later keeps: the typed corrections by row key and field, and the
+    row keys of the groups ticked. Nothing else, and never an answer."""
+
+    corrected: dict[str, dict[str, str]]
+    selected: frozenset[str]
+
+
+def progress_text(corrected: Mapping[str, Mapping[str, str]], selected: Iterable[str]) -> str:
+    """Saved progress in its one shape."""
+    return json.dumps(
+        {
+            "v": PROGRESS_SHAPE,
+            "corrected": {key: dict(fields) for key, fields in sorted(corrected.items())},
+            "selected": sorted(set(selected)),
+        },
+        separators=(",", ":"),
+    )
+
+
+def progress_read(text: str | None) -> SavedProgress | None:
+    """Saved progress, read closed-world: exactly its three keys, shape 3, corrections only to
+    fields a page asks to confirm and within the form's limit, and row keys as text. Any other
+    shape reads as no progress."""
+    if text is None:
+        return None
+    try:
+        found = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(found, dict) or set(found) != PROGRESS_KEYS:
+        return None
+    corrected, selected = found["corrected"], found["selected"]
+    if found["v"] != PROGRESS_SHAPE or not isinstance(corrected, dict):
+        return None
+    if not isinstance(selected, list) or not all(isinstance(key, str) for key in selected):
+        return None
+    out: dict[str, dict[str, str]] = {}
+    for key, fields in corrected.items():
+        if not isinstance(fields, dict):
+            return None
+        for field, value in fields.items():
+            if field not in CONFIRMABLE or not isinstance(value, str):
+                return None
+            if not value.strip() or len(value) > MOST_CORRECTION:
+                return None
+        out[str(key)] = {str(field): str(value) for field, value in fields.items()}
+    return SavedProgress(out, frozenset(selected))

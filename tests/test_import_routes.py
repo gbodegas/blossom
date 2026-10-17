@@ -828,7 +828,7 @@ def test_same_name_assignments_are_each_listed_with_their_facts_and_none_is_pres
     assert composing is not None
     control = composing.group(0)
     assert " checked" not in control
-    assert control.count("Sentence Composing, due Fri 10/9, no assigned date, No instructions") == 2
+    assert control.count("Sentence Composing, due Fri 10/9, no assigned date, no instructions") == 2
     assert "ref aa1111" in control
     assert "ref bb1111" in control
     assert control.count("Due Fri 10/9: this card says Thu 10/8.") == 2
@@ -894,7 +894,7 @@ def test_a_destination_due_another_day_asks_with_nothing_chosen_and_says_what_is
 
     form = html.unescape(review_form(asked))
     assert (
-        "Due date for Sentence Composing, due Fri 10/9, no assigned date, No instructions" in form
+        "Due date for Sentence Composing, due Fri 10/9, no assigned date, no instructions" in form
     )
     assert "Due Fri 10/9, as saved" in form
     assert "Due Thu 10/8" in form
@@ -1031,7 +1031,9 @@ def send(browser: TestClient, draft_id: str, fields: Sequence[tuple[str, str]]) 
 
 
 def followed(browser: TestClient, answer: Answer) -> str:
-    assert answer.status_code == 303, answer.text
+    """The page a press answers with: the review it renders, or the one it redirects to."""
+    if answer.status_code != 303:
+        return answer.text
     return browser.get(answer.headers["location"]).text
 
 
@@ -1292,7 +1294,8 @@ def test_save_for_later_keeps_the_typed_corrections_and_a_page_behind_keeps_its_
     assert says(later, imports.PRESS_SAID["later"])
     assert "Saved for later at " in later
     assert json.loads(str(progress)) == {
-        "corrections": {json.loads(field)[0]: {"title": "Sentence Combining"}},
+        "v": 3,
+        "corrected": {json.loads(field)[0]: {"title": "Sentence Combining"}},
         "selected": [],
     }
     assert 'value="Sentence Combining"' in later
@@ -1849,7 +1852,7 @@ def test_each_card_shows_what_was_read_for_it_beside_its_destination_choices(
     assert (
         "This card: Sentence Composing, due Thu 10/8, assigned Mon 10/5, “Complete pages 12 to 14.”"
     ) in form
-    assert "This card: Chains Reading Guide 6, due Mon 10/5, no assigned date, No instructions" in (
+    assert "This card: Chains Reading Guide 6, due Mon 10/5, no assigned date, no instructions" in (
         form
     )
 
@@ -1958,6 +1961,142 @@ def test_a_review_left_with_only_cards_that_couldn_t_be_read_still_shows_them(
     assert "Couldn't read" in html.unescape(after)
     assert after.count('form="leave-item-') == 2
     assert 'form="finish"' in after
+
+
+# ------------------------------------------------------------------ typing kept in the form
+
+
+def unsure_answer() -> dict[str, object]:
+    return homework_answer(
+        cards=[homework_card(uncertain=[{"field": "title", "reason": "a smudge over it"}])]
+    )
+
+
+def test_keep_these_answers_answers_with_the_review_and_the_typing_still_in_the_form(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
+        [field] = fields_named(review_form(page), "correct:")
+        typed = {f"correct:{field}": "Sentence Combining"}
+        kept = send(browser, draft_id, page_post(page, "keep", typed=typed))
+        answers = stored_answers(browser, draft_id)
+        again = send(browser, draft_id, page_post(kept.text, "keep"))
+
+    form = review_form(kept.text)
+    [piece] = [s for k, s in answers if k == "destination"]
+    assert kept.status_code == 200
+    assert says(kept.text, imports.PRESS_SAID["kept"])
+    assert 'value="Sentence Combining"' in form
+    assert (f"answer:destination:{piece}", "{&#34;new&#34;:1}") in checked_values(form)
+    assert "A new Sentence Combining (1)" in form
+    assert screenshot_page.SAID["preselected"] not in form
+    assert again.status_code == 200
+    assert 'value="Sentence Combining"' in review_form(again.text)
+    assert screenshot_page.SAID["preselected"] not in review_form(again.text)
+
+
+def test_a_save_that_saves_nothing_answers_with_the_typing_in_the_form(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
+        [field] = fields_named(review_form(page), "correct:")
+        typed = {f"correct:{field}": "Sentence Combining"}
+        units = digests_on(page)
+        refused = send(browser, draft_id, page_post(page, "save", tick=units, typed=typed))
+
+    assert refused.status_code == 409
+    assert says(refused.text, imports.PRESS_SAID["changed_by_answers"])
+    assert 'value="Sentence Combining"' in review_form(refused.text)
+    assert "A new Sentence Combining (1)" in review_form(refused.text)
+
+
+def test_a_save_refused_while_a_group_is_open_keeps_the_ticks_it_sent(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first, second = units_on(page)
+        none_ticked = send(browser, draft_id, page_post(page, "save"))
+        later = followed(browser, send(browser, draft_id, page_post(page, "later", tick=[first])))
+
+    assert none_ticked.status_code == 200
+    assert says(none_ticked.text, imports.PRESS_SAID["none_chosen"])
+    assert units_ticked(none_ticked.text) == []
+    assert units_ticked(later) == [first]
+
+
+def test_a_page_from_before_a_change_answers_with_its_typing_in_the_current_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
+        [field] = fields_named(review_form(page), "correct:")
+        send(browser, draft_id, page_post(page, "keep"))
+        typed = {f"correct:{field}": "Sentence Craft"}
+        stale = send(browser, draft_id, page_post(page, "keep", typed=typed))
+
+    assert stale.status_code == 409
+    assert says(stale.text, imports.CHANGED_IN_ANOTHER_TAB)
+    assert says(stale.text, imports.PRESS_SAID["keep_stale"])
+    assert 'value="Sentence Craft"' in review_form(stale.text)
+
+
+# ------------------------------------------------------------------ saved progress
+
+
+def test_saved_progress_is_kept_in_its_one_shape_and_any_other_reads_as_none(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        [field] = fields_named(review_form(page), "correct:")
+        key = json.loads(field)[0]
+        typed = {f"correct:{field}": "Sentence Combining"}
+        send(browser, draft_id, page_post(page, "later", typed=typed))
+        student = state_of(browser).project_state.student_id()
+        drafts = state_of(browser).import_drafts
+        written = drafts.snapshot(student, draft_id).progress
+        shown = []
+        for other in (
+            {"corrections": {key: {"title": "Sentence Combining"}}, "selected": []},
+            {"v": 2, "corrected": {key: {"title": "Sentence Combining"}}, "selected": []},
+            {"v": 3, "corrected": {key: {"title": "Sentence Combining"}}, "selected": [], "x": 1},
+            {"v": 3, "corrected": {key: {"shade": "red"}}, "selected": []},
+            {"v": 3, "corrected": {key: {"title": "Sentence Combining"}}, "selected": [7]},
+        ):
+            snapshot = drafts.snapshot(student, draft_id)
+            drafts.save_progress(
+                student,
+                draft_id,
+                revision=snapshot.progress_revision,
+                progress=json.dumps(other),
+            )
+            shown.append(browser.get(f"/parent/imports/{draft_id}").text)
+
+    assert json.loads(str(written)) == {
+        "v": 3,
+        "corrected": {key: {"title": "Sentence Combining"}},
+        "selected": [],
+    }
+    for one in shown:
+        assert 'value="Sentence Combining"' not in one
+        assert "A new Sentence Composing (1)" in one
+
+
+SCREENSHOT_LIST_RULE = ".screenshot-list {\n  list-style: none;\n  margin: 0;\n  padding: 0;\n}\n"
+"""The review's screenshots, pinned whole: a list without markers, as the app's other lists."""
+
+
+def test_the_review_s_screenshots_are_a_list_without_markers(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        page = browser.get(f"/parent/imports/{made(browser, RED)}").text
+
+    assert '<ul class="screenshot-list">' in page
+    assert STYLESHEET.read_text(encoding="utf-8").count(SCREENSHOT_LIST_RULE) == 1
 
 
 IMPORT_REVIEW_RULES = (

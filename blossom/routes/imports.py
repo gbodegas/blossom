@@ -20,7 +20,7 @@ import hmac
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Annotated, Final
 
@@ -43,7 +43,14 @@ from blossom.screenshot_page import (
     piece_text,
     rows_shown,
 )
-from blossom.screenshot_posts import PostRefused, ReviewPost, read_change, read_review
+from blossom.screenshot_posts import (
+    PostRefused,
+    ReviewPost,
+    progress_read,
+    progress_text,
+    read_change,
+    read_review,
+)
 from blossom.screenshot_reading import read_screenshots
 from blossom.screenshot_review import value_json
 from blossom.screenshot_save import (
@@ -516,37 +523,27 @@ def label_of(snapshot: DraftSnapshot, index: int) -> str:
 
 
 def picked(progress: str | None) -> frozenset[str] | None:
-    """The groups a page load ticks: those saved progress names when there is saved progress,
+    """The rows a page load ticks: those saved progress names when there is saved progress,
     else None, so every group ready to save is ticked."""
-    return None if progress is None else selected_of(progress)
-
-
-def selected_of(progress: str | None) -> frozenset[str]:
-    """The groups a review's saved progress keeps ticked, by unit name; none when there is no
-    progress or it can't be read."""
-    try:
-        found = json.loads(progress or "{}").get("selected", [])
-    except (ValueError, AttributeError):
-        return frozenset()
-    if not isinstance(found, list):
-        return frozenset()
-    return frozenset(str(name) for name in found if isinstance(name, str))
+    read = progress_read(progress)
+    return None if read is None else read.selected
 
 
 def corrections_of(progress: str | None) -> dict[str, dict[str, str]]:
     """The typed corrections a review's saved progress keeps, by row key and field; none when
-    there is no progress or it can't be read."""
-    try:
-        found = json.loads(progress or "{}").get("corrections", {})
-    except (ValueError, AttributeError):
-        return {}
-    if not isinstance(found, dict):
-        return {}
-    return {
-        str(key): {str(f): str(v) for f, v in fields.items() if isinstance(v, str)}
-        for key, fields in found.items()
-        if isinstance(fields, dict)
-    }
+    there is no progress or it isn't in its one shape."""
+    read = progress_read(progress)
+    return {} if read is None else read.corrected
+
+
+def row_keys(review: ReviewState, units: Iterable[str]) -> frozenset[str]:
+    """The row keys of the groups named, as saved progress keeps a selection."""
+    return frozenset(
+        review.by_name[name].key
+        for unit in units
+        for name in unit.split("+")
+        if name in review.by_name
+    )
 
 
 async def image_names(
@@ -627,7 +624,7 @@ async def rows_of(
         acceptance=secrets.token_hex(16),
         until=until_text(state, snapshot.expires_at),
         corrections=corrections,
-        selected=frozenset(ticked) if ticked is not None else picked(snapshot.progress),
+        selected=row_keys(review, ticked) if ticked is not None else picked(snapshot.progress),
         open_keys=open_keys,
         unread=unread,
     )
@@ -891,12 +888,32 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             answers=list(post.answers),
         )
     except ReviewChanged:
-        return to_review(state, draft_id, [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["keep_stale"]])
+        said = [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["keep_stale"]]
+        return await with_typing(request, state, draft_id, post, said, 409)
     except (StoreBusy, WriterBusy):
-        return to_review(state, draft_id, [PRESS_SAID["keep_failed"]])
+        return await with_typing(request, state, draft_id, post, [PRESS_SAID["keep_failed"]], 503)
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return store_refusal(request, state, error)
-    return to_review(state, draft_id, [PRESS_SAID["kept"]])
+    return await with_typing(request, state, draft_id, post, [PRESS_SAID["kept"]], 200)
+
+
+async def with_typing(
+    request: Request,
+    state: ApplicationState,
+    draft_id: str,
+    post: ReviewPost,
+    said: Sequence[str],
+    status: int,
+) -> Response:
+    """A press that saved nothing answers with the review as it stands now, the corrections it
+    typed and the groups it ticked still in the form, so nothing typed is lost and an answer
+    just kept stays matched to the corrections it was given with."""
+    after = await snapshot_or_page(request, state, draft_id)
+    if isinstance(after, Response):
+        return after
+    lines = list(said)
+    rows = await rows_of(request, state, after, lines, typed=post.corrections, ticked=post.units)
+    return review_page(request, state, after, lines, status, rows=rows)
 
 
 async def later_press(
@@ -905,9 +922,9 @@ async def later_press(
     """Save review for later: the answers and the typed corrections, in one transaction, the
     corrections only when no other tab saved for later since the page."""
     student = state.project_state.student_id()
-    progress = json.dumps(
-        {"corrections": post.corrections, "selected": sorted(post.units)}, separators=(",", ":")
-    )
+    review = await state_of_review(state, found, post.corrections)
+    ticked = row_keys(review, post.units) if review is not None else frozenset()
+    progress = progress_text(post.corrections, ticked)
     try:
         done = await asyncio.to_thread(
             state.import_drafts.save_for_later,
@@ -919,19 +936,17 @@ async def later_press(
             progress=progress,
         )
     except ReviewChanged:
-        return to_review(state, found.draft_id, [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["later_stale"]])
+        said = [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["later_stale"]]
+        return await with_typing(request, state, found.draft_id, post, said, 409)
     except (StoreBusy, WriterBusy):
-        return to_review(state, found.draft_id, [PRESS_SAID["later_failed"]])
+        said = [PRESS_SAID["later_failed"]]
+        return await with_typing(request, state, found.draft_id, post, said, 503)
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return store_refusal(request, state, error)
     if done.progress_saved:
         return to_review(state, found.draft_id, [PRESS_SAID["later"], saved_for_later_at(state)])
-    after = await snapshot_or_page(request, state, found.draft_id)
-    if isinstance(after, Response):
-        return after
     said = [PRESS_SAID["answers_kept"], PRESS_SAID["later_behind"]]
-    rows = await rows_of(request, state, after, said, typed=post.corrections, ticked=post.units)
-    return review_page(request, state, after, said, 409, rows=rows)
+    return await with_typing(request, state, found.draft_id, post, said, 409)
 
 
 async def save_press(
@@ -955,19 +970,21 @@ async def save_press(
             answers=list(post.answers),
         )
     except ReviewChanged:
-        return to_review(state, draft_id, [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["save_stale"]])
+        said = [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["save_stale"]]
+        return await with_typing(request, state, draft_id, post, said, 409)
     except (StoreBusy, WriterBusy):
-        return to_review(state, draft_id, [PRESS_SAID["save_failed"]])
+        return await with_typing(request, state, draft_id, post, [PRESS_SAID["save_failed"]], 503)
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return store_refusal(request, state, error)
     answered = kept.stored > 0
+    kept_said = [PRESS_SAID["answers_kept"]] if answered else []
     if not post.units:
-        kept_said = [PRESS_SAID["answers_kept"]] if answered else []
-        return to_review(state, draft_id, [*kept_said, PRESS_SAID["none_chosen"]])
+        said = [*kept_said, PRESS_SAID["none_chosen"]]
+        return await with_typing(request, state, draft_id, post, said, 200)
     named = await image_names(request, state, found)
     if named is None:
-        kept_said = [PRESS_SAID["answers_kept"]] if answered else []
-        return to_review(state, draft_id, [*kept_said, SAID["no_name_check"]])
+        said = [*kept_said, SAID["no_name_check"]]
+        return await with_typing(request, state, draft_id, post, said, 500)
     press = SavePress(
         student,
         draft_id,
@@ -993,11 +1010,16 @@ async def save_press(
     except Exception as error:
         logger.warning("A screenshot save failed: %s", type(error).__name__)
         outcome = NotSaved("failed")
-    return await outcome_page(request, state, draft_id, outcome, answered)
+    return await outcome_page(request, state, draft_id, outcome, answered, post)
 
 
 async def outcome_page(
-    request: Request, state: ApplicationState, draft_id: str, outcome: SaveOutcome, answered: bool
+    request: Request,
+    state: ApplicationState,
+    draft_id: str,
+    outcome: SaveOutcome,
+    answered: bool,
+    post: ReviewPost,
 ) -> Response:
     """What a Save press answers with, by what committed: "nothing was saved" only when the
     homework transaction didn't commit, and a save that committed is reported as saved, with
@@ -1005,9 +1027,12 @@ async def outcome_page(
     if isinstance(outcome, NotSaved):
         if outcome.reason in ("absent", "closed", "expired"):
             return said_page(request, marks_of(state), SAID[outcome.reason], 409)
-        return to_review(state, draft_id, not_saved(outcome, answered))
+        status = 503 if outcome.reason in ("busy", "failed") else 409
+        return await with_typing(
+            request, state, draft_id, post, not_saved(outcome, answered), status
+        )
     if isinstance(outcome, AlreadySaved):
-        return to_review(state, draft_id, [PRESS_SAID["already"]])
+        return await with_typing(request, state, draft_id, post, [PRESS_SAID["already"]], 200)
     if isinstance(outcome, Replayed):
         return await saved_page(request, state, draft_id, outcome.acceptance_id, [])
     said = [counted(outcome.counts[0], outcome.counts[1], outcome.counts[3])]

@@ -1985,6 +1985,13 @@ pre.example {
   }
 }
 
+/* The screenshot review's screenshots, a list without markers, as the app's other lists. */
+.screenshot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 /* The screenshot review's fieldsets and panels give way as the grade review's do: on a phone
    with text at 200%, a fieldset takes the page's width, and a panel's side padding goes to
    13vw - 1rem where that is narrower, the panel reaching into the page's side margin, before
