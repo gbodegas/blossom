@@ -7,6 +7,7 @@ Every route serves a parent alone, checked before any body is read, and every an
 no-store. Nothing on Family review offers the upload yet.
 """
 
+import dataclasses
 import io
 import pathlib
 import re
@@ -24,7 +25,7 @@ from blossom import screenshot_reading
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
 from blossom.routes import imports
-from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, Settings
+from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
 from blossom.stores.import_drafts import DRAFT_LIFETIME, FAILURES, new_creation_token
 from blossom.uploads import as_new_image, prepare_image
 from tests.support import (
@@ -64,14 +65,21 @@ def gif() -> bytes:
 RED, BLUE, GREEN = png(color=(200, 40, 40)), png(color=(40, 40, 200)), png(color=(40, 200, 40))
 
 
-def open_settings(tmp_path: pathlib.Path, *, key: bool = True) -> Settings:
+def open_settings(tmp_path: pathlib.Path, *, key: bool = True, turned_on: bool = True) -> Settings:
+    """Sign-in off, files under ``tmp_path``, and screenshot import on unless told otherwise."""
     return fixture_settings(
         BLOSSOM_TODAY=PLAN_DATE.isoformat(),
         BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
         BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
         BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+        **({SCREENSHOT_IMPORT_VARIABLE: "1"} if turned_on else {}),
         **(KEY if key else {}),
     )
+
+
+def signed_in_with_import(tmp_path: pathlib.Path) -> Settings:
+    """The household's sign-in on, and screenshot import on."""
+    return dataclasses.replace(signed_in_household(tmp_path), screenshot_import=True)
 
 
 @contextmanager
@@ -678,7 +686,7 @@ def test_with_the_sign_in_off_another_computer_is_refused_before_any_body(
 def test_with_the_sign_in_on_her_and_no_one_are_refused_and_a_parent_is_served(
     tmp_path: pathlib.Path,
 ) -> None:
-    settings = signed_in_household(tmp_path)
+    settings = signed_in_with_import(tmp_path)
     with TestClient(
         create_app(settings), follow_redirects=False, headers={"Origin": "http://testserver"}
     ) as parent:
@@ -756,3 +764,62 @@ def test_an_expired_review_says_so_and_takes_nothing(tmp_path: pathlib.Path) -> 
     assert page.status_code == 410
     assert says(page.text, imports.SAID["expired"])
     assert refused.status_code == 410
+
+
+# ------------------------------------------------------------------ screenshot import turned off
+
+UNREAD_BODY = b"--unread body" * 600_000
+"""Far over an upload's limits: read, it would be refused as too large rather than missing."""
+
+
+def test_turned_off_every_import_address_answers_as_a_missing_one_before_any_body(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Off by default, each import route answers exactly as an address that doesn't exist, with
+    an upload far over the limits unread, no review made, and nothing marking the address."""
+    settings = open_settings(tmp_path, turned_on=False)
+    assert settings.screenshot_import is False
+    with here(settings) as browser:
+        missing = browser.get("/parent/no-such-address")
+        answers = {
+            (method, path): browser.request(method, path, content=UNREAD_BODY)
+            for method, path in every_route("0" * 32, "1" * 32)
+        }
+        count = drafts(browser)
+
+    assert missing.status_code == 404
+    assert {key: answer.status_code for key, answer in answers.items()} == dict.fromkeys(
+        answers, 404
+    )
+    assert {answer.text for answer in answers.values()} == {missing.text}
+    assert all("cache-control" not in answer.headers for answer in answers.values())
+    assert count == 0
+
+
+def test_turned_off_a_signed_in_parent_finds_no_import_address(tmp_path: pathlib.Path) -> None:
+    with TestClient(
+        create_app(signed_in_household(tmp_path)),
+        follow_redirects=False,
+        headers={"Origin": "http://testserver"},
+    ) as parent:
+        signed_in(parent, THEIRS)
+        answers = [
+            parent.request(method, path, content=b"--unread body")
+            for method, path in every_route("0" * 32, "1" * 32)
+        ]
+        count = drafts(parent)
+
+    assert [answer.status_code for answer in answers] == [404] * len(answers)
+    assert count == 0
+
+
+def test_the_family_review_page_offers_no_screenshot_import_while_off(
+    tmp_path: pathlib.Path,
+) -> None:
+    """While off, the page names no import address and says nothing of screenshots."""
+    with here(open_settings(tmp_path, turned_on=False)) as browser:
+        page = browser.get("/parent")
+
+    assert page.status_code == 200
+    assert "/parent/imports" not in page.text
+    assert "screenshot" not in page.text.lower()

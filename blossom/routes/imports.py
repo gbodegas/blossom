@@ -24,6 +24,7 @@ from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from blossom.anthropic_client import model_configured
@@ -166,8 +167,11 @@ class ScreenshotsNotHere(Exception):
 
 
 def screenshots_here(request: Request) -> None:
-    """The import routes' dependency: with sign-in off, only this computer."""
+    """The import routes' dependency: with import off, no such address; with sign-in off, only
+    this computer. Both are decided before any body byte is read."""
     state = get_application_state(request)
+    if not state.settings.screenshot_import:
+        raise StarletteHTTPException(status_code=404)
     if not state.settings.household_sign_in and not from_this_computer(request):
         raise ScreenshotsNotHere
 

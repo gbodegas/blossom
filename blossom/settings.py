@@ -15,6 +15,10 @@ The two minute budgets are the household's numbers, not rules of the system:
 no evening length is right for every family, so both are read here with
 defaults rather than fixed in the planner.
 
+Homework screenshot import is off unless ``BLOSSOM_SCREENSHOT_IMPORT`` turns it on. While
+it is off, every screenshot import address answers as an address that doesn't exist, and no
+page offers it.
+
 There is no settings library. A few paths and two numbers do not justify a
 dependency, and ``.env`` files can be loaded with ``uv run --env-file .env``.
 """
@@ -49,6 +53,7 @@ EVENING_MINUTES_VARIABLE = "BLOSSOM_EVENING_MINUTES"
 TOO_MUCH_MINUTES_VARIABLE = "BLOSSOM_TOO_MUCH_MINUTES"
 SAMPLE_VARIABLE = "BLOSSOM_SAMPLE"
 TEST_COPY_VARIABLE = "BLOSSOM_TEST_COPY"
+SCREENSHOT_IMPORT_VARIABLE = "BLOSSOM_SCREENSHOT_IMPORT"
 # The names of the variables, not their values, so the lint rule does not apply.
 STUDENT_PASSPHRASE_VARIABLE = "BLOSSOM_STUDENT_PASSPHRASE"  # noqa: S105
 PARENT_PASSPHRASE_VARIABLE = "BLOSSOM_PARENT_PASSPHRASE"  # noqa: S105
@@ -192,6 +197,9 @@ class Settings:
     """From ``BLOSSOM_TEST_COPY``. True marks every page "Test copy": the state is a copy
     of the family's own data, made for a test pass. Set by a test-copy launch and nothing
     else, and refused beside ``sample``."""
+    screenshot_import: bool = False
+    """From ``BLOSSOM_SCREENSHOT_IMPORT``. True turns homework screenshot import on. Off, the
+    import addresses answer as missing ones and no page links to them."""
     student_passphrase: str | None = field(default=None, repr=False)
     """From ``BLOSSOM_STUDENT_PASSPHRASE``. With ``parent_passphrase`` it turns the
     household sign-in on: every page asks who is there before showing anything.
@@ -356,6 +364,7 @@ class Settings:
             too_much_minutes=minutes(TOO_MUCH_MINUTES_VARIABLE, DEFAULT_TOO_MUCH_MINUTES),
             sample=flag(SAMPLE_VARIABLE),
             test_copy=flag(TEST_COPY_VARIABLE),
+            screenshot_import=flag(SCREENSHOT_IMPORT_VARIABLE),
             student_passphrase=secret(STUDENT_PASSPHRASE_VARIABLE),
             parent_passphrase=secret(PARENT_PASSPHRASE_VARIABLE),
         )

@@ -459,6 +459,9 @@ there's no `.env` yet. Then check these lines in `.env`:
 - `BLOSSOM_TODAY` is blank, so the pages show the real date.
 - `BLOSSOM_SAMPLE` is blank, so sample mode is off.
 - `BLOSSOM_TEST_COPY` is blank or absent, so the pages don't say Test copy.
+- `BLOSSOM_SCREENSHOT_IMPORT` is blank or absent, so homework screenshot import
+  stays off: its addresses answer as missing ones and no page offers it. It
+  stays off until its save and recovery checks pass.
 - The three state paths name the household's own files, never
   `.local/sample/`. The defaults under `.local/` are fine in a folder that
   isn't synced.
