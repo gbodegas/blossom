@@ -51,6 +51,7 @@
           <fieldset class="choice">
             <legend>{{ piece.legend }}</legend>
             <p class="note">{{ piece.read }}</p>
+            {% for line in piece.said %}<p class="note">{{ line }}</p>{% endfor %}
             {% for choice in piece.choices %}
               <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
             {% endfor %}
@@ -67,12 +68,21 @@
             {% endfor %}
             {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
             {% if question.text %}
-              <label>Correction <input type="text" name="{{ question.text[0] }}" value="{{ question.text[1] }}" maxlength="200"></label>
-              {% if question.unsaved %}<p class="note">Not saved yet.</p>{% endif %}
+              <label>{{ question.text_label }} <input type="{{ question.text_type }}" name="{{ question.text[0] }}" value="{{ question.text[1] }}"{% if question.text_type == "text" %} maxlength="200"{% endif %}{% if question.refused %} aria-invalid="true"{% endif %}></label>
+              {% if question.refused %}<p class="note">{{ question.refused }}</p>{% endif %}
+              {% if question.mark %}<p class="note">{{ question.mark }}</p>{% endif %}
             {% endif %}
           </fieldset>
         {% endfor %}
       {% endfor %}
+    </section>
+  {% endif %}
+  {% if rows.saved %}
+    <section class="panel" aria-labelledby="saved-heading">
+      <h2 id="saved-heading">Saved</h2>
+      <ul>
+        {% for card in rows.saved %}<li>{{ card }}</li>{% endfor %}
+      </ul>
     </section>
   {% endif %}
   {% if rows.unread %}
@@ -109,7 +119,9 @@
         {% endfor %}
         {% for wait in unit.waits %}<p class="note">{{ wait }}</p>{% endfor %}
         {% if unit.tick %}
-          <label><input type="checkbox" name="unit" value="{{ unit.unit }}"{% if unit.ticked %} checked{% endif %}> <span>Save this group</span></label>
+          <div class="choice">
+            <label><input type="checkbox" name="unit" value="{{ unit.unit }}"{% if unit.ticked %} checked{% endif %}> <span>Save this group</span></label>
+          </div>
         {% endif %}
         <div class="actions"><button type="submit" class="secondary" form="{{ unit.leave }}">Leave this group unsaved</button></div>
       </article>

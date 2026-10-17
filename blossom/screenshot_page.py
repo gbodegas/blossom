@@ -31,12 +31,16 @@ from blossom.screenshot_review import (
     offers,
     reference,
     subject_for,
+    typed_day,
     unit_name,
     value_json,
     value_of,
 )
 from blossom.screenshot_save import (
+    CORRECTABLE,
+    DATE_FIELDS,
     ReviewState,
+    confirm_fields,
     confirm_subject,
     instruction_subject,
     unit_digests,
@@ -71,6 +75,10 @@ SAID: Final = {
     "task": "Task",
     "type": "Type",
     "type_helper": "Task: a form to sign, supplies to bring, or similar.",
+    "due_differs": "Its due line and its day heading name different dates. Which due date does "
+    "Blossom use?",
+    "correction": "Correction",
+    "nothing": "none",
 }
 """The fixed sentences and labels of the review's rows."""
 
@@ -81,6 +89,7 @@ OPEN_NAMES: Final = {
     "instructions": "which instructions apply",
     "confirm": "a field the reader wasn't sure of",
     "name": "the student name",
+    "due_read": "which due date Blossom uses",
 }
 """How the preview names each question still open."""
 
@@ -90,7 +99,7 @@ FIELD_NAMES: Final = {
     "title": "title",
     "instruction": "instructions",
     "footer": "due date",
-    "heading": "day heading",
+    "heading": "assigned date (day heading)",
 }
 """How an uncertain field is named in "The reader wasn't sure of the {field}."."""
 
@@ -148,6 +157,70 @@ def labels_for(rows: Sequence[SavedRow]) -> dict[str, str]:
             else f"{plain[row.assignment_id]}, {reference(row.assignment_id, twins)}"
         )
     return out
+
+
+def dates_said(piece: Piece, places: Mapping[str, int]) -> tuple[str, ...]:
+    """What each of a piece's cards said of its dates, as read: its due line and the day
+    heading above it, both kept whatever date Blossom uses."""
+
+    def quoted(text: str | None) -> str:
+        return SAID["nothing"] if not text else f"\u201c{text}\u201d"
+
+    return tuple(
+        f"Screenshot {places.get(one.place.sha256, 0)}, card {one.place.place + 1} said: "
+        f"due line {quoted(one.line)}; day heading {quoted(one.heading)}."
+        for one in piece.seen
+    )
+
+
+def due_option(piece: Piece, day: date) -> str:
+    """One answer to which due date Blossom uses, by what said it."""
+    lines = any(one.card == "due" and one.line_day == day for one in piece.seen)
+    return f"Due {day_text(day)}, as the {'due line' if lines else 'day heading'} says"
+
+
+def confirm_question(
+    piece: Piece,
+    field: str,
+    places: Mapping[str, int],
+    values: Mapping[tuple[str, str], str],
+    typed: Mapping[str, str],
+    unsaved: bool,
+) -> "Question":
+    """Confirm as read, and for a field a parent may correct, its box: a date for the due line
+    or the day heading, text otherwise. The due or assigned label is confirmed only. A typed
+    date Blossom can't read is said beneath its box, never dropped."""
+    subject = confirm_subject(piece.key, field)
+    named = FIELD_NAMES[field]
+    if field == "footer" or (field == "heading" and piece.due_card):
+        named = "due date"
+    legend = f"{piece_text(places, piece)}: The reader wasn't sure of the {named}."
+    options = (("as_read", SAID["confirm"], values.get(("confirm", subject)) == "as_read"),)
+    if field not in CORRECTABLE:
+        return Question(answer_field("confirm", subject), legend, options)
+    value = typed.get(field, "")
+    refused = None
+    label, kind = SAID["correction"], "text"
+    if field in DATE_FIELDS:
+        kind = "date"
+        label = "Due date" if named == "due date" else "Assigned date (day heading)"
+        day = typed_day(value) if value else None
+        if value and day is None:
+            refused = (
+                f"The date given was \u201c{value}\u201d, which is not a date Blossom can read."
+            )
+        value = "" if day is None else day.isoformat()
+    return Question(
+        answer_field("confirm", subject),
+        legend,
+        options,
+        text=(f"correct:{subject}", value),
+        unsaved=unsaved,
+        text_label=label,
+        text_type=kind,
+        refused=refused,
+        mark=SAID["not_saved_yet"] if unsaved else None,
+    )
 
 
 def piece_read(piece: Piece, course: str) -> str:
@@ -268,6 +341,8 @@ class PieceControl:
     read: str = ""
     """What was read for the card, as corrected: its title, due date, assigned date and words,
     in the form its entries take, so the two can be compared."""
+    said: tuple[str, ...] = ()
+    """What each of its cards said of its dates, as the screenshot showed them."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -282,6 +357,11 @@ class Question:
     helper: str | None = None
     unsaved: bool = False
     """Whether the correction in its box is typing this press sent that isn't saved."""
+    text_label: str = ""
+    text_type: str = "text"
+    refused: str | None = None
+    """A typed date Blossom can't read, said beneath its box rather than dropped."""
+    mark: str | None = None
     leave: str | None = None
     """The "Leave this group unsaved" form a split question's row may be set aside with."""
     text: tuple[str, str] | None = None
@@ -371,6 +451,8 @@ class RowsShown:
     saved."""
     unread: tuple["UnreadGroup", ...] = ()
     """The cards that couldn't be read as homework, by screenshot and reason."""
+    saved: tuple[str, ...] = ()
+    """The cards of this review already saved, each by its title and place."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -758,6 +840,7 @@ def rows_shown(
                 p.name in state.defaults and p.name not in state.stored,
                 p.name in state.validation.of(p.name).stale,
                 piece_read(p, pieces[0].course),
+                dates_said(p, places),
             )
             for p in pieces
         )
@@ -833,27 +916,29 @@ def rows_shown(
                     helper=SAID["type_helper"],
                 )
             )
+        for piece in pieces:
+            if piece.due_choices and not any(
+                typed_day(corrections.get(piece.key, {}).get(f) or "") for f in DATE_FIELDS
+            ):
+                got = values.get(("due_read", piece.name))
+                questions.append(
+                    Question(
+                        answer_field("due_read", piece.name),
+                        f"{piece_text(places, piece)}: {SAID['due_differs']}",
+                        tuple(
+                            (day.isoformat(), due_option(piece, day), got == day.isoformat())
+                            for day in piece.due_choices
+                        ),
+                    )
+                )
         confirming: dict[tuple[str, str], Piece] = {}
         for piece in pieces:
-            for field in sorted(piece.uncertain):
-                if field in FIELD_NAMES:
-                    confirming.setdefault((piece.key, field), piece)
+            for field in sorted(confirm_fields(piece)):
+                confirming.setdefault((piece.key, field), piece)
         for (key, field), piece in confirming.items():
-            subject = confirm_subject(key, field)
             questions.append(
-                Question(
-                    answer_field("confirm", subject),
-                    f"{piece_text(places, piece)}: The reader wasn't sure of the "
-                    f"{FIELD_NAMES[field]}.",
-                    (
-                        (
-                            "as_read",
-                            SAID["confirm"],
-                            values.get(("confirm", subject)) == "as_read",
-                        ),
-                    ),
-                    text=(f"correct:{subject}", corrections.get(key, {}).get(field, "")),
-                    unsaved=(key, field) in unsaved,
+                confirm_question(
+                    piece, field, places, values, corrections.get(key, {}), (key, field) in unsaved
                 )
             )
         for question in questions:
@@ -974,6 +1059,7 @@ def rows_shown(
         (*forms, *unread_forms),
         bool(names) and not state.saved,
         unread_groups,
+        tuple(piece_text(places, p) for p in state.pieces if p.name in state.saved),
     )
 
 
@@ -993,10 +1079,11 @@ def _still_open(
         values.get(("confirm", confirm_subject(m.key, f))) is None
         and not corrections.get(m.key, {}).get(f)
         for m in members
-        for f in m.uncertain
-        if f in FIELD_NAMES
+        for f in confirm_fields(m)
     ):
         still.append("confirm")
+    if any(not m.due_resolved for m in members):
+        still.append("due_read")
     if any(c.sha256 in waiting for m in members for c in m.cards):
         still.append("name")
     return still

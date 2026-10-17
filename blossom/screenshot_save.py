@@ -289,6 +289,22 @@ UNCONFIRMED: Final = ("first_use", "not_confirmed", "confirm_again")
 """The statuses of a student line whose name question asks "Yes, this is her name"."""
 
 
+CORRECTABLE: Final = CONFIRMABLE - {"badge"}
+"""The fields a parent may type a correction for: class and title, dates, and an instruction.
+The due or assigned label is confirmed as read, never typed."""
+DATE_FIELDS: Final = frozenset({"footer", "heading"})
+"""The fields whose correction is a date."""
+
+
+def confirm_fields(piece: Piece) -> frozenset[str]:
+    """The fields of a piece the parent confirms or corrects. On a due card the due line and
+    the day heading both name its due date, so one due-date field stands for both."""
+    fields = {f for f in piece.uncertain if f in CONFIRMABLE}
+    if piece.due_card and "heading" in fields:
+        fields = (fields - {"heading"}) | {"footer"}
+    return frozenset(fields)
+
+
 def confirm_subject(key: str, field: str) -> str:
     """A confirmation's subject: the row key and the field."""
     return json.dumps([key, field], separators=(",", ":"))
@@ -371,7 +387,10 @@ def review_state(
     split = {
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
     }
-    pieces, asking, _ = pieces_from(tables.readings, split, tables.discards, now, corrections)
+    due_read = {subject: value for (kind, subject), value in values.items() if kind == "due_read"}
+    pieces, asking, _ = pieces_from(
+        tables.readings, split, tables.discards, now, corrections, due_read
+    )
     by_name = {p.name: p for p in pieces}
     saved = {name: target for name, target in tables.saved.items() if name in by_name}
     rows = saved_rows(record)
@@ -681,9 +700,8 @@ def _unconfirmed(
         ("confirm", confirm_subject(piece.key, field)) not in answers
         and not corrections.get(piece.key, {}).get(field)
         for piece in (state.by_name[name] for name in unit)
-        for field in piece.uncertain
-        if field in CONFIRMABLE
-    )
+        for field in confirm_fields(piece)
+    ) or any(not state.by_name[name].due_resolved for name in unit)
 
 
 def _identity(

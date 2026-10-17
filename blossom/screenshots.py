@@ -583,6 +583,30 @@ def _in_round(
     return dataclasses.replace(reading, occurrence=occurrence)
 
 
+class PlacedCard(NamedTuple):
+    """A card as the assembly places it: where it was read, the card as read, and the day
+    heading the assembly reads it under, if any."""
+
+    place: CardPlace
+    card: Card | None
+    heading: Heading | None
+
+
+def cards_placed(readings: Sequence[StoredReading]) -> dict[CardPlace, PlacedCard]:
+    """Every card of a draft's readings at its place, decoded and placed under its day heading
+    exactly as ``homework_assembly`` places it, so a page can show what a row was read from.
+    A reading that can't be decoded, or isn't a homework list, places no card."""
+    out: dict[CardPlace, PlacedCard] = {}
+    for stored in readings:
+        reading = _decoded(stored)
+        if reading is None or reading.wrong_kind:
+            continue
+        for item in _placed(stored.sha256, _digest(stored, reading), reading):
+            place = CardPlace(item.sha256, item.place)
+            out[place] = PlacedCard(place, item.card, item.heading)
+    return out
+
+
 def _decoded(stored: StoredReading) -> HomeworkReading | None:
     """A stored reading as its model, or ``None`` when it can't be decoded as this schema's."""
     if (stored.prompt_version, stored.schema_version) != (PROMPT_VERSION, SCHEMA_VERSION):

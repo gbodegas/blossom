@@ -19,13 +19,19 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 import blossom.intake as intake
 from blossom.intake import Reading
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen
-from blossom.screenshots import KEY_INSTANT, CardPlace, ScreenshotRow, homework_assembly
+from blossom.screenshots import (
+    KEY_INSTANT,
+    CardPlace,
+    ScreenshotRow,
+    cards_placed,
+    homework_assembly,
+)
 from blossom.stores.import_drafts import Carry, StoredReading
 
 WINDOW_DAYS: Final = 7
@@ -81,11 +87,76 @@ class Piece:
     reading: Reading | None = dataclasses.field(default=None, compare=False, repr=False)
     cards: tuple[CardPlace, ...] = dataclasses.field(default=(), compare=False)
     uncertain: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
+    seen: tuple["DatesSeen", ...] = dataclasses.field(default=(), compare=False)
+    """What each of its cards said of its dates: the due line and the day heading as read."""
+    due_resolved: bool = dataclasses.field(default=True, compare=False)
+    """False while its due card's due line and day heading name different dates and nothing
+    the parent gave settles which one Blossom uses."""
+
+    @property
+    def due_card(self) -> bool:
+        """Whether it was read from due cards alone, so a day heading above it names its due
+        date rather than the day it was assigned."""
+        if self.seen:
+            return all(one.card == "due" for one in self.seen)
+        return self.assigned is None
+
+    @property
+    def due_choices(self) -> tuple[date, ...]:
+        """The dates its due cards' due lines and day headings name, when they disagree."""
+        days = {
+            day
+            for one in self.seen
+            if one.card == "due"
+            and one.line_day
+            and one.heading_day
+            and one.line_day != one.heading_day
+            for day in (one.line_day, one.heading_day)
+        }
+        return tuple(sorted(days))
 
     @property
     def pair(self) -> tuple[str, str]:
         """The class and title, folded as the record matches names."""
         return intake.pair(self.course, self.title)
+
+
+class DatesSeen(NamedTuple):
+    """One card's dates as the screenshot showed them: which kind of card it is, its due line
+    and its day heading as read, and the dates each names, if any."""
+
+    place: CardPlace
+    card: str
+    """``due`` or ``assigned``."""
+    line: str | None
+    line_day: date | None
+    heading: str | None
+    heading_day: date | None
+
+
+def dates_seen(
+    readings: Sequence[StoredReading], cards: Sequence[CardPlace]
+) -> tuple[DatesSeen, ...]:
+    """What each card said of its dates, from the stored readings: its due line, and the day
+    heading the assembly read it under. Both are kept whatever date the row uses."""
+    placed = cards_placed(readings)
+    out = []
+    for place in cards:
+        found = placed.get(place)
+        if found is None or found.card is None:
+            continue
+        card, heading = found.card, found.heading
+        out.append(
+            DatesSeen(
+                place,
+                "assigned" if card.badge == "ASSIGNED" else "due",
+                card.footer,
+                card.due,
+                None if heading is None else heading.text,
+                None if heading is None else heading.day,
+            )
+        )
+    return tuple(out)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1033,6 +1104,7 @@ def pieces_from(
     aside: frozenset[str],
     now: datetime,
     corrections: Mapping[str, Mapping[str, str]] | None = None,
+    due_read: Mapping[str, str] | None = None,
 ) -> tuple[list[Piece], list[ScreenshotRow], list[ScreenshotRow]]:
     """The review's pieces, the rows still asking the split question, and every row. A row
     answered "These are different assignments" gives one piece per assigned day and one for its
@@ -1081,7 +1153,43 @@ def pieces_from(
             chosen = date.fromisoformat(answer[1])
             reading = dataclasses.replace(row.reading, assigned_on=chosen)
             out.append(made(row.key, row.key, reading, row.sources, False, row.marks))
-    return sorted(out, key=lambda p: p.name), asking, rows
+    settled = [_settled(piece, readings, corrections, due_read or {}) for piece in out]
+    return sorted(settled, key=lambda p: p.name), asking, rows
+
+
+def _settled(
+    piece: Piece,
+    readings: Sequence[StoredReading],
+    corrections: Mapping[str, Mapping[str, str]],
+    due_read: Mapping[str, str],
+) -> Piece:
+    """A piece with what its cards said of their dates. Where a due card's due line and day
+    heading name different dates, the parent's answer of which one Blossom uses sets the due
+    date, as a typed due date does; until one of them is given the piece isn't settled. The
+    row's key is never touched."""
+    seen = dates_seen(readings, piece.cards)
+    with_seen = dataclasses.replace(piece, seen=seen)
+    choices = with_seen.due_choices
+    if not choices:
+        return with_seen
+    typed = corrections.get(piece.key, {})
+    if any(typed_day(typed.get(field) or "") for field in ("footer", "heading")):
+        return with_seen
+    chosen = next((d for d in choices if d.isoformat() == due_read.get(piece.name)), None)
+    if chosen is None or piece.reading is None:
+        return dataclasses.replace(with_seen, due_resolved=False)
+    before = None if piece.due is None else piece.due.isoformat()
+    reading = dataclasses.replace(
+        piece.reading,
+        due_date=chosen,
+        claims=tuple(
+            c.model_copy(update={"asserted_value": chosen.isoformat()})
+            if c.asserted_value == before
+            else c
+            for c in piece.reading.claims
+        ),
+    )
+    return dataclasses.replace(with_seen, due=chosen, reading=reading)
 
 
 def piece_names(
@@ -1122,7 +1230,7 @@ def answer_names(kind: str, subject: str) -> list[str]:
     """The piece names an answer is about; a split answer's row key for a split answer."""
     if kind == "kind" and subject.startswith("["):
         return list(json.loads(subject)[1])
-    if kind in ("destination", "split", "kind"):
+    if kind in ("destination", "split", "kind", "due_read"):
         return [subject]
     if kind in ("due", "assigned", "instructions"):
         return list(json.loads(subject)[1])

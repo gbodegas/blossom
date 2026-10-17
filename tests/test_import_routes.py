@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 from PIL import Image
 
-from blossom import screenshot_page, screenshot_reading
+from blossom import screenshot_page, screenshot_posts, screenshot_reading
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
 from blossom.routes import imports
@@ -1014,7 +1014,7 @@ def page_post(
         kind = re.search(r'type="([^"]+)"', tag).group(1)  # type: ignore[union-attr]
         if kind == "hidden":
             fields.append((name, value))
-        elif kind == "text":
+        elif kind in ("text", "date"):
             fields.append((name, typed.get(name, value)))
         elif name != "unit" and name not in choose and " checked" in tag:
             fields.append((name, value))
@@ -2228,6 +2228,160 @@ def test_each_card_s_own_line_shows_its_instructions_whole(
     assert line in html.unescape(review_form(page))
 
 
+# ------------------------------------------------------------------ dates as the screenshot said
+
+
+def disagreeing_due_card(**fields: object) -> dict[str, object]:
+    """A due card whose own due line says Thursday under a day heading that says Monday."""
+    return homework_answer(cards=[homework_card(badge="DUE", footer="Due (10/8/2026)", **fields)])
+
+
+def test_a_due_card_whose_line_and_heading_disagree_shows_both_and_waits_for_a_choice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, disagreeing_due_card()))
+        page = her_name_answered(browser, draft_id, page)
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        units = digests_on(page)
+        before = assignment_count(browser)
+        refused = send(browser, draft_id, page_post(page, "save", tick=units))
+        made = assignment_count(browser)
+        keep(browser, draft_id, ("due_read", piece, "2026-10-08"))
+        settled = browser.get(f"/parent/imports/{draft_id}").text
+        [after] = fields_named(review_form(settled), "answer:destination:")
+
+    form = html.unescape(review_form(page))
+    assert (
+        "Screenshot 1, card 1 said: due line “Due (10/8/2026)”; day heading “Monday 10/5/2026”."
+        in form
+    )
+    assert (
+        "Its due line and its day heading name different dates. Which due date does Blossom use?"
+        in form
+    )
+    assert "Due Thu 10/8, as the due line says" in form
+    assert "Due Mon 10/5, as the day heading says" in form
+    assert not [n for n, _ in checked_values(review_form(page)) if n.startswith("answer:due_read:")]
+    assert units_on(page) == []
+    assert "which due date Blossom uses" in form
+    assert says(refused.text, REFUSED_OPEN)
+    assert made == before
+    assert after == piece
+    assert "This card: Sentence Composing, due Thu 10/8" in html.unescape(review_form(settled))
+    assert units_on(settled)
+
+
+def test_the_heading_shown_for_a_card_is_the_one_its_row_was_dated_by(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two day headings read at the same height above a due card: the page names the one the
+    assembly placed it under, the one its due date came from."""
+    answer = homework_answer(
+        headings=[
+            {"text": "Monday 10/5/2026", "y": 150, "uncertain": None},
+            {"text": "Tuesday 10/6/2026", "y": 150, "uncertain": None},
+        ],
+        cards=[homework_card(badge="DUE", footer=None)],
+    )
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    form = html.unescape(review_form(page))
+    assert "This card: Sentence Composing, due Tue 10/6" in form
+    assert "said: due line none; day heading \u201cTuesday 10/6/2026\u201d." in form
+
+
+def test_a_due_card_has_one_due_date_box_and_an_assigned_card_its_two_labeled(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unsure_dates = [
+        {"field": "footer", "reason": "blurred"},
+    ]
+    due_card = homework_answer(
+        headings=[{"text": "Monday 10/5/2026", "y": 150, "uncertain": "faint"}],
+        cards=[homework_card(badge="DUE", footer="Due (10/5/2026)", uncertain=unsure_dates)],
+    )
+    assigned_card = homework_answer(
+        headings=[{"text": "Monday 10/5/2026", "y": 150, "uncertain": "faint"}],
+        cards=[homework_card(uncertain=unsure_dates)],
+    )
+    with here(open_settings(tmp_path)) as browser:
+        _, due_page = read_review(browser, monkeypatch, (RED, due_card))
+        _, assigned_page = read_review(browser, monkeypatch, (BLUE, assigned_card))
+
+    due_form = html.unescape(review_form(due_page))
+    assert due_form.count('type="date"') == 1
+    assert "The reader wasn't sure of the due date." in due_form
+    assert '>Due date <input type="date"' in due_form
+    assigned_form = html.unescape(review_form(assigned_page))
+    assert assigned_form.count('type="date"') == 2
+    assert '>Due date <input type="date"' in assigned_form
+    assert '>Assigned date (day heading) <input type="date"' in assigned_form
+
+
+def test_the_due_or_assigned_label_is_confirmed_never_typed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(
+        cards=[homework_card(uncertain=[{"field": "badge", "reason": "faint"}])]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        [subject] = fields_named(review_form(page), "answer:confirm:")
+        forged = [*page_post(page, "keep"), (f"correct:{subject}", "DUE")]
+        refused = followed(browser, send(browser, draft_id, forged))
+
+    form = review_form(page)
+    assert 'name="correct:' not in form
+    assert screenshot_page.SAID["confirm"] in form
+    assert says(refused, imports.PRESS_SAID["keep_invalid"])
+    key = json.loads(subject)[0]
+    badge = {"v": 3, "corrected": {key: {"badge": "DUE"}}, "selected": []}
+    assert screenshot_posts.progress_read(json.dumps(badge)) is None
+
+
+def test_a_typed_date_blossom_can_t_read_is_said_and_not_used(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(
+        cards=[homework_card(uncertain=[{"field": "footer", "reason": "blurred"}])]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        [field] = fields_named(review_form(page), "correct:")
+        kept = send(browser, draft_id, page_post(page, "keep", typed={f"correct:{field}": "10/14"}))
+
+    shown = html.unescape(kept.text)
+    assert "The date given was “10/14”, which is not a date Blossom can read." in shown
+    assert "This card: Sentence Composing, due Thu 10/8" in shown
+
+
+def test_a_partial_save_lists_the_saved_cards_as_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first, _ = units_on(page)
+        saved = send(browser, draft_id, page_post(page, "save", tick=[first]))
+
+    shown = html.unescape(saved.text)
+    assert '<h2 id="saved-heading">Saved</h2>' in shown
+    assert re.search(r"<li>Sentence Composing \(screenshot 1, card 1\)</li>", shown)
+
+
+def test_each_group_s_tick_sits_inline_with_its_label(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+
+    ticks = re.findall(r'<div class="choice">\s*<label><input type="checkbox" name="unit"', page)
+    assert len(ticks) == 2
+
+
 IMPORT_REVIEW_RULES = (
     ".import-review .choice {\n  min-width: 0;\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"
@@ -2240,7 +2394,9 @@ IMPORT_REVIEW_RULES = (
     '.import-review input[type="file"] {\n  max-width: 100%;\n}\n\n'
     "@media (max-width: 30rem) {\n"
     "  .import-review .panel,\n  .import-review .panel article {\n"
-    "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
+    "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n\n"
+    '  .import-review input[type="date"] {\n'
+    "    padding-inline: clamp(2vw, 100000vw - 14650rem - 14500px, 0.85rem);\n  }\n}\n"
 )
 """The screenshot review's rules, pinned whole: on a narrow screen with large text its
 fieldsets take the page's width, a panel's side padding gives way and the panel reaches into
@@ -2257,7 +2413,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 7
+    assert css.count("import-review") == 8
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert carriers == ["import_review.html", "parent_review.html"]
 

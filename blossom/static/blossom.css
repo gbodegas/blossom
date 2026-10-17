@@ -1997,8 +1997,9 @@ pre.example {
    13vw - 1rem where that is narrower, the panel reaching into the page's side margin, before
    any word breaks. A card inside a panel gives way the same way without reaching any further,
    so it never passes the screen's edge. An entry's reference, or an id shown whole, breaks
-   only where its line can't hold it, and a file input is never wider than its panel. Every
-   screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
+   only where its line can't hold it, and a file input is never wider than its panel. A date
+   field's side padding goes to 2% of the screen's width there, as the plan panel's does.
+   Every screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
 .import-review .choice {
   min-width: 0;
   padding-inline: clamp(0px, 13vw - 1rem, 1rem);
@@ -2025,6 +2026,10 @@ pre.example {
   .import-review .panel,
   .import-review .panel article {
     padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
+
+  .import-review input[type="date"] {
+    padding-inline: clamp(2vw, 100000vw - 14650rem - 14500px, 0.85rem);
   }
 }
 

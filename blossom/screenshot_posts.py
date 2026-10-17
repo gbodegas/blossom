@@ -16,12 +16,22 @@ from typing import Final, NamedTuple
 
 from blossom.screenshot_page import page_check
 from blossom.screenshot_review import answer_names, dest_kind, value_json, value_of
-from blossom.screenshot_save import CONFIRMABLE, ReviewState, correction_digest
+from blossom.screenshot_save import CORRECTABLE, ReviewState, correction_digest
 from blossom.stores.import_drafts import AnswerToKeep
 
 PRESSES: Final = frozenset({"keep", "save", "later"})
 ANSWER_KINDS: Final = frozenset(
-    {"destination", "split", "due", "assigned", "kind", "instructions", "name", "confirm"}
+    {
+        "destination",
+        "split",
+        "due",
+        "assigned",
+        "kind",
+        "instructions",
+        "name",
+        "confirm",
+        "due_read",
+    }
 )
 SIGNED: Final = ("version", "progress_revision", "acceptance", "asked", "defaults", "identity")
 """The review form's signed fields, besides each group's ``digest:{unit}``, in its order."""
@@ -188,7 +198,7 @@ def read_review(
                 key, field = (str(part) for part in json.loads(subject))
             except (ValueError, TypeError) as error:
                 raise PostRefused from error
-            if field not in CONFIRMABLE:
+            if field not in CORRECTABLE:
                 raise PostRefused
             if value.strip():
                 corrections.setdefault(key, {})[field] = value.strip()
@@ -273,7 +283,7 @@ def progress_read(text: str | None) -> SavedProgress | None:
         if not isinstance(fields, dict):
             return None
         for field, value in fields.items():
-            if field not in CONFIRMABLE or not isinstance(value, str):
+            if field not in CORRECTABLE or not isinstance(value, str):
                 return None
             if not value.strip() or len(value) > MOST_CORRECTION:
                 return None
