@@ -25,7 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
-from blossom import dependencies
+from blossom import dependencies, screenshot_review
 from blossom.app import create_app
 from blossom.clock import Clock, FrozenClock
 from blossom.dependencies import (
@@ -415,6 +415,18 @@ def test_the_import_drafts_store_opens_with_the_state_and_closes_with_it(
 
     with pytest.raises(sqlite3.ProgrammingError):
         state.import_drafts.snapshot(student, "0" * 32)
+
+
+def test_the_screenshot_reviews_rules_are_wired_into_the_import_drafts_store(
+    tmp_path: pathlib.Path,
+) -> None:
+    app = create_app(fixture_settings(**file_settings(tmp_path)))
+
+    with TestClient(app, headers=SAME_ORIGIN) as client:
+        client.get("/student/due-this-week")
+        store = getattr(app.state, STATE_ATTRIBUTE).import_drafts
+        assert store._carries == {"homework_screenshot": screenshot_review.carry}
+        assert store._pieces == {"homework_screenshot": screenshot_review.piece_names}
 
 
 def test_a_start_clears_every_attempt_and_sweeps_expired_drafts(tmp_path: pathlib.Path) -> None:

@@ -39,6 +39,7 @@ from blossom.grades.identity import name_form_key
 from blossom.household import SignInAttempts, keys_for, secret_beside
 from blossom.routes.forms import quiet_the_parser
 from blossom.sample_notes import plant_notes
+from blossom.screenshot_review import carry, piece_names
 from blossom.screenshots import homework_rows
 from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource, read_whole
@@ -215,12 +216,15 @@ def build_application_state(
         # Screenshot import drafts share the file and read its acceptance records, so they
         # open after the record. Expiry runs on the real clock and a Read attempt's deadline
         # on ``monotonic``: an attempt left by a stopped process can't be current, so every
-        # attempt is cleared before anything is served, then the sweep runs.
+        # attempt is cleared before anything is served, then the sweep runs. The review's
+        # rules say what a change of readings clears and which pieces make up a split row.
         import_drafts = ImportDraftsStore.open(
             settings.database_path,
             real,
             monotonic,
             rows={"homework_screenshot": homework_rows},
+            carries={"homework_screenshot": carry},
+            pieces={"homework_screenshot": piece_names},
         )
         opened.append(import_drafts)
         import_drafts.clear_attempts()
