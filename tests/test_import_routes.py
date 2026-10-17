@@ -2418,8 +2418,11 @@ def test_an_unticked_these_are_her_homework_is_withdrawn(
 # ------------------------------------------------------------------ counts, names and her note
 
 
-def acceptance_counts(browser: TestClient, page: str) -> tuple[int, int, int, int] | None:
-    return state_of(browser).project_state.homework_counts(acceptance_of(page))
+def acceptance_counts(
+    browser: TestClient, draft_id: str, page: str
+) -> tuple[int, int, int, int] | None:
+    record = state_of(browser).project_state
+    return record.homework_counts(record.student_id(), draft_id, acceptance_of(page))
 
 
 def test_two_cards_in_one_assignment_count_once_added_and_once_already_saved(
@@ -2453,7 +2456,7 @@ def test_two_cards_in_one_assignment_count_once_added_and_once_already_saved(
             browser, send(browser, first, page_post(kept, "save", tick=units_on(kept)))
         )
         made = assignment_count(browser) - before
-        added_counts = acceptance_counts(browser, kept)
+        added_counts = acceptance_counts(browser, first, kept)
         [row] = [
             a
             for a in state_of(browser).project_state.all_assignments()
@@ -2471,7 +2474,7 @@ def test_two_cards_in_one_assignment_count_once_added_and_once_already_saved(
             ),
         )
         send(browser, again, page_post(kept, "save", tick=units_on(kept)))
-        unchanged_counts = acceptance_counts(browser, kept)
+        unchanged_counts = acceptance_counts(browser, again, kept)
 
     assert len(pieces) == 2
     assert made == 1
@@ -2529,7 +2532,7 @@ def test_two_cards_of_other_names_found_onto_one_row_count_once_and_each_name_is
         saved = followed(
             browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
         )
-        counts = acceptance_counts(browser, page)
+        counts = acceptance_counts(browser, draft_id, page)
         decided = state_of(browser).project_state.intake_decisions(
             [("English 8", "Vocab Test"), ("English 8", "Spelling List")]
         )
@@ -2656,7 +2659,7 @@ def test_homework_made_from_her_note_saves_in_one_press_when_chosen_as_the_desti
         saved = followed(
             browser, send(browser, draft_id, page_post(kept, "save", tick=units_on(kept)))
         )
-        pairs = record.homework_acceptance(acceptance_of(kept))
+        pairs = record.homework_acceptance(record.student_id(), draft_id, acceptance_of(kept))
         decided = record.intake_decisions([("English 8", "Sentence Composing")])
 
     assert value in html.unescape(review_form(page))
@@ -3730,3 +3733,138 @@ def test_the_family_review_page_offers_no_screenshot_import_while_off(
     assert page.status_code == 200
     assert "/parent/imports" not in page.text
     assert "screenshot" not in page.text.lower()
+
+
+# ------------------------------------------------------------------ usable corrections
+
+
+@pytest.mark.parametrize("typed", ["10/14", "2026-02-30", "nonsense"])
+def test_an_unreadable_typed_date_leaves_the_field_open_and_a_save_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, typed: str
+) -> None:
+    unsure = [{"field": "footer", "reason": "blurred"}]
+    answer = homework_answer(cards=[homework_card(uncertain=unsure)])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        [subject] = fields_named(review_form(page), "answer:confirm:")
+        box = {f"correct:{subject}": typed}
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep", typed=box)))
+        [unit] = digests_on(kept)
+        before = assignment_count(browser)
+        forced = followed(
+            browser, send(browser, draft_id, page_post(kept, "save", tick=[unit], typed=box))
+        )
+        unwritten = assignment_count(browser)
+        assert units_on(kept) == []
+        assert says(kept, screenshot_page.OPEN_NAMES["confirm"])
+        assert unwritten == before
+        confirm = {f"answer:confirm:{subject}": "as_read"}
+        followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(forced, "save", tick=[unit], typed=box, choose=confirm),
+            ),
+        )
+        due = saved_due(browser, "Sentence Composing")
+
+    assert units_on(forced) == []
+    assert says(forced, screenshot_page.OPEN_NAMES["confirm"])
+    assert due == date(2026, 10, 8)
+
+
+# ------------------------------------------------------------------ what still needs checking
+
+
+def acceptance_row(browser: TestClient, acceptance: str) -> tuple[object, ...]:
+    found = (
+        state_of(browser)
+        .project_state._connection.execute(
+            "SELECT left_to_check, complete FROM grade_acceptances WHERE acceptance_id = ?",
+            (acceptance,),
+        )
+        .fetchone()
+    )
+    return tuple(found or ())
+
+
+def open_rows(browser: TestClient, draft_id: str) -> list[str]:
+    student = state_of(browser).project_state.student_id()
+    snapshot = state_of(browser).import_drafts.snapshot(student, draft_id)
+    return [row.key for row in snapshot.rows if row.state == "open"]
+
+
+def left_shapes() -> dict[str, tuple[tuple[bytes, object], ...]]:
+    monday, tuesday = split_answers()
+    lab = homework_answer(
+        cards=[homework_card(course="Science 8", title="Lab Report", footer="Due (10/9/2026)")]
+    )
+    return {
+        "a split question open": ((RED, monday), (BLUE, tuesday), (GREEN, lab)),
+        "two cards it couldn't read": ((RED, unreadable_answer()),),
+        "nothing left": ((RED, homework_answer(cards=[homework_card()])),),
+    }
+
+
+@pytest.mark.parametrize(
+    ("shape", "said", "left"),
+    [
+        ("a split question open", "1 assignment added. 0 updated. 1 still needs checking.", 1),
+        ("two cards it couldn't read", "1 assignment added. 0 updated. 2 still need checking.", 2),
+        ("nothing left", "1 assignment added. 0 updated. 0 still need checking.", 0),
+    ],
+)
+def test_still_needs_checking_counts_every_open_piece_split_question_and_unreadable_card(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, shape: str, said: str, left: int
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, *left_shapes()[shape])
+        page = her_name_answered(browser, draft_id, page)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        )
+        recorded = acceptance_row(browser, acceptance_of(page))
+        still = open_rows(browser, draft_id)
+
+    assert says(saved, said)
+    assert recorded == (left, int(left == 0))
+    assert (left == 0) == (not still)
+
+
+# ------------------------------------------------------------------ a recorded acceptance
+
+
+def test_a_recorded_acceptance_answers_only_for_its_own_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outcome = "1 assignment added. 0 updated. 0 still need checking."
+    with here(open_settings(tmp_path)) as browser:
+        mine, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        page = her_name_answered(browser, mine, page)
+        acceptance = acceptance_of(page)
+        saved = followed(browser, send(browser, mine, page_post(page, "save", tick=units_on(page))))
+        lab = homework_answer(cards=[homework_card(course="Science 8", title="Lab Report")])
+        closed, other = read_review(browser, monkeypatch, (GREEN, lab))
+        press_outside(browser, other, "discard")
+        opened, _ = read_review(browser, monkeypatch, (BLUE, lab))
+        before = assignment_count(browser)
+        resent = [("acceptance", acceptance), ("press", "save")]
+        absent = send(browser, "f" * 32, resent)
+        to_closed = send(browser, closed, resent)
+        to_open = followed(browser, send(browser, opened, resent))
+        again = followed(browser, send(browser, mine, resent))
+        after = assignment_count(browser)
+
+    assert says(saved, outcome)
+    assert absent.status_code == 404
+    assert not says(absent.text, outcome)
+    assert says(to_closed.text, imports.SAID["closed"])
+    assert not says(to_closed.text, outcome)
+    assert not says(to_open, outcome)
+    assert says(to_open, imports.PRESS_SAID["save_invalid"])
+    assert says(again, outcome)
+    assert after == before

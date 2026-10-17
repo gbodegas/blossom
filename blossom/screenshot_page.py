@@ -17,6 +17,7 @@ from datetime import date
 from typing import Final
 
 from blossom.screenshot_review import (
+    DATE_FIELDS,
     ChangeTold,
     DateQuestion,
     Destination,
@@ -34,12 +35,12 @@ from blossom.screenshot_review import (
     subject_for,
     typed_day,
     unit_name,
+    usable_correction,
     value_json,
     value_of,
 )
 from blossom.screenshot_save import (
     CORRECTABLE,
-    DATE_FIELDS,
     ReviewState,
     confirm_fields,
     confirm_subject,
@@ -1025,7 +1026,7 @@ def rows_shown(
             )
         for piece in pieces:
             if piece.due_choices and not any(
-                typed_day(corrections.get(piece.key, {}).get(f) or "") for f in DATE_FIELDS
+                usable_correction(f, corrections.get(piece.key, {}).get(f)) for f in DATE_FIELDS
             ):
                 got = values.get(("due_read", piece.name))
                 questions.append(
@@ -1174,7 +1175,7 @@ def _still_open(
         still.append("instructions")
     if any(
         values.get(("confirm", confirm_subject(m.key, f))) is None
-        and not corrections.get(m.key, {}).get(f)
+        and not usable_correction(f, corrections.get(m.key, {}).get(f))
         for m in members
         for f in confirm_fields(m)
     ):

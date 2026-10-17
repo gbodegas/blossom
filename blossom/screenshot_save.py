@@ -19,7 +19,7 @@ import dataclasses
 import hashlib
 import json
 import sqlite3
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any, Final, cast
 
@@ -39,6 +39,7 @@ from blossom.intake import (
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionChoice
 from blossom.screenshot_review import (
+    DATE_FIELDS,
     KINDS,
     Destination,
     EarlierPick,
@@ -56,13 +57,22 @@ from blossom.screenshot_review import (
     slot_id,
     slot_occurrence,
     subject_for,
+    typed_day,
     unit_name,
+    usable_correction,
     validate,
     value_json,
     value_of,
     written_dates,
 )
-from blossom.screenshots import HomeworkReading, ScreenshotRow
+from blossom.screenshots import (
+    CardPlace,
+    HomeworkReading,
+    PlacedCard,
+    ScreenshotRow,
+    cards_placed,
+    homework_rows,
+)
 from blossom.stores.gradebook import (
     AnswerNotAsked,
     ConfirmedBy,
@@ -70,7 +80,7 @@ from blossom.stores.gradebook import (
     NameFormNotSaved,
 )
 from blossom.stores.homework_saves import DraftForSave, HomeworkAcceptance
-from blossom.stores.import_drafts import ImportDraftsStore
+from blossom.stores.import_drafts import ImportDraftsStore, StoredReading
 from blossom.stores.intake_decisions import DecisionToKeep
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 
@@ -138,7 +148,8 @@ class Saved:
     closed: bool = False
     incomplete: tuple[str, ...] = ()
     counts: tuple[int, int, int, int] = (0, 0, 0, 0)
-    """Assignments added, updated and already saved by this save, and pieces left to check."""
+    """Assignments added, updated and already saved by this save, and what is left to check:
+    open pieces, rows waiting on their split question and "couldn't read" items."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -329,7 +340,6 @@ UNCONFIRMED: Final = ("first_use", "not_confirmed", "confirm_again")
 CORRECTABLE: Final = CONFIRMABLE - {"badge"}
 """The fields a parent may type a correction for: class and title, dates, and an instruction.
 The due or assigned label is confirmed as read, never typed."""
-DATE_FIELDS: Final = frozenset({"footer", "heading"})
 """The fields whose correction is a date."""
 
 
@@ -596,7 +606,7 @@ def _homework_transaction(
 ) -> SaveOutcome:
     """Inside the writer's transaction: a recorded acceptance id first, the draft's checks, the
     comparison, then the homework, its decisions, the acceptance and the answer deletes."""
-    recorded = record.homework_acceptance(press.acceptance_id)
+    recorded = record.homework_acceptance(press.student_id, press.draft_id, press.acceptance_id)
     if recorded is not None:
         return Replayed(press.acceptance_id, recorded)
     tables = record.draft_for_save(press.student_id, press.draft_id)
@@ -651,6 +661,7 @@ def _homework_transaction(
     pairs: list[tuple[str, str]] = []
     by_entry = {entry.dest: entry for entry in state.preview}
     added = updated = unchanged = 0
+    written: list[str] = []
     for chosen in ready:
         for dest, names in sorted(state.validation.destinations.items()):
             if not set(names) <= set(chosen):
@@ -664,6 +675,8 @@ def _homework_transaction(
                 unchanged += 1
             else:
                 updated += 1
+            if dest[0] == "new" or not entry.nothing_new:
+                written += names
     status, answer, form = identity
     if answer == "hers":
         line = next(
@@ -700,24 +713,29 @@ def _homework_transaction(
         return bool(about) and set(about) <= done
 
     consumed = [(kind, subject) for kind, subject in tables.answers if saved_with(kind, subject)]
-    left = len(state.open) - len({name for name, _ in pairs})
+    left = _open_units(state, saved_now, tables.readings, tables.discards)
+    corrected, confirmed = _correction_counts(
+        state, written, tables.answers, press.corrections, tables.readings
+    )
     record.add_homework_acceptance(
         HomeworkAcceptance(
-            press.acceptance_id,
-            press.student_id,
-            press.draft_id,
-            tuple(pairs),
-            status,
-            answer,
-            added,
-            updated,
-            unchanged,
-            left,
-            len(state.open),
-            len(consumed),
-            left == 0 and not state.asking,
-            len({state.by_name[name].key for name, _ in pairs} & set(press.corrections)),
-            press.role,
+            acceptance_id=press.acceptance_id,
+            student_id=press.student_id,
+            draft_id=press.draft_id,
+            pairs=tuple(pairs),
+            identity_status=status,
+            identity_answer=answer,
+            identity_form=form,
+            added=added,
+            updated=updated,
+            already_saved=unchanged,
+            left_to_check=left,
+            shown=_open_units(state, state.saved, tables.readings, tables.discards),
+            answers_kept=len(consumed),
+            complete=left == 0,
+            corrected=corrected,
+            confirmed=confirmed,
+            role=press.role,
         ),
         now,
     )
@@ -732,6 +750,73 @@ def _homework_transaction(
     )
 
 
+def _open_units(
+    state: ReviewState,
+    saved: Collection[str],
+    readings: Sequence[StoredReading],
+    discards: Collection[str],
+) -> int:
+    """What still needs checking with the pieces named saved: each other piece, each row
+    waiting on its split question, and each "couldn't read" item not set aside. It is 0
+    exactly when the review has no open row."""
+    pieces = sum(1 for piece in state.pieces if piece.name not in saved)
+    items = sum(
+        1 for row in homework_rows(readings) if not row.readable and row.key not in discards
+    )
+    return pieces + len(state.asking) + items
+
+
+def _correction_counts(
+    state: ReviewState,
+    written: Collection[str],
+    answers: Mapping[tuple[str, str], tuple[str, str]],
+    corrections: Mapping[str, Mapping[str, str]],
+    readings: Sequence[StoredReading],
+) -> tuple[int, int]:
+    """The two counts of the rows whose destination this save wrote, leaving out rows another
+    save accepted: the fields corrected, and the other uncertain fields confirmed as read. A
+    correction counts when Blossom can use it and it differs from every value the screenshot
+    gave for the field, so a date chosen among the dates read is none. A field counts once."""
+    taken = {state.by_name[name].key for name in state.saved if name in state.by_name}
+    placed = cards_placed(readings)
+    fields: dict[tuple[str, str], Piece] = {}
+    for name in sorted(written):
+        piece = state.by_name[name]
+        if piece.key in taken:
+            continue
+        for field in sorted(confirm_fields(piece)):
+            fields.setdefault((piece.key, field), piece)
+    corrected = confirmed = 0
+    for (key, field), piece in fields.items():
+        typed = corrections.get(key, {}).get(field)
+        if typed is not None and usable_correction(field, typed):
+            read = _values_read(piece, field, placed)
+            value: object = typed_day(typed) if field in DATE_FIELDS else typed.strip()
+            if value not in read:
+                corrected += 1
+                continue
+        if ("confirm", confirm_subject(key, field)) in answers:
+            confirmed += 1
+    return corrected, confirmed
+
+
+def _values_read(
+    piece: Piece, field: str, placed: Mapping[CardPlace, PlacedCard]
+) -> frozenset[object]:
+    """Every value the screenshot gave for a piece's field: for the due line, its dates, and on
+    a due card its day headings' too, since both name its due date; for the day heading, its
+    dates; for text, the card's own words."""
+    if field == "footer":
+        days = {one.line_day for one in piece.seen}
+        if piece.due_card:
+            days |= {one.heading_day for one in piece.seen}
+        return frozenset(days - {None})
+    if field == "heading":
+        return frozenset({one.heading_day for one in piece.seen} - {None})
+    cards = [placed[c].card for c in piece.cards if c in placed]
+    return frozenset(getattr(card, field) for card in cards if card is not None)
+
+
 def _unconfirmed(
     state: ReviewState,
     unit: Sequence[str],
@@ -739,10 +824,10 @@ def _unconfirmed(
     corrections: Mapping[str, Mapping[str, str]],
 ) -> bool:
     """Whether a field the reader wasn't sure of, on a row of the unit, is neither confirmed as
-    read nor corrected."""
+    read nor given a correction Blossom can use."""
     return any(
         ("confirm", confirm_subject(piece.key, field)) not in answers
-        and not corrections.get(piece.key, {}).get(field)
+        and not usable_correction(field, corrections.get(piece.key, {}).get(field))
         for piece in (state.by_name[name] for name in unit)
         for field in confirm_fields(piece)
     ) or any(not state.by_name[name].due_resolved for name in unit)
@@ -754,10 +839,11 @@ def _identity(
     names: Mapping[str, tuple[str, str | None]],
     answers: Mapping[tuple[str, str], tuple[str, str]],
 ) -> tuple[str, str, str | None] | NotSaved:
-    """The status and answer the save carries for the screenshots its units came from, the
-    answer read from the review's stored name answers: one unconfirmed name, answered; else
-    screenshots with no name, confirmed; else every name matching. A unit whose screenshot
-    has no answer yet is open, and units needing two different answers are refused."""
+    """The status, answer and keyed form the save carries for the screenshots its units came
+    from, the answer read from the review's stored name answers: one unconfirmed name,
+    answered, with its form; else screenshots with no name, confirmed, with none; else every
+    name matching, with their form when they show one. A unit whose screenshot has no answer
+    yet is open, and units needing two different answers are refused."""
     images: dict[str, set[str]] = {}
     for unit in ready:
         for name in unit:
@@ -786,7 +872,10 @@ def _identity(
         waiting |= units_where(lambda line: line[0] == "missing")
     if waiting:
         return NotSaved("open", tuple(sorted(waiting)))
-    return ("missing", "confirmed", None) if missing else ("matches", "shown", None)
+    if missing:
+        return "missing", "confirmed", None
+    matched = {form for status, form in seen.values() if status == "matches" and form}
+    return "matches", "shown", next(iter(matched)) if len(matched) == 1 else None
 
 
 def _write(

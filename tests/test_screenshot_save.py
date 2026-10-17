@@ -31,6 +31,8 @@ from blossom.screenshot_save import (
     Saved,
     SaveHooks,
     SavePress,
+    confirm_subject,
+    correction_digest,
     instruction_subject,
     review_state,
     save_homework,
@@ -314,7 +316,10 @@ def test_a_save_writes_the_homework_its_decision_its_pairs_and_deletes_the_answe
         new.assignment_id,
         "assignment-word-study-x1",
     }
-    assert house.record.homework_acceptance(press.acceptance_id) == outcome.pairs
+    assert (
+        house.record.homework_acceptance(house.student, press.draft_id, press.acceptance_id)
+        == outcome.pairs
+    )
     decided = house.record.intake_decisions([intake.pair(COURSE, "Reading Log")])
     assert [d.lands_on for answers in decided.values() for d in answers if d.kind == "renamed"] == [
         "assignment-word-study-x1"
@@ -500,7 +505,6 @@ SITES: tuple[tuple[int, str], ...] = (
     (sqlite3.SQLITE_INSERT, "school_instructions"),
     (sqlite3.SQLITE_INSERT, "intake_decisions"),
     (sqlite3.SQLITE_INSERT, "grade_acceptances"),
-    (sqlite3.SQLITE_UPDATE, "grade_acceptances"),
     (sqlite3.SQLITE_DELETE, "import_draft_answers"),
 )
 """The write sites of a save of a new slot and a found row of another name: what the record
@@ -510,7 +514,6 @@ INSTRUCTION_SITES: tuple[tuple[int, str], ...] = (
     (sqlite3.SQLITE_INSERT, "school_instructions"),
     (sqlite3.SQLITE_UPDATE, "school_instructions"),
     (sqlite3.SQLITE_INSERT, "grade_acceptances"),
-    (sqlite3.SQLITE_UPDATE, "grade_acceptances"),
     (sqlite3.SQLITE_DELETE, "import_draft_answers"),
 )
 """The write sites of a save onto an existing assignment with an answered instruction question:
@@ -563,7 +566,6 @@ ALL_SITES = frozenset(
         (sqlite3.SQLITE_UPDATE, "school_instructions"),
         (sqlite3.SQLITE_INSERT, "intake_decisions"),
         (sqlite3.SQLITE_INSERT, "grade_acceptances"),
-        (sqlite3.SQLITE_UPDATE, "grade_acceptances"),
         (sqlite3.SQLITE_DELETE, "import_draft_answers"),
         (sqlite3.SQLITE_INSERT, "grade_name_forms"),
         (sqlite3.SQLITE_UPDATE, "grade_student"),
@@ -683,7 +685,10 @@ def test_a_process_exit_after_the_commit_keeps_the_save_and_a_resend_replays_it(
     with pytest.raises(Crash):
         save(house, press, CrashAt("after_commit"))
 
-    assert house.record.homework_acceptance(press.acceptance_id) is not None
+    assert (
+        house.record.homework_acceptance(house.student, press.draft_id, press.acceptance_id)
+        is not None
+    )
     snapshot = house.drafts.snapshot(house.student, draft_id)
     assert snapshot.finished
     assert snapshot.closed_at is None
@@ -708,7 +713,10 @@ def test_a_failed_close_keeps_and_reports_the_save_and_a_resend_replays_it(house
 
     assert isinstance(outcome, Saved)
     assert (outcome.closed, outcome.incomplete) == (False, ("close",))
-    assert house.record.homework_acceptance(press.acceptance_id) == outcome.pairs
+    assert (
+        house.record.homework_acceptance(house.student, press.draft_id, press.acceptance_id)
+        == outcome.pairs
+    )
     assert house.drafts.snapshot(house.student, draft_id).finished
     assert isinstance(save(house, press), Replayed)
     assert house.drafts.sweep().closed == 1
@@ -960,3 +968,394 @@ def two_row_review_again(house: House) -> str:
         house, draft_id, {piece.name: {"found": "assignment-word-study-x1", "offer": "basis"}}
     )
     return draft_id
+
+
+# ------------------------------------------------------------------ what the acceptance records
+
+
+def unsure(
+    title: str,
+    words: str,
+    top: int,
+    *fields: str,
+    badge: str = "ASSIGNED",
+    footer: str = "Due (8/24/2026)",
+) -> dict[str, object]:
+    """A card of English 7 under Friday's heading, due Monday, whose named fields the reader
+    wasn't sure of."""
+    return homework_card(
+        badge=badge,
+        course=COURSE,
+        title=title,
+        instruction=words,
+        footer=footer,
+        y_top=top,
+        y_bottom=top + 80,
+        uncertain=[{"field": field, "reason": "blurred"} for field in fields],
+    )
+
+
+def keys_of(house: House, draft_id: str) -> dict[str, str]:
+    """Each piece's row key, by its title as read."""
+    return {p.title: p.key for p in state_of(house, draft_id).pieces}
+
+
+def answered_press(
+    house: House,
+    draft_id: str,
+    corrections: Mapping[str, Mapping[str, str]],
+    confirmed: Sequence[tuple[str, str]] = (),
+    *,
+    acceptance: str = "c" * 32,
+    rows: Sequence[str] | None = None,
+    destinations: Mapping[str, Mapping[str, object]] | None = None,
+) -> SavePress:
+    """Every piece kept on its destination (its own new slot unless named) and the named fields
+    confirmed as read, each answer bound to its row's corrections; then the press a page made
+    with those corrections sends, for the groups of the row keys named, or all."""
+    tables = house.record.draft_for_save(house.student, draft_id)
+    assert tables is not None
+    state = review_state(house.record, tables, now=OBSERVED_AT, corrections=corrections)
+    by_key = {p.key: p for p in state.pieces}
+    answers = [
+        AnswerToKeep(
+            "destination",
+            piece.name,
+            value_json(dict((destinations or {}).get(piece.title, {"new": 1}))),
+            correction_digest(corrections.get(piece.key)),
+            (piece.name,),
+        )
+        for piece in state.open
+    ]
+    answers += [
+        AnswerToKeep(
+            "confirm",
+            confirm_subject(key, field),
+            "as_read",
+            correction_digest(corrections.get(key)),
+            (by_key[key].name,),
+        )
+        for key, field in confirmed
+    ]
+    version = house.drafts.snapshot(house.student, draft_id).version
+    house.drafts.keep_answers(house.student, draft_id, version=version, answers=answers)
+    tables = house.record.draft_for_save(house.student, draft_id)
+    assert tables is not None
+    state = review_state(house.record, tables, now=OBSERVED_AT, corrections=corrections)
+    digests = unit_digests(state)
+    chosen = sorted(
+        unit_name(u.unit)
+        for u in state.validation.units
+        if rows is None or any(state.by_name[n].key in rows for n in u.unit)
+    )
+    return SavePress(
+        house.student,
+        draft_id,
+        house.drafts.snapshot(house.student, draft_id).version,
+        acceptance,
+        tuple(chosen),
+        digests,
+        {name: value_json(value) for name, value in state.defaults.items()},
+        {key: dict(fields) for key, fields in corrections.items()},
+        dict.fromkeys((c.sha256 for p in state.pieces for c in p.cards), ("matches", None)),
+        NAME_KEY,
+    )
+
+
+def counts_recorded(house: House, acceptance: str) -> tuple[object, ...]:
+    return tuple(
+        sqlite3.connect(house.path)
+        .execute(
+            "SELECT corrected, confirmed FROM grade_acceptances WHERE acceptance_id = ?",
+            (acceptance,),
+        )
+        .fetchone()
+        or ()
+    )
+
+
+def corrected_and_confirmed_press(house: House) -> SavePress:
+    """Two fields corrected and three confirmed as read, on the two rows the press saves."""
+    draft_id = read_review(
+        house,
+        screenshot(
+            "Friday 8/21/2026",
+            unsure(
+                "Vocab Quiz", "Study list one.", 200, "title", "footer", "instruction", "course"
+            ),
+            unsure("Reading Log", "Read pages 4 to 6.", 300, "title"),
+        ),
+    )
+    keys = keys_of(house, draft_id)
+    quiz, log = keys["Vocab Quiz"], keys["Reading Log"]
+    corrections = {quiz: {"title": "Vocab Test", "footer": "2026-08-25"}}
+    confirmed = [(quiz, "instruction"), (quiz, "course"), (log, "title")]
+    return answered_press(house, draft_id, corrections, confirmed)
+
+
+def fields_corrected_and_confirmed(house: House) -> tuple[tuple[object, ...], tuple[int, int]]:
+    press = corrected_and_confirmed_press(house)
+    assert isinstance(save(house, press), Saved)
+    return counts_recorded(house, press.acceptance_id), (2, 3)
+
+
+def read_values_typed_back(house: House) -> tuple[tuple[object, ...], tuple[int, int]]:
+    draft_id = read_review(
+        house,
+        screenshot(
+            "Friday 8/21/2026",
+            unsure("Vocab Quiz", "Study list one.", 200, "title", "footer", "instruction"),
+        ),
+    )
+    quiz = keys_of(house, draft_id)["Vocab Quiz"]
+    typed = {"title": "Vocab Quiz", "footer": "2026-08-24", "instruction": "Study list one."}
+    press = answered_press(house, draft_id, {quiz: typed})
+    assert isinstance(save(house, press), Saved)
+    return counts_recorded(house, press.acceptance_id), (0, 0)
+
+
+def unreadable_date_confirmed(house: House) -> tuple[tuple[object, ...], tuple[int, int]]:
+    draft_id = read_review(
+        house,
+        screenshot("Friday 8/21/2026", unsure("Vocab Quiz", "Study list one.", 200, "footer")),
+    )
+    quiz = keys_of(house, draft_id)["Vocab Quiz"]
+    press = answered_press(house, draft_id, {quiz: {"footer": "10/14"}}, [(quiz, "footer")])
+    assert isinstance(save(house, press), Saved)
+    assert next(a for a in house.record.all_assignments()).due_date == MONDAY
+    return counts_recorded(house, press.acceptance_id), (0, 1)
+
+
+def due_date_chosen_among_those_read(house: House) -> tuple[tuple[object, ...], tuple[int, int]]:
+    draft_id = read_review(
+        house,
+        screenshot(
+            "Friday 8/21/2026", unsure("Vocab Quiz", "Study list one.", 200, "footer", badge="DUE")
+        ),
+    )
+    quiz = keys_of(house, draft_id)["Vocab Quiz"]
+    press = answered_press(house, draft_id, {quiz: {"footer": FRIDAY.isoformat()}})
+    assert isinstance(save(house, press), Saved)
+    assert next(a for a in house.record.all_assignments()).due_date == FRIDAY
+    return counts_recorded(house, press.acceptance_id), (0, 0)
+
+
+def rows_this_save_did_not_write(house: House) -> tuple[tuple[object, ...], tuple[int, ...]]:
+    """An unselected row, then a row another save accepted, then a destination that writes
+    nothing: only the row each save writes counts."""
+    draft_id = read_review(
+        house,
+        screenshot(
+            "Friday 8/21/2026",
+            unsure("Vocab Quiz", "Study list one.", 200, "title"),
+            unsure("Reading Log", "Read pages 4 to 6.", 300, "title"),
+        ),
+    )
+    keys = keys_of(house, draft_id)
+    corrections = {
+        keys["Vocab Quiz"]: {"title": "Vocab Test"},
+        keys["Reading Log"]: {"title": "Reading Notes"},
+    }
+    first = answered_press(house, draft_id, corrections, rows=[keys["Vocab Quiz"]])
+    assert isinstance(save(house, first), Saved)
+    second = answered_press(house, draft_id, corrections, acceptance="d" * 32)
+    assert isinstance(save(house, second), Saved)
+    [test] = [a for a in house.record.all_assignments() if a.title == "Vocab Test"]
+    again = read_review(
+        house,
+        screenshot("Friday 8/21/2026", unsure("Vocab Test", "Study list one.", 200, "course")),
+    )
+    on = {"Vocab Test": {"existing": test.assignment_id}}
+    course = keys_of(house, again)["Vocab Test"]
+    third = answered_press(
+        house, again, {}, [(course, "course")], acceptance="e" * 32, destinations=on
+    )
+    assert isinstance(save(house, third), Saved)
+    got = (
+        *counts_recorded(house, first.acceptance_id),
+        *counts_recorded(house, second.acceptance_id),
+        *counts_recorded(house, third.acceptance_id),
+    )
+    return got, (1, 0, 1, 0, 0, 0)
+
+
+def replayed_unchanged(house: House) -> tuple[tuple[object, ...], tuple[int, ...]]:
+    press = corrected_and_confirmed_press(house)
+    assert isinstance(save(house, press), Saved)
+    assert counts_recorded(house, press.acceptance_id) == (2, 3)
+    assert isinstance(save(house, press), Replayed)
+    return counts_recorded(house, press.acceptance_id), (2, 3)
+
+
+COUNT_CASES: Final[dict[str, Callable[[House], tuple[tuple[object, ...], tuple[int, ...]]]]] = {
+    "two corrected and three confirmed": fields_corrected_and_confirmed,
+    "the read values typed back": read_values_typed_back,
+    "an unreadable date confirmed": unreadable_date_confirmed,
+    "a due date chosen among those read": due_date_chosen_among_those_read,
+    "rows this save didn't write": rows_this_save_did_not_write,
+    "a replay": replayed_unchanged,
+}
+
+
+@pytest.mark.parametrize("case", sorted(COUNT_CASES))
+def test_the_acceptance_counts_corrected_and_confirmed_fields(house: House, case: str) -> None:
+    got, expected = COUNT_CASES[case](house)
+
+    assert got == expected
+
+
+def test_a_correction_blossom_can_t_use_answers_no_field(house: House) -> None:
+    draft_id = read_review(
+        house,
+        screenshot("Friday 8/21/2026", unsure("Vocab Quiz", "Study list one.", 200, "footer")),
+    )
+    quiz = keys_of(house, draft_id)["Vocab Quiz"]
+    press = answered_press(house, draft_id, {quiz: {"footer": "10/14"}})
+    before = world(house)
+
+    assert save(house, press) == NotSaved("open", press.units)
+    assert world(house) == before
+
+
+OTHER_KEY: Final = b"synthetic-name-key-made-again-two"
+"""A second household key, as after the secret is replaced."""
+
+
+def form_recorded(house: House, acceptance: str) -> tuple[object, ...]:
+    return tuple(
+        sqlite3.connect(house.path)
+        .execute(
+            "SELECT identity_status, identity_answer, identity_form FROM grade_acceptances "
+            "WHERE acceptance_id = ?",
+            (acceptance,),
+        )
+        .fetchone()
+        or ()
+    )
+
+
+def forms_kept(house: House) -> list[str]:
+    return [
+        str(row[0])
+        for row in sqlite3.connect(house.path).execute("SELECT name_form FROM grade_name_forms")
+    ]
+
+
+def name_answered(house: House, draft_id: str, form: str, answer: str) -> None:
+    version = house.drafts.snapshot(house.student, draft_id).version
+    house.drafts.keep_answers(
+        house.student,
+        draft_id,
+        version=version,
+        answers=[AnswerToKeep("name", form, answer, correction_digest_none(), ())],
+    )
+
+
+def first_use_answered_hers(house: House) -> tuple[object, ...]:
+    press = first_use(press_of(house, her_name_review(house), "1" * 32))
+    assert isinstance(save(house, press), Saved)
+    assert forms_kept(house) == [WREN_FORM]
+    return form_recorded(house, press.acceptance_id), ("first_use", "hers", WREN_FORM)
+
+
+def misread(house: House) -> tuple[object, ...]:
+    draft_id = two_row_review(house)
+    name_answered(house, draft_id, WREN_FORM, "misread")
+    press = first_use(press_of(house, draft_id, "1" * 32))
+    assert isinstance(save(house, press), Saved)
+    assert forms_kept(house) == []
+    return form_recorded(house, press.acceptance_id), ("first_use", "misread", WREN_FORM)
+
+
+def confirmed_again(house: House) -> tuple[object, ...]:
+    first_use_answered_hers(house)
+    again = name_form(OTHER_KEY, "Wren")
+    draft_id = read_review(
+        house, screenshot("Friday 8/21/2026", card("Word Study", "Study list three.", 200))
+    )
+    keep_destinations(
+        house, draft_id, {p.name: {"new": 1} for p in state_of(house, draft_id).pieces}
+    )
+    name_answered(house, draft_id, again, "hers")
+    press = dataclasses.replace(
+        press_of(house, draft_id, "2" * 32),
+        name_key=OTHER_KEY,
+    )
+    press = dataclasses.replace(press, names=dict.fromkeys(press.names, ("confirm_again", again)))
+    assert isinstance(save(house, press), Saved)
+    return form_recorded(house, press.acceptance_id), ("confirm_again", "hers", again)
+
+
+def matches(house: House) -> tuple[object, ...]:
+    first_use_answered_hers(house)
+    draft_id = read_review(
+        house, screenshot("Friday 8/21/2026", card("Word Study", "Study list three.", 200))
+    )
+    keep_destinations(
+        house, draft_id, {p.name: {"new": 1} for p in state_of(house, draft_id).pieces}
+    )
+    press = named(press_of(house, draft_id, "2" * 32), "matches", WREN_FORM)
+    assert isinstance(save(house, press), Saved)
+    assert forms_kept(house) == [WREN_FORM]
+    return form_recorded(house, press.acceptance_id), ("matches", "shown", WREN_FORM)
+
+
+def missing(house: House) -> tuple[object, ...]:
+    draft_id = two_row_review(house)
+    name_answered(house, draft_id, "missing", "confirmed")
+    press = named(press_of(house, draft_id, "1" * 32), "missing", None)
+    assert isinstance(save(house, press), Saved)
+    return form_recorded(house, press.acceptance_id), ("missing", "confirmed", None)
+
+
+def replayed_form(house: House) -> tuple[object, ...]:
+    press = first_use(press_of(house, her_name_review(house), "1" * 32))
+    assert isinstance(save(house, press), Saved)
+    recorded = form_recorded(house, press.acceptance_id)
+    assert isinstance(save(house, press), Replayed)
+    return form_recorded(house, press.acceptance_id), recorded
+
+
+FORM_CASES: Final = {
+    "first use answered hers": first_use_answered_hers,
+    "misread": misread,
+    "confirm again": confirmed_again,
+    "matches": matches,
+    "missing": missing,
+    "a replay": replayed_form,
+}
+
+
+@pytest.mark.parametrize("case", sorted(FORM_CASES))
+def test_the_acceptance_records_the_keyed_form_it_answered_or_matched(
+    house: House, case: str
+) -> None:
+    got, expected = FORM_CASES[case](house)
+    row = sqlite3.connect(house.path).execute("SELECT * FROM grade_acceptances").fetchall()
+
+    assert got == expected
+    assert "Wren" not in repr(row)
+
+
+def test_check_zero_compares_student_and_source_key(house: House) -> None:
+    draft_id = two_row_review(house)
+    press = press_of(house, draft_id, "4" * 32)
+    saved = save(house, press)
+    assert isinstance(saved, Saved)
+    other = read_review(
+        house, screenshot("Friday 8/21/2026", card("Word Study", "Study list three.", 200))
+    )
+    keep_destinations(house, other, {p.name: {"new": 1} for p in state_of(house, other).pieces})
+    stranger = dataclasses.replace(press_of(house, other, "4" * 32))
+    before = world(house)
+
+    outcome = save(house, stranger)
+
+    assert house.record.homework_acceptance(house.student, draft_id, "4" * 32) == saved.pairs
+    assert house.record.homework_acceptance(house.student, other, "4" * 32) is None
+    assert house.record.homework_acceptance("another-student", draft_id, "4" * 32) is None
+    assert house.record.homework_counts(house.student, draft_id, "4" * 32) is not None
+    assert house.record.homework_counts(house.student, other, "4" * 32) is None
+    assert house.record.homework_counts("another-student", draft_id, "4" * 32) is None
+    assert not isinstance(outcome, Replayed)
+    assert world(house) == before

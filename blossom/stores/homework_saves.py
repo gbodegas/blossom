@@ -18,12 +18,28 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, NamedTuple
 
-from blossom.stores.gradebook import ADD_ACCEPTANCE
-
 if TYPE_CHECKING:
     from blossom.stores.import_drafts import StoredReading
 
 HOMEWORK: Final = "homework_screenshot"
+ADD_HOMEWORK_ACCEPTANCE: Final = (
+    "INSERT INTO grade_acceptances (acceptance_id, student_id, kind, source_key, report_id, "
+    "class_id, term_label, accepted, identity_status, identity_answer, identity_form, added, "
+    "updated, already_saved, left_to_check, shown, answers_kept, complete, accepted_at, role, "
+    "corrected, confirmed) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+"""A homework acceptance's one insert: every column, its two correction counts among them."""
+PAIRS_RECORDED: Final = (
+    "SELECT accepted FROM grade_acceptances "
+    "WHERE acceptance_id = ? AND kind = ? AND student_id = ? AND source_key = ?"
+)
+COUNTS_RECORDED: Final = (
+    "SELECT added, updated, already_saved, left_to_check FROM grade_acceptances "
+    "WHERE acceptance_id = ? AND kind = ? AND student_id = ? AND source_key = ?"
+)
+"""A homework acceptance's pairs and counts, as hers and this review's: by its id, its kind,
+her student id and the draft id it was recorded for."""
 
 
 class DraftForSave(NamedTuple):
@@ -49,7 +65,7 @@ class DraftForSave(NamedTuple):
 
 class HomeworkAcceptance(NamedTuple):
     """The acceptance a homework save writes: its id, the pieces' pairs, the identity the page
-    established, and the counts it records."""
+    established with the keyed form it was decided on, and the counts it records."""
 
     acceptance_id: str
     student_id: str
@@ -57,6 +73,7 @@ class HomeworkAcceptance(NamedTuple):
     pairs: tuple[tuple[str, str], ...]
     identity_status: str
     identity_answer: str
+    identity_form: str | None
     added: int
     updated: int
     already_saved: int
@@ -65,6 +82,7 @@ class HomeworkAcceptance(NamedTuple):
     answers_kept: int
     complete: bool
     corrected: int
+    confirmed: int
     role: str
 
 
@@ -78,25 +96,27 @@ class HomeworkSaveRecords:
     def _writing(self) -> AbstractContextManager[None]:
         raise NotImplementedError
 
-    def homework_acceptance(self, acceptance_id: str) -> tuple[tuple[str, str], ...] | None:
-        """The pairs a homework acceptance with this id recorded, or None when there is none."""
+    def homework_acceptance(
+        self, student_id: str, draft_id: str, acceptance_id: str
+    ) -> tuple[tuple[str, str], ...] | None:
+        """The pairs her homework acceptance with this id recorded for this review, or None when
+        it recorded none: an id recorded for another review or student is none here."""
         with self._lock:
             row = self._connection.execute(
-                "SELECT accepted FROM grade_acceptances WHERE acceptance_id = ? AND kind = ?",
-                (acceptance_id, HOMEWORK),
+                PAIRS_RECORDED, (acceptance_id, HOMEWORK, student_id, draft_id)
             ).fetchone()
         if row is None:
             return None
         return tuple((str(name), str(target)) for name, target in json.loads(str(row[0])))
 
-    def homework_counts(self, acceptance_id: str) -> tuple[int, int, int, int] | None:
-        """What a homework acceptance with this id counted: assignments added, updated and
-        already saved, and pieces left to check; None when there is none."""
+    def homework_counts(
+        self, student_id: str, draft_id: str, acceptance_id: str
+    ) -> tuple[int, int, int, int] | None:
+        """What her homework acceptance with this id counted for this review: assignments added,
+        updated and already saved, and what was left to check; None when it recorded none."""
         with self._lock:
             row = self._connection.execute(
-                "SELECT added, updated, already_saved, left_to_check FROM grade_acceptances "
-                "WHERE acceptance_id = ? AND kind = ?",
-                (acceptance_id, HOMEWORK),
+                COUNTS_RECORDED, (acceptance_id, HOMEWORK, student_id, draft_id)
             ).fetchone()
         return None if row is None else (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
 
@@ -179,10 +199,11 @@ class HomeworkSaveRecords:
     def add_homework_acceptance(
         self, acceptance: HomeworkAcceptance, accepted_at: datetime
     ) -> None:
-        """Write the acceptance with its ``[piece name, id]`` pairs, in the caller's transaction."""
+        """Write the acceptance with its ``[piece name, id]`` pairs, its keyed form and its two
+        correction counts, in one insert in the caller's transaction."""
         with self._lock, self._writing():
             self._connection.execute(
-                ADD_ACCEPTANCE,
+                ADD_HOMEWORK_ACCEPTANCE,
                 (
                     acceptance.acceptance_id,
                     acceptance.student_id,
@@ -194,7 +215,7 @@ class HomeworkSaveRecords:
                     json.dumps([list(pair) for pair in acceptance.pairs]),
                     acceptance.identity_status,
                     acceptance.identity_answer,
-                    None,
+                    acceptance.identity_form,
                     acceptance.added,
                     acceptance.updated,
                     acceptance.already_saved,
@@ -204,11 +225,9 @@ class HomeworkSaveRecords:
                     int(acceptance.complete),
                     accepted_at.isoformat(),
                     acceptance.role,
+                    acceptance.corrected,
+                    acceptance.confirmed,
                 ),
-            )
-            self._connection.execute(
-                "UPDATE grade_acceptances SET corrected = ? WHERE acceptance_id = ?",
-                (acceptance.corrected, acceptance.acceptance_id),
             )
 
     def drop_saved_answers(self, draft_id: str, answers: Collection[tuple[str, str]]) -> int:

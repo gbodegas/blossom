@@ -1040,28 +1040,40 @@ def typed_day(value: str) -> date | None:
             return None
 
 
+DATE_FIELDS: Final = frozenset({"footer", "heading"})
+"""The fields a parent corrects with a date: the due line, and the day heading."""
+
+
+def usable_correction(field: str, value: str | None) -> bool:
+    """Whether a typed correction is one Blossom can use: text that isn't blank, and for the
+    due line or the day heading, a date it can read. One it can't use answers nothing."""
+    if value is None or not value.strip():
+        return False
+    return field not in DATE_FIELDS or typed_day(value) is not None
+
+
 def corrected(reading: Reading, fields: Mapping[str, str] | None) -> Reading:
     """The reading with the parent's typed corrections on its uncertain fields: class, title,
     instruction words, the due line, or the day heading (the assigned date on an assigned
-    card's row, else the due date). A value that can't be read as its field is passed over."""
+    card's row, else the due date). A correction Blossom can't use is passed over."""
     if not fields:
         return reading
+    usable = {f: v.strip() for f, v in fields.items() if usable_correction(f, v)}
     change: dict[str, Any] = {}
     for field in ("course", "title"):
-        value = (fields.get(field) or "").strip()
-        if value:
-            change[field] = value
-    words = (fields.get("instruction") or "").strip()
-    if words:
+        if field in usable:
+            change[field] = usable[field]
+    if "instruction" in usable:
+        words = usable["instruction"]
         seen = [dataclasses.replace(i, text=words) for i in reading.instructions]
         seen = seen or [InstructionSeen(words, SourceChannel.LMS)]
         change["instructions"] = tuple({i.text: i for i in seen}.values())
-    due = typed_day(fields["footer"]) if fields.get("footer") else None
-    if fields.get("heading"):
-        day = typed_day(fields["heading"])
-        if day is not None and reading.assigned_on is not None:
+    due = typed_day(usable["footer"]) if "footer" in usable else None
+    if "heading" in usable:
+        day = typed_day(usable["heading"])
+        if reading.assigned_on is not None:
             change["assigned_on"] = day
-        elif day is not None:
+        else:
             due = day
     if due is not None and due != reading.due_date:
         before = None if reading.due_date is None else reading.due_date.isoformat()
@@ -1173,7 +1185,7 @@ def _settled(
     if not choices:
         return with_seen
     typed = corrections.get(piece.key, {})
-    if any(typed_day(typed.get(field) or "") for field in ("footer", "heading")):
+    if any(usable_correction(field, typed.get(field)) for field in DATE_FIELDS):
         return with_seen
     chosen = next((d for d in choices if d.isoformat() == due_read.get(piece.name)), None)
     if chosen is None or piece.reading is None:

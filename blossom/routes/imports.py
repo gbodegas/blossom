@@ -1007,7 +1007,9 @@ async def save_press(
     record = state.project_state
     student = record.student_id()
     draft_id = found.draft_id
-    recorded = await asyncio.to_thread(record.homework_acceptance, post.acceptance)
+    recorded = await asyncio.to_thread(
+        record.homework_acceptance, student, draft_id, post.acceptance
+    )
     if recorded is not None:
         return await saved_page(request, state, draft_id, post.acceptance, [], post)
     try:
@@ -1126,15 +1128,18 @@ def unsaved_typing(
 
 
 async def replayed(request: Request, state: ApplicationState, draft_id: str) -> Response | None:
-    """A Save press resent after its review closed: the outcome its acceptance id recorded,
-    when it recorded one; else None."""
+    """A Save press resent after its review closed: the outcome its acceptance id recorded for
+    this review, when it recorded one; else None, so an id recorded for another review gets
+    this one's own answer."""
     if not opaque(draft_id):
         return None
     form = await form_of(request)
     acceptance = next((v for n, v in form.multi_items() if n == "acceptance"), "")
     if not isinstance(acceptance, str) or not opaque(acceptance):
         return None
-    if await asyncio.to_thread(state.project_state.homework_acceptance, acceptance) is None:
+    record = state.project_state
+    student = record.student_id()
+    if await asyncio.to_thread(record.homework_acceptance, student, draft_id, acceptance) is None:
         return None
     return await saved_page(request, state, draft_id, acceptance, [])
 
@@ -1150,9 +1155,11 @@ async def saved_page(
     """A resent press whose acceptance id is recorded: that save's counts, and nothing
     written. With the review still open, a press that carries its typing gets it back, as
     the save it repeats did."""
-    counts = await asyncio.to_thread(state.project_state.homework_counts, acceptance)
-    lines = [*said, counted(counts[0], counts[1], counts[3])] if counts else said
     student = state.project_state.student_id()
+    counts = await asyncio.to_thread(
+        state.project_state.homework_counts, student, draft_id, acceptance
+    )
+    lines = [*said, counted(counts[0], counts[1], counts[3])] if counts else said
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except STORE_REFUSALS:
