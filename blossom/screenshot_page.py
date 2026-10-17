@@ -895,8 +895,9 @@ def rows_shown(
     frozen: bool = False,
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, one control per open piece
-    by name group, each destination's questions, and the group preview with its refusals and
-    offers, plus the signed fields the review form carries."""
+    by name group, each destination's questions once, under the first name group with cards
+    going there, and the group preview with its refusals and offers, plus the signed fields
+    the review form carries."""
     values = dict(state.values)
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
     for unit in state.validation.units:
@@ -933,6 +934,7 @@ def rows_shown(
         (q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in names
     ] + [(q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in splits]
     shown_groups = []
+    asked_dests: set[tuple[str, ...]] = set()
     for pieces in groups.values():
         controls = tuple(
             PieceControl(
@@ -960,9 +962,10 @@ def rows_shown(
             {
                 d
                 for d, names_there in state.validation.destinations.items()
-                if set(names_there) & {p.name for p in pieces}
+                if set(names_there) & {p.name for p in pieces} and d not in asked_dests
             }
         )
+        asked_dests.update(dests)
         for dest in dests:
             entry = previews.get(dest)
             if entry is None:

@@ -2546,6 +2546,91 @@ def test_two_cards_of_other_names_found_onto_one_row_count_once_and_each_name_is
     }
 
 
+def two_names_found_onto_one_row(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, due: date
+) -> tuple[str, str]:
+    """A review whose "Vocab Test" and "Spelling List" cards, due Thu 10/8, are both found onto
+    one "Grammar Practice" due on ``due``: its id and the page after."""
+    target = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=due,
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    cards = [
+        homework_card(title="Vocab Test", instruction="Study list one."),
+        homework_card(
+            title="Spelling List", instruction="Study list two.", y_top=360, y_bottom=450
+        ),
+    ]
+    state_of(browser).project_state.upsert_assignments([target])
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=cards)))
+    page = her_name_answered(browser, draft_id, page)
+    for piece in fields_named(review_form(page), "answer:destination:"):
+        finding = browser.get(
+            f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "grammar"}
+        ).text
+        choice = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
+        )
+        assert choice is not None
+        fields = [
+            (html.unescape(n), html.unescape(v))
+            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
+        ]
+        page = followed(browser, send(browser, draft_id, fields))
+    return draft_id, page
+
+
+def legends_starting(page: str, start: str) -> int:
+    return len(re.findall(rf"<legend>{re.escape(start)}", html.unescape(review_form(page))))
+
+
+def test_the_instruction_question_of_one_destination_is_asked_once_and_saves_after_one_keep(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = two_names_found_onto_one_row(browser, monkeypatch, date(2026, 10, 8))
+        [field] = fields_named(review_form(page), "answer:instructions:")
+        offered = [
+            html.unescape(v)
+            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', review_form(page))
+            if html.unescape(n) == f"answer:instructions:{field}" and v
+        ]
+        kept = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                [
+                    *page_post(page, "keep"),
+                    *((f"answer:instructions:{field}", text) for text in offered),
+                ],
+            ),
+        )
+        posted = page_post(kept, "save", tick=units_on(kept))
+        saved = followed(browser, send(browser, draft_id, posted))
+
+    assert legends_starting(page, "Which instructions apply to") == 1
+    assert offered == ["Study list one.", "Study list two."]
+    assert [v for n, v in posted if n.startswith("answer:instructions:")] == offered
+    assert says(saved, "0 assignments added. 1 updated.")
+
+
+def test_the_due_date_question_of_one_destination_is_asked_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        _, page = two_names_found_onto_one_row(browser, monkeypatch, date(2026, 10, 9))
+
+    assert len(fields_named(review_form(page), "answer:due:")) == 1
+    assert legends_starting(page, "Due date for") == 1
+
+
 def test_homework_made_from_her_note_saves_in_one_press_when_chosen_as_the_destination(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
