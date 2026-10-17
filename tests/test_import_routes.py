@@ -1615,6 +1615,198 @@ def units_ticked(page: str) -> list[str]:
     return [html.unescape(u) for u in re.findall(r'name="unit" value="([^"]+)" checked', page)]
 
 
+# ------------------------------------------------------------------ setting aside and discarding
+
+
+def outside(page: str, form_id: str) -> tuple[str, list[tuple[str, str]]]:
+    """A small form of the review page, by its id: its action and its fields."""
+    found = re.search(
+        rf'<form method="post" action="([^"]+)" id="{re.escape(form_id)}">(.*?)</form>',
+        page,
+        re.S,
+    )
+    assert found is not None, form_id
+    fields = [
+        (html.unescape(n), html.unescape(v))
+        for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', found.group(2))
+    ]
+    return found.group(1), fields
+
+
+def press_outside(browser: TestClient, page: str, form_id: str) -> Answer:
+    action, fields = outside(page, form_id)
+    return browser.post(
+        action,
+        content=urlencode(fields).encode(),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+
+def row_states(browser: TestClient, draft_id: str) -> dict[str, str]:
+    student = state_of(browser).project_state.student_id()
+    snapshot = state_of(browser).import_drafts.snapshot(student, draft_id)
+    return {row.key: row.state for row in snapshot.rows}
+
+
+def closed(browser: TestClient, draft_id: str) -> bool:
+    student = state_of(browser).project_state.student_id()
+    return state_of(browser).import_drafts.snapshot(student, draft_id).closed_at is not None
+
+
+def test_leave_this_group_unsaved_sets_its_rows_aside_and_the_rest_stays_open(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        after = followed(browser, press_outside(browser, page, "leave-1"))
+        states = row_states(browser, draft_id)
+        still_open = not closed(browser, draft_id)
+
+    assert len(units_on(page)) == 2
+    assert says(after, imports.AFTER_SAID["set_aside"])
+    assert sorted(states.values()) == ["discarded", "open"]
+    assert len(units_on(after)) == 1
+    assert still_open
+
+
+def test_leaving_the_last_group_unsaved_finishes_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        left = press_outside(browser, page, "leave-1")
+        done = closed(browser, draft_id)
+
+    assert left.status_code == 200
+    assert says(left.text, imports.AFTER_SAID["set_aside"])
+    assert says(left.text, imports.AFTER_SAID["nothing_saved"])
+    assert done
+
+
+def test_a_row_whose_days_differ_can_be_left_unsaved_before_its_question_is_answered(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monday, tuesday = split_answers()
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        left = press_outside(browser, page, "leave-split-1")
+        done = closed(browser, draft_id)
+
+    assert says(left.text, imports.AFTER_SAID["set_aside"])
+    assert done
+
+
+def test_finish_without_the_rest_closes_the_review_after_a_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first, _ = units_on(page)
+        after = followed(browser, send(browser, draft_id, page_post(page, "save", tick=[first])))
+        finished = press_outside(browser, after, "finish")
+        done = closed(browser, draft_id)
+
+    assert finished.status_code == 200
+    assert says(finished.text, imports.AFTER_SAID["finished"])
+    assert done
+
+
+def test_discard_the_review_removes_it_and_says_nothing_was_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        before = assignment_count(browser)
+        gone = press_outside(browser, page, "discard")
+        done = closed(browser, draft_id)
+        made = assignment_count(browser)
+        again = browser.get(f"/parent/imports/{draft_id}")
+
+    assert gone.status_code == 200
+    assert says(gone.text, imports.AFTER_SAID["discarded"])
+    assert says(gone.text, imports.AFTER_SAID["nothing_saved"])
+    assert done
+    assert made == before
+    assert says(again.text, imports.SAID["closed"])
+
+
+def test_not_hers_discards_a_review_nothing_was_saved_from(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        offered = 'form="not-hers"' in page
+        gone = press_outside(browser, page, "not-hers")
+        done = closed(browser, draft_id)
+
+    assert offered
+    assert gone.status_code == 200
+    assert says(gone.text, imports.AFTER_SAID["not_hers"])
+    assert done
+
+
+def test_not_hers_is_not_offered_after_a_save_and_a_page_from_before_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        [form] = fields_named(review_form(page), "answer:name:")
+        keep(browser, draft_id, ("name", form, "misread"))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        first, _ = units_on(page)
+        after = followed(browser, send(browser, draft_id, page_post(page, "save", tick=[first])))
+        refused = followed(browser, press_outside(browser, page, "not-hers"))
+        still_open = not closed(browser, draft_id)
+
+    assert 'form="not-hers"' in page
+    assert 'form="not-hers"' not in after
+    assert says(refused, imports.AFTER_SAID["not_hers_after_a_save"])
+    assert still_open
+
+
+def test_a_small_form_from_a_page_before_a_change_changes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        left = followed(browser, press_outside(browser, page, "leave-1"))
+        finished = followed(browser, press_outside(browser, page, "finish"))
+        discarded = followed(browser, press_outside(browser, page, "discard"))
+        states = row_states(browser, draft_id)
+        action, fields = outside(browser.get(f"/parent/imports/{draft_id}").text, "leave-1")
+        forged = [(n, '["0:elsewhere"]' if n == "keys" else v) for n, v in fields]
+        unchecked = followed(
+            browser,
+            browser.post(
+                action,
+                content=urlencode(forged).encode(),
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            ),
+        )
+
+    assert says(left, imports.CHANGED_IN_ANOTHER_TAB)
+    assert says(left, imports.AFTER_SAID["nothing_set_aside"])
+    assert says(finished, imports.AFTER_SAID["nothing_set_aside"])
+    assert says(discarded, imports.AFTER_SAID["nothing_discarded"])
+    assert set(states.values()) == {"open"}
+    assert says(unchecked, imports.AFTER_SAID["unchecked"])
+
+
+def test_the_disclosure_stands_directly_above_read(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+
+    disclosed = page.index(str(escape(imports.DISCLOSED)))
+    read = page.index(f'action="/parent/imports/{draft_id}/read"')
+    assert disclosed < read
+    assert "<p" not in page[disclosed:read].split("</p>", 1)[1]
+
+
 IMPORT_REVIEW_RULES = (
     ".import-review .choice {\n  min-width: 0;\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"
@@ -1657,6 +1849,10 @@ def every_route(draft_id: str, image_id: str) -> list[tuple[str, str]]:
         ("POST", f"/parent/imports/{draft_id}/read"),
         ("POST", f"/parent/imports/{draft_id}/review"),
         ("GET", f"/parent/imports/{draft_id}/find"),
+        ("POST", f"/parent/imports/{draft_id}/set-aside"),
+        ("POST", f"/parent/imports/{draft_id}/finish"),
+        ("POST", f"/parent/imports/{draft_id}/discard"),
+        ("POST", f"/parent/imports/{draft_id}/not-hers"),
     ]
 
 
@@ -1675,6 +1871,10 @@ def test_every_import_route_is_one_this_module_names() -> None:
         ("POST", "/parent/imports/{draft_id}/read"),
         ("POST", "/parent/imports/{draft_id}/review"),
         ("GET", "/parent/imports/{draft_id}/find"),
+        ("POST", "/parent/imports/{draft_id}/set-aside"),
+        ("POST", "/parent/imports/{draft_id}/finish"),
+        ("POST", "/parent/imports/{draft_id}/discard"),
+        ("POST", "/parent/imports/{draft_id}/not-hers"),
     }
 
 
@@ -1756,13 +1956,40 @@ def test_every_import_answer_is_no_store_with_the_sign_in_off(
     assert [answer.headers["cache-control"] for answer in answers] == ["no-store"] * len(answers)
 
 
-def test_family_review_offers_no_screenshot_upload_yet(tmp_path: pathlib.Path) -> None:
+def test_family_review_offers_screenshots_while_import_is_on(tmp_path: pathlib.Path) -> None:
     with here(open_settings(tmp_path)) as browser:
+        page = browser.get("/parent")
+        fields = dict(
+            re.findall(r'<input type="hidden" name="(token|issued)" value="([^"]+)">', page.text)
+        )
+        files = [("screenshots", ("shot-0.png", RED, "image/png"))]
+        sent = browser.post("/parent/imports", data=fields, files=files)
+        listed = browser.get("/parent").text
+
+    assert page.status_code == 200
+    assert says(page.text, "Add screenshots")
+    assert says(page.text, imports.ASIDE)
+    assert says(page.text, imports.LIMITS)
+    assert says(page.text, imports.DISCLOSURE)
+    assert (
+        '<form method="post" action="/parent/imports" enctype="multipart/form-data">' in page.text
+    )
+    assert sent.status_code == 303
+    draft_id = sent.headers["location"].rsplit("/", 1)[-1]
+    assert f'href="/parent/imports/{draft_id}"' in listed
+    assert "Homework screenshots from " in listed
+    assert "Available until " in listed
+
+
+def test_family_review_from_another_computer_with_the_sign_in_off_says_where_to_add_them(
+    tmp_path: pathlib.Path,
+) -> None:
+    with here(open_settings(tmp_path), client="192.168.1.20") as browser:
         page = browser.get("/parent")
 
     assert page.status_code == 200
-    assert "/parent/imports" not in page.text
-    assert "Add screenshots" not in page.text
+    assert says(page.text, imports.SAID["only_here"])
+    assert 'action="/parent/imports"' not in page.text
 
 
 def test_an_expired_review_says_so_and_takes_nothing(tmp_path: pathlib.Path) -> None:

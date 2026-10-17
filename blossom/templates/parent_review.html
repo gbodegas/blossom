@@ -566,6 +566,33 @@
         <li>2. Review</li>
         <li>3. Saved</li>
       </ol>
+      {% if screenshots %}
+        <h2>Add screenshots</h2>
+        <p class="note">{{ screenshots.aside }}</p>
+        {% if screenshots.only_here %}
+          <p class="note">{{ screenshots.only_here }}</p>
+        {% else %}
+          <p class="note" id="screenshot-limits">{{ screenshots.limits }}</p>
+          <p class="note" id="screenshot-disclosure">{{ screenshots.disclosure }}</p>
+          <form method="post" action="/parent/imports" enctype="multipart/form-data">
+            <input type="hidden" name="token" value="{{ screenshots.token }}">
+            <input type="hidden" name="issued" value="{{ screenshots.issued }}">
+            <label for="screenshot-files">Screenshots</label>
+            <input type="file" id="screenshot-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="screenshot-limits screenshot-disclosure">
+            <div class="actions">
+              <button type="submit" class="primary">Add screenshots</button>
+            </div>
+          </form>
+        {% endif %}
+        {% if screenshots.reviews %}
+          <h3>Open screenshot reviews</h3>
+          <ul>
+            {% for review in screenshots.reviews %}
+              <li><a href="{{ review.href }}">{{ review.label }}</a> <span class="note">{{ review.until }}</span></li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      {% endif %}
       <h2>Paste school text</h2>
       <p class="note">
         Paste text from the homework page, a downloaded weekly summary, or a Missing email.

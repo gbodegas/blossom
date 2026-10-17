@@ -71,6 +71,7 @@ from blossom.stores.import_drafts import (
     ReviewChanged,
     TooManyImages,
     UnknownImage,
+    new_creation_token,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.templating import page_templates
@@ -623,6 +624,7 @@ async def rows_of(
         until=until_text(state, snapshot.expires_at),
         corrections=corrections,
         selected=frozenset(ticked) if ticked is not None else picked(snapshot.progress),
+        open_keys=[row.key for row in snapshot.rows if row.state == "open"],
     )
 
 
@@ -1111,3 +1113,198 @@ FIND_SAID: Final = {
     "nothing": "Nothing saved matches those words.",
 }
 """What the find page says when there is no card to find for, or nothing matches."""
+
+
+# ------------------------------------------------------------------ setting aside and discarding
+
+AFTER_SAID: Final = {
+    "set_aside": "Set aside. It won't be saved from this review.",
+    "finished": "This review is finished; there's nothing more to review.",
+    "nothing_saved": "Nothing was saved from this review.",
+    "discarded": "This review is discarded.",
+    "safe": "Anything you already saved is safe.",
+    "not_hers": 'You answered "Not hers". Nothing was saved.',
+    "not_hers_after_a_save": (
+        'Part of this review is already saved, so it can\'t be answered "Not hers". Leave the '
+        "rest unsaved instead."
+    ),
+    "nothing_set_aside": "Nothing was set aside.",
+    "nothing_discarded": "Nothing was discarded.",
+    "busy": "Blossom was busy, so nothing changed. Try again.",
+    "unchecked": "Nothing changed: this page's button couldn't be checked. Try again.",
+}
+"""What setting aside, finishing and discarding say, all in one place."""
+SMALL_FIELDS: Final = {
+    "set-aside": frozenset({"version", "keys", "check"}),
+    "finish": frozenset({"version", "keys", "check"}),
+    "discard": frozenset({"version", "check"}),
+    "not-hers": frozenset({"version", "check"}),
+}
+"""The fields each small form of the review sends, every one of them signed."""
+
+
+async def small_form(
+    request: Request, state: ApplicationState, found: DraftSnapshot, action: str
+) -> tuple[int, list[str]] | None:
+    """A small form's version and keys, when its fields are whole and signed with the review's
+    page key; None when they aren't."""
+    fields, whole = await fields_of(request, SMALL_FIELDS[action])
+    if not whole or not fields.get("version", "").isdigit() or len(fields["version"]) > 12:
+        return None
+    signed = [("version", fields["version"])]
+    if "keys" in SMALL_FIELDS[action]:
+        signed.append(("keys", fields["keys"]))
+    if action != "set-aside":
+        signed.append(("action", action))
+    if not hmac.compare_digest(fields["check"], page_check(found.page_key, signed)):
+        return None
+    try:
+        keys = json.loads(fields.get("keys", "[]"))
+    except ValueError:
+        return None
+    if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+        return None
+    return int(fields["version"]), keys
+
+
+def finished_said(found: DraftSnapshot, *first: str) -> list[str]:
+    """What a press that closed the review says: whether anything of it was saved."""
+    return [*first, AFTER_SAID["finished"] if found.saved else AFTER_SAID["nothing_saved"]]
+
+
+async def closing_press(
+    request: Request, state: ApplicationState, draft_id: str, action: str
+) -> Response:
+    """Leave this group unsaved, or Finish without the rest: the rows the page named set aside
+    at its version, the review closing when nothing is left open."""
+    found = await snapshot_or_page(request, state, draft_id)
+    if isinstance(found, Response):
+        return found
+    posted = await small_form(request, state, found, action)
+    if posted is None:
+        return to_review(state, draft_id, [AFTER_SAID["unchecked"]])
+    version, keys = posted
+    student = state.project_state.student_id()
+    store = state.import_drafts
+    try:
+        if action == "set-aside":
+            await asyncio.to_thread(store.set_aside, student, draft_id, version=version, keys=keys)
+        else:
+            await asyncio.to_thread(
+                store.discard_rest, student, draft_id, version=version, keys=keys
+            )
+    except ReviewChanged:
+        return to_review(state, draft_id, [CHANGED_IN_ANOTHER_TAB, AFTER_SAID["nothing_set_aside"]])
+    except (StoreBusy, WriterBusy):
+        return to_review(state, draft_id, [AFTER_SAID["busy"]])
+    except (DraftClosed, DraftExpired, DraftNotFound) as error:
+        return store_refusal(request, state, error)
+    after = await asyncio.to_thread(store.snapshot, student, draft_id)
+    first = [AFTER_SAID["set_aside"]] if action == "set-aside" else []
+    if after.closed_at is not None or after.finished:
+        lines = finished_said(found, *first)
+        return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
+    return to_review(state, draft_id, first or [AFTER_SAID["set_aside"]])
+
+
+@router.post("/{draft_id}/set-aside")
+async def set_aside(request: Request, draft_id: str, state: State) -> Response:
+    """Leave this group unsaved: the group's rows set aside at the page's version."""
+    return await closing_press(request, state, draft_id, "set-aside")
+
+
+@router.post("/{draft_id}/finish")
+async def finish(request: Request, draft_id: str, state: State) -> Response:
+    """Finish without the rest: every open row the page showed set aside, the images with no
+    reading removed, and the review closed when nothing is left open."""
+    return await closing_press(request, state, draft_id, "finish")
+
+
+async def discarding_press(
+    request: Request, state: ApplicationState, draft_id: str, action: str
+) -> Response:
+    """Discard the review, or Not hers: the whole review discarded at the page's version, its
+    images, readings and saved progress removed. Not hers only while nothing of it is saved."""
+    found = await snapshot_or_page(request, state, draft_id)
+    if isinstance(found, Response):
+        return found
+    posted = await small_form(request, state, found, action)
+    if posted is None:
+        return to_review(state, draft_id, [AFTER_SAID["unchecked"]])
+    if action == "not-hers" and found.saved:
+        return to_review(state, draft_id, [AFTER_SAID["not_hers_after_a_save"]])
+    student = state.project_state.student_id()
+    try:
+        await asyncio.to_thread(
+            state.import_drafts.discard_review, student, draft_id, version=posted[0]
+        )
+    except ReviewChanged:
+        return to_review(state, draft_id, [CHANGED_IN_ANOTHER_TAB, AFTER_SAID["nothing_discarded"]])
+    except (StoreBusy, WriterBusy):
+        return to_review(state, draft_id, [AFTER_SAID["busy"]])
+    except (DraftClosed, DraftExpired, DraftNotFound) as error:
+        return store_refusal(request, state, error)
+    if action == "not-hers":
+        return said_page(request, marks_of(state), AFTER_SAID["not_hers"], 200)
+    last = AFTER_SAID["safe"] if found.saved else AFTER_SAID["nothing_saved"]
+    return said_page(request, marks_of(state), AFTER_SAID["discarded"], 200, last)
+
+
+@router.post("/{draft_id}/discard")
+async def discard(request: Request, draft_id: str, state: State) -> Response:
+    """Discard the review."""
+    return await discarding_press(request, state, draft_id, "discard")
+
+
+@router.post("/{draft_id}/not-hers")
+async def not_hers(request: Request, draft_id: str, state: State) -> Response:
+    """Not hers: the review discarded, while nothing of it is saved."""
+    return await discarding_press(request, state, draft_id, "not-hers")
+
+
+# ------------------------------------------------------------------ the entry in Family review
+
+ASIDE: Final = "Pasting the school's text stays the exact way on a computer."
+DISCLOSURE: Final = (
+    "When you press Read, Blossom sends the screenshots to Anthropic's API to be read. A "
+    "review's screenshots, what Blossom read from them, and any progress saved for later are "
+    "removed from Blossom's database file when the review finishes, is discarded, or expires, "
+    "48 hours after it starts. The removal can wait for Blossom's next hourly cleanup, or its "
+    "next start. It doesn't guarantee they are erased from the disk, and a backup taken while "
+    "the review was open may still hold copies."
+)
+"""What Family review says beside Add screenshots: what is sent and when, what is removed and
+when, and the backup caveat."""
+
+
+def screenshot_entry(request: Request, state: ApplicationState) -> dict[str, object] | None:
+    """Family review's screenshot entry: None while screenshot import is off; else the form
+    that starts a review, or where screenshots can be added from, and the reviews still open,
+    each with when it stops being available."""
+    if not state.settings.screenshot_import:
+        return None
+    if not state.settings.household_sign_in and not from_this_computer(request):
+        return {"aside": ASIDE, "only_here": SAID["only_here"], "reviews": []}
+    student = state.project_state.student_id()
+    try:
+        drafts = state.import_drafts.open_drafts(student)
+    except (StoreBusy, WriterBusy):
+        drafts = ()
+    reviews = [
+        {
+            "href": f"{PREFIX}/{draft.draft_id}",
+            "label": f"Homework screenshots from {until_text(state, draft.created_at)}",
+            "until": f"Available until {until_text(state, draft.expires_at)}",
+        }
+        for draft in drafts
+        if draft.kind == HOMEWORK
+    ]
+    return {
+        "aside": ASIDE,
+        "only_here": None,
+        "limits": LIMITS,
+        "disclosure": DISCLOSURE,
+        "token": new_creation_token(),
+        "issued": state.real_clock.now().isoformat(),
+        "reviews": reviews,
+    }

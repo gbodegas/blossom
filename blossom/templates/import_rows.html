@@ -22,10 +22,10 @@
         {% if question.remove %}
           <div class="actions">
             {% for image_id, label in question.remove %}<button type="submit" class="secondary" form="remove-{{ image_id }}">{{ label }}</button>{% endfor %}
-            <button type="submit" class="secondary" form="not-hers">Not hers</button>
           </div>
         {% endif %}
       {% endfor %}
+      {% if rows.not_hers %}<div class="actions"><button type="submit" class="secondary" form="not-hers">Not hers</button></div>{% endif %}
     </section>
   {% endif %}
   {% if rows.splits %}
@@ -38,6 +38,7 @@
             <label><input type="radio" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
           {% endfor %}
         </fieldset>
+        {% if question.leave %}<div class="actions"><button type="submit" class="secondary" form="{{ question.leave }}">Leave this group unsaved</button></div>{% endif %}
       {% endfor %}
     </section>
   {% endif %}

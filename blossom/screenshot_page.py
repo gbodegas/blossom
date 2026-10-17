@@ -189,6 +189,8 @@ class Question:
     """(value, label, checked)."""
     many: bool = False
     helper: str | None = None
+    leave: str | None = None
+    """The "Leave this group unsaved" form a split question's row may be set aside with."""
     text: tuple[str, str] | None = None
     """For a field the reader wasn't sure of: the correction's field name and its typed value."""
 
@@ -270,6 +272,9 @@ class RowsShown:
     hidden: tuple[tuple[str, str], ...]
     status: str
     forms: tuple[OutsideForm, ...]
+    not_hers: bool = False
+    """Whether "Not hers" is offered: with the name question, while nothing of the review is
+    saved."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -589,6 +594,7 @@ def rows_shown(
     until: str,
     corrections: Mapping[str, Mapping[str, str]],
     selected: frozenset[str] | None = None,
+    open_keys: Sequence[str] = (),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, one control per open piece
     by name group, each destination's questions, and the group preview with its refusals and
@@ -803,7 +809,22 @@ def rows_shown(
     ]
     hidden += [(f"digest:{u}", ",".join(d)) for u, d in sorted(digests.items())]
     hidden.append(("check", page_check(page_key, hidden)))
-    for action in ("finish", "discard", "not-hers"):
+    for index, row in enumerate(state.asking, 1):
+        keys = json.dumps([row.key], separators=(",", ":"))
+        signed = [("version", str(version)), ("keys", keys)]
+        signed.append(("check", page_check(page_key, signed)))
+        forms.append(OutsideForm(f"leave-split-{index}", "set-aside", tuple(signed)))
+    splits = tuple(
+        dataclasses.replace(question, leave=f"leave-split-{index}")
+        for index, question in enumerate(splits, 1)
+    )
+    finishing = [
+        ("version", str(version)),
+        ("keys", json.dumps(sorted(open_keys), separators=(",", ":"))),
+    ]
+    finishing.append(("check", page_check(page_key, [*finishing, ("action", "finish")])))
+    forms.append(OutsideForm("finish", "finish", tuple(finishing)))
+    for action in ("discard", "not-hers"):
         signed = [("version", str(version))]
         signed.append(("check", page_check(page_key, [*signed, ("action", action)])))
         forms.append(OutsideForm(action, action, tuple(signed)))
@@ -815,6 +836,7 @@ def rows_shown(
         tuple(hidden),
         SAID["status"],
         tuple(forms),
+        bool(names) and not state.saved,
     )
 
 
