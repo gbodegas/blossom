@@ -7,7 +7,7 @@
   the smaller actions are forms of their own after it, which their buttons name, so nothing
   needs scripts.
 #}
-<form method="post" action="/parent/imports/{{ draft_id }}/review" class="review-form import-review" id="review-form">
+<form method="post" action="/parent/imports/{{ draft_id }}/review" class="review-form" id="review-form">
   {% for name, value in rows.hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   {% if rows.names %}
     <section class="panel" aria-labelledby="name-heading">

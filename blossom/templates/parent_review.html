@@ -567,6 +567,7 @@
         <li>3. Saved</li>
       </ol>
       {% if screenshots %}
+        <div class="import-review">
         <h2>Add screenshots</h2>
         <p class="note">{{ screenshots.aside }}</p>
         {% if screenshots.only_here %}
@@ -592,6 +593,7 @@
             {% endfor %}
           </ul>
         {% endif %}
+        </div>
       {% endif %}
       <h2>Paste school text</h2>
       <p class="note">

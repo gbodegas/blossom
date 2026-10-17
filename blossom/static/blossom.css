@@ -1985,11 +1985,13 @@ pre.example {
   }
 }
 
-/* The screenshot review's fieldsets and cards give way as the grade review's do: on a phone
-   with text at 200%, a fieldset takes the page's width, and a card's side padding goes to
-   13vw - 1rem where that is narrower, reaching into the page's side margin, before any word
-   breaks. An entry's reference, or an id shown whole, breaks only where its line can't hold
-   it. Every screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
+/* The screenshot review's fieldsets and panels give way as the grade review's do: on a phone
+   with text at 200%, a fieldset takes the page's width, and a panel's side padding goes to
+   13vw - 1rem where that is narrower, the panel reaching into the page's side margin, before
+   any word breaks. A card inside a panel gives way the same way without reaching any further,
+   so it never passes the screen's edge. An entry's reference, or an id shown whole, breaks
+   only where its line can't hold it, and a file input is never wider than its panel. Every
+   screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
 .import-review .choice {
   min-width: 0;
   padding-inline: clamp(0px, 13vw - 1rem, 1rem);
@@ -1999,15 +2001,22 @@ pre.example {
   overflow-wrap: anywhere;
 }
 
-.import-review .panel,
-.import-review article {
+.import-review .panel {
   margin-inline: min(0px, 13vw - 2.25rem);
   padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
 }
 
+.import-review .panel article {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+.import-review input[type="file"] {
+  max-width: 100%;
+}
+
 @media (max-width: 30rem) {
   .import-review .panel,
-  .import-review article {
+  .import-review .panel article {
     padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
   }
 }

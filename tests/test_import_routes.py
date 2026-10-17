@@ -48,12 +48,21 @@ from tests.support import (
     PLAN_DATE,
     THEIRS,
     Answer,
+    Element,
+    Rule,
+    UnreadCss,
+    View,
+    elements_of,
     fixture_settings,
     homework_answer,
     homework_card,
+    selector,
     signed_in,
     signed_in_household,
     state_of,
+    style_rules,
+    unshielded,
+    winner,
 )
 
 LOOPBACK = "127.0.0.1:8781"
@@ -1811,29 +1820,193 @@ IMPORT_REVIEW_RULES = (
     ".import-review .choice {\n  min-width: 0;\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"
     ".import-review .choice label > span {\n  overflow-wrap: anywhere;\n}\n\n"
-    ".import-review .panel,\n.import-review article {\n"
+    ".import-review .panel {\n"
     "  margin-inline: min(0px, 13vw - 2.25rem);\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
+    ".import-review .panel article {\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
+    '.import-review input[type="file"] {\n  max-width: 100%;\n}\n\n'
     "@media (max-width: 30rem) {\n"
-    "  .import-review .panel,\n  .import-review article {\n"
+    "  .import-review .panel,\n  .import-review .panel article {\n"
     "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
 )
 """The screenshot review's rules, pinned whole: on a narrow screen with large text its
-fieldsets take the page's width and its cards' side padding gives way before a word breaks."""
+fieldsets take the page's width, a panel's side padding gives way and the panel reaches into
+the page's margin, a card inside a panel gives way without reaching further, and a file input
+is never wider than its panel."""
+STYLESHEET = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
 
 
-def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_rows_carry_its_class() -> None:
-    static = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
-    css = static.read_text(encoding="utf-8")
+def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_its_class() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
     carriers = sorted(
         page.name
-        for page in (static.parents[1] / "templates").glob("*.html")
+        for page in (STYLESHEET.parents[1] / "templates").glob("*.html")
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 6
+    assert css.count("import-review") == 7
     assert css.count(IMPORT_REVIEW_RULES) == 1
-    assert carriers == ["import_rows.html"]
+    assert carriers == ["import_review.html", "parent_review.html"]
+
+
+# ------------------------------------------------------------------ the cascade at 320 px
+
+NARROW = View(320, browser_text=32, root_text=32)
+"""A phone 320 pixels wide with the browser's text at 200%."""
+SPACING = ("margin-left", "margin-right", "padding-left", "padding-right", "max-width")
+"""The properties the checks below read."""
+
+
+def spacing_of(name: str, value: str) -> dict[str, str]:
+    """The longhands a spacing declaration sets, refusing a form these checks don't read."""
+    parts = value.split()
+    if name in ("margin", "padding"):
+        if not 1 <= len(parts) <= 4 or "(" in value:
+            raise UnreadCss(value)
+        right = parts[1] if len(parts) > 1 else parts[0]
+        left = parts[3] if len(parts) == 4 else right
+        return {f"{name}-left": left, f"{name}-right": right}
+    if name in ("margin-inline", "padding-inline"):
+        box = name.removesuffix("-inline")
+        return {f"{box}-left": value, f"{box}-right": value}
+    if name in SPACING:
+        return {name: value}
+    return {}
+
+
+def spacing_sheet() -> dict[str, list[Rule]]:
+    sheet: dict[str, list[Rule]] = {}
+    for style in style_rules(STYLESHEET.read_text(encoding="utf-8")):
+        declared = [
+            (longhand, setting, important)
+            for name, value, important in style.declarations
+            for longhand, setting in spacing_of(name, value.strip().lower()).items()
+        ]
+        if not declared:
+            continue
+        chosen = [selector(unshielded(head)) for head in style.selectors.split(",")]
+        for longhand, setting, important in declared:
+            for one in chosen:
+                sheet.setdefault(longhand, []).append(
+                    Rule(one, setting, style.order, style.media, important)
+                )
+    return sheet
+
+
+def px(value: str | None, view: View) -> float:
+    """A margin or padding in pixels: unset, ``auto`` or ``0``; a length; or ``min`` or
+    ``clamp`` of lengths or of their spaced sums and differences, read argument by argument.
+    Any other form is refused, never worked out."""
+    if value is None or value in ("auto", "0"):
+        return 0.0
+    called = re.fullmatch(r"(min|clamp)\((.+)\)", value)
+    if called is None:
+        return length_px(value, view)
+    found = [summed_px(one.strip(), view) for one in called.group(2).split(",")]
+    if called.group(1) == "min":
+        return min(found)
+    if len(found) != 3:
+        raise UnreadCss(value)
+    low, middle, high = found
+    return max(low, min(middle, high))
+
+
+def summed_px(value: str, view: View) -> float:
+    """An argument of ``min`` or ``clamp``: a length, or lengths added and taken away with a
+    spaced sign. A bare number, a keyword or a function there is refused."""
+    terms = re.split(r"\s+([-+])\s+", value)
+    total = length_px(terms[0], view)
+    for sign, term in zip(terms[1::2], terms[2::2], strict=True):
+        total += length_px(term, view) if sign == "+" else -length_px(term, view)
+    return total
+
+
+def length_px(value: str, view: View) -> float:
+    """A length in px, rem or vw; anything else is refused."""
+    read = re.fullmatch(r"(\d*\.?\d+)(px|rem|vw)", value)
+    if read is None:
+        raise UnreadCss(value)
+    unit = {"px": 1.0, "rem": float(view.root_text), "vw": view.width / 100}
+    return float(read.group(1)) * unit[read.group(2)]
+
+
+def test_the_length_reader_reads_the_review_s_forms_and_refuses_any_other() -> None:
+    assert px("clamp(0px, 13vw - 1rem, 1.2rem)", NARROW) == pytest.approx(9.6)
+    assert px("min(0px, 13vw - 2.25rem)", NARROW) == pytest.approx(-30.4)
+    assert px("auto", NARROW) == px("0", NARROW) == 0.0
+    for unknown in ("calc(1px)", "max(1px, 2px)", "clamp(1px, 2px)", "50%", "1em", "1px+2px"):
+        with pytest.raises(UnreadCss):
+            px(unknown, NARROW)
+
+
+def spacing(sheet: dict[str, list[Rule]], element: Element, name: str) -> float:
+    rules = [rule for rule in sheet.get(name, []) if rule.chosen.matches(element)]
+    found = winner(rules, NARROW)
+    if found is None and element.tag == "ul" and name == "padding-left":
+        return 40.0
+    return px(None if found is None else found.value, NARROW)
+
+
+def left_edge(sheet: dict[str, list[Rule]], element: Element) -> float:
+    """Where an element's border box starts from the screen's left edge, with every block
+    above it as wide as its page allows."""
+    edge = spacing(sheet, element, "margin-left")
+    for above in element.ancestors():
+        edge += spacing(sheet, above, "margin-left") + spacing(sheet, above, "padding-left")
+    return edge
+
+
+def review_pages(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        family = browser.get("/parent").text
+    return {"review": page, "family": family}
+
+
+def test_at_320_px_with_large_text_no_card_of_the_preview_passes_the_screen_s_edge(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = spacing_sheet()
+    page = review_pages(tmp_path, monkeypatch)["review"]
+    cards = [e for e in elements_of(page) if e.tag == "article"]
+
+    assert len(cards) == 2
+    assert all(left_edge(sheet, card) >= 0 for card in cards)
+
+
+def test_at_320_px_with_large_text_every_panel_of_the_review_gives_way(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = spacing_sheet()
+    page = review_pages(tmp_path, monkeypatch)["review"]
+    panels = [e for e in elements_of(page) if e.tag == "section" and "panel" in e.classes]
+    narrowest = px("clamp(0px, 13vw - 1rem, 1.2rem)", NARROW)
+
+    assert len(panels) >= 4
+    assert all(spacing(sheet, panel, "padding-left") == narrowest for panel in panels)
+    assert all(left_edge(sheet, panel) < 40 for panel in panels)
+
+
+def test_every_file_input_of_screenshot_import_keeps_within_its_panel(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = spacing_sheet()
+    pages = review_pages(tmp_path, monkeypatch)
+    inputs = [
+        e
+        for page in pages.values()
+        for e in elements_of(page)
+        if e.tag == "input" and e.attributes.get("type") == "file"
+    ]
+
+    assert len(inputs) == 2
+    for one in inputs:
+        found = winner(
+            [rule for rule in sheet.get("max-width", []) if rule.chosen.matches(one)], NARROW
+        )
+        assert found is not None
+        assert found.value == "100%"
 
 
 # ------------------------------------------------------------------ who may, and no-store

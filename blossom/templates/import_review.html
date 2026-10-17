@@ -5,6 +5,7 @@
 {% block content %}
   <h1>Homework screenshots</h1>
   <p class="note">Available until {{ until }}</p>
+  <div class="import-review">
   {% if said %}
     <div class="problem" role="status" id="said">
       {% for line in said %}<p>{{ line }}</p>{% endfor %}
@@ -53,5 +54,6 @@
       </form>
     </section>
   {% endif %}
+  </div>
   <p class="return"><a href="/parent">Back to Family review</a></p>
 {% endblock %}
