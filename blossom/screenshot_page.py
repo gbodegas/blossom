@@ -49,6 +49,7 @@ SAID: Final = {
         "press Save review for later."
     ),
     "preselected": "Preselected; kept when you press a button below.",
+    "not_saved_yet": "Not saved yet.",
     "find": "Find under another name\u2026",
     "no_words": "no instructions",
     "no_assigned": "no assigned date",
@@ -156,7 +157,7 @@ def piece_read(piece: Piece, course: str) -> str:
     due = f"due {day_text(piece.due)}" if piece.due else SAID["no_due"]
     assigned = f"assigned {day_text(piece.assigned)}" if piece.assigned else SAID["no_assigned"]
     texts = list(dict.fromkeys(i.text for i in piece.reading.instructions)) if piece.reading else []
-    words = words_line(texts[0] if texts else None, max(0, len(texts) - 1))
+    words = ", ".join(f"\u201c{text}\u201d" for text in texts) or SAID["no_words"]
     return f"This card: {title}, {due}, {assigned}, {words}"
 
 
@@ -279,6 +280,8 @@ class Question:
     """(value, label, checked)."""
     many: bool = False
     helper: str | None = None
+    unsaved: bool = False
+    """Whether the correction in its box is typing this press sent that isn't saved."""
     leave: str | None = None
     """The "Leave this group unsaved" form a split question's row may be set aside with."""
     text: tuple[str, str] | None = None
@@ -439,6 +442,22 @@ def _choices(state: ReviewState, piece: Piece, defaulted: bool) -> tuple[Choice,
             for f in facts(piece, row, state.rows, state.picks)
         )
         out.append(Choice(entry.value, label, shown, entry.value == picked))
+    for refusal in state.validation.of(piece.name).refusals:
+        holder = refusal.named[1] if refusal.kind == "copy" else None
+        offered = None if holder is None else value_json({"found": holder})
+        if (
+            holder is None
+            or piece.name not in refusal.pieces
+            or holder not in state.rows
+            or holder in {e.stands_for for e in entries}
+            or any(c.value == offered for c in out)
+        ):
+            continue
+        shown = tuple(
+            fact_text(f.kind, f.entry_date, f.piece_date, labels.get(str(f.about), ""))
+            for f in facts(piece, state.rows[holder], state.rows, state.picks)
+        )
+        out.append(Choice(str(offered), with_reference(state, holder), shown, offered == picked))
     if picked is not None and all(c.value != picked for c in out) and chosen is not None:
         target = str(chosen.get("found", ""))
         if dest_kind(chosen) == "found" and target in state.rows:
@@ -705,6 +724,7 @@ def rows_shown(
     selected: frozenset[str] | None = None,
     open_keys: Sequence[str] = (),
     unread: Sequence[UnreadCard] = (),
+    unsaved: frozenset[tuple[str, str]] = frozenset(),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, one control per open piece
     by name group, each destination's questions, and the group preview with its refusals and
@@ -833,6 +853,7 @@ def rows_shown(
                         ),
                     ),
                     text=(f"correct:{subject}", corrections.get(key, {}).get(field, "")),
+                    unsaved=(key, field) in unsaved,
                 )
             )
         for question in questions:

@@ -68,6 +68,7 @@
             {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
             {% if question.text %}
               <label>Correction <input type="text" name="{{ question.text[0] }}" value="{{ question.text[1] }}" maxlength="200"></label>
+              {% if question.unsaved %}<p class="note">Not saved yet.</p>{% endif %}
             {% endif %}
           </fieldset>
         {% endfor %}

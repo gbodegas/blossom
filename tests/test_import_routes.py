@@ -2099,6 +2099,135 @@ def test_the_review_s_screenshots_are_a_list_without_markers(tmp_path: pathlib.P
     assert STYLESHEET.read_text(encoding="utf-8").count(SCREENSHOT_LIST_RULE) == 1
 
 
+# ------------------------------------------------------------------ partial saves and holders
+
+
+def two_unsure() -> dict[str, object]:
+    marked = [{"field": "title", "reason": "a smudge over it"}]
+    return homework_answer(
+        cards=[
+            homework_card(uncertain=marked),
+            homework_card(
+                course="Science 8",
+                title="Chains Reading Guide 6",
+                instruction="Read chapter 6.",
+                uncertain=marked,
+                y_top=360,
+                y_bottom=430,
+            ),
+        ]
+    )
+
+
+def test_a_partial_save_returns_the_rows_left_open_with_their_typing_marked_unsaved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, two_unsure()))
+        page = her_name_answered(browser, draft_id, page)
+        first_confirm, second_confirm = fields_named(review_form(page), "answer:confirm:")
+        first_unit = digests_on(page)[0]
+        fields = page_post(
+            page,
+            "save",
+            tick=[first_unit],
+            choose={f"answer:confirm:{first_confirm}": "as_read"},
+            typed={f"correct:{second_confirm}": "Chains Reading Guide Six"},
+        )
+        saved = send(browser, draft_id, fields)
+        again = send(browser, draft_id, fields)
+        student = state_of(browser).project_state.student_id()
+        progress = state_of(browser).import_drafts.snapshot(student, draft_id).progress
+
+    for answer in (saved, again):
+        assert answer.status_code == 200
+        assert says(answer.text, imports.counted(1, 0, 1))
+        assert says(answer.text, imports.PRESS_SAID["unsaved_typing"])
+        form = review_form(answer.text)
+        assert 'value="Chains Reading Guide Six"' in form
+        assert says(form, screenshot_page.SAID["not_saved_yet"])
+    assert progress is None
+
+
+def test_typing_already_saved_for_later_isn_t_marked_unsaved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
+        [field] = fields_named(review_form(page), "correct:")
+        typed = {f"correct:{field}": "Sentence Combining"}
+        later = followed(browser, send(browser, draft_id, page_post(page, "later", typed=typed)))
+        kept = send(browser, draft_id, page_post(later, "keep"))
+
+    assert 'value="Sentence Combining"' in review_form(kept.text)
+    assert not says(review_form(kept.text), screenshot_page.SAID["not_saved_yet"])
+
+
+def test_a_refusal_s_holder_outside_the_card_s_list_is_offered_as_its_destination(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    later_card = homework_answer(cards=[homework_card(footer="Due (10/30/2026)")])
+    found_row = Assignment(
+        assignment_id="assignment-grammar-practice-hhhh7777",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 30),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        first, page = read_review(browser, monkeypatch, (BLUE, later_card))
+        page = her_name_answered(browser, first, page)
+        send(browser, first, page_post(page, "save", tick=units_on(page)))
+        [holder] = [
+            a
+            for a in state_of(browser).project_state.all_assignments()
+            if a.title == "Sentence Composing" and a.due_date == date(2026, 10, 30)
+        ]
+        state_of(browser).project_state.upsert_assignments([found_row])
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        found = json.dumps({"found": found_row.assignment_id}, separators=(",", ":"))
+        keep(browser, draft_id, ("destination", piece, found))
+        refused = browser.get(f"/parent/imports/{draft_id}").text
+        offered = json.dumps({"found": holder.assignment_id}, separators=(",", ":"))
+        chosen = send(
+            browser,
+            draft_id,
+            page_post(refused, "keep", choose={f"answer:destination:{piece}": offered}),
+        )
+        answers = stored_answers(browser, draft_id)
+
+    form = html.unescape(review_form(refused))
+    control = re.search(r"<legend>Sentence Composing \(.*?</fieldset>", form, re.S)
+    assert control is not None
+    assert "would copy the words of" in form
+    assert f'value="{offered}"' in control.group(0)
+    assert "Sentence Composing, due Fri 10/30, assigned Mon 10/5" in control.group(0)
+    assert "ref " in control.group(0) or holder.assignment_id in control.group(0)
+    assert "Has this card's words." in control.group(0)
+    assert "Due Fri 10/30: this card says Thu 10/8." in control.group(0)
+    assert chosen.status_code == 200
+    assert answers[("destination", piece)] == offered
+
+
+def test_each_card_s_own_line_shows_its_instructions_whole(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    long = "Complete pages 12 to 14, then write three sentences about each of the stories."
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card(instruction=long)]))
+        )
+
+    line = f"This card: Sentence Composing, due Thu 10/8, assigned Mon 10/5, \u201c{long}\u201d"
+    assert line in html.unescape(review_form(page))
+
+
 IMPORT_REVIEW_RULES = (
     ".import-review .choice {\n  min-width: 0;\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"

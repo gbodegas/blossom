@@ -625,6 +625,7 @@ async def rows_of(
         until=until_text(state, snapshot.expires_at),
         corrections=corrections,
         selected=row_keys(review, ticked) if ticked is not None else picked(snapshot.progress),
+        unsaved=frozenset() if typed is None else unsaved_typing(snapshot, typed),
         open_keys=open_keys,
         unread=unread,
     )
@@ -800,6 +801,7 @@ PRESS_SAID: Final = {
         "written. Save again."
     ),
     "failed": "The homework wasn't saved; nothing of it was written. Save again.",
+    "unsaved_typing": "Not saved yet: your changes on the rows below.",
     "incomplete": (
         "Homework saved. Blossom couldn't confirm this review is closed; its next hourly "
         "cleanup closes it if it's still open."
@@ -960,7 +962,7 @@ async def save_press(
     draft_id = found.draft_id
     recorded = await asyncio.to_thread(record.homework_acceptance, post.acceptance)
     if recorded is not None:
-        return await saved_page(request, state, draft_id, post.acceptance, [])
+        return await saved_page(request, state, draft_id, post.acceptance, [], post)
     try:
         kept = await asyncio.to_thread(
             state.import_drafts.keep_answers,
@@ -1046,7 +1048,33 @@ async def outcome_page(
         return said_page(request, marks_of(state), said[0], 200, *said[1:], SAID["closed"])
     if answered:
         said.append(PRESS_SAID["left_open"])
-    return to_review(state, draft_id, said)
+    return await partly_saved(request, state, draft_id, post, said)
+
+
+async def partly_saved(
+    request: Request, state: ApplicationState, draft_id: str, post: ReviewPost, said: list[str]
+) -> Response:
+    """A save that leaves the review open: the outcome, and the rows left open with the
+    corrections the press typed still in the form, marked as not saved, none of them stored."""
+    after = await snapshot_or_page(request, state, draft_id)
+    if isinstance(after, Response):
+        return after
+    if unsaved_typing(after, post.corrections):
+        said = [*said, PRESS_SAID["unsaved_typing"]]
+    return await with_typing(request, state, draft_id, post, said, 200)
+
+
+def unsaved_typing(
+    snapshot: DraftSnapshot, typed: Mapping[str, Mapping[str, str]]
+) -> frozenset[tuple[str, str]]:
+    """The corrections a press typed that saved progress doesn't hold, by row key and field."""
+    kept = corrections_of(snapshot.progress)
+    return frozenset(
+        (key, field)
+        for key, fields in typed.items()
+        for field, value in fields.items()
+        if kept.get(key, {}).get(field) != value
+    )
 
 
 async def replayed(request: Request, state: ApplicationState, draft_id: str) -> Response | None:
@@ -1064,10 +1092,16 @@ async def replayed(request: Request, state: ApplicationState, draft_id: str) -> 
 
 
 async def saved_page(
-    request: Request, state: ApplicationState, draft_id: str, acceptance: str, said: list[str]
+    request: Request,
+    state: ApplicationState,
+    draft_id: str,
+    acceptance: str,
+    said: list[str],
+    post: ReviewPost | None = None,
 ) -> Response:
     """A resent press whose acceptance id is recorded: that save's counts, and nothing
-    written."""
+    written. With the review still open, a press that carries its typing gets it back, as
+    the save it repeats did."""
     counts = await asyncio.to_thread(state.project_state.homework_counts, acceptance)
     lines = [*said, counted(counts[0], counts[1], counts[3])] if counts else said
     student = state.project_state.student_id()
@@ -1077,6 +1111,8 @@ async def saved_page(
         snapshot = None
     if snapshot is None or snapshot.closed_at is not None or snapshot.finished:
         return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
+    if post is not None:
+        return await partly_saved(request, state, draft_id, post, lines)
     return to_review(state, draft_id, lines)
 
 
