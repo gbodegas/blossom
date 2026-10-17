@@ -35,7 +35,12 @@ from blossom.screenshot_review import (
     value_json,
     value_of,
 )
-from blossom.screenshot_save import ReviewState, instruction_subject, unit_digests
+from blossom.screenshot_save import (
+    ReviewState,
+    confirm_subject,
+    instruction_subject,
+    unit_digests,
+)
 from blossom.screenshots import CardPlace, ScreenshotRow
 
 SAID: Final = {
@@ -63,6 +68,8 @@ SAID: Final = {
     "confirm": "Confirm as read",
     "homework": "Homework",
     "task": "Task",
+    "type": "Type",
+    "type_helper": "Task: a form to sign, supplies to bring, or similar.",
 }
 """The fixed sentences and labels of the review's rows."""
 
@@ -181,6 +188,7 @@ class Question:
     options: tuple[tuple[str, str, bool], ...]
     """(value, label, checked)."""
     many: bool = False
+    helper: str | None = None
     text: tuple[str, str] | None = None
     """For a field the reader wasn't sure of: the correction's field name and its typed value."""
 
@@ -222,6 +230,9 @@ class UnitShown:
     unit: str
     entries: tuple[EntryShown, ...]
     tick: bool
+    ticked: bool
+    """Ticked on the page, for display only: with saved progress, when it names the group and
+    the group is still open and can be ticked; with none, every group that can be ticked."""
     waits: tuple[str, ...]
     refusals: tuple[str, ...]
     offers: tuple[OfferShown, ...]
@@ -283,11 +294,6 @@ def page_check(page_key: bytes, fields: Sequence[tuple[str, str]]) -> str:
 def answer_field(kind: str, subject: str) -> str:
     """The form field an answer is posted in."""
     return f"answer:{kind}:{subject}"
-
-
-def confirm_subject(key: str, field: str) -> str:
-    """A confirmation's subject: the row key and the field."""
-    return json.dumps([key, field], separators=(",", ":"))
 
 
 # ------------------------------------------------------------------ the parts
@@ -582,6 +588,7 @@ def rows_shown(
     acceptance: str,
     until: str,
     corrections: Mapping[str, Mapping[str, str]],
+    selected: frozenset[str] | None = None,
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, one control per open piece
     by name group, each destination's questions, and the group preview with its refusals and
@@ -601,7 +608,9 @@ def rows_shown(
     for piece in open_pieces:
         groups.setdefault(piece.pair, []).append(piece)
     previews = {e.dest: e for e in state.preview}
-    asked_fields: list[tuple[str, str]] = []
+    asked_fields: list[tuple[str, str]] = [
+        (q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in names
+    ] + [(q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in splits]
     shown_groups = []
     for pieces in groups.values():
         controls = tuple(
@@ -671,6 +680,22 @@ def rows_shown(
                         many=True,
                     )
                 )
+        typed: dict[str, Piece] = {}
+        for piece in pieces:
+            typed.setdefault(piece.key, piece)
+        for key, piece in typed.items():
+            got = values.get(("kind", key))
+            questions.append(
+                Question(
+                    answer_field("kind", key),
+                    f"{SAID['type']}: {piece_text(places, piece)}",
+                    (
+                        ("HOMEWORK", SAID["homework"], got == "HOMEWORK"),
+                        ("TASK", SAID["task"], got == "TASK"),
+                    ),
+                    helper=SAID["type_helper"],
+                )
+            )
         confirming: dict[tuple[str, str], Piece] = {}
         for piece in pieces:
             for field in sorted(piece.uncertain):
@@ -749,11 +774,13 @@ def rows_shown(
         leave = [("version", str(version)), ("keys", keys)]
         leave.append(("check", page_check(page_key, leave)))
         forms.append(OutsideForm(f"leave-{number}", "set-aside", tuple(leave)))
+        tickable = unit.ready and not still_any and unit_name(unit.unit) in digests
         shown_units.append(
             UnitShown(
                 unit_name(unit.unit),
                 tuple(entries_shown),
-                unit.ready and not still_any and unit_name(unit.unit) in digests,
+                tickable,
+                tickable and (selected is None or unit_name(unit.unit) in selected),
                 _waits(unit),
                 refusals,
                 tuple(shown_offers),

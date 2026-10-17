@@ -1840,8 +1840,8 @@ def test_answers_are_kept_at_the_pages_version_with_one_raise(world: World) -> N
 
 
 def test_an_answer_for_pieces_another_save_accepted_is_dropped(world: World) -> None:
-    """MUST-A: an answer naming only saved pieces is dropped, never stored or refused; the rest
-    of the post is stored."""
+    """An answer naming only pieces another save took is dropped, never stored or refused; the
+    rest of the post is stored."""
     draft_id = world.draft("a")
     world.read(draft_id, "a", "r1", "r2")
     world.accept(draft_id, "0:r1")
@@ -1875,7 +1875,7 @@ def test_a_busy_writer_keeps_no_answer(world: World) -> None:
 
 def test_saving_for_later_keeps_answers_and_progress_in_one_transaction(world: World) -> None:
     """On a current page both are stored; on a page behind another tab's save for later the
-    answers are kept and no progress is stored (T27); a write refused inside the transaction
+    answers are kept and no progress is stored; a write refused inside the transaction
     leaves neither."""
     draft_id = world.draft("a")
     world.read(draft_id, "a", "r1", "r2")

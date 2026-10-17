@@ -86,6 +86,17 @@ class HomeworkSaveRecords:
             return None
         return tuple((str(name), str(target)) for name, target in json.loads(str(row[0])))
 
+    def homework_counts(self, acceptance_id: str) -> tuple[int, int, int, int] | None:
+        """What a homework acceptance with this id counted: assignments added, updated and
+        already saved, and pieces left to check; None when there is none."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT added, updated, already_saved, left_to_check FROM grade_acceptances "
+                "WHERE acceptance_id = ? AND kind = ?",
+                (acceptance_id, HOMEWORK),
+            ).fetchone()
+        return None if row is None else (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
+
     def draft_for_save(self, student_id: str, draft_id: str) -> DraftForSave | None:
         """Her homework draft's tables, or None when she has no such draft."""
         # The draft store's statements, read here on the writer's connection; imported here

@@ -991,11 +991,17 @@ NO_BODY: Final = frozenset(
 )
 """The routes that change something and read no body at all."""
 READS_ITS_OWN_BODY: Final = frozenset(
-    {"/parent/imports", "/parent/imports/{draft_id}/images", "/parent/imports/{draft_id}/read"}
+    {
+        "/parent/imports",
+        "/parent/imports/{draft_id}/images",
+        "/parent/imports/{draft_id}/read",
+        "/parent/imports/{draft_id}/review",
+    }
 )
 """The import routes that take no form parameter and read their body themselves once their
-parent-only check has passed: an upload's multipart body within its limits, and a Read press's
-two fields. ``tests/test_import_routes.py`` presses them."""
+parent-only check has passed: an upload's multipart body within its limits, a Read press's two
+fields, and a review press's answers against the fields its page signed.
+``tests/test_import_routes.py`` presses them."""
 READS: Final = frozenset({"GET", "HEAD"})
 PARENT_MAY_PRESS: Final = frozenset({"/student/actions/plan", "/student/grades/view"})
 """Her routes that read the body of a parent's press rather than refusing it first: the plan

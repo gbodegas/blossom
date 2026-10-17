@@ -16,10 +16,12 @@ import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import date
+from typing import Final
 
 import pytest
 
 from blossom import intake
+from blossom.grades.identity import name_form
 from blossom.screenshot_review import carry, piece_names, unit_name, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
@@ -166,13 +168,17 @@ def state_of(house: House, draft_id: str, record: ProjectStateStore | None = Non
 def keep_destinations(
     house: House, draft_id: str, chosen: Mapping[str, Mapping[str, object]]
 ) -> None:
-    """Step 2 as a press runs it: the destinations posted, kept at the page's version."""
+    """Keep a press's posted destinations at the page's version, before any save."""
     version = house.drafts.snapshot(house.student, draft_id).version
     answers = [
         AnswerToKeep("destination", name, value_json(v), correction_digest_none(), (name,))
         for name, v in chosen.items()
     ]
     house.drafts.keep_answers(house.student, draft_id, version=version, answers=answers)
+
+
+NAME_KEY: Final = b"synthetic-name-key-for-the-tests"
+"""The key the tests' name forms are made under."""
 
 
 def correction_digest_none() -> str:
@@ -194,8 +200,8 @@ def press_of(
         digests,
         {name: value_json(value) for name, value in state.defaults.items()},
         {},
-        "matches",
-        "shown",
+        dict.fromkeys((c.sha256 for p in state.pieces for c in p.cards), ("matches", None)),
+        NAME_KEY,
     )
 
 
@@ -233,7 +239,7 @@ def acceptances(house: House) -> list[str]:
     ]
 
 
-def two_row_review(house: House) -> str:
+def two_row_review(house: House, *, answer_due: bool = True) -> str:
     """A Vocab Quiz with no saved assignment, and a Reading Log that a saved Word Study row of
     another name, due Monday, is found for, with its due date moved to Friday."""
     house.record.upsert_assignments(
@@ -266,6 +272,8 @@ def two_row_review(house: House) -> str:
         draft_id,
         {quiz.name: {"new": 1}, log.name: {"found": "assignment-word-study-x1", "offer": "basis"}},
     )
+    if not answer_due:
+        return draft_id
     state = state_of(house, draft_id)
     [question] = [q for u in state.validation.units for q in u.questions if q.kind == "due"]
     version = house.drafts.snapshot(house.student, draft_id).version
@@ -331,6 +339,123 @@ def test_the_save_counts_what_it_did_on_the_acceptance(house: House) -> None:
     assert row == ("matches", "shown", 1, 1, 0, 0, 2, 3, 1, 0)
 
 
+def test_a_pressed_group_with_a_question_still_open_is_refused_and_nothing_is_written(
+    house: House,
+) -> None:
+    draft_id = two_row_review(house, answer_due=False)
+    press = press_of(house, draft_id)
+    state = state_of(house, draft_id)
+    [waiting] = [unit_name(u.unit) for u in state.validation.units if u.questions]
+    before = world(house)
+
+    assert save(house, press) == NotSaved("open", (waiting,))
+    assert world(house) == before
+
+
+def test_yes_this_is_her_name_adds_the_keyed_form_as_the_homework_commits(house: House) -> None:
+    draft_id = her_name_review(house)
+    assert house.record.identity_of(NAME_KEY, "Wren").status.value == "first_use"
+
+    assert isinstance(save(house, first_use(press_of(house, draft_id))), Saved)
+
+    assert house.record.identity_of(NAME_KEY, "Wren").status.value == "matches"
+    forms = sqlite3.connect(house.path).execute("SELECT * FROM grade_name_forms").fetchall()
+    assert len(forms) == 1
+    assert "Wren" not in repr(forms)
+    assert identity_row(house) == ("first_use", "hers")
+
+
+def identity_row(house: House) -> tuple[object, ...]:
+    return tuple(
+        sqlite3.connect(house.path)
+        .execute("SELECT identity_status, identity_answer FROM grade_acceptances")
+        .fetchone()
+        or ()
+    )
+
+
+def named(press: SavePress, status: str, form: str | None) -> SavePress:
+    """The press with every read screenshot's student line given this status and form."""
+    return dataclasses.replace(press, names=dict.fromkeys(press.names, (status, form)))
+
+
+def test_an_unconfirmed_name_saves_only_with_its_stored_answer_which_the_save_carries(
+    house: House,
+) -> None:
+    draft_id = two_row_review(house)
+    press = named(press_of(house, draft_id), "first_use", "f" * 64)
+    before = world(house)
+
+    assert save(house, press) == NotSaved("open", tuple(sorted(press.units)))
+    assert world(house) == before
+
+    version = house.drafts.snapshot(house.student, draft_id).version
+    house.drafts.keep_answers(
+        house.student,
+        draft_id,
+        version=version,
+        answers=[AnswerToKeep("name", "f" * 64, "hers", correction_digest_none(), ())],
+    )
+    press = named(press_of(house, draft_id, "2" * 32), "first_use", "f" * 64)
+
+    assert isinstance(save(house, press), Saved)
+    assert identity_row(house) == ("first_use", "hers")
+
+
+def test_screenshots_with_no_name_save_once_confirmed_and_a_line_never_checked_waits(
+    house: House,
+) -> None:
+    draft_id = two_row_review(house)
+    unchecked = dataclasses.replace(press_of(house, draft_id), names={})
+    missing = named(press_of(house, draft_id), "missing", None)
+
+    assert save(house, unchecked) == NotSaved("open", tuple(sorted(unchecked.units)))
+    assert save(house, missing) == NotSaved("open", tuple(sorted(missing.units)))
+
+    version = house.drafts.snapshot(house.student, draft_id).version
+    house.drafts.keep_answers(
+        house.student,
+        draft_id,
+        version=version,
+        answers=[AnswerToKeep("name", "missing", "confirmed", correction_digest_none(), ())],
+    )
+
+    assert isinstance(
+        save(house, named(press_of(house, draft_id, "3" * 32), "missing", None)), Saved
+    )
+    assert identity_row(house) == ("missing", "confirmed")
+
+
+def test_units_needing_two_different_name_answers_are_refused_together(house: House) -> None:
+    draft_id = read_review(
+        house,
+        screenshot("Friday 8/21/2026", card("Vocab Quiz", "Study list one.", 200)),
+        screenshot("Friday 8/21/2026", card("Reading Log", "Read pages 4 to 6.", 200)),
+    )
+    state = state_of(house, draft_id)
+    keep_destinations(house, draft_id, {p.name: {"new": 1} for p in state.pieces})
+    press = press_of(house, draft_id)
+    first, second = sorted(press.names)
+    version = house.drafts.snapshot(house.student, draft_id).version
+    house.drafts.keep_answers(
+        house.student,
+        draft_id,
+        version=version,
+        answers=[
+            AnswerToKeep("name", "a" * 64, "hers", correction_digest_none(), ()),
+            AnswerToKeep("name", "missing", "confirmed", correction_digest_none(), ()),
+        ],
+    )
+    press = press_of(house, draft_id)
+    both = {first: ("not_confirmed", "a" * 64), second: ("missing", None)}
+    before = world(house)
+
+    outcome = save(house, dataclasses.replace(press, names=both))
+
+    assert outcome == NotSaved("names", tuple(sorted(press.units)))
+    assert world(house) == before
+
+
 def instruction_choice_review(house: House) -> str:
     """A Vocab Quiz saved with "Study list two.", then a second review whose card, with "Study
     list one.", goes to it: the record asks which instructions apply, and only the new one is
@@ -390,9 +515,43 @@ INSTRUCTION_SITES: tuple[tuple[int, str], ...] = (
 )
 """The write sites of a save onto an existing assignment with an answered instruction question:
 the new instruction, the earlier one kept as history, the acceptance and the answer deletes."""
-SHAPES: dict[str, tuple[Callable[[House], str], tuple[tuple[int, str], ...]]] = {
-    "new slot and found row": (two_row_review, SITES),
-    "instruction choice": (instruction_choice_review, INSTRUCTION_SITES),
+WREN_FORM: Final = name_form(NAME_KEY, "Wren")
+"""The keyed form of the student line the synthetic screenshots carry."""
+
+
+def her_name_review(house: House) -> str:
+    """The new slot and found row, from a screenshot whose name no form confirms yet, answered
+    "Yes, this is her name"."""
+    draft_id = two_row_review(house)
+    version = house.drafts.snapshot(house.student, draft_id).version
+    house.drafts.keep_answers(
+        house.student,
+        draft_id,
+        version=version,
+        answers=[AnswerToKeep("name", WREN_FORM, "hers", correction_digest_none(), ())],
+    )
+    return draft_id
+
+
+def first_use(press: SavePress) -> SavePress:
+    """The press with every screenshot's line read as a first use of her name."""
+    return dataclasses.replace(press, names=dict.fromkeys(press.names, ("first_use", WREN_FORM)))
+
+
+NAME_SITES: tuple[tuple[int, str], ...] = (
+    *SITES,
+    (sqlite3.SQLITE_INSERT, "grade_name_forms"),
+    (sqlite3.SQLITE_UPDATE, "grade_student"),
+)
+"""The write sites of that save with "Yes, this is her name": its keyed form, and the key check
+the first form sets."""
+SHAPES: dict[
+    str,
+    tuple[Callable[[House], str], tuple[tuple[int, str], ...], Callable[[SavePress], SavePress]],
+] = {
+    "new slot and found row": (two_row_review, SITES, lambda press: press),
+    "instruction choice": (instruction_choice_review, INSTRUCTION_SITES, lambda press: press),
+    "her name confirmed": (her_name_review, NAME_SITES, first_use),
 }
 ALL_SITES = frozenset(
     {
@@ -406,17 +565,19 @@ ALL_SITES = frozenset(
         (sqlite3.SQLITE_INSERT, "grade_acceptances"),
         (sqlite3.SQLITE_UPDATE, "grade_acceptances"),
         (sqlite3.SQLITE_DELETE, "import_draft_answers"),
+        (sqlite3.SQLITE_INSERT, "grade_name_forms"),
+        (sqlite3.SQLITE_UPDATE, "grade_student"),
     }
 )
 """The closed list: every write site the homework transaction makes, across the shapes."""
-REFUSALS = [(shape, site) for shape, (_, sites) in SHAPES.items() for site in sites]
+REFUSALS = [(shape, site) for shape, (_, sites, _) in SHAPES.items() for site in sites]
 
 
 @pytest.mark.parametrize("shape", sorted(SHAPES))
 def test_a_full_save_writes_exactly_the_named_statements(house: House, shape: str) -> None:
-    build, expected = SHAPES[shape]
+    build, expected, adjust = SHAPES[shape]
     draft_id = build(house)
-    press = press_of(house, draft_id, "6" * 32)
+    press = adjust(press_of(house, draft_id, "6" * 32))
     seen: set[tuple[int, str]] = set()
 
     def note(action: int, table: str | None, *_: object) -> int:
@@ -433,7 +594,7 @@ def test_a_full_save_writes_exactly_the_named_statements(house: House, shape: st
 
 
 def test_the_closed_list_is_every_shapes_sites() -> None:
-    assert {site for _, sites in SHAPES.values() for site in sites} == ALL_SITES
+    assert {site for _, sites, _ in SHAPES.values() for site in sites} == ALL_SITES
     assert (sqlite3.SQLITE_UPDATE, "school_instructions") in ALL_SITES
 
 
@@ -447,8 +608,9 @@ def test_a_refused_write_at_any_statement_leaves_the_file_as_it_was(
 ) -> None:
     """Refused at one write site, the save writes nothing, the acceptance pairs don't exist
     without the homework, and lifted, the same press saves once."""
-    draft_id = SHAPES[shape][0](house)
-    press = press_of(house, draft_id, "6" * 32)
+    build, _, adjust = SHAPES[shape]
+    draft_id = build(house)
+    press = adjust(press_of(house, draft_id, "6" * 32))
     before = world(house)
 
     def refusing(action: int, table: str | None, *_: object) -> int:

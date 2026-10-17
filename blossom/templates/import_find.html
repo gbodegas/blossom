@@ -1,0 +1,31 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#
+  Find under another name, for one open card of a screenshot review: a search of the saved
+  assignments by the words of their class and title, each result a form of its own that keeps
+  that card's destination as a press of Keep these answers. Nothing needs scripts.
+#}
+{% extends "base.html" %}
+{% block title %}Blossom - Homework screenshots{% endblock %}
+{% block content %}
+  <h1>Homework screenshots</h1>
+  <section class="panel" aria-labelledby="find-heading">
+    <h2 id="find-heading">Find under another name</h2>
+    <p class="note">{{ card }}</p>
+    <form method="get" action="/parent/imports/{{ draft_id }}/find">
+      <input type="hidden" name="piece" value="{{ piece }}">
+      <label for="find-words">Words of the class or title</label>
+      <input type="text" id="find-words" name="words" value="{{ words }}" maxlength="200">
+      <div class="actions"><button type="submit" class="primary">Find</button></div>
+    </form>
+    {% if nothing %}<p class="note">{{ nothing }}</p>{% endif %}
+    {% for result in results %}
+      <form method="post" action="/parent/imports/{{ draft_id }}/review" class="choice">
+        {% for name, value in result.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+        <p>{{ result.label }}</p>
+        <div class="actions"><button type="submit" class="secondary">Choose this one</button></div>
+      </form>
+    {% endfor %}
+  </section>
+  <p class="return"><a href="/parent/imports/{{ draft_id }}">Back to the review</a></p>
+{% endblock %}

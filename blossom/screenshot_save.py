@@ -10,9 +10,9 @@ A press of "Save selected homework" writes in this order, each step its own comm
    acceptance with its ``[piece name, id]`` pairs, and deletes the saved pieces' answers;
 3. closing the review when the save finished it.
 
-"Nothing was saved" is true only when step 2 never committed. Once it has, a failure closing
-the review, or any later step, leaves the save whole and is reported beside it, and a resent
-press replays the save by its acceptance id.
+"Nothing was saved" is true only when the homework transaction never committed. Once it has, a
+failure closing the review, or any later step, leaves the save whole and is reported beside
+it, and a resent press replays the save by its acceptance id.
 """
 
 import dataclasses
@@ -21,7 +21,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from blossom import intake
 from blossom.candidates import readings_for
@@ -53,7 +53,13 @@ from blossom.screenshot_review import (
     value_of,
     written_dates,
 )
-from blossom.screenshots import ScreenshotRow
+from blossom.screenshots import HomeworkReading, ScreenshotRow
+from blossom.stores.gradebook import (
+    AnswerNotAsked,
+    ConfirmedBy,
+    GradeTransactionLost,
+    NameFormNotSaved,
+)
 from blossom.stores.homework_saves import DraftForSave, HomeworkAcceptance
 from blossom.stores.import_drafts import ImportDraftsStore
 from blossom.stores.intake_decisions import DecisionToKeep
@@ -89,7 +95,9 @@ NO_HOOKS = SaveHooks()
 class SavePress:
     """A "Save selected homework" press, after its answers are kept: the review, its version
     after them, the page's acceptance id, the pressed units and their signed digests, the
-    defaults the page showed, the typed corrections, and the identity the page established."""
+    defaults the page showed, the typed corrections, and what each read screenshot's student
+    line is against her record. The answers to the name question are read from the review's
+    own stored answers, inside the save."""
 
     student_id: str
     draft_id: str
@@ -99,8 +107,12 @@ class SavePress:
     digests: Mapping[str, tuple[str, ...]]
     defaults_posted: Mapping[str, str]
     corrections: Mapping[str, Mapping[str, str]]
-    identity_status: str
-    identity_answer: str
+    names: Mapping[str, tuple[str, str | None]]
+    """Each read image's student line, by its SHA-256: its status against her record
+    (``matches``, ``first_use``, ``not_confirmed``, ``confirm_again`` or ``missing``) and its
+    keyed form, which keys the stored answer to the name question."""
+    name_key: bytes
+    """The key name forms are made under, for "Yes, this is her name" to add the keyed form."""
     role: str = "parent"
 
 
@@ -116,6 +128,8 @@ class Saved:
     already_units: tuple[str, ...] = ()
     closed: bool = False
     incomplete: tuple[str, ...] = ()
+    counts: tuple[int, int, int, int] = (0, 0, 0, 0)
+    """Assignments added, updated and already saved by this save, and pieces left to check."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -138,7 +152,9 @@ class NotSaved:
     """The homework transaction didn't commit, so nothing of the homework was written."""
 
     reason: str
-    """``absent``, ``closed``, ``expired``, ``stale``, ``gate``, ``changed``, ``busy`` or
+    """``absent``, ``closed``, ``expired``, ``stale``, ``gate``, ``open`` (a pressed unit still
+    has a question, a field to confirm or the name question to answer), ``names`` (pressed units
+    from screenshots whose names need different answers), ``changed``, ``busy`` or
     ``failed``."""
     changed_units: tuple[str, ...] = ()
     already_units: tuple[str, ...] = ()
@@ -267,6 +283,31 @@ def instruction_subject(dest: tuple[str, ...], names: Sequence[str], revision: i
     return json.dumps([list(dest), sorted(names), revision], separators=(",", ":"))
 
 
+CONFIRMABLE: Final = frozenset({"badge", "course", "title", "instruction", "footer", "heading"})
+"""The fields a reader can mark uncertain that the parent confirms as read or corrects."""
+UNCONFIRMED: Final = ("first_use", "not_confirmed", "confirm_again")
+"""The statuses of a student line whose name question asks "Yes, this is her name"."""
+
+
+def confirm_subject(key: str, field: str) -> str:
+    """A confirmation's subject: the row key and the field."""
+    return json.dumps([key, field], separators=(",", ":"))
+
+
+def student_line(body: str) -> str | None:
+    """The selected student's name as a stored homework reading holds it; it is passed to the
+    record only to make its keyed form, and never kept elsewhere."""
+    try:
+        return HomeworkReading.model_validate_json(body).student.name
+    except ValueError:
+        return None
+
+
+def _confirmed_by(role: str) -> ConfirmedBy:
+    """Who answered "Yes, this is her name": a parent, or the household with the sign-in off."""
+    return "household" if role == "household" else "parent"
+
+
 def correction_digest(fields: Mapping[str, str] | None) -> str:
     """The digest of a row's typed corrections an answer was stored with."""
     text = json.dumps(dict(sorted(fields.items())), separators=(",", ":")) if fields else ""
@@ -325,7 +366,7 @@ def review_state(
     defaults_posted: Mapping[str, str] | None = None,
 ) -> ReviewState:
     """The review's pieces, destinations, checks and preview from its tables and the record.
-    A default the press posted and step 2 stored still counts as the default it was."""
+    A default the press posted, and its answers kept, still counts as the default it was."""
     values = {key: value for key, (value, _) in tables.answers.items()}
     split = {
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
@@ -465,8 +506,10 @@ def save_homework(
     try:
         with record.comparing_and_writing():
             outcome = _homework_transaction(record, press, now, today, hooks)
-    except _Changed:
+    except (_Changed, AnswerNotAsked):
         return NotSaved("changed")
+    except (NameFormNotSaved, GradeTransactionLost):
+        return NotSaved("failed")
     except sqlite3.OperationalError as error:
         busy = error.sqlite_errorcode in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
         return NotSaved("busy" if busy else "failed")
@@ -488,8 +531,8 @@ def save_homework(
 def _homework_transaction(
     record: ProjectStateStore, press: SavePress, now: datetime, today: date, hooks: SaveHooks
 ) -> SaveOutcome:
-    """Inside the writer's transaction: check 0, the draft's checks, the comparison, then the
-    homework, its decisions, the acceptance and the answer deletes."""
+    """Inside the writer's transaction: a recorded acceptance id first, the draft's checks, the
+    comparison, then the homework, its decisions, the acceptance and the answer deletes."""
     recorded = record.homework_acceptance(press.acceptance_id)
     if recorded is not None:
         return Replayed(press.acceptance_id, recorded)
@@ -515,6 +558,7 @@ def _homework_transaction(
     ready: list[tuple[str, ...]] = []
     changed: list[str] = []
     already: list[str] = []
+    still_open: list[str] = []
     for name in press.units:
         if all(n in state.saved for n in name.split("+")):
             already.append(name)
@@ -522,12 +566,21 @@ def _homework_transaction(
         unit = next((u for u in state.validation.units if unit_name(u.unit) == name), None)
         if (
             unit is None
-            or not unit.ready
+            or unit.refusals
+            or unit.stale
             or tuple(sorted(press.digests.get(name, ()))) != digests.get(name, ())
         ):
             changed.append(name)
             continue
+        if not unit.ready or _unconfirmed(state, unit.unit, tables.answers, press.corrections):
+            still_open.append(name)
+            continue
         ready.append(unit.unit)
+    if still_open:
+        return NotSaved("open", tuple(still_open), tuple(already))
+    identity = _identity(state, ready, press.names, tables.answers)
+    if isinstance(identity, NotSaved):
+        return identity
     if not ready:
         if already and not changed:
             return AlreadySaved(tuple(already))
@@ -548,6 +601,22 @@ def _homework_transaction(
                 unchanged += len(names)
             else:
                 updated += len(names)
+    status, answer, form = identity
+    if answer == "hers":
+        line = next(
+            (
+                student_line(r.body)
+                for r in tables.readings
+                if press.names.get(r.sha256, ("", None)) == (status, form)
+            ),
+            None,
+        )
+        if line is None:
+            raise _Changed
+        if status == "confirm_again":
+            record.confirm_name_again(press.name_key, line, _confirmed_by(press.role))
+        else:
+            record.add_name_form(press.name_key, line, _confirmed_by(press.role))
     hooks.before_acceptance()
     saved_now = {name for name, _ in pairs} | set(state.saved)
     whole_rows = {
@@ -556,11 +625,18 @@ def _homework_transaction(
         if all(q.name in saved_now for q in state.pieces if q.key == p.key)
     }
     done = saved_now | whole_rows
-    consumed = [
-        (kind, subject)
-        for kind, subject in tables.answers
-        if kind != "split" and (about := answer_names(kind, subject)) and set(about) <= done
-    ]
+
+    def saved_with(kind: str, subject: str) -> bool:
+        """Whether an answer goes with this save: every answer about the saved pieces, their
+        rows' confirmations among them; never the split, nor the name answer, which stays."""
+        if kind in ("split", "name"):
+            return False
+        if kind == "confirm":
+            return str(json.loads(subject)[0]) in whole_rows
+        about = answer_names(kind, subject)
+        return bool(about) and set(about) <= done
+
+    consumed = [(kind, subject) for kind, subject in tables.answers if saved_with(kind, subject)]
     left = len(state.open) - len({name for name, _ in pairs})
     record.add_homework_acceptance(
         HomeworkAcceptance(
@@ -568,8 +644,8 @@ def _homework_transaction(
             press.student_id,
             press.draft_id,
             tuple(pairs),
-            press.identity_status,
-            press.identity_answer,
+            status,
+            answer,
             added,
             updated,
             unchanged,
@@ -589,7 +665,66 @@ def _homework_transaction(
         tuple(unit_name(u) for u in ready),
         tuple(changed),
         tuple(already),
+        counts=(added, updated, unchanged, left),
     )
+
+
+def _unconfirmed(
+    state: ReviewState,
+    unit: Sequence[str],
+    answers: Mapping[tuple[str, str], tuple[str, str]],
+    corrections: Mapping[str, Mapping[str, str]],
+) -> bool:
+    """Whether a field the reader wasn't sure of, on a row of the unit, is neither confirmed as
+    read nor corrected."""
+    return any(
+        ("confirm", confirm_subject(piece.key, field)) not in answers
+        and not corrections.get(piece.key, {}).get(field)
+        for piece in (state.by_name[name] for name in unit)
+        for field in piece.uncertain
+        if field in CONFIRMABLE
+    )
+
+
+def _identity(
+    state: ReviewState,
+    ready: Sequence[tuple[str, ...]],
+    names: Mapping[str, tuple[str, str | None]],
+    answers: Mapping[tuple[str, str], tuple[str, str]],
+) -> tuple[str, str, str | None] | NotSaved:
+    """The status and answer the save carries for the screenshots its units came from, the
+    answer read from the review's stored name answers: one unconfirmed name, answered; else
+    screenshots with no name, confirmed; else every name matching. A unit whose screenshot
+    has no answer yet is open, and units needing two different answers are refused."""
+    images: dict[str, set[str]] = {}
+    for unit in ready:
+        for name in unit:
+            for card in state.by_name[name].cards:
+                images.setdefault(card.sha256, set()).add(unit_name(unit))
+    seen = {sha: names.get(sha, ("unknown", None)) for sha in images}
+
+    def units_where(test: Callable[[tuple[str, str | None]], bool]) -> set[str]:
+        return {u for sha, units in images.items() if test(seen[sha]) for u in units}
+
+    waiting = units_where(lambda line: line[0] == "unknown")
+    forms = {form for status, form in seen.values() if status in UNCONFIRMED}
+    missing = any(status == "missing" for status, _ in seen.values())
+    if forms and (len(forms) > 1 or missing):
+        return NotSaved("names", tuple(sorted(units_where(lambda _: True))))
+    if forms:
+        [form] = forms
+        status = next(s for s, f in seen.values() if f == form and s in UNCONFIRMED)
+        got = answers.get(("name", str(form)), ("", ""))[0]
+        if got not in ("hers", "misread"):
+            waiting |= units_where(lambda line: line[1] == form)
+        if waiting:
+            return NotSaved("open", tuple(sorted(waiting)))
+        return status, got, str(form)
+    if missing and answers.get(("name", "missing"), ("", ""))[0] != "confirmed":
+        waiting |= units_where(lambda line: line[0] == "missing")
+    if waiting:
+        return NotSaved("open", tuple(sorted(waiting)))
+    return ("missing", "confirmed", None) if missing else ("matches", "shown", None)
 
 
 def _write(

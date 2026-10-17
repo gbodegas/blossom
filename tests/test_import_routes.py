@@ -11,12 +11,14 @@ import dataclasses
 import html
 import io
 import json
+import logging
 import pathlib
 import re
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,20 +29,16 @@ from blossom import screenshot_page, screenshot_reading
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
 from blossom.routes import imports
-from blossom.screenshot_review import value_json
 from blossom.screenshot_save import (
-    Saved,
-    SavePress,
+    CONFIRMABLE,
     correction_digest,
-    review_state,
-    save_homework,
-    unit_digests,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
 from blossom.stores.import_drafts import (
     DRAFT_LIFETIME,
     FAILURES,
     AnswerToKeep,
+    DraftExpired,
     new_creation_token,
 )
 from blossom.stores.project_state import Assignment, AssignmentKind
@@ -837,30 +835,9 @@ def test_a_card_saved_before_starts_on_already_saved_with_every_alternative_besi
     answer = homework_answer(cards=[homework_card()])
     with here(open_settings(tmp_path)) as browser:
         first, page = read_review(browser, monkeypatch, (RED, answer))
-        her_name_answered(browser, first, page)
-        state = state_of(browser)
-        record = state.project_state
-        student = record.student_id()
-        tables = record.draft_for_save(student, first)
-        assert tables is not None
-        review = review_state(record, tables, now=now_of(browser), corrections={})
-        digests = unit_digests(review)
-        press = SavePress(
-            student,
-            first,
-            state.import_drafts.snapshot(student, first).version,
-            "c" * 32,
-            tuple(sorted(digests)),
-            digests,
-            {name: value_json(value) for name, value in review.defaults.items()},
-            {},
-            "first_use",
-            "hers",
-        )
-        saved = save_homework(
-            record, state.import_drafts, press, now=now_of(browser), today=now_of(browser).date()
-        )
-        assert isinstance(saved, Saved)
+        page = her_name_answered(browser, first, page)
+        saved = send(browser, first, page_post(page, "save", tick=units_on(page)))
+        assert says(saved.text, imports.counted(1, 0, 0))
         _, again = read_review(browser, monkeypatch, (RED, answer))
 
     form = review_form(again)
@@ -868,7 +845,7 @@ def test_a_card_saved_before_starts_on_already_saved_with_every_alternative_besi
         "Sentence Composing, due Thu 10/8, assigned Mon 10/5, \u201cComplete pages 12 to 14.\u201d"
     )
     assert f"Already saved in {label}." in html.unescape(form)
-    assert len(checked_values(form)) == 1
+    assert len([n for n, _ in checked_values(form) if n.startswith("answer:destination:")]) == 1
     assert "A new Sentence Composing (1)" in form
     assert screenshot_page.SAID["find"] in html.unescape(form)
     assert f"Already saved in {label}. Nothing new is written." in html.unescape(form)
@@ -1006,6 +983,638 @@ def test_a_refused_group_names_its_cause_and_offers_whole_changes_that_store_not
     assert [form.count('name="answer:destination:') for form in offered][-1] == 2
 
 
+# ------------------------------------------------------------------ the review's presses
+
+
+def page_post(
+    page: str,
+    press: str,
+    *,
+    choose: Mapping[str, str] | None = None,
+    tick: Sequence[str] = (),
+    typed: Mapping[str, str] | None = None,
+) -> list[tuple[str, str]]:
+    """The review form's fields as a browser sends them with scripts off: the hidden fields, the
+    checked controls (or those chosen here), the text typed, the groups ticked, the button."""
+    choose, typed = dict(choose or {}), dict(typed or {})
+    fields: list[tuple[str, str]] = []
+    for tag in re.findall(r"<input [^>]*>", review_form(page)):
+        name = html.unescape(re.search(r'name="([^"]+)"', tag).group(1))  # type: ignore[union-attr]
+        found = re.search(r'value="([^"]*)"', tag)
+        value = html.unescape(found.group(1)) if found else ""
+        kind = re.search(r'type="([^"]+)"', tag).group(1)  # type: ignore[union-attr]
+        if kind == "hidden":
+            fields.append((name, value))
+        elif kind == "text":
+            fields.append((name, typed.get(name, value)))
+        elif name != "unit" and name not in choose and " checked" in tag:
+            fields.append((name, value))
+    fields += [*choose.items(), *(("unit", unit) for unit in tick), ("press", press)]
+    return fields
+
+
+def send(browser: TestClient, draft_id: str, fields: Sequence[tuple[str, str]]) -> Answer:
+    return browser.post(
+        f"/parent/imports/{draft_id}/review",
+        content=urlencode(list(fields)).encode(),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+
+def followed(browser: TestClient, answer: Answer) -> str:
+    assert answer.status_code == 303, answer.text
+    return browser.get(answer.headers["location"]).text
+
+
+def units_on(page: str) -> list[str]:
+    return [html.unescape(u) for u in re.findall(r'name="unit" value="([^"]+)"', page)]
+
+
+def digests_on(page: str) -> list[str]:
+    return [
+        name.removeprefix("digest:")
+        for name in fields_named(review_form(page), "")
+        if name.startswith("digest:")
+    ]
+
+
+def assignment_count(browser: TestClient) -> int:
+    return len(state_of(browser).project_state.all_assignments())
+
+
+def test_keep_these_answers_stores_what_the_page_posts_and_says_so(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        after = followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        answers = stored_answers(browser, draft_id)
+
+    assert sorted(kind for kind, _ in answers) == ["destination", "destination"]
+    assert set(answers.values()) == {'{"new":1}'}
+    assert says(after, imports.PRESS_SAID["kept"])
+    assert screenshot_page.SAID["preselected"] not in after
+
+
+def test_a_page_made_before_a_newer_answer_keeps_nothing_and_says_the_review_changed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        [form] = fields_named(review_form(page), "answer:name:")
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        before = stored_answers(browser, draft_id)
+        stale = page_post(page, "keep", choose={f"answer:name:{form}": "misread"})
+        after = followed(browser, send(browser, draft_id, stale))
+        saved = page_post(page, "save", tick=units_on(page))
+        refused = followed(browser, send(browser, draft_id, saved))
+        later = followed(browser, send(browser, draft_id, page_post(page, "later")))
+        answers = stored_answers(browser, draft_id)
+
+    assert answers == before
+    assert says(after, imports.CHANGED_IN_ANOTHER_TAB)
+    assert says(after, imports.PRESS_SAID["keep_stale"])
+    assert says(refused, imports.PRESS_SAID["save_stale"])
+    assert says(later, imports.PRESS_SAID["later_stale"])
+
+
+def test_a_post_that_doesnt_match_its_page_keeps_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        fields = page_post(page, "keep")
+        [piece, _] = fields_named(review_form(page), "answer:destination:")
+        offered_not = [
+            *[(n, v) for n, v in fields if n != f"answer:destination:{piece}"],
+            (f"answer:destination:{piece}", '{"existing":"assignment-elsewhere-00000000"}'),
+        ]
+        unsigned = [(n, "9" if n == "version" else v) for n, v in fields]
+        answers = [
+            followed(browser, send(browser, draft_id, sent)) for sent in (offered_not, unsigned)
+        ]
+        stored = stored_answers(browser, draft_id)
+
+    assert stored == {}
+    assert all(says(a, imports.PRESS_SAID["keep_invalid"]) for a in answers)
+
+
+def test_save_selected_homework_saves_the_ticked_groups_and_a_resend_writes_nothing_twice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        fields = page_post(page, "save", tick=units_on(page))
+        before = assignment_count(browser)
+        saved = send(browser, draft_id, fields)
+        made_now = assignment_count(browser)
+        again = send(browser, draft_id, fields)
+        made_after = assignment_count(browser)
+
+    assert saved.status_code == 200
+    assert says(saved.text, imports.counted(2, 0, 0))
+    assert says(saved.text, imports.SAID["closed"])
+    assert made_now - before == made_after - before == 2
+    assert says(again.text, imports.counted(2, 0, 0))
+
+
+def test_saving_one_group_leaves_the_rest_open_with_the_answers_kept(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first, second = units_on(page)
+        fields = page_post(page, "save", tick=[first])
+        before = assignment_count(browser)
+        after = followed(browser, send(browser, draft_id, fields))
+        again = followed(browser, send(browser, draft_id, fields))
+        made = assignment_count(browser)
+
+    assert says(after, imports.counted(1, 0, 1))
+    assert says(after, imports.PRESS_SAID["left_open"])
+    assert units_on(after) == [second]
+    assert says(again, imports.counted(1, 0, 1))
+    assert made - before == 1
+
+
+REFUSED_OPEN = (
+    "The homework wasn't saved: a group you chose still has a question to answer. Nothing of "
+    "it was written."
+)
+
+
+def test_a_save_is_refused_while_a_ticked_group_still_has_a_question(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(
+        cards=[homework_card(uncertain=[{"field": "title", "reason": "a smudge over it"}])]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        units = digests_on(page)
+        before = assignment_count(browser)
+        no_name = followed(browser, send(browser, draft_id, page_post(page, "save", tick=units)))
+        page = her_name_answered(browser, draft_id, browser.get(f"/parent/imports/{draft_id}").text)
+        unconfirmed = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units))
+        )
+        made = assignment_count(browser)
+        [subject] = fields_named(review_form(page), "answer:confirm:")
+        confirmed = page_post(
+            page, "save", tick=units, choose={f"answer:confirm:{subject}": "as_read"}
+        )
+        saved = send(browser, draft_id, confirmed)
+
+    assert units
+    assert units_on(page) == []
+    assert says(no_name, imports.PRESS_SAID["answers_kept"])
+    assert says(no_name, REFUSED_OPEN)
+    assert says(unconfirmed, REFUSED_OPEN)
+    assert made == before
+    assert says(saved.text, imports.counted(1, 0, 0))
+
+
+def test_a_failure_inside_the_homework_transaction_writes_none_of_it_and_says_so(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        record = state_of(browser).project_state
+
+        def broken(*_: object, **__: object) -> None:
+            words = "synthetic note text that must stay out of the log"
+            raise RuntimeError(words)
+
+        before = assignment_count(browser)
+        monkeypatch.setattr(record, "add_homework_acceptance", broken)
+        with caplog.at_level(logging.WARNING):
+            after = followed(
+                browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+            )
+        made = assignment_count(browser)
+
+    assert made == before
+    assert says(after, imports.PRESS_SAID["answers_kept"])
+    assert says(after, imports.PRESS_SAID["failed"])
+    assert "RuntimeError" in caplog.text
+    assert "synthetic note text" not in caplog.text
+
+
+def test_a_failure_after_the_commit_keeps_and_reports_the_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        drafts = state_of(browser).import_drafts
+        calls: list[int] = []
+        snapshot = drafts.snapshot
+
+        def failing_after_the_first(*args: object, **kwargs: object) -> object:
+            calls.append(1)
+            if len(calls) > 1:
+                raise DraftExpired
+            return snapshot(*args, **kwargs)  # type: ignore[arg-type]
+
+        before = assignment_count(browser)
+        monkeypatch.setattr(drafts, "snapshot", failing_after_the_first)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        made = assignment_count(browser)
+
+    assert saved.status_code == 200
+    assert says(saved.text, imports.PRESS_SAID["incomplete"])
+    assert says(saved.text, imports.counted(2, 0, 0))
+    assert made - before == 2
+
+
+def test_a_record_changed_since_the_page_saves_nothing_and_shows_what_saving_does_now(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rival = Assignment(
+        assignment_id="assignment-sentence-composing-dddd3333",
+        course="English 8",
+        title="Sentence Composing",
+        due_date=date(2026, 10, 9),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        state_of(browser).project_state.upsert_assignments([rival])
+        before = assignment_count(browser)
+        after = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        )
+        made = assignment_count(browser)
+
+    assert made == before
+    assert says(after, imports.PRESS_SAID["changed_by_answers"])
+
+
+def test_save_for_later_keeps_the_typed_corrections_and_a_page_behind_keeps_its_typing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(
+        cards=[homework_card(uncertain=[{"field": "title", "reason": "a smudge over it"}])]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        [field] = fields_named(review_form(page), "correct:")
+        typed = {f"correct:{field}": "Sentence Combining"}
+        later = followed(browser, send(browser, draft_id, page_post(page, "later", typed=typed)))
+        student = state_of(browser).project_state.student_id()
+        progress = state_of(browser).import_drafts.snapshot(student, draft_id).progress
+        one_tab, other_tab = (browser.get(f"/parent/imports/{draft_id}").text for _ in range(2))
+        followed(browser, send(browser, draft_id, page_post(one_tab, "later")))
+        behind = send(
+            browser,
+            draft_id,
+            page_post(other_tab, "later", typed={f"correct:{field}": "Sentence Craft"}),
+        )
+        kept = state_of(browser).import_drafts.snapshot(student, draft_id).progress
+
+    assert says(later, imports.PRESS_SAID["later"])
+    assert "Saved for later at " in later
+    assert json.loads(str(progress)) == {
+        "corrections": {json.loads(field)[0]: {"title": "Sentence Combining"}},
+        "selected": [],
+    }
+    assert 'value="Sentence Combining"' in later
+    assert "A new Sentence Combining (1)" in later
+    assert behind.status_code == 409
+    assert says(behind.text, imports.PRESS_SAID["answers_kept"])
+    assert says(behind.text, imports.PRESS_SAID["later_behind"])
+    assert 'value="Sentence Craft"' in behind.text
+    assert kept == progress
+
+
+def test_an_offer_is_kept_whole_and_part_of_one_is_an_ordinary_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monday, tuesday = split_answers()
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        [row] = fields_named(review_form(page), "answer:split:")
+        keep(browser, draft_id, ("split", row, json.dumps("split")))
+        split = browser.get(f"/parent/imports/{draft_id}").text
+        days = fields_named(review_form(split), "answer:destination:")
+        keep(browser, draft_id, *(("destination", d, '{"new":1}') for d in days))
+        refused = browser.get(f"/parent/imports/{draft_id}").text
+        offered = re.findall(
+            r'<form method="post" action="[^"]+/review" id="offer-[^"]+">.*?</form>', refused, re.S
+        )
+        closure = [
+            (html.unescape(n), html.unescape(v))
+            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', offered[-1])
+        ]
+        whole = followed(browser, send(browser, draft_id, closure))
+        moved = stored_answers(browser, draft_id)
+        part = page_post(
+            whole, "keep", choose={f"answer:destination:{days[0]}": moved[("destination", days[1])]}
+        )
+        followed(browser, send(browser, draft_id, part))
+        partly = stored_answers(browser, draft_id)
+        forged = [(n, '{"new":7}' if n.startswith("answer:") else v) for n, v in closure]
+        refused_again = followed(browser, send(browser, draft_id, forged))
+
+    assert says(whole, imports.PRESS_SAID["kept"])
+    assert sorted(moved[("destination", d)] for d in days) == ['{"new":2}', '{"new":3}']
+    assert partly[("destination", days[0])] == moved[("destination", days[1])]
+    assert partly[("destination", days[1])] == moved[("destination", days[1])]
+    assert says(refused_again, imports.PRESS_SAID["keep_invalid"])
+
+
+def test_find_under_another_name_lists_saved_work_by_its_words_and_keeps_the_one_chosen(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([other])
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        piece = fields_named(review_form(page), "answer:destination:")[0]
+        found = browser.get(
+            f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "grammar"}
+        )
+        nothing = browser.get(
+            f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "zzzz"}
+        )
+        gone = browser.get(f"/parent/imports/{draft_id}/find", params={"piece": "x", "words": "a"})
+        chosen = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', found.text, re.S
+        )
+        assert chosen is not None
+        fields = [
+            (html.unescape(n), html.unescape(v))
+            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', chosen.group(0))
+        ]
+        after = followed(browser, send(browser, draft_id, fields))
+        answers = stored_answers(browser, draft_id)
+
+    assert found.status_code == 200
+    assert says(found.text, "English 8: Grammar Practice, due Thu 10/8")
+    assert says(nothing.text, imports.FIND_SAID["nothing"])
+    assert gone.status_code == 404
+    assert answers[("destination", piece)] == json.dumps(
+        {"found": other.assignment_id}, separators=(",", ":")
+    )
+    assert "Found under another name: Grammar Practice, due Thu 10/8" in html.unescape(after)
+
+
+def test_a_row_s_type_is_chosen_with_the_paste_page_s_words_and_can_ask_the_kind_question(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = Assignment(
+        assignment_id="assignment-sentence-composing-ffff5555",
+        course="English 8",
+        title="Sentence Composing",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=date(2026, 10, 5),
+        kind=AssignmentKind.HOMEWORK,
+    )
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([saved])
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        [row] = fields_named(review_form(page), "answer:kind:")
+        chosen = page_post(
+            page,
+            "keep",
+            choose={
+                f"answer:destination:{piece}": json.dumps(
+                    {"existing": saved.assignment_id}, separators=(",", ":")
+                ),
+                f"answer:kind:{row}": "TASK",
+            },
+        )
+        after = followed(browser, send(browser, draft_id, chosen))
+
+    form = html.unescape(review_form(page))
+    assert "Type: Sentence Composing (screenshot 1, card 1)" in form
+    assert screenshot_page.SAID["type_helper"] in form
+    assert "Homework or task for Sentence Composing, due Thu 10/8" in html.unescape(after)
+    assert "homework or task" in html.unescape(after)
+
+
+def test_the_name_answered_in_the_same_press_is_kept_first_and_read_by_the_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        [form] = fields_named(review_form(page), "answer:name:")
+        fields = page_post(
+            page, "save", tick=digests_on(page), choose={f"answer:name:{form}": "hers"}
+        )
+        before = assignment_count(browser)
+        saved = send(browser, draft_id, fields)
+        made = assignment_count(browser)
+        row = (
+            state_of(browser)
+            .project_state._connection.execute(
+                "SELECT identity_status, identity_answer FROM grade_acceptances "
+                "WHERE kind = 'homework_screenshot'"
+            )
+            .fetchone()
+        )
+
+    assert says(saved.text, imports.counted(1, 0, 0))
+    assert made - before == 1
+    assert tuple(row) == ("first_use", "hers")
+
+
+def test_a_group_another_tab_saved_is_already_saved_and_nothing_is_written_twice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        one_tab, other_tab = (browser.get(f"/parent/imports/{draft_id}").text for _ in range(2))
+        first = units_on(one_tab)[0]
+        followed(browser, send(browser, draft_id, page_post(one_tab, "save", tick=[first])))
+        before = assignment_count(browser)
+        again = followed(
+            browser, send(browser, draft_id, page_post(other_tab, "save", tick=[first]))
+        )
+        made = assignment_count(browser)
+
+    assert says(again, imports.PRESS_SAID["already"])
+    assert made == before
+
+
+def test_a_save_with_no_group_ticked_keeps_the_answers_and_saves_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        before = assignment_count(browser)
+        after = followed(browser, send(browser, draft_id, page_post(page, "save")))
+        made = assignment_count(browser)
+        answers = stored_answers(browser, draft_id)
+
+    assert says(after, imports.PRESS_SAID["answers_kept"])
+    assert says(after, imports.PRESS_SAID["none_chosen"])
+    assert made == before
+    assert len(answers) == 2
+
+
+def test_the_confirmable_fields_are_the_ones_the_page_names() -> None:
+    assert set(screenshot_page.FIELD_NAMES) == CONFIRMABLE
+
+
+def name_forms(browser: TestClient) -> list[tuple[object, ...]]:
+    return [
+        tuple(row)
+        for row in state_of(browser).project_state._connection.execute(
+            "SELECT * FROM grade_name_forms"
+        )
+    ]
+
+
+def test_yes_this_is_her_name_adds_its_keyed_form_with_the_save_and_never_the_name(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        before = name_forms(browser)
+        page = her_name_answered(browser, draft_id, page)
+        kept_only = name_forms(browser)
+        send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = name_forms(browser)
+        _, again = read_review(browser, monkeypatch, (RED, answer))
+
+    assert before == kept_only == []
+    assert len(after) == 1
+    assert "Wren" not in repr(after)
+    assert "names Wren" not in again
+    assert 'name="answer:name:' not in again
+
+
+def test_the_name_was_misread_saves_and_adds_no_form(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        [form] = fields_named(review_form(page), "answer:name:")
+        keep(browser, draft_id, ("name", form, "misread"))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        forms = name_forms(browser)
+
+    assert says(saved.text, imports.counted(1, 0, 0))
+    assert forms == []
+
+
+def test_a_save_deletes_its_rows_confirmations_and_keeps_the_open_rows(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marked = [{"field": "title", "reason": "a smudge over it"}]
+    answer = homework_answer(
+        cards=[
+            homework_card(uncertain=marked),
+            homework_card(
+                course="Science 8",
+                title="Chains Reading Guide 6",
+                uncertain=marked,
+                y_top=360,
+                y_bottom=430,
+            ),
+        ]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        subjects = fields_named(review_form(page), "answer:confirm:")
+        keep(browser, draft_id, *(("confirm", s, "as_read") for s in subjects))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        first, _ = units_on(page)
+        before = stored_answers(browser, draft_id)
+        followed(browser, send(browser, draft_id, page_post(page, "save", tick=[first])))
+        after = stored_answers(browser, draft_id)
+
+    confirmations = sorted(s for k, s in before if k == "confirm")
+    assert len(confirmations) == 2
+    assert len([s for k, s in after if k == "confirm"]) == 1
+    assert [k for k, _ in after if k == "name"] == ["name"]
+    assert len([k for k, _ in after if k == "destination"]) == 1
+
+
+def test_saved_progress_keeps_the_groups_ticked_and_ticks_only_those_still_open(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first, second = units_on(page)
+        unticked = units_ticked(page)
+        later = followed(browser, send(browser, draft_id, page_post(page, "later", tick=[first])))
+        student = state_of(browser).project_state.student_id()
+        progress = state_of(browser).import_drafts.snapshot(student, draft_id).progress
+        followed(browser, send(browser, draft_id, page_post(later, "save", tick=[first])))
+        after_save = browser.get(f"/parent/imports/{draft_id}").text
+        stale = page_post(after_save, "later", tick=[second])
+        stale += [("unit", "a-unit-no-page-showed")]
+        refused = followed(browser, send(browser, draft_id, stale))
+
+    assert unticked == [first, second]
+    assert json.loads(str(progress))["selected"] == [first]
+    assert units_ticked(later) == [first]
+    assert units_on(after_save) == [second]
+    assert units_ticked(after_save) == []
+    assert says(refused, imports.PRESS_SAID["later_invalid"])
+
+
+def test_with_no_saved_progress_the_ready_groups_are_ticked_and_an_unready_one_isnt(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(
+        cards=[
+            homework_card(uncertain=[{"field": "title", "reason": "a smudge over it"}]),
+            homework_card(
+                course="Science 8", title="Chains Reading Guide 6", y_top=360, y_bottom=430
+            ),
+        ]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        student = state_of(browser).project_state.student_id()
+        progress = state_of(browser).import_drafts.snapshot(student, draft_id).progress
+        answers = stored_answers(browser, draft_id)
+
+    ready = units_on(page)
+    assert progress is None
+    assert len(digests_on(page)) == 2
+    assert len(ready) == 1
+    assert units_ticked(page) == ready
+    assert [kind for kind, _ in answers] == ["name"]
+
+
+def units_ticked(page: str) -> list[str]:
+    return [html.unescape(u) for u in re.findall(r'name="unit" value="([^"]+)" checked', page)]
+
+
 IMPORT_REVIEW_RULES = (
     ".import-review .choice {\n  min-width: 0;\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"
@@ -1046,6 +1655,8 @@ def every_route(draft_id: str, image_id: str) -> list[tuple[str, str]]:
         ("GET", f"/parent/imports/{draft_id}/images/{image_id}"),
         ("POST", f"/parent/imports/{draft_id}/images/{image_id}/remove"),
         ("POST", f"/parent/imports/{draft_id}/read"),
+        ("POST", f"/parent/imports/{draft_id}/review"),
+        ("GET", f"/parent/imports/{draft_id}/find"),
     ]
 
 
@@ -1062,6 +1673,8 @@ def test_every_import_route_is_one_this_module_names() -> None:
         ("GET", "/parent/imports/{draft_id}/images/{image_id}"),
         ("POST", "/parent/imports/{draft_id}/images/{image_id}/remove"),
         ("POST", "/parent/imports/{draft_id}/read"),
+        ("POST", "/parent/imports/{draft_id}/review"),
+        ("GET", "/parent/imports/{draft_id}/find"),
     }
 
 

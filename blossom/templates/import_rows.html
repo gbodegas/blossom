@@ -63,6 +63,7 @@
             {% for value, label, checked in question.options %}
               <label><input type="{% if question.many or question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
             {% endfor %}
+            {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
             {% if question.text %}
               <label>Correction <input type="text" name="{{ question.text[0] }}" value="{{ question.text[1] }}" maxlength="200"></label>
             {% endif %}
@@ -91,7 +92,7 @@
         {% endfor %}
         {% for wait in unit.waits %}<p class="note">{{ wait }}</p>{% endfor %}
         {% if unit.tick %}
-          <label><input type="checkbox" name="unit" value="{{ unit.unit }}"> <span>Save this group</span></label>
+          <label><input type="checkbox" name="unit" value="{{ unit.unit }}"{% if unit.ticked %} checked{% endif %}> <span>Save this group</span></label>
         {% endif %}
         <div class="actions"><button type="submit" class="secondary" form="{{ unit.leave }}">Leave this group unsaved</button></div>
       </article>
