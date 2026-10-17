@@ -1985,6 +1985,33 @@ pre.example {
   }
 }
 
+/* The screenshot review's fieldsets and cards give way as the grade review's do: on a phone
+   with text at 200%, a fieldset takes the page's width, and a card's side padding goes to
+   13vw - 1rem where that is narrower, reaching into the page's side margin, before any word
+   breaks. An entry's reference, or an id shown whole, breaks only where its line can't hold
+   it. Every screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
+.import-review .choice {
+  min-width: 0;
+  padding-inline: clamp(0px, 13vw - 1rem, 1rem);
+}
+
+.import-review .choice label > span {
+  overflow-wrap: anywhere;
+}
+
+.import-review .panel,
+.import-review article {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+@media (max-width: 30rem) {
+  .import-review .panel,
+  .import-review article {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
+}
+
 /* A homework card on her week and an assignment's details give way the same way. On a phone
    with text at 200% a card leaves a line too short for a word of a title or of the
    gradebook's heading, so its side padding goes to 13vw - 1rem where that is narrower, and

@@ -8,25 +8,42 @@ no-store. Nothing on Family review offers the upload yet.
 """
 
 import dataclasses
+import html
 import io
+import json
 import pathlib
 import re
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 from PIL import Image
 
-from blossom import screenshot_reading
+from blossom import screenshot_page, screenshot_reading
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
 from blossom.routes import imports
+from blossom.screenshot_review import value_json
+from blossom.screenshot_save import (
+    Saved,
+    SavePress,
+    correction_digest,
+    review_state,
+    save_homework,
+    unit_digests,
+)
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
-from blossom.stores.import_drafts import DRAFT_LIFETIME, FAILURES, new_creation_token
+from blossom.stores.import_drafts import (
+    DRAFT_LIFETIME,
+    FAILURES,
+    AnswerToKeep,
+    new_creation_token,
+)
+from blossom.stores.project_state import Assignment, AssignmentKind
 from blossom.uploads import as_new_image, prepare_image
 from tests.support import (
     HERS,
@@ -35,6 +52,7 @@ from tests.support import (
     Answer,
     fixture_settings,
     homework_answer,
+    homework_card,
     signed_in,
     signed_in_household,
     state_of,
@@ -622,13 +640,399 @@ def test_a_reading_the_busy_file_couldnt_keep_is_named_on_the_press_page(
 
 
 def test_each_image_label_is_one_of_the_closed_set() -> None:
+    """ "Read again" is said only of an image an attempt covered; failures keep their own."""
     assert imports.LABELS == {
-        "unread": "Not read yet. Read again.",
-        "ended": "Not read in time. Read again.",
+        "unread": "Not read yet.",
+        "ended": "Not read. Read again.",
         "read": "Read.",
         "wrong_kind": "This doesn't look like the school's homework list.",
     }
     assert set(imports.FAILED) == set(FAILURES)
+
+
+def test_an_image_never_read_is_never_told_to_read_again(tmp_path: pathlib.Path) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert says(page, "Screenshot 1: Not read yet.")
+    assert "Read again" not in page
+
+
+# ------------------------------------------------------------------ the review's rows
+
+
+def read_review(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, *answers: tuple[bytes, object]
+) -> tuple[str, str]:
+    """A review made of the given images, each read as its answer: its id and the page after
+    the Read press."""
+    reader = Reader(monkeypatch)
+    for image, answer in answers:
+        reader.answers[image] = ScreenshotAnswer(answer, None, 10, 5)
+    draft_id = made(browser, *(image for image, _ in answers))
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    pressed = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+    assert pressed.status_code == 200, pressed.text
+    return draft_id, pressed.text
+
+
+def review_form(page: str) -> str:
+    found = re.search(r'<form method="post" action="[^"]+/review".*?</form>', page, re.S)
+    assert found is not None, page
+    return found.group(0)
+
+
+def stored_answers(browser: TestClient, draft_id: str) -> dict[tuple[str, str], str]:
+    student = state_of(browser).project_state.student_id()
+    tables = state_of(browser).project_state.draft_for_save(student, draft_id)
+    assert tables is not None
+    return {key: value for key, (value, _) in tables.answers.items()}
+
+
+def checked_values(form: str) -> list[tuple[str, str]]:
+    return re.findall(r'name="([^"]+)" value="([^"]*)" checked', form)
+
+
+def acceptance_of(page: str) -> str:
+    found = re.search(r'name="acceptance" value="([0-9a-f]{32})"', page)
+    assert found is not None
+    return found.group(1)
+
+
+def keep(browser: TestClient, draft_id: str, *answers: tuple[str, str, str]) -> None:
+    """Answers kept as a press keeps them, at the review's version: (kind, subject, value)."""
+    student = state_of(browser).project_state.student_id()
+    drafts = state_of(browser).import_drafts
+    version = drafts.snapshot(student, draft_id).version
+    drafts.keep_answers(
+        student,
+        draft_id,
+        version=version,
+        answers=[
+            AnswerToKeep(kind, subject, value, correction_digest(None), ())
+            for kind, subject, value in answers
+        ],
+    )
+
+
+def fields_named(form: str, prefix: str) -> list[str]:
+    found = re.findall(rf'name="{re.escape(prefix)}([^"]+)"', form)
+    return list(dict.fromkeys(html.unescape(name) for name in found))
+
+
+def her_name_answered(browser: TestClient, draft_id: str, page: str) -> str:
+    [form] = fields_named(review_form(page), "answer:name:")
+    keep(browser, draft_id, ("name", form, "hers"))
+    return browser.get(f"/parent/imports/{draft_id}").text
+
+
+def test_the_rows_appear_once_read_each_lone_card_preselected_and_nothing_stored(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        again = browser.get(f"/parent/imports/{draft_id}").text
+        answers = stored_answers(browser, draft_id)
+
+    form = review_form(page)
+    pieces = fields_named(form, "answer:destination:")
+    assert answers == {}
+    assert checked_values(form) == [
+        (f"answer:destination:{p}", "{&#34;new&#34;:1}") for p in pieces
+    ]
+    assert form.count(screenshot_page.SAID["preselected"]) == 2
+    assert says(page, "A new Sentence Composing (1)")
+    assert says(page, "A new Sentence Composing, due Thu 10/8")
+    assert says(page, "Adds \u201cComplete pages 12 to 14.\u201d")
+    assert says(page, "Screenshot 1 names Wren. Is this her name? Answer before saving its rows.")
+    assert form.count("Still to answer: the student name.") == 2
+    assert 'name="unit"' not in form
+    assert says(page, screenshot_page.SAID["status"])
+    assert acceptance_of(page) != acceptance_of(again)
+
+
+def test_the_review_form_signs_its_fields_with_the_review_s_own_key(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        student = state_of(browser).project_state.student_id()
+        snapshot = state_of(browser).import_drafts.snapshot(student, draft_id)
+
+    hidden = [
+        (name, html.unescape(value))
+        for name, value in re.findall(
+            r'<input type="hidden" name="([^"]+)" value="([^"]*)">', review_form(page)
+        )
+    ]
+    names = [name for name, _ in hidden]
+    signed = [(name, value) for name, value in hidden if name != "check"]
+    assert names[:6] == [
+        "version",
+        "progress_revision",
+        "acceptance",
+        "asked",
+        "defaults",
+        "identity",
+    ]
+    assert sum(name.startswith("digest:") for name in names) == 2
+    assert dict(hidden)["version"] == str(snapshot.version)
+    assert dict(hidden)["check"] == screenshot_page.page_check(snapshot.page_key, signed)
+
+
+def test_with_her_name_answered_each_ready_group_can_be_ticked_and_still_nothing_else_stored(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        after = her_name_answered(browser, draft_id, page)
+        answers = stored_answers(browser, draft_id)
+
+    form = review_form(after)
+    assert [kind for kind, _ in answers] == ["name"]
+    assert "Still to answer" not in form
+    assert form.count('name="unit"') == 2
+    assert ("answer:name:" + next(iter(answers))[1], "hers") in checked_values(form)
+
+
+def test_same_name_assignments_are_each_listed_with_their_facts_and_none_is_preselected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    twins = [
+        Assignment(
+            assignment_id=f"assignment-sentence-composing-{tail}",
+            course="English 8",
+            title="Sentence Composing",
+            due_date=date(2026, 10, 9),
+            dependencies=[],
+            reported_submission_status="not_reported",
+            assigned_on=None,
+            kind=AssignmentKind.HOMEWORK,
+        )
+        for tail in ("aaaa1111", "bbbb1111")
+    ]
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments(twins)
+        _, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+
+    form = review_form(page)
+    composing = re.search(r"<legend>Sentence Composing \(.*?</fieldset>", form, re.S)
+    assert composing is not None
+    control = composing.group(0)
+    assert " checked" not in control
+    assert control.count("Sentence Composing, due Fri 10/9, no assigned date, No instructions") == 2
+    assert "ref aa1111" in control
+    assert "ref bb1111" in control
+    assert control.count("Due Fri 10/9: this card says Thu 10/8.") == 2
+    assert control.count("Doesn&#39;t have this card&#39;s words.") == 2
+    assert "A new Sentence Composing (1)" in control
+    assert screenshot_page.SAID["preselected"] not in control
+    assert says(page, screenshot_page.SAID["choose_each"])
+
+
+def test_a_card_saved_before_starts_on_already_saved_with_every_alternative_beside_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        first, page = read_review(browser, monkeypatch, (RED, answer))
+        her_name_answered(browser, first, page)
+        state = state_of(browser)
+        record = state.project_state
+        student = record.student_id()
+        tables = record.draft_for_save(student, first)
+        assert tables is not None
+        review = review_state(record, tables, now=now_of(browser), corrections={})
+        digests = unit_digests(review)
+        press = SavePress(
+            student,
+            first,
+            state.import_drafts.snapshot(student, first).version,
+            "c" * 32,
+            tuple(sorted(digests)),
+            digests,
+            {name: value_json(value) for name, value in review.defaults.items()},
+            {},
+            "first_use",
+            "hers",
+        )
+        saved = save_homework(
+            record, state.import_drafts, press, now=now_of(browser), today=now_of(browser).date()
+        )
+        assert isinstance(saved, Saved)
+        _, again = read_review(browser, monkeypatch, (RED, answer))
+
+    form = review_form(again)
+    label = (
+        "Sentence Composing, due Thu 10/8, assigned Mon 10/5, \u201cComplete pages 12 to 14.\u201d"
+    )
+    assert f"Already saved in {label}." in html.unescape(form)
+    assert len(checked_values(form)) == 1
+    assert "A new Sentence Composing (1)" in form
+    assert screenshot_page.SAID["find"] in html.unescape(form)
+    assert f"Already saved in {label}. Nothing new is written." in html.unescape(form)
+
+
+def test_a_destination_due_another_day_asks_with_nothing_chosen_and_says_what_is_kept(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = Assignment(
+        assignment_id="assignment-sentence-composing-cccc2222",
+        course="English 8",
+        title="Sentence Composing",
+        due_date=date(2026, 10, 9),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([saved])
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        keep(
+            browser,
+            draft_id,
+            (
+                "destination",
+                piece,
+                json.dumps({"existing": saved.assignment_id}, separators=(",", ":")),
+            ),
+        )
+        asked = browser.get(f"/parent/imports/{draft_id}").text
+        [subject] = fields_named(review_form(asked), "answer:due:")
+        keep(browser, draft_id, ("due", subject, "2026-10-08"))
+        answered = browser.get(f"/parent/imports/{draft_id}").text
+
+    form = html.unescape(review_form(asked))
+    assert (
+        "Due date for Sentence Composing, due Fri 10/9, no assigned date, No instructions" in form
+    )
+    assert "Due Fri 10/9, as saved" in form
+    assert "Due Thu 10/8" in form
+    assert not [v for n, v in checked_values(review_form(asked)) if n.startswith("answer:due:")]
+    assert "Still to answer: the due date, the student name." in form
+    assert (
+        "Due Thu 10/8, as you chose. The school's Fri 10/9 is kept beside it, and her page "
+        "will say the sources disagree."
+    ) in html.unescape(answered)
+
+
+def test_a_field_the_reader_wasnt_sure_of_asks_to_be_confirmed_or_corrected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = homework_answer(
+        cards=[homework_card(uncertain=[{"field": "title", "reason": "a smudge over it"}])]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    form = html.unescape(review_form(page))
+    assert "Sentence Composing (screenshot 1, card 1): The reader wasn't sure of the title." in form
+    assert screenshot_page.SAID["confirm"] in form
+    assert 'name="correct:' in form
+    assert "Still to answer: a field the reader wasn't sure of, the student name." in form
+
+
+def split_answers() -> tuple[object, object]:
+    """One assigned card read under two day headings: one row whose assigned days differ."""
+    card = homework_card(footer="Due (10/9/2026)")
+    monday = homework_answer(
+        headings=[{"text": "Monday 10/5/2026", "y": 150, "uncertain": None}], cards=[card]
+    )
+    tuesday = homework_answer(
+        headings=[{"text": "Tuesday 10/6/2026", "y": 150, "uncertain": None}], cards=[card]
+    )
+    return monday, tuesday
+
+
+def test_a_row_whose_assigned_days_differ_asks_first_and_names_both_days(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monday, tuesday = split_answers()
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+
+    form = review_form(page)
+    assert says(page, "Sentence Composing: " + screenshot_page.SAID["split"])
+    assert says(page, "Assigned Mon 10/5 (screenshot 1, card 1)")
+    assert says(page, "Assigned Tue 10/6 (screenshot 2, card 1)")
+    assert says(page, screenshot_page.SAID["split_apart"])
+    assert " checked" not in form.split("Where each card goes")[0].split("Different assigned")[-1]
+
+
+def test_a_refused_group_names_its_cause_and_offers_whole_changes_that_store_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monday, tuesday = split_answers()
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        [row] = fields_named(review_form(page), "answer:split:")
+        keep(browser, draft_id, ("split", row, json.dumps("split")))
+        split = browser.get(f"/parent/imports/{draft_id}").text
+        days = fields_named(review_form(split), "answer:destination:")
+        keep(browser, draft_id, *(("destination", d, '{"new":1}') for d in days))
+        refused = browser.get(f"/parent/imports/{draft_id}").text
+        answers = stored_answers(browser, draft_id)
+
+    assert len(days) == 2
+    assert says(
+        refused,
+        "Sentence Composing (screenshot 1, card 1, assigned Mon 10/5) and Sentence Composing "
+        "(screenshot 2, card 1, assigned Tue 10/6) are different days of one row, so they "
+        "can't go to the same assignment.",
+    )
+    assert says(refused, "Use this change")
+    assert says(
+        refused,
+        "Sentence Composing (screenshot 1, card 1, assigned Mon 10/5): from a new Sentence "
+        "Composing (1) to a new Sentence Composing (2)",
+    )
+    assert says(
+        refused,
+        "Sentence Composing (screenshot 2, card 1, assigned Tue 10/6): from a new Sentence "
+        "Composing (1) to a new Sentence Composing (3)",
+    )
+    assert 'name="unit"' not in review_form(refused)
+    assert {(k, v) for (k, _), v in answers.items() if k == "destination"} == {
+        ("destination", '{"new":1}')
+    }
+    offered = re.findall(
+        r'<form method="post" action="[^"]+/review" id="offer-[^"]+">.*?</form>', refused, re.S
+    )
+    assert 1 <= len(offered) <= 5
+    assert [form.count('name="answer:destination:') for form in offered][-1] == 2
+
+
+IMPORT_REVIEW_RULES = (
+    ".import-review .choice {\n  min-width: 0;\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"
+    ".import-review .choice label > span {\n  overflow-wrap: anywhere;\n}\n\n"
+    ".import-review .panel,\n.import-review article {\n"
+    "  margin-inline: min(0px, 13vw - 2.25rem);\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
+    "@media (max-width: 30rem) {\n"
+    "  .import-review .panel,\n  .import-review article {\n"
+    "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
+)
+"""The screenshot review's rules, pinned whole: on a narrow screen with large text its
+fieldsets take the page's width and its cards' side padding gives way before a word breaks."""
+
+
+def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_rows_carry_its_class() -> None:
+    static = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
+    css = static.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in (static.parents[1] / "templates").glob("*.html")
+        if "import-review" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("import-review") == 6
+    assert css.count(IMPORT_REVIEW_RULES) == 1
+    assert carriers == ["import_rows.html"]
 
 
 # ------------------------------------------------------------------ who may, and no-store

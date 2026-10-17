@@ -39,6 +39,7 @@
       </form>
     {% endif %}
   </section>
+  {% if rows %}{% include "import_rows.html" %}{% endif %}
   {% if not full %}
     <section class="panel" aria-labelledby="more-heading">
       <h2 id="more-heading">Add screenshots</h2>

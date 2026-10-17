@@ -18,6 +18,8 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
+import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Annotated, Final
@@ -29,9 +31,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from blossom.anthropic_client import model_configured
 from blossom.dependencies import ApplicationState, get_application_state
+from blossom.household import UnreadableHouseholdSecret
 from blossom.routes.forms import fields_of
-from blossom.routes.grades import from_this_computer
+from blossom.routes.grades import from_this_computer, grade_name_key
+from blossom.screenshot_page import ImageName, RowsShown, rows_shown
 from blossom.screenshot_reading import read_screenshots
+from blossom.screenshot_save import review_state
+from blossom.screenshots import HomeworkReading
 from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.import_drafts import (
     DRAFT_LIFETIME,
@@ -46,6 +52,7 @@ from blossom.stores.import_drafts import (
     TooManyImages,
     UnknownImage,
 )
+from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.templating import page_templates
 from blossom.uploads import Upload, UploadRefused, prepare_upload, read_upload
 
@@ -60,13 +67,14 @@ NOTE_SECONDS: Final = 300
 """How long an upload's note waits for its review to show it."""
 
 LABELS: Final = {
-    "unread": "Not read yet. Read again.",
-    "ended": "Not read in time. Read again.",
+    "unread": "Not read yet.",
+    "ended": "Not read. Read again.",
     "read": "Read.",
     "wrong_kind": "This doesn't look like the school's homework list.",
 }
 """How an image stands, as its review says it, all in one place: an image no attempt covers,
-one whose attempt ended with no result kept, one read, and one read as something else."""
+one whose attempt ended with no result kept, one read, and one read as something else. "Read
+again" is never said of an image never read."""
 
 FAILED: Final = {
     "not_read_in_time": "Not read in time. Read again.",
@@ -123,6 +131,10 @@ SAID: Final = {
         "Screenshots can be added only on the computer running Blossom, or with sign-in on."
     ),
     "read_busy": "Blossom was busy, so nothing was read. Press Read again.",
+    "no_name_check": (
+        "Blossom couldn't check that these screenshots are hers. See the household guide before "
+        "saving."
+    ),
 }
 LIMITS: Final = (
     "Up to 10 screenshots at a time, PNG or JPEG, up to 12 MB each. A review holds up to 10 "
@@ -134,6 +146,7 @@ DISCLOSED: Final = (
 )
 
 templates = page_templates()
+logger = logging.getLogger(__name__)
 
 
 def image_refusal(place: int, kind: str) -> str:
@@ -480,15 +493,96 @@ def label_of(snapshot: DraftSnapshot, index: int) -> str:
     return LABELS["unread"]
 
 
+def corrections_of(progress: str | None) -> dict[str, dict[str, str]]:
+    """The typed corrections a review's saved progress keeps, by row key and field; none when
+    there is no progress or it can't be read."""
+    try:
+        found = json.loads(progress or "{}").get("corrections", {})
+    except (ValueError, AttributeError):
+        return {}
+    if not isinstance(found, dict):
+        return {}
+    return {
+        str(key): {str(f): str(v) for f, v in fields.items() if isinstance(v, str)}
+        for key, fields in found.items()
+        if isinstance(fields, dict)
+    }
+
+
+def student_line(body: str) -> str | None:
+    """The selected student's name as a stored homework reading holds it."""
+    try:
+        return HomeworkReading.model_validate_json(body).student.name
+    except ValueError:
+        return None
+
+
+async def rows_of(
+    request: Request, state: ApplicationState, snapshot: DraftSnapshot, said: list[str]
+) -> RowsShown | None:
+    """The review's rows once anything is read, worked out from its stored state and the record
+    as the save works them out; None before then."""
+    if not any(r.kind == "homework_list" for r in snapshot.readings):
+        return None
+    record = state.project_state
+    student = record.student_id()
+    tables = await asyncio.to_thread(record.draft_for_save, student, snapshot.draft_id)
+    if tables is None:
+        return None
+    corrections = corrections_of(snapshot.progress)
+    review = await asyncio.to_thread(
+        review_state, record, tables, now=state.real_clock.now(), corrections=corrections
+    )
+    if not review.open and not review.asking:
+        return None
+    places = {image.sha256: index + 1 for index, image in enumerate(snapshot.images)}
+    ids = {image.sha256: image.image_id for image in snapshot.images}
+    images: list[ImageName] = []
+    try:
+        key = await grade_name_key(request, state)
+    except (UnreadableHouseholdSecret, UnsafeCheckpointPath, OSError) as error:
+        logger.warning("The household secret couldn't be read: %s", type(error).__name__)
+        said.append(SAID["no_name_check"])
+    else:
+        for reading in snapshot.readings:
+            if reading.kind != "homework_list" or reading.sha256 not in ids:
+                continue
+            line = student_line(reading.body)
+            identity = record.identity_of(key, line)
+            images.append(
+                ImageName(
+                    ids[reading.sha256],
+                    places[reading.sha256],
+                    reading.sha256,
+                    identity.status.value,
+                    identity.form,
+                    line,
+                )
+            )
+    return rows_shown(
+        review,
+        places=places,
+        images=images,
+        page_key=snapshot.page_key,
+        version=snapshot.version,
+        progress_revision=snapshot.progress_revision,
+        acceptance=secrets.token_hex(16),
+        until=until_text(state, snapshot.expires_at),
+        corrections=corrections,
+    )
+
+
 def review_page(
     request: Request,
     state: ApplicationState,
     snapshot: DraftSnapshot,
     said: Sequence[str] = (),
     status: int = 200,
+    rows: RowsShown | None = None,
 ) -> Response:
     """The review: its images with their labels, the Read press for the unread ones when a key
-    is set and no attempt is current, and the form that adds more."""
+    is set and no attempt is current, the form that adds more, and once anything is read, the
+    rows with their destinations, questions and the group preview."""
     keyed = model_configured(state.settings)
     unread = [image.image_id for image in snapshot.images if not image.read]
     ends = snapshot.attempt_ends
@@ -516,6 +610,7 @@ def review_page(
             "disclosed": DISCLOSED,
             "limits": LIMITS,
             "full": len(snapshot.images) >= MOST_IMAGES_PRESENT,
+            "rows": rows,
         },
         status_code=status,
     )
@@ -544,7 +639,8 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
     if isinstance(found, Response):
         return found
     said = note_read(state.result_key, draft_id, request.cookies.get(NOTE_COOKIE))
-    answer = review_page(request, state, found, said)
+    rows = await rows_of(request, state, found, said)
+    answer = review_page(request, state, found, said, rows=rows)
     if request.cookies.get(NOTE_COOKIE) is not None:
         answer.delete_cookie(NOTE_COOKIE, path=f"{PREFIX}/{draft_id}")
     return answer
@@ -597,4 +693,5 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
             for image_id in outcome.busy
             if image_id in places and image_id not in read_now
         ]
-    return review_page(request, state, after, said)
+    rows = await rows_of(request, state, after, said)
+    return review_page(request, state, after, said, rows=rows)

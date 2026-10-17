@@ -19,7 +19,7 @@ import dataclasses
 import hashlib
 import json
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any, cast
 
@@ -276,6 +276,10 @@ def correction_digest(fields: Mapping[str, str] | None) -> str:
 # ------------------------------------------------------------------ the review's state
 
 
+Rework = Callable[[Mapping[str, Destination]], tuple[Validation, tuple[PreviewEntry, ...]]]
+"""Another mapping's checks and preview, against the same record and answers."""
+
+
 @dataclasses.dataclass(frozen=True)
 class ReviewState:
     """Everything a review page and a save work from, built from the draft's tables and the
@@ -297,6 +301,9 @@ class ReviewState:
     entries: Mapping[str, list[ListEntry]]
     preview: tuple[PreviewEntry, ...]
     asked: Mapping[tuple[str, ...], Change | None]
+    rework: "Rework" = dataclasses.field(default=lambda _: (Validation((), {}), ()), compare=False)
+    """The checks and preview another mapping of these pieces would have, as an offer shows it,
+    against the same record and answers."""
 
     @property
     def by_name(self) -> dict[str, Piece]:
@@ -355,49 +362,63 @@ def review_state(
         for key, value in values.items()
         if key[0] in ("due", "assigned") or (key[0] == "kind" and key[1].startswith("["))
     }
-    asked: dict[tuple[str, ...], Change | None] = {}
-
-    def instruction_ready(dest: tuple[str, ...], members: Sequence[Piece]) -> bool:
-        change = instruction_question(record, dest, members)
-        asked[dest] = change
-        if change is None:
-            return True
-        names = [m.name for m in members]
-        return (
-            "instructions",
-            instruction_subject(dest, names, change.instructions_revision),
-        ) in values
-
-    validation = validate(pieces, mapping, rows, picks, saved, dates, instruction_ready, kinds)
     listed = {p.name: entries(p, groups[p.pair], rows, picks, stored) for p in open_pieces}
     entry_ids = {
         name: [e.stands_for for e in found if e.kind in ("listed", "linked") and e.stands_for]
         for name, found in listed.items()
     }
 
-    def instructions(
-        dest: tuple[str, ...], members: Sequence[Piece]
-    ) -> tuple[int | None, tuple[str, ...] | None]:
-        change = asked.get(dest)
-        if change is None:
-            return None, None
-        subject = instruction_subject(dest, [m.name for m in members], change.instructions_revision)
-        got = values.get(("instructions", subject))
-        return change.instructions_revision, None if got is None else tuple(json.loads(got))
+    def work(
+        chosen: Mapping[str, Destination],
+        chosen_defaulted: Iterable[str],
+        asked: dict[tuple[str, ...], Change | None],
+    ) -> tuple[Validation, tuple[PreviewEntry, ...]]:
+        def instruction_ready(dest: tuple[str, ...], members: Sequence[Piece]) -> bool:
+            change = instruction_question(record, dest, members)
+            asked[dest] = change
+            if change is None:
+                return True
+            names = [m.name for m in members]
+            return (
+                "instructions",
+                instruction_subject(dest, names, change.instructions_revision),
+            ) in values
 
-    shown = preview(
-        validation,
-        pieces,
-        mapping,
-        rows,
-        dates,
-        defaulted,
-        entry_ids,
-        instructions,
-        picks,
-        kinds,
-        check,
-    )
+        def instructions(
+            dest: tuple[str, ...], members: Sequence[Piece]
+        ) -> tuple[int | None, tuple[str, ...] | None]:
+            change = asked.get(dest)
+            if change is None:
+                return None, None
+            names = [m.name for m in members]
+            subject = instruction_subject(dest, names, change.instructions_revision)
+            got = values.get(("instructions", subject))
+            return change.instructions_revision, None if got is None else tuple(json.loads(got))
+
+        found = validate(pieces, chosen, rows, picks, saved, dates, instruction_ready, kinds)
+        return found, tuple(
+            preview(
+                found,
+                pieces,
+                chosen,
+                rows,
+                dates,
+                chosen_defaulted,
+                entry_ids,
+                instructions,
+                picks,
+                kinds,
+                check,
+            )
+        )
+
+    asked: dict[tuple[str, ...], Change | None] = {}
+    validation, shown = work(mapping, defaulted, asked)
+
+    def rework(other: Mapping[str, Destination]) -> tuple[Validation, tuple[PreviewEntry, ...]]:
+        kept = {n for n in defaulted if n in other and other[n] == mapping.get(n)}
+        return work(other, kept, {})
+
     return ReviewState(
         tuple(pieces),
         tuple(asking),
@@ -413,8 +434,9 @@ def review_state(
         values,
         validation,
         listed,
-        tuple(shown),
+        shown,
         asked,
+        rework,
     )
 
 
