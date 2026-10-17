@@ -41,7 +41,7 @@ from blossom.screenshot_save import (
     instruction_subject,
     unit_digests,
 )
-from blossom.screenshots import CardPlace, ScreenshotRow
+from blossom.screenshots import CardPlace, ScreenshotRow, UnreadCard
 
 SAID: Final = {
     "status": (
@@ -143,6 +143,92 @@ def labels_for(rows: Sequence[SavedRow]) -> dict[str, str]:
     return out
 
 
+def piece_read(piece: Piece, course: str) -> str:
+    """What was read for a card, as corrected, in the form an entry takes: its title (with its
+    class where the group's heading gives another), due date, assigned date and words."""
+    title = piece.title if piece.course == course else f"{piece.course}: {piece.title}"
+    due = f"due {day_text(piece.due)}" if piece.due else SAID["no_due"]
+    assigned = f"assigned {day_text(piece.assigned)}" if piece.assigned else SAID["no_assigned"]
+    texts = list(dict.fromkeys(i.text for i in piece.reading.instructions)) if piece.reading else []
+    if texts:
+        first = texts[0] if len(texts[0]) <= 60 else texts[0][:57] + "..."
+        more = f" and {len(texts) - 1} more" if len(texts) > 1 else ""
+        words = f"\u201c{first}\u201d{more}"
+    else:
+        words = SAID["no_words"]
+    return f"This card: {title}, {due}, {assigned}, {words}"
+
+
+UNREAD_SAID: Final = {
+    "text": (
+        "Text Blossom couldn't read",
+        "Look at the screenshot and enter it by hand if it's homework.",
+    ),
+    "no_day": (
+        "Homework read, but its date couldn't be told",
+        "No date was on the card or in a heading above it in this screenshot.",
+    ),
+    "clipped": (
+        "Cut off at the screenshot's edge",
+        "Often the same card shows whole in the next screenshot. If so, set this aside.",
+    ),
+    "repeated": (
+        "Read twice the same way in one screenshot",
+        "Set it aside if it's the same card.",
+    ),
+}
+"""Each kind of card that couldn't be read: its group's heading and what it means."""
+REASON_GROUP: Final = {
+    "reading_unreadable": "text",
+    "card_unreadable": "text",
+    "incomplete": "text",
+    "no_day": "no_day",
+    "clipped": "clipped",
+    "repeated": "repeated",
+}
+
+
+def unread_shown(
+    unread: Sequence[UnreadCard],
+    places: Mapping[str, int],
+    open_keys: Sequence[str],
+    page_key: bytes,
+    version: int,
+) -> tuple[tuple["UnreadGroup", ...], list["OutsideForm"]]:
+    """The cards still open that couldn't be read, grouped by screenshot and reason, each with
+    what was read of it and a "Set aside" form signed at the page's version."""
+    still = set(open_keys)
+    grouped: dict[tuple[int, str], list[tuple[str, str]]] = {}
+    forms: list[OutsideForm] = []
+    for index, item in enumerate(
+        sorted(unread, key=lambda u: (places.get(u.sha256, 0), u.place or 0, u.key)), 1
+    ):
+        if item.key not in still:
+            continue
+        group = REASON_GROUP[item.reason]
+        card = item.card
+        parts = (
+            []
+            if card is None
+            else [str(x) for x in (card.course, card.title, card.instruction, card.footer) if x]
+        )
+        read = " \u00b7 ".join(parts) if parts else "Nothing on it could be read."
+        where = f"Card {item.place + 1}: " if item.place is not None else ""
+        form_id = f"leave-item-{index}"
+        keys = json.dumps([item.key], separators=(",", ":"))
+        signed = [("version", str(version)), ("keys", keys)]
+        signed.append(("check", page_check(page_key, signed)))
+        forms.append(OutsideForm(form_id, "set-aside", tuple(signed)))
+        grouped.setdefault((places.get(item.sha256, 0), group), []).append((where + read, form_id))
+    out = []
+    for (place, group), cards in sorted(grouped.items()):
+        heading, said = UNREAD_SAID[group]
+        out.append(
+            UnreadGroup(f"Screenshot {place}: {heading}" if place else heading, said, tuple(cards))
+        )
+    return tuple(out), forms
+
+
 def fact_text(fact_kind: str, entry_day: date | None, piece_day: date | None, about: str) -> str:
     """One fact beside an entry, as text."""
     if fact_kind == "due_differs":
@@ -177,6 +263,9 @@ class PieceControl:
     find: str
     preselected: bool
     stale: bool
+    read: str = ""
+    """What was read for the card, as corrected: its title, due date, assigned date and words,
+    in the form its entries take, so the two can be compared."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -275,6 +364,19 @@ class RowsShown:
     not_hers: bool = False
     """Whether "Not hers" is offered: with the name question, while nothing of the review is
     saved."""
+    unread: tuple["UnreadGroup", ...] = ()
+    """The cards that couldn't be read as homework, by screenshot and reason."""
+
+
+@dataclasses.dataclass(frozen=True)
+class UnreadGroup:
+    """Cards of one screenshot that couldn't be read for one reason: the group's heading, what
+    it means, and each card with what was read of it and its "Set aside" form."""
+
+    heading: str
+    said: str
+    cards: tuple[tuple[str, str], ...]
+    """(the card's place and what was read of it, the id of its "Set aside" form)."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -338,7 +440,12 @@ def _choices(state: ReviewState, piece: Piece, defaulted: bool) -> tuple[Choice,
     if picked is not None and all(c.value != picked for c in out) and chosen is not None:
         target = str(chosen.get("found", ""))
         if dest_kind(chosen) == "found" and target in state.rows:
-            out.append(Choice(picked, f"Found under another name: {labels[target]}", (), True))
+            row = state.rows[target]
+            shown = tuple(
+                fact_text(f.kind, f.entry_date, f.piece_date, labels.get(str(f.about), ""))
+                for f in facts(piece, row, state.rows, state.picks)
+            )
+            out.append(Choice(picked, f"Found under another name: {labels[target]}", shown, True))
     return tuple(out)
 
 
@@ -595,6 +702,7 @@ def rows_shown(
     corrections: Mapping[str, Mapping[str, str]],
     selected: frozenset[str] | None = None,
     open_keys: Sequence[str] = (),
+    unread: Sequence[UnreadCard] = (),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, one control per open piece
     by name group, each destination's questions, and the group preview with its refusals and
@@ -627,6 +735,7 @@ def rows_shown(
                 p.name,
                 p.name in state.defaults and p.name not in state.stored,
                 p.name in state.validation.of(p.name).stale,
+                piece_read(p, pieces[0].course),
             )
             for p in pieces
         )
@@ -809,6 +918,7 @@ def rows_shown(
     ]
     hidden += [(f"digest:{u}", ",".join(d)) for u, d in sorted(digests.items())]
     hidden.append(("check", page_check(page_key, hidden)))
+    unread_groups, unread_forms = unread_shown(unread, places, open_keys, page_key, version)
     for index, row in enumerate(state.asking, 1):
         keys = json.dumps([row.key], separators=(",", ":"))
         signed = [("version", str(version)), ("keys", keys)]
@@ -835,8 +945,9 @@ def rows_shown(
         tuple(shown_units),
         tuple(hidden),
         SAID["status"],
-        tuple(forms),
+        (*forms, *unread_forms),
         bool(names) and not state.saved,
+        unread_groups,
     )
 
 

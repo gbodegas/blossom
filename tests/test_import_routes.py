@@ -1816,6 +1816,150 @@ def test_the_disclosure_stands_directly_above_read(tmp_path: pathlib.Path) -> No
     assert "<p" not in page[disclosed:read].split("</p>", 1)[1]
 
 
+# ------------------------------------------------------------------ what each card was read as
+
+
+def unreadable_answer() -> dict[str, object]:
+    """One card read whole, one whose title couldn't be read, and one with no date anywhere."""
+    return homework_answer(
+        headings=[],
+        cards=[
+            homework_card(),
+            homework_card(title=None, y_top=360, y_bottom=430),
+            homework_card(
+                badge="DUE",
+                course="Science 8",
+                title="Vocab 4",
+                instruction=None,
+                footer=None,
+                y_top=450,
+                y_bottom=520,
+            ),
+        ],
+    )
+
+
+def test_each_card_shows_what_was_read_for_it_beside_its_destination_choices(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+
+    form = html.unescape(review_form(page))
+    assert (
+        "This card: Sentence Composing, due Thu 10/8, assigned Mon 10/5, “Complete pages 12 to 14.”"
+    ) in form
+    assert "This card: Chains Reading Guide 6, due Mon 10/5, no assigned date, No instructions" in (
+        form
+    )
+
+
+def test_a_found_row_chosen_for_a_card_shows_the_same_facts_as_every_other_entry(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = Assignment(
+        assignment_id="assignment-grammar-practice-gggg6666",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 9),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=date(2026, 10, 2),
+        kind=AssignmentKind.HOMEWORK,
+    )
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([other])
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        found = json.dumps({"found": other.assignment_id}, separators=(",", ":"))
+        keep(browser, draft_id, ("destination", piece, found))
+        after = html.unescape(review_form(browser.get(f"/parent/imports/{draft_id}").text))
+
+    chosen = re.search(
+        r"Found under another name: Grammar Practice[^<]*(<span.*?)</label>", after, re.S
+    )
+    assert chosen is not None
+    facts = chosen.group(1)
+    assert "Doesn't have this card's words." in facts
+    assert "Due Fri 10/9: this card says Thu 10/8." in facts
+    assert "Assigned Fri 10/2: this card says Mon 10/5." in facts
+
+
+def test_cards_that_couldn_t_be_read_are_listed_with_their_reason_text_and_place(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
+
+    shown = html.unescape(page)
+    assert "Couldn't read" in shown
+    assert "Screenshot 1: Text Blossom couldn't read" in shown
+    assert "Look at the screenshot and enter it by hand if it's homework." in shown
+    assert "Card 2: English 8 · Complete pages 12 to 14. · Due (10/8/2026)" in shown
+    assert "Screenshot 1: Homework read, but its date couldn't be told" in shown
+    assert "No date was on the card or in a heading above it in this screenshot." in shown
+    assert "Card 3: Science 8 · Vocab 4" in shown
+    assert shown.count('form="leave-item-') == 2
+
+
+def test_a_card_that_couldn_t_be_read_can_be_set_aside_and_the_review_then_finishes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        stale = page
+        left = followed(browser, press_outside(browser, page, "leave-item-1"))
+        refused = followed(browser, press_outside(browser, stale, "leave-item-2"))
+        states = row_states(browser, draft_id)
+        [remaining] = re.findall(r'form="(leave-item-\d+)"', left)
+        left_again = press_outside(browser, left, remaining)
+        saved = send(
+            browser,
+            draft_id,
+            page_post(browser.get(f"/parent/imports/{draft_id}").text, "save", tick=units_on(left)),
+        )
+        done = closed(browser, draft_id)
+
+    assert says(left, imports.AFTER_SAID["set_aside"])
+    assert says(refused, imports.CHANGED_IN_ANOTHER_TAB)
+    assert sorted(states.values()) == ["discarded", "open", "open"]
+    assert left_again.status_code == 303
+    assert says(saved.text, imports.counted(1, 0, 0))
+    assert done
+
+
+def test_finish_without_the_rest_sets_aside_the_cards_that_couldn_t_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
+        before = row_states(browser, draft_id)
+        finished = press_outside(browser, page, "finish")
+        done = closed(browser, draft_id)
+
+    assert sorted(before.values()) == ["open", "open", "open"]
+    assert says(finished.text, imports.AFTER_SAID["nothing_saved"])
+    assert done
+
+
+def test_a_review_left_with_only_cards_that_couldn_t_be_read_still_shows_them(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = browser.get(f"/parent/imports/{draft_id}").text
+        still_open = not closed(browser, draft_id)
+
+    assert still_open
+    assert "Couldn't read" in html.unescape(after)
+    assert after.count('form="leave-item-') == 2
+    assert 'form="finish"' in after
+
+
 IMPORT_REVIEW_RULES = (
     ".import-review .choice {\n  min-width: 0;\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"

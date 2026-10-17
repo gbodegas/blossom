@@ -50,6 +50,7 @@
         {% for piece in group.pieces %}
           <fieldset class="choice">
             <legend>{{ piece.legend }}</legend>
+            <p class="note">{{ piece.read }}</p>
             {% for choice in piece.choices %}
               <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
             {% endfor %}
@@ -70,6 +71,20 @@
             {% endif %}
           </fieldset>
         {% endfor %}
+      {% endfor %}
+    </section>
+  {% endif %}
+  {% if rows.unread %}
+    <section class="panel" aria-labelledby="unread-heading">
+      <h2 id="unread-heading">Couldn't read</h2>
+      {% for group in rows.unread %}
+        <h3>{{ group.heading }}</h3>
+        <p class="note">{{ group.said }}</p>
+        <ul>
+          {% for text, form_id in group.cards %}
+            <li><p>{{ text }}</p><div class="actions"><button type="submit" class="secondary" form="{{ form_id }}">Set aside</button></div></li>
+          {% endfor %}
+        </ul>
       {% endfor %}
     </section>
   {% endif %}

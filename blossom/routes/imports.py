@@ -57,6 +57,7 @@ from blossom.screenshot_save import (
     save_homework,
     student_line,
 )
+from blossom.screenshots import homework_assembly
 from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.import_drafts import (
     DRAFT_LIFETIME,
@@ -608,8 +609,11 @@ async def rows_of(
         return None
     corrections = corrections_of(snapshot.progress) if typed is None else typed
     review = await state_of_review(state, snapshot, corrections)
-    if review is None or (not review.open and not review.asking):
+    open_keys = [row.key for row in snapshot.rows if row.state == "open"]
+    items_open = any(not row.readable and row.state == "open" for row in snapshot.rows)
+    if review is None or (not review.open and not review.asking and not items_open):
         return None
+    unread = homework_assembly(snapshot.readings, now=state.real_clock.now()).unread
     named = await image_names(request, state, snapshot)
     if named is None:
         said.append(SAID["no_name_check"])
@@ -624,7 +628,8 @@ async def rows_of(
         until=until_text(state, snapshot.expires_at),
         corrections=corrections,
         selected=frozenset(ticked) if ticked is not None else picked(snapshot.progress),
-        open_keys=[row.key for row in snapshot.rows if row.state == "open"],
+        open_keys=open_keys,
+        unread=unread,
     )
 
 
