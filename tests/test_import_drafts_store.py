@@ -1923,6 +1923,37 @@ def test_saving_for_later_keeps_answers_and_progress_in_one_transaction(world: W
     assert world.store.snapshot(world.student, draft_id).progress == '{"tab": "one"}'
 
 
+def test_a_withdrawn_answer_is_deleted_with_the_press_s_answers_and_one_raise(
+    world: World,
+) -> None:
+    """An answer the press left blank is deleted in the transaction that keeps the others; one
+    never kept is passed over, and a press that changes nothing raises nothing."""
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1", "r2")
+    version = world.store.snapshot(world.student, draft_id).version
+    confirm = answer('["r1","title"]', "as_read", "0:r1", kind="confirm")
+    world.store.keep_answers(world.student, draft_id, version=version, answers=[confirm])
+
+    kept = world.store.keep_answers(
+        world.student,
+        draft_id,
+        version=version + 1,
+        answers=[answer("0:r2")],
+        withdrawn=[("confirm", '["r1","title"]'), ("instructions", "never kept")],
+    )
+    again = world.store.keep_answers(
+        world.student,
+        draft_id,
+        version=version + 2,
+        answers=[answer("0:r2")],
+        withdrawn=[("confirm", '["r1","title"]')],
+    )
+
+    assert (kept.version, kept.stored, kept.withdrawn) == (version + 2, 1, 1)
+    assert kept_answers(world, draft_id) == {("destination", "0:r2"): '{"new":1}'}
+    assert (again.version, again.stored, again.withdrawn) == (version + 2, 0, 0)
+
+
 def test_a_mark_stays_until_the_draft_closes_even_once_its_piece_is_answered(
     world: World,
 ) -> None:

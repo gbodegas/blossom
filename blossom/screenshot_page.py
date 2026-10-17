@@ -797,9 +797,10 @@ def _offer_shown(
 
 
 def _names(
-    images: Sequence[ImageName], values: Mapping[tuple[str, str], str]
+    images: Sequence[ImageName], values: Mapping[tuple[str, str], str], frozen: bool = False
 ) -> tuple[list[NameQuestion], set[str]]:
-    """The name questions, and the images whose rows wait on one."""
+    """The name questions, and the images whose rows wait on one. Once some homework is saved,
+    no screenshot can be removed, so none offers "Remove only this screenshot"."""
     out: list[NameQuestion] = []
     waiting: set[str] = set()
     missing = [i for i in images if i.status == "missing"]
@@ -839,7 +840,9 @@ def _names(
                     ("hers", "Yes, this is her name", got == "hers"),
                     ("misread", "The name was misread", got == "misread"),
                 ),
-                tuple(
+                ()
+                if frozen
+                else tuple(
                     (
                         i.image_id,
                         "Remove only this screenshot"
@@ -889,6 +892,7 @@ def rows_shown(
     open_keys: Sequence[str] = (),
     unread: Sequence[UnreadCard] = (),
     unsaved: frozenset[tuple[str, str]] = frozenset(),
+    frozen: bool = False,
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, one control per open piece
     by name group, each destination's questions, and the group preview with its refusals and
@@ -913,7 +917,7 @@ def rows_shown(
             for offer in offers(state.pieces, state.mapping, unit, entry_values, recheck)
         ]
     labels = page_labels(state, [pair for found in reworked.values() for pair in found])
-    names, waiting = _names(images, values)
+    names, waiting = _names(images, values, frozen)
     splits = tuple(_split_question(r, places, values) for r in state.asking)
 
     def first_card(piece: Piece) -> tuple[int, int, str]:

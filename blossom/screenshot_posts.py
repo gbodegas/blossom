@@ -59,6 +59,13 @@ class ReviewPost:
     units: tuple[str, ...]
     digests: dict[str, tuple[str, ...]]
     defaults: dict[str, str]
+    withdrawn: tuple[tuple[str, str], ...] = ()
+    """Each confirmation or instruction choice the page asked for and the press left blank, by
+    kind and subject: a box left unticked takes back the answer it held."""
+
+
+WITHDRAWABLE: Final = frozenset({"confirm", "instructions"})
+"""The answer kinds a press takes back when it posts none of their boxes."""
 
 
 def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
@@ -123,7 +130,7 @@ def read_change(
     corrections: Mapping[str, Mapping[str, str]],
 ) -> ReviewPost:
     """An offer's or a found row's post: every field signed, destination answers alone, kept
-    as a press of Keep these answers."""
+    as a press of Keep these answers, with the corrections they were given with."""
     fields = _single(items)
     signature = fields.pop("offer", "")
     if not hmac.compare_digest(signature, page_check(page_key, sorted(fields.items()))):
@@ -139,13 +146,20 @@ def read_change(
         answers.append(_answer(state, kind, subject, _destination(value), corrections))
     if not answers:
         raise PostRefused
-    return ReviewPost("keep", version, "", 0, tuple(answers), {}, (), {}, {})
+    typed = {key: dict(fields) for key, fields in corrections.items()}
+    return ReviewPost("keep", version, "", 0, tuple(answers), typed, (), {}, {})
 
 
 def _number(text: str) -> int:
     if not text.isdigit() or len(text) > 12:
         raise PostRefused
     return int(text)
+
+
+def _kind(name: str) -> str:
+    """An answer field's kind, or "" for a field of no answer kind."""
+    parts = name.split(":", 2)
+    return parts[1] if len(parts) == 3 and parts[0] == "answer" else ""
 
 
 def _field(name: str) -> tuple[str, str]:
@@ -160,7 +174,8 @@ def read_review(
 ) -> ReviewPost:
     """The review form's post: its signed fields checked, each answer one the page asked with a
     value it offered, each correction one for a field it asked to confirm, each ticked group
-    one it showed."""
+    one it showed. A confirmation or instruction question the page asked and the press left
+    blank is withdrawn."""
     signed = [(n, v) for n, v in items if n in SIGNED or n.startswith("digest:") or n == "check"]
     hidden = _single(signed)
     check = hidden.pop("check", "")
@@ -222,6 +237,11 @@ def read_review(
         else:
             value = values[0]
         answers.append(_answer(state, kind, subject, value, corrections))
+    withdrawn = tuple(
+        sorted(
+            _field(name) for name in offered if name not in chosen and _kind(name) in WITHDRAWABLE
+        )
+    )
     return ReviewPost(
         presses[0],
         _number(hidden["version"]),
@@ -232,6 +252,7 @@ def read_review(
         units,
         digests,
         defaults,
+        withdrawn,
     )
 
 

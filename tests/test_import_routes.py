@@ -2307,6 +2307,188 @@ def test_a_refused_destination_reads_the_same_in_the_refusal_its_control_and_the
     assert f"Found under another name: {destination}" in preview_labels(refused)
 
 
+# ------------------------------------------------------------------ a box left unticked
+
+
+def checked_names(page: str) -> list[str]:
+    return [html.unescape(name) for name, _ in checked_values(review_form(page))]
+
+
+def test_an_unticked_confirmation_is_withdrawn_so_a_save_writes_nothing_and_asks_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    card = homework_card(uncertain=[{"field": "instruction", "reason": "blurred"}])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[card])))
+        page = her_name_answered(browser, draft_id, page)
+        [subject] = fields_named(review_form(page), "answer:confirm:")
+        field = f"answer:confirm:{subject}"
+        kept = followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={field: "as_read"}))
+        )
+        held = stored_answers(browser, draft_id)
+        units = units_on(kept)
+        unticked = [f for f in page_post(kept, "save", tick=units) if f[0] != field]
+        before = assignment_count(browser)
+        saved = followed(browser, send(browser, draft_id, unticked))
+        after = assignment_count(browser)
+        answers = stored_answers(browser, draft_id)
+
+    assert held[("confirm", subject)] == "as_read"
+    assert units
+    assert after == before
+    assert ("confirm", subject) not in answers
+    assert field not in checked_names(saved)
+    assert units_on(saved) == []
+    assert says(saved, screenshot_page.OPEN_NAMES["confirm"])
+
+
+def test_clearing_every_instruction_box_withdraws_the_instructions_chosen(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def vocab(words: str) -> dict[str, object]:
+        return homework_answer(cards=[homework_card(title="Vocab Quiz", instruction=words)])
+
+    with here(open_settings(tmp_path)) as browser:
+        first, page = read_review(browser, monkeypatch, (BLUE, vocab("Study list two.")))
+        page = her_name_answered(browser, first, page)
+        send(browser, first, page_post(page, "save", tick=units_on(page)))
+        [row] = [
+            a for a in state_of(browser).project_state.all_assignments() if a.title == "Vocab Quiz"
+        ]
+        draft_id, page = read_review(browser, monkeypatch, (RED, vocab("Study list one.")))
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        existing = json.dumps({"existing": row.assignment_id}, separators=(",", ":"))
+        asked = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(page, "keep", choose={f"answer:destination:{piece}": existing}),
+            ),
+        )
+        [subject] = fields_named(review_form(asked), "answer:instructions:")
+        field = f"answer:instructions:{subject}"
+        chosen = followed(
+            browser,
+            send(browser, draft_id, [*page_post(asked, "keep"), (field, "Study list one.")]),
+        )
+        held = stored_answers(browser, draft_id)
+        cleared = followed(
+            browser,
+            send(browser, draft_id, [f for f in page_post(chosen, "keep") if f[0] != field]),
+        )
+        answers = stored_answers(browser, draft_id)
+
+    assert held[("instructions", subject)] == json.dumps(["Study list one."])
+    assert ("instructions", subject) not in answers
+    assert field not in checked_names(cleared)
+    assert says(cleared, screenshot_page.OPEN_NAMES["instructions"])
+
+
+# ------------------------------------------------------------------ after the first save
+
+FROZEN = (
+    "This review's screenshots are fixed now that some homework is saved. To add or change a "
+    "screenshot, start a new upload; Blossom compares it with what is saved."
+)
+
+
+def test_after_a_partial_save_the_screenshots_are_fixed_and_a_remove_from_before_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lab = homework_answer(cards=[homework_card(course="Science 8", title="Lab Report")])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()), (BLUE, lab))
+        page = her_name_answered(browser, draft_id, page)
+        units = units_on(page)
+        partial = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units[:1]))
+        )
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+        [first_image, second_image] = images_of(browser, draft_id)
+        removed = browser.post(f"/parent/imports/{draft_id}/images/{first_image}/remove")
+        added = upload(browser, GREEN, form={}, to=f"/parent/imports/{draft_id}/images")
+        still = images_of(browser, draft_id)
+
+    assert f"/images/{first_image}/remove" in page
+    for shown in (partial, reloaded):
+        assert says(shown, FROZEN)
+        assert "/remove" not in shown
+        assert f'action="/parent/imports/{draft_id}/images"' not in shown
+        assert f'action="/parent/imports/{draft_id}/read"' not in shown
+        assert units_on(shown)
+    assert removed.status_code == 409
+    assert says(removed.text, FROZEN)
+    assert added.status_code == 409
+    assert says(added.text, FROZEN)
+    assert still == [first_image, second_image]
+
+
+# ------------------------------------------------------------------ a found row or an offer
+
+
+def typed_on(page: str) -> list[str]:
+    return [html.unescape(v) for v in re.findall(r'name="correct:[^"]*" value="([^"]*)"', page)]
+
+
+def assert_returned_with_saved_typing(page: str, chosen: str, typed: str) -> None:
+    """The page a found row's or an offer's post returns: the correction saved for later in
+    its box, the destination posted chosen, and no answer set aside for a lost correction."""
+    assert typed_on(page) == [typed]
+    assert not says(page, screenshot_page.SAID["lost_correction"])
+    assert chosen in [html.unescape(v) for _, v in checked_values(review_form(page))]
+
+
+def test_a_found_row_or_an_offer_returns_the_page_with_the_corrections_saved_for_later(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    later_card = homework_answer(cards=[homework_card(footer="Due (10/30/2026)")])
+    found_row = Assignment(
+        assignment_id="assignment-grammar-practice-hhhh7777",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 30),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    unsure = homework_card(uncertain=[{"field": "instruction", "reason": "blurred"}])
+    same_words = "Complete pages 12 to 14."
+    with here(open_settings(tmp_path)) as browser:
+        first, page = read_review(browser, monkeypatch, (BLUE, later_card))
+        page = her_name_answered(browser, first, page)
+        send(browser, first, page_post(page, "save", tick=units_on(page)))
+        state_of(browser).project_state.upsert_assignments([found_row])
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[unsure])))
+        [box] = fields_named(review_form(page), "correct:")
+        followed(
+            browser,
+            send(browser, draft_id, page_post(page, "later", typed={f"correct:{box}": same_words})),
+        )
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        finding = browser.get(
+            f"/parent/imports/{draft_id}/find", params={"piece": piece, "words": "grammar"}
+        ).text
+        choice = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
+        )
+        assert choice is not None
+        fields = [
+            (html.unescape(n), html.unescape(v))
+            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
+        ]
+        found_page = followed(browser, send(browser, draft_id, fields))
+        found = json.dumps({"found": found_row.assignment_id}, separators=(",", ":"))
+        assert_returned_with_saved_typing(found_page, found, same_words)
+        _, offer_fields = outside(found_page, "offer-1-1")
+        offered = dict(offer_fields)[f"answer:destination:{piece}"]
+        offer_page = followed(browser, press_outside(browser, found_page, "offer-1-1"))
+
+    assert_returned_with_saved_typing(offer_page, offered, same_words)
+
+
 def test_each_card_s_own_line_shows_its_instructions_whole(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

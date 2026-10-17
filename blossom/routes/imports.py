@@ -76,6 +76,7 @@ from blossom.stores.import_drafts import (
     AttemptUnderWay,
     DraftClosed,
     DraftExpired,
+    DraftFrozen,
     DraftNotFound,
     DraftSnapshot,
     ReviewChanged,
@@ -154,6 +155,10 @@ SAID: Final = {
     "too_old": "This form is too old to use. Choose the screenshots again.",
     "busy": "Blossom was busy, so nothing was added. Send the screenshots again.",
     "image_gone": "That screenshot isn't in this review.",
+    "frozen": (
+        "This review's screenshots are fixed now that some homework is saved. To add or change "
+        "a screenshot, start a new upload; Blossom compares it with what is saved."
+    ),
     "unchecked": (
         "Nothing was read: this page's Read button couldn't be checked. Press Read again."
     ),
@@ -383,6 +388,8 @@ def store_refusal(request: Request, state: ApplicationState, error: Exception) -
         return said_page(request, marks, SAID["closed"], 409)
     if isinstance(error, DraftExpired):
         return said_page(request, marks, SAID["expired"], 410)
+    if isinstance(error, DraftFrozen):
+        return said_page(request, marks, SAID["frozen"], 409)
     if isinstance(error, StoreBusy | WriterBusy):
         return said_page(request, marks, SAID["busy"], 503)
     return said_page(request, marks, SAID["absent"], 404)
@@ -392,6 +399,7 @@ STORE_REFUSALS: Final = (
     TooManyImages,
     DraftClosed,
     DraftExpired,
+    DraftFrozen,
     DraftNotFound,
     StoreBusy,
     WriterBusy,
@@ -443,6 +451,8 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
         if snapshot.closed_at is not None or snapshot.finished:
             raise DraftClosed
+        if snapshot.frozen:
+            raise DraftFrozen
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
     try:
@@ -653,6 +663,7 @@ async def rows_of(
         unsaved=frozenset() if typed is None else unsaved_typing(snapshot, typed),
         open_keys=open_keys,
         unread=unread,
+        frozen=snapshot.frozen,
     )
 
 
@@ -688,7 +699,12 @@ def review_page(
             ],
             "said": list(said),
             "under_way": None if when is None else under_way(when),
-            "read_ids": ",".join(unread) if keyed and unread and when is None else None,
+            "read_ids": (
+                ",".join(unread)
+                if keyed and unread and when is None and not snapshot.frozen
+                else None
+            ),
+            "frozen": SAID["frozen"] if snapshot.frozen else None,
             "read_check": read_check(snapshot.page_key, unread),
             "no_key": None if keyed else SAID["no_key"],
             "disclosed": DISCLOSED,
@@ -765,7 +781,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         outcome = None
     except (StoreBusy, WriterBusy):
         return review_page(request, state, found, [SAID["read_busy"]], 503)
-    except (DraftClosed, DraftExpired, DraftNotFound) as error:
+    except (DraftClosed, DraftExpired, DraftFrozen, DraftNotFound) as error:
         return store_refusal(request, state, error)
     after = await snapshot_or_page(request, state, draft_id)
     if isinstance(after, Response):
@@ -915,6 +931,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             draft_id,
             version=post.version,
             answers=list(post.answers),
+            withdrawn=list(post.withdrawn),
         )
     except ReviewChanged:
         said = [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["keep_stale"]]
@@ -963,6 +980,7 @@ async def later_press(
             progress_revision=post.progress_revision,
             answers=list(post.answers),
             progress=progress,
+            withdrawn=list(post.withdrawn),
         )
     except ReviewChanged:
         said = [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["later_stale"]]
@@ -997,6 +1015,7 @@ async def save_press(
             draft_id,
             version=post.version,
             answers=list(post.answers),
+            withdrawn=list(post.withdrawn),
         )
     except ReviewChanged:
         said = [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["save_stale"]]
@@ -1005,7 +1024,7 @@ async def save_press(
         return await with_typing(request, state, draft_id, post, [PRESS_SAID["save_failed"]], 503)
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return store_refusal(request, state, error)
-    answered = kept.stored > 0
+    answered = kept.stored > 0 or kept.withdrawn > 0
     kept_said = [PRESS_SAID["answers_kept"]] if answered else []
     if not post.units:
         said = [*kept_said, PRESS_SAID["none_chosen"]]

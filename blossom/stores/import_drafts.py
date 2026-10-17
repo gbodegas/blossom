@@ -179,6 +179,8 @@ class DraftSnapshot(NamedTuple):
     discarded: frozenset[str]
     """Every key the draft's discard list names that no acceptance does."""
     finished: bool
+    frozen: bool = False
+    """Whether some homework from it is saved, so its screenshots stay as they are."""
 
 
 class OpenDraft(NamedTuple):
@@ -294,12 +296,13 @@ class AnswerToKeep(NamedTuple):
 
 
 class AnswersKept(NamedTuple):
-    """What keeping a press's answers did: the version after, how many answers it stored, and
-    how many it dropped as already saved."""
+    """What keeping a press's answers did: the version after, how many answers it stored, how
+    many it dropped as already saved, and how many it withdrew."""
 
     version: int
     stored: int
     dropped: int
+    withdrawn: int = 0
 
 
 class SavedForLater(NamedTuple):
@@ -964,14 +967,17 @@ class ImportDraftsStore:
         *,
         version: int,
         answers: Sequence[AnswerToKeep],
+        withdrawn: Sequence[tuple[str, str]] = (),
         wait: float = STORE_WAIT_SECONDS,
     ) -> AnswersKept:
         """Keep a press's answers at the page's version, all or none, in one writer transaction:
         an answer for pieces another save accepted is dropped, an answer equal to the one kept
-        writes nothing, and the version is raised once when any answer changed."""
+        writes nothing, each answer the page asked for and the press left blank (``withdrawn``,
+        by kind and subject) is deleted, and the version is raised once when any answer
+        changed."""
         with self._writing(wait) as now:
             draft = self._at_version(student_id, draft_id, version, now)
-            return self._keep_answers_locked(draft, answers)
+            return self._keep_answers_locked(draft, answers, withdrawn)
 
     def save_for_later(
         self,
@@ -982,6 +988,7 @@ class ImportDraftsStore:
         progress_revision: int,
         answers: Sequence[AnswerToKeep],
         progress: str,
+        withdrawn: Sequence[tuple[str, str]] = (),
         wait: float = STORE_WAIT_SECONDS,
     ) -> SavedForLater:
         """Save review for later in one writer transaction: the answers as ``keep_answers``
@@ -989,7 +996,7 @@ class ImportDraftsStore:
         behind keeps its answers and stores no progress."""
         with self._writing(wait) as now:
             draft = self._at_version(student_id, draft_id, version, now)
-            kept = self._keep_answers_locked(draft, answers)
+            kept = self._keep_answers_locked(draft, answers, withdrawn)
             revision = int(draft["progress_revision"])
             if revision != progress_revision:
                 return SavedForLater(kept, False, revision)
@@ -1007,10 +1014,13 @@ class ImportDraftsStore:
             return SavedForLater(kept, True, revision + 1)
 
     def _keep_answers_locked(
-        self, draft: sqlite3.Row, answers: Sequence[AnswerToKeep]
+        self,
+        draft: sqlite3.Row,
+        answers: Sequence[AnswerToKeep],
+        withdrawn: Sequence[tuple[str, str]] = (),
     ) -> AnswersKept:
-        """Inside a write at the page's version: the dropped, the unchanged and the stored
-        answers, with one version raise when any changed."""
+        """Inside a write at the page's version: the dropped, the unchanged, the stored and the
+        withdrawn answers, with one version raise when any changed."""
         draft_id = str(draft["draft_id"])
         saved = self._worked_out(draft).saved
         kept = {
@@ -1027,9 +1037,14 @@ class ImportDraftsStore:
                 changed[(answer.kind, answer.subject)] = (answer.value, answer.digest)
         for (kind, subject), (value, digest) in sorted(changed.items()):
             self._connection.execute(KEEP_ANSWER, (draft_id, kind, subject, value, digest))
-        if changed:
+        gone = sorted({key for key in withdrawn if key in kept and key not in changed})
+        self._connection.executemany(
+            "DELETE FROM import_draft_answers WHERE draft_id = ? AND kind = ? AND subject = ?",
+            [(draft_id, kind, subject) for kind, subject in gone],
+        )
+        if changed or gone:
             self._connection.execute(RAISE_VERSION, (draft_id,))
-        return AnswersKept(self._version(draft_id), len(changed), dropped)
+        return AnswersKept(self._version(draft_id), len(changed), dropped, len(gone))
 
     def discard_rest(
         self,
@@ -1414,6 +1429,7 @@ class ImportDraftsStore:
             saved=worked.saved,
             discarded=worked.discarded,
             finished=worked.finished,
+            frozen=self._frozen(draft),
         )
 
     def open_drafts(

@@ -19,13 +19,17 @@
           <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="160"></a>
           <p>Screenshot {{ image.place }}: {{ image.label }}</p>
           <p><a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot</a></p>
-          <form method="post" action="/parent/imports/{{ draft_id }}/images/{{ image.id }}/remove">
-            <button type="submit" class="secondary">Remove</button>
-          </form>
+          {% if not frozen %}
+            <form method="post" action="/parent/imports/{{ draft_id }}/images/{{ image.id }}/remove">
+              <button type="submit" class="secondary">Remove</button>
+            </form>
+          {% endif %}
         </li>
       {% endfor %}
     </ul>
-    {% if under_way %}
+    {% if frozen %}
+      <p class="note">{{ frozen }}</p>
+    {% elif under_way %}
       <p class="note">{{ under_way }}</p>
     {% elif no_key %}
       <p class="note">{{ no_key }}</p>
@@ -41,7 +45,7 @@
     {% endif %}
   </section>
   {% if rows %}{% include "import_rows.html" %}{% endif %}
-  {% if not full %}
+  {% if not full and not frozen %}
     <section class="panel" aria-labelledby="more-heading">
       <h2 id="more-heading">Add screenshots</h2>
       <p class="note" id="more-limits">{{ limits }}</p>
