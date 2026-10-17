@@ -1923,6 +1923,26 @@ def test_saving_for_later_keeps_answers_and_progress_in_one_transaction(world: W
     assert world.store.snapshot(world.student, draft_id).progress == '{"tab": "one"}'
 
 
+def test_a_mark_stays_until_the_draft_closes_even_once_its_piece_is_answered(
+    world: World,
+) -> None:
+    """A change's mark is its piece's only trace of the answers it cleared: answering the piece
+    again keeps the mark, and only the close deletes it."""
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1")
+    world.store._connection.execute(
+        "INSERT INTO import_draft_marks (draft_id, subject) VALUES (?, ?)", (draft_id, "0:r1")
+    )
+    world.store._connection.commit()
+    version = world.store.snapshot(world.student, draft_id).version
+
+    world.store.keep_answers(world.student, draft_id, version=version, answers=[answer("0:r1")])
+
+    review = world.store.review_answers(world.student, draft_id)
+    assert kept_answers(world, draft_id) == {("destination", "0:r1"): '{"new":1}'}
+    assert review.marks == frozenset({"0:r1"})
+
+
 def test_answers_and_marks_go_with_the_draft(world: World) -> None:
     """Closing deletes a draft's answers and marks in the close's transaction, and the expiry
     sweep's statements delete them with the rest."""

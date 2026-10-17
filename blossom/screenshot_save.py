@@ -382,7 +382,9 @@ def review_state(
     defaults_posted: Mapping[str, str] | None = None,
 ) -> ReviewState:
     """The review's pieces, destinations, checks and preview from its tables and the record.
-    A default the press posted, and its answers kept, still counts as the default it was."""
+    A default the press posted, and its answers kept, still counts as the default it was. A
+    piece a change of screenshots marked, or whose answer depended on a correction that wasn't
+    kept, is given no default: it waits for an answer."""
     values = {key: value for key, (value, _) in tables.answers.items()}
     split = {
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
@@ -411,7 +413,12 @@ def review_state(
     by_row = {s: v for (k, s), v in values.items() if k == "kind" and v in KINDS}
     kinds = {p.name: by_row[p.key] for p in pieces if p.key in by_row}
     check = writes_nothing_test(record, kinds)
-    chosen = defaults(open_pieces, groups, rows, picks, stored, check)
+    asks = tables.marks | lost
+    chosen = {
+        name: value
+        for name, value in defaults(open_pieces, groups, rows, picks, stored, check).items()
+        if name not in asks
+    }
     mapping: dict[str, Destination] = {**chosen, **stored}
     defaulted = set(chosen)
     for name, value in (defaults_posted or {}).items():

@@ -1027,11 +1027,6 @@ class ImportDraftsStore:
                 changed[(answer.kind, answer.subject)] = (answer.value, answer.digest)
         for (kind, subject), (value, digest) in sorted(changed.items()):
             self._connection.execute(KEEP_ANSWER, (draft_id, kind, subject, value, digest))
-            if kind == "destination":
-                self._connection.execute(
-                    "DELETE FROM import_draft_marks WHERE draft_id = ? AND subject = ?",
-                    (draft_id, subject),
-                )
         if changed:
             self._connection.execute(RAISE_VERSION, (draft_id,))
         return AnswersKept(self._version(draft_id), len(changed), dropped)

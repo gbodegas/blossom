@@ -7,6 +7,7 @@ Every route serves a parent alone, checked before any body is read, and every an
 no-store. Nothing on Family review offers the upload yet.
 """
 
+import asyncio
 import dataclasses
 import html
 import io
@@ -2505,6 +2506,104 @@ def test_reading_a_new_copy_of_a_group_left_unsaved_says_it_asks_again(
     assert sorted(states.values()) == ["open", "open"]
 
 
+def destination_cards(page: str) -> list[str]:
+    """Each piece's destination control on the review form, whole."""
+    return [
+        card
+        for card in re.findall(r'<fieldset class="choice">.*?</fieldset>', review_form(page), re.S)
+        if 'name="answer:destination:' in card
+    ]
+
+
+def asks_with_nothing_chosen(page: str) -> bool:
+    """Whether the review's one card asks where it goes, nothing preselected, and its group
+    waits to be answered."""
+    [card] = destination_cards(page)
+    return (
+        " checked" not in card
+        and screenshot_page.SAID["preselected"] not in card
+        and units_on(page) == []
+        and says(page, screenshot_page.SAID["choose_each"])
+    )
+
+
+def marks_of_review(browser: TestClient, draft_id: str) -> frozenset[str]:
+    student = state_of(browser).project_state.student_id()
+    return state_of(browser).import_drafts.review_answers(student, draft_id).marks
+
+
+def test_a_card_whose_answer_a_change_cleared_asks_with_nothing_preselected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lone = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, lone), (GREEN, lone))
+        page = her_name_answered(browser, draft_id, page)
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        [_, green] = images_of(browser, draft_id)
+        removed = followed(
+            browser, browser.post(f"/parent/imports/{draft_id}/images/{green}/remove")
+        )
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+        [piece] = fields_named(review_form(reloaded), "answer:destination:")
+        [value] = re.findall(r'value="([^"]+)"', destination_cards(reloaded)[0])[:1]
+        answered = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(
+                    reloaded, "keep", choose={f"answer:destination:{piece}": html.unescape(value)}
+                ),
+            ),
+        )
+        marks = marks_of_review(browser, draft_id)
+
+    assert screenshot_page.SAID["preselected"] in destination_cards(page)[0]
+    assert asks_with_nothing_chosen(removed)
+    assert asks_with_nothing_chosen(reloaded)
+    assert " checked" in destination_cards(answered)[0]
+    assert screenshot_page.SAID["preselected"] not in destination_cards(answered)[0]
+    assert units_on(answered)
+    assert marks == {piece}
+
+
+def test_a_reading_stored_with_no_press_page_to_say_so_leaves_its_card_asking(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reading the Read press's own page never showed, as when that page was left before it
+    came back: the change's mark still makes the card ask on the next page load."""
+    lone = homework_answer(cards=[homework_card()])
+    reader = Reader(monkeypatch)
+    for image in (RED, GREEN):
+        reader.answers[image] = ScreenshotAnswer(lone, None, 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        page = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+        page = her_name_answered(browser, draft_id, page)
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        upload(browser, GREEN, form={}, to=f"/parent/imports/{draft_id}/images")
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        [_, green] = images_of(browser, draft_id)
+        outcome = asyncio.run(
+            screenshot_reading.read_screenshots(
+                state.import_drafts,
+                state.settings,
+                student,
+                draft_id,
+                [green],
+                monotonic=state.monotonic,
+                held=set(),
+            )
+        )
+        later = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert outcome.read == (green,)
+    assert asks_with_nothing_chosen(later)
+
+
 def test_an_answer_whose_correction_wasn_t_kept_says_why_its_row_asks_again(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2515,10 +2614,18 @@ def test_an_answer_whose_correction_wasn_t_kept_says_why_its_row_asks_again(
         send(browser, draft_id, page_post(page, "keep", typed=typed))
         reopened = browser.get(f"/parent/imports/{draft_id}").text
 
+    assert screenshot_page.SAID["preselected"] in destination_cards(page)[0]
     assert says(reopened, screenshot_page.SAID["lost_correction"])
+    assert asks_with_nothing_chosen(reopened)
 
 
 # ------------------------------------------------------------------ the due date chosen, then saved
+
+
+BOTH_READ = (
+    "Screenshot 1, card 1 said: due line \u201cDue (10/8/2026)\u201d; day heading "
+    "\u201cMonday 10/5/2026\u201d."
+)
 
 
 def due_card_and_another(**due_fields: object) -> dict[str, object]:
@@ -2569,6 +2676,7 @@ def test_the_due_date_chosen_on_the_page_is_the_one_saved_and_its_answer_goes(
         due = saved_due(browser, "Sentence Composing")
 
     assert held[("due_read", piece)] == value.group(1)
+    assert BOTH_READ in html.unescape(review_form(kept.text))
     assert due == written
     assert not [kind for kind, _ in answers if kind == "due_read"]
 
@@ -2601,6 +2709,7 @@ def test_a_due_date_typed_in_the_box_settles_the_question_and_is_the_one_saved(
 
     assert "Which due date does Blossom use?" in asked
     assert "Which due date does Blossom use?" not in review_form(kept.text)
+    assert BOTH_READ in html.unescape(review_form(kept.text))
     assert due == date(2026, 10, 12)
 
 

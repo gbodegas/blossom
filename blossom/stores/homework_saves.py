@@ -42,6 +42,9 @@ class DraftForSave(NamedTuple):
     """(kind, subject) to (value, digest)."""
     saved: Mapping[str, str]
     """Each piece name an acceptance of this draft names, with its assignment id."""
+    marks: frozenset[str] = frozenset()
+    """Each piece name or row key a change of screenshots cleared answers of, until the draft
+    closes."""
 
 
 class HomeworkAcceptance(NamedTuple):
@@ -148,6 +151,12 @@ class HomeworkSaveRecords:
                 (str(kind), str(subject)): (str(value), str(digest))
                 for kind, subject, value, digest in connection.execute(ANSWERS_OF, (draft_id,))
             }
+            marks = frozenset(
+                str(subject)
+                for (subject,) in connection.execute(
+                    "SELECT subject FROM import_draft_marks WHERE draft_id = ?", (draft_id,)
+                )
+            )
             saved: dict[str, str] = {}
             for (accepted,) in connection.execute(ACCEPTED_KEYS, (student_id, HOMEWORK, draft_id)):
                 for name, target in json.loads(str(accepted)):
@@ -164,6 +173,7 @@ class HomeworkSaveRecords:
             discards,
             answers,
             saved,
+            marks,
         )
 
     def add_homework_acceptance(
