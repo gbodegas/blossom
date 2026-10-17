@@ -58,6 +58,7 @@
             <p class="note"><a href="/parent/imports/{{ draft_id }}/find?piece={{ piece.find|urlencode }}">Find under another name&hellip;</a></p>
             {% if piece.preselected %}<p class="note">Preselected; kept when you press a button below.</p>{% endif %}
             {% if piece.stale %}<p class="problem">A choice here isn't offered any more; choose again.</p>{% endif %}
+            {% if piece.lost %}<p class="problem">{{ piece.lost }}</p>{% endif %}
           </fieldset>
         {% endfor %}
         {% for question in group.questions %}

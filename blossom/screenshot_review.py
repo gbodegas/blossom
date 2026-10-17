@@ -1224,6 +1224,8 @@ class Cleared:
     aside_delete: frozenset[str]
     notes: tuple[tuple[str, str], ...]
     """(row key, ``aside_carried`` or ``asks_again``)."""
+    named: frozenset[str] = frozenset()
+    """The piece names and row keys gone or touched whose answers it clears."""
 
 
 def answer_names(kind: str, subject: str) -> list[str]:
@@ -1284,6 +1286,7 @@ def cleared(
             or (kind == "kind" and subject.startswith("["))
         ) and any(hit(name) for name in answer_names(kind, subject)):
             delete.add((kind, subject))
+    named = {name for kind, subject in delete for name in answer_names(kind, subject) if hit(name)}
     notes: list[tuple[str, str]] = []
     carried: set[str] = set()
     asked: set[str] = set()
@@ -1301,7 +1304,12 @@ def cleared(
                 asked.add(row.key)
             notes.append((row.key, "asks_again"))
     return Cleared(
-        frozenset(delete), frozenset(marks), frozenset(carried), frozenset(asked), tuple(notes)
+        frozenset(delete),
+        frozenset(marks),
+        frozenset(carried),
+        frozenset(asked),
+        tuple(notes),
+        frozenset(named),
     )
 
 
@@ -1317,3 +1325,60 @@ def carry(
     new_rows = homework_assembly(list(after), now=KEY_INSTANT).rows
     result = cleared(old_rows, new_rows, answers, aside)
     return Carry(result.delete, result.marks, result.aside_insert, result.aside_delete)
+
+
+@dataclasses.dataclass(frozen=True)
+class ClearedRow:
+    """A row whose answers a change cleared, as the next page names it."""
+
+    title: str
+    day: date | None
+    """The assigned day of a piece split by assigned day; None for any other."""
+    copies: bool
+    """Whether it is one of identical cards the review still shows after the change."""
+
+
+@dataclasses.dataclass(frozen=True)
+class ChangeTold:
+    """What a change of readings did that the next page says."""
+
+    cleared: tuple[ClearedRow, ...]
+    carried: tuple[str, ...]
+    """The titles of the rows it keeps left unsaved."""
+    asked: tuple[str, ...]
+    """The titles of the rows it asks about again, though some of their cards were left
+    unsaved."""
+
+
+def change_told(
+    before: Sequence[StoredReading],
+    after: Sequence[StoredReading],
+    answers: Mapping[tuple[str, str], Any],
+    aside: frozenset[str],
+) -> ChangeTold:
+    """What the next page says of a change of readings, worked out from the tables before it
+    as the draft store's change transaction works it out: the rows whose answers it cleared,
+    in the order the rows came before it, and the rows left unsaved that it keeps or asks
+    about again."""
+    old_rows = homework_assembly(list(before), now=KEY_INSTANT).rows
+    new_rows = homework_assembly(list(after), now=KEY_INSTANT).rows
+    result = cleared(old_rows, new_rows, answers, aside)
+    order = {row.key: index for index, row in enumerate(old_rows)}
+    old = {row.key: row for row in old_rows}
+    new = {row.key: row for row in new_rows}
+    shown = {copy_group(row) for row in new_rows}
+    rows: list[ClearedRow] = []
+    for name in sorted(result.named, key=lambda n: (order.get(n.split("|")[0], 0), n)):
+        key, _, part = name.partition("|")
+        if key not in old or (part and key in result.named):
+            continue
+        day = date.fromisoformat(part) if part and part != "due" else None
+        row = ClearedRow(old[key].reading.title, day, copy_group(old[key]) in shown)
+        if row not in rows:
+            rows.append(row)
+
+    def titles(note: str) -> tuple[str, ...]:
+        found = [new[key].reading.title for key, said in result.notes if said == note]
+        return tuple(dict.fromkeys(found))
+
+    return ChangeTold(tuple(rows), titles("aside_carried"), titles("asks_again"))

@@ -38,6 +38,7 @@ from blossom.screenshot_page import (
     ImageName,
     RowsShown,
     answer_field,
+    change_said,
     labels_for,
     page_check,
     piece_text,
@@ -52,7 +53,7 @@ from blossom.screenshot_posts import (
     read_review,
 )
 from blossom.screenshot_reading import read_screenshots
-from blossom.screenshot_review import value_json
+from blossom.screenshot_review import change_told, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
     NotSaved,
@@ -66,6 +67,7 @@ from blossom.screenshot_save import (
 )
 from blossom.screenshots import homework_assembly
 from blossom.stores.drafts import StoreBusy, WriterBusy
+from blossom.stores.homework_saves import DraftForSave
 from blossom.stores.import_drafts import (
     DRAFT_LIFETIME,
     MOST_IMAGES_PRESENT,
@@ -461,19 +463,42 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
     return to_review(state, draft_id, upload_said(added, places, prepared.refused))
 
 
+async def tables_of(state: ApplicationState, draft_id: str) -> DraftForSave | None:
+    """A homework review's tables as the save reads them; None for any other review."""
+    record = state.project_state
+    return await asyncio.to_thread(record.draft_for_save, record.student_id(), draft_id)
+
+
+async def change_lines(
+    state: ApplicationState, draft_id: str, before: DraftForSave | None
+) -> list[str]:
+    """What the page after a change of screenshots says of the answers it cleared and the rows
+    left unsaved it kept or asks about again, from the review's tables before the change and
+    its readings after; nothing when the review isn't open homework on both sides."""
+    if before is None or before.closed_at is not None:
+        return []
+    after = await tables_of(state, draft_id)
+    if after is None or after.closed_at is not None:
+        return []
+    answers = {key: value for key, (value, _) in before.answers.items()}
+    return change_said(change_told(before.readings, after.readings, answers, before.discards))
+
+
 @router.post("/{draft_id}/images/{image_id}/remove")
 async def remove_image(request: Request, draft_id: str, image_id: str, state: State) -> Response:
-    """Remove one image and its reading, with no version comparison; nothing of a body is read."""
+    """Remove one image and its reading, with no version comparison; nothing of a body is read.
+    The next page says what the change cleared."""
     if not opaque(draft_id) or not opaque(image_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     student = state.project_state.student_id()
+    before = await tables_of(state, draft_id)
     try:
         await asyncio.to_thread(state.import_drafts.remove_image, student, draft_id, image_id)
     except UnknownImage:
         return to_review(state, draft_id, [SAID["image_gone"]])
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
-    return to_review(state, draft_id)
+    return to_review(state, draft_id, await change_lines(state, draft_id, before))
 
 
 @router.get("/{draft_id}/images/{image_id}")
@@ -708,7 +733,8 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
 @router.post("/{draft_id}/read")
 async def read(request: Request, draft_id: str, state: State) -> Response:
     """A Read press over the unread images its page showed, signed with the review's key; it
-    returns by the attempt's deadline with the review as it stands then."""
+    returns by the attempt's deadline with the review as it stands then, saying what the
+    readings stored by then cleared."""
     found = await snapshot_or_page(request, state, draft_id)
     if isinstance(found, Response):
         return found
@@ -724,6 +750,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
     ):
         return review_page(request, state, found, [SAID["unchecked"]], 400)
     student = state.project_state.student_id()
+    before = await tables_of(state, draft_id)
     try:
         outcome = await read_screenshots(
             state.import_drafts,
@@ -743,11 +770,11 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
     after = await snapshot_or_page(request, state, draft_id)
     if isinstance(after, Response):
         return after
-    said: list[str] = []
+    said = await change_lines(state, draft_id, before)
     if outcome is not None:
         places = {image.image_id: index + 1 for index, image in enumerate(after.images)}
         read_now = {image.image_id for image in after.images if image.read}
-        said = [
+        said += [
             busy_reading(places[image_id])
             for image_id in outcome.busy
             if image_id in places and image_id not in read_now

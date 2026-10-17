@@ -2382,6 +2382,228 @@ def test_each_group_s_tick_sits_inline_with_its_label(
     assert len(ticks) == 2
 
 
+# ------------------------------------------------------------------ changes that clear answers
+
+CLEARED_INTRO = "Your screenshots changed, so these rows' answers were cleared:"
+
+
+def test_removing_a_screenshot_that_clears_an_answer_says_which_rows_to_answer_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vocab = homework_answer(
+        cards=[homework_card(title="Vocab Quiz", instruction="Study list one.")]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()), (BLUE, vocab))
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        [_, blue] = images_of(browser, draft_id)
+        removed = followed(
+            browser, browser.post(f"/parent/imports/{draft_id}/images/{blue}/remove")
+        )
+        again = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert says(removed, f"{CLEARED_INTRO} Vocab Quiz. Answer them again.")
+    assert not says(removed, screenshot_page.CHANGE_SAID["copies"])
+    assert CLEARED_INTRO not in html.unescape(again)
+
+
+def test_removing_one_of_two_identical_screenshots_says_it_can_t_tell_the_copies_apart(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lone = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, lone), (GREEN, lone))
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        [_, green] = images_of(browser, draft_id)
+        removed = followed(
+            browser, browser.post(f"/parent/imports/{draft_id}/images/{green}/remove")
+        )
+
+    assert says(removed, f"{CLEARED_INTRO} Sentence Composing. Answer them again.")
+    assert says(removed, screenshot_page.CHANGE_SAID["copies"])
+
+
+def test_reading_a_new_copy_of_an_answered_card_says_its_answers_were_cleared(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lone = homework_answer(cards=[homework_card()])
+    reader = Reader(monkeypatch)
+    for image in (RED, GREEN):
+        reader.answers[image] = ScreenshotAnswer(lone, None, 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        page = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        kept = [kind for kind, _ in stored_answers(browser, draft_id)]
+        upload(browser, GREEN, form={}, to=f"/parent/imports/{draft_id}/images")
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        read = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+        left = [kind for kind, _ in stored_answers(browser, draft_id)]
+
+    assert "destination" in kept
+    assert "destination" not in left
+    assert says(read.text, f"{CLEARED_INTRO} Sentence Composing. Answer them again.")
+    assert says(read.text, screenshot_page.CHANGE_SAID["copies"])
+
+
+def two_cards() -> dict[str, object]:
+    return homework_answer(
+        cards=[
+            homework_card(),
+            homework_card(
+                course="Science 8",
+                title="Chains Reading Guide 6",
+                instruction="Read chapter 6.",
+                y_top=360,
+                y_bottom=430,
+            ),
+        ]
+    )
+
+
+def test_removing_a_copy_of_a_group_left_unsaved_says_it_is_still_left_unsaved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, two_cards()), (GREEN, two_cards()))
+        page = her_name_answered(browser, draft_id, page)
+        followed(browser, press_outside(browser, page, "leave-1"))
+        [_, green] = images_of(browser, draft_id)
+        removed = followed(
+            browser, browser.post(f"/parent/imports/{draft_id}/images/{green}/remove")
+        )
+        states = row_states(browser, draft_id)
+
+    assert says(
+        removed,
+        screenshot_page.CHANGE_SAID["carried"].format(label="Sentence Composing"),
+    )
+    assert not says(removed, CLEARED_INTRO)
+    assert sorted(states.values()) == ["discarded", "open"]
+
+
+def test_reading_a_new_copy_of_a_group_left_unsaved_says_it_asks_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    for image in (RED, GREEN):
+        reader.answers[image] = ScreenshotAnswer(two_cards(), None, 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        page = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+        page = her_name_answered(browser, draft_id, page)
+        followed(browser, press_outside(browser, page, "leave-1"))
+        upload(browser, GREEN, form={}, to=f"/parent/imports/{draft_id}/images")
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        read = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+        states = row_states(browser, draft_id)
+
+    assert read.status_code == 200
+    assert says(read.text, screenshot_page.CHANGE_SAID["asked"].format(label="Sentence Composing"))
+    assert sorted(states.values()) == ["open", "open"]
+
+
+def test_an_answer_whose_correction_wasn_t_kept_says_why_its_row_asks_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
+        [field] = fields_named(review_form(page), "correct:")
+        typed = {f"correct:{field}": "Sentence Combining"}
+        send(browser, draft_id, page_post(page, "keep", typed=typed))
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert says(reopened, screenshot_page.SAID["lost_correction"])
+
+
+# ------------------------------------------------------------------ the due date chosen, then saved
+
+
+def due_card_and_another(**due_fields: object) -> dict[str, object]:
+    return homework_answer(
+        cards=[
+            homework_card(badge="DUE", footer="Due (10/8/2026)", **due_fields),
+            homework_card(
+                course="Science 8",
+                title="Chains Reading Guide 6",
+                instruction="Read chapter 6.",
+                y_top=360,
+                y_bottom=430,
+            ),
+        ]
+    )
+
+
+def saved_due(browser: TestClient, title: str) -> date | None:
+    [found] = [a for a in state_of(browser).project_state.all_assignments() if a.title == title]
+    return found.due_date
+
+
+@pytest.mark.parametrize(
+    ("chosen", "written"),
+    [
+        ("Due Thu 10/8, as the due line says", date(2026, 10, 8)),
+        ("Due Mon 10/5, as the day heading says", date(2026, 10, 5)),
+    ],
+)
+def test_the_due_date_chosen_on_the_page_is_the_one_saved_and_its_answer_goes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, chosen: str, written: date
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, due_card_and_another()))
+        page = her_name_answered(browser, draft_id, page)
+        [piece, _] = fields_named(review_form(page), "answer:destination:")
+        value = re.search(rf'value="([^"]+)"> <span>{re.escape(chosen)}</span>', review_form(page))
+        assert value is not None
+        kept = send(
+            browser,
+            draft_id,
+            page_post(page, "keep", choose={f"answer:due_read:{piece}": value.group(1)}),
+        )
+        held = stored_answers(browser, draft_id)
+        first = next(u for u in units_on(kept.text) if piece in u)
+        send(browser, draft_id, page_post(kept.text, "save", tick=[first]))
+        answers = stored_answers(browser, draft_id)
+        due = saved_due(browser, "Sentence Composing")
+
+    assert held[("due_read", piece)] == value.group(1)
+    assert due == written
+    assert not [kind for kind, _ in answers if kind == "due_read"]
+
+
+def test_a_due_date_typed_in_the_box_settles_the_question_and_is_the_one_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unsure = [{"field": "footer", "reason": "blurred"}]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, due_card_and_another(uncertain=unsure))
+        )
+        page = her_name_answered(browser, draft_id, page)
+        asked = review_form(page)
+        [field] = fields_named(review_form(page), "correct:")
+        [subject] = fields_named(review_form(page), "answer:confirm:")
+        kept = send(
+            browser,
+            draft_id,
+            page_post(page, "keep", typed={f"correct:{field}": "2026-10-12"}),
+        )
+        piece = json.loads(subject)[0]
+        first = next(u for u in units_on(kept.text) if piece in u)
+        send(
+            browser,
+            draft_id,
+            page_post(kept.text, "save", tick=[first]),
+        )
+        due = saved_due(browser, "Sentence Composing")
+
+    assert "Which due date does Blossom use?" in asked
+    assert "Which due date does Blossom use?" not in review_form(kept.text)
+    assert due == date(2026, 10, 12)
+
+
 IMPORT_REVIEW_RULES = (
     ".import-review .choice {\n  min-width: 0;\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"

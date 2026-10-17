@@ -17,6 +17,7 @@ from datetime import date
 from typing import Final
 
 from blossom.screenshot_review import (
+    ChangeTold,
     DateQuestion,
     Destination,
     Offer,
@@ -79,8 +80,23 @@ SAID: Final = {
     "Blossom use?",
     "correction": "Correction",
     "nothing": "none",
+    "lost_correction": "This row's answer depended on a correction that wasn't kept, so it asks "
+    "again.",
 }
 """The fixed sentences and labels of the review's rows."""
+
+CHANGE_SAID: Final = {
+    "cleared": "Your screenshots changed, so these rows' answers were cleared: {labels}. Answer "
+    "them again.",
+    "copies": "Blossom can't tell which of these identical cards is which after the change, so "
+    "their answers were cleared.",
+    "carried": "Your screenshots changed. {label} is still left unsaved, as you chose for these "
+    "cards.",
+    "asked": "Your screenshots changed. {label} now has cards you hadn't left unsaved, so it asks "
+    "again. You can leave it unsaved again.",
+}
+"""What the page after a change of screenshots says of the answers it cleared and the rows left
+unsaved it kept or asks about again."""
 
 OPEN_NAMES: Final = {
     "due": "the due date",
@@ -121,6 +137,25 @@ def piece_text(places: Mapping[str, int], piece: Piece) -> str:
     where = "; ".join(card_text(places, c) for c in piece.cards) or "a card"
     day = f", assigned {day_text(piece.assigned)}" if piece.split and piece.assigned else ""
     return f"{piece.title} ({where}{day})"
+
+
+def change_said(told: ChangeTold) -> list[str]:
+    """The sentences the page after a change of screenshots opens with: the rows whose answers
+    it cleared, by title and, for a piece split by assigned day, that day; that identical cards
+    can't be told apart, when any of those rows is one of them; and each row left unsaved it
+    kept or asks about again."""
+    out = []
+    if told.cleared:
+        labels = "; ".join(
+            row.title + (f", assigned {day_text(row.day)}" if row.day else "")
+            for row in told.cleared
+        )
+        out.append(CHANGE_SAID["cleared"].format(labels=labels))
+    if any(row.copies for row in told.cleared):
+        out.append(CHANGE_SAID["copies"])
+    out += [CHANGE_SAID["carried"].format(label=title) for title in told.carried]
+    out += [CHANGE_SAID["asked"].format(label=title) for title in told.asked]
+    return out
 
 
 def words_line(first: str | None, more: int) -> str:
@@ -343,6 +378,8 @@ class PieceControl:
     in the form its entries take, so the two can be compared."""
     said: tuple[str, ...] = ()
     """What each of its cards said of its dates, as the screenshot showed them."""
+    lost: str | None = None
+    """Why it asks again when its answer depended on a correction that wasn't kept."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -841,6 +878,7 @@ def rows_shown(
                 p.name in state.validation.of(p.name).stale,
                 piece_read(p, pieces[0].course),
                 dates_said(p, places),
+                SAID["lost_correction"] if p.name in state.lost else None,
             )
             for p in pieces
         )
