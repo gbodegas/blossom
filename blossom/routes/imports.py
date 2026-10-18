@@ -26,7 +26,6 @@ from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
-from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from blossom.anthropic_client import model_configured
@@ -76,6 +75,7 @@ from blossom.stores.import_drafts import (
     TOKEN_SHAPE,
     Added,
     AttemptUnderWay,
+    Closing,
     DraftClosed,
     DraftExpired,
     DraftFrozen,
@@ -218,11 +218,10 @@ class ScreenshotsNotHere(Exception):
 
 
 def screenshots_here(request: Request) -> None:
-    """The import routes' dependency: with import off, no such address; with sign-in off, only
-    this computer. Both are decided before any body byte is read."""
+    """The import routes' dependency: with sign-in off, only this computer, decided before any
+    body byte is read. With import off the routes aren't registered at all, so every import
+    address answers as a missing one, whatever its method."""
     state = get_application_state(request)
-    if not state.settings.screenshot_import:
-        raise StarletteHTTPException(status_code=404)
     if not state.settings.household_sign_in and not from_this_computer(request):
         raise ScreenshotsNotHere
 
@@ -1300,16 +1299,18 @@ async def small_form(
     return int(fields["version"]), keys
 
 
-def finished_said(found: DraftSnapshot, *first: str) -> list[str]:
-    """What a press that closed the review says: whether anything of it was saved."""
-    return [*first, AFTER_SAID["finished"] if found.saved else AFTER_SAID["nothing_saved"]]
+def finished_said(done: Closing, *first: str) -> list[str]:
+    """What a press that closed the review says: whether anything of it was saved, as its own
+    transaction read it."""
+    return [*first, AFTER_SAID["finished"] if done.saved else AFTER_SAID["nothing_saved"]]
 
 
 async def closing_press(
     request: Request, state: ApplicationState, draft_id: str, action: str
 ) -> Response:
     """Leave this group unsaved, or Finish without the rest: the rows the page named set aside
-    at its version, the review closing when nothing is left open."""
+    at its version, the review closing when nothing is left open. What it says comes from its
+    own transaction, never from a read before it or after it."""
     found = await snapshot_or_page(request, state, draft_id)
     if isinstance(found, Response):
         return found
@@ -1321,9 +1322,11 @@ async def closing_press(
     store = state.import_drafts
     try:
         if action == "set-aside":
-            await asyncio.to_thread(store.set_aside, student, draft_id, version=version, keys=keys)
+            done = await asyncio.to_thread(
+                store.set_aside, student, draft_id, version=version, keys=keys
+            )
         else:
-            await asyncio.to_thread(
+            done = await asyncio.to_thread(
                 store.discard_rest, student, draft_id, version=version, keys=keys
             )
     except ReviewChanged:
@@ -1332,10 +1335,9 @@ async def closing_press(
         return to_review(state, draft_id, [AFTER_SAID["busy"]])
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return store_refusal(request, state, error)
-    after = await asyncio.to_thread(store.snapshot, student, draft_id)
     first = [AFTER_SAID["set_aside"]] if action == "set-aside" else []
-    if after.closed_at is not None or after.finished:
-        lines = finished_said(found, *first)
+    if done.closed:
+        lines = finished_said(done, *first)
         return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
     return to_review(state, draft_id, first or [AFTER_SAID["set_aside"]])
 
@@ -1357,20 +1359,26 @@ async def discarding_press(
     request: Request, state: ApplicationState, draft_id: str, action: str
 ) -> Response:
     """Discard the review, or Not hers: the whole review discarded at the page's version, its
-    images, readings and saved progress removed. Not hers only while nothing of it is saved."""
+    images, readings and saved progress removed. Not hers only while nothing of it is saved,
+    as the discard's own transaction reads it; what Discard says of saved homework comes from
+    that transaction too."""
     found = await snapshot_or_page(request, state, draft_id)
     if isinstance(found, Response):
         return found
     posted = await small_form(request, state, found, action)
     if posted is None:
         return to_review(state, draft_id, [AFTER_SAID["unchecked"]])
-    if action == "not-hers" and found.saved:
-        return to_review(state, draft_id, [AFTER_SAID["not_hers_after_a_save"]])
     student = state.project_state.student_id()
     try:
-        await asyncio.to_thread(
-            state.import_drafts.discard_review, student, draft_id, version=posted[0]
+        done = await asyncio.to_thread(
+            state.import_drafts.discard_review,
+            student,
+            draft_id,
+            version=posted[0],
+            refuse_if_saved=action == "not-hers",
         )
+    except DraftFrozen:
+        return to_review(state, draft_id, [AFTER_SAID["not_hers_after_a_save"]])
     except ReviewChanged:
         return to_review(state, draft_id, [CHANGED_IN_ANOTHER_TAB, AFTER_SAID["nothing_discarded"]])
     except (StoreBusy, WriterBusy):
@@ -1379,7 +1387,7 @@ async def discarding_press(
         return store_refusal(request, state, error)
     if action == "not-hers":
         return said_page(request, marks_of(state), AFTER_SAID["not_hers"], 200)
-    last = AFTER_SAID["safe"] if found.saved else AFTER_SAID["nothing_saved"]
+    last = AFTER_SAID["safe"] if done.saved else AFTER_SAID["nothing_saved"]
     return said_page(request, marks_of(state), AFTER_SAID["discarded"], 200, last)
 
 

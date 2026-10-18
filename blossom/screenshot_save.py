@@ -871,7 +871,10 @@ def _identity(
     from, the answer read from the review's stored name answers: one unconfirmed name,
     answered, with its form; else screenshots with no name, confirmed, with none; else every
     name matching, with their form when they show one. A unit whose screenshot has no answer
-    yet is open, and units needing two different answers are refused."""
+    yet is open, and units needing two different answers are refused. A unit drawing on both
+    one unconfirmed name and screenshots with no name needs both answers, and carries the
+    name's status, answer and form; a unit of unnamed screenshots alone, pressed beside it,
+    is still refused."""
     images: dict[str, set[str]] = {}
     for unit in ready:
         for name in unit:
@@ -885,7 +888,10 @@ def _identity(
     waiting = units_where(lambda line: line[0] == "unknown")
     forms = {form for status, form in seen.values() if status in UNCONFIRMED}
     missing = any(status == "missing" for status, _ in seen.values())
-    if forms and (len(forms) > 1 or missing):
+    merged = units_where(lambda line: line[0] == "missing") <= units_where(
+        lambda line: line[0] in UNCONFIRMED
+    )
+    if forms and (len(forms) > 1 or (missing and not merged)):
         return NotSaved("names", tuple(sorted(units_where(lambda _: True))))
     if forms:
         [form] = forms
@@ -893,6 +899,8 @@ def _identity(
         got = answers.get(("name", str(form)), ("", ""))[0]
         if got not in ("hers", "misread"):
             waiting |= units_where(lambda line: line[1] == form)
+        if missing and answers.get(("name", "missing"), ("", ""))[0] != "confirmed":
+            waiting |= units_where(lambda line: line[0] == "missing")
         if waiting:
             return NotSaved("open", tuple(sorted(waiting)))
         return status, got, str(form)

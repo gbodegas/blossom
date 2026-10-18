@@ -143,7 +143,10 @@ def create_app(
     app.include_router(school_instructions.router)
     app.include_router(parent.router)
     app.include_router(inbox.router)
-    app.include_router(imports.router)
+    # Off, screenshot import has no routes, so each of its addresses, with any method,
+    # answers as a missing one.
+    if resolved.screenshot_import:
+        app.include_router(imports.router)
     app.include_router(verifier.router)
     app.add_exception_handler(FormUnreadable, unreadable_form(resolved.page_marks))
     app.add_exception_handler(grades.NotOnThisComputer, grades.refused_here(resolved.page_marks))

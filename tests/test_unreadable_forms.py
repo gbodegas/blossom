@@ -1111,8 +1111,9 @@ def test_every_route_that_changes_something_is_a_form_route_or_reads_no_form(
     """Every route that takes a method other than a read is a FastAPI route: one pressed here
     as a form route, one that reads no body, named here, or one whose body is JSON. A route
     whose fields are form parameters is a ``FormRoute``, and the one mount serves files. So
-    a new route is one or the other before these tests pass."""
-    with household_client("open", tmp_path) as client:
+    a new route is one or the other before these tests pass. Screenshot import is on, so its
+    routes are served to be counted."""
+    with household_client("open", tmp_path, screenshot_import=True) as client:
         served = list(every_route(cast(FastAPI, client.app).routes))
     mounts = [route for route in served if isinstance(route, Mount)]
     routes = [route for route in served if isinstance(route, Route)]

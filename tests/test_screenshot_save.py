@@ -1406,3 +1406,132 @@ def test_check_zero_compares_student_and_source_key(house: House) -> None:
     assert house.record.homework_counts("another-student", draft_id, "4" * 32) is None
     assert not isinstance(outcome, Replayed)
     assert world(house) == before
+
+
+# ----------------------------------------------- one row from a named and an unnamed screenshot
+
+AVERY_FORM: Final = name_form(NAME_KEY, "Avery")
+"""The keyed form of a second, different student line."""
+
+
+def sha_of(answer: dict[str, object]) -> str:
+    """The SHA-256 ``read_review`` stores a screenshot of this answer under."""
+    label = hashlib.sha256(repr(answer).encode()).hexdigest()[:12]
+    return hashlib.sha256(f"synthetic-png-{label}".encode()).hexdigest()
+
+
+def shown_by(name: str | None, heading: str, *cards: dict[str, object]) -> dict[str, object]:
+    """A screenshot naming this student, or none, under one day heading."""
+    return homework_answer(
+        active_student={"name": name, "uncertain": None},
+        headings=[{"text": heading, "y": 100, "uncertain": None}],
+        cards=list(cards),
+    )
+
+
+ASSIGNED_TUESDAY: Final = homework_card(footer="Due (10/7/2026)", y_top=150, y_bottom=230)
+DUE_WEDNESDAY: Final = homework_card(
+    badge="DUE", instruction=None, footer=None, y_top=150, y_bottom=230
+)
+
+
+def merged_review(house: House, second: str | None = None) -> tuple[str, str, str]:
+    """One Sentence Composing row from two screenshots: its assigned card under Tuesday on a
+    screenshot naming Wren, its due card under Wednesday on one naming ``second``, or nobody.
+    Its id and the two screenshots' SHA-256s, its destination kept as new work."""
+    named = shown_by("Wren", "Tuesday 10/6/2026", ASSIGNED_TUESDAY)
+    other = shown_by(second, "Wednesday 10/7/2026", DUE_WEDNESDAY)
+    draft_id = read_review(house, named, other)
+    [piece] = state_of(house, draft_id).pieces
+    keep_destinations(house, draft_id, {piece.name: {"new": 1}})
+    return draft_id, sha_of(named), sha_of(other)
+
+
+def read_more(house: House, draft_id: str, answer: dict[str, object]) -> str:
+    """Another screenshot added to the review and read; its SHA-256."""
+    label = hashlib.sha256(repr(answer).encode()).hexdigest()[:12]
+    png = f"synthetic-png-{label}".encode()
+    house.drafts.add_images(house.student, draft_id, [NewImage(png=png, width=800, height=600)])
+    sha = hashlib.sha256(png).hexdigest()
+    house.ticks.at += 200.0
+    snapshot = house.drafts.snapshot(house.student, draft_id)
+    [image_id] = [i.image_id for i in snapshot.images if i.sha256 == sha]
+    attempt = house.drafts.start_attempt(house.student, draft_id, [image_id])
+    assert attempt is not None
+    checked = homework_reading(answer)
+    assert checked.reading is not None
+    house.drafts.store_reading(
+        house.student,
+        draft_id,
+        attempt_id=attempt.attempt_id,
+        image_id=image_id,
+        sha256=sha,
+        reading=UploadedReading(
+            checked.reading.image_kind,
+            "v1b",
+            "screenshot-reading/1",
+            checked.reading.model_dump_json(),
+        ),
+        timing=TIMING,
+    )
+    house.drafts.end_attempt(house.student, draft_id, attempt.attempt_id)
+    return sha
+
+
+MERGED: Final = {
+    "hers": ((("name", "hers"), ("missing", "confirmed")), ("first_use", "hers", WREN_FORM)),
+    "misread": (
+        (("name", "misread"), ("missing", "confirmed")),
+        ("first_use", "misread", WREN_FORM),
+    ),
+    "no answer for the name": ((("missing", "confirmed"),), "open"),
+    "no confirmation of the unnamed screenshot": ((("name", "hers"),), "open"),
+    "the confirmation cleared by another unnamed screenshot": (
+        (("name", "hers"), ("missing", "confirmed")),
+        "open",
+    ),
+    "two different names": ((("name", "hers"), ("avery", "hers")), "names"),
+}
+"""Each merged row's stored name answers, and what its save gives: the acceptance's status,
+answer and form, or the refusal."""
+
+
+@pytest.mark.parametrize("case", list(MERGED))
+def test_a_merged_row_of_a_named_and_an_unnamed_screenshot_saves_once_with_both_answers(
+    house: House, case: str
+) -> None:
+    given, expected = MERGED[case]
+    second = "Avery" if case == "two different names" else None
+    draft_id, named, other = merged_review(house, second)
+    [merged] = unit_digests(state_of(house, draft_id))
+    subjects = {"name": WREN_FORM, "missing": "missing", "avery": AVERY_FORM}
+    for which, answer in given:
+        name_answered(house, draft_id, subjects[which], answer)
+    names = {named: ("first_use", WREN_FORM), other: ("missing", None)}
+    if second is not None:
+        names[other] = ("first_use", AVERY_FORM)
+    if case == "the confirmation cleared by another unnamed screenshot":
+        more = shown_by(None, "Thursday 10/8/2026", homework_card(title="Lab Report"))
+        names[read_more(house, draft_id, more)] = ("missing", None)
+    stored = house.record.draft_for_save(house.student, draft_id)
+    assert stored is not None
+    kept = {key: value for key, (value, _) in stored.answers.items()}
+    press = dataclasses.replace(press_of(house, draft_id, "6" * 32), names=names)
+    press = dataclasses.replace(press, units=tuple(u for u in press.units if u == merged))
+    before = world(house)
+
+    outcome = save(house, press)
+
+    if isinstance(expected, tuple):
+        assert isinstance(outcome, Saved)
+        assert form_recorded(house, press.acceptance_id) == expected
+        assert acceptances(house) == [press.acceptance_id]
+        assert len(assignments(house)) == 1
+        assert forms_kept(house) == ([WREN_FORM] if expected[1] == "hers" else [])
+        assert isinstance(save(house, press), Replayed)
+        assert acceptances(house) == [press.acceptance_id]
+    else:
+        assert outcome == NotSaved(str(expected), press.units)
+        assert world(house) == before
+    if case == "the confirmation cleared by another unnamed screenshot":
+        assert ("name", "missing") not in kept

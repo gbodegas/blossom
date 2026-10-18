@@ -18,6 +18,7 @@ import logging
 import pathlib
 import re
 import socket
+import sqlite3
 import tempfile
 import threading
 import time
@@ -33,7 +34,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 from PIL import Image
 
-from blossom import screenshot_page, screenshot_posts, screenshot_reading
+from blossom import screenshot_page, screenshot_posts, screenshot_reading, screenshot_save
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
 from blossom.routes import imports
@@ -3724,29 +3725,41 @@ def test_an_expired_review_says_so_and_takes_nothing(tmp_path: pathlib.Path) -> 
 
 UNREAD_BODY = b"--unread body" * 600_000
 """Far over an upload's limits: read, it would be refused as too large rather than missing."""
+METHODS: Final = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
+"""Every method a request can name here, the routes' own and the rest."""
+MISSING: Final = "/parent/no-such-address"
+
+
+def as_answered(answer: Answer) -> tuple[int, str, list[tuple[str, str]]]:
+    """An answer's status, body and every header, in order."""
+    return answer.status_code, answer.text, sorted(answer.headers.items())
 
 
 def test_turned_off_every_import_address_answers_as_a_missing_one_before_any_body(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Off by default, each import route answers exactly as an address that doesn't exist, with
-    an upload far over the limits unread, no review made, and nothing marking the address."""
+    """Off by default, each import address, with every method, answers exactly as an address
+    that doesn't exist does with that method: its status, its body and every header, with no
+    ``Allow`` naming a method; an upload far over the limits is unread, and no review is made."""
     settings = open_settings(tmp_path, turned_on=False)
     assert settings.screenshot_import is False
     with here(settings) as browser:
-        missing = browser.get("/parent/no-such-address")
+        missing = {
+            method: as_answered(browser.request(method, MISSING, content=UNREAD_BODY))
+            for method in METHODS
+        }
         answers = {
-            (method, path): browser.request(method, path, content=UNREAD_BODY)
-            for method, path in every_route("0" * 32, "1" * 32)
+            (method, path): as_answered(browser.request(method, path, content=UNREAD_BODY))
+            for _, path in every_route("0" * 32, "1" * 32)
+            for method in METHODS
         }
         count = drafts(browser)
 
-    assert missing.status_code == 404
-    assert {key: answer.status_code for key, answer in answers.items()} == dict.fromkeys(
-        answers, 404
-    )
-    assert {answer.text for answer in answers.values()} == {missing.text}
-    assert all("cache-control" not in answer.headers for answer in answers.values())
+    assert len(answers) == 84
+    assert {method: answer[0] for method, answer in missing.items()} == dict.fromkeys(METHODS, 404)
+    assert answers == {(method, path): missing[method] for method, path in answers}
+    assert all("allow" not in dict(answer[2]) for answer in answers.values())
+    assert all("cache-control" not in dict(answer[2]) for answer in answers.values())
     assert count == 0
 
 
@@ -3757,13 +3770,20 @@ def test_turned_off_a_signed_in_parent_finds_no_import_address(tmp_path: pathlib
         headers={"Origin": "http://testserver"},
     ) as parent:
         signed_in(parent, THEIRS)
-        answers = [
-            parent.request(method, path, content=b"--unread body")
-            for method, path in every_route("0" * 32, "1" * 32)
-        ]
+        missing = {
+            method: as_answered(parent.request(method, MISSING, content=b"--unread body"))
+            for method in METHODS
+        }
+        answers = {
+            (method, path): as_answered(parent.request(method, path, content=b"--unread body"))
+            for _, path in every_route("0" * 32, "1" * 32)
+            for method in METHODS
+        }
         count = drafts(parent)
 
-    assert [answer.status_code for answer in answers] == [404] * len(answers)
+    assert len(answers) == 84
+    assert answers == {(method, path): missing[method] for method, path in answers}
+    assert all("allow" not in dict(answer[2]) for answer in answers.values())
     assert count == 0
 
 
@@ -5157,3 +5177,264 @@ def test_saved_progress_holds_each_correction_up_to_its_field_s_limit(
     assert within is not None
     assert within.corrected == {"k1": {field: "a" * most}}
     assert screenshot_posts.progress_read(progress(most + 1)) is None
+
+
+# ----------------------------------------------- a closing press and a save between
+
+
+CLOSING_PRESSES: Final = {
+    "Not hers": ("discard_review", "not-hers"),
+    "Discard the review": ("discard_review", "discard"),
+    "Finish without the rest": ("discard_rest", "finish"),
+    "Leave this group unsaved": ("set_aside", "leave-2"),
+}
+"""Each closing press: the store call its transaction runs, and the form that sends it."""
+
+
+def acceptances_of(browser: TestClient, draft_id: str) -> int:
+    connection = state_of(browser).import_drafts._connection
+    found = connection.execute(
+        "SELECT COUNT(*) FROM grade_acceptances WHERE source_key = ?", (draft_id,)
+    ).fetchone()
+    return int(found[0])
+
+
+def kept_two_groups(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+    """A review of two cards whose answers, her name's "Yes, this is her name" among them, are
+    kept: its id and the page Keep these answers returns."""
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+    [form] = fields_named(review_form(page), "answer:name:")
+    choose = {f"answer:name:{form}": "hers"}
+    kept = followed(browser, send(browser, draft_id, page_post(page, "keep", choose=choose)))
+    return draft_id, kept
+
+
+@pytest.mark.parametrize("press", list(CLOSING_PRESSES))
+def test_a_save_committing_between_a_closing_press_and_its_transaction_is_reported_truthfully(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    method, form_id = CLOSING_PRESSES[press]
+    seen: dict[str, object] = {}
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        first, _ = units_on(kept)
+        store = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        real = getattr(store, method)
+
+        def racing(*args: object, **kwargs: object) -> object:
+            seen["before"] = store.snapshot(student, draft_id).version
+            saving = page_post(kept, "save", tick=[first])
+            seen["saved"] = followed(browser, send(browser, draft_id, saving))
+            seen["after"] = store.snapshot(student, draft_id).version
+            return real(*args, **kwargs)
+
+        before = assignment_count(browser)
+        monkeypatch.setattr(store, method, racing)
+        shown = followed(browser, press_outside(browser, kept, form_id))
+        monkeypatch.setattr(store, method, real)
+        after = assignment_count(browser)
+        accepted = acceptances_of(browser, draft_id)
+        snapshot = store.snapshot(student, draft_id)
+
+    assert says(str(seen["saved"]), "1 assignment added.")
+    assert seen["before"] == seen["after"]
+    assert after == before + 1
+    assert accepted == 1
+    assert not says(shown, imports.AFTER_SAID["nothing_saved"])
+    assert not says(shown, imports.AFTER_SAID["not_hers"])
+    if press == "Not hers":
+        assert says(shown, imports.AFTER_SAID["not_hers_after_a_save"])
+        assert snapshot.closed_at is None
+        assert len(snapshot.images) == 1
+    elif press == "Discard the review":
+        assert says(shown, imports.AFTER_SAID["discarded"])
+        assert says(shown, imports.AFTER_SAID["safe"])
+        assert snapshot.closed_at is not None
+    else:
+        assert says(shown, imports.AFTER_SAID["finished"])
+        assert snapshot.closed_at is not None
+
+
+@pytest.mark.parametrize("press", ["Finish without the rest", "Leave this group unsaved"])
+def test_a_closing_press_whose_review_expires_after_its_commit_answers_from_its_transaction(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    method = CLOSING_PRESSES[press][0]
+    lone = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, lone))
+        store = state_of(browser).import_drafts
+        real = getattr(store, method)
+        later = store._clock.now() + DRAFT_LIFETIME
+
+        def then_expiring(*args: object, **kwargs: object) -> object:
+            done = real(*args, **kwargs)
+            monkeypatch.setattr(store._clock, "now", lambda: later)
+            return done
+
+        monkeypatch.setattr(store, method, then_expiring)
+        answer = press_outside(browser, page, "finish" if method == "discard_rest" else "leave-1")
+
+    assert answer.status_code == 200
+    assert says(answer.text, imports.AFTER_SAID["nothing_saved"])
+
+
+@pytest.mark.parametrize("press", ["Not hers", "Discard the review", "Finish without the rest"])
+def test_a_save_from_a_page_made_before_a_closing_press_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    form_id = CLOSING_PRESSES[press][1]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        before = assignment_count(browser)
+        closing = followed(browser, press_outside(browser, kept, form_id))
+        shut = closed(browser, draft_id)
+        saving = page_post(kept, "save", tick=units_on(kept))
+        saved = followed(browser, send(browser, draft_id, saving))
+        again = followed(browser, press_outside(browser, kept, form_id))
+        after = assignment_count(browser)
+        accepted = acceptances_of(browser, draft_id)
+
+    assert shut
+    assert not says(closing, imports.AFTER_SAID["safe"])
+    assert says(saved, imports.SAID["closed"])
+    assert says(again, imports.SAID["closed"])
+    assert after == before
+    assert accepted == 0
+
+
+def test_after_a_save_whose_close_failed_a_closing_press_still_sees_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failed: list[str] = []
+
+    def failing_after_commit() -> None:
+        if not failed:
+            failed.append("after_commit")
+            msg = "the review's close fails once"
+            raise sqlite3.OperationalError(msg)
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        first, _ = units_on(kept)
+        monkeypatch.setattr(screenshot_save.NO_HOOKS, "after_commit", failing_after_commit)
+        followed(browser, send(browser, draft_id, page_post(kept, "save", tick=[first])))
+        refused = followed(browser, press_outside(browser, kept, "not-hers"))
+        still_open = not closed(browser, draft_id)
+        discarded = followed(browser, press_outside(browser, kept, "discard"))
+        accepted = acceptances_of(browser, draft_id)
+
+    assert failed == ["after_commit"]
+    assert says(refused, imports.AFTER_SAID["not_hers_after_a_save"])
+    assert still_open
+    assert says(discarded, imports.AFTER_SAID["safe"])
+    assert accepted == 1
+
+
+# ----------------------------------------------- one row from a named and an unnamed screenshot
+
+
+def shown_by(name: str | None, heading: str, *cards: dict[str, Any]) -> dict[str, Any]:
+    """A screenshot naming this student, or none, under one day heading."""
+    return homework_answer(
+        active_student={"name": name, "uncertain": None},
+        headings=[{"text": heading, "y": 100, "uncertain": None}],
+        cards=list(cards),
+    )
+
+
+MERGED_SHAPES: Final = {
+    "the merged row alone": ((), ()),
+    "beside a card of the named screenshot": (
+        (
+            homework_card(
+                badge="DUE",
+                title="Lab Report",
+                instruction=None,
+                footer=None,
+                y_top=260,
+                y_bottom=330,
+            ),
+        ),
+        (),
+    ),
+    "after the unnamed screenshot's own card saved": (
+        (),
+        (
+            homework_card(
+                badge="DUE", title="Warm Up", instruction=None, footer=None, y_top=260, y_bottom=330
+            ),
+        ),
+    ),
+}
+"""Each shape of a Sentence Composing row read from a screenshot naming Wren, its assigned
+card under Tuesday, and one naming nobody, its due card under Wednesday: the named
+screenshot's other cards, and the unnamed one's."""
+
+
+def identities_of(browser: TestClient, draft_id: str) -> list[tuple[str, str]]:
+    connection = state_of(browser).import_drafts._connection
+    return [
+        (str(status), str(answer))
+        for status, answer in connection.execute(
+            "SELECT identity_status, identity_answer FROM grade_acceptances "
+            "WHERE source_key = ? ORDER BY rowid",
+            (draft_id,),
+        )
+    ]
+
+
+@pytest.mark.parametrize("shape", list(MERGED_SHAPES))
+def test_a_merged_row_saves_with_both_confirmations_before_and_after_another_groups_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    named_cards, unnamed_cards = MERGED_SHAPES[shape]
+    assigned = homework_card(footer="Due (10/7/2026)", y_top=150, y_bottom=230)
+    due = homework_card(badge="DUE", instruction=None, footer=None, y_top=150, y_bottom=230)
+    named = shown_by("Wren", "Tuesday 10/6/2026", assigned, *named_cards)
+    unnamed = shown_by(None, "Wednesday 10/7/2026", due, *unnamed_cards)
+    missing = {"answer:name:missing": "confirmed"}
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, named), (BLUE, unnamed))
+        [form] = [f for f in fields_named(review_form(page), "answer:name:") if f != "missing"]
+        hers = {f"answer:name:{form}": "hers"}
+        start = assignment_count(browser)
+        if unnamed_cards:
+            page = followed(
+                browser, send(browser, draft_id, page_post(page, "keep", choose=missing))
+            )
+            [own] = units_on(page)
+            page = followed(browser, send(browser, draft_id, page_post(page, "save", tick=[own])))
+            first, last = missing, hers
+        else:
+            first, last = hers, missing
+        assert assignment_count(browser) == start + len(unnamed_cards)
+        one = followed(browser, send(browser, draft_id, page_post(page, "keep", choose=first)))
+        [merged] = [unit for unit in digests_on(one) if unit not in units_on(one)]
+        forced = followed(browser, send(browser, draft_id, page_post(one, "save", tick=[merged])))
+        waited = assignment_count(browser)
+        both = followed(browser, send(browser, draft_id, page_post(forced, "keep", choose=last)))
+        ready = units_on(both)
+        posted = page_post(both, "save", tick=[merged])
+        saved = followed(browser, send(browser, draft_id, posted))
+        after = assignment_count(browser)
+        resent = followed(browser, send(browser, draft_id, posted))
+        fresh = browser.get(f"/parent/imports/{draft_id}").text
+        again = assignment_count(browser)
+        identities = identities_of(browser, draft_id)
+        if named_cards:
+            [other] = [unit for unit in units_on(fresh) if unit != merged]
+            followed(browser, send(browser, draft_id, page_post(fresh, "save", tick=[other])))
+            identities = identities_of(browser, draft_id)
+
+    assert waited == start + len(unnamed_cards)
+    assert merged in ready
+    assert says(saved, "1 assignment added.")
+    assert after == waited + 1
+    assert again == after
+    assert not says(resent, "wasn't saved")
+    assert merged not in units_on(fresh)
+    expected = [("missing", "confirmed")] * len(unnamed_cards) + [("first_use", "hers")]
+    expected += [("matches", "shown")] * len(named_cards)
+    assert identities == expected

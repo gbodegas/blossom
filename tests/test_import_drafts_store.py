@@ -28,6 +28,7 @@ from blossom.stores.import_drafts import (
     AnswerToKeep,
     AttemptUnderWay,
     Carry,
+    Closing,
     DraftClosed,
     DraftExpired,
     DraftFrozen,
@@ -1077,7 +1078,7 @@ def test_discard_the_rest_raises_the_version_when_it_removes_images_and_leaves_r
     world.read(draft_id, "a", "r1", "r2")
     page = world.store.snapshot(world.student, draft_id).version
 
-    after = world.store.discard_rest(world.student, draft_id, version=page, keys=["0:r1"])
+    after = world.store.discard_rest(world.student, draft_id, version=page, keys=["0:r1"]).version
 
     snapshot = world.store.snapshot(world.student, draft_id)
     assert after == snapshot.version > page
@@ -1622,7 +1623,7 @@ def test_setting_aside_a_group_keeps_every_image_and_raises_the_version_once(wor
 
     after = world.store.set_aside(
         world.student, draft_id, version=snapshot.version, keys=["0:u1", "0:r3"]
-    )
+    ).version
 
     assert after == snapshot.version + 1
     assert states(world, draft_id) == {
@@ -1632,7 +1633,11 @@ def test_setting_aside_a_group_keeps_every_image_and_raises_the_version_once(wor
         "0:u1": "discarded",
     }
     assert len(world.store.snapshot(world.student, draft_id).images) == 2
-    assert world.store.set_aside(world.student, draft_id, version=after, keys=["0:r2"]) == after + 1
+    assert world.store.set_aside(world.student, draft_id, version=after, keys=["0:r2"]) == (
+        after + 1,
+        False,
+        False,
+    )
     assert states(world, draft_id)["0:r2"] == "discarded"
 
 
@@ -1645,7 +1650,7 @@ def test_setting_aside_skips_a_saved_key_and_refuses_what_the_draft_doesnt_hold(
     version = world.store.snapshot(world.student, draft_id).version
 
     assert (
-        world.store.set_aside(world.student, draft_id, version=version, keys=["0:r1"])
+        world.store.set_aside(world.student, draft_id, version=version, keys=["0:r1"]).version
         == version + 1
     )
     version += 1
@@ -1684,7 +1689,7 @@ def test_setting_aside_the_last_open_row_finishes_and_closes_the_draft(world: Wo
 
     after = world.store.set_aside(world.student, draft_id, version=version, keys=["0:r2"])
 
-    assert after == version + 2  # the group's raise, and the close's
+    assert after == (version + 2, True, True)  # the group's raise, and the close's
     snapshot = world.store.snapshot(world.student, draft_id)
     assert snapshot.closed_at is not None
     assert snapshot.images == ()
@@ -2113,3 +2118,64 @@ def test_a_change_of_readings_carries_inside_its_own_transaction(world: World) -
     assert review.answers == ()
     assert review.marks == frozenset({"0:r1"})
     assert seen[-1] == (2, 1)
+
+
+# ------------------------------------------------------------------ closing, decided inside
+
+
+def test_not_hers_refuses_inside_its_transaction_once_anything_is_saved(world: World) -> None:
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1", "r2")
+    page = world.store.snapshot(world.student, draft_id).version
+    world.accept(draft_id, "0:r1")
+    before = world.store.snapshot(world.student, draft_id)
+
+    with pytest.raises(DraftFrozen):
+        world.store.discard_review(world.student, draft_id, version=page, refuse_if_saved=True)
+    after = world.store.snapshot(world.student, draft_id)
+    rows = states(world, draft_id)
+    discarded = world.store.discard_review(world.student, draft_id, version=page)
+
+    assert after == before
+    assert after.closed_at is None
+    assert rows == {"0:r1": "saved", "0:r2": "open"}
+    assert discarded == Closing(world.store.snapshot(world.student, draft_id).version, True, True)
+
+
+def test_every_closing_call_returns_what_its_transaction_saw(world: World) -> None:
+    def version_of(draft_id: str) -> int:
+        return world.store.snapshot(world.student, draft_id).version
+
+    page_of = version_of
+
+    quiet = world.draft("a")
+    world.read(quiet, "a", "r1", "r2")
+    left = world.store.set_aside(world.student, quiet, version=page_of(quiet), keys=["0:r1"])
+    after_leave = version_of(quiet)
+    finished = world.store.discard_rest(world.student, quiet, version=page_of(quiet), keys=["0:r2"])
+
+    raced = world.draft("b")
+    world.read(raced, "b", "r1", "r2")
+    page = page_of(raced)
+    world.accept(raced, "0:r1")
+    closed_by_leave = world.store.set_aside(world.student, raced, version=page, keys=["0:r2"])
+
+    finishing = world.draft("c")
+    world.read(finishing, "c", "r1", "r2")
+    page = page_of(finishing)
+    world.accept(finishing, "0:r1")
+    closed_by_finish = world.store.discard_rest(
+        world.student, finishing, version=page, keys=["0:r1", "0:r2"]
+    )
+
+    discarding = world.draft("d")
+    world.read(discarding, "d", "r1")
+    nothing_saved = world.store.discard_review(
+        world.student, discarding, version=page_of(discarding)
+    )
+
+    assert left == Closing(after_leave, False, False)
+    assert finished == Closing(version_of(quiet), True, False)
+    assert closed_by_leave == Closing(version_of(raced), True, True)
+    assert closed_by_finish == Closing(version_of(finishing), True, True)
+    assert nothing_saved == Closing(version_of(discarding), True, False)

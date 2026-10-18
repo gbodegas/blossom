@@ -272,7 +272,19 @@ class ProgressBehind(RuntimeError):
 
 class DraftFrozen(RuntimeError):
     """Some homework from the draft is saved, so its screenshots stay as they are: no image is
-    added or removed and no Read starts. Nothing was written."""
+    added or removed, no Read starts, and the review can't be answered "Not hers". Nothing was
+    written."""
+
+
+class Closing(NamedTuple):
+    """What a closing call's transaction committed: the version after, whether it closed the
+    draft, and whether any acceptance names the draft, read in that same transaction. No
+    draft operation deletes an acceptance, and no save lands in a closed draft, so the last is
+    what the review's outcome is."""
+
+    version: int
+    closed: bool
+    saved: bool
 
 
 class StoredAnswer(NamedTuple):
@@ -1054,10 +1066,10 @@ class ImportDraftsStore:
         version: int,
         keys: Collection[str],
         wait: float = STORE_WAIT_SECONDS,
-    ) -> int:
+    ) -> Closing:
         """Discard the open rows a page showed and remove the images with no reading, at the
-        page's version; the version after. Rows already saved are skipped. A draft this
-        finishes closes in the same transaction."""
+        page's version; what the transaction committed. Rows already saved are skipped. A
+        draft this finishes closes in the same transaction."""
         with self._writing(wait) as now:
             draft = self._at_version(student_id, draft_id, version, now)
             worked = self._worked_out(draft)
@@ -1074,8 +1086,8 @@ class ImportDraftsStore:
             ).rowcount
             if removed:
                 self._connection.execute(RAISE_VERSION, (draft_id,))
-            self._close_if_finished(draft, now)
-            return self._version(draft_id)
+            closed = self._close_if_finished(draft, now)
+            return Closing(self._version(draft_id), closed, self._accepted(draft))
 
     def set_aside(
         self,
@@ -1085,10 +1097,11 @@ class ImportDraftsStore:
         version: int,
         keys: Collection[str],
         wait: float = STORE_WAIT_SECONDS,
-    ) -> int:
+    ) -> Closing:
         """Set a group's rows or items aside at the page's version, all or none: each key is
         discarded, a key already saved is skipped, and the version is raised once. When nothing
-        is left open, the draft closes in the same transaction. The version after."""
+        is left open, the draft closes in the same transaction. What the transaction
+        committed."""
         with self._writing(wait) as now:
             draft = self._at_version(student_id, draft_id, version, now)
             worked = self._worked_out(draft)
@@ -1105,16 +1118,26 @@ class ImportDraftsStore:
                 ],
             )
             self._connection.execute(RAISE_VERSION, (draft_id,))
-            self._close_if_finished(draft, now)
-            return self._version(draft_id)
+            closed = self._close_if_finished(draft, now)
+            return Closing(self._version(draft_id), closed, self._accepted(draft))
 
     def discard_review(
-        self, student_id: str, draft_id: str, *, version: int, wait: float = STORE_WAIT_SECONDS
-    ) -> int:
+        self,
+        student_id: str,
+        draft_id: str,
+        *,
+        version: int,
+        refuse_if_saved: bool = False,
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> Closing:
         """Discard the whole review, as "Discard the review" and "Not hers" do, at the page's
         version: every open row discarded, every image, reading and saved progress deleted,
-        and the draft closed; the version after. No acceptance is written."""
+        and the draft closed; what the transaction committed. No acceptance is written. For
+        "Not hers", ``refuse_if_saved``: once any homework from it is saved, as this
+        transaction reads it, ``DraftFrozen`` and nothing is written, whatever page asked."""
         with self._writing(wait) as now:
+            if refuse_if_saved and self._frozen(self._open_draft(student_id, draft_id, now)):
+                raise DraftFrozen
             draft = self._at_version(student_id, draft_id, version, now)
             worked = self._worked_out(draft)
             self._connection.executemany(
@@ -1123,7 +1146,7 @@ class ImportDraftsStore:
                 [(draft_id, row.key, instant(now)) for row in worked.rows if row.state == "open"],
             )
             self._close(draft_id, now)
-            return self._version(draft_id)
+            return Closing(self._version(draft_id), True, self._accepted(draft))
 
     def clean_up(self, student_id: str, draft_id: str, wait: float = STORE_WAIT_SECONDS) -> bool:
         """Close a finished draft: its images, readings and saved progress deleted and the
@@ -1306,15 +1329,19 @@ class ImportDraftsStore:
         self._close(str(draft["draft_id"]), now)
         return True
 
-    def _frozen(self, draft: sqlite3.Row) -> bool:
-        """Whether a homework draft is named by an acceptance: once some homework from it is
-        saved, its screenshots and readings stay as they are. A grade draft is never frozen."""
-        return str(draft["kind"]) == "homework_screenshot" and (
+    def _accepted(self, draft: sqlite3.Row) -> bool:
+        """Whether any acceptance names the draft, as this transaction reads it."""
+        return (
             self._connection.execute(
                 ACCEPTED_KEYS + " LIMIT 1", (draft["student_id"], draft["kind"], draft["draft_id"])
             ).fetchone()
             is not None
         )
+
+    def _frozen(self, draft: sqlite3.Row) -> bool:
+        """Whether a homework draft is named by an acceptance: once some homework from it is
+        saved, its screenshots and readings stay as they are. A grade draft is never frozen."""
+        return str(draft["kind"]) == "homework_screenshot" and self._accepted(draft)
 
     def _whole_rows(
         self, draft: sqlite3.Row, readings: Sequence[StoredReading], saved: frozenset[str]
