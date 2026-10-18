@@ -31,7 +31,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from blossom.anthropic_client import model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.household import UnreadableHouseholdSecret
-from blossom.routes.forms import fields_of, form_of
+from blossom.routes.forms import FormUnreadable, fields_of, form_of
 from blossom.routes.grades import from_this_computer, grade_name_key
 from blossom.screenshot_page import (
     ImageName,
@@ -52,6 +52,7 @@ from blossom.screenshot_posts import (
     progress_text,
     read_change,
     read_review,
+    typed_back,
 )
 from blossom.screenshot_reading import read_screenshots
 from blossom.screenshot_review import change_told, value_json
@@ -394,6 +395,102 @@ def store_refusal(request: Request, state: ApplicationState, error: Exception) -
     if isinstance(error, StoreBusy | WriterBusy):
         return said_page(request, marks, SAID["busy"], 503)
     return said_page(request, marks, SAID["absent"], 404)
+
+
+TYPED_LABELS: Final = {
+    "course": "Class",
+    "title": "Title",
+    "instruction": "Instructions",
+    "footer": "Due date",
+    "heading": "Date (day heading)",
+}
+"""How each correction given back is labeled, since the review's cards aren't shown with it."""
+TYPED_SAID: Final = (
+    "What you typed, as you sent it. This review can't keep it; copy anything you still need."
+)
+"""What the boxes of typing given back say first."""
+
+
+async def gone_with_typing(
+    request: Request, state: ApplicationState, gone: str, said: Sequence[str], status: int
+) -> Response:
+    """A press on a review that expired, or that the sweep took away: what the press did first, if
+    anything committed, then why the review can't take more, and every correction the post
+    typed in a box to copy, read from the post alone. Nothing of the review is shown, nothing
+    is stored, and nothing more can be saved from it."""
+    try:
+        form = await form_of(request)
+    except FormUnreadable:
+        form = None
+    items = (
+        []
+        if form is None
+        else [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
+    )
+    typed = [(TYPED_LABELS[field], text) for field, text in typed_back(items)]
+    return templates.TemplateResponse(
+        request,
+        "import_said.html",
+        {
+            "said": [*said, SAID[gone]],
+            "typed": typed,
+            "typed_said": TYPED_SAID,
+            "marks": marks_of(state),
+            "page": "parent",
+        },
+        status_code=status,
+    )
+
+
+async def refused_keeping_typing(
+    request: Request,
+    state: ApplicationState,
+    error: Exception,
+    said: Sequence[str] = (),
+    status: int | None = None,
+) -> Response:
+    """A store's refusal of a press, as its page says it: for a review that expired, or that the
+    sweep has since removed, with the press's typing given back, after what the press did if
+    anything of it committed; any other as it always is."""
+    if isinstance(error, DraftExpired):
+        return await gone_with_typing(request, state, "expired", said, status or 410)
+    if isinstance(error, DraftNotFound):
+        return await gone_with_typing(request, state, "absent", said, status or 404)
+    return store_refusal(request, state, error)
+
+
+async def gone_now(state: ApplicationState, draft_id: str) -> str | None:
+    """Whether the review, read now, has expired (``expired``) or is gone
+    (``absent``); None while it can still be read, open or closed."""
+    student = state.project_state.student_id()
+    try:
+        await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except DraftExpired:
+        return "expired"
+    except DraftNotFound:
+        return "absent"
+    except STORE_REFUSALS:
+        return None
+    return None
+
+
+async def snapshot_keeping_typing(
+    request: Request,
+    state: ApplicationState,
+    draft_id: str,
+    said: Sequence[str] = (),
+    status: int | None = None,
+) -> DraftSnapshot | Response:
+    """The review as one read sees it after a press, or the page that says why it can't be
+    shown: for a review that expired or is gone, what the press did and its typing."""
+    student = state.project_state.student_id()
+    try:
+        snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except STORE_REFUSALS as error:
+        return await refused_keeping_typing(request, state, error, said, status)
+    if snapshot.closed_at is not None:
+        return said_page(request, marks_of(state), SAID["closed"], 200)
+    return snapshot
 
 
 STORE_REFUSALS: Final = (
@@ -921,9 +1018,18 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     answers, Save selected homework and Save review for later. A press with a correction
     longer than its field takes keeps and saves nothing, and answers 422 with the review and
     its typing, that correction whole in its box."""
-    found = await snapshot_or_page(request, state, draft_id)
-    if isinstance(found, Response):
-        return await replayed(request, state, draft_id) or found
+    if not opaque(draft_id):
+        return said_page(request, marks_of(state), SAID["absent"], 404)
+    student = state.project_state.student_id()
+    try:
+        found = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except STORE_REFUSALS as error:
+        return await replayed(request, state, draft_id) or await refused_keeping_typing(
+            request, state, error
+        )
+    if found.closed_at is not None:
+        closed = said_page(request, marks_of(state), SAID["closed"], 200)
+        return await replayed(request, state, draft_id) or closed
     post, named = await review_post(request, state, found)
     if post is None:
         refused = {"save": "save_invalid", "later": "later_invalid"}.get(named, "keep_invalid")
@@ -950,7 +1056,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     except (StoreBusy, WriterBusy):
         return await with_typing(request, state, draft_id, post, [PRESS_SAID["keep_failed"]], 503)
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
-        return store_refusal(request, state, error)
+        return await refused_keeping_typing(request, state, error)
     return await with_typing(request, state, draft_id, post, [PRESS_SAID["kept"]], 200)
 
 
@@ -965,8 +1071,9 @@ async def with_typing(
     """A press that saved nothing answers with the review as it stands now, the corrections it
     typed and the groups it ticked still in the form, so nothing typed is lost and an answer
     just kept stays matched to the corrections it was given with. A press that posts no ticks,
-    an offer or a found row, is ticked as a plain load would tick the page."""
-    after = await snapshot_or_page(request, state, draft_id)
+    an offer or a found row, is ticked as a plain load would tick the page. A review that
+    expired meanwhile answers with what the press did and its typing to copy."""
+    after = await snapshot_keeping_typing(request, state, draft_id, said, status)
     if isinstance(after, Response):
         return after
     lines = list(said)
@@ -1002,9 +1109,13 @@ async def later_press(
         said = [PRESS_SAID["later_failed"]]
         return await with_typing(request, state, found.draft_id, post, said, 503)
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
-        return store_refusal(request, state, error)
+        return await refused_keeping_typing(request, state, error)
     if done.progress_saved:
-        return to_review(state, found.draft_id, [PRESS_SAID["later"], saved_for_later_at(state)])
+        later = [PRESS_SAID["later"], saved_for_later_at(state)]
+        gone = await gone_now(state, found.draft_id)
+        if gone is not None:
+            return await gone_with_typing(request, state, gone, later, 200)
+        return to_review(state, found.draft_id, later)
     said = [PRESS_SAID["answers_kept"], PRESS_SAID["later_behind"]]
     return await with_typing(request, state, found.draft_id, post, said, 409)
 
@@ -1038,7 +1149,7 @@ async def save_press(
     except (StoreBusy, WriterBusy):
         return await with_typing(request, state, draft_id, post, [PRESS_SAID["save_failed"]], 503)
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
-        return store_refusal(request, state, error)
+        return await refused_keeping_typing(request, state, error)
     answered = kept.stored > 0 or kept.withdrawn > 0
     kept_said = [PRESS_SAID["answers_kept"]] if answered else []
     if not post.units:
@@ -1086,9 +1197,12 @@ async def outcome_page(
 ) -> Response:
     """What a Save press answers with, by what committed: "nothing was saved" only when the
     homework transaction didn't commit, and a save that committed is reported as saved, with
-    anything after it that didn't finish."""
+    anything after it that didn't finish. A review that expired, or is gone, gives the press's
+    typing back with what it says, never in place of a save that committed."""
     if isinstance(outcome, NotSaved):
-        if outcome.reason in ("absent", "closed", "expired"):
+        if outcome.reason in ("absent", "expired"):
+            return await gone_with_typing(request, state, outcome.reason, [], 409)
+        if outcome.reason == "closed":
             return said_page(request, marks_of(state), SAID[outcome.reason], 409)
         status = 503 if outcome.reason in ("busy", "failed") else 409
         return await with_typing(
@@ -1104,7 +1218,11 @@ async def outcome_page(
     if outcome.changed_units:
         said.append(PRESS_SAID["changed"])
     if outcome.incomplete:
-        return said_page(request, marks_of(state), PRESS_SAID["incomplete"], 200, *said)
+        lines = [PRESS_SAID["incomplete"], *said]
+        gone = await gone_now(state, draft_id)
+        if gone is not None:
+            return await gone_with_typing(request, state, gone, lines, 200)
+        return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
     if outcome.closed:
         return said_page(request, marks_of(state), said[0], 200, *said[1:], SAID["closed"])
     if answered:
@@ -1116,8 +1234,9 @@ async def partly_saved(
     request: Request, state: ApplicationState, draft_id: str, post: ReviewPost, said: list[str]
 ) -> Response:
     """A save that leaves the review open: the outcome, and the rows left open with the
-    corrections the press typed still in the form, marked as not saved, none of them stored."""
-    after = await snapshot_or_page(request, state, draft_id)
+    corrections the press typed still in the form, marked as not saved, none of them stored.
+    A review that expired since answers with the outcome and the typing to copy."""
+    after = await snapshot_keeping_typing(request, state, draft_id, said, 200)
     if isinstance(after, Response):
         return after
     if unsaved_typing(after, post.corrections):

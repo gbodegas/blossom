@@ -5632,3 +5632,159 @@ def test_a_save_recorded_before_expiry_replays_its_outcome_after_it_and_writes_n
     assert not says(replayed, imports.SAID["expired"])
     assert after_replay == after_save
     assert accepted == 1
+
+
+# ------------------------------------------------------- what was typed, on a review that expired
+
+TYPED_WORDS: Final = "Read pages 4 to 6.\nAnswer the two questions."
+TYPED_SAID: Final = (
+    "What you typed, as you sent it. This review can't keep it; copy anything you still need."
+)
+TYPED_DATE: Final = "the Thursday after next"
+
+
+def typed_review(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str, list[tuple[str, str]], str]:
+    """A review of two cards, her name answered: the first's instructions and due line the
+    reader wasn't sure of, typed as a multiline correction and a date Blossom can't read; the
+    second ready to save. Its id, the page, that page's post for Keep these answers with the
+    typing, and the ready group."""
+    unsure = homework_card(
+        uncertain=[
+            {"field": "instruction", "reason": "faint"},
+            {"field": "footer", "reason": "faint"},
+        ]
+    )
+    plain = homework_card(
+        course="Science 8", title="Chains Reading Guide 6", y_top=360, y_bottom=430
+    )
+    draft_id, page = read_review(
+        browser, monkeypatch, (RED, homework_answer(cards=[unsure, plain]))
+    )
+    page = her_name_answered(browser, draft_id, page)
+    boxes = {
+        str(json.loads(subject)[1]): f"correct:{subject}"
+        for subject in fields_named(review_form(page), "correct:")
+    }
+    typed = {boxes["instruction"]: TYPED_WORDS, boxes["footer"]: TYPED_DATE}
+    return draft_id, page, page_post(page, "keep", typed=typed), units_on(page)[-1]
+
+
+def copyable(page: str) -> list[str]:
+    """The text of each read-only box a page gives back, as a browser reads it."""
+    found = re.findall(r"<textarea [^>]*readonly[^>]*>(.*?)</textarea>", page, re.S)
+    shown = [html.unescape(text) for text in found]
+    return [text[1:] if text.startswith("\n") else text for text in shown]
+
+
+def stored_row(browser: TestClient, draft_id: str) -> tuple[object, object]:
+    """The draft's expiry and its saved progress, read from the file itself, since the store
+    refuses an expired draft."""
+    connection = state_of(browser).import_drafts._connection
+    expires = connection.execute(
+        "SELECT expires_at FROM import_drafts WHERE draft_id = ?", (draft_id,)
+    ).fetchone()
+    progress = connection.execute(
+        "SELECT progress FROM import_draft_progress WHERE draft_id = ?", (draft_id,)
+    ).fetchone()
+    return (None if expires is None else expires[0]), (None if progress is None else progress[0])
+
+
+EXPIRY_MOMENTS: Final = ("before the press", "while it waits", "after it commits")
+
+
+@pytest.mark.parametrize("moment", EXPIRY_MOMENTS)
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, moment: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, keeping, ready = typed_review(browser, monkeypatch)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        posted = [(n, press if n == "press" else v) for n, v in keeping]
+        if press == "save":
+            posted = [*[f for f in posted if f[0] != "unit"], ("unit", ready)]
+        stored_before = stored_row(browser, draft_id)
+        before = assignment_count(browser)
+        past = expires + timedelta(minutes=1)
+        if moment == "before the press":
+            clock_moved_to(monkeypatch, browser, past)
+        elif moment == "while it waits":
+            if press == "save":
+                real = state.project_state.comparing_and_writing
+
+                def waiting() -> object:
+                    clock_moved_to(monkeypatch, browser, past)
+                    return real()
+
+                monkeypatch.setattr(state.project_state, "comparing_and_writing", waiting)
+            else:
+                method = "keep_answers" if press == "keep" else "save_for_later"
+                writer = getattr(state.import_drafts, method)
+
+                def late(*args: object, **kwargs: object) -> object:
+                    clock_moved_to(monkeypatch, browser, past)
+                    return writer(*args, **kwargs)
+
+                monkeypatch.setattr(state.import_drafts, method, late)
+        elif press == "save":
+
+            def expiring_meanwhile(assignment_id: str) -> None:
+                clock_moved_to(monkeypatch, browser, past)
+
+            monkeypatch.setattr(screenshot_save.NO_HOOKS, "after_keep", expiring_meanwhile)
+        else:
+            method = "keep_answers" if press == "keep" else "save_for_later"
+            writer = getattr(state.import_drafts, method)
+
+            def committed_then_expired(*args: object, **kwargs: object) -> object:
+                done = writer(*args, **kwargs)
+                clock_moved_to(monkeypatch, browser, past)
+                return done
+
+            monkeypatch.setattr(state.import_drafts, method, committed_then_expired)
+        answer = followed(browser, send(browser, draft_id, posted))
+        after = assignment_count(browser)
+        expires_after, progress = stored_row(browser, draft_id)
+
+    assert says(answer, imports.SAID["expired"])
+    assert sorted(copyable(answer)) == sorted([TYPED_WORDS, TYPED_DATE])
+    assert says(answer, TYPED_SAID)
+    assert expires_after == stored_before[0]
+    committed = moment == "after it commits"
+    if press == "save" and committed:
+        assert says(answer, "1 assignment added.")
+        assert after == before + 1
+    else:
+        assert after == before
+    if press == "later" and committed:
+        assert progress is not None
+    else:
+        assert progress == stored_before[1] is None
+    if press == "keep" and committed:
+        assert says(answer, imports.PRESS_SAID["kept"])
+    if press == "later" and committed:
+        assert says(answer, imports.PRESS_SAID["later"])
+
+
+def test_a_press_on_a_review_the_sweep_removed_after_expiry_gives_back_what_was_typed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, keeping, _ = typed_review(browser, monkeypatch)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        clock_moved_to(monkeypatch, browser, expires + timedelta(hours=2))
+        swept = state.import_drafts.sweep()
+        answer = send(browser, draft_id, keeping)
+        left = stored_row(browser, draft_id)
+
+    assert swept.expired == 1
+    assert answer.status_code == 404
+    assert says(answer.text, imports.SAID["absent"])
+    assert sorted(copyable(answer.text)) == sorted([TYPED_WORDS, TYPED_DATE])
+    assert left == (None, None)

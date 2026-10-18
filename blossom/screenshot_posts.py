@@ -302,6 +302,34 @@ def read_review(
     )
 
 
+def typed_back(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
+    """Each correction a post typed, by field, in the order it was posted: a box's text, or for
+    a date box posted empty, the date Blossom couldn't read that was carried beside it. Read
+    from the post alone, never from the review, to give back as typed when the review can't
+    take it; a name that doesn't name a correction is passed over."""
+    found: dict[tuple[str, str], str] = {}
+    carried: dict[tuple[str, str], str] = {}
+    for name, value in items:
+        prefix = next((p for p in ("correct:", "refused:") if name.startswith(p)), None)
+        if prefix is None:
+            continue
+        try:
+            key, field = (str(part) for part in json.loads(name.removeprefix(prefix)))
+        except (ValueError, TypeError):
+            continue
+        if field not in CORRECTABLE:
+            continue
+        text = correction_text(field, value)
+        if prefix == "correct:":
+            found.setdefault((key, field), text)
+        else:
+            carried.setdefault((key, field), text)
+    for subject, text in carried.items():
+        if not found.get(subject, "").strip():
+            found[subject] = text
+    return tuple((field, text) for (_, field), text in found.items() if text.strip())
+
+
 # ------------------------------------------------------------------ saved progress
 
 PROGRESS_KEYS: Final = frozenset({"v", "corrected", "selected"})

@@ -2061,6 +2061,16 @@ pre.example {
   }
 }
 
+/* What a press typed on a review that expired, given back to copy: each box under its label,
+   as wide as the panel, two lines tall to start, growing as a reader drags it. */
+.typed-back label {
+  margin-top: 0.75rem;
+}
+
+.typed-back textarea {
+  min-height: 3.6rem;
+}
+
 /* A homework card on her week and an assignment's details give way the same way. On a phone
    with text at 200% a card leaves a line too short for a word of a title or of the
    gradebook's heading, so its side padding goes to 13vw - 1rem where that is narrower, and
