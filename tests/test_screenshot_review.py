@@ -13,9 +13,12 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from typing import cast
 
-from blossom import intake
+import pytest
+
+from blossom import intake, screenshot_page
 from blossom import screenshot_review as review
 from blossom.screenshot_review import EarlierPick, Piece, Refusal, SavedRow
+from blossom.screenshot_save import confirm_fields
 from blossom.screenshots import CardPlace, ScreenshotRow, homework_assembly
 from blossom.stores.import_drafts import Carry, StoredReading
 from tests.support import OBSERVED_AT, homework_answer, homework_card, stored_homework
@@ -795,3 +798,85 @@ def test_the_draft_stores_carry_reads_the_readings_before_and_after() -> None:
     answers = {("destination", kept_row.key): "{}", ("destination", gone_row.key): "{}"}
     result = review.carry([first, second], [first], answers, frozenset())
     assert result == Carry(frozenset({("destination", gone_row.key)}), frozenset({gone_row.key}))
+
+
+# ------------------------------------------------------------------ which date a correction sets
+
+TYPED_DAY = date(2026, 10, 6)
+
+
+def faint(day: str, y: int = 150) -> dict[str, object]:
+    return {"text": day, "y": y, "uncertain": "faint"}
+
+
+def routed_shapes() -> dict[str, tuple[list[StoredReading], bool, str]]:
+    """Each piece shape, as readings whose day headings the reader wasn't sure of, whether its
+    row is answered "These are different assignments", and which date its day heading's
+    correction sets."""
+    due_only = stored_homework(
+        "due", homework_answer(headings=[faint("Wednesday 10/14/2026")], cards=[due_card(W1, 200)])
+    )
+    assigned_only = stored_homework(
+        "assigned",
+        homework_answer(headings=[faint("Monday 10/12/2026")], cards=[assigned_card(W1)]),
+    )
+    mixed = stored_homework(
+        "mixed",
+        homework_answer(
+            headings=[faint("Monday 10/12/2026"), faint("Wednesday 10/14/2026", 400)],
+            cards=[assigned_card(W1), due_card(W1)],
+        ),
+    )
+    other_day = stored_homework(
+        "tue", homework_answer(headings=[faint("Tuesday 10/13/2026")], cards=[assigned_card(W2)])
+    )
+    return {
+        "a due card": ([due_only], False, "due"),
+        "an assigned card": ([assigned_only], False, "assigned"),
+        "a mixed row": ([mixed], False, "assigned"),
+        "a split piece": ([mixed, other_day], True, "assigned"),
+        "the undated piece of a split row": ([mixed, other_day], True, "due"),
+    }
+
+
+def routed_piece(shape: str, corrections: Mapping[str, Mapping[str, str]] | None = None) -> Piece:
+    readings, split, _ = routed_shapes()[shape]
+    rows = homework_assembly(readings, now=OBSERVED_AT).rows
+    answers = {r.key: "split" for r in rows} if split else {}
+    pieces, asking, _ = review.pieces_from(
+        readings,
+        answers,
+        frozenset(),
+        OBSERVED_AT,
+        {k: dict(v) for k, v in (corrections or {}).items()},
+    )
+    assert asking == []
+    if shape == "a split piece":
+        [found] = [p for p in pieces if p.name.endswith("|2026-10-12")]
+    elif shape == "the undated piece of a split row":
+        [found] = [p for p in pieces if p.name.endswith("|due")]
+    else:
+        [found] = pieces
+    return found
+
+
+@pytest.mark.parametrize("shape", list(routed_shapes()))
+def test_one_routing_decides_which_date_each_correction_sets(shape: str) -> None:
+    expected = routed_shapes()[shape][2]
+    piece = routed_piece(shape)
+    typed = {piece.key: {"heading": TYPED_DAY.isoformat()}}
+    moved = routed_piece(shape, typed)
+    field = "heading" if "heading" in confirm_fields(piece) else "footer"
+    box = screenshot_page.confirm_question(piece, field, {}, {}, {}, unsaved=False)
+
+    assert review.date_target(piece.reading, "heading") == expected
+    assert review.date_target(piece.reading, "footer") == "due"
+    if expected == "due":
+        assert (moved.due, moved.assigned) == (TYPED_DAY, piece.assigned)
+    else:
+        assert (moved.due, moved.assigned) == (piece.due, TYPED_DAY)
+    assert review.settles_due(piece, typed) == (expected == "due")
+    assert review.settles_due(piece, {piece.key: {"footer": TYPED_DAY.isoformat()}})
+    assert not review.settles_due(piece, {piece.key: {"footer": "10/14"}})
+    assert field == ("heading" if expected == "assigned" else "footer")
+    assert box.text_label == ("Due date" if expected == "due" else "Assigned date (day heading)")

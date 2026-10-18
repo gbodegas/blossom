@@ -49,6 +49,7 @@ from blossom.screenshot_review import (
     SavedRow,
     Validation,
     answer_names,
+    date_target,
     defaults,
     destination_kind,
     entries,
@@ -344,10 +345,11 @@ The due or assigned label is confirmed as read, never typed."""
 
 
 def confirm_fields(piece: Piece) -> frozenset[str]:
-    """The fields of a piece the parent confirms or corrects. On a due card the due line and
-    the day heading both name its due date, so one due-date field stands for both."""
+    """The fields of a piece the parent confirms or corrects. Where the day heading names the
+    due date, as on a due card's row, the due line and the heading both name it, so one
+    due-date field stands for both."""
     fields = {f for f in piece.uncertain if f in CONFIRMABLE}
-    if piece.due_card and "heading" in fields:
+    if "heading" in fields and date_target(piece.reading, "heading") == "due":
         fields = (fields - {"heading"}) | {"footer"}
     return frozenset(fields)
 
@@ -803,16 +805,16 @@ def _correction_counts(
 def _values_read(
     piece: Piece, field: str, placed: Mapping[CardPlace, PlacedCard]
 ) -> frozenset[object]:
-    """Every value the screenshot gave for a piece's field: for the due line, its dates, and on
-    a due card its day headings' too, since both name its due date; for the day heading, its
-    dates; for text, the card's own words."""
-    if field == "footer":
+    """Every value the screenshot gave for the date or words a piece's field sets: for the due
+    date, every due line and each due card's day heading, since both name its due date; for
+    the assigned date, each assigned card's day heading; for text, the card's own words."""
+    target = date_target(piece.reading, field)
+    if target == "due":
         days = {one.line_day for one in piece.seen}
-        if piece.due_card:
-            days |= {one.heading_day for one in piece.seen}
+        days |= {one.heading_day for one in piece.seen if one.card == "due"}
         return frozenset(days - {None})
-    if field == "heading":
-        return frozenset({one.heading_day for one in piece.seen} - {None})
+    if target == "assigned":
+        return frozenset({one.heading_day for one in piece.seen if one.card == "assigned"} - {None})
     cards = [placed[c].card for c in piece.cards if c in placed]
     return frozenset(getattr(card, field) for card in cards if card is not None)
 

@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from blossom.screenshot_page import page_check
-from blossom.screenshot_review import answer_names, dest_kind, value_json, value_of
+from blossom.screenshot_review import DATE_FIELDS, answer_names, dest_kind, value_json, value_of
 from blossom.screenshot_save import CORRECTABLE, ReviewState, correction_digest
 from blossom.stores.import_drafts import AnswerToKeep
 
@@ -173,7 +173,8 @@ def read_review(
     """The review form's post: its signed fields checked, each answer one the page asked with a
     value it offered, each correction one for a field it asked to confirm, each ticked group
     one it showed. A confirmation or instruction question the page asked and the press left
-    blank is withdrawn."""
+    blank is withdrawn. A date Blossom couldn't read, carried back beside its empty date box,
+    stays the box's correction until a date is chosen there."""
     signed = [(n, v) for n, v in items if n in SIGNED or n.startswith("digest:") or n == "check"]
     hidden = _single(signed)
     check = hidden.pop("check", "")
@@ -199,9 +200,22 @@ def read_review(
     if len(set(units)) != len(units) or any(u not in digests for u in units):
         raise PostRefused
     corrections: dict[str, dict[str, str]] = {}
+    carried: dict[tuple[str, str], str] = {}
     chosen: dict[str, list[str]] = {}
     for name, value in rest:
         if name in ("press", "unit"):
+            continue
+        if name.startswith("refused:"):
+            subject = name.removeprefix("refused:")
+            if f"answer:confirm:{subject}" not in offered or len(value) > MOST_CORRECTION:
+                raise PostRefused
+            try:
+                key, field = (str(part) for part in json.loads(subject))
+            except (ValueError, TypeError) as error:
+                raise PostRefused from error
+            if field not in DATE_FIELDS or (key, field) in carried:
+                raise PostRefused
+            carried[(key, field)] = value.strip()
             continue
         if name.startswith("correct:"):
             subject = name.removeprefix("correct:")
@@ -222,6 +236,9 @@ def read_review(
         if name in chosen and kind != "instructions":
             raise PostRefused
         chosen.setdefault(name, []).append(value)
+    for (key, field), text in carried.items():
+        if text and not corrections.get(key, {}).get(field):
+            corrections.setdefault(key, {})[field] = text
     answers = []
     for name, values in chosen.items():
         kind, subject = _field(name)

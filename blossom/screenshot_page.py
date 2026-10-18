@@ -28,10 +28,12 @@ from blossom.screenshot_review import (
     SavedRow,
     UnitCheck,
     Validation,
+    date_target,
     dest_kind,
     facts,
     offers,
     reference,
+    settles_due,
     subject_for,
     typed_day,
     unit_name,
@@ -279,10 +281,11 @@ def confirm_question(
 ) -> "Question":
     """Confirm as read, and for a field a parent may correct, its box: a date for the due line
     or the day heading, text otherwise. The due or assigned label is confirmed only. A typed
-    date Blossom can't read is said beneath its box, never dropped."""
+    date Blossom can't read is said beneath its box and carried back as typed beside it, never
+    dropped."""
     subject = confirm_subject(piece.key, field)
     named = FIELD_NAMES[field]
-    if field == "footer" or (field == "heading" and piece.due_card):
+    if date_target(piece.reading, field) == "due":
         named = "due date"
     legend = f"{piece_text(places, piece)}: The reader wasn't sure of the {named}."
     options = (("as_read", SAID["confirm"], values.get(("confirm", subject)) == "as_read"),)
@@ -290,6 +293,7 @@ def confirm_question(
         return Question(answer_field("confirm", subject), legend, options)
     value = typed.get(field, "")
     refused = None
+    carried = None
     label, kind = SAID["correction"], "text"
     if field in DATE_FIELDS:
         kind = "date"
@@ -299,6 +303,7 @@ def confirm_question(
             refused = (
                 f"The date given was \u201c{value}\u201d, which is not a date Blossom can read."
             )
+            carried = (f"refused:{subject}", value)
         value = "" if day is None else day.isoformat()
     return Question(
         answer_field("confirm", subject),
@@ -310,6 +315,7 @@ def confirm_question(
         text_type=kind,
         refused=refused,
         mark=SAID["not_saved_yet"] if unsaved else None,
+        carried=carried,
     )
 
 
@@ -459,6 +465,9 @@ class Question:
     """The "Leave this group unsaved" form a split question's row may be set aside with."""
     text: tuple[str, str] | None = None
     """For a field the reader wasn't sure of: the correction's field name and its typed value."""
+    carried: tuple[str, str] | None = None
+    """For a typed date Blossom can't read: the hidden field that carries it back as typed, and
+    its text, so a page posted unchanged keeps it."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1035,9 +1044,7 @@ def rows_shown(
                 )
             )
         for piece in pieces:
-            if piece.due_choices and not any(
-                usable_correction(f, corrections.get(piece.key, {}).get(f)) for f in DATE_FIELDS
-            ):
+            if piece.due_choices and not settles_due(piece, corrections):
                 got = values.get(("due_read", piece.name))
                 questions.append(
                     Question(

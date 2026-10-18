@@ -94,14 +94,6 @@ class Piece:
     the parent gave settles which one Blossom uses."""
 
     @property
-    def due_card(self) -> bool:
-        """Whether it was read from due cards alone, so a day heading above it names its due
-        date rather than the day it was assigned."""
-        if self.seen:
-            return all(one.card == "due" for one in self.seen)
-        return self.assigned is None
-
-    @property
     def due_choices(self) -> tuple[date, ...]:
         """The dates its due cards' due lines and day headings name, when they disagree."""
         days = {
@@ -1052,6 +1044,28 @@ def usable_correction(field: str, value: str | None) -> bool:
     return field not in DATE_FIELDS or typed_day(value) is not None
 
 
+def date_target(reading: Reading | None, field: str) -> str | None:
+    """Which date a date correction sets: the due line sets the due date; the day heading sets
+    the assigned date on a row read with one, and the due date on a due card's row. None for a
+    field that isn't a date."""
+    if field == "footer":
+        return "due"
+    if field == "heading":
+        return "assigned" if reading is not None and reading.assigned_on is not None else "due"
+    return None
+
+
+def settles_due(piece: "Piece", corrections: Mapping[str, Mapping[str, str]]) -> bool:
+    """Whether the piece's row has a correction Blossom can use that sets its due date, which
+    answers which due date Blossom uses; one that sets the assigned date answers nothing of
+    it."""
+    typed = corrections.get(piece.key, {})
+    return any(
+        usable_correction(field, typed.get(field)) and date_target(piece.reading, field) == "due"
+        for field in DATE_FIELDS
+    )
+
+
 def corrected(reading: Reading, fields: Mapping[str, str] | None) -> Reading:
     """The reading with the parent's typed corrections on its uncertain fields: class, title,
     instruction words, the due line, or the day heading (the assigned date on an assigned
@@ -1068,13 +1082,14 @@ def corrected(reading: Reading, fields: Mapping[str, str] | None) -> Reading:
         seen = [dataclasses.replace(i, text=words) for i in reading.instructions]
         seen = seen or [InstructionSeen(words, SourceChannel.LMS)]
         change["instructions"] = tuple({i.text: i for i in seen}.values())
-    due = typed_day(usable["footer"]) if "footer" in usable else None
-    if "heading" in usable:
-        day = typed_day(usable["heading"])
-        if reading.assigned_on is not None:
-            change["assigned_on"] = day
+    due = None
+    for field in ("footer", "heading"):
+        if field not in usable:
+            continue
+        if date_target(reading, field) == "assigned":
+            change["assigned_on"] = typed_day(usable[field])
         else:
-            due = day
+            due = typed_day(usable[field])
     if due is not None and due != reading.due_date:
         before = None if reading.due_date is None else reading.due_date.isoformat()
         change["due_date"] = due
@@ -1177,15 +1192,13 @@ def _settled(
 ) -> Piece:
     """A piece with what its cards said of their dates. Where a due card's due line and day
     heading name different dates, the parent's answer of which one Blossom uses sets the due
-    date, as a typed due date does; until one of them is given the piece isn't settled. The
-    row's key is never touched."""
+    date, as a correction that sets the due date does; until one of them is given the piece
+    isn't settled. A correction of the assigned date answers nothing of it. The row's key is
+    never touched."""
     seen = dates_seen(readings, piece.cards)
     with_seen = dataclasses.replace(piece, seen=seen)
     choices = with_seen.due_choices
-    if not choices:
-        return with_seen
-    typed = corrections.get(piece.key, {})
-    if any(usable_correction(field, typed.get(field)) for field in DATE_FIELDS):
+    if not choices or settles_due(piece, corrections):
         return with_seen
     chosen = next((d for d in choices if d.isoformat() == due_read.get(piece.name)), None)
     if chosen is None or piece.reading is None:

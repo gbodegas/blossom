@@ -16,7 +16,7 @@
         <fieldset class="choice">
           <legend>{{ question.said }}</legend>
           {% for value, label, checked in question.options %}
-            <label><input type="radio" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
+            <label><input type="{% if question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
           {% endfor %}
         </fieldset>
         {% if question.remove %}
@@ -70,6 +70,7 @@
             {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
             {% if question.text %}
               <label>{{ question.text_label }} <input type="{{ question.text_type }}" name="{{ question.text[0] }}" value="{{ question.text[1] }}"{% if question.text_type == "text" %} maxlength="200"{% endif %}{% if question.refused %} aria-invalid="true"{% endif %}></label>
+              {% if question.carried %}<input type="hidden" name="{{ question.carried[0] }}" value="{{ question.carried[1] }}">{% endif %}
               {% if question.refused %}<p class="note">{{ question.refused }}</p>{% endif %}
               {% if question.mark %}<p class="note">{{ question.mark }}</p>{% endif %}
             {% endif %}

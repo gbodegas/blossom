@@ -1009,6 +1009,7 @@ def answered_press(
     acceptance: str = "c" * 32,
     rows: Sequence[str] | None = None,
     destinations: Mapping[str, Mapping[str, object]] | None = None,
+    due_read: Mapping[str, str] | None = None,
 ) -> SavePress:
     """Every piece kept on its destination (its own new slot unless named) and the named fields
     confirmed as read, each answer bound to its row's corrections; then the press a page made
@@ -1036,6 +1037,17 @@ def answered_press(
             (by_key[key].name,),
         )
         for key, field in confirmed
+    ]
+    answers += [
+        AnswerToKeep(
+            "due_read",
+            piece.name,
+            (due_read or {})[piece.key],
+            correction_digest(corrections.get(piece.key)),
+            (piece.name,),
+        )
+        for piece in state.open
+        if piece.key in (due_read or {})
     ]
     version = house.drafts.snapshot(house.student, draft_id).version
     house.drafts.keep_answers(house.student, draft_id, version=version, answers=answers)
@@ -1140,6 +1152,38 @@ def due_date_chosen_among_those_read(house: House) -> tuple[tuple[object, ...], 
     return counts_recorded(house, press.acceptance_id), (0, 0)
 
 
+def assigned_date_corrected_to_the_due_card_s_heading(
+    house: House,
+) -> tuple[tuple[object, ...], tuple[int, int]]:
+    """One item read as an assigned card under a Friday heading the reader wasn't sure of, due
+    Monday, and as the due card under Monday whose own due line says Tuesday: the assigned date
+    corrected to Monday is a correction, though Monday is the due card's heading."""
+    draft_id = read_review(
+        house,
+        homework_answer(
+            headings=[
+                {"text": "Friday 8/21/2026", "y": 150, "uncertain": "faint"},
+                {"text": "Monday 8/24/2026", "y": 400, "uncertain": None},
+            ],
+            cards=[
+                unsure("Vocab Quiz", "Study list one.", 200),
+                unsure("Vocab Quiz", "Study list one.", 450, badge="DUE", footer="Due (8/25/2026)"),
+            ],
+        ),
+    )
+    quiz = keys_of(house, draft_id)["Vocab Quiz"]
+    press = answered_press(
+        house,
+        draft_id,
+        {quiz: {"heading": MONDAY.isoformat()}},
+        due_read={quiz: date(2026, 8, 25).isoformat()},
+    )
+    assert isinstance(save(house, press), Saved)
+    [written] = house.record.all_assignments()
+    assert (written.due_date, written.assigned_on) == (date(2026, 8, 25), MONDAY)
+    return counts_recorded(house, press.acceptance_id), (1, 0)
+
+
 def rows_this_save_did_not_write(house: House) -> tuple[tuple[object, ...], tuple[int, ...]]:
     """An unselected row, then a row another save accepted, then a destination that writes
     nothing: only the row each save writes counts."""
@@ -1192,6 +1236,9 @@ COUNT_CASES: Final[dict[str, Callable[[House], tuple[tuple[object, ...], tuple[i
     "the read values typed back": read_values_typed_back,
     "an unreadable date confirmed": unreadable_date_confirmed,
     "a due date chosen among those read": due_date_chosen_among_those_read,
+    "an assigned date corrected to the due card's heading": (
+        assigned_date_corrected_to_the_due_card_s_heading
+    ),
     "rows this save didn't write": rows_this_save_did_not_write,
     "a replay": replayed_unchanged,
 }

@@ -21,7 +21,7 @@ import socket
 import tempfile
 import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from typing import Final
@@ -3323,6 +3323,10 @@ IMPORT_REVIEW_RULES = (
     ".import-review .panel article {\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
     '.import-review input[type="file"] {\n  max-width: 100%;\n}\n\n'
+    ".import-review legend,\n.import-review .note,\n.import-review .source,\n"
+    ".import-review .effect,\n.import-review .problem,\n.import-review .choice > p,\n"
+    ".import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
+    ".import-review button,\n.import-review input {\n  overflow-wrap: normal;\n}\n\n"
     "@media (max-width: 30rem) {\n"
     "  .import-review .panel,\n  .import-review .panel article {\n"
     "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n\n"
@@ -3331,8 +3335,9 @@ IMPORT_REVIEW_RULES = (
 )
 """The screenshot review's rules, pinned whole: on a narrow screen with large text its
 fieldsets take the page's width, a panel's side padding gives way and the panel reaches into
-the page's margin, a card inside a panel gives way without reaching further, and a file input
-is never wider than its panel."""
+the page's margin, a card inside a panel gives way without reaching further, a file input is
+never wider than its panel, and school text breaks where its line can't hold it while a
+control's words never do."""
 STYLESHEET = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
 
 
@@ -3344,7 +3349,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 8
+    assert css.count("import-review") == 17
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert carriers == ["import_find.html", "import_review.html", "parent_review.html"]
 
@@ -4139,3 +4144,329 @@ def test_every_open_review_offers_discard_the_review(
     assert after.images == ()
     assert says(again, imports.SAID["closed"])
     assert "Discard the review" not in again
+
+
+# ------------------------------------------------------------------ which date a correction sets
+
+
+def mixed_row(*unsure: str) -> dict[str, object]:
+    """One item read as an assigned card under a Monday heading the reader wasn't sure of, due
+    10/8, and as the due card under Thursday 10/8 whose own due line says 10/9."""
+    return homework_answer(
+        headings=[
+            {"text": "Monday 10/5/2026", "y": 150, "uncertain": "faint"},
+            {"text": "Thursday 10/8/2026", "y": 400, "uncertain": None},
+        ],
+        cards=[
+            homework_card(
+                badge="ASSIGNED",
+                footer="Due (10/8/2026)",
+                y_top=200,
+                y_bottom=300,
+                uncertain=[{"field": field, "reason": "blurred"} for field in unsure],
+            ),
+            homework_card(badge="DUE", footer="Due (10/9/2026)", y_top=450, y_bottom=550),
+        ],
+    )
+
+
+def boxes_of(page: str) -> dict[str, str]:
+    """Each correction box's subject, by its field."""
+    return {json.loads(s)[1]: s for s in fields_named(review_form(page), "correct:")}
+
+
+def due_choice(page: str, said: str) -> str:
+    found = re.search(rf'value="([^"]+)"> <span>{re.escape(said)}</span>', review_form(page))
+    assert found is not None
+    return html.unescape(found.group(1))
+
+
+def written(browser: TestClient) -> tuple[date | None, date | None]:
+    [found] = [
+        a
+        for a in state_of(browser).project_state.all_assignments()
+        if a.title == "Sentence Composing"
+    ]
+    return found.due_date, found.assigned_on
+
+
+ASKED = "Which due date does Blossom use?"
+
+
+@pytest.mark.parametrize(
+    "case", ["assigned date typed", "with the due date chosen", "due date typed"]
+)
+def test_an_assigned_date_correction_leaves_the_due_date_question_and_its_choice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    unsure = ("footer",) if case == "due date typed" else ()
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, mixed_row(*unsure)))
+        page = her_name_answered(browser, draft_id, page)
+        boxes = boxes_of(page)
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        typed = {f"correct:{boxes['heading']}": "2026-10-06"}
+        choose: dict[str, str] = {}
+        if case == "with the due date chosen":
+            choose = {
+                f"answer:due_read:{piece}": due_choice(page, "Due Fri 10/9, as the due line says")
+            }
+        if case == "due date typed":
+            typed = {f"correct:{boxes['footer']}": "2026-10-09"}
+            choose = {f"answer:confirm:{boxes['heading']}": "as_read"}
+        kept = followed(
+            browser, send(browser, draft_id, page_post(page, "keep", typed=typed, choose=choose))
+        )
+        [unit] = digests_on(kept)
+        before = assignment_count(browser)
+        followed(
+            browser, send(browser, draft_id, page_post(kept, "save", tick=[unit], typed=typed))
+        )
+        after = assignment_count(browser)
+        dates = written(browser) if after > before else None
+
+    assert ASKED in html.unescape(review_form(page))
+    if case == "assigned date typed":
+        assert ASKED in html.unescape(review_form(kept))
+        assert units_on(kept) == []
+        assert after == before
+    elif case == "with the due date chosen":
+        assert units_on(kept) == [unit]
+        assert dates == (date(2026, 10, 9), date(2026, 10, 6))
+    else:
+        assert ASKED not in html.unescape(review_form(kept))
+        assert dates == (date(2026, 10, 9), date(2026, 10, 5))
+
+
+# ------------------------------------------------------------------ the returned form
+
+
+@pytest.mark.parametrize("field", ["footer", "heading"])
+def test_the_returned_page_posted_unchanged_keeps_a_date_blossom_can_t_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    answer = (
+        homework_answer(cards=[homework_card(uncertain=[{"field": "footer", "reason": "blurred"}])])
+        if field == "footer"
+        else mixed_row()
+    )
+    refused = "The date given was “10/14”, which is not a date Blossom can read."
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        box = boxes_of(page)[field]
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        key = json.loads(box)[0]
+        kept = followed(
+            browser,
+            send(browser, draft_id, page_post(page, "keep", typed={f"correct:{box}": "10/14"})),
+        )
+        followed(browser, send(browser, draft_id, page_post(kept, "later")))
+        student = state_of(browser).project_state.student_id()
+        progress = state_of(browser).import_drafts.snapshot(student, draft_id).progress
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+        again = followed(browser, send(browser, draft_id, page_post(reloaded, "keep")))
+        held = stored_answers(browser, draft_id)
+        fixed = followed(
+            browser,
+            send(
+                browser, draft_id, page_post(again, "keep", typed={f"correct:{box}": "2026-10-12"})
+            ),
+        )
+
+    saved = screenshot_posts.progress_read(progress)
+    assert saved is not None
+    assert saved.corrected[key][field] == "10/14"
+    for shown in (kept, reloaded, again):
+        assert says(shown, refused)
+        assert says(shown, screenshot_page.OPEN_NAMES["confirm"])
+        assert not says(shown, screenshot_page.SAID["lost_correction"])
+    assert not says(reloaded, screenshot_page.SAID["not_saved_yet"])
+    assert ("destination", piece) in held
+    assert 'value="2026-10-12"' in fixed
+    assert not says(fixed, refused)
+    assert not says(fixed, screenshot_page.OPEN_NAMES["confirm"])
+
+
+# ------------------------------------------------------------------ the name checkbox
+
+
+def test_these_are_her_homework_is_a_checkbox_a_browser_can_untick(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unnamed = homework_answer(
+        active_student={"name": None, "uncertain": None}, cards=[homework_card()]
+    )
+    field = "answer:name:missing"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unnamed))
+        kept = followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={field: "confirmed"}))
+        )
+        unticked = [f for f in page_post(kept, "save", tick=units_on(kept)) if f[0] != field]
+        saved = followed(browser, send(browser, draft_id, unticked))
+        answers = stored_answers(browser, draft_id)
+
+    assert re.findall(rf'<input type="(\w+)" name="{field}"', page) == ["checkbox"]
+    assert f'type="checkbox" name="{field}" value="confirmed" checked' in kept
+    assert ("name", "missing") not in answers
+    assert units_on(saved) == []
+
+
+# ------------------------------------------------------------------ school text wraps
+
+WRAPS: Final = frozenset({"anywhere", "normal", "break-word"})
+"""The `overflow-wrap` values the checklist below reads; any other is refused."""
+BREAKS_WORDS: Final = ("word-break", "hyphens", "white-space")
+"""Properties that also decide where a line breaks, which the checklist doesn't read; a rule
+of the review's own that sets one is refused."""
+
+
+def wrap_sheet() -> list[Rule]:
+    """Every `overflow-wrap` declaration of the sheet, under its selectors, read whole: a value
+    outside `WRAPS` is refused, and so is a selector the reader can't read."""
+    rules: list[Rule] = []
+    for style in style_rules(STYLESHEET.read_text(encoding="utf-8")):
+        if "import-review" in style.selectors and any(
+            name in BREAKS_WORDS for name, _, _ in style.declarations
+        ):
+            raise UnreadCss(style.selectors)
+        declared = [
+            (value.strip().lower(), important)
+            for name, value, important in style.declarations
+            if name in ("overflow-wrap", "word-wrap")
+        ]
+        if not declared:
+            continue
+        chosen = [selector(unshielded(head)) for head in style.selectors.split(",")]
+        for value, important in declared:
+            if value not in WRAPS:
+                raise UnreadCss(value)
+            rules += [Rule(one, value, style.order, style.media, important) for one in chosen]
+    return rules
+
+
+def wrapping(rules: list[Rule], element: Element, view: View) -> str:
+    """The `overflow-wrap` an element ends with: its own winning rule, else its nearest
+    ancestor's, since the property is inherited, else `normal`."""
+    for one in [element, *element.ancestors()]:
+        found = winner([rule for rule in rules if rule.chosen.matches(one)], view)
+        if found is not None:
+            return found.value
+    return "normal"
+
+
+def long_text_pages(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """The pages that show school text: a review whose card was found a row it would copy the
+    words of, a search's results, and a partly saved review with cards it couldn't read."""
+    later_card = homework_answer(cards=[homework_card(footer="Due (10/30/2026)")])
+    found_row = Assignment(
+        assignment_id="assignment-grammar-practice-hhhh7777",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 30),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        first, page = read_review(browser, monkeypatch, (BLUE, later_card))
+        page = her_name_answered(browser, first, page)
+        send(browser, first, page_post(page, "save", tick=units_on(page)))
+        state_of(browser).project_state.upsert_assignments([found_row])
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        opened = press_outside(browser, page, find_button(page, piece))
+        search = re.search(
+            r'<form method="post" action="([^"]+/find)">(.*?)</form>', opened.text, re.S
+        )
+        assert search is not None
+        hidden = re.findall(
+            r'<input type="hidden" name="([^"]+)" value="([^"]*)">', search.group(2)
+        )
+        results = browser.post(
+            search.group(1),
+            data={**{html.unescape(n): html.unescape(v) for n, v in hidden}, "words": "grammar"},
+        ).text
+        keep(
+            browser,
+            draft_id,
+            (
+                "destination",
+                piece,
+                json.dumps({"found": found_row.assignment_id}, separators=(",", ":")),
+            ),
+        )
+        refused = browser.get(f"/parent/imports/{draft_id}").text
+        items, page = read_review(browser, monkeypatch, (GREEN, unreadable_answer()))
+        send(browser, items, page_post(page, "save", tick=units_on(page)))
+        partly = browser.get(f"/parent/imports/{items}").text
+    return {"find": results, "review": refused, "partly saved": partly}
+
+
+def in_section(element: Element, heading: str) -> bool:
+    return any(
+        above.tag == "section" and above.attributes.get("aria-labelledby") == heading
+        for above in element.ancestors()
+    )
+
+
+SCHOOL_TEXT: Final[dict[str, tuple[str, Callable[[Element], bool]]]] = {
+    "the find result": (
+        "find",
+        lambda e: e.tag == "p" and e.parent is not None and "choice" in e.parent.classes,
+    ),
+    "the find card's note": (
+        "find",
+        lambda e: e.tag == "p" and "note" in e.classes and in_section(e, "find-heading"),
+    ),
+    "the piece legends": ("review", lambda e: e.tag == "legend" and not e.text.startswith("Type:")),
+    "the question legends": ("review", lambda e: e.tag == "legend" and e.text.startswith("Type:")),
+    "the card's own line": (
+        "review",
+        lambda e: e.tag == "p" and "note" in e.classes and e.text.startswith("This card:"),
+    ),
+    "the facts": ("review", lambda e: "source" in e.classes),
+    "the preview's lines": ("review", lambda e: "effect" in e.classes),
+    "the problems": ("review", lambda e: "problem" in e.classes),
+    "the saved cards": ("partly saved", lambda e: e.tag == "li" and in_section(e, "saved-heading")),
+    "the cards it couldn't read": (
+        "partly saved",
+        lambda e: e.tag == "li" and in_section(e, "unread-heading"),
+    ),
+}
+"""The closed checklist: each element of the review and find pages that shows school text, by
+the page it is on."""
+
+
+def test_every_school_text_on_the_review_and_find_pages_wraps(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rules = wrap_sheet()
+    pages = {
+        name: elements_of(page) for name, page in long_text_pages(tmp_path, monkeypatch).items()
+    }
+    views = (View(320), NARROW)
+    found = {
+        name: [e for e in pages[page] if test(e)] for name, (page, test) in SCHOOL_TEXT.items()
+    }
+    controls = [e for elements in pages.values() for e in elements if e.tag in ("button", "input")]
+
+    assert [name for name, elements in found.items() if not elements] == []
+    assert [
+        (name, e.tag, e.text[:40], view.browser_text)
+        for name, elements in found.items()
+        for e in elements
+        for view in views
+        if wrapping(rules, e, view) != "anywhere"
+    ] == []
+    assert controls
+    assert [
+        (e.tag, e.attributes.get("name", e.text)[:40])
+        for e in controls
+        for view in views
+        if wrapping(rules, e, view) == "anywhere"
+    ] == []
