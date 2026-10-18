@@ -155,6 +155,15 @@ class FrozenClock:
         return self._instant.astimezone(self._zone).date()
 
 
+def day_at(household: Clock, instant: datetime) -> date:
+    """The household's date at ``instant``: a pinned clock's own day, since a pinned run reads
+    the date it names; any other clock's, the instant's date in the household's zone, so a
+    caller that read the instant once gets the date of that same instant."""
+    if isinstance(household, FrozenClock):
+        return household.today()
+    return instant.astimezone(household.zone).date()
+
+
 def clock_from(pinned_date: date | None, timezone_key: str | None) -> Clock:
     """Return a clock in the household's zone, frozen at ``pinned_date`` when given.
 

@@ -1985,6 +1985,92 @@ pre.example {
   }
 }
 
+/* The screenshot review's screenshots, a list without markers, as the app's other lists. */
+.screenshot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* The screenshot review's fieldsets and panels give way as the grade review's do: on a phone
+   with text at 200%, a fieldset takes the page's width, and a panel's side padding goes to
+   13vw - 1rem where that is narrower, the panel reaching into the page's side margin, before
+   any word breaks. A card inside a panel gives way the same way without reaching any further,
+   so it never passes the screen's edge. An entry's reference, or an id shown whole, breaks
+   only where its line can't hold it, and a file input is never wider than its panel. A date
+   field's side padding goes to 2% of the screen's width there, as the plan panel's does.
+   School text, a long title or a link in a card's words among it, breaks inside its panel
+   only where its line can't hold it; a button's or a field's words never do. An
+   instruction's correction box sits under its label, as wide as its fieldset, starts two
+   lines tall, not the height of the paste box, and grows as a reader drags it.
+   Every screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
+.import-review .choice {
+  min-width: 0;
+  padding-inline: clamp(0px, 13vw - 1rem, 1rem);
+}
+
+.import-review .choice label > span {
+  overflow-wrap: anywhere;
+}
+
+.import-review .panel {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+.import-review .panel article {
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+.import-review input[type="file"] {
+  max-width: 100%;
+}
+
+.import-review legend,
+.import-review .note,
+.import-review .source,
+.import-review .effect,
+.import-review .problem,
+.import-review .choice > p,
+.import-review li {
+  overflow-wrap: anywhere;
+}
+
+.import-review button,
+.import-review input {
+  overflow-wrap: normal;
+}
+
+.import-review .choice .lines {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.import-review textarea {
+  min-height: 3.6rem;
+}
+
+@media (max-width: 30rem) {
+  .import-review .panel,
+  .import-review .panel article {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
+
+  .import-review input[type="date"] {
+    padding-inline: clamp(2vw, 100000vw - 14650rem - 14500px, 0.85rem);
+  }
+}
+
+/* What a press typed on a review that expired, given back to copy: each box under its label,
+   as wide as the panel, two lines tall to start, growing as a reader drags it. */
+.typed-back label {
+  margin-top: 0.75rem;
+}
+
+.typed-back textarea {
+  min-height: 3.6rem;
+}
+
 /* A homework card on her week and an assignment's details give way the same way. On a phone
    with text at 200% a card leaves a line too short for a word of a title or of the
    gradebook's heading, so its side padding goes to 13vw - 1rem where that is narrower, and

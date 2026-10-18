@@ -109,6 +109,7 @@ from blossom.stores.captures import (
 )
 from blossom.stores.catch_up import CatchUpRecords
 from blossom.stores.gradebook import GradebookRecords
+from blossom.stores.homework_saves import HomeworkSaveRecords
 from blossom.stores.intake_decisions import IntakeDecisionRecords
 from blossom.stores.paths import refuse_unsafe_path
 from blossom.stores.school_instructions import (
@@ -717,6 +718,7 @@ class ProjectStateStore(
     IntakeDecisionRecords,
     CatchUpRecords,
     GradebookRecords,
+    HomeworkSaveRecords,
 ):
     """SQLite-backed project state, opened once and shared across worker threads.
 

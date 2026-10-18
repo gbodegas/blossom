@@ -84,6 +84,7 @@ from blossom.pairing import pair
 from blossom.plan_dates import DatesNow, dates_now
 from blossom.plan_reading import DoneMark, PlanReading, read_plan
 from blossom.routes.forms import TOKEN_MAX_LENGTH, FormRoute, fields_of
+from blossom.routes.imports import screenshot_entry
 from blossom.routes.navigation import (
     ADDED_NOTES_PAGE,
     ARCHIVED_NOTES_PAGE,
@@ -1290,6 +1291,7 @@ def review_page(
         request,
         "parent_review.html",
         {
+            "screenshots": screenshot_entry(request, state),
             "today": today,
             # The date the plan form is filled with: the one a refused press chose, kept,
             # or today; with Help with a plan open on a plan press's answer, or when a

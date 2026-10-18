@@ -398,6 +398,8 @@ CREATE TABLE IF NOT EXISTS grade_acceptances (
     complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
     accepted_at TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role {WHO}),
+    corrected INTEGER CHECK (corrected IS NULL OR corrected >= 0),
+    confirmed INTEGER CHECK (confirmed IS NULL OR confirmed >= 0),
     CHECK ((kind = 'homework_screenshot') = (class_id IS NULL)),
     CHECK ((kind = 'homework_screenshot') = (term_label IS NULL))
 )
@@ -880,6 +882,15 @@ ADD_ACCEPTANCE: Final = (
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 ACCEPTANCE_COLUMNS: Final = "PRAGMA table_info(grade_acceptances)"
+ACCEPTANCE_COUNTS: Final = {
+    name: f"ALTER TABLE grade_acceptances ADD COLUMN {name} INTEGER "
+    f"CHECK ({name} IS NULL OR {name} >= 0)"
+    for name in ("corrected", "confirmed")
+}
+"""A screenshot import's two correction counts, the fields a parent corrected and the uncertain
+fields a parent confirmed, never their values: each added once to a file made before them,
+after every other column, as the table's one definition has them. A pasted report's
+acceptance leaves both empty."""
 UNTIED: Final = (
     "SELECT "
     "COALESCE(SUM(a.kind = 'homework_screenshot' AND a.report_id IS NOT NULL), 0), "
@@ -914,7 +925,8 @@ SET_ACCEPTANCES_ASIDE: Final = "ALTER TABLE grade_acceptances RENAME TO grade_ac
 TIE_ACCEPTANCES: Final = (
     "INSERT INTO grade_acceptances (acceptance_id, student_id, kind, source_key, report_id, "
     "class_id, term_label, accepted, identity_status, identity_answer, identity_form, added, "
-    "updated, already_saved, left_to_check, shown, answers_kept, complete, accepted_at, role) "
+    "updated, already_saved, left_to_check, shown, answers_kept, complete, accepted_at, role, "
+    "corrected, confirmed) "
     "SELECT a.acceptance_id, a.student_id, a.kind, a.source_key, a.report_id, "
     "CASE WHEN a.kind = 'homework_screenshot' THEN NULL ELSE ("
     "SELECT r.class_id FROM grade_reports AS r WHERE r.student_id = a.student_id "
@@ -926,7 +938,7 @@ TIE_ACCEPTANCES: Final = (
     "AND r.source_key = a.source_key)) ORDER BY r.acceptance_order LIMIT 1) END, "
     "a.accepted, a.identity_status, a.identity_answer, a.identity_form, a.added, a.updated, "
     "a.already_saved, a.left_to_check, a.shown, a.answers_kept, a.complete, a.accepted_at, "
-    "a.role FROM grade_acceptances_before AS a"
+    "a.role, a.corrected, a.confirmed FROM grade_acceptances_before AS a"
 )
 """Each acceptance with its report's class and term, or, naming none, its capture's, read
 with a scalar subquery so a capture of several reports gives each row once."""
@@ -1773,6 +1785,7 @@ class GradebookRecords:
         self._connection.execute(CREATE_VIEW_CHOICES)
         self._connection.execute(CREATE_HOMEWORK_CLASSES)
         self._connection.execute(CREATE_HOMEWORK_LINKS)
+        self._add_acceptance_counts()
         self._tie_acceptances()
         if self._connection.execute(STUDENT_ON_RECORD).fetchone() is None:
             self._connection.execute(MAKE_STUDENT, (new_student_id(), self._stamp()))
@@ -1786,6 +1799,14 @@ class GradebookRecords:
         """Whether the file holds what that index forbids: a student ID and result with two or
         more confirmed links. A read alone, of no link's values."""
         return self._connection.execute(HOMEWORK_LINKS_TWICE_CONFIRMED).fetchone() is not None
+
+    def _add_acceptance_counts(self) -> None:
+        """Give a file made before them the two correction counts, empty, once, in the caller's
+        transaction; before the rebuild, so the rebuild carries them."""
+        columns = {str(row[1]) for row in self._connection.execute(ACCEPTANCE_COLUMNS)}
+        for name, statement in ACCEPTANCE_COUNTS.items():
+            if name not in columns:
+                self._connection.execute(statement)
 
     def _tie_acceptances(self) -> None:
         """Give a file's acceptances their class and term, once, in the caller's transaction:

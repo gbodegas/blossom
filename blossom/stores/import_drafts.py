@@ -6,11 +6,16 @@ review's own progress, kept until the review finishes or expires.
 A draft holds inputs and draft-only progress. It never decides what was saved: that is
 the acceptance records the record store writes in its own save transaction. This store
 reads those records, inside each of its own transactions, to tell which rows are saved,
-and it writes nothing outside its own four tables.
+and it writes nothing outside its own six tables. It also keeps the review's answers and
+marks until the draft closes, and refuses any change to the screenshots once some homework
+from them is saved.
 
 A draft's rows come from the whole set of its stored readings, so the store is given,
 at construction, one pure function per draft kind from those readings to the row keys.
 A kind with no function can't make a draft, and the sweep applies expiry alone to it.
+Two more pure functions per kind may be given: what a change of readings does to the
+review's answers and set-aside rows, run inside the change's own transaction, and each
+row's piece names, which tell a row split into pieces saved once all of them are.
 
 Every call is one transaction. Expiry is 48 hours after creation on the real clock,
 never the household's pinned date. Unavailable and removed are two steps: from the instant
@@ -174,6 +179,19 @@ class DraftSnapshot(NamedTuple):
     discarded: frozenset[str]
     """Every key the draft's discard list names that no acceptance does."""
     finished: bool
+    frozen: bool = False
+    """Whether some homework from it is saved, so its screenshots stay as they are."""
+
+
+class OpenDraft(NamedTuple):
+    """One open review as a list of them shows it: its id, kind, times and how many images it
+    holds. Nothing read from an image, and no row, is in it."""
+
+    draft_id: str
+    kind: str
+    created_at: datetime
+    expires_at: datetime
+    images: int
 
 
 class Added(NamedTuple):
@@ -252,6 +270,98 @@ class ProgressBehind(RuntimeError):
     """Another save for later landed since the page was made. Nothing was stored."""
 
 
+class DraftFrozen(RuntimeError):
+    """Some homework from the draft is saved, so its screenshots stay as they are: no image is
+    added or removed, no Read starts, and the review can't be answered "Not hers". Nothing was
+    written."""
+
+
+class Closing(NamedTuple):
+    """What a closing call's transaction committed: the version after, whether it closed the
+    draft, and whether any acceptance names the draft, read in that same transaction. No
+    draft operation deletes an acceptance, and no save lands in a closed draft, so the last is
+    what the review's outcome is."""
+
+    version: int
+    closed: bool
+    saved: bool
+
+
+class StoredAnswer(NamedTuple):
+    """One answer the review keeps: its kind, its subject, its value and its correction digest."""
+
+    kind: str
+    subject: str
+    value: str
+    digest: str
+
+
+class AnswerToKeep(NamedTuple):
+    """An answer a press posts, with the piece names it is about, so that an answer for pieces
+    another save accepted since the page was made is dropped rather than stored."""
+
+    kind: str
+    subject: str
+    value: str
+    digest: str
+    names: tuple[str, ...] = ()
+
+
+class AnswersKept(NamedTuple):
+    """What keeping a press's answers did: the version after, how many answers it stored, how
+    many it dropped as already saved, and how many it withdrew."""
+
+    version: int
+    stored: int
+    dropped: int
+    withdrawn: int = 0
+
+
+class SavedForLater(NamedTuple):
+    """What Save review for later did: the answers kept, and whether the progress was stored
+    against the page's revision, with the revision after."""
+
+    answers: AnswersKept
+    progress_saved: bool
+    progress_revision: int
+
+
+class ReviewAnswers(NamedTuple):
+    """A draft's kept answers and marks, as one read saw them."""
+
+    answers: tuple[StoredAnswer, ...]
+    marks: frozenset[str]
+
+
+class Carry(NamedTuple):
+    """What a change of readings does to the review: the answers it clears, by kind and
+    subject, the piece names it marks, and the row keys it sets aside or asks about again."""
+
+    delete: frozenset[tuple[str, str]] = frozenset()
+    marks: frozenset[str] = frozenset()
+    aside_insert: frozenset[str] = frozenset()
+    aside_delete: frozenset[str] = frozenset()
+
+
+CarryFunction = Callable[
+    [
+        Sequence["StoredReading"],
+        Sequence["StoredReading"],
+        Mapping[tuple[str, str], str],
+        frozenset[str],
+    ],
+    Carry,
+]
+"""A pure function from the readings before and after a change, the kept answers and the rows
+set aside, to what the change clears, marks and carries."""
+
+PiecesFunction = Callable[
+    [Sequence["StoredReading"], Mapping[str, str]], Mapping[str, frozenset[str]]
+]
+"""A pure function from the readings and the kept split answers (row key to value) to each row
+key's piece names."""
+
+
 ACCEPTED_KEYS: Final = (
     "SELECT accepted FROM grade_acceptances WHERE student_id = ? AND kind = ? AND source_key = ?"
 )
@@ -317,9 +427,34 @@ TABLES: Final = (
         saved_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS import_draft_answers (
+        draft_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        value TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        PRIMARY KEY (draft_id, kind, subject)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS import_draft_marks (
+        draft_id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        PRIMARY KEY (draft_id, subject)
+    )
+    """,
 )
 
 DRAFT_OF: Final = "SELECT * FROM import_drafts WHERE draft_id = ? AND student_id = ?"
+OPEN_DRAFTS: Final = (
+    "SELECT d.draft_id, d.kind, d.created_at, d.expires_at, "
+    "(SELECT COUNT(*) FROM import_draft_images AS i WHERE i.draft_id = d.draft_id) AS images "
+    "FROM import_drafts AS d WHERE d.student_id = ? AND d.closed_at IS NULL "
+    "ORDER BY d.created_at, d.draft_id"
+)
+"""Her drafts not closed, each with its image count, read without a rows function, an
+acceptance record or a reading."""
 IMAGES_OF: Final = (
     "SELECT image_id, position, sha256, width, height, size, added_at, attempt_id, reading, "
     "reading_kind, prompt_version, schema_version, failure FROM import_draft_images "
@@ -332,10 +467,21 @@ IMAGE_OF: Final = (
 )
 """What a result is checked against: one image row's id, hash, attempt and reading."""
 RAISE_VERSION: Final = "UPDATE import_drafts SET version = version + 1 WHERE draft_id = ?"
+ANSWERS_OF: Final = (
+    "SELECT kind, subject, value, digest FROM import_draft_answers WHERE draft_id = ?"
+)
+KEEP_ANSWER: Final = (
+    "INSERT INTO import_draft_answers (draft_id, kind, subject, value, digest) "
+    "VALUES (?, ?, ?, ?, ?) ON CONFLICT (draft_id, kind, subject) DO UPDATE SET "
+    "value = excluded.value, digest = excluded.digest"
+)
+"""One answer stored, or its value and digest replaced."""
 DELETE_DRAFT: Final = (
     "DELETE FROM import_draft_images WHERE draft_id = ?",
     "DELETE FROM import_draft_discards WHERE draft_id = ?",
     "DELETE FROM import_draft_progress WHERE draft_id = ?",
+    "DELETE FROM import_draft_answers WHERE draft_id = ?",
+    "DELETE FROM import_draft_marks WHERE draft_id = ?",
     "DELETE FROM import_drafts WHERE draft_id = ?",
 )
 """Everything of one draft, in the order the sweep deletes it at expiry."""
@@ -351,18 +497,18 @@ class ImportDraftsStore:
 
     name = "import_drafts"
     retention_policy = (
-        "Keep a review's screenshots, what was read from them, and any progress saved for "
-        "later available until the review finishes or is discarded, and never past 48 hours "
-        "from when it was started. Unavailable and removed are two steps. From the instant a "
-        "review is 48 hours old, nothing of it can be read. When a review finishes or is "
-        "discarded, its "
-        "screenshots, readings and progress are removed from the file at once, or by the next "
-        "hourly sweep or the next start. Whatever of a review is left at 48 hours, what is left "
-        "of a closed review included (its ids, times, page key and the keys of rows set "
-        "aside), is removed from the file by the first sweep after those 48 hours, or at the "
-        "next start if Blossom was stopped. Removal from the file is all that is promised: a "
-        "backup or a disk snapshot taken while the review was open may still hold earlier "
-        "copies. What a save kept lives in the record under its own rules, never here."
+        "Keep a review's screenshots, what was read from them, the answers given on it, and "
+        "any progress saved for later available until the review finishes or is discarded, "
+        "and never past 48 hours from when it was started. Unavailable and removed are two "
+        "steps. From the instant a review is 48 hours old, nothing of it can be read. When a "
+        "review finishes or is discarded, its screenshots, readings, answers and progress are "
+        "removed from the file at once, or by the next hourly sweep or the next start. "
+        "Whatever of a review is left at 48 hours, what is left of a closed review included "
+        "(its ids, times, page key and the keys of rows set aside), is removed from the file "
+        "by the first sweep after those 48 hours, or at the next start if Blossom was stopped. "
+        "Removal from the file is all that is promised: a backup or a disk snapshot taken "
+        "while the review was open may still hold earlier copies. What a save kept lives in "
+        "the record under its own rules, never here."
     )
 
     def __init__(
@@ -372,6 +518,8 @@ class ImportDraftsStore:
         monotonic: Callable[[], float] = time.monotonic,
         *,
         rows: Mapping[str, RowsFunction],
+        carries: Mapping[str, CarryFunction] | None = None,
+        pieces: Mapping[str, PiecesFunction] | None = None,
     ) -> None:
         self._connection = connection
         self._connection.row_factory = sqlite3.Row
@@ -379,7 +527,9 @@ class ImportDraftsStore:
         self._clock = clock
         self._monotonic = monotonic
         self._rows = dict(rows)
-        unknown = set(self._rows) - KINDS
+        self._carries = dict(carries or {})
+        self._pieces = dict(pieces or {})
+        unknown = (set(self._rows) | set(self._carries) | set(self._pieces)) - KINDS
         if unknown:
             msg = f"no draft kind is named {sorted(unknown)}"
             raise ValueError(msg)
@@ -401,6 +551,8 @@ class ImportDraftsStore:
         monotonic: Callable[[], float] = time.monotonic,
         *,
         rows: Mapping[str, RowsFunction],
+        carries: Mapping[str, CarryFunction] | None = None,
+        pieces: Mapping[str, PiecesFunction] | None = None,
     ) -> "ImportDraftsStore":
         """Open the household's file, refusing the places the saved-state store refuses, with
         deleted pages overwritten and SQLite's temporary storage held in memory."""
@@ -409,7 +561,7 @@ class ImportDraftsStore:
         connection = sqlite3.connect(safe, check_same_thread=False)
         connection.execute("PRAGMA secure_delete=ON")
         connection.execute("PRAGMA temp_store=MEMORY")
-        return cls(connection, clock, monotonic, rows=rows)
+        return cls(connection, clock, monotonic, rows=rows, carries=carries, pieces=pieces)
 
     def close(self, wait: float = STORE_WAIT_SECONDS) -> None:
         """Close the underlying connection once no other call holds the store."""
@@ -501,6 +653,8 @@ class ImportDraftsStore:
         for images hashed before it began. A draft made in this transaction starts at version
         1 with its first images."""
         draft = self._open_draft(student_id, draft_id, now)
+        if self._frozen(draft):
+            raise DraftFrozen
         held = {
             str(row["sha256"]): int(row["position"])
             for row in self._connection.execute(IMAGES_OF, (draft_id,))
@@ -552,11 +706,13 @@ class ImportDraftsStore:
         self, student_id: str, draft_id: str, image_id: str, wait: float = STORE_WAIT_SECONDS
     ) -> int:
         """Delete one image and its reading, with no version comparison, even a reading that
-        arrived since the page opened; return the raised version. A draft this finishes closes."""
+        arrived since the page opened; return the raised version. What the change does to the
+        review's answers is applied in the same transaction. A draft this finishes closes."""
         with self._writing(wait) as now:
-            draft = self._present(student_id, draft_id, now)
-            if draft["closed_at"] is not None:
-                raise DraftClosed
+            draft = self._open_draft(student_id, draft_id, now)
+            if self._frozen(draft):
+                raise DraftFrozen
+            before = self._worked_out(draft).readings
             removed = self._connection.execute(
                 "DELETE FROM import_draft_images WHERE draft_id = ? AND image_id = ?",
                 (draft_id, image_id),
@@ -564,15 +720,17 @@ class ImportDraftsStore:
             if removed != 1:
                 raise UnknownImage
             self._connection.execute(RAISE_VERSION, (draft_id,))
+            self._carried(draft, before)
             self._close_if_finished(draft, now)
             return self._version(draft_id)
 
     def image_png(
         self, student_id: str, draft_id: str, image_id: str, wait: float = STORE_WAIT_SECONDS
     ) -> bytes:
-        """The prepared PNG of one image of an unexpired draft: the bytes shown and sent."""
+        """The prepared PNG of one image of an unexpired draft neither closed nor finished: the
+        bytes shown and sent."""
         with self._reading(wait) as now:
-            self._present(student_id, draft_id, now)
+            self._open_draft(student_id, draft_id, now)
             row = self._connection.execute(
                 "SELECT png FROM import_draft_images WHERE draft_id = ? AND image_id = ?",
                 (draft_id, image_id),
@@ -595,6 +753,8 @@ class ImportDraftsStore:
         isn't an image of the draft is passed over."""
         with self._writing(wait) as now:
             draft = self._open_draft(student_id, draft_id, now)
+            if self._frozen(draft):
+                raise DraftFrozen
             current = self._current_ends(draft)
             if current is not None:
                 raise AttemptUnderWay(current)
@@ -642,6 +802,7 @@ class ImportDraftsStore:
             if draft is None:
                 log_dropped("a reading", timing)
                 return False
+            before = self._worked_out(draft).readings
             self._connection.execute(
                 "UPDATE import_draft_images SET reading = ?, reading_kind = ?, "
                 "prompt_version = ?, schema_version = ?, failure = NULL, seconds = ?, "
@@ -658,6 +819,7 @@ class ImportDraftsStore:
                 ),
             )
             self._connection.execute(RAISE_VERSION, (draft_id,))
+            self._carried(draft, before)
             self._close_if_finished(draft, now)
             return True
 
@@ -687,6 +849,30 @@ class ImportDraftsStore:
                 "UPDATE import_draft_images SET failure = ?, seconds = ?, input_tokens = ?, "
                 "output_tokens = ? WHERE image_id = ?",
                 (failure, timing.seconds, timing.input_tokens, timing.output_tokens, image_id),
+            )
+            return True
+
+    def end_attempt(
+        self, student_id: str, draft_id: str, attempt_id: str, wait: float = STORE_WAIT_SECONDS
+    ) -> bool:
+        """End a Read attempt whose calls have all ended: while it is still the draft's current
+        attempt, its deadline moves to now, so another press can start one at once. Its id stays
+        on the draft and its images, and a result for it is dropped from now on. Whether it did;
+        another attempt, one already past its deadline, or a draft not hers, closed or expired
+        changes nothing."""
+        with self._writing(wait) as now:
+            draft = self._connection.execute(DRAFT_OF, (draft_id, student_id)).fetchone()
+            if (
+                draft is None
+                or now >= moment(draft["expires_at"])
+                or draft["closed_at"] is not None
+                or draft["attempt_id"] != attempt_id
+                or self._current_ends(draft) is None
+            ):
+                return False
+            self._connection.execute(
+                "UPDATE import_drafts SET attempt_ends = ? WHERE draft_id = ? AND attempt_id = ?",
+                (self._monotonic(), draft_id, attempt_id),
             )
             return True
 
@@ -723,7 +909,7 @@ class ImportDraftsStore:
         ).fetchone()
         if row is None or row["sha256"] != sha256 or row["attempt_id"] != attempt_id:
             return None
-        if row["reading"] is not None or self._worked_out(draft).finished:
+        if row["reading"] is not None or self._worked_out(draft).finished or self._frozen(draft):
             return None
         return cast("sqlite3.Row", draft)
 
@@ -766,6 +952,112 @@ class ImportDraftsStore:
             )
             return revision + 1
 
+    def review_answers(
+        self, student_id: str, draft_id: str, wait: float = STORE_WAIT_SECONDS
+    ) -> ReviewAnswers:
+        """The answers and marks an unexpired draft keeps, in one read."""
+        with self._reading(wait) as now:
+            self._present(student_id, draft_id, now)
+            answers = tuple(
+                StoredAnswer(str(kind), str(subject), str(value), str(digest))
+                for kind, subject, value, digest in self._connection.execute(
+                    ANSWERS_OF, (draft_id,)
+                )
+            )
+            marks = frozenset(
+                str(subject)
+                for (subject,) in self._connection.execute(
+                    "SELECT subject FROM import_draft_marks WHERE draft_id = ?", (draft_id,)
+                )
+            )
+        return ReviewAnswers(tuple(sorted(answers)), marks)
+
+    def keep_answers(
+        self,
+        student_id: str,
+        draft_id: str,
+        *,
+        version: int,
+        answers: Sequence[AnswerToKeep],
+        withdrawn: Sequence[tuple[str, str]] = (),
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> AnswersKept:
+        """Keep a press's answers at the page's version, all or none, in one writer transaction:
+        an answer for pieces another save accepted is dropped, an answer equal to the one kept
+        writes nothing, each answer the page asked for and the press left blank (``withdrawn``,
+        by kind and subject) is deleted, and the version is raised once when any answer
+        changed."""
+        with self._writing(wait) as now:
+            draft = self._at_version(student_id, draft_id, version, now)
+            return self._keep_answers_locked(draft, answers, withdrawn)
+
+    def save_for_later(
+        self,
+        student_id: str,
+        draft_id: str,
+        *,
+        version: int,
+        progress_revision: int,
+        answers: Sequence[AnswerToKeep],
+        progress: str,
+        withdrawn: Sequence[tuple[str, str]] = (),
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> SavedForLater:
+        """Save review for later in one writer transaction: the answers as ``keep_answers``
+        keeps them, then the progress compared and set against the page's revision. A page
+        behind keeps its answers and stores no progress."""
+        with self._writing(wait) as now:
+            draft = self._at_version(student_id, draft_id, version, now)
+            kept = self._keep_answers_locked(draft, answers, withdrawn)
+            revision = int(draft["progress_revision"])
+            if revision != progress_revision:
+                return SavedForLater(kept, False, revision)
+            self._connection.execute(
+                "INSERT INTO import_draft_progress (draft_id, progress, saved_at) "
+                "VALUES (?, ?, ?) ON CONFLICT (draft_id) DO UPDATE SET "
+                "progress = excluded.progress, saved_at = excluded.saved_at",
+                (draft_id, progress, instant(now)),
+            )
+            self._connection.execute(
+                "UPDATE import_drafts SET progress_revision = progress_revision + 1 "
+                "WHERE draft_id = ?",
+                (draft_id,),
+            )
+            return SavedForLater(kept, True, revision + 1)
+
+    def _keep_answers_locked(
+        self,
+        draft: sqlite3.Row,
+        answers: Sequence[AnswerToKeep],
+        withdrawn: Sequence[tuple[str, str]] = (),
+    ) -> AnswersKept:
+        """Inside a write at the page's version: the dropped, the unchanged, the stored and the
+        withdrawn answers, with one version raise when any changed."""
+        draft_id = str(draft["draft_id"])
+        saved = self._worked_out(draft).saved
+        kept = {
+            (str(kind), str(subject)): (str(value), str(digest))
+            for kind, subject, value, digest in self._connection.execute(ANSWERS_OF, (draft_id,))
+        }
+        changed: dict[tuple[str, str], tuple[str, str]] = {}
+        dropped = 0
+        for answer in answers:
+            if answer.names and all(name in saved for name in answer.names):
+                dropped += 1
+                continue
+            if kept.get((answer.kind, answer.subject)) != (answer.value, answer.digest):
+                changed[(answer.kind, answer.subject)] = (answer.value, answer.digest)
+        for (kind, subject), (value, digest) in sorted(changed.items()):
+            self._connection.execute(KEEP_ANSWER, (draft_id, kind, subject, value, digest))
+        gone = sorted({key for key in withdrawn if key in kept and key not in changed})
+        self._connection.executemany(
+            "DELETE FROM import_draft_answers WHERE draft_id = ? AND kind = ? AND subject = ?",
+            [(draft_id, kind, subject) for kind, subject in gone],
+        )
+        if changed or gone:
+            self._connection.execute(RAISE_VERSION, (draft_id,))
+        return AnswersKept(self._version(draft_id), len(changed), dropped, len(gone))
+
     def discard_rest(
         self,
         student_id: str,
@@ -774,10 +1066,10 @@ class ImportDraftsStore:
         version: int,
         keys: Collection[str],
         wait: float = STORE_WAIT_SECONDS,
-    ) -> int:
+    ) -> Closing:
         """Discard the open rows a page showed and remove the images with no reading, at the
-        page's version; the version after. Rows already saved are skipped. A draft this
-        finishes closes in the same transaction."""
+        page's version; what the transaction committed. Rows already saved are skipped. A
+        draft this finishes closes in the same transaction."""
         with self._writing(wait) as now:
             draft = self._at_version(student_id, draft_id, version, now)
             worked = self._worked_out(draft)
@@ -794,16 +1086,58 @@ class ImportDraftsStore:
             ).rowcount
             if removed:
                 self._connection.execute(RAISE_VERSION, (draft_id,))
-            self._close_if_finished(draft, now)
-            return self._version(draft_id)
+            closed = self._close_if_finished(draft, now)
+            return Closing(self._version(draft_id), closed, self._accepted(draft))
+
+    def set_aside(
+        self,
+        student_id: str,
+        draft_id: str,
+        *,
+        version: int,
+        keys: Collection[str],
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> Closing:
+        """Set a group's rows or items aside at the page's version, all or none: each key is
+        discarded, a key already saved is skipped, and the version is raised once. When nothing
+        is left open, the draft closes in the same transaction. What the transaction
+        committed."""
+        with self._writing(wait) as now:
+            draft = self._at_version(student_id, draft_id, version, now)
+            worked = self._worked_out(draft)
+            present = {row.key for row in worked.rows}
+            if not keys or not set(keys) <= present:
+                raise ReviewChanged
+            self._connection.executemany(
+                "INSERT OR IGNORE INTO import_draft_discards (draft_id, row_key, discarded_at) "
+                "VALUES (?, ?, ?)",
+                [
+                    (draft_id, key, instant(now))
+                    for key in sorted(set(keys))
+                    if key not in worked.saved
+                ],
+            )
+            self._connection.execute(RAISE_VERSION, (draft_id,))
+            closed = self._close_if_finished(draft, now)
+            return Closing(self._version(draft_id), closed, self._accepted(draft))
 
     def discard_review(
-        self, student_id: str, draft_id: str, *, version: int, wait: float = STORE_WAIT_SECONDS
-    ) -> int:
+        self,
+        student_id: str,
+        draft_id: str,
+        *,
+        version: int,
+        refuse_if_saved: bool = False,
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> Closing:
         """Discard the whole review, as "Discard the review" and "Not hers" do, at the page's
         version: every open row discarded, every image, reading and saved progress deleted,
-        and the draft closed; the version after. No acceptance is written."""
+        and the draft closed; what the transaction committed. No acceptance is written. For
+        "Not hers", ``refuse_if_saved``: once any homework from it is saved, as this
+        transaction reads it, ``DraftFrozen`` and nothing is written, whatever page asked."""
         with self._writing(wait) as now:
+            if refuse_if_saved and self._frozen(self._open_draft(student_id, draft_id, now)):
+                raise DraftFrozen
             draft = self._at_version(student_id, draft_id, version, now)
             worked = self._worked_out(draft)
             self._connection.executemany(
@@ -812,7 +1146,7 @@ class ImportDraftsStore:
                 [(draft_id, row.key, instant(now)) for row in worked.rows if row.state == "open"],
             )
             self._close(draft_id, now)
-            return self._version(draft_id)
+            return Closing(self._version(draft_id), True, self._accepted(draft))
 
     def clean_up(self, student_id: str, draft_id: str, wait: float = STORE_WAIT_SECONDS) -> bool:
         """Close a finished draft: its images, readings and saved progress deleted and the
@@ -891,9 +1225,7 @@ class ImportDraftsStore:
         self, student_id: str, draft_id: str, version: int, now: datetime
     ) -> sqlite3.Row:
         """Checks 1, 2 and 3 for a discard: present, not closed, at the page's version."""
-        draft = self._present(student_id, draft_id, now)
-        if draft["closed_at"] is not None:
-            raise DraftClosed
+        draft = self._open_draft(student_id, draft_id, now)
         if int(draft["version"]) != version:
             raise ReviewChanged
         return draft
@@ -937,6 +1269,7 @@ class ImportDraftsStore:
             ACCEPTED_KEYS, (draft["student_id"], draft["kind"], draft_id)
         ):
             saved.update(accepted_keys(accepted))
+        saved |= self._whole_rows(draft, readings, frozenset(saved))
         discards = {
             str(key)
             for (key,) in self._connection.execute(
@@ -996,13 +1329,88 @@ class ImportDraftsStore:
         self._close(str(draft["draft_id"]), now)
         return True
 
+    def _accepted(self, draft: sqlite3.Row) -> bool:
+        """Whether any acceptance names the draft, as this transaction reads it."""
+        return (
+            self._connection.execute(
+                ACCEPTED_KEYS + " LIMIT 1", (draft["student_id"], draft["kind"], draft["draft_id"])
+            ).fetchone()
+            is not None
+        )
+
+    def _frozen(self, draft: sqlite3.Row) -> bool:
+        """Whether a homework draft is named by an acceptance: once some homework from it is
+        saved, its screenshots and readings stay as they are. A grade draft is never frozen."""
+        return str(draft["kind"]) == "homework_screenshot" and self._accepted(draft)
+
+    def _whole_rows(
+        self, draft: sqlite3.Row, readings: Sequence[StoredReading], saved: frozenset[str]
+    ) -> set[str]:
+        """The row keys whose pieces the acceptances all name, for a kind with a pieces
+        function: a row split into pieces is saved once every piece is."""
+        function = self._pieces.get(str(draft["kind"]))
+        if function is None or not any("|" in name for name in saved):
+            return set()
+        split = {
+            str(subject): str(value)
+            for subject, value in self._connection.execute(
+                "SELECT subject, value FROM import_draft_answers "
+                "WHERE draft_id = ? AND kind = 'split'",
+                (draft["draft_id"],),
+            )
+        }
+        return {key for key, names in function(readings, split).items() if names and names <= saved}
+
+    def _carried(self, draft: sqlite3.Row, before: Sequence[StoredReading]) -> None:
+        """Inside a change's write: what the change of readings does to the review's answers,
+        marks and set-aside rows, by the kind's carry function."""
+        function = self._carries.get(str(draft["kind"]))
+        if function is None:
+            return
+        draft_id = str(draft["draft_id"])
+        after = self._worked_out(draft).readings
+        if tuple(after) == tuple(before):
+            return
+        answers = {
+            (str(kind), str(subject)): str(value)
+            for kind, subject, value, _ in self._connection.execute(ANSWERS_OF, (draft_id,))
+        }
+        aside = frozenset(
+            str(key)
+            for (key,) in self._connection.execute(
+                "SELECT row_key FROM import_draft_discards WHERE draft_id = ?", (draft_id,)
+            )
+        )
+        carry = function(before, after, answers, aside)
+        self._connection.executemany(
+            "DELETE FROM import_draft_answers WHERE draft_id = ? AND kind = ? AND subject = ?",
+            [(draft_id, kind, subject) for kind, subject in sorted(carry.delete)],
+        )
+        self._connection.executemany(
+            "INSERT OR IGNORE INTO import_draft_marks (draft_id, subject) VALUES (?, ?)",
+            [(draft_id, subject) for subject in sorted(carry.marks)],
+        )
+        stamp = instant(self._clock.now())
+        self._connection.executemany(
+            "INSERT OR IGNORE INTO import_draft_discards (draft_id, row_key, discarded_at) "
+            "VALUES (?, ?, ?)",
+            [(draft_id, key, stamp) for key in sorted(carry.aside_insert)],
+        )
+        self._connection.executemany(
+            "DELETE FROM import_draft_discards WHERE draft_id = ? AND row_key = ?",
+            [(draft_id, key) for key in sorted(carry.aside_delete)],
+        )
+
     def _close(self, draft_id: str, now: datetime) -> None:
-        """Delete the draft's images, readings and saved progress, end its attempt, set
-        ``closed_at`` and raise the version. Nothing outside the draft's tables is touched."""
+        """Delete the draft's images, readings, saved progress, answers and marks, end its
+        attempt, set ``closed_at`` and raise the version. Nothing outside the draft's tables is
+        touched."""
         self._connection.execute("DELETE FROM import_draft_images WHERE draft_id = ?", (draft_id,))
         self._connection.execute(
             "DELETE FROM import_draft_progress WHERE draft_id = ?", (draft_id,)
         )
+        self._connection.execute("DELETE FROM import_draft_answers WHERE draft_id = ?", (draft_id,))
+        self._connection.execute("DELETE FROM import_draft_marks WHERE draft_id = ?", (draft_id,))
         self._connection.execute(
             "UPDATE import_drafts SET closed_at = ?, attempt_id = NULL, attempt_ends = NULL, "
             "version = version + 1 WHERE draft_id = ?",
@@ -1048,7 +1456,27 @@ class ImportDraftsStore:
             saved=worked.saved,
             discarded=worked.discarded,
             finished=worked.finished,
+            frozen=self._frozen(draft),
         )
+
+    def open_drafts(
+        self, student_id: str, wait: float = STORE_WAIT_SECONDS
+    ) -> tuple[OpenDraft, ...]:
+        """Her reviews still open, unexpired and not closed, in the order they were started. It
+        works out no rows and reads no reading or acceptance record, so no draft's content can
+        make the list fail."""
+        with self._reading(wait) as now:
+            return tuple(
+                OpenDraft(
+                    draft_id=str(row["draft_id"]),
+                    kind=str(row["kind"]),
+                    created_at=moment(row["created_at"]),
+                    expires_at=moment(row["expires_at"]),
+                    images=int(row["images"]),
+                )
+                for row in self._connection.execute(OPEN_DRAFTS, (student_id,))
+                if now < moment(row["expires_at"])
+            )
 
     # ------------------------------------------------------------------ sessions
 

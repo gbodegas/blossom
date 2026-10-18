@@ -1,0 +1,71 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% block title %}Blossom - Homework screenshots{% endblock %}
+{% block content %}
+  <h1>Homework screenshots</h1>
+  <p class="note">Available until {{ until }}</p>
+  <div class="import-review">
+  {% if said %}
+    <div class="problem" role="status" id="said">
+      {% for line in said %}<p>{{ line }}</p>{% endfor %}
+    </div>
+  {% endif %}
+  <section class="panel" aria-labelledby="screenshots-heading">
+    <h2 id="screenshots-heading">Screenshots</h2>
+    <ul class="screenshot-list">
+      {% for image in images %}
+        <li>
+          <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="160"></a>
+          <p>Screenshot {{ image.place }}: {{ image.label }}</p>
+          <p><a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot</a></p>
+          {% if not frozen %}
+            <form method="post" action="/parent/imports/{{ draft_id }}/images/{{ image.id }}/remove">
+              <button type="submit" class="secondary">Remove</button>
+            </form>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+    {% set reads_here = read_ids and not frozen and not under_way and not no_key %}
+    {% if frozen %}
+      <p class="note">{{ frozen }}</p>
+    {% elif under_way %}
+      <p class="note">{{ under_way }}</p>
+    {% elif no_key %}
+      <p class="note">{{ no_key }}</p>
+    {% elif read_ids %}
+      <p class="note" id="read-disclosed">{{ disclosed }}</p>
+      <form method="post" action="/parent/imports/{{ draft_id }}/read">
+        <input type="hidden" name="images" value="{{ read_ids }}">
+        <input type="hidden" name="check" value="{{ read_check }}">
+        <div class="actions">
+          <button type="submit" class="primary" aria-describedby="read-disclosed">Read</button>
+          {% if not rows %}<button type="submit" class="secondary" form="{{ discard.id }}">Discard the review</button>{% endif %}
+        </div>
+      </form>
+    {% endif %}
+    {% if not rows and not reads_here %}
+      <div class="actions"><button type="submit" class="secondary" form="{{ discard.id }}">Discard the review</button></div>
+    {% endif %}
+  </section>
+  {% if rows %}{% include "import_rows.html" %}{% endif %}
+  {% if not full and not frozen %}
+    <section class="panel" aria-labelledby="more-heading">
+      <h2 id="more-heading">Add screenshots</h2>
+      <p class="note" id="more-limits">{{ limits }}</p>
+      <form method="post" action="/parent/imports/{{ draft_id }}/images" enctype="multipart/form-data">
+        <label for="more-files">Screenshots</label>
+        <input type="file" id="more-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="more-limits">
+        <div class="actions">
+          <button type="submit" class="primary">Add screenshots</button>
+        </div>
+      </form>
+    </section>
+  {% endif %}
+  <form method="post" action="/parent/imports/{{ draft_id }}/{{ discard.action }}" id="{{ discard.id }}">
+    {% for name, value in discard.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  </form>
+  </div>
+  <p class="return"><a href="/parent">Back to Family review</a></p>
+{% endblock %}

@@ -1325,3 +1325,20 @@ def test_g_i20_every_grade_write_is_all_or_nothing_at_each_site(tmp_path: pathli
 
     assert len(seen) == sum(len(sites) for _, sites, _ in EVERY_WRITE.values())
     assert seen == dict.fromkeys(seen, (True, True, True))
+
+
+# ------------------------------------------------------------------ the two correction counts
+
+
+def test_a_pasted_grade_report_s_acceptance_has_no_correction_counts(path: pathlib.Path) -> None:
+    """The text save writes neither count: both stay empty."""
+    store = ProjectStateStore.open(path, fixture_clock())
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    store.close()
+    raw = sqlite3.connect(path)
+    try:
+        counts = raw.execute("SELECT kind, corrected, confirmed FROM grade_acceptances").fetchall()
+    finally:
+        raw.close()
+
+    assert counts == [("grade_text", None, None)]

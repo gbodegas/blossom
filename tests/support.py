@@ -112,6 +112,7 @@ from blossom.settings import (
     DEFAULT_TOO_MUCH_MINUTES,
     FIXTURE_PATH_VARIABLE,
     REPOSITORY_ROOT,
+    SCREENSHOT_IMPORT_VARIABLE,
     TIMEZONE_VARIABLE,
     Settings,
 )
@@ -2579,19 +2580,24 @@ def database_of(client: TestClient) -> pathlib.Path:
     return pathlib.Path(state_of(client).settings.database_path)
 
 
-def household_client(reader: str, tmp_path: pathlib.Path) -> TestClient:
+def household_client(
+    reader: str, tmp_path: pathlib.Path, *, screenshot_import: bool = False
+) -> TestClient:
     """The fixture week for ``reader``, its files under ``tmp_path``: the sign-in on for her
-    and a parent, who sign in with ``sign_in_as``, and off for ``open``. Entered by the
-    caller. For a run the state guard stands behind."""
+    and a parent, who sign in with ``sign_in_as``, and off for ``open``, with screenshot
+    import turned on for ``open`` when asked. Entered by the caller. For a run the state guard
+    stands behind."""
     require_protection("household_client")
     if reader != "open":
         return client_for(signed_in_household(tmp_path))
+    turned_on = {SCREENSHOT_IMPORT_VARIABLE: "1"} if screenshot_import else {}
     return client_for(
         fixture_settings(
             BLOSSOM_TODAY=PLAN_DATE.isoformat(),
             BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
             BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
             BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+            **turned_on,
         )
     )
 

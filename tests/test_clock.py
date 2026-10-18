@@ -23,6 +23,7 @@ from blossom.clock import (
     SystemClock,
     TimeZoneUnavailable,
     clock_from,
+    day_at,
     household_zone,
     spoken_day,
 )
@@ -312,3 +313,13 @@ def test_the_application_refuses_to_start_without_a_zone(
         TestClient(create_app(settings), headers=SAME_ORIGIN),
     ):
         pass
+
+
+def test_the_household_date_at_an_instant_is_a_pinned_day_or_that_instant_s_own_date() -> None:
+    zone = ZoneInfo("America/New_York")
+    late = datetime(2026, 10, 9, 3, 30, tzinfo=UTC)
+    pinned = FrozenClock(datetime(2026, 10, 5, tzinfo=zone), zone)
+
+    assert day_at(pinned, late) == date(2026, 10, 5)
+    assert day_at(SystemClock(zone), late) == date(2026, 10, 8)
+    assert day_at(SystemClock(ZoneInfo("Asia/Tokyo")), late) == date(2026, 10, 9)

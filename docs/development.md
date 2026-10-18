@@ -431,6 +431,15 @@ linked note gives counts only as one more source for that due date. Her
 requests for help and her reports about turning work in stay out of every
 call.
 
+Homework screenshots go to Anthropic's API only when a parent presses Read on
+a screenshot review, and only the screenshots that page showed. A review's
+screenshots, what Blossom read from them, and any progress saved for later are
+removed from Blossom's database file when the review finishes, is discarded,
+or expires. The removal can wait for Blossom's next hourly cleanup, or for its
+next start if it was stopped. This removes them from the file; it doesn't
+guarantee they are erased from the disk, and a backup or a disk snapshot taken
+while the review was open may still hold earlier copies.
+
 The full prompts and responses are also kept on this computer, in
 `traces.sqlite3` for two weeks, and each run's plan and record in
 `blossom.sqlite3`, as "What survives a restart" describes. The model still
@@ -459,6 +468,9 @@ there's no `.env` yet. Then check these lines in `.env`:
 - `BLOSSOM_TODAY` is blank, so the pages show the real date.
 - `BLOSSOM_SAMPLE` is blank, so sample mode is off.
 - `BLOSSOM_TEST_COPY` is blank or absent, so the pages don't say Test copy.
+- `BLOSSOM_SCREENSHOT_IMPORT` is blank or absent, so homework screenshot import
+  stays off: its addresses answer as missing ones and no page offers it. It
+  stays off until its save and recovery checks pass.
 - The three state paths name the household's own files, never
   `.local/sample/`. The defaults under `.local/` are fine in a folder that
   isn't synced.
@@ -529,8 +541,9 @@ her next grade report asks again whether the name on it is hers; nothing
 already saved changes. A paste Blossom can't read as a grade report comes back
 with its text, and nothing is saved.
 
-With sign-in off, as a sample or test copy runs, the first grade report makes
-`household.secret` beside the database, and the grade pages for parents open
+With sign-in off, as a sample or test copy runs, the first grade report or
+the first homework screenshot review makes `household.secret` beside the
+database, and the grade pages for parents open
 only in a browser on the computer running Blossom: any loopback client and
 Host, for example `localhost`, `127.0.0.1` or `[::1]`. That mode can't tell
 a parent from her on that computer, so
@@ -541,8 +554,12 @@ off, the browser may also keep a review page, student line included, in its
 history.
 
 A grade report keeps the school's own words for her results, notes included,
-and school text may contain names. The student and teacher lines are never
-kept as text; only the keyed form of her name is. A class name given when a
+and school text may contain names. In grade records the student and teacher
+lines are never kept as text; only the keyed form of her name is. While a
+screenshot review is open, Blossom keeps the student name it read from the
+screenshots, as text, with the screenshots, and removes it with them when the
+review finishes, is discarded or expires. That removal can wait for the next
+hourly cleanup, or the next start. A teacher's name is never kept. A class name given when a
 class is first added is at most 60 characters. The term confirmed at the
 first setup is at most 20, whether typed under "Another" or the report's own
 term chosen with "This report's". These are length limits only.

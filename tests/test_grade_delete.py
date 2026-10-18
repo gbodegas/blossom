@@ -781,3 +781,99 @@ def test_a_replay_checks_access_and_ownership_first(tmp_path: pathlib.Path) -> N
 
     assert ran == []
     assert elsewhere == NothingToDelete(class_id, "T1")
+
+
+# ------------------------------------------------------------------ the two correction counts
+
+COUNTS = ("corrected", "confirmed")
+
+
+def acceptance_columns(file: pathlib.Path) -> list[tuple[object, ...]]:
+    raw = sqlite3.connect(file)
+    try:
+        return [tuple(row) for row in raw.execute("PRAGMA table_info(grade_acceptances)")]
+    finally:
+        raw.close()
+
+
+def without_the_counts(path: pathlib.Path) -> None:
+    """The acceptance table as a file made before the two counts holds it: every other column,
+    its class and term included, and the rows a save wrote."""
+    store = ProjectStateStore.open(path, fixture_clock())
+    assert isinstance(save_grade(store, WREN, key=KEY), GradeReportSaved)
+    store.close()
+    raw = sqlite3.connect(path)
+    with raw:
+        raw.execute("ALTER TABLE grade_acceptances DROP COLUMN corrected")
+        raw.execute("ALTER TABLE grade_acceptances DROP COLUMN confirmed")
+    raw.close()
+
+
+def test_a_file_without_the_correction_counts_gains_them_once_at_start(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Both columns are added, empty, after every other column, as a fresh file has them; the
+    rows keep everything else; a second start adds nothing."""
+    path = tmp_path / "blossom.sqlite3"
+    without_the_counts(path)
+    raw = sqlite3.connect(path)
+    kept = raw.execute("SELECT * FROM grade_acceptances").fetchall()
+    raw.close()
+    fresh = tmp_path / "fresh.sqlite3"
+    ProjectStateStore.open(fresh, fixture_clock()).close()
+
+    ProjectStateStore.open(path, fixture_clock()).close()
+    once = closed_world([path], leaving_out=())
+    ProjectStateStore.open(path, fixture_clock()).close()
+
+    assert acceptance_columns(path) == acceptance_columns(fresh)
+    assert [str(row[1]) for row in acceptance_columns(path)][-2:] == list(COUNTS)
+    raw = sqlite3.connect(path)
+    after = raw.execute("SELECT * FROM grade_acceptances").fetchall()
+    raw.close()
+    assert after == [(*row, None, None) for row in kept]
+    assert closed_world([path], leaving_out=()) == once
+
+
+def test_the_rebuild_carries_the_correction_counts(tmp_path: pathlib.Path) -> None:
+    """A file without the class and term whose rows hold the two counts keeps them through the
+    rebuild; a file without the counts too gains them empty."""
+    path = tmp_path / "blossom.sqlite3"
+    untied_file(path)
+    changed_by_hand(
+        path,
+        ("ALTER TABLE grade_acceptances ADD COLUMN corrected INTEGER", ()),
+        ("ALTER TABLE grade_acceptances ADD COLUMN confirmed INTEGER", ()),
+        (
+            "UPDATE grade_acceptances SET corrected = 4, confirmed = 5 "
+            "WHERE kind = 'homework_screenshot'",
+            (),
+        ),
+    )
+    plain = tmp_path / "plain.sqlite3"
+    untied_file(plain)
+    fresh = tmp_path / "fresh.sqlite3"
+    ProjectStateStore.open(fresh, fixture_clock()).close()
+
+    for file in (path, plain):
+        ProjectStateStore.open(file, fixture_clock()).close()
+
+    def counts(file: pathlib.Path) -> set[tuple[object, ...]]:
+        raw = sqlite3.connect(file)
+        try:
+            return set(raw.execute("SELECT kind, corrected, confirmed FROM grade_acceptances"))
+        finally:
+            raw.close()
+
+    assert counts(path) == {
+        ("grade_text", None, None),
+        ("grade_screenshot", None, None),
+        ("homework_screenshot", 4, 5),
+    }
+    assert counts(plain) == {
+        ("grade_text", None, None),
+        ("grade_screenshot", None, None),
+        ("homework_screenshot", None, None),
+    }
+    assert acceptance_columns(path) == acceptance_columns(fresh)
+    assert acceptance_columns(plain) == acceptance_columns(fresh)

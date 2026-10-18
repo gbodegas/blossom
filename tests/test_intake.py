@@ -563,6 +563,49 @@ def test_what_the_record_lacks_is_filled_and_a_note_follows_a_stated_policy(
     assert remembered[0].effect == "Nothing changes."
 
 
+def test_chosen_dates_are_written_with_the_row_and_a_paste_without_them_is_unchanged(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A later week names Book Covers due 09/10 beside the saved 09/08. Kept with no dates, as a
+    paste is, the saved date stands and the card's is a claim beside it, the same as with an
+    empty set; kept with chosen dates, the row takes them in the same save."""
+    first = read_text(THREE_WEEKS, now=NOW, today=TODAY).items
+    later = read_text(
+        "Homework for Wren\n- 09/10/2026 - Thursday\n08 Geometry - Due: Book Covers:\n",
+        now=NOW,
+        today=TODAY,
+    ).items
+    outcomes = {}
+    for name, extra in (
+        ("paste", {}),
+        ("empty", {"dates": {}}),
+        ("chosen", {"dates": {0: (date(2026, 9, 10), date(2026, 9, 1))}}),
+    ):
+        store = ProjectStateStore.open(tmp_path / f"{name}.sqlite3", fixture_clock())
+        try:
+            keep(first, store)
+            kept = keep(later, store, **extra)
+            covers = {(item.course, item.title): item for item in store.all_assignments()}[
+                "08 Geometry", "Book Covers"
+            ]
+            claims = [said.asserted_value for said in store.deadline_records(covers.assignment_id)]
+            outcomes[name] = (kept, covers.due_date, covers.assigned_on, claims)
+        finally:
+            store.close()
+
+    assert outcomes["paste"] == outcomes["empty"]
+    kept, due, assigned, claims = outcomes["paste"]
+    assert (kept, due) == (Kept(added=0, updated=1, unchanged=0), date(2026, 9, 8))
+    assert claims == ["2026-09-08", "2026-09-08", "2026-09-10"]
+    kept, due, assigned, claims = outcomes["chosen"]
+    assert (kept, due, assigned) == (
+        Kept(added=0, updated=1, unchanged=0),
+        date(2026, 9, 10),
+        date(2026, 9, 1),
+    )
+    assert claims == ["2026-09-08", "2026-09-08", "2026-09-10"]
+
+
 WEEK_ONE = "Homework for Wren\n- 09/07/2026 - Monday\nMath - Due: Weekly practice:\n"
 WEEK_TWO = "Homework for Wren\n- 09/14/2026 - Monday\nMath - Due: Weekly practice:\n"
 WEEK_THREE = "Homework for Wren\n- 09/21/2026 - Monday\nMath - Due: Weekly practice:\n"

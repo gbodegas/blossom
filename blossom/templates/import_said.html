@@ -1,0 +1,20 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% block title %}Blossom - Homework screenshots{% endblock %}
+{% block content %}
+  <h1>Homework screenshots</h1>
+  <section class="panel">
+    {% for line in said %}<p{% if loop.first %} class="problem" role="alert"{% endif %}>{{ line }}</p>{% endfor %}
+    {% if typed %}
+      <div class="typed-back">
+        <p class="note">{{ typed_said }}</p>
+        {% for label, text in typed %}
+          <label>{{ label }} <textarea rows="2" readonly>
+{{ text }}</textarea></label>
+        {% endfor %}
+      </div>
+    {% endif %}
+    <p class="return"><a href="/parent">Back to Family review</a></p>
+  </section>
+{% endblock %}

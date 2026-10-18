@@ -1,0 +1,155 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#
+  The review's rows once anything is read: the student-name and split questions, one
+  destination control per piece by name group, each destination's questions, and the group
+  preview with its refusals and offers. One form holds every answer, with its three buttons;
+  the smaller actions are forms of their own after it, which their buttons name, so nothing
+  needs scripts.
+#}
+<form method="post" action="/parent/imports/{{ draft_id }}/review" class="review-form" id="review-form">
+  {% for name, value in rows.hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  {% if rows.names %}
+    <section class="panel" aria-labelledby="name-heading">
+      <h2 id="name-heading">Student name</h2>
+      {% for question in rows.names %}
+        <fieldset class="choice">
+          <legend>{{ question.said }}</legend>
+          {% for value, label, checked in question.options %}
+            <label><input type="{% if question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
+          {% endfor %}
+        </fieldset>
+        {% if question.remove %}
+          <div class="actions">
+            {% for image_id, label in question.remove %}<button type="submit" class="secondary" form="remove-{{ image_id }}">{{ label }}</button>{% endfor %}
+          </div>
+        {% endif %}
+      {% endfor %}
+      {% if rows.not_hers %}<div class="actions"><button type="submit" class="secondary" form="not-hers">Not hers</button></div>{% endif %}
+    </section>
+  {% endif %}
+  {% if rows.splits %}
+    <section class="panel" aria-labelledby="split-heading">
+      <h2 id="split-heading">Different assigned days</h2>
+      {% for question in rows.splits %}
+        <fieldset class="choice">
+          <legend>{{ question.legend }}</legend>
+          {% for value, label, checked in question.options %}
+            <label><input type="radio" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
+          {% endfor %}
+        </fieldset>
+        {% if question.leave %}<div class="actions"><button type="submit" class="secondary" form="{{ question.leave }}">Leave this group unsaved</button></div>{% endif %}
+      {% endfor %}
+    </section>
+  {% endif %}
+  {% if rows.groups %}
+    <section class="panel" aria-labelledby="where-heading">
+      <h2 id="where-heading">Where each card goes</h2>
+      {% for group in rows.groups %}
+        <h3>{{ group.heading }}</h3>
+        {% for piece in group.pieces %}
+          <fieldset class="choice">
+            <legend>{{ piece.legend }}</legend>
+            <p class="note">{{ piece.read }}</p>
+            {% for line in piece.said %}<p class="note">{{ line }}</p>{% endfor %}
+            {% for choice in piece.choices %}
+              <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
+            {% endfor %}
+            <div class="actions"><button type="submit" class="secondary" form="{{ piece.find }}">Find under another name&hellip;</button></div>
+            {% if piece.preselected %}<p class="note">Preselected; kept when you press a button below.</p>{% endif %}
+            {% if piece.stale %}<p class="problem">A choice here isn't offered any more; choose again.</p>{% endif %}
+            {% if piece.lost %}<p class="problem">{{ piece.lost }}</p>{% endif %}
+          </fieldset>
+        {% endfor %}
+        {% for question in group.questions %}
+          <fieldset class="choice">
+            <legend>{{ question.legend }}</legend>
+            {% for value, label, checked in question.options %}
+              <label><input type="{% if question.many or question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
+            {% endfor %}
+            {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
+            {% if question.text %}
+              {% if question.text_type == "lines" %}
+              <label class="lines">{{ question.text_label }} <textarea name="{{ question.text[0] }}" rows="2"{% if question.refused %} aria-invalid="true"{% endif %}>
+{{ question.text[1] }}</textarea></label>
+              {% else %}
+              <label>{{ question.text_label }} <input type="{{ question.text_type }}" name="{{ question.text[0] }}" value="{{ question.text[1] }}"{% if question.refused %} aria-invalid="true"{% endif %}></label>
+              {% endif %}
+              {% if question.carried %}<input type="hidden" name="{{ question.carried[0] }}" value="{{ question.carried[1] }}">{% endif %}
+              {% if question.refused %}<p class="note">{{ question.refused }}</p>{% endif %}
+              {% if question.mark %}<p class="note">{{ question.mark }}</p>{% endif %}
+            {% endif %}
+          </fieldset>
+        {% endfor %}
+      {% endfor %}
+    </section>
+  {% endif %}
+  {% if rows.saved %}
+    <section class="panel" aria-labelledby="saved-heading">
+      <h2 id="saved-heading">Saved</h2>
+      <ul>
+        {% for card in rows.saved %}<li>{{ card }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+  {% if rows.unread %}
+    <section class="panel" aria-labelledby="unread-heading">
+      <h2 id="unread-heading">Couldn't read</h2>
+      {% for group in rows.unread %}
+        <h3>{{ group.heading }}</h3>
+        <p class="note">{{ group.said }}</p>
+        <ul>
+          {% for text, form_id in group.cards %}
+            <li><p>{{ text }}</p><div class="actions"><button type="submit" class="secondary" form="{{ form_id }}">Set aside</button></div></li>
+          {% endfor %}
+        </ul>
+      {% endfor %}
+    </section>
+  {% endif %}
+  <section class="panel" aria-labelledby="saving-heading">
+    <h2 id="saving-heading">What saving does</h2>
+    {% for unit in rows.preview %}
+      <article class="assignment">
+        {% for entry in unit.entries %}
+          <h3>{{ entry.label }}</h3>
+          <p class="source">{{ entry.cards|join("; ") }}</p>
+          {% for line in entry.lines %}<p class="effect">{{ line }}</p>{% endfor %}
+          {% if entry.still_open %}<p class="note">{{ entry.still_open }}</p>{% endif %}
+        {% endfor %}
+        {% for refusal in unit.refusals %}<p class="problem">{{ refusal }}</p>{% endfor %}
+        {% for offer in unit.offers %}
+          <div class="choice">
+            {% for move in offer.moves %}<p class="effect">{{ move }}</p>{% endfor %}
+            {% for line in offer.lines %}<p class="source">{{ line }}</p>{% endfor %}
+            <div class="actions"><button type="submit" class="secondary" form="{{ offer.form }}">Use this change</button></div>
+          </div>
+        {% endfor %}
+        {% for wait in unit.waits %}<p class="note">{{ wait }}</p>{% endfor %}
+        {% if unit.tick %}
+          <div class="choice">
+            <label><input type="checkbox" name="unit" value="{{ unit.unit }}"{% if unit.ticked %} checked{% endif %}> <span>Save this group</span></label>
+          </div>
+        {% endif %}
+        <div class="actions"><button type="submit" class="secondary" form="{{ unit.leave }}">Leave this group unsaved</button></div>
+      </article>
+    {% endfor %}
+    <p class="note" id="review-status">{{ rows.status }}</p>
+    <div class="actions">
+      <button type="submit" class="primary" name="press" value="save" aria-describedby="review-status">Save selected homework</button>
+      <button type="submit" class="secondary" name="press" value="keep" aria-describedby="review-status">Keep these answers</button>
+      <button type="submit" class="secondary" name="press" value="later" aria-describedby="review-status">Save review for later</button>
+    </div>
+    <div class="actions">
+      <button type="submit" class="secondary" form="finish">Finish without the rest</button>
+      <button type="submit" class="secondary" form="discard">Discard the review</button>
+    </div>
+  </section>
+</form>
+{% for form in rows.forms %}
+  <form method="post" action="/parent/imports/{{ draft_id }}/{{ form.action }}" id="{{ form.id }}">
+    {% for name, value in form.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  </form>
+{% endfor %}
+{% for question in rows.names %}{% for image_id, _ in question.remove %}
+  <form method="post" action="/parent/imports/{{ draft_id }}/images/{{ image_id }}/remove" id="remove-{{ image_id }}"></form>
+{% endfor %}{% endfor %}

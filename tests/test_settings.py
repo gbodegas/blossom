@@ -21,6 +21,7 @@ from blossom.settings import (
     EVENING_MINUTES_VARIABLE,
     FIXTURE_PATH_VARIABLE,
     REPOSITORY_ROOT,
+    SCREENSHOT_IMPORT_VARIABLE,
     TODAY_VARIABLE,
     TOO_MUCH_MINUTES_VARIABLE,
     Settings,
@@ -64,6 +65,19 @@ def test_blank_environment_values_fall_back_to_defaults() -> None:
     settings = Settings.from_environment({FIXTURE_PATH_VARIABLE: "   "})
 
     assert settings.fixture_path == Settings.from_environment({}).fixture_path
+
+
+def test_screenshot_import_is_off_unless_turned_on() -> None:
+    """Homework screenshot import is off by default and when blank; on and off are read as the
+    other yes-or-no settings are, and anything else is refused by name."""
+    assert Settings.from_environment({}).screenshot_import is False
+    assert Settings.from_environment({SCREENSHOT_IMPORT_VARIABLE: "  "}).screenshot_import is False
+    for value in ("1", "true", "Yes", "on"):
+        assert Settings.from_environment({SCREENSHOT_IMPORT_VARIABLE: value}).screenshot_import
+    for value in ("0", "false", "no", "OFF"):
+        assert not Settings.from_environment({SCREENSHOT_IMPORT_VARIABLE: value}).screenshot_import
+    with pytest.raises(ValueError, match=SCREENSHOT_IMPORT_VARIABLE):
+        Settings.from_environment({SCREENSHOT_IMPORT_VARIABLE: "soon"})
 
 
 def test_the_two_budgets_are_read_as_minutes_with_defaults() -> None:

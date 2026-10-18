@@ -986,9 +986,28 @@ NO_BODY: Final = frozenset(
         "/student/help-requests/{request_id}",
         "/student/actions/take-back-help/{request_id}",
         "/student/actions/take-back/{signal_id}",
+        "/parent/imports/{draft_id}/images/{image_id}/remove",
     }
 )
 """The routes that change something and read no body at all."""
+READS_ITS_OWN_BODY: Final = frozenset(
+    {
+        "/parent/imports",
+        "/parent/imports/{draft_id}/images",
+        "/parent/imports/{draft_id}/read",
+        "/parent/imports/{draft_id}/review",
+        "/parent/imports/{draft_id}/find",
+        "/parent/imports/{draft_id}/set-aside",
+        "/parent/imports/{draft_id}/finish",
+        "/parent/imports/{draft_id}/discard",
+        "/parent/imports/{draft_id}/not-hers",
+    }
+)
+"""The import routes that take no form parameter and read their body themselves once their
+parent-only check has passed: an upload's multipart body within its limits, a Read press's two
+fields, a review press's answers against the fields its page signed, a search's card and
+words, and the review's small signed forms that set rows aside or discard the review.
+``tests/test_import_routes.py`` presses them."""
 READS: Final = frozenset({"GET", "HEAD"})
 PARENT_MAY_PRESS: Final = frozenset({"/student/actions/plan", "/student/grades/view"})
 """Her routes that read the body of a parent's press rather than refusing it first: the plan
@@ -1092,8 +1111,9 @@ def test_every_route_that_changes_something_is_a_form_route_or_reads_no_form(
     """Every route that takes a method other than a read is a FastAPI route: one pressed here
     as a form route, one that reads no body, named here, or one whose body is JSON. A route
     whose fields are form parameters is a ``FormRoute``, and the one mount serves files. So
-    a new route is one or the other before these tests pass."""
-    with household_client("open", tmp_path) as client:
+    a new route is one or the other before these tests pass. Screenshot import is on, so its
+    routes are served to be counted."""
+    with household_client("open", tmp_path, screenshot_import=True) as client:
         served = list(every_route(cast(FastAPI, client.app).routes))
     mounts = [route for route in served if isinstance(route, Mount)]
     routes = [route for route in served if isinstance(route, Route)]
@@ -1115,10 +1135,10 @@ def test_every_route_that_changes_something_is_a_form_route_or_reads_no_form(
     for route in api:
         if route.body_field is not None and isinstance(route.body_field.field_info, FormParameter):
             assert isinstance(route, FormRoute), route.path
-        if route.path in NO_BODY:
+        if route.path in NO_BODY | READS_ITS_OWN_BODY:
             assert route.body_field is None, route.path
-    assert {route.path for route in api} - json_bodies - NO_BODY == pressed
-    assert {route.path for route in api} >= NO_BODY
+    assert {route.path for route in api} - json_bodies - NO_BODY - READS_ITS_OWN_BODY == pressed
+    assert {route.path for route in api} >= NO_BODY | READS_ITS_OWN_BODY
     assert pressed.isdisjoint(json_bodies | NO_BODY)
 
 

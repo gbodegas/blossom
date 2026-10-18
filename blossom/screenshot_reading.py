@@ -19,6 +19,7 @@ import hashlib
 import logging
 import time
 from collections.abc import Callable, Collection
+from contextlib import suppress
 from typing import Any, Final, NamedTuple
 
 from blossom.anthropic_client import (
@@ -53,6 +54,11 @@ CALL_TIMEOUT_SECONDS: Final = 90.0
 """The most time one call is given, as the reader was tested, and never more than the time
 left before the press's deadline. It is each network operation's timeout and the time the
 answer's body is checked against."""
+
+MIN_CALL_SECONDS: Final = 15.0
+"""The least time left before the deadline at which a call, or its retry, starts. The slowest
+call the reader's benchmark measured took 14.6 seconds, so a call started with less would
+likely end unfinished and still be charged; the image is left unread for this press."""
 
 RETRY_PAUSE_SECONDS: Final = 1.0
 """How long a busy service is given before it is asked again, never past the deadline."""
@@ -122,6 +128,11 @@ async def read_screenshots(
         held.add(task)
         task.add_done_callback(held.discard)
     done, _ = await asyncio.wait(tasks, timeout=max(0.0, attempt.ends - monotonic()))
+    if len(done) == len(tasks):
+        # Every call has ended, so nothing of this attempt can still be charged: end it now,
+        # and another press may read at once.
+        with suppress(StoreBusy, WriterBusy):
+            await asyncio.to_thread(store.end_attempt, student_id, draft_id, attempt.attempt_id)
     found: dict[str, list[Any]] = {"read": [], "failed": [], "dropped": [], "busy": []}
     unfinished: list[str] = []
     for task, image_id in tasks.items():
@@ -182,7 +193,7 @@ def _read_and_store(
     tokens_in = tokens_out = 0
     for asked in (1, 2):
         left = attempt.ends - monotonic()
-        if left <= 0:
+        if left < MIN_CALL_SECONDS:
             break
         answer = call(png, min(CALL_TIMEOUT_SECONDS, left))
         tokens_in += answer.input_tokens

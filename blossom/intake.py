@@ -2389,6 +2389,7 @@ def keep(
     imported_by: Author | None = None,
     now: datetime | None = None,
     today: date | None = None,
+    dates: Mapping[int, tuple[date | None, date | None]] | None = None,
 ) -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
     """Compare and write as one: save what the record lacks, and say what changed.
 
@@ -2430,6 +2431,10 @@ def keep(
     an answer to the card's own question is refused as ``NotOffered``. One
     made against a card or a homework that has changed since leaves the text
     unsaved with what changed handed back.
+
+    ``dates`` holds a due date and an assigned date a parent chose for a card's row, each
+    ``None`` to leave it: they are written with the row in the same transaction, whatever the
+    distance from the saved date. A paste passes none, and nothing changes for it.
     """
     picks = picks or {}
     crossed = picks.keys() & (identities or {}).keys()
@@ -2521,6 +2526,27 @@ def keep(
                     rows[change.assignment_id] = row
             claims.setdefault(change.assignment_id, []).extend(change.new_claims)
             reports.setdefault(change.assignment_id, []).extend(change.new_reports)
+        for key, (due, assigned) in sorted((dates or {}).items()):
+            dated = next((c for c in changes if c.key == key and c.state != FOLDED), None)
+            if dated is None:
+                continue
+            target = dated.assignment_id
+            current = rows.get(target) or dated.standing
+            if current is None:
+                continue
+            moved: dict[str, object] = {}
+            origins = dict(current.origins)
+            if due is not None and current.due_date != due:
+                moved["due_date"] = due
+                origins["due_date"] = dated.reading.origin_of("due_date")
+            if assigned is not None and current.assigned_on != assigned:
+                moved["assigned_on"] = assigned
+                origins["assigned_on"] = dated.reading.origin_of("assigned_on")
+            if moved:
+                rows[target] = current.model_copy(update={**moved, "origins": origins})
+                if target in unchanged:
+                    unchanged.discard(target)
+                    updated.add(target)
         store.put_on_record(rows.values(), claims, reports)
         moment = store.instruction_moment()
         for change in changes:

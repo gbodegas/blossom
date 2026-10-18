@@ -338,12 +338,19 @@ class AssignedDay(NamedTuple):
 class ScreenshotRow(NamedTuple):
     """One row the screenshots read as: its key (what it would write and its layer), the
     reading it would write, the fields marked uncertain on any card it came from, the day
-    heading among them, and every distinct assigned date its assigned cards were read under."""
+    heading among them, and every distinct assigned date its assigned cards were read under.
+    ``layer`` and ``sources`` say which copy it is and where its cards were read; neither is
+    in the key."""
 
     key: str
     reading: Reading
     marks: frozenset[str]
     assigned: tuple[AssignedDay, ...]
+    layer: int
+    """How many matching cards are above this row's cards in their screenshots: 0 for the
+    first copy, 1 for the second. For telling copies apart on the page, never for an id."""
+    sources: tuple[CardPlace, ...]
+    """Every card the row came from, by its image's SHA-256 and its place there, in order."""
 
     @property
     def assigned_dates_disagree(self) -> bool:
@@ -482,10 +489,12 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
         assigned = _assigned_days(members)
         cards_read = read_cards([portal for _, portal, _, _ in members], now=now)
         marks_of: list[set[str]] = [set() for _ in cards_read.readings]
-        for (_, _, marks, _), joined in zip(members, cards_read.joined, strict=True):
+        places_of: list[set[CardPlace]] = [set() for _ in cards_read.readings]
+        for (_, _, marks, place), joined in zip(members, cards_read.joined, strict=True):
             marks_of[joined] |= marks
+            places_of[joined].add(place)
         in_layer = taken.setdefault(layer, {})
-        for read, marked in zip(cards_read.readings, marks_of, strict=True):
+        for read, marked, places in zip(cards_read.readings, marks_of, places_of, strict=True):
             written = _in_round(_unsettled(read, assigned, members), rounds)
             key = _key(_written(written, frozenset(marked), layer, assigned))
             if key in in_layer:
@@ -496,7 +505,11 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
                 unread[repeat] = UnreadCard(repeat, "", None, None, "repeated")
                 continue
             in_layer[key] = 0
-            rows.append(ScreenshotRow(key, written, frozenset(marked), assigned))
+            rows.append(
+                ScreenshotRow(
+                    key, written, frozenset(marked), assigned, layer, tuple(sorted(places))
+                )
+            )
     return Assembly(
         rows=tuple(sorted(rows, key=lambda row: row.key)),
         unread=tuple(sorted(unread.values(), key=lambda item: item.key)),
@@ -568,6 +581,30 @@ def _in_round(
     occurrence = None if not held else day.isoformat()
     held.append((day, occurrence))
     return dataclasses.replace(reading, occurrence=occurrence)
+
+
+class PlacedCard(NamedTuple):
+    """A card as the assembly places it: where it was read, the card as read, and the day
+    heading the assembly reads it under, if any."""
+
+    place: CardPlace
+    card: Card | None
+    heading: Heading | None
+
+
+def cards_placed(readings: Sequence[StoredReading]) -> dict[CardPlace, PlacedCard]:
+    """Every card of a draft's readings at its place, decoded and placed under its day heading
+    exactly as ``homework_assembly`` places it, so a page can show what a row was read from.
+    A reading that can't be decoded, or isn't a homework list, places no card."""
+    out: dict[CardPlace, PlacedCard] = {}
+    for stored in readings:
+        reading = _decoded(stored)
+        if reading is None or reading.wrong_kind:
+            continue
+        for item in _placed(stored.sha256, _digest(stored, reading), reading):
+            place = CardPlace(item.sha256, item.place)
+            out[place] = PlacedCard(place, item.card, item.heading)
+    return out
 
 
 def _decoded(stored: StoredReading) -> HomeworkReading | None:
