@@ -15,7 +15,13 @@ from typing import Final, NamedTuple
 
 from blossom.screenshot_page import page_check, same_signature
 from blossom.screenshot_review import DATE_FIELDS, answer_names, dest_kind, value_json, value_of
-from blossom.screenshot_save import CORRECTABLE, ReviewState, correction_digest
+from blossom.screenshot_save import (
+    CORRECTABLE,
+    CORRECTION_MOST,
+    ReviewState,
+    correction_digest,
+    correction_text,
+)
 from blossom.stores.import_drafts import AnswerToKeep
 
 PRESSES: Final = frozenset({"keep", "save", "later"})
@@ -34,8 +40,6 @@ ANSWER_KINDS: Final = frozenset(
 )
 SIGNED: Final = ("version", "progress_revision", "acceptance", "asked", "defaults", "identity")
 """The review form's signed fields, besides each group's ``digest:{unit}``, in its order."""
-MOST_CORRECTION: Final = 200
-"""The most characters of one typed correction."""
 
 
 class PostRefused(Exception):
@@ -206,7 +210,7 @@ def read_review(
             continue
         if name.startswith("refused:"):
             subject = name.removeprefix("refused:")
-            if f"answer:confirm:{subject}" not in offered or len(value) > MOST_CORRECTION:
+            if f"answer:confirm:{subject}" not in offered:
                 raise PostRefused
             try:
                 key, field = (str(part) for part in json.loads(subject))
@@ -214,11 +218,13 @@ def read_review(
                 raise PostRefused from error
             if field not in DATE_FIELDS or (key, field) in carried:
                 raise PostRefused
+            if len(value) > CORRECTION_MOST[field]:
+                raise PostRefused
             carried[(key, field)] = value.strip()
             continue
         if name.startswith("correct:"):
             subject = name.removeprefix("correct:")
-            if f"answer:confirm:{subject}" not in offered or len(value) > MOST_CORRECTION:
+            if f"answer:confirm:{subject}" not in offered:
                 raise PostRefused
             try:
                 key, field = (str(part) for part in json.loads(subject))
@@ -226,8 +232,11 @@ def read_review(
                 raise PostRefused from error
             if field not in CORRECTABLE:
                 raise PostRefused
-            if value.strip():
-                corrections.setdefault(key, {})[field] = value.strip()
+            text = correction_text(field, value)
+            if len(text) > CORRECTION_MOST[field]:
+                raise PostRefused
+            if text.strip():
+                corrections.setdefault(key, {})[field] = text.strip()
             continue
         kind, _ = _field(name)
         if name not in offered or value not in offered[name]:
@@ -300,7 +309,7 @@ def progress_text(corrected: Mapping[str, Mapping[str, str]], selected: Iterable
 
 def progress_read(text: str | None) -> SavedProgress | None:
     """Saved progress, read closed-world: exactly its three keys, shape 3, corrections only to
-    fields a page asks to confirm and within the form's limit, and row keys as text. Any other
+    fields a page asks to confirm and within each field's limit, and row keys as text. Any other
     shape reads as no progress."""
     if text is None:
         return None
@@ -322,7 +331,7 @@ def progress_read(text: str | None) -> SavedProgress | None:
         for field, value in fields.items():
             if field not in CORRECTABLE or not isinstance(value, str):
                 return None
-            if not value.strip() or len(value) > MOST_CORRECTION:
+            if not value.strip() or len(value) > CORRECTION_MOST[field]:
                 return None
         out[str(key)] = {str(field): str(value) for field, value in fields.items()}
     return SavedProgress(out, frozenset(selected))

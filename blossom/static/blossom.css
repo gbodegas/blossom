@@ -2000,7 +2000,9 @@ pre.example {
    only where its line can't hold it, and a file input is never wider than its panel. A date
    field's side padding goes to 2% of the screen's width there, as the plan panel's does.
    School text, a long title or a link in a card's words among it, breaks inside its panel
-   only where its line can't hold it; a button's or a field's words never do.
+   only where its line can't hold it; a button's or a field's words never do. An
+   instruction's correction box sits under its label, as wide as its fieldset, starts two
+   lines tall, not the height of the paste box, and grows as a reader drags it.
    Every screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
 .import-review .choice {
   min-width: 0;
@@ -2037,6 +2039,15 @@ pre.example {
 .import-review button,
 .import-review input {
   overflow-wrap: normal;
+}
+
+.import-review .choice .lines {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.import-review textarea {
+  min-height: 3.6rem;
 }
 
 @media (max-width: 30rem) {

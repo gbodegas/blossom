@@ -24,7 +24,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
-from typing import Final
+from typing import Any, Final
 from urllib.parse import urlencode
 
 import pytest
@@ -1013,8 +1013,9 @@ def page_post(
     typed: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """The review form's fields as a browser sends them with scripts off: the hidden fields, the
-    checked controls (or those chosen here), the text typed, the groups ticked, the button.
-    `send` serializes them as a browser does, line breaks as CRLF."""
+    checked controls (or those chosen here), the text typed in its boxes and text areas, the
+    groups ticked, the button. A text area's first line break is the markup's, as a browser
+    reads it. `send` serializes them as a browser does, line breaks as CRLF."""
     choose, typed = dict(choose or {}), dict(typed or {})
     fields: list[tuple[str, str]] = []
     for tag in re.findall(r"<input [^>]*>", review_form(page)):
@@ -1028,6 +1029,10 @@ def page_post(
             fields.append((name, typed.get(name, value)))
         elif name != "unit" and name not in choose and " checked" in tag:
             fields.append((name, value))
+    for tag, content in re.findall(r"(<textarea [^>]*>)(.*?)</textarea>", review_form(page), re.S):
+        name = html.unescape(re.search(r'name="([^"]+)"', tag).group(1))  # type: ignore[union-attr]
+        shown = html.unescape(content)
+        fields.append((name, typed.get(name, shown[1:] if shown.startswith("\n") else shown)))
     fields += [*choose.items(), *(("unit", unit) for unit in tick), ("press", press)]
     return fields
 
@@ -2776,7 +2781,12 @@ def test_after_a_partial_save_the_screenshots_are_fixed_and_a_remove_from_before
 
 
 def typed_on(page: str) -> list[str]:
-    return [html.unescape(v) for v in re.findall(r'name="correct:[^"]*" value="([^"]*)"', page)]
+    """The text in each correction box, a one-line box's or a text area's, in page order."""
+    one_line = r'name="correct:[^"]*" value="([^"]*)"'
+    lines = r'<textarea name="correct:[^"]*"[^>]*>(.*?)</textarea>'
+    found = re.finditer(f"{one_line}|{lines}", page, re.S)
+    shown = [html.unescape(m.group(1) if m.group(2) is None else m.group(2)) for m in found]
+    return [text[1:] if text.startswith("\n") else text for text in shown]
 
 
 def assert_returned_with_saved_typing(page: str, chosen: str, typed: str) -> None:
@@ -3347,6 +3357,8 @@ IMPORT_REVIEW_RULES = (
     ".import-review .effect,\n.import-review .problem,\n.import-review .choice > p,\n"
     ".import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
     ".import-review button,\n.import-review input {\n  overflow-wrap: normal;\n}\n\n"
+    ".import-review .choice .lines {\n  flex-direction: column;\n  align-items: stretch;\n}\n\n"
+    ".import-review textarea {\n  min-height: 3.6rem;\n}\n\n"
     "@media (max-width: 30rem) {\n"
     "  .import-review .panel,\n  .import-review .panel article {\n"
     "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n\n"
@@ -3356,8 +3368,9 @@ IMPORT_REVIEW_RULES = (
 """The screenshot review's rules, pinned whole: on a narrow screen with large text its
 fieldsets take the page's width, a panel's side padding gives way and the panel reaches into
 the page's margin, a card inside a panel gives way without reaching further, a file input is
-never wider than its panel, and school text breaks where its line can't hold it while a
-control's words never do."""
+never wider than its panel, school text breaks where its line can't hold it while a
+control's words never do, and an instruction's correction box sits under its label, two lines
+tall to start."""
 STYLESHEET = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
 
 
@@ -3369,7 +3382,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 17
+    assert css.count("import-review") == 19
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert carriers == ["import_find.html", "import_review.html", "parent_review.html"]
 
@@ -4798,3 +4811,349 @@ def test_an_instruction_longer_than_a_paste_is_offered_and_kept_whole(
 
     assert len(longest) == INSTRUCTION_MAX_LENGTH + 1
     assert json.loads(held[("instructions", subject)]) == [longest]
+
+
+# ----------------------------------------------- her homework confirmed, then more screenshots
+
+ASK_NAME_AGAIN = "Your screenshots changed, so confirm again that these are her homework."
+
+
+def unnamed(title: str) -> dict[str, Any]:
+    """A homework list showing no student name, with one card of this title."""
+    return homework_answer(
+        active_student={"name": None, "uncertain": None}, cards=[homework_card(title=title)]
+    )
+
+
+def confirmed_then_added(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str, str]:
+    """A review of one screenshot showing no name, her homework confirmed by Keep these answers,
+    then a second such screenshot added and read: its id, the page after the confirmation, and
+    the page after the Read."""
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(unnamed("Sentence Composing"), None, 10, 5)
+    reader.answers[BLUE] = ScreenshotAnswer(unnamed("Lab Report"), None, 10, 5)
+    draft_id = made(browser, RED)
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    page = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+    confirmed = followed(
+        browser,
+        send(
+            browser, draft_id, page_post(page, "keep", choose={"answer:name:missing": "confirmed"})
+        ),
+    )
+    upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    read = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+    return draft_id, confirmed, read
+
+
+def test_a_screenshot_with_no_name_added_after_the_confirmation_asks_for_it_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    field = "answer:name:missing"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, confirmed, read = confirmed_then_added(browser, monkeypatch)
+        held = stored_answers(browser, draft_id)
+        before = assignment_count(browser)
+        forced = followed(
+            browser, send(browser, draft_id, page_post(read, "save", tick=digests_on(read)))
+        )
+        assert assignment_count(browser) == before
+        answered = followed(
+            browser, send(browser, draft_id, page_post(forced, "keep", choose={field: "confirmed"}))
+        )
+        saved = followed(
+            browser, send(browser, draft_id, page_post(answered, "save", tick=units_on(answered)))
+        )
+        after = assignment_count(browser)
+
+    assert field in checked_names(confirmed)
+    assert ("name", "missing") not in held
+    assert says(read, ASK_NAME_AGAIN)
+    assert says(read, "No student name was found on 2 screenshots.")
+    assert field not in checked_names(read)
+    assert units_on(read) == []
+    assert len(digests_on(read)) == 2
+    assert field not in checked_names(forced)
+    assert len(units_on(answered)) == 2
+    assert says(saved, "2 assignments added.")
+    assert after == before + 2
+
+
+def test_reopening_or_removing_a_screenshot_keeps_the_confirmation(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    field = "answer:name:missing"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser,
+            monkeypatch,
+            (RED, unnamed("Sentence Composing")),
+            (BLUE, unnamed("Lab Report")),
+        )
+        followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={field: "confirmed"}))
+        )
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+        [_, blue] = images_of(browser, draft_id)
+        removed = followed(
+            browser, browser.post(f"/parent/imports/{draft_id}/images/{blue}/remove")
+        )
+        held = stored_answers(browser, draft_id)
+
+    assert held[("name", "missing")] == "confirmed"
+    for shown in (reopened, removed):
+        assert field in checked_names(shown)
+        assert not says(shown, ASK_NAME_AGAIN)
+    assert len(units_on(reopened)) == 2
+    assert len(units_on(removed)) == 1
+
+
+def test_a_screenshot_with_no_name_that_replaces_the_one_confirmed_asks_for_it_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    field = "answer:name:missing"
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(unnamed("Sentence Composing"), None, 10, 5)
+    reader.answers[BLUE] = ScreenshotAnswer(unnamed("Lab Report"), None, 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        page = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+        followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={field: "confirmed"}))
+        )
+        [red] = images_of(browser, draft_id)
+        removed = followed(browser, browser.post(f"/parent/imports/{draft_id}/images/{red}/remove"))
+        kept = stored_answers(browser, draft_id)
+        upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        read = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+        held = stored_answers(browser, draft_id)
+
+    assert kept[("name", "missing")] == "confirmed"
+    assert not says(removed, ASK_NAME_AGAIN)
+    assert ("name", "missing") not in held
+    assert says(read, ASK_NAME_AGAIN)
+    assert says(read, "No student name was found on 1 screenshot.")
+    assert field not in checked_names(read)
+    assert units_on(read) == []
+
+
+def test_a_screenshot_showing_a_name_added_later_asks_its_name_and_keeps_the_confirmation(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    field = "answer:name:missing"
+    named = homework_answer(
+        active_student={"name": "Avery", "uncertain": None},
+        cards=[homework_card(title="Lab Report")],
+    )
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(unnamed("Sentence Composing"), None, 10, 5)
+    reader.answers[GREEN] = ScreenshotAnswer(named, None, 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        page = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+        followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={field: "confirmed"}))
+        )
+        upload(browser, GREEN, form={}, to=f"/parent/imports/{draft_id}/images")
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        read = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+        held = stored_answers(browser, draft_id)
+
+    assert held[("name", "missing")] == "confirmed"
+    assert not says(read, ASK_NAME_AGAIN)
+    assert field in checked_names(read)
+    assert says(read, "No student name was found on 1 screenshot.")
+    assert says(read, "Screenshot 2 names Avery. Is this her name?")
+    assert not any(
+        name.startswith("answer:name:") and name != field for name in checked_names(read)
+    )
+    assert len(units_on(read)) == 1
+
+
+def test_a_save_from_the_page_before_the_screenshot_was_added_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    field = "answer:name:missing"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, confirmed, _ = confirmed_then_added(browser, monkeypatch)
+        before = assignment_count(browser)
+        stale = send(browser, draft_id, page_post(confirmed, "save", tick=units_on(confirmed)))
+        shown = followed(browser, stale)
+        after = assignment_count(browser)
+        held = stored_answers(browser, draft_id)
+
+    assert units_on(confirmed)
+    assert stale.status_code == 409
+    assert says(shown, imports.PRESS_SAID["save_stale"])
+    assert after == before
+    assert ("name", "missing") not in held
+    assert field not in checked_names(shown)
+
+
+# ------------------------------------------------------- corrections as long as a reading holds
+
+LONG_TITLE = "Sentence Composing " + "a" * 231
+LONG_WORDS = "Complete pages 12 to 14 " + "b" * 226
+
+
+def unsure_review(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, *fields: str
+) -> tuple[str, str, dict[str, str]]:
+    """A review of one card whose given fields the reader wasn't sure of, her name answered:
+    its id, the page, and each field's correction box by field."""
+    card = homework_card(uncertain=[{"field": f, "reason": "faint"} for f in fields])
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[card])))
+    page = her_name_answered(browser, draft_id, page)
+    boxes = {
+        str(json.loads(subject)[1]): f"correct:{subject}"
+        for subject in fields_named(review_form(page), "correct:")
+    }
+    return draft_id, page, boxes
+
+
+def box_of(page: str, name: str) -> tuple[str, str] | None:
+    """A correction box's tag, ``input`` or ``textarea``, and the text it holds as a browser
+    reads it."""
+    named = re.escape(str(escape(name)))
+    found = re.search(rf'(<textarea [^>]*name="{named}"[^>]*>)(.*?)</textarea>', page, re.S)
+    if found is not None:
+        text = html.unescape(found.group(2))
+        return found.group(1), text[1:] if text.startswith("\n") else text
+    found = re.search(rf'<input [^>]*name="{named}" value="([^"]*)"[^>]*>', page)
+    return None if found is None else (found.group(0), html.unescape(found.group(1)))
+
+
+def progress_on(browser: TestClient, draft_id: str) -> screenshot_posts.SavedProgress | None:
+    student = state_of(browser).project_state.student_id()
+    return screenshot_posts.progress_read(
+        state_of(browser).import_drafts.snapshot(student, draft_id).progress
+    )
+
+
+def test_each_correction_box_takes_as_many_characters_as_a_reading_holds(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        _, page, boxes = unsure_review(browser, monkeypatch, "course", "title", "instruction")
+
+    form = review_form(page)
+    tags = {field: str((box_of(form, name) or ("", ""))[0]) for field, name in boxes.items()}
+    assert set(tags) == {"course", "title", "instruction"}
+    assert tags["course"].startswith('<input type="text"')
+    assert 'maxlength="200"' in tags["course"]
+    assert tags["title"].startswith('<input type="text"')
+    assert 'maxlength="300"' in tags["title"]
+    assert tags["instruction"].startswith("<textarea ")
+    assert 'maxlength="4000"' in tags["instruction"]
+
+
+def test_a_long_title_and_instruction_are_corrected_and_kept_whole_through_every_press(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, "title", "instruction")
+        typed = {boxes["title"]: LONG_TITLE, boxes["instruction"]: LONG_WORDS}
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep", typed=typed)))
+        later = followed(browser, send(browser, draft_id, page_post(kept, "later")))
+        progress = progress_on(browser, draft_id)
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+        saved = followed(
+            browser, send(browser, draft_id, page_post(reloaded, "save", tick=units_on(reloaded)))
+        )
+        record = state_of(browser).project_state
+        rows = [a for a in record.all_assignments() if a.title == LONG_TITLE]
+        readings = record.school_instruction_readings([a.assignment_id for a in rows])
+
+    assert len(LONG_TITLE) == len(LONG_WORDS) == 250
+    assert says(kept, imports.PRESS_SAID["kept"])
+    assert says(later, imports.PRESS_SAID["later"])
+    for shown in (kept, reloaded):
+        assert box_of(shown, boxes["title"])[1] == LONG_TITLE  # type: ignore[index]
+        assert box_of(shown, boxes["instruction"])[1] == LONG_WORDS  # type: ignore[index]
+    assert progress is not None
+    [corrected] = progress.corrected.values()
+    assert corrected == {"title": LONG_TITLE, "instruction": LONG_WORDS}
+    assert says(saved, "1 assignment added.")
+    [row] = rows
+    assert readings.readable[row.assignment_id].texts == (LONG_WORDS,)
+
+
+LINES_OF_A: Final = ("a" * 99 + "\n") * 39 + "a" * 100
+"""4,000 characters in 40 lines; a browser posts them as 4,039."""
+WIDE: Final = "\N{SPEAKING HEAD IN SILHOUETTE}" * 4_000
+"""4,000 characters of four bytes each, 48,000 bytes once a form encodes them."""
+
+
+@pytest.mark.parametrize(
+    ("words", "kept"),
+    [(LINES_OF_A, True), (LINES_OF_A + "a", False), (WIDE, True)],
+    ids=["4000", "4001", "4000 four-byte"],
+)
+def test_an_instruction_correction_of_4000_characters_is_kept_and_one_longer_is_refused_whole(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: str, kept: bool
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, "instruction")
+        later = followed(
+            browser,
+            send(browser, draft_id, page_post(page, "later", typed={boxes["instruction"]: words})),
+        )
+        progress = progress_on(browser, draft_id)
+
+    assert len(words) == (4000 if kept else 4001)
+    if kept:
+        assert says(later, imports.PRESS_SAID["later"])
+        assert progress is not None
+        [corrected] = progress.corrected.values()
+        assert corrected == {"instruction": words}
+    else:
+        assert says(later, imports.PRESS_SAID["later_invalid"])
+        assert progress is None
+        assert box_of(later, boxes["instruction"]) == (box_of(page, boxes["instruction"]))
+
+
+def test_a_multiline_instruction_correction_keeps_its_line_breaks_through_a_browser_s_post(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    words = "Read pages 4 to 6.\nAnswer the two questions."
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, "instruction")
+        followed(
+            browser,
+            send(browser, draft_id, page_post(page, "later", typed={boxes["instruction"]: words})),
+        )
+        progress = progress_on(browser, draft_id)
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+        followed(
+            browser, send(browser, draft_id, page_post(reloaded, "save", tick=units_on(reloaded)))
+        )
+        record = state_of(browser).project_state
+        [row] = [a for a in record.all_assignments() if a.title == "Sentence Composing"]
+        readings = record.school_instruction_readings([row.assignment_id])
+
+    assert progress is not None
+    assert list(progress.corrected.values()) == [{"instruction": words}]
+    assert box_of(reloaded, boxes["instruction"])[1] == words  # type: ignore[index]
+    assert readings.readable[row.assignment_id].texts == (words,)
+
+
+@pytest.mark.parametrize(
+    ("field", "most"),
+    [("course", 200), ("title", 300), ("instruction", 4000), ("footer", 200), ("heading", 200)],
+)
+def test_saved_progress_holds_each_correction_up_to_its_field_s_limit(
+    field: str, most: int
+) -> None:
+    def progress(length: int) -> str:
+        return json.dumps({"v": 3, "corrected": {"k1": {field: "a" * length}}, "selected": []})
+
+    within = screenshot_posts.progress_read(progress(most))
+    assert within is not None
+    assert within.corrected == {"k1": {field: "a" * most}}
+    assert screenshot_posts.progress_read(progress(most + 1)) is None

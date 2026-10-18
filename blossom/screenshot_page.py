@@ -44,6 +44,8 @@ from blossom.screenshot_review import (
 )
 from blossom.screenshot_save import (
     CORRECTABLE,
+    CORRECTION_MOST,
+    MANY_LINES,
     ReviewState,
     confirm_fields,
     confirm_subject,
@@ -98,9 +100,10 @@ CHANGE_SAID: Final = {
     "cards.",
     "asked": "Your screenshots changed. {label} now has cards you hadn't left unsaved, so it asks "
     "again. You can leave it unsaved again.",
+    "name": "Your screenshots changed, so confirm again that these are her homework.",
 }
-"""What the page after a change of screenshots says of the answers it cleared and the rows left
-unsaved it kept or asks about again."""
+"""What the page after a change of screenshots says of the answers it cleared, the rows left
+unsaved it kept or asks about again, and a confirmation of her homework it cleared."""
 
 OPEN_NAMES: Final = {
     "due": "the due date",
@@ -146,8 +149,9 @@ def piece_text(places: Mapping[str, int], piece: Piece) -> str:
 def change_said(told: ChangeTold) -> list[str]:
     """The sentences the page after a change of screenshots opens with: the rows whose answers
     it cleared, by title and, for a piece split by assigned day, that day; that identical cards
-    can't be told apart, when any of those rows is one of them; and each row left unsaved it
-    kept or asks about again."""
+    can't be told apart, when any of those rows is one of them; each row left unsaved it kept
+    or asks about again; and that her homework must be confirmed again, when it cleared that
+    confirmation."""
     out = []
     if told.cleared:
         labels = "; ".join(
@@ -159,6 +163,8 @@ def change_said(told: ChangeTold) -> list[str]:
         out.append(CHANGE_SAID["copies"])
     out += [CHANGE_SAID["carried"].format(label=title) for title in told.carried]
     out += [CHANGE_SAID["asked"].format(label=title) for title in told.asked]
+    if told.name_asked:
+        out.append(CHANGE_SAID["name"])
     return out
 
 
@@ -281,9 +287,10 @@ def confirm_question(
     unsaved: bool,
 ) -> "Question":
     """Confirm as read, and for a field a parent may correct, its box: a date for the due line
-    or the day heading, text otherwise. The due or assigned label is confirmed only. A typed
-    date Blossom can't read is said beneath its box and carried back as typed beside it, never
-    dropped."""
+    or the day heading, several lines for an instruction, one line of text otherwise, each
+    taking as many characters as a reading holds there. The due or assigned label is confirmed
+    only. A typed date Blossom can't read is said beneath its box and carried back as typed
+    beside it, never dropped."""
     subject = confirm_subject(piece.key, field)
     named = FIELD_NAMES[field]
     if date_target(piece.reading, field) == "due":
@@ -295,7 +302,7 @@ def confirm_question(
     value = typed.get(field, "")
     refused = None
     carried = None
-    label, kind = SAID["correction"], "text"
+    label, kind = SAID["correction"], "lines" if field in MANY_LINES else "text"
     if field in DATE_FIELDS:
         kind = "date"
         label = "Due date" if named == "due date" else "Assigned date (day heading)"
@@ -314,6 +321,7 @@ def confirm_question(
         unsaved=unsaved,
         text_label=label,
         text_type=kind,
+        text_most=CORRECTION_MOST[field],
         refused=refused,
         mark=SAID["not_saved_yet"] if unsaved else None,
         carried=carried,
@@ -459,6 +467,9 @@ class Question:
     """Whether the correction in its box is typing this press sent that isn't saved."""
     text_label: str = ""
     text_type: str = "text"
+    """``text`` for one line, ``lines`` for several, ``date`` for a date."""
+    text_most: int = 0
+    """The most characters its box takes."""
     refused: str | None = None
     """A typed date Blossom can't read, said beneath its box rather than dropped."""
     mark: str | None = None

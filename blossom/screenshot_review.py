@@ -22,12 +22,14 @@ from datetime import date, datetime
 from typing import Any, Final, NamedTuple
 
 import blossom.intake as intake
+from blossom.grades.draft import folded
 from blossom.intake import Reading
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen
 from blossom.screenshots import (
     KEY_INSTANT,
     CardPlace,
+    HomeworkReading,
     ScreenshotRow,
     cards_placed,
     homework_assembly,
@@ -1251,6 +1253,9 @@ class Cleared:
     """(row key, ``aside_carried`` or ``asks_again``)."""
     named: frozenset[str] = frozenset()
     """The piece names and row keys gone or touched whose answers it clears."""
+    name_asked: bool = False
+    """Whether it clears the confirmation that the screenshots showing no name are her
+    homework."""
 
 
 def answer_names(kind: str, subject: str) -> list[str]:
@@ -1264,16 +1269,37 @@ def answer_names(kind: str, subject: str) -> list[str]:
     return []
 
 
+def unnamed(readings: Sequence[StoredReading]) -> frozenset[tuple[str, str]]:
+    """Each homework screenshot whose reading shows no student name, as the name question counts
+    it, with that reading: what one confirmation that they are her homework covers."""
+    out: set[tuple[str, str]] = set()
+    for reading in readings:
+        if reading.kind != "homework_list":
+            continue
+        try:
+            name = HomeworkReading.model_validate_json(reading.body).student.name
+        except ValueError:
+            name = None
+        if name is None or not folded(name):
+            out.add((reading.sha256, reading.body))
+    return frozenset(out)
+
+
 def cleared(
     old_rows: Sequence[ScreenshotRow],
     new_rows: Sequence[ScreenshotRow],
     answers: Mapping[tuple[str, str], Any],
     aside: frozenset[str],
+    *,
+    unnamed_added: bool = False,
 ) -> Cleared:
     """A piece's destination is cleared, and the piece marked, when its row is gone or its
     identical-copy group changes; so are the date, kind and instruction answers of any
     destination holding such a piece, and the split answer of such a row. Rows set aside carry
-    to rows made of their cards alone, and rows with new cards ask again."""
+    to rows made of their cards alone, and rows with new cards ask again. The confirmation that
+    the screenshots showing no name are her homework is cleared when the change adds one or
+    reads one with other words, so a screenshot the parent hadn't seen never takes an answer
+    given before it."""
     old_keys = {r.key for r in old_rows}
     gone = old_keys - {r.key for r in new_rows}
 
@@ -1311,6 +1337,8 @@ def cleared(
             or (kind == "kind" and subject.startswith("["))
         ) and any(hit(name) for name in answer_names(kind, subject)):
             delete.add((kind, subject))
+    if unnamed_added and ("name", "missing") in answers:
+        delete.add(("name", "missing"))
     named = {name for kind, subject in delete for name in answer_names(kind, subject) if hit(name)}
     notes: list[tuple[str, str]] = []
     carried: set[str] = set()
@@ -1335,6 +1363,7 @@ def cleared(
         frozenset(asked),
         tuple(notes),
         frozenset(named),
+        ("name", "missing") in delete,
     )
 
 
@@ -1348,7 +1377,8 @@ def carry(
     store's change transaction."""
     old_rows = homework_assembly(list(before), now=KEY_INSTANT).rows
     new_rows = homework_assembly(list(after), now=KEY_INSTANT).rows
-    result = cleared(old_rows, new_rows, answers, aside)
+    added = bool(unnamed(after) - unnamed(before))
+    result = cleared(old_rows, new_rows, answers, aside, unnamed_added=added)
     return Carry(result.delete, result.marks, result.aside_insert, result.aside_delete)
 
 
@@ -1373,6 +1403,9 @@ class ChangeTold:
     asked: tuple[str, ...]
     """The titles of the rows it asks about again, though some of their cards were left
     unsaved."""
+    name_asked: bool = False
+    """Whether it cleared the confirmation that the screenshots showing no name are her
+    homework, so the page asks for it again."""
 
 
 def change_told(
@@ -1383,11 +1416,13 @@ def change_told(
 ) -> ChangeTold:
     """What the next page says of a change of readings, worked out from the tables before it
     as the draft store's change transaction works it out: the rows whose answers it cleared,
-    in the order the rows came before it, and the rows left unsaved that it keeps or asks
-    about again."""
+    in the order the rows came before it, the rows left unsaved that it keeps or asks about
+    again, and whether it cleared the confirmation that the screenshots showing no name are
+    her homework."""
     old_rows = homework_assembly(list(before), now=KEY_INSTANT).rows
     new_rows = homework_assembly(list(after), now=KEY_INSTANT).rows
-    result = cleared(old_rows, new_rows, answers, aside)
+    added = bool(unnamed(after) - unnamed(before))
+    result = cleared(old_rows, new_rows, answers, aside, unnamed_added=added)
     order = {row.key: index for index, row in enumerate(old_rows)}
     old = {row.key: row for row in old_rows}
     new = {row.key: row for row in new_rows}
@@ -1406,4 +1441,4 @@ def change_told(
         found = [new[key].reading.title for key, said in result.notes if said == note]
         return tuple(dict.fromkeys(found))
 
-    return ChangeTold(tuple(rows), titles("aside_carried"), titles("asks_again"))
+    return ChangeTold(tuple(rows), titles("aside_carried"), titles("asks_again"), result.name_asked)

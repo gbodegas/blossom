@@ -67,6 +67,9 @@ from blossom.screenshot_review import (
     written_dates,
 )
 from blossom.screenshots import (
+    INSTRUCTION_MOST,
+    LINE_MOST,
+    TITLE_MOST,
     CardPlace,
     HomeworkReading,
     PlacedCard,
@@ -341,6 +344,29 @@ UNCONFIRMED: Final = ("first_use", "not_confirmed", "confirm_again")
 CORRECTABLE: Final = CONFIRMABLE - {"badge"}
 """The fields a parent may type a correction for: class and title, dates, and an instruction.
 The due or assigned label is confirmed as read, never typed."""
+CORRECTION_MOST: Final = {
+    "course": LINE_MOST,
+    "title": TITLE_MOST,
+    "instruction": INSTRUCTION_MOST,
+    "footer": LINE_MOST,
+    "heading": LINE_MOST,
+}
+"""The most characters of a typed correction, by field: as many as a reading holds there, so
+any reading can be corrected whole. The page's boxes, a posted correction, saved progress and
+a reopened review all hold to it, and a longer one is refused whole, never cut."""
+MANY_LINES: Final = frozenset({"instruction"})
+"""The fields whose correction is typed in a box of several lines."""
+
+
+def correction_text(field: str, value: str) -> str:
+    """A typed correction as it is kept: in a box of several lines, which a browser posts with
+    a carriage return and a line feed, every line ending made one line feed, as a paste's are;
+    otherwise as typed."""
+    if field not in MANY_LINES:
+        return value
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 """The fields whose correction is a date."""
 
 

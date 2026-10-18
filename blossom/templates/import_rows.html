@@ -69,7 +69,12 @@
             {% endfor %}
             {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
             {% if question.text %}
-              <label>{{ question.text_label }} <input type="{{ question.text_type }}" name="{{ question.text[0] }}" value="{{ question.text[1] }}"{% if question.text_type == "text" %} maxlength="200"{% endif %}{% if question.refused %} aria-invalid="true"{% endif %}></label>
+              {% if question.text_type == "lines" %}
+              <label class="lines">{{ question.text_label }} <textarea name="{{ question.text[0] }}" rows="2" maxlength="{{ question.text_most }}"{% if question.refused %} aria-invalid="true"{% endif %}>
+{{ question.text[1] }}</textarea></label>
+              {% else %}
+              <label>{{ question.text_label }} <input type="{{ question.text_type }}" name="{{ question.text[0] }}" value="{{ question.text[1] }}"{% if question.text_type == "text" %} maxlength="{{ question.text_most }}"{% endif %}{% if question.refused %} aria-invalid="true"{% endif %}></label>
+              {% endif %}
               {% if question.carried %}<input type="hidden" name="{{ question.carried[0] }}" value="{{ question.carried[1] }}">{% endif %}
               {% if question.refused %}<p class="note">{{ question.refused }}</p>{% endif %}
               {% if question.mark %}<p class="note">{{ question.mark }}</p>{% endif %}

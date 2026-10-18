@@ -880,3 +880,65 @@ def test_one_routing_decides_which_date_each_correction_sets(shape: str) -> None
     assert not review.settles_due(piece, {piece.key: {"footer": "10/14"}})
     assert field == ("heading" if expected == "assigned" else "footer")
     assert box.text_label == ("Due date" if expected == "due" else "Assigned date (day heading)")
+
+
+# ------------------------------------------------------- her homework confirmed across a change
+
+
+def unnamed_shot(label: str, title: str, name: str | None = None) -> StoredReading:
+    """A screenshot showing one card of this title and this student name, or none."""
+    answer = homework_answer(
+        active_student={"name": name, "uncertain": None}, cards=[homework_card(title=title)]
+    )
+    return stored_homework(label, answer)
+
+
+NAME_CHANGES: dict[str, tuple[list[StoredReading], list[StoredReading], bool]] = {
+    "a screenshot with no name added": (
+        [unnamed_shot("one", "Sentence Composing")],
+        [unnamed_shot("one", "Sentence Composing"), unnamed_shot("two", "Lab Report")],
+        True,
+    ),
+    "a screenshot with no name read again with other words": (
+        [unnamed_shot("one", "Sentence Composing")],
+        [unnamed_shot("one", "Lab Report")],
+        True,
+    ),
+    "a named screenshot read again with no name": (
+        [unnamed_shot("one", "Sentence Composing"), unnamed_shot("two", "Lab Report", "Wren")],
+        [unnamed_shot("one", "Sentence Composing"), unnamed_shot("two", "Lab Report")],
+        True,
+    ),
+    "a named screenshot added": (
+        [unnamed_shot("one", "Sentence Composing")],
+        [unnamed_shot("one", "Sentence Composing"), unnamed_shot("two", "Lab Report", "Wren")],
+        False,
+    ),
+    "a screenshot with no name removed": (
+        [unnamed_shot("one", "Sentence Composing"), unnamed_shot("two", "Lab Report")],
+        [unnamed_shot("one", "Sentence Composing")],
+        False,
+    ),
+    "the same screenshots in another order": (
+        [unnamed_shot("one", "Sentence Composing"), unnamed_shot("two", "Lab Report")],
+        [unnamed_shot("two", "Lab Report"), unnamed_shot("one", "Sentence Composing")],
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize("change", list(NAME_CHANGES))
+def test_a_change_clears_the_missing_name_confirmation_only_for_a_new_screenshot_with_no_name(
+    change: str,
+) -> None:
+    before, after, asks = NAME_CHANGES[change]
+    answers = {("name", "missing"): "confirmed", ("name", "keyed-form-of-wren"): "hers"}
+    result = review.carry(before, after, answers, frozenset())
+    told = review.change_told(before, after, answers, frozenset())
+    unanswered = review.change_told(before, after, {}, frozenset())
+
+    assert (("name", "missing") in result.delete) == asks
+    assert ("name", "keyed-form-of-wren") not in result.delete
+    assert told.name_asked == asks
+    assert (screenshot_page.CHANGE_SAID["name"] in screenshot_page.change_said(told)) == asks
+    assert not unanswered.name_asked
