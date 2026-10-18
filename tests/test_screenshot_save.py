@@ -15,12 +15,14 @@ import pathlib
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from datetime import date
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta
 from typing import Final
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from blossom import intake
+from blossom import intake, screenshot_save
 from blossom.grades.identity import name_form
 from blossom.screenshot_review import carry, piece_names, unit_name, value_json
 from blossom.screenshot_save import (
@@ -218,8 +220,8 @@ def save(
         record or house.record,
         house.drafts,
         press,
-        now=OBSERVED_AT,
-        today=OBSERVED_AT.date(),
+        clock=fixture_clock(),
+        household=fixture_clock(),
         **extra,
     )
 
@@ -1535,3 +1537,72 @@ def test_a_merged_row_of_a_named_and_an_unnamed_screenshot_saves_once_with_both_
         assert world(house) == before
     if case == "the confirmation cleared by another unnamed screenshot":
         assert ("name", "missing") not in kept
+
+
+# ------------------------------------------------------------------ the save's one instant
+
+
+class Moving:
+    """A clock the test moves, that notes whether each reading came inside the writer."""
+
+    def __init__(self, at: datetime, inside: list[bool]) -> None:
+        self.at = at
+        self.inside = inside
+        self.reads: list[bool] = []
+        self._zone = ZoneInfo("America/New_York")
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return self._zone
+
+    def now(self) -> datetime:
+        self.reads.append(bool(self.inside))
+        return self.at
+
+    def today(self) -> date:
+        msg = "the household's date comes from the save's own instant"
+        raise AssertionError(msg)
+
+
+def test_the_save_reads_the_clock_once_inside_the_writer_and_dates_everything_from_it(
+    house: House, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    draft_id = two_row_review(house)
+    press = press_of(house, draft_id, "8" * 32)
+    inside: list[bool] = []
+    clock = Moving(OBSERVED_AT, inside)
+    later = OBSERVED_AT + timedelta(hours=30)
+    real = house.record.comparing_and_writing
+    seen: dict[str, object] = {}
+
+    @contextmanager
+    def waiting() -> Iterator[None]:
+        clock.at = later
+        with real():
+            inside.append(True)
+            try:
+                yield
+            finally:
+                inside.pop()
+
+    original_state = screenshot_save.review_state
+    original_keep = screenshot_save._keep
+
+    def state_seen(*args: object, **kwargs: object) -> object:
+        seen["review_state"] = kwargs["now"]
+        return original_state(*args, **kwargs)  # type: ignore[arg-type]
+
+    def keep_seen(*args: object) -> None:
+        seen["keep"] = args[-2:]
+        original_keep(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(house.record, "comparing_and_writing", waiting)
+    monkeypatch.setattr(screenshot_save, "review_state", state_seen)
+    monkeypatch.setattr(screenshot_save, "_keep", keep_seen)
+    outcome = save_homework(house.record, house.drafts, press, clock=clock, household=clock)
+
+    assert isinstance(outcome, Saved)
+    assert clock.reads == [True]
+    assert seen["review_state"] == later
+    assert seen["keep"] == (later, later.astimezone(clock.zone).date())
+    assert later.astimezone(clock.zone).date() != OBSERVED_AT.astimezone(clock.zone).date()

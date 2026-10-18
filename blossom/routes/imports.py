@@ -1067,8 +1067,8 @@ async def save_press(
             record,
             state.import_drafts,
             press,
-            now=state.real_clock.now(),
-            today=state.clock.today(),
+            clock=state.real_clock,
+            household=state.clock,
         )
     except Exception as error:
         logger.warning("A screenshot save failed: %s", type(error).__name__)

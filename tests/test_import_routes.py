@@ -5540,3 +5540,95 @@ def test_a_date_typed_past_its_limit_is_refused_whole_and_kept_until_a_date_is_c
     assert chosen.status_code == 303
     assert progress is not None
     assert list(progress.corrected.values()) == [{"footer": "2026-10-09"}]
+
+
+# ------------------------------------------------------- the save's clock, read inside its writer
+
+
+def clock_moved_to(monkeypatch: pytest.MonkeyPatch, browser: TestClient, at: datetime) -> None:
+    """The real clock, which the draft store reads too, set to ``at`` from now on."""
+    monkeypatch.setattr(state_of(browser).real_clock, "now", lambda: at)
+
+
+@pytest.mark.parametrize("past", [timedelta(seconds=1), timedelta(0)], ids=["after", "exactly at"])
+def test_a_save_whose_wait_for_the_writer_crosses_expiry_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, past: timedelta
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        first, _ = units_on(kept)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        real = state.project_state.comparing_and_writing
+        entered: list[bool] = []
+
+        def waiting() -> object:
+            if not entered:
+                entered.append(True)
+                clock_moved_to(monkeypatch, browser, expires + past)
+            return real()
+
+        before = assignment_count(browser)
+        monkeypatch.setattr(state.project_state, "comparing_and_writing", waiting)
+        answer = send(browser, draft_id, page_post(kept, "save", tick=[first]))
+        monkeypatch.setattr(state.project_state, "comparing_and_writing", real)
+        after = assignment_count(browser)
+        accepted = acceptances_of(browser, draft_id)
+
+    assert entered == [True]
+    assert says(answer.text, imports.SAID["expired"])
+    assert after == before
+    assert accepted == 0
+
+
+def test_a_save_that_passed_its_checks_before_expiry_completes_after_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        first, _ = units_on(kept)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        moved: list[bool] = []
+
+        def expiring_meanwhile(assignment_id: str) -> None:
+            if not moved:
+                moved.append(True)
+                clock_moved_to(monkeypatch, browser, expires + timedelta(minutes=1))
+
+        before = assignment_count(browser)
+        monkeypatch.setattr(screenshot_save.NO_HOOKS, "after_keep", expiring_meanwhile)
+        saved = followed(browser, send(browser, draft_id, page_post(kept, "save", tick=[first])))
+        after = assignment_count(browser)
+        accepted = acceptances_of(browser, draft_id)
+
+    assert moved == [True]
+    assert says(saved, "1 assignment added.")
+    assert after == before + 1
+    assert accepted == 1
+
+
+def test_a_save_recorded_before_expiry_replays_its_outcome_after_it_and_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        first, _ = units_on(kept)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        posted = page_post(kept, "save", tick=[first])
+        saved = followed(browser, send(browser, draft_id, posted))
+        after_save = assignment_count(browser)
+        clock_moved_to(monkeypatch, browser, expires + timedelta(minutes=1))
+        replayed = followed(browser, send(browser, draft_id, posted))
+        after_replay = assignment_count(browser)
+        accepted = acceptances_of(browser, draft_id)
+
+    assert says(saved, "1 assignment added.")
+    assert says(replayed, "1 assignment added.")
+    assert not says(replayed, imports.SAID["expired"])
+    assert after_replay == after_save
+    assert accepted == 1

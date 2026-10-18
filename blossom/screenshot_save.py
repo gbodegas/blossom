@@ -26,6 +26,7 @@ from typing import Any, Final, cast
 from blossom import intake
 from blossom.candidates import readings_for
 from blossom.captures import candidate_basis
+from blossom.clock import Clock, day_at
 from blossom.intake import (
     KNOWN,
     UPDATE,
@@ -585,15 +586,20 @@ def save_homework(
     drafts: ImportDraftsStore,
     press: SavePress,
     *,
-    now: datetime,
-    today: date,
+    clock: Clock,
+    household: Clock,
     hooks: SaveHooks = NO_HOOKS,
 ) -> SaveOutcome:
-    """The homework transaction, then closing the review when the save finished it. A failure
-    after the commit is reported in ``incomplete`` and never undoes or hides the save."""
+    """The homework transaction, then closing the review when the save finished it. The real
+    clock is read once, after the store's lock and the file's writer are held, and that one
+    instant, with the household's date at it, serves every check and write of the
+    transaction: a save that waited past the review's expiry is refused, and one whose checks
+    passed completes even if the review expires before it commits. A failure after the commit
+    is reported in ``incomplete`` and never undoes or hides the save."""
     try:
         with record.comparing_and_writing():
-            outcome = _homework_transaction(record, press, now, today, hooks)
+            now = clock.now()
+            outcome = _homework_transaction(record, press, now, day_at(household, now), hooks)
     except (_Changed, AnswerNotAsked):
         return NotSaved("changed")
     except (NameFormNotSaved, GradeTransactionLost):
