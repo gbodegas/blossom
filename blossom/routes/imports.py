@@ -816,6 +816,10 @@ PRESS_SAID: Final = {
         "kept. Answer them again."
     ),
     "keep_failed": "Your answers couldn't be kept. Try again.",
+    "too_long": (
+        "A correction is longer than its field takes, so nothing was kept or saved. Shorten it "
+        "and press again."
+    ),
     "save_stale": "Your answers on that page weren't kept, and nothing was saved.",
     "save_invalid": (
         "Some of these questions changed before you answered, so nothing was kept or saved. "
@@ -914,7 +918,9 @@ async def review_post(
 @router.post("/{draft_id}/review")
 async def review_press(request: Request, draft_id: str, state: State) -> Response:
     """The review form's three presses, and an offer or a found row posted whole: Keep these
-    answers, Save selected homework and Save review for later."""
+    answers, Save selected homework and Save review for later. A press with a correction
+    longer than its field takes keeps and saves nothing, and answers 422 with the review and
+    its typing, that correction whole in its box."""
     found = await snapshot_or_page(request, state, draft_id)
     if isinstance(found, Response):
         return await replayed(request, state, draft_id) or found
@@ -922,6 +928,8 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     if post is None:
         refused = {"save": "save_invalid", "later": "later_invalid"}.get(named, "keep_invalid")
         return to_review(state, draft_id, [PRESS_SAID[refused]])
+    if post.too_long:
+        return await with_typing(request, state, draft_id, post, [PRESS_SAID["too_long"]], 422)
     if post.press == "later":
         return await later_press(request, state, found, post)
     if post.press == "save":

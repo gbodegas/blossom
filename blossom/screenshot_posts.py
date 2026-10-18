@@ -14,10 +14,16 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from blossom.screenshot_page import page_check, same_signature
-from blossom.screenshot_review import DATE_FIELDS, answer_names, dest_kind, value_json, value_of
+from blossom.screenshot_review import (
+    CORRECTION_MOST,
+    DATE_FIELDS,
+    answer_names,
+    dest_kind,
+    value_json,
+    value_of,
+)
 from blossom.screenshot_save import (
     CORRECTABLE,
-    CORRECTION_MOST,
     ReviewState,
     correction_digest,
     correction_text,
@@ -68,6 +74,9 @@ class ReviewPost:
     held."""
     ticked: bool = True
     """Whether the press posted the page's ticks; an offer or a found row posts none."""
+    too_long: tuple[tuple[str, str], ...] = ()
+    """Each correction, by row key and field, longer than its field takes: the press is refused
+    whole, and the correction goes back in its box as typed."""
 
 
 WITHDRAWABLE: Final = ("answer:confirm:", "answer:instructions:", "answer:name:missing")
@@ -177,7 +186,9 @@ def read_review(
     value it offered, each correction one for a field it asked to confirm, each ticked group
     one it showed. A confirmation or instruction question the page asked and the press left
     blank is withdrawn. A date Blossom couldn't read, carried back beside its empty date box,
-    stays the box's correction until a date is chosen there."""
+    stays the box's correction until a date is chosen there. A correction longer than its
+    field takes is named in ``too_long`` and kept as typed, never cut, for the page to give
+    back."""
     signed = [(n, v) for n, v in items if n in SIGNED or n.startswith("digest:") or n == "check"]
     hidden = _single(signed)
     check = hidden.pop("check", "")
@@ -204,6 +215,8 @@ def read_review(
         raise PostRefused
     corrections: dict[str, dict[str, str]] = {}
     carried: dict[tuple[str, str], str] = {}
+    carried_long: dict[tuple[str, str], str] = {}
+    too_long: set[tuple[str, str]] = set()
     chosen: dict[str, list[str]] = {}
     for name, value in rest:
         if name in ("press", "unit"):
@@ -216,10 +229,11 @@ def read_review(
                 key, field = (str(part) for part in json.loads(subject))
             except (ValueError, TypeError) as error:
                 raise PostRefused from error
-            if field not in DATE_FIELDS or (key, field) in carried:
+            if field not in DATE_FIELDS or (key, field) in carried | carried_long:
                 raise PostRefused
             if len(value) > CORRECTION_MOST[field]:
-                raise PostRefused
+                carried_long[(key, field)] = value
+                continue
             carried[(key, field)] = value.strip()
             continue
         if name.startswith("correct:"):
@@ -234,7 +248,9 @@ def read_review(
                 raise PostRefused
             text = correction_text(field, value)
             if len(text) > CORRECTION_MOST[field]:
-                raise PostRefused
+                too_long.add((key, field))
+                corrections.setdefault(key, {})[field] = text
+                continue
             if text.strip():
                 corrections.setdefault(key, {})[field] = text.strip()
             continue
@@ -246,6 +262,10 @@ def read_review(
         chosen.setdefault(name, []).append(value)
     for (key, field), text in carried.items():
         if text and not corrections.get(key, {}).get(field):
+            corrections.setdefault(key, {})[field] = text
+    for (key, field), text in carried_long.items():
+        if not corrections.get(key, {}).get(field):
+            too_long.add((key, field))
             corrections.setdefault(key, {})[field] = text
     answers = []
     for name, values in chosen.items():
@@ -278,6 +298,7 @@ def read_review(
         digests,
         defaults,
         withdrawn,
+        too_long=tuple(sorted(too_long)),
     )
 
 

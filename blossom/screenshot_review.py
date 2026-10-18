@@ -27,7 +27,10 @@ from blossom.intake import Reading
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen
 from blossom.screenshots import (
+    INSTRUCTION_MOST,
     KEY_INSTANT,
+    LINE_MOST,
+    TITLE_MOST,
     CardPlace,
     HomeworkReading,
     ScreenshotRow,
@@ -1038,10 +1041,24 @@ DATE_FIELDS: Final = frozenset({"footer", "heading"})
 """The fields a parent corrects with a date: the due line, and the day heading."""
 
 
+CORRECTION_MOST: Final = {
+    "course": LINE_MOST,
+    "title": TITLE_MOST,
+    "instruction": INSTRUCTION_MOST,
+    "footer": LINE_MOST,
+    "heading": LINE_MOST,
+}
+"""The most characters of a typed correction, by field, counted in code points: as many as a
+reading holds there, so any reading can be corrected whole. A posted correction, saved progress
+and a reopened review hold to it; the page's boxes name no length, so a paste reaches Blossom
+whole, and a longer correction is refused whole, never cut."""
+
+
 def usable_correction(field: str, value: str | None) -> bool:
-    """Whether a typed correction is one Blossom can use: text that isn't blank, and for the
-    due line or the day heading, a date it can read. One it can't use answers nothing."""
-    if value is None or not value.strip():
+    """Whether a typed correction is one Blossom can use: text that isn't blank and fits
+    within its field's limit, and for the due line or the day heading, a date it can read. One
+    it can't use answers nothing."""
+    if value is None or not value.strip() or len(value) > CORRECTION_MOST.get(field, 0):
         return False
     return field not in DATE_FIELDS or typed_day(value) is not None
 

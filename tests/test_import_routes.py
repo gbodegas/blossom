@@ -5056,21 +5056,25 @@ def progress_on(browser: TestClient, draft_id: str) -> screenshot_posts.SavedPro
     )
 
 
-def test_each_correction_box_takes_as_many_characters_as_a_reading_holds(
+def test_no_correction_box_cuts_what_is_typed_or_pasted(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A browser counts a box's length in UTF-16 units and cuts a paste to it before the post;
+    no correction box names one, so the whole text reaches the server, which counts code
+    points."""
     with here(open_settings(tmp_path)) as browser:
         _, page, boxes = unsure_review(browser, monkeypatch, "course", "title", "instruction")
+        _, dated, date_boxes = unsure_review(browser, monkeypatch, "footer")
 
     form = review_form(page)
     tags = {field: str((box_of(form, name) or ("", ""))[0]) for field, name in boxes.items()}
     assert set(tags) == {"course", "title", "instruction"}
     assert tags["course"].startswith('<input type="text"')
-    assert 'maxlength="200"' in tags["course"]
     assert tags["title"].startswith('<input type="text"')
-    assert 'maxlength="300"' in tags["title"]
     assert tags["instruction"].startswith("<textarea ")
-    assert 'maxlength="4000"' in tags["instruction"]
+    assert "maxlength" not in form
+    assert "maxlength" not in review_form(dated)
+    assert set(date_boxes) == {"footer"}
 
 
 def test_a_long_title_and_instruction_are_corrected_and_kept_whole_through_every_press(
@@ -5133,9 +5137,9 @@ def test_an_instruction_correction_of_4000_characters_is_kept_and_one_longer_is_
         [corrected] = progress.corrected.values()
         assert corrected == {"instruction": words}
     else:
-        assert says(later, imports.PRESS_SAID["later_invalid"])
+        assert says(later, imports.PRESS_SAID["too_long"])
         assert progress is None
-        assert box_of(later, boxes["instruction"]) == (box_of(page, boxes["instruction"]))
+        assert box_of(later, boxes["instruction"])[1] == words  # type: ignore[index]
 
 
 def test_a_multiline_instruction_correction_keeps_its_line_breaks_through_a_browser_s_post(
@@ -5438,3 +5442,101 @@ def test_a_merged_row_saves_with_both_confirmations_before_and_after_another_gro
     expected = [("missing", "confirmed")] * len(unnamed_cards) + [("first_use", "hers")]
     expected += [("matches", "shown")] * len(named_cards)
     assert identities == expected
+
+
+# ------------------------------------------------------- corrections past their field's limit
+
+FIELD_LIMITS: Final = {"course": 200, "title": 300, "instruction": 4000}
+"""Each one-line or multi-line correction's most characters, counted in code points."""
+FIELD_SAID: Final = {"course": "class", "title": "title", "instruction": "instructions"}
+
+
+def at_most(field: str, extra: str = "") -> str:
+    """A correction of exactly its field's most code points, one of them outside the Basic
+    Multilingual Plane, then ``extra``; an instruction's has line breaks."""
+    most = FIELD_LIMITS[field]
+    if field == "instruction":
+        head = "Complete pages 12 to 14.\nAnswer both questions.\n"
+    else:
+        head = {"course": "English 8 ", "title": "Sentence Composing "}[field]
+    return head + "b" * (most - len(head) - 2) + "\N{GRINNING FACE}z" + extra
+
+
+@pytest.mark.parametrize("field", list(FIELD_LIMITS))
+def test_a_correction_of_its_field_s_most_code_points_is_kept_whole(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    words = at_most(field)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, field)
+        later = followed(
+            browser, send(browser, draft_id, page_post(page, "later", typed={boxes[field]: words}))
+        )
+        progress = progress_on(browser, draft_id)
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert len(words) == FIELD_LIMITS[field]
+    assert len(words.encode("utf-16-le")) // 2 == FIELD_LIMITS[field] + 1
+    assert says(later, imports.PRESS_SAID["later"])
+    assert progress is not None
+    assert list(progress.corrected.values()) == [{field: words}]
+    assert box_of(reloaded, boxes[field])[1] == words  # type: ignore[index]
+
+
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+@pytest.mark.parametrize("field", list(FIELD_LIMITS))
+def test_a_correction_past_its_field_s_limit_is_refused_whole_and_returned_as_typed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, field: str, press: str
+) -> None:
+    words = at_most(field, "y")
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, field)
+        held = stored_answers(browser, draft_id)
+        before = assignment_count(browser)
+        posted = page_post(page, press, typed={boxes[field]: words}, tick=units_on(page))
+        answer = send(browser, draft_id, posted)
+        assert answer.status_code == 422
+        progress = progress_on(browser, draft_id)
+        after = assignment_count(browser)
+        answers = stored_answers(browser, draft_id)
+        again = send(browser, draft_id, page_post(answer.text, press))
+        still = progress_on(browser, draft_id)
+
+    named = FIELD_SAID[field]
+    assert answer.status_code == 422
+    assert says(answer.text, imports.PRESS_SAID["too_long"])
+    assert says(answer.text, f"Keep the {named} to {FIELD_LIMITS[field]:,} characters or fewer.")
+    assert box_of(answer.text, boxes[field])[1] == words  # type: ignore[index]
+    assert says(answer.text, "Still to answer: a field the reader wasn't sure of")
+    assert progress is None
+    assert after == before
+    assert answers == held
+    assert again.status_code == 422
+    assert box_of(again.text, boxes[field])[1] == words  # type: ignore[index]
+    assert still is None
+
+
+def test_a_date_typed_past_its_limit_is_refused_whole_and_kept_until_a_date_is_chosen(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    typed = "the Thursday after next, " + "e" * 180
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, "footer")
+        box = boxes["footer"]
+        refused = send(browser, draft_id, page_post(page, "later", typed={box: typed}))
+        assert refused.status_code == 422
+        again = send(browser, draft_id, page_post(refused.text, "later"))
+        chosen = send(browser, draft_id, page_post(again.text, "later", typed={box: "2026-10-09"}))
+        progress = progress_on(browser, draft_id)
+
+    carry = re.search(r'name="refused:[^"]*" value="([^"]*)"', refused.text)
+    assert len(typed) == 205
+    assert refused.status_code == 422
+    assert says(refused.text, "Keep the due date to 200 characters or fewer.")
+    assert carry is not None
+    assert html.unescape(carry.group(1)) == typed
+    assert again.status_code == 422
+    assert says(again.text, "Keep the due date to 200 characters or fewer.")
+    assert chosen.status_code == 303
+    assert progress is not None
+    assert list(progress.corrected.values()) == [{"footer": "2026-10-09"}]

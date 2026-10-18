@@ -18,6 +18,7 @@ from typing import Final
 
 from blossom.school_instructions import to_wire
 from blossom.screenshot_review import (
+    CORRECTION_MOST,
     DATE_FIELDS,
     ChangeTold,
     DateQuestion,
@@ -44,7 +45,6 @@ from blossom.screenshot_review import (
 )
 from blossom.screenshot_save import (
     CORRECTABLE,
-    CORRECTION_MOST,
     MANY_LINES,
     ReviewState,
     confirm_fields,
@@ -85,6 +85,7 @@ SAID: Final = {
     "due_differs": "Its due line and its day heading name different dates. Which due date does "
     "Blossom use?",
     "correction": "Correction",
+    "too_long": "Keep the {named} to {most:,} characters or fewer.",
     "nothing": "none",
     "lost_correction": "This row's answer depended on a correction that wasn't kept, so it asks "
     "again.",
@@ -287,10 +288,11 @@ def confirm_question(
     unsaved: bool,
 ) -> "Question":
     """Confirm as read, and for a field a parent may correct, its box: a date for the due line
-    or the day heading, several lines for an instruction, one line of text otherwise, each
-    taking as many characters as a reading holds there. The due or assigned label is confirmed
-    only. A typed date Blossom can't read is said beneath its box and carried back as typed
-    beside it, never dropped."""
+    or the day heading, several lines for an instruction, one line of text otherwise. No box
+    limits its length, so a paste reaches Blossom whole; a correction longer than its field
+    takes comes back in its box as typed, with a sentence beneath it saying how long the field
+    can be. The due or assigned label is confirmed only. A typed date Blossom can't read is
+    said beneath its box and carried back as typed beside it, never dropped."""
     subject = confirm_subject(piece.key, field)
     named = FIELD_NAMES[field]
     if date_target(piece.reading, field) == "due":
@@ -302,13 +304,16 @@ def confirm_question(
     value = typed.get(field, "")
     refused = None
     carried = None
+    most = CORRECTION_MOST[field]
+    if len(value) > most:
+        refused = SAID["too_long"].format(named=named, most=most)
     label, kind = SAID["correction"], "lines" if field in MANY_LINES else "text"
     if field in DATE_FIELDS:
         kind = "date"
         label = "Due date" if named == "due date" else "Assigned date (day heading)"
         day = typed_day(value) if value else None
         if value and day is None:
-            refused = (
+            refused = refused or (
                 f"The date given was \u201c{value}\u201d, which is not a date Blossom can read."
             )
             carried = (f"refused:{subject}", value)
@@ -321,7 +326,6 @@ def confirm_question(
         unsaved=unsaved,
         text_label=label,
         text_type=kind,
-        text_most=CORRECTION_MOST[field],
         refused=refused,
         mark=SAID["not_saved_yet"] if unsaved else None,
         carried=carried,
@@ -468,10 +472,9 @@ class Question:
     text_label: str = ""
     text_type: str = "text"
     """``text`` for one line, ``lines`` for several, ``date`` for a date."""
-    text_most: int = 0
-    """The most characters its box takes."""
     refused: str | None = None
-    """A typed date Blossom can't read, said beneath its box rather than dropped."""
+    """A typed date Blossom can't read, or a correction longer than its field takes, said
+    beneath its box rather than dropped."""
     mark: str | None = None
     leave: str | None = None
     """The "Leave this group unsaved" form a split question's row may be set aside with."""
