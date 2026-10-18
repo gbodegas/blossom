@@ -9,12 +9,11 @@ A post that doesn't match what its page signed is refused whole, so nothing of i
 """
 
 import dataclasses
-import hmac
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
-from blossom.screenshot_page import page_check
+from blossom.screenshot_page import page_check, same_signature
 from blossom.screenshot_review import DATE_FIELDS, answer_names, dest_kind, value_json, value_of
 from blossom.screenshot_save import CORRECTABLE, ReviewState, correction_digest
 from blossom.stores.import_drafts import AnswerToKeep
@@ -137,7 +136,7 @@ def read_change(
     as a press of Keep these answers, with the corrections they were given with."""
     fields = _single(items)
     signature = fields.pop("offer", "")
-    if not hmac.compare_digest(signature, page_check(page_key, sorted(fields.items()))):
+    if not same_signature(signature, page_check(page_key, sorted(fields.items()))):
         raise PostRefused
     if fields.pop("press", "") != "keep":
         raise PostRefused
@@ -178,7 +177,7 @@ def read_review(
     signed = [(n, v) for n, v in items if n in SIGNED or n.startswith("digest:") or n == "check"]
     hidden = _single(signed)
     check = hidden.pop("check", "")
-    if not hmac.compare_digest(check, page_check(page_key, list(hidden.items()))):
+    if not same_signature(check, page_check(page_key, list(hidden.items()))):
         raise PostRefused
     if any(n not in hidden for n in SIGNED):
         raise PostRefused
@@ -243,7 +242,9 @@ def read_review(
     for name, values in chosen.items():
         kind, subject = _field(name)
         if kind == "instructions":
-            texts = sorted({v for v in values if v})
+            # Every value here matched an option the page signed, so each one but "none
+            # apply" is an instruction's words as the page wrote them.
+            texts = sorted({str(json.loads(v)) for v in values if v})
             if texts and "" in values:
                 raise PostRefused
             value = json.dumps(texts)

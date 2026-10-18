@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from typing import Final
 
+from blossom.school_instructions import to_wire
 from blossom.screenshot_review import (
     DATE_FIELDS,
     ChangeTold,
@@ -587,6 +588,12 @@ def page_check(page_key: bytes, fields: Sequence[tuple[str, str]]) -> str:
     return hmac.new(page_key, body.encode(), hashlib.sha256).hexdigest()
 
 
+def same_signature(given: str, expected: str) -> bool:
+    """Whether a signature a form or a cookie sent is the one expected, compared as UTF-8 bytes
+    in constant time, so a value with characters beyond ASCII is a mismatch, never an error."""
+    return hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))
+
+
 def answer_field(kind: str, subject: str) -> str:
     """The form field an answer is posted in."""
     return f"answer:{kind}:{subject}"
@@ -1015,8 +1022,10 @@ def rows_shown(
                 )
                 got = values.get(("instructions", subject))
                 chosen = set(json.loads(got)) if got else set()
+                # Each instruction travels as one JSON string in ASCII, so a browser posts it
+                # back exactly, line endings included; "none apply" is the empty value.
                 options = tuple(
-                    (s.text, f"\u201c{s.text}\u201d", s.text in chosen)
+                    (to_wire(s.text), f"\u201c{s.text}\u201d", s.text in chosen)
                     for s in change.instructions_shown
                 )
                 questions.append(

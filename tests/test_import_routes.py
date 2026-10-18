@@ -1013,7 +1013,8 @@ def page_post(
     typed: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """The review form's fields as a browser sends them with scripts off: the hidden fields, the
-    checked controls (or those chosen here), the text typed, the groups ticked, the button."""
+    checked controls (or those chosen here), the text typed, the groups ticked, the button.
+    `send` serializes them as a browser does, line breaks as CRLF."""
     choose, typed = dict(choose or {}), dict(typed or {})
     fields: list[tuple[str, str]] = []
     for tag in re.findall(r"<input [^>]*>", review_form(page)):
@@ -1031,10 +1032,20 @@ def page_post(
     return fields
 
 
+def as_a_browser_sends(fields: Sequence[tuple[str, str]]) -> bytes:
+    """A form's fields serialized as a browser submits them: every line break in a name or a
+    value, CR, LF or CRLF, becomes CRLF, then the form is URL-encoded."""
+
+    def lines(text: str) -> str:
+        return re.sub(r"\r\n|\r|\n", "\r\n", text)
+
+    return urlencode([(lines(name), lines(value)) for name, value in fields]).encode()
+
+
 def send(browser: TestClient, draft_id: str, fields: Sequence[tuple[str, str]]) -> Answer:
     return browser.post(
         f"/parent/imports/{draft_id}/review",
-        content=urlencode(list(fields)).encode(),
+        content=as_a_browser_sends(fields),
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
 
@@ -1658,7 +1669,7 @@ def press_outside(browser: TestClient, page: str, form_id: str) -> Answer:
     action, fields = outside(page, form_id)
     return browser.post(
         action,
-        content=urlencode(fields).encode(),
+        content=as_a_browser_sends(fields),
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
 
@@ -2379,7 +2390,11 @@ def test_clearing_every_instruction_box_withdraws_the_instructions_chosen(
         field = f"answer:instructions:{subject}"
         chosen = followed(
             browser,
-            send(browser, draft_id, [*page_post(asked, "keep"), (field, "Study list one.")]),
+            send(
+                browser,
+                draft_id,
+                [*page_post(asked, "keep"), (field, option_for(asked, subject, "Study list one."))],
+            ),
         )
         held = stored_answers(browser, draft_id)
         cleared = followed(
@@ -2534,7 +2549,12 @@ def test_two_cards_of_other_names_found_onto_one_row_count_once_and_each_name_is
         name = f"answer:instructions:{field}"
         texts = ["Study list one.", "Study list two."]
         page = followed(
-            browser, send(browser, draft_id, page_post(page, "keep") + [(name, t) for t in texts])
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(page, "keep") + [(name, option_for(page, field, t)) for t in texts],
+            ),
         )
         saved = followed(
             browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
@@ -2626,7 +2646,7 @@ def test_the_instruction_question_of_one_destination_is_asked_once_and_saves_aft
         saved = followed(browser, send(browser, draft_id, posted))
 
     assert legends_starting(page, "Which instructions apply to") == 1
-    assert offered == ["Study list one.", "Study list two."]
+    assert [json.loads(v) for v in offered] == ["Study list one.", "Study list two."]
     assert [v for n, v in posted if n.startswith("answer:instructions:")] == offered
     assert says(saved, "0 assignments added. 1 updated.")
 
@@ -4470,3 +4490,311 @@ def test_every_school_text_on_the_review_and_find_pages_wraps(
         for view in views
         if wrapping(rules, e, view) == "anywhere"
     ] == []
+
+
+# ------------------------------------------------------------ signed fields, whatever they hold
+
+
+def said_lines(page: str) -> list[str]:
+    """What a page says first: the review's note, or a said page's lines."""
+    found = re.search(r'<div class="problem" role="status" id="said">(.*?)</div>', page, re.S)
+    if found is None:
+        found = re.search(
+            r'<section class="panel">\s*(<p class="problem".*?)</section>', page, re.S
+        )
+    if found is None:
+        return []
+    return [html.unescape(line) for line in re.findall(r"<p[^>]*>([^<]*)</p>", found.group(1))]
+
+
+def draft_state(browser: TestClient, draft_id: str) -> tuple[object, ...]:
+    student = state_of(browser).project_state.student_id()
+    snapshot = state_of(browser).import_drafts.snapshot(student, draft_id)
+    return (
+        snapshot.version,
+        snapshot.closed_at,
+        len(snapshot.images),
+        snapshot.discarded,
+        snapshot.progress_revision,
+        snapshot.progress,
+        tuple(sorted(stored_answers(browser, draft_id).items())),
+    )
+
+
+SIGNED_SITES: Final = (
+    "the review form",
+    "an offer",
+    "Read",
+    "the upload note",
+    "Leave this group unsaved",
+    "Finish without the rest",
+    "Discard the review",
+    "Not hers",
+)
+"""Each signed value an import route compares: the review form's `check`, an offer's or found
+row's `offer`, Read's `check`, the upload note cookie, and each small form's `check`."""
+SMALL_FORMS: Final = {
+    "Leave this group unsaved": "leave-1",
+    "Finish without the rest": "finish",
+    "Discard the review": "discard",
+    "Not hers": "not-hers",
+}
+
+
+def signed_answer(
+    browser: TestClient, draft_id: str, page: str, site: str, signature: str
+) -> tuple[int, list[str]]:
+    """The route's answer to a press whose signed value is ``signature``: its status, and what
+    the page it answers with, or leads to, says first."""
+    form = {"content-type": "application/x-www-form-urlencoded"}
+    if site == "the upload note":
+        cookie = f"{imports.NOTE_COOKIE}=abc.{signature}".encode()
+        answer = browser.get(f"/parent/imports/{draft_id}", headers={b"Cookie": cookie})
+        return answer.status_code, said_lines(answer.text)
+    if site == "the review form":
+        fields = [(n, signature if n == "check" else v) for n, v in page_post(page, "keep")]
+        path = f"/parent/imports/{draft_id}/review"
+    elif site == "an offer":
+        [piece] = fields_named(review_form(page), "answer:destination:")[:1]
+        version = re.search(r'name="version" value="(\d+)"', page)
+        assert version is not None
+        fields = [
+            ("version", version.group(1)),
+            ("press", "keep"),
+            (f"answer:destination:{piece}", '{"new":1}'),
+            ("offer", signature),
+        ]
+        path = f"/parent/imports/{draft_id}/review"
+    elif site == "Read":
+        [image_id] = images_of(browser, draft_id)[:1]
+        fields = [("images", image_id), ("check", signature)]
+        path = f"/parent/imports/{draft_id}/read"
+    else:
+        path, found = outside(page, SMALL_FORMS[site])
+        fields = [(n, signature if n == "check" else v) for n, v in found]
+    answer = browser.post(path, content=as_a_browser_sends(fields), headers=form)
+    shown = followed(browser, answer)
+    return answer.status_code, said_lines(shown)
+
+
+@pytest.mark.parametrize("value", ["é", "€", "é€" * 32], ids=["e-acute", "euro", "sixty-four"])
+@pytest.mark.parametrize("site", SIGNED_SITES)
+def test_a_signed_field_that_isn_t_ascii_is_refused_like_any_bad_signature(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, site: str, value: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        before = draft_state(browser, draft_id)
+        wrong = signed_answer(browser, draft_id, page, site, "0" * 64)
+        between = draft_state(browser, draft_id)
+        odd = signed_answer(browser, draft_id, page, site, value)
+        after = draft_state(browser, draft_id)
+
+    assert odd == wrong
+    assert before == between == after
+
+
+MALFORMED: Final = {
+    "invalid UTF-8": b"version=1&words=%FF",
+    "an encoded surrogate": b"version=1&words=%ED%A0%80",
+}
+"""Bodies a browser never sends, the bad bytes in an unsigned field; a signed field holding
+what they decode to is the signature test's case."""
+BODY_ROUTES: Final = {
+    "read": ("read", {"invalid UTF-8": 400, "an encoded surrogate": 400, "a file part": 400}),
+    "review": ("review", {"invalid UTF-8": 303, "an encoded surrogate": 303, "a file part": 400}),
+    "find": ("find", {"invalid UTF-8": 400, "an encoded surrogate": 400, "a file part": 400}),
+    "set aside": (
+        "set-aside",
+        {"invalid UTF-8": 303, "an encoded surrogate": 303, "a file part": 400},
+    ),
+    "finish": ("finish", {"invalid UTF-8": 303, "an encoded surrogate": 303, "a file part": 400}),
+    "discard": ("discard", {"invalid UTF-8": 303, "an encoded surrogate": 303, "a file part": 400}),
+    "not hers": (
+        "not-hers",
+        {"invalid UTF-8": 303, "an encoded surrogate": 303, "a file part": 400},
+    ),
+}
+"""Each import route that reads a form body, by its address under the review, and its own
+answer to each malformed body: 400 when the form can't be read, or the route's refusal of a
+form that isn't whole or isn't signed."""
+
+
+@pytest.mark.parametrize("body", [*MALFORMED, "a file part"])
+@pytest.mark.parametrize("route", list(BODY_ROUTES))
+def test_every_body_reading_import_route_refuses_a_malformed_body_and_changes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str, body: str
+) -> None:
+    action, expected = BODY_ROUTES[route]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(browser, monkeypatch, (RED, homework_answer()))
+        before = draft_state(browser, draft_id)
+        path = f"/parent/imports/{draft_id}/{action}"
+        if body == "a file part":
+            answer = browser.post(path, files={"check": ("check.txt", b"0" * 8, "text/plain")})
+        else:
+            answer = browser.post(
+                path,
+                content=MALFORMED[body],
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            )
+        after = draft_state(browser, draft_id)
+
+    assert answer.status_code == expected[body]
+    assert before == after
+
+
+# ---------------------------------------------------------- instructions as a browser posts them
+
+MULTILINE = "Read pages 1-3.\nAnswer question 2."
+
+
+def two_names_with_instructions(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, first: str, second: str
+) -> tuple[str, str, str]:
+    """A review whose two cards of two names, with these instructions, are both found onto one
+    "Grammar Practice": its id, the page after, and the instruction question's subject."""
+    target = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    cards = [
+        homework_card(title="Vocab Test", instruction=first),
+        homework_card(title="Spelling List", instruction=second, y_top=360, y_bottom=450),
+    ]
+    state_of(browser).project_state.upsert_assignments([target])
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=cards)))
+    page = her_name_answered(browser, draft_id, page)
+    for piece in fields_named(review_form(page), "answer:destination:"):
+        _, fields = outside(page, find_button(page, piece))
+        finding = browser.post(
+            f"/parent/imports/{draft_id}/find", data={**dict(fields), "words": "grammar"}
+        ).text
+        choice = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
+        )
+        assert choice is not None
+        chosen = [
+            (html.unescape(n), html.unescape(v))
+            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
+        ]
+        page = followed(browser, send(browser, draft_id, chosen))
+    [subject] = fields_named(review_form(page), "answer:instructions:")
+    return draft_id, page, subject
+
+
+def option_for(page: str, subject: str, words: str) -> str:
+    """The value of the instruction option the page shows with these words."""
+    shown = f"“{words}”"
+    for value, label in re.findall(
+        rf'name="{re.escape(str(escape(f"answer:instructions:{subject}")))}" value="([^"]*)"'
+        r"(?: checked)?> <span>(.*?)</span>",
+        review_form(page),
+        re.S,
+    ):
+        if html.unescape(str(label)) == shown:
+            return html.unescape(str(value))
+    raise AssertionError(words)
+
+
+def test_a_multiline_instruction_kept_and_saved_as_a_browser_posts_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, subject = two_names_with_instructions(
+            browser, monkeypatch, MULTILINE, "Study list two."
+        )
+        field = f"answer:instructions:{subject}"
+        kept = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                [*page_post(page, "keep"), (field, option_for(page, subject, MULTILINE))],
+            ),
+        )
+        held = stored_answers(browser, draft_id)
+        followed(browser, send(browser, draft_id, page_post(kept, "save", tick=units_on(kept))))
+        record = state_of(browser).project_state
+        readings = record.school_instruction_readings(["assignment-grammar-practice-eeee4444"])
+
+    assert f'name="{escape(field)}" value=""' in review_form(page)
+    assert json.loads(held[("instructions", subject)]) == [MULTILINE]
+    assert readings.readable["assignment-grammar-practice-eeee4444"].texts == (MULTILINE,)
+
+
+def test_two_instructions_differing_only_in_line_endings_are_told_apart(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    crlf = MULTILINE.replace("\n", "\r\n")
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, subject = two_names_with_instructions(browser, monkeypatch, MULTILINE, crlf)
+        field = f"answer:instructions:{subject}"
+        lf_value = option_for(page, subject, MULTILINE)
+        crlf_value = option_for(page, subject, crlf)
+        followed(browser, send(browser, draft_id, [*page_post(page, "keep"), (field, lf_value)]))
+        held = stored_answers(browser, draft_id)
+
+    assert lf_value != crlf_value
+    assert json.loads(held[("instructions", subject)]) == [MULTILINE]
+
+
+def test_an_instruction_longer_than_a_paste_is_offered_and_kept_whole(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blossom.reconciliation import SourceChannel
+    from blossom.school_instructions import INSTRUCTION_MAX_LENGTH
+
+    longest = "Read every page. " + "z" * (INSTRUCTION_MAX_LENGTH + 1 - len("Read every page. "))
+    with here(open_settings(tmp_path)) as browser:
+        record = state_of(browser).project_state
+        saved = Assignment(
+            assignment_id="assignment-sentence-composing-llll0000",
+            course="English 8",
+            title="Sentence Composing",
+            due_date=date(2026, 10, 8),
+            dependencies=[],
+            reported_submission_status="not_reported",
+            assigned_on=None,
+            kind=AssignmentKind.HOMEWORK,
+        )
+        record.upsert_assignments([saved])
+        record.put_on_record(
+            [saved.model_copy(update={"note": longest, "origins": {"note": SourceChannel.LMS}})],
+            {},
+        )
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        page = her_name_answered(browser, draft_id, page)
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        onto = json.dumps({"existing": saved.assignment_id}, separators=(",", ":"))
+        asked = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(page, "keep", choose={f"answer:destination:{piece}": onto}),
+            ),
+        )
+        [subject] = fields_named(review_form(asked), "answer:instructions:")
+        field = f"answer:instructions:{subject}"
+        followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                [*page_post(asked, "keep"), (field, option_for(asked, subject, longest))],
+            ),
+        )
+        held = stored_answers(browser, draft_id)
+
+    assert len(longest) == INSTRUCTION_MAX_LENGTH + 1
+    assert json.loads(held[("instructions", subject)]) == [longest]

@@ -43,6 +43,7 @@ from blossom.screenshot_page import (
     page_check,
     piece_text,
     rows_shown,
+    same_signature,
     signed_action,
 )
 from blossom.screenshot_posts import (
@@ -309,7 +310,7 @@ def note_read(key: bytes, draft_id: str, value: str | None) -> list[str]:
     if not value or "." not in value:
         return []
     body, check = value.rsplit(".", 1)
-    if not hmac.compare_digest(check, note_check(key, body)):
+    if not same_signature(check, note_check(key, body)):
         return []
     try:
         named, said = json.loads(base64.urlsafe_b64decode(body.encode()))
@@ -765,7 +766,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         not whole
         or not named
         or not all(opaque(part) for part in named)
-        or not hmac.compare_digest(fields.get("check", ""), read_check(found.page_key, named))
+        or not same_signature(fields.get("check", ""), read_check(found.page_key, named))
     ):
         return review_page(request, state, found, [SAID["unchecked"]], 400)
     student = state.project_state.student_id()
@@ -1288,7 +1289,7 @@ async def small_form(
         signed.append(("keys", fields["keys"]))
     if action != "set-aside":
         signed.append(("action", action))
-    if not hmac.compare_digest(fields["check"], page_check(found.page_key, signed)):
+    if not same_signature(fields["check"], page_check(found.page_key, signed)):
         return None
     try:
         keys = json.loads(fields.get("keys", "[]"))
