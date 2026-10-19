@@ -830,13 +830,19 @@ def test_what_done_means_is_said_once_above_every_done_button(
 
 @pytest.mark.parametrize("reading_log", [None, "not_yet", "done"])
 def test_work_due_later_has_its_due_date_on_a_line_of_its_own(reading_log: str | None) -> None:
+    """In every state of the row, its due date is a line of its own, as a card's is: the date,
+    then where it came from, and nothing else on that line."""
     with browser() as client:
         if reading_log is not None:
             reported(store_of(client), reading_log, READING_LOG_ID)
         page = main_of(page_of(client))
     row = card_for(page, READING_LOG_ID)
+    due = re.search(r'<p class="due">(.*?)</p>', row, re.S)
 
-    assert re.search(r'<p class="due">Due \w+, \w+ \d+</p>', row)
+    assert due is not None
+    line, source = re.subn(r'<span class="source">[^<]*</span>', "", due.group(1))
+    assert re.fullmatch(r"Due \w+, \w+ \d+", " ".join(line.split()))
+    assert source == 1
     assert '<span class="due">' not in page
 
 

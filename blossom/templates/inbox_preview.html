@@ -355,7 +355,12 @@
           {% if total %}
             {# A typed note kept off her homework is still something to finish, so the family page can say so. #}
             {% set done = to_save == 0 and counts.review == 0 and not kept_note and not waiting %}
-            <button type="submit" class="primary{% if done %} done{% endif %}"{% if done %} disabled aria-disabled="true"{% endif %} data-changed-label="Save changes">{% if to_save == 0 and kept_note %}Keep her note{% elif to_save == 0 and waiting %}Save the ticked links{% else %}Save {{ to_save }} assignment{% if to_save != 1 %}s{% endif %}{% endif %}</button>
+            {% if done %}
+              {# Every card's Type can still change, so the press is offered without scripts; the script shows it as done until a type changes. #}
+              <button type="submit" class="primary" data-unchanged-label="Save 0 assignments" data-changed-label="Save changes">Save changes</button>
+            {% else %}
+              <button type="submit" class="primary" data-changed-label="Save changes">{% if to_save == 0 and kept_note %}Keep her note{% elif to_save == 0 and waiting %}Save the ticked links{% else %}Save {{ to_save }} assignment{% if to_save != 1 %}s{% endif %}{% endif %}</button>
+            {% endif %}
           {% endif %}
           <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate>Edit</button>
         </div>

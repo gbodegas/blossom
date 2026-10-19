@@ -79,6 +79,7 @@ from tests.support import (
     HER_FORM_NOT_WHOLE,
     HER_NEWER_PLAN,
     HER_TOP_LINE,
+    HERS,
     PLAN_DATE,
     SAME_ORIGIN,
     THEIRS,
@@ -108,6 +109,7 @@ from tests.support import (
     record,
     refusing,
     report,
+    reported,
     runs_recorded,
     scripted_graphs,
     settled_run,
@@ -547,6 +549,84 @@ def test_a_change_asked_for_is_said_in_her_words() -> None:
     assert "A change is asked for; plan again when you are ready." in page
     assert "<q>the essay needs two sittings</q>" in page
     assert "Plan for Wednesday, August 19, 2026" in page
+
+
+def her_plan_read_by(tmp_path: pathlib.Path, reader: str, decision: str | None) -> str:
+    """Her week, signed in as ``reader``, once she has made a plan, a parent has decided it
+    as ``decision`` or left it waiting, and she has reported the essay in it done. Its words
+    with their spacing made single."""
+    client = client_for(signed_in_household(tmp_path))
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
+    with client:
+        signed_in(client, HERS)
+        made = client.post("/student/actions/plan", data=fresh_plan_fields(client))
+        assert made.status_code == 303, made.text
+        draft_id = client.get("/student/plans/today").json()["draft_id"]
+        signed_in(client, THEIRS)
+        if decision is not None:
+            decided = client.post(
+                f"/parent/approvals/{draft_id}",
+                json={"approved": decision == "approved", "reason": "start with the essay"},
+            )
+            assert decided.status_code == 200, decided.text
+        reported(state_of(client).project_state, "done", ESSAY_ID)
+        if reader == "her":
+            signed_in(client, HERS)
+        page = client.get(PAGE).text
+    return " ".join(page.split())
+
+
+HER_PLAN_WORDS: dict[str, tuple[str, ...]] = {
+    "her": (
+        "<strong>Your updates.</strong> This plan includes work you now report as Done.",
+        "Your assignments or updates differ from the work this plan used, so it does not "
+        "cover your week as it stands. It stays until a new one is made; plan again when you "
+        "are ready.",
+    ),
+    "a parent": (
+        "<strong>Her updates.</strong> This plan includes work she now reports as Done.",
+        "Her assignments or updates differ from the work this plan used, so it does not "
+        "cover her week as it stands. It stays until a new one is made; plan again when she "
+        "is ready.",
+    ),
+}
+"""What her week says about her updates, and about the fit of a plan still waiting, to her
+and to a parent. A decided plan is not measured against the week."""
+HER_DECISION_WORDS: dict[tuple[str, str | None], str] = {
+    ("her", None): "A parent has not reviewed it yet. You can start anyway.",
+    ("a parent", None): "A parent has not reviewed it yet. She can start anyway.",
+    ("her", "approved"): '<p class="from-heading">From your parents</p> <p class="from-text"> '
+    "Looks good.",
+    ("a parent", "approved"): '<p class="from-heading">Parent review</p> <p class="from-text"> '
+    "Looks good.",
+    ("her", "rejected"): '<p class="from-heading">From your parents</p> <p class="from-text"> '
+    "A change is asked for; plan again when you are ready.",
+    ("a parent", "rejected"): '<p class="from-heading">Parent review</p> '
+    '<p class="from-text"> A change is asked for; plan again when she is ready.',
+}
+"""What her week says of a parent's review, to her and to a parent."""
+
+
+@pytest.mark.parametrize("decision", [None, "approved", "rejected"])
+@pytest.mark.parametrize("reader", ["her", "a parent"])
+def test_her_week_says_her_updates_and_her_plan_to_whoever_reads_it(
+    tmp_path: pathlib.Path, reader: str, decision: str | None
+) -> None:
+    """Signed in, she reads her updates and her planning as hers; a parent reading her week
+    reads them as hers too, in the third person, and is offered none of her own presses."""
+    page = her_plan_read_by(tmp_path, reader, decision)
+
+    updates, unfit = HER_PLAN_WORDS[reader]
+    assert updates in page
+    assert (unfit in page) is (decision is None)
+    assert HER_DECISION_WORDS[(reader, decision)] in page
+    if reader == "a parent":
+        for hers in ("Your updates", "you now report", "You can start", "From your parents"):
+            assert hers not in page
+        assert "when you are ready" not in page
+        assert 'action="/student/actions/too-much"' not in page
 
 
 # --------------------------------------------------------- the disclosure
@@ -1706,6 +1786,43 @@ def test_a_run_asked_for_by_its_id_is_said_on_her_week(monkeypatch: pytest.Monke
     assert run_link(first, AGAIN) in line
 
 
+def landing(page: str) -> list[str]:
+    """Each element of a page that takes the focus as it arrives, as its opening tag."""
+    return re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", page)
+
+
+def test_a_check_on_a_run_lands_on_where_it_stands_or_on_the_plan_it_published() -> None:
+    """Asked by its id, a run still being finished or ended puts the focus on its line, and a
+    run that published puts it on today's plan; her week visited without asking takes none,
+    whatever its line says."""
+    first = f"plan:{PLAN_DATE.isoformat()}:first"
+    newer = f"plan:{PLAN_DATE.isoformat()}:newer"
+    with browser() as client:
+        state = state_of(client)
+        state.drafts.admit_run(
+            first, plan_date=PLAN_DATE, deadline_mono=state.monotonic() + RUN_DEADLINE_SECONDS
+        )
+        running = client.get(f"{PAGE}?run={first}").text
+        visited_running = client.get(PAGE).text
+        state.drafts.end_run(first, reason="timed_out")
+        ended = client.get(f"{PAGE}?run={first}").text
+        settled_run(
+            state.drafts,
+            draft(f"draft:{newer}", "Plan for Wednesday"),
+            thread_id=newer,
+            plan_date=PLAN_DATE,
+        )
+        published = client.get(f"{PAGE}?run={newer}").text
+        visited = client.get(PAGE).text
+
+    on_the_line = '<p class="{kind}" role="status" id="plan-run" tabindex="-1" autofocus>'
+    assert landing(running) == [on_the_line.format(kind="note")]
+    assert landing(ended) == [on_the_line.format(kind="confidence disagree")]
+    assert run_line(visited_running) is not None
+    assert landing(visited_running) == landing(visited) == []
+    assert landing(published) == ['<div id="todays-plan" tabindex="-1" autofocus>']
+
+
 def test_a_parent_reading_her_week_is_told_where_a_run_stands_in_her_words(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1744,7 +1861,7 @@ def test_a_parent_reading_her_week_is_told_where_a_run_stands_in_her_words(
     assert "hasn&#39;t changed" not in line
     assert "Your" not in line
     assert "your" not in line
-    assert run_line(found) == line
+    assert run_line(found) == line.replace(' tabindex="-1" autofocus', "")
 
 
 def test_her_week_says_on_load_what_became_of_the_last_plan_request() -> None:

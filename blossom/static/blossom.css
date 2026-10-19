@@ -73,7 +73,7 @@
   --rose-bg: rgba(229, 168, 180, 0.3);
   --rose-ink: #96505f;
   --amber-bg: rgba(233, 201, 150, 0.35);
-  --amber-ink: #85652c;
+  --amber-ink: #7d5e28;
   --slate-bg: rgba(155, 184, 211, 0.24);
   --slate-ink: #4b5f72;
   --sage-bg: rgba(168, 204, 180, 0.35);
@@ -1997,8 +1997,11 @@ pre.example {
    13vw - 1rem where that is narrower, the panel reaching into the page's side margin, before
    any word breaks. A card inside a panel gives way the same way without reaching any further,
    so it never passes the screen's edge. An entry's reference, or an id shown whole, breaks
-   only where its line can't hold it, and a file input is never wider than its panel. A date
-   field's side padding goes to 2% of the screen's width there, as the plan panel's does.
+   only where its line can't hold it, and a file input is never wider than its panel. A file
+   input's words, its choose button's among them, take the page's type at the reader's text
+   size, and the input and its choose button are each as tall as a control, the browser
+   keeping its own picker and the names of the files chosen. A date field's side padding goes
+   to 2% of the screen's width there, as the plan panel's does.
    School text, a long title or a link in a card's words among it, breaks inside its panel
    only where its line can't hold it; a button's or a field's words never do. An
    instruction's correction box sits under its label, as wide as its fieldset, starts two
@@ -2024,6 +2027,24 @@ pre.example {
 
 .import-review input[type="file"] {
   max-width: 100%;
+  min-height: 2.75rem;
+  font: inherit;
+  font-family: var(--font-body);
+  color: var(--text);
+}
+
+.import-review input[type="file"]::file-selector-button {
+  min-height: 2.75rem;
+  margin-inline-end: 0.75rem;
+  padding: 0.55rem 1.1rem;
+  border: 1.5px solid var(--pink);
+  border-radius: var(--pill);
+  background: transparent;
+  color: var(--rose-ink);
+  font: inherit;
+  font-family: var(--font-display);
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .import-review legend,
@@ -2059,6 +2080,38 @@ pre.example {
   .import-review input[type="date"] {
     padding-inline: clamp(2vw, 100000vw - 14650rem - 14500px, 0.85rem);
   }
+}
+
+/* The paste review's questions give way as the grade review's do: on a phone with text at
+   200%, a card reaches into the page's 1.25rem side margin until it is 13vw - 1rem from the
+   screen's edge, and a fieldset reaches into its card's side padding, staying 13vw - 1rem
+   inside the card's edge, while the card keeps its own padding, so its Type field still
+   reaches across it. The fieldset takes the card's width and its side padding goes to
+   13vw - 1rem where that is narrower, so an ordinary word keeps whole. A question and a
+   choice's words wrap, an id shown whole breaking only where its line can't hold it, and a
+   choice's words go under its radio when less than 8rem is left beside it. Every screen 320
+   pixels or wider with ordinary text keeps the ordinary layout. */
+.review-week article {
+  margin-inline: min(0px, 13vw - 2.25rem);
+}
+
+.review-week .choice {
+  min-width: 0;
+  margin-inline: min(0px, 13vw - 2.2rem);
+  padding-inline: clamp(0px, 13vw - 1rem, 1rem);
+}
+
+.review-week .choice legend,
+.review-week .choice label > span {
+  overflow-wrap: anywhere;
+}
+
+.review-week .choice.identity label {
+  flex-wrap: wrap;
+}
+
+.review-week .choice.identity label > span {
+  flex: 1 1 8rem;
 }
 
 /* What a press typed on a review that expired, given back to copy: each box under its label,

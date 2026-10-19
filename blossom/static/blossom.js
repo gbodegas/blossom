@@ -16,11 +16,13 @@
   it, so "What is shared" shows what it names.
 
   The third is for the review pages: when everything read is saved already,
-  its Save button is disabled, and a type changed on a card or a question
-  answered hands the button back, as "Save changes"; the card's own line
-  says what the changed type does. On the grade review, an entry picked by
-  hand from a row's list also selects that row's "Choose an existing
-  assignment"; the server still checks the row's answers either way.
+  the page offers its Save button as "Save changes", so a type changed on a
+  card is saved without this file. Here it shows as done until a type
+  changed on a card or a question answered hands it back; a type the browser
+  restored counts as changed. The card's own line says what the changed type
+  does. On the grade review, an entry picked by hand from a row's list also
+  selects that row's "Choose an existing assignment"; the server still checks
+  the row's answers either way.
 
   The fourth is for a page shown again: by the browser's back/forward cache,
   from a copy it kept, or fetched again by Back, Forward or a refresh. A new
@@ -219,6 +221,23 @@
         button.textContent = button.dataset.changedLabel || button.textContent;
       }
     });
+  }
+
+  var unchanged = review ? review.querySelector("button.primary[data-unchanged-label]") : null;
+  if (unchanged) {
+    var restored = Array.prototype.some.call(
+      review.querySelectorAll("select[name^='kind-']"),
+      function (select) {
+        var shown = select.querySelector("option[selected]");
+        return shown !== null && select.value !== shown.value;
+      }
+    );
+    if (!restored) {
+      unchanged.disabled = true;
+      unchanged.setAttribute("aria-disabled", "true");
+      unchanged.classList.add("done");
+      unchanged.textContent = unchanged.dataset.unchangedLabel;
+    }
   }
 
   document.addEventListener("click", function (event) {

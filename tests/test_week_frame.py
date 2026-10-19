@@ -9,8 +9,10 @@ page frames a week. The evening's minute budgets are the household's settings
 and the page shows the numbers it was given.
 """
 
+import html
 import json
 import pathlib
+import re
 from datetime import date
 
 import pytest
@@ -20,6 +22,7 @@ from blossom.agent.prompts import PLANNER_SYSTEM
 from blossom.app import create_app
 from blossom.noticing import monday_of
 from blossom.reconciliation import SourceConfidence
+from blossom.routes.navigation import details_href
 from blossom.settings import STATIC_PATH as STATIC
 from blossom.settings import TEMPLATE_PATH as TEMPLATES
 from tests.support import (
@@ -27,6 +30,7 @@ from tests.support import (
     fixture_settings,
     fresh_signal_fields,
     outside_earlier_work,
+    report,
 )
 
 PINNED_TODAY = "2026-08-19"
@@ -330,3 +334,95 @@ def test_her_week_s_homework_panels_narrow_rule_is_pinned_and_only_her_week_writ
     assert writers["student_due_this_week.html"].count('<section class="panel apart">') == 1
     assert writers["student_due_this_week.html"].count('<section class="panel assigned">') == 1
     assert writers["student_earlier_work.html"].count('class="panel assigned earlier-work"') == 1
+
+
+LATER_ROWS = {
+    "agreed": "Agreed project",
+    "disputed": "Disputed project",
+    "unread": "Unread project",
+    "contradicted": "Contradicted project",
+}
+"""Work assigned this week and due after it, one row for each way its date can stand."""
+LATER_CLAIMS = [
+    ("agreed", "LMS", "2026-08-27"),
+    ("agreed", "EMAIL", "2026-08-27"),
+    ("disputed", "LMS", "2026-08-27"),
+    ("disputed", "EMAIL", "2026-08-28"),
+    ("unread", "LMS", "the Thursday after next"),
+    ("contradicted", "LMS", "2026-08-28"),
+]
+"""What the sources say of each row's date: two that agree, two that disagree, one that
+can't be read as a date, and the school's alone against the record's."""
+
+
+def later_rows(tmp_path: pathlib.Path, done: str | None = None) -> tuple[dict[str, str], str]:
+    """Each row due later on her week, by its id, with ``done`` reported done, and the
+    details page its evidence link names, for the disputed row."""
+    rows = [
+        dict(FIXTURE_ROW, assignment_id=name, title=title, due_date="2026-08-27")
+        for name, title in LATER_ROWS.items()
+    ]
+    claims = [
+        {
+            "assignment_id": name,
+            "channel": channel,
+            "asserted_value": value,
+            "observed_at": "2026-08-18T09:00:00-04:00",
+            "confidence": 0.8,
+        }
+        for name, channel, value in LATER_CLAIMS
+    ]
+    (tmp_path / "assignments.json").write_text(json.dumps(rows), encoding="utf-8")
+    (tmp_path / "deadline_sources.json").write_text(json.dumps(claims), encoding="utf-8")
+    settings = fixture_settings(
+        BLOSSOM_TODAY=PINNED_TODAY,
+        BLOSSOM_FIXTURE_PATH=str(tmp_path),
+        BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
+        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
+        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+    )
+    with TestClient(create_app(settings), headers=SAME_ORIGIN, follow_redirects=False) as client:
+        if done is not None:
+            report(client, done, "done", week=MONDAY)
+        shown = client.get("/student/due-this-week").text
+        later = shown.partition("Assigned this week, due later")[2]
+        found = {
+            name: later.split(f"<strong>{title}</strong>", 1)[1].split("</li>", 1)[0]
+            for name, title in LATER_ROWS.items()
+        }
+        evidence = html.unescape(re.findall(r'href="([^"]*#evidence)"', found["disputed"])[0])
+        details = client.get(evidence).text
+    return found, details
+
+
+@pytest.mark.parametrize("done", [None, "disputed", "contradicted"])
+def test_a_row_due_later_says_how_its_date_stands_and_links_to_what_the_sources_say(
+    tmp_path: pathlib.Path, done: str | None
+) -> None:
+    """A row due later, to do or reported done, shows its date as a card does: the date and
+    its source when sources agree, the recorded date with a banner when they disagree or
+    the school says otherwise, and the claim that couldn't be read. Nothing is chosen; the
+    banner links to the evidence on that assignment's details."""
+    rows, details = later_rows(tmp_path, done)
+    evidence = {
+        name: details_href(name, fragment="evidence", return_to="week", week=MONDAY)
+        for name in ("disputed", "contradicted")
+    }
+
+    assert "Due Thursday, August 27" in rows["agreed"]
+    assert '<span class="source">' in rows["agreed"].split("</p>", 1)[0]
+    assert "Check this date." not in rows["agreed"]
+    assert "Recorded date Thursday, August 27" in rows["disputed"]
+    assert "Sources disagree about it, and nothing has been chosen for you." in rows["disputed"]
+    assert "could not be read as a date" in rows["unread"]
+    assert "Recorded date Thursday, August 27" in rows["contradicted"]
+    assert "The school says otherwise." in rows["contradicted"]
+    for name, title in (("disputed", "Disputed project"), ("contradicted", "Contradicted project")):
+        assert (
+            f'<a href="{html.escape(evidence[name])}" aria-label="See what the sources say: '
+            f'{title}, Science">See what the sources say</a>.'
+        ) in rows[name]
+    assert all('href="#evidence"' not in row for row in rows.values())
+    assert "August 28" not in rows["disputed"].split("Check this date.", 1)[0]
+    assert '<section class="evidence" id="evidence" tabindex="-1">' in details
+    assert "Disputed project" in details

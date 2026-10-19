@@ -908,6 +908,24 @@ def test_the_darker_action_color_clears_every_tint_and_the_usual_one_does_not() 
         assert contrast(usual, drawn(sheet, *under)) >= 4.5, under
 
 
+def test_the_amber_words_clear_their_tint_on_the_paper_its_ruling_and_every_card() -> None:
+    """The amber words, such as the notice that the school's status disagrees with hers, are
+    at least 4.5 to 1 against their own tint wherever it is laid: on the bare paper, on one
+    of the paper's ruled lines, and on each card surface with or without a ruled line under."""
+    sheet = read_sheet(stylesheet())
+    ink = drawn(sheet, "amber-ink")
+
+    for under in (
+        ("canvas",),
+        ("canvas", "rule"),
+        ("canvas", "surface-strong"),
+        ("canvas", "surface"),
+        ("canvas", "rule", "surface-strong"),
+        ("canvas", "rule", "surface"),
+    ):
+        assert contrast(ink, drawn(sheet, *under, "amber-bg")) >= 4.5, under
+
+
 # ------------------------------------------------------------- as tall as a control
 
 

@@ -6,8 +6,12 @@
   <h1>Homework screenshots</h1>
   <p class="note">Available until {{ until }}</p>
   <div class="import-review">
+  {#
+    What a press answered, said only on the page that answers it, takes the focus there, so
+    the next Tab starts from the answer; an ordinary visit has nothing here.
+  #}
   {% if said %}
-    <div class="problem" role="status" id="said">
+    <div class="problem" role="status" id="said" tabindex="-1" autofocus>
       {% for line in said %}<p>{{ line }}</p>{% endfor %}
     </div>
   {% endif %}

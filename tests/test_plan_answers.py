@@ -1252,7 +1252,7 @@ KEPT_WORK = {
 """Work on record whose only date, the portal's, is before today's evening, as id, title,
 course and that date."""
 DATE_LINK = re.compile(r'<a href="([^"]*)">(Check the dates for [^<]*)</a>')
-PLAN_RUN_NOTICE = re.compile(r'<p [^>]*id="plan-run">(.*?)</p>', re.S)
+PLAN_RUN_NOTICE = re.compile(r'<p [^>]*id="plan-run"[^>]*>(.*?)</p>', re.S)
 
 
 def past_due_on_record(
@@ -1469,7 +1469,8 @@ def test_a_kept_list_that_cannot_be_read_is_said_as_none(caplog: pytest.LogCaptu
 def test_her_weeks_notices_for_the_run_link_the_same_work(reader: str) -> None:
     """Her week on load, and with the address naming the run, says the run's notice in its own
     words and then the first answer's "Check the dates" links, the same ones in the same
-    order; the family page's notice for the run links none."""
+    order, the notice taking the focus only where the address names the run; the family
+    page's notice for the run links none."""
     planners: list[Scripted[Any]] = []
     with browser(key=True, **SIGNED_IN) as client:
         sign_in_as(client, reader)
@@ -1486,6 +1487,8 @@ def test_her_weeks_notices_for_the_run_link_the_same_work(reader: str) -> None:
     links = date_links(first.text)
     labels = " ".join(label for _, label in links)
     assert len(links) == 3
+    assert 'id="plan-run" tabindex="-1" autofocus>' in asked.text
+    assert 'id="plan-run" tabindex="-1" autofocus>' not in loaded.text
     for page in (loaded, asked):
         notice = plan_run_notice(page.text)
         assert words(notice).startswith(f"{ENDED_REASONS['date_problem']} ")

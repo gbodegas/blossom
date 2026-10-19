@@ -1093,6 +1093,55 @@ def test_keep_these_answers_stores_what_the_page_posts_and_says_so(
     assert screenshot_page.SAID["preselected"] not in after
 
 
+def focused(page: str) -> list[str]:
+    """Each element of a page that takes the focus as it arrives, as its opening tag."""
+    return re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", page)
+
+
+def test_each_press_lands_on_its_answer_and_an_ordinary_visit_takes_no_focus(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep these answers, a search under another name and a refusal each answer with a page
+    whose answer takes the focus, once; the review opened again, the find page opened with no
+    words, and the review shown again after the answer take none."""
+    other = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([other])
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        visit = browser.get(f"/parent/imports/{draft_id}").text
+        piece = fields_named(review_form(page), "answer:destination:")[0]
+        opened = browser.post(f"/parent/imports/{draft_id}/find", data={"piece": piece}).text
+        found = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
+        ).text
+        nothing = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "zzzz"}
+        ).text
+        gone = browser.post(f"/parent/imports/{draft_id}/find", data={"piece": "x", "words": "a"})
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        again = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert focused(page) == focused(visit) == focused(opened) == focused(again) == []
+    assert focused(kept) == [
+        '<div class="problem" role="status" id="said" tabindex="-1" autofocus>'
+    ]
+    assert says(kept.split('id="said"', 1)[1].split("</div>", 1)[0], imports.PRESS_SAID["kept"])
+    assert focused(found) == ['<p id="find-first" tabindex="-1" autofocus>']
+    assert "Grammar Practice" in found.split('id="find-first"', 1)[1].split("</p>", 1)[0]
+    assert focused(nothing) == ['<p class="note" id="find-nothing" tabindex="-1" autofocus>']
+    assert gone.status_code == 404
+    assert focused(gone.text) == ['<p class="problem" role="alert" tabindex="-1" autofocus>']
+
+
 def test_a_page_made_before_a_newer_answer_keeps_nothing_and_says_the_review_changed(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3353,7 +3402,13 @@ IMPORT_REVIEW_RULES = (
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
     ".import-review .panel article {\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
-    '.import-review input[type="file"] {\n  max-width: 100%;\n}\n\n'
+    '.import-review input[type="file"] {\n  max-width: 100%;\n  min-height: 2.75rem;\n'
+    "  font: inherit;\n  font-family: var(--font-body);\n  color: var(--text);\n}\n\n"
+    '.import-review input[type="file"]::file-selector-button {\n  min-height: 2.75rem;\n'
+    "  margin-inline-end: 0.75rem;\n  padding: 0.55rem 1.1rem;\n"
+    "  border: 1.5px solid var(--pink);\n  border-radius: var(--pill);\n"
+    "  background: transparent;\n  color: var(--rose-ink);\n  font: inherit;\n"
+    "  font-family: var(--font-display);\n  font-weight: 700;\n  cursor: pointer;\n}\n\n"
     ".import-review legend,\n.import-review .note,\n.import-review .source,\n"
     ".import-review .effect,\n.import-review .problem,\n.import-review .choice > p,\n"
     ".import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
@@ -3369,7 +3424,8 @@ IMPORT_REVIEW_RULES = (
 """The screenshot review's rules, pinned whole: on a narrow screen with large text its
 fieldsets take the page's width, a panel's side padding gives way and the panel reaches into
 the page's margin, a card inside a panel gives way without reaching further, a file input is
-never wider than its panel, school text breaks where its line can't hold it while a
+never wider than its panel and it and its choose button are as tall as a control in the
+page's type at the reader's text size, school text breaks where its line can't hold it while a
 control's words never do, and an instruction's correction box sits under its label, two lines
 tall to start."""
 STYLESHEET = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
@@ -3383,7 +3439,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 19
+    assert css.count("import-review") == 20
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert carriers == ["import_find.html", "import_review.html", "parent_review.html"]
 

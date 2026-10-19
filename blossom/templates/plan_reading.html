@@ -24,6 +24,8 @@
   is shown as its saved text, with a sentence that says why. Either way the
   reviewer's notes are one fold, open when the run's review could not settle
   and folded when it accepted the plan, on her page and the family's alike.
+  ``lands`` says the address asked where the run that published this plan stands,
+  so the plan takes the focus.
 #}
 {% set level = plan_level|default(3) %}
 {% set hers = reading.reader == "student" %}
@@ -42,7 +44,7 @@
 {% macro mark(done) %}
   <p class="plan-mark"><span class="pill">Reported done</span> Reported {{ done.reported_on|long_date }}{% if done.restored_on %}, restored {{ done.restored_on|long_date }}{% endif %}</p>
 {% endmacro %}
-<div class="plan-reading" id="{{ reading.anchor }}" tabindex="-1">
+<div class="plan-reading" id="{{ reading.anchor }}" tabindex="-1"{% if lands is defined and lands %} autofocus{% endif %}>
   {% if reading.structured %}
     <div class="plan-text">
       <p class="plan-title">{{ reading.title }}</p>

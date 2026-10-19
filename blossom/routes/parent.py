@@ -1134,6 +1134,7 @@ def review_page(
     open_plan: str | None = None,
     problem_check: RunCheck | None = None,
     run_notice: RunNotice | None = None,
+    run_asked: str | None = None,
     help_reply: HelpReplyKept | None = None,
     reason_kept: ReasonKept | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -1154,8 +1155,10 @@ def review_page(
     link to the row, so it is met on a page that opens at its top.
     ``open_plan`` is a plan a link came back to, whose folds are opened.
     ``problem_check`` links the problem to the run it names, and ``run_notice`` is what
-    the page says about a planning run. ``plan_answer`` is a plan press's answer, whose
-    first sentence takes the focus, so the press lands on its opening. A waiting plan no
+    the page says about a planning run. ``run_asked`` is the run the address asked about:
+    its line takes the focus, or, with no line, the plan that run published. ``plan_answer``
+    is a plan press's answer, whose first sentence takes the focus, so the press lands on
+    its opening. A waiting plan no
     review could resume says so in place of its two buttons, as the decision itself refuses
     it. ``help_reply`` is the
     words a refused press sent back, shown in its request's box while that request is
@@ -1223,6 +1226,15 @@ def review_page(
         for record in shown
     }
     waiting = [plans[record.draft_id].view for record in records.waiting]
+    # A check on a run that has nothing more to say lands on the plan that run published.
+    landing_plan = next(
+        (
+            record.draft_id
+            for record in (*records.waiting, *records.decided)
+            if run_asked and run_notice is None and record.thread_id == run_asked
+        ),
+        None,
+    )
     stuck = unresumable_threads(
         state.checkpointer, [record.thread_id for record in records.waiting], STORE_WAIT_SECONDS
     )
@@ -1314,6 +1326,8 @@ def review_page(
             "problem_check": problem_check,
             "problem_opening": problem_opening,
             "run_notice": run_notice,
+            "run_asked": run_asked,
+            "landing_plan": landing_plan,
             # Open when the latest run of an evening still ahead made no plan, so the
             # parent sees why without looking for it.
             "ended_open": any(run.newest and run.plan_date >= today for run in ended),
@@ -1660,6 +1674,7 @@ def review(
             else (CheckState(focus) if focus else None),
             open_plan=plan,
             run_notice=run_notice(state, run, FAMILY_PAGE, parent=True, today=None),
+            run_asked=run,
         )
     except sqlite3.Error as error:
         return review_unreadable(

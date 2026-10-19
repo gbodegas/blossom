@@ -57,10 +57,12 @@
   {#
     Where a planning run stands: the one the address names, or the household's
     run while it is still being made or finished. Runs that ended without a plan
-    are listed below, under their own heading.
+    are listed below, under their own heading. When the address asks where a run
+    stands, this line takes the focus, or, with nothing to say, the plan that run
+    published does, waiting for review or decided as today's.
   #}
   {% if run_notice %}
-    <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run">{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}</p>
+    <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run"{% if run_asked %} tabindex="-1" autofocus{% endif %}>{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}</p>
   {% endif %}
   {% if added is not none %}
     <p class="note" role="status">
@@ -452,7 +454,7 @@
             <strong>Blossom's review:</strong> could not settle every point. Its notes are open under the plan, in Blossom's review notes.
           </p>
         {% endif %}
-        {% with reading = readings[draft.draft_id], plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
+        {% with reading = readings[draft.draft_id], plan_level = 4, lands = landing_plan is not none and draft.draft_id == landing_plan %}{% include "plan_reading.html" %}{% endwith %}
         {{ steps_list(draft.steps, "How this plan was made") }}
         {% if draft.stale %}
           <p class="confidence disagree" role="alert"><strong>Plan again.</strong> {{ draft.stale }}</p>
@@ -546,7 +548,7 @@
         {% if draft.reported_done %}
           {{ done_notice(draft) }}
         {% endif %}
-        {% with reading = readings[draft.draft_id], plan_level = 3 %}{% include "plan_reading.html" %}{% endwith %}
+        {% with reading = readings[draft.draft_id], plan_level = 3, lands = landing_plan is not none and draft.draft_id == landing_plan %}{% include "plan_reading.html" %}{% endwith %}
         {{ steps_list(draft.steps, "How this plan was made") }}
       </article>
     </section>

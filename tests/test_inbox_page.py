@@ -200,9 +200,9 @@ def test_a_paste_is_reviewed_week_by_week_and_saved_only_when_asked(
     assert "0 new, 0 updates, 3 already saved." in again
     assert "Everything here is saved already; there is nothing to save." in again
     assert (
-        'class="primary done" disabled aria-disabled="true" data-changed-label="Save changes">'
-        "Save 0 assignments" in again
-    )
+        '<button type="submit" class="primary" data-unchanged-label="Save 0 assignments" '
+        'data-changed-label="Save changes">Save changes</button>'
+    ) in again
 
 
 def test_an_entry_by_hand_is_reviewed_then_saved_as_the_familys_own(
@@ -444,6 +444,82 @@ def test_the_type_is_the_parents_to_correct_on_the_page_and_on_the_entry_form(
     )
     assert rows["Vocabulary list, unit two"].kind is AssignmentKind.TASK
     assert rows["Vocabulary list, unit two"].origins["kind"] is SourceChannel.PARENT_ENTRY
+
+
+def save_press(page: str) -> str:
+    """The review's Save button as the page writes it, before any script runs."""
+    found = re.search(r'<button type="submit" class="primary[^"]*"[^>]*>[^<]*</button>', page)
+    assert found is not None
+    return found.group(0)
+
+
+def test_a_saved_rows_type_is_corrected_with_scripts_off_and_an_untouched_press_changes_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """When everything read is saved already, the page still offers a Save press a browser can
+    send without scripts, so a type changed on a card is saved; the same press with nothing
+    changed saves nothing, and the page shows done only through the script."""
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data={"text": SUMMARY}).status_code == 303
+        before = {row.title: row for row in state_of(client).project_state.all_assignments()}
+        again = client.post("/parent/inbox/read", data={"text": SUMMARY}).text
+        form = review_form(again)
+        untouched = client.post("/parent/inbox/keep", data=form)
+        unchanged = {row.title: row for row in state_of(client).project_state.all_assignments()}
+        changed = client.post("/parent/inbox/keep", data={**form, "kind-1": "TASK"})
+        after = {row.title: row for row in state_of(client).project_state.all_assignments()}
+
+    press = save_press(again)
+    assert "disabled" not in press
+    assert ">Save changes</button>" in press
+    assert 'data-unchanged-label="Save 0 assignments"' in press
+    assert "Everything here is saved already; there is nothing to save." in again
+    assert form["kind-1"] == "HOMEWORK"
+    assert untouched.headers["location"] == "/parent?added=0&updated=0&unchanged=3"
+    assert unchanged == before
+    assert changed.headers["location"] == "/parent?added=0&updated=1&unchanged=2"
+    assert len(after) == 3
+    assert after["Summer Reading - Log"].kind is AssignmentKind.TASK
+    assert after["Summer Reading - Log"].origins["kind"] is SourceChannel.PARENT_ENTRY
+    assert {title: row for title, row in after.items() if title != "Summer Reading - Log"} == {
+        title: row for title, row in before.items() if title != "Summer Reading - Log"
+    }
+
+
+SCRIPT = pathlib.Path(inbox.__file__).parents[1] / "static" / "blossom.js"
+SHOWN_AS_DONE = """\
+  var unchanged = review ? review.querySelector("button.primary[data-unchanged-label]") : null;
+  if (unchanged) {
+    var restored = Array.prototype.some.call(
+      review.querySelectorAll("select[name^='kind-']"),
+      function (select) {
+        var shown = select.querySelector("option[selected]");
+        return shown !== null && select.value !== shown.value;
+      }
+    );
+    if (!restored) {
+      unchanged.disabled = true;
+      unchanged.setAttribute("aria-disabled", "true");
+      unchanged.classList.add("done");
+      unchanged.textContent = unchanged.dataset.unchangedLabel;
+    }
+  }
+"""
+"""The script's part in the offered Save press, whole: on load it shows the press as done,
+in the words the page gave it, unless the browser restored a changed type."""
+
+
+def test_only_the_script_shows_the_offered_save_press_as_done() -> None:
+    """The page's own press is never disabled; the script alone marks it done, once, and the
+    review's one change listener hands it back as "Save changes"."""
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert script.count(SHOWN_AS_DONE) == 1
+    assert script.count("data-unchanged-label") == 1
+    assert script.count('review.querySelector("button.primary[disabled]")') == 1
+    assert script.count("button.dataset.changedLabel") == 1
 
 
 SAVED_WEEK = "Tuesday 9/1/2026\nMath\nDue: Weekly practice:\n"
@@ -1498,3 +1574,47 @@ def test_a_padded_spelling_of_a_cards_key_names_no_card(tmp_path: pathlib.Path, 
     assert saved.headers["location"] == "/parent?added=0&updated=2&unchanged=0"
     assert len(rows) == 2
     assert all(row.kind is AssignmentKind.HOMEWORK for row in rows)
+
+
+STYLESHEET = pathlib.Path(inbox.__file__).parents[1] / "static" / "blossom.css"
+REVIEW_WEEK_CHOICE_RULES = (
+    ".review-week article {\n  margin-inline: min(0px, 13vw - 2.25rem);\n}\n\n"
+    ".review-week .choice {\n  min-width: 0;\n  margin-inline: min(0px, 13vw - 2.2rem);\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1rem);\n}\n\n"
+    ".review-week .choice legend,\n.review-week .choice label > span {\n"
+    "  overflow-wrap: anywhere;\n}\n\n"
+    ".review-week .choice.identity label {\n  flex-wrap: wrap;\n}\n\n"
+    ".review-week .choice.identity label > span {\n  flex: 1 1 8rem;\n}\n"
+)
+"""The paste review's rules for its questions, pinned whole: on a narrow screen with large
+text a card reaches into the page's side margin and a fieldset into its card's side padding,
+its own side padding gives way, so an ordinary word keeps whole; a question and an id shown
+whole wrap inside it, and a choice's words go under its radio."""
+
+
+def test_the_paste_review_s_question_rules_are_pinned_and_only_its_page_carries_its_class() -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    carriers = sorted(
+        page.name
+        for page in (STYLESHEET.parents[1] / "templates").glob("*.html")
+        if "review-week" in page.read_text(encoding="utf-8")
+    )
+
+    assert css.count("review-week") == 8
+    assert css.count(REVIEW_WEEK_CHOICE_RULES) == 1
+    assert carriers == ["inbox_preview.html"]
+
+
+def test_each_question_on_the_paste_review_sits_in_a_week_of_the_review() -> None:
+    """The rules above reach the paste review's questions through the week they sit in: every
+    fieldset of choices on the page is inside the review's week section, and each choice of
+    the question about which homework a card is keeps its words, its id among them, in the
+    span the rules wrap."""
+    page = (STYLESHEET.parents[1] / "templates" / "inbox_preview.html").read_text(encoding="utf-8")
+    week = page.split('<section class="review-week">', 1)[1].split("</section>", 1)[0]
+    identity = week.split('<fieldset class="choice identity"', 1)[1].split("</fieldset>", 1)[0]
+
+    assert page.count('<fieldset class="choice') == week.count('<fieldset class="choice') == 4
+    assert identity.count("<label>") == identity.count("<label><input") == 2
+    assert identity.count('"> <span>') == 2
+    assert "Id {{ candidate.assignment_id }}.</span></span></label>" in identity

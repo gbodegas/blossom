@@ -381,6 +381,11 @@ ASSIGNMENTS_CHANGED: Final = (
     "your week as it stands. It stays until a new one is made; plan again when you are "
     "ready."
 )
+HER_ASSIGNMENTS_CHANGED: Final = (
+    "Her assignments or updates differ from the work this plan used, so it does not cover "
+    "her week as it stands. It stays until a new one is made; plan again when she is ready."
+)
+"""The same notice to a parent reading her week."""
 
 
 def over_the_limit(minutes: int) -> str:
@@ -393,6 +398,8 @@ def over_the_limit(minutes: int) -> str:
 
 
 PLAN_INCLUDES_DONE: Final = "This plan includes work you now report as Done."
+SHE_INCLUDES_DONE: Final = "This plan includes work she now reports as Done."
+"""The same notice to a parent reading her week."""
 PLAN_WINDOW_DONE: Final = "Some work in this plan's window is now reported Done."
 """The notice for a plan from before plans carried their ids: a fact about its window and
 no more. What to do about it, when anything can be done, is the stale warning's to say."""
@@ -1454,10 +1461,10 @@ def take_back_help(request: Request, request_id: str, state: State) -> Response:
 
 
 def done_in(
-    record: DraftRecord, found: ReportedDone | None, *, today: date
+    record: DraftRecord, found: ReportedDone | None, *, today: date, reader: Reader = "student"
 ) -> tuple[str, list[NamedAssignmentView]] | None:
-    """In her words, that a plan includes work she reports as done as things stand, and
-    which work, or ``None`` while it includes none.
+    """In the words of ``reader``, that a plan includes work she reports as done as things
+    stand, and which work, or ``None`` while it includes none.
 
     Said for a plan of today's or a later evening, whatever a parent decided:
     a parent's "looks good" is about the plan as it was. ``found`` is what
@@ -1471,7 +1478,7 @@ def done_in(
         return None
     if not found.known:
         return PLAN_WINDOW_DONE, []
-    return PLAN_INCLUDES_DONE, [
+    return SHE_INCLUDES_DONE if reader == "family" else PLAN_INCLUDES_DONE, [
         NamedAssignmentView(assignment_id=name, title=title) for name, title in found.named
     ]
 
@@ -1529,7 +1536,7 @@ def read_a_plan(
         if everything is None:
             everything = read_everything(store, store, also=record.plan_assignment_ids or ())
         updates = plan_updates(store, record, everything=everything)
-        included = done_in(record, updates.done, today=today)
+        included = done_in(record, updates.done, today=today, reader=reader)
         found = staleness(
             state.workload_signals,
             record,
@@ -1546,7 +1553,7 @@ def read_a_plan(
         case Staleness.OVER_THE_LIMIT:
             stale = over_the_limit(limit_now(record, state.settings))
         case Staleness.ASSIGNMENTS_CHANGED:
-            stale = ASSIGNMENTS_CHANGED
+            stale = HER_ASSIGNMENTS_CHANGED if reader == "family" else ASSIGNMENTS_CHANGED
         case None:
             stale = None
     view = StudentPlanView(
@@ -2569,6 +2576,7 @@ def student_page(
     status_code: int = status.HTTP_200_OK,
     today: date | None = None,
     run_notice: RunNotice | None = None,
+    run_asked: bool = False,
     signal_removed: bool = False,
     plan_answer: PlanAnswer | None = None,
     signal_answer: SignalAnswer | None = None,
@@ -2830,6 +2838,7 @@ def student_page(
             "plan_label_mark": PLAN_LABEL_MARK,
             "signal_form": fresh_signal_form(state, today).fields(),
             "run_notice": run_notice,
+            "run_asked": run_asked,
             # A notice about a run of today's evening links the past-due work it kept, as
             # the answer to its press does.
             "notice_checks": () if run_notice is None else date_checks(run_notice.past_due),
@@ -3056,6 +3065,7 @@ def due_this_week(
             earlier_note=chose,
             today=today,
             run_notice=run_notice(state, run, PAGE, parent=parent, today=today),
+            run_asked=run is not None,
             signal_removed=removed,
         )
     except sqlite3.Error as error:
@@ -3156,12 +3166,14 @@ def week_page(
     earlier_note: "EarlierNote | None" = None,
     today: date | None = None,
     run_notice: RunNotice | None = None,
+    run_asked: bool = False,
     signal_removed: bool = False,
 ) -> HTMLResponse:
     """Her week as an address asks for it, with the cards a visit keeps in place, what a
     choice in Earlier homework to check did, what today's panel says about a planning run,
-    and whether an Undo just removed a request of hers, for the household day ``today`` the
-    caller read. A record that cannot be read raises ``sqlite3.Error``."""
+    whether the address asked where a run stands, and whether an Undo just removed a request
+    of hers, for the household day ``today`` the caller read. A record that cannot be read
+    raises ``sqlite3.Error``."""
     if week is None:
         return student_page(
             request,
@@ -3175,6 +3187,7 @@ def week_page(
             earlier_note=earlier_note,
             today=today,
             run_notice=run_notice,
+            run_asked=run_asked,
             signal_removed=signal_removed,
         )
     try:
@@ -3212,6 +3225,7 @@ def week_page(
         earlier_note=earlier_note,
         today=today,
         run_notice=run_notice,
+        run_asked=run_asked,
     )
 
 
