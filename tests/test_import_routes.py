@@ -2360,6 +2360,72 @@ def test_screenshots_still_to_read_or_read_as_something_else_stay_in_view_with_r
     assert above.index('id="where-heading"') < above.index("</form>", above.index("review-form"))
 
 
+def eight_read(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Eight screenshots, every one read as her homework list."""
+    return read_review(browser, monkeypatch, *eight_cards())[1]
+
+
+def some_unread(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """One screenshot read, one whose reading failed and one read as something else."""
+    reader = Reader(monkeypatch)
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    reader.answers[GREEN] = ScreenshotAnswer(homework_answer(image_kind="unsupported"), None, 9, 4)
+    draft_id = made(browser, RED, BLUE, GREEN)
+    unread = browser.get(f"/parent/imports/{draft_id}").text
+    return browser.post(f"/parent/imports/{draft_id}/read", data=read_form(unread)).text
+
+
+def partly_saved(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Two screenshots read and one group saved: the screenshots are fixed."""
+    lab = homework_answer(cards=[homework_card(course="Science 8", title="Lab Report")])
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()), (BLUE, lab))
+    page = her_name_answered(browser, draft_id, page)
+    tick = units_on(page)[:1]
+    return followed(browser, send(browser, draft_id, page_post(page, "save", tick=tick)))
+
+
+def none_read(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Two screenshots not read yet."""
+    return browser.get(f"/parent/imports/{made(browser, RED, BLUE)}").text
+
+
+SCREENSHOT_STATES: Final = {
+    "every screenshot read": eight_read,
+    "some still to read": some_unread,
+    "fixed after a save": partly_saved,
+    "nothing read yet": none_read,
+}
+SCREENSHOTS_HEADING: Final = '<h2 id="screenshots-heading">Screenshots</h2>'
+
+
+@pytest.mark.parametrize("state", list(SCREENSHOT_STATES))
+def test_one_screenshots_heading_leads_the_screenshots_read_wherever_they_are(
+    state: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page's headings name Screenshots once. When the screenshots read follow the review
+    form, that heading leads their section, so heading navigation reaches them; before the
+    review asks anything, it leads the screenshots at the top."""
+    with here(open_settings(tmp_path)) as browser:
+        page = SCREENSHOT_STATES[state](browser, monkeypatch)
+
+    headings = [re.sub(r"<[^>]+>", "", h) for h in re.findall(r"<h2[^>]*>(.*?)</h2>", page, re.S)]
+    assert headings.count("Screenshots") == 1
+    assert page.count(SCREENSHOTS_HEADING) == 1
+    heading = page.index(SCREENSHOTS_HEADING)
+    section = page.rfind("<section", 0, heading)
+    assert 'aria-labelledby="screenshots-heading"' in page[section:heading]
+    fold = FOLD.search(page)
+    if 'id="review-form"' in page:
+        assert fold is not None
+        form_end = page.index("</form>", page.index('id="review-form"'))
+        assert form_end < section < heading < fold.start()
+        assert "</section>" not in page[heading : fold.start()]
+        assert page.index('id="saving-heading"') < heading
+    else:
+        assert fold is None
+        assert headings[0] == "Screenshots"
+
+
 GOES = re.compile(
     r'<p class="jump"><a href="#(saving-\d+)">See what saving does'
     r'<span class="visually-hidden"> for ([^<]+)</span></a></p>'

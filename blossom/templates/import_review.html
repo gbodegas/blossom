@@ -47,16 +47,19 @@
     Once the review asks its questions, a way to the first one still to answer comes first.
     A screenshot still to read, one whose reading failed and one read as something else stay
     in view at the top, above Read, with the note that says why reading waits or why the
-    screenshots are fixed. Before anything is read, every screenshot shows there.
+    screenshots are fixed. Before anything is read, every screenshot shows there. The page
+    names Screenshots in one heading: at the top before the review asks anything, and over
+    the screenshots read once they follow the review form.
   #}
   {% set read = images|selectattr("read")|list %}
   {% set rest = images|rejectattr("read")|list %}
+  {% set read_below = rows and read %}
   {% if rows and rows.first_open %}
     <p class="jump"><a href="#{{ rows.first_open }}">First question to answer</a></p>
   {% endif %}
   {% if not rows or rest or frozen or under_way or no_key or read_ids %}
-  <section class="panel" aria-labelledby="screenshots-heading">
-    <h2 id="screenshots-heading">Screenshots</h2>
+  <section class="panel"{% if not read_below %} aria-labelledby="screenshots-heading"{% endif %}>
+    {% if not read_below %}<h2 id="screenshots-heading">Screenshots</h2>{% endif %}
     {% if read and not rows %}{{ read_fold(read, true, "screenshot-fold") }}{% endif %}
     {% if rest or not read %}
       <ul class="screenshot-list">
@@ -87,7 +90,12 @@
   </section>
   {% endif %}
   {% if rows %}{% include "import_rows.html" %}{% endif %}
-  {% if rows and read %}{{ read_fold(read, false, "panel screenshot-fold") }}{% endif %}
+  {% if read_below %}
+    <section class="panel" aria-labelledby="screenshots-heading">
+      <h2 id="screenshots-heading">Screenshots</h2>
+      {{ read_fold(read, false, "screenshot-fold") }}
+    </section>
+  {% endif %}
   {% if not full and not frozen %}
     <section class="panel" aria-labelledby="more-heading">
       <h2 id="more-heading">Add screenshots</h2>
