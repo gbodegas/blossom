@@ -59,7 +59,7 @@ SAID: Final = {
         "Answers are kept when you submit them. Corrections you type are kept only when you "
         "press Save review for later."
     ),
-    "preselected": "Preselected; kept when you press a button below.",
+    "preselected": "Suggested choice. You can change it.",
     "not_saved_yet": "Not saved yet.",
     "find": "Find under another name\u2026",
     "no_words": "no instructions",
@@ -455,6 +455,10 @@ class PieceControl:
     """What each of its cards said of its dates, as the screenshot showed them."""
     lost: str | None = None
     """Why it asks again when its answer depended on a correction that wasn't kept."""
+    anchor: str = ""
+    """Its fieldset's id on the page, by its place among the open pieces."""
+    goes: str = ""
+    """The id of the group of what saving does that holds it, the one its unit shows."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -483,6 +487,8 @@ class Question:
     carried: tuple[str, str] | None = None
     """For a typed date Blossom can't read: the hidden field that carries it back as typed, and
     its text, so a page posted unchanged keeps it."""
+    anchor: str = ""
+    """Its fieldset's id on the page, by its place among the review's questions."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -530,6 +536,13 @@ class UnitShown:
     refusals: tuple[str, ...]
     offers: tuple[OfferShown, ...]
     leave: str
+    anchor: str = ""
+    """Its id on the page, by its place among the units."""
+    cards: tuple[tuple[str, str], ...] = ()
+    """(legend, fieldset id) of each card of the unit with choices on the page, so each links
+    to the other by what the unit holds."""
+    about: str = ""
+    """The unit's cards by title and place, which its repeated controls' names end with."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -550,6 +563,8 @@ class NameQuestion:
     options: tuple[tuple[str, str, bool], ...]
     remove: tuple[tuple[str, str], ...]
     """Each image "Remove only this screenshot" names, with its button's label."""
+    anchor: str = ""
+    """Its fieldset's id on the page, by its place among the review's questions."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -570,6 +585,8 @@ class RowsShown:
     """The cards that couldn't be read as homework, by screenshot and reason."""
     saved: tuple[str, ...] = ()
     """The cards of this review already saved, each by its title and place."""
+    first_open: str | None = None
+    """The id of the first fieldset, in page order, with no answer chosen or typed."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -976,6 +993,11 @@ def rows_shown(
     shown_groups = []
     asked_dests: set[tuple[str, ...]] = set()
     finds = {piece.name: f"find-{number}" for number, piece in enumerate(open_pieces, 1)}
+    choices_at = {piece.name: f"card-{number}" for number, piece in enumerate(open_pieces, 1)}
+    ordered = sorted(
+        state.validation.units, key=lambda u: min(first_card(state.by_name[n]) for n in u.unit)
+    )
+    held_at = {name: f"saving-{n}" for n, unit in enumerate(ordered, 1) for name in unit.unit}
     for pieces in groups.values():
         controls = tuple(
             PieceControl(
@@ -988,6 +1010,8 @@ def rows_shown(
                 piece_read(p, pieces[0].course),
                 dates_said(p, places),
                 SAID["lost_correction"] if p.name in state.lost else None,
+                choices_at[p.name],
+                held_at[p.name],
             )
             for p in pieces
         )
@@ -1098,9 +1122,6 @@ def rows_shown(
     digests = unit_digests(state)
     forms = [OutsideForm(form_id, "find", (("piece", name),)) for name, form_id in finds.items()]
     shown_units = []
-    ordered = sorted(
-        state.validation.units, key=lambda u: min(first_card(state.by_name[n]) for n in u.unit)
-    )
     for number, unit in enumerate(ordered, 1):
         here = [e for e in state.preview if set(e.pieces) <= set(unit.unit)]
         last_open = set(unit.unit) >= {p.name for p in open_pieces}
@@ -1136,6 +1157,7 @@ def rows_shown(
         leave.append(("check", page_check(page_key, leave)))
         forms.append(OutsideForm(f"leave-{number}", "set-aside", tuple(leave)))
         tickable = unit.ready and not still_any and unit_name(unit.unit) in digests
+        held = sorted((state.by_name[n] for n in unit.unit), key=first_card)
         shown_units.append(
             UnitShown(
                 unit_name(unit.unit),
@@ -1149,6 +1171,13 @@ def rows_shown(
                 refusals,
                 tuple(shown_offers),
                 f"leave-{number}",
+                f"saving-{number}",
+                tuple(
+                    (piece_text(places, m), choices_at[m.name])
+                    for m in held
+                    if m.name in choices_at
+                ),
+                "; ".join(piece_text(places, m) for m in held),
             )
         )
     hidden = [
@@ -1184,6 +1213,17 @@ def rows_shown(
     finishing.append(("check", page_check(page_key, [*finishing, ("action", "finish")])))
     forms.append(OutsideForm("finish", "finish", tuple(finishing)))
     forms.append(signed_action("not-hers", page_key, version))
+    names = [dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(names, 1)]
+    splits = tuple(
+        dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(splits, len(names) + 1)
+    )
+    start = len(names) + len(splits) + 1
+    for index, group in enumerate(shown_groups):
+        asked_here = tuple(
+            dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(group.questions, start)
+        )
+        shown_groups[index] = dataclasses.replace(group, questions=asked_here)
+        start += len(asked_here)
     return RowsShown(
         tuple(names),
         splits,
@@ -1195,7 +1235,26 @@ def rows_shown(
         bool(names) and not state.saved,
         unread_groups,
         tuple(piece_text(places, p) for p in state.pieces if p.name in state.saved),
+        _first_open(names, splits, shown_groups),
     )
+
+
+def _first_open(
+    names: Sequence[NameQuestion], splits: Sequence[Question], groups: Sequence[GroupShown]
+) -> str | None:
+    """The id of the first fieldset, in the order the page shows them, with no option checked
+    and no correction typed: the first question still to answer."""
+
+    def answered(question: Question) -> bool:
+        typed = question.text is not None and bool(question.text[1].strip())
+        return typed or any(checked for _, _, checked in question.options)
+
+    asked = [(q.anchor, any(checked for _, _, checked in q.options)) for q in names]
+    asked += [(q.anchor, answered(q)) for q in splits]
+    for group in groups:
+        asked += [(p.anchor, any(c.checked for c in p.choices)) for p in group.pieces]
+        asked += [(q.anchor, answered(q)) for q in group.questions]
+    return next((anchor for anchor, done in asked if not done), None)
 
 
 def _still_open(

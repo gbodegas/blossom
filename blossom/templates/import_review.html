@@ -15,22 +15,46 @@
       {% for line in said %}<p>{{ line }}</p>{% endfor %}
     </div>
   {% endif %}
-  <section class="panel" aria-labelledby="screenshots-heading">
-    <h2 id="screenshots-heading">Screenshots</h2>
-    <ul class="screenshot-list">
-      {% for image in images %}
+  {#
+    Each screenshot with its label and, while the review is open to changes, its Remove press.
+  #}
+  {% macro shown(image) %}
         <li>
           <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="160"></a>
           <p>Screenshot {{ image.place }}: {{ image.label }}</p>
-          <p><a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot</a></p>
+          <p><a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a></p>
           {% if not frozen %}
             <form method="post" action="/parent/imports/{{ draft_id }}/images/{{ image.id }}/remove">
-              <button type="submit" class="secondary">Remove</button>
+              <button type="submit" class="secondary">Remove<span class="visually-hidden"> screenshot {{ image.place }}</span></button>
             </form>
           {% endif %}
         </li>
-      {% endfor %}
-    </ul>
+  {% endmacro %}
+  <section class="panel" aria-labelledby="screenshots-heading">
+    <h2 id="screenshots-heading">Screenshots</h2>
+    {#
+      The screenshots read as her homework list fold away under their count once the review
+      asks its questions, below a way to the first one still to answer. A screenshot still to
+      read, one whose reading failed and one read as something else stay in view, above Read.
+    #}
+    {% set read = images|selectattr("read")|list %}
+    {% set rest = images|rejectattr("read")|list %}
+    {% if rows and rows.first_open %}
+      <p class="jump"><a href="#{{ rows.first_open }}">First question to answer</a></p>
+    {% endif %}
+    {% if read %}
+      <details class="screenshot-fold"{% if not rows %} open{% endif %}>
+        <summary>{{ read|length }} screenshot{% if read|length != 1 %}s{% endif %} read</summary>
+        <ul class="screenshot-list">
+          {% for image in read %}{{ shown(image) }}{% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+    {% if rest or not read %}
+      <ul class="screenshot-list">
+        {% for image in rest %}{{ shown(image) }}{% endfor %}
+      </ul>
+    {% endif %}
     {% set reads_here = read_ids and not frozen and not under_way and not no_key %}
     {% if frozen %}
       <p class="note">{{ frozen }}</p>

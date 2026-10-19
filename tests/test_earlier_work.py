@@ -30,6 +30,7 @@ from blossom.heuristic_relevance import CRITERIA, CriticVerdict
 from blossom.noticing import PLANNING_DIGEST, canonical_active_input, planning_digest, read_week
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel
+from blossom.routes.navigation import assignment_anchor
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import (
     BEYOND_THE_CALENDAR,
@@ -49,6 +50,7 @@ from blossom.settings import ANTHROPIC_API_KEY_VARIABLE as KEY_VARIABLE
 from blossom.stores.catch_up import ChoiceMade, ChoiceNotSaved, ChoiceStood
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from tests.support import (
+    ARRIVAL_CUE,
     HER_PAGE,
     HERS,
     NOT_UTF8,
@@ -61,6 +63,7 @@ from tests.support import (
     card_for,
     changed_by_hand,
     client_for,
+    declared_for,
     due,
     fixture_clock,
     fixture_settings,
@@ -607,6 +610,65 @@ def test_ten_or_fewer_from_the_last_fourteen_days_need_no_fold() -> None:
 
     assert len(shown_ids(shown)) == 10
     assert "<details" not in section(shown)
+
+
+EARLIER_JUMP = re.compile(
+    r'<p class="support-links"><a href="#earlier-work">Earlier homework to check \((\d+)\)</a></p>'
+)
+
+
+def jump_count(html: str) -> int | None:
+    """The count the link to Earlier homework to check gives, or None with no link."""
+    found = EARLIER_JUMP.findall(html)
+    assert len(found) <= 1
+    return int(found[0]) if found else None
+
+
+@pytest.mark.parametrize("earlier", [10, 12])
+def test_the_week_s_homework_comes_before_earlier_work_which_a_counted_link_reaches(
+    earlier: int,
+) -> None:
+    with household(*due_days_ago(*range(1, earlier + 1)), OCT_3) as client:
+        shown = page(client)
+        other_week = page(client, week="2026-09-21")
+
+    for html in (shown, other_week):
+        jump = EARLIER_JUMP.search(html)
+        assert jump is not None
+        assert jump_count(html) == earlier
+        assert jump.start() < html.index('id="homework"') < html.index('id="earlier-work"')
+        assert len(shown_ids(html)) + len(folded_ids(html)) == earlier
+    assert shown.index('id="today"') < EARLIER_JUMP.search(shown).start()  # type: ignore[union-attr]
+    assert shown.index('id="earlier-ago-01"') > shown.index(
+        f'id="{assignment_anchor(OCT_3.assignment_id)}"'
+    )
+    assert declared_for("#earlier-work:focus") == [ARRIVAL_CUE]
+
+
+def test_with_no_homework_this_week_earlier_work_follows_the_line_that_says_so() -> None:
+    with household(*due_days_ago(8, 9)) as client:
+        shown = page(client)
+
+    assert jump_count(shown) == 2
+    assert shown.index('class="empty"') < shown.index('id="earlier-work"')
+
+
+def test_with_no_earlier_work_there_is_no_link_to_it() -> None:
+    with household(OCT_3) as client:
+        shown = page(client)
+
+    assert jump_count(shown) is None
+    assert 'id="earlier-work"' not in shown
+
+
+def test_a_choice_saved_below_the_week_s_homework_lands_on_its_item() -> None:
+    with household(*due_days_ago(*range(1, 11)), OCT_3) as client:
+        landed = choose(client, "ago-01")
+        after = client.get(landed, headers=PAGE_HEADERS).text
+
+    assert landed.endswith("#earlier-ago-01")
+    assert after.index('id="homework"') < after.index('id="earlier-ago-01"')
+    assert "Added to your choices for today." in words(item_of(after, "ago-01"))
 
 
 def test_choices_for_today_and_yesterday_show_once_whatever_their_age() -> None:

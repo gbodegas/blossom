@@ -33,6 +33,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
+from blossom.drafts import DraftStatus
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
 from blossom.plans import DailyPlan
 from blossom.routes.hand_in import GONE_FROM_THE_LIST
@@ -627,8 +628,9 @@ SHOWN: Final[dict[str, tuple[Callable[[TestClient], None], str]]] = {
 def test_with_no_plan_and_work_left_see_homework_links_to_the_homework(
     case: str, reader: str, tmp_path: pathlib.Path
 ) -> None:
-    """In the plan's place, a plain link to the first card or row still to do. It has no id
-    of its own and asks for no focus, and the homework's heading keeps its id."""
+    """Beside where today stands, a plain link to the first card or row still to do, ahead of
+    help and the planning controls. It has no id of its own and asks for no focus, and the
+    homework's heading keeps its id."""
     make, first = SHOWN[case]
     with reading(reader, tmp_path) as client:
         make(client)
@@ -637,7 +639,10 @@ def test_with_no_plan_and_work_left_see_homework_links_to_the_homework(
 
     today = page[at(page, TODAY) : page.index("</section>", at(page, TODAY))]
     assert page.count(see_homework(first)) == 1
-    assert today.rstrip().endswith(see_homework(first))
+    standing = today.index(NO_PLAN_YET)
+    after_standing = today[today.index("</p>", standing) + len("</p>") :].lstrip()
+    assert after_standing.startswith(see_homework(first))
+    assert today.index(see_homework(first)) < today.index('<div class="actions">')
     landing = lands_on(page, f"#title-{first}")
     assert landing.endswith(f'id="title-{first}" tabindex="-1">')
     assert lands_on(page, "#homework") == HEADING.removesuffix("Due this week</h2>")
@@ -646,7 +651,7 @@ def test_with_no_plan_and_work_left_see_homework_links_to_the_homework(
     assert 'id="todays-plan"' not in page
     no_plan = '<p class="note" id="todays-plan" tabindex="-1" role="status">'
     said = asked.index(f"{no_plan}No plan is saved for today now.</p>")
-    assert said < asked.index(see_homework(first))
+    assert asked.index(see_homework(first)) < said
 
 
 def finished_but_missing(store: ProjectStateStore, name: str) -> None:
@@ -816,6 +821,64 @@ def test_see_homework_is_left_out_with_a_plan_or_nothing_left_and_the_page_says_
         assert today.index('class="support-links"') < today.index("planning window is")
         assert "Planning uses the model provider" not in today
     assert "autofocus" not in page
+
+
+# ------------------------------------------------------------------ her plan first
+
+
+def decided_as(client: TestClient, decision: str) -> None:
+    """Today's plan as a parent's decision leaves it, or left waiting."""
+    if decision == "waiting":
+        return
+    saved = state_of(client).drafts.latest_for(PLAN_DATE)
+    assert saved is not None
+    approved = decision == "approved"
+    state_of(client).drafts.record_decision(
+        saved.draft_id,
+        status=DraftStatus.APPROVED_FOR_MANUAL_SEND if approved else DraftStatus.DRAFT,
+        decision="approved" if approved else "rejected",
+        reason=None if approved else "Synthetic reason",
+    )
+
+
+REVIEWED: Final = {
+    "waiting": "A parent has not reviewed it yet.",
+    "approved": '<div class="from-parents approved">',
+    "change asked": '<div class="from-parents rejected">',
+}
+"""What Today says of a parent's review, by the decision on her plan."""
+SECONDARY: Final = (
+    'action="/student/actions/plan"',
+    'class="note planning-window"',
+    'class="support-links"',
+    'class="notice"',
+)
+"""The planning controls and explanations, and the links to the other lists."""
+
+
+@pytest.mark.parametrize("reader", READERS)
+@pytest.mark.parametrize("decision", list(REVIEWED))
+def test_today_shows_her_plan_before_its_review_and_the_planning_controls(
+    decision: str, reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Her plan follows where today stands, below help and Too much right now, one press
+    each; a parent's review comes after it, and the planning controls after that."""
+    with reading(reader, tmp_path, graphs=planner(fixture_week_plan)) as client:
+        assert client.post(PLAN, data=plan_form(client)).status_code == 303
+        decided_as(client, decision)
+        page = main_of(page_of(client))
+
+    today = page[at(page, TODAY) : page.index("</section>", at(page, TODAY))]
+    plan = today.index('<details class="plan" open>')
+    review = today.index(REVIEWED[decision])
+    to_help = today.index('href="#help"' if reader == "a parent" else 'href="#ask-for-help"')
+    assert today.index('class="standing"') < to_help < plan < review
+    assert (reader == "a parent") == ("Too much right now</button>" not in today)
+    if reader != "a parent":
+        assert today.index("Too much right now</button>") < plan
+    shown = [mark for mark in SECONDARY if mark in today]
+    assert shown
+    assert all(review < today.index(mark) for mark in shown)
 
 
 # ------------------------------------------------------------------ anchors

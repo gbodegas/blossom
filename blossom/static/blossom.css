@@ -513,8 +513,10 @@ article h2 {
 }
 
 /* A link on a line of its own, as tall as a button: the jump at the top of an assignment's
-   details, past the instructions to her update; and on a result's homework page, each other
-   result's title and the way from refused search words to their field. */
+   details, past the instructions to her update; on a result's homework page, each other
+   result's title and the way from refused search words to their field; and on the
+   screenshot review, the way to the first question still to answer, and the ways between a
+   card's choices and what saving does with it. */
 .jump a {
   display: inline-flex;
   align-items: center;
@@ -887,10 +889,13 @@ a.assignment-link:focus-visible {
 /* Places a press or a link lands on. On her week: the homework's heading, the title
    of a card or the name of a row due later, the line for a card not on record now,
    what a save did, the choices of the form Change opens, and the line that says where
-   her request for a shorter plan stands. On an assignment's
+   her request for a shorter plan stands, and Earlier homework to check, which a
+   link near Today reaches. On an assignment's
    details, the evidence and the headings a jump or a section's link lands on, Turning
    it in's among them. On class details, the title of a result a link lands on. On a
-   result's homework page, its heading, where a press or the way in lands. Each
+   result's homework page, its heading, where a press or the way in lands. On the
+   screenshot review, a question or a card's choices, and a group of what saving
+   does, where their links land. Each
    takes the same calm cue, whether a click, a key or a
    redirect brought the focus: a pale wash around the place and a bar of the action
    color at its left, both drawn outside its box so nothing moves, and no outline
@@ -910,6 +915,9 @@ h1#homework:focus,
 .assigned .row-title:focus,
 .card-gone:focus,
 .update .choice:focus,
+#earlier-work:focus,
+.import-review .choice[tabindex="-1"]:focus,
+.import-review article[tabindex="-1"]:focus,
 #too-much-state:focus {
   outline: 3px solid transparent;
   outline-offset: 4px;
@@ -938,11 +946,12 @@ h1#homework:focus,
 }
 
 /* The headings of the week's homework, of Turning it in and of Help, the line that says
-   where her request for a shorter plan stands, and the family page's Help she asked for,
-   stop a little below the top of the screen when a link or a redirect lands on them, so
-   their cue shows whole. */
+   where her request for a shorter plan stands, Earlier homework to check, and the family
+   page's Help she asked for, stop a little below the top of the screen when a link or a
+   redirect lands on them, so their cue shows whole. */
 .list-heading,
 #too-much-state,
+#earlier-work,
 #turning-it-in,
 #help,
 #ask-for-help,

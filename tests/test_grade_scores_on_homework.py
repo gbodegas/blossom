@@ -288,6 +288,12 @@ def ways_in_on(page: str) -> list[tuple[str, str, str]]:
     return [(html.unescape(href), words, html.unescape(name)) for href, name, words in found]
 
 
+def due_later(page: str) -> str:
+    """The section of rows assigned in the week and due later, whole."""
+    start = page.index('<section class="panel assigned">')
+    return page[start : page.index("</section>", start)]
+
+
 def earlier_row(page: str, title: str) -> str:
     found = re.search(
         rf'<li id="earlier-[^"]*" tabindex="-1">\s*<strong>{re.escape(title)}</strong>.*?</li>',
@@ -363,9 +369,7 @@ def test_each_place_that_lists_an_assignment_shows_the_same_line_and_link() -> N
     diagram = [
         (DIAGRAM_LINE, link_to(class_id, ids[DIAGRAM]), f"Grade details: {DIAGRAM}, {BIOLOGY}")
     ]
-    later, done_later = (
-        page[page.index('<section class="panel assigned">') :] for page in (week, done_week)
-    )
+    later, done_later = (due_later(page) for page in (week, done_week))
     outside = apart[apart.index("<h2>Outside the week shown</h2>") :]
     fold = week[week.index('<details class="steps earlier-more"') :]
     assert scores(card_for(week, LOG_ID)) == log
@@ -426,10 +430,7 @@ def test_a_row_writes_grade_details_in_a_paragraph_of_its_own_above_details() ->
         reported(store, "done", DIAGRAM_ID)
         done_week = page_of(client)
 
-    section = '<section class="panel assigned">'
-    bare_later, later, done_later = (
-        page[page.index(section) :] for page in (bare, week, done_week)
-    )
+    bare_later, later, done_later = (due_later(page) for page in (bare, week, done_week))
     fold = week[week.index('<details class="steps earlier-more"') :]
     assert above_details(card_for(later, DIAGRAM_ID), DIAGRAM) == [
         f"Grade details: {DIAGRAM}, {BIOLOGY}"
@@ -3729,9 +3730,7 @@ def test_each_place_shows_the_count_of_an_assignment_s_results_and_one_way_to_th
             store.delete_class_term(class_id, term, revision=preview.revision, role="parent")
         done_bare = as_rendered(client, HER_PAGE)
 
-    later, done_later = (
-        page[page.index('<section class="panel assigned">') :] for page in (week, done_week)
-    )
+    later, done_later = (due_later(page) for page in (week, done_week))
     outside = apart[apart.index("<h2>Outside the week shown</h2>") :]
     fold = week[week.index('<details class="steps earlier-more"') :]
     places = {

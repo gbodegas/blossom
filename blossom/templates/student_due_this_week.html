@@ -73,6 +73,9 @@
         No plan for today yet.
       {% endif %}
     </p>
+    {% if not view.plan and work_left %}
+      <p><a class="to-help" href="{{ see_homework_href }}">See homework</a></p>
+    {% endif %}
     {#
       Where the last plan request stands, when the address names its run or it is
       still being finished: a run still running links to "Check on it.", and one
@@ -110,28 +113,6 @@
         {% if plan_reading %}<a href="{{ todays_plan_href() }}">View today's plan</a>{% endif %}
       </p>
     {% endif %}
-    {% if view.plan and view.plan.decision in ("approved", "rejected") %}
-      <div class="from-parents {{ view.plan.decision }}">
-        <p class="from-heading">{% if parent %}Parent review{% else %}From your parents{% endif %}</p>
-        <p class="from-text">
-          {% if view.plan.decision == "approved" %}
-            Looks good.
-          {% elif view.nothing_to_plan %}
-            A change was asked for on this saved plan.
-          {% else %}
-            A change is asked for; plan again when {% if parent %}she is{% else %}you are{% endif %} ready.
-          {% endif %}
-          {% if view.plan.reason %}<q>{{ view.plan.reason }}</q>{% endif %}
-        </p>
-      </div>
-    {% elif view.plan and view.plan.decision == "expired" %}
-      <p class="note">Nobody reviewed this plan.</p>
-    {% elif view.plan %}
-      <p class="note">
-        A parent has not reviewed it yet.
-        {% if not view.nothing_to_plan %}{% if parent %}She{% else %}You{% endif %} can start anyway.{% endif %}
-      </p>
-    {% endif %}
     {% if view.plan and view.plan.stale %}
       {% if view.nothing_to_plan %}
         <p class="confidence disagree" role="status">
@@ -141,8 +122,6 @@
       {% else %}
         <p class="confidence disagree" role="status"><strong>{{ plan_label }}.</strong> {{ view.plan.stale }}</p>
       {% endif %}
-    {% elif view.plan_uses_limit and parent %}
-      <p class="note">This plan fits within today's {{ view.budget_minutes }}-minute limit.</p>
     {% endif %}
     {#
       The reviewer's verdict is not a check that failed. When it could not
@@ -233,23 +212,104 @@
     {% endset %}
 
     {#
-      With nothing in today's planning window left to plan, nothing here offers a plan
-      or explains planning. The places that hold what is left come first; then, quieter,
-      help and her signal, which she may want whether or not there is anything to plan;
-      and today's planning window, named last.
+      Her support follows where today stands and what she must know about her
+      plan: help and her signal, one press each, whatever a parent decided.
+      Her plan comes next, then a parent's review of it, and only then the
+      planning controls and what they use. With nothing in today's planning
+      window left to plan, nothing here offers a plan or explains planning: the
+      places that hold what is left follow any saved plan, help and her signal
+      come after them, quieter, unless a saved plan is shown, and today's
+      planning window is named last.
     #}
-    {% if view.nothing_to_plan %}
-      {{ places }}
+    {% set quieter %}
       <div class="actions">
         {{ to_help }}
         {{ signal_press }}
       </div>
       {{ signal_said }}
-      <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
-    {% else %}
+    {% endset %}
+    {% if not view.nothing_to_plan %}
       {{ signal_said }}
       <div class="actions">
-        {% if view.can_plan and plan_form %}
+        {{ signal_press }}
+        {{ to_help }}
+      </div>
+    {% elif view.plan %}
+      {{ quieter }}
+    {% endif %}
+
+    {#
+      Today's saved plan, unfolded on every visit, so her next step is on the
+      page without a remembered action: after planning, on a refresh, on the
+      way back from an assignment, and on an ordinary arrival alike, for a
+      plan read by its rows and one read as text, whatever a parent decided
+      and whether or not its work is done. It is a native fold she can close
+      on the page, and nothing remembers that she did. It sits after the
+      notices and her support, help and her signal, one press each, and
+      before a parent's review and the planning controls; Help is below the
+      homework, one link away however long the plan is. The text is the record
+      as saved; nothing is cut or rewritten here.
+
+      The place around the fold has an id of its own, the same whichever plan
+      it holds, and that is where her links to today's plan land: a way back
+      written under one plan is followed later, when another may have taken
+      its place. The place takes the focus and the fold doesn't, since a fold
+      that can take the focus keeps Tab out of everything inside it. The plan
+      inside keeps the id made from its draft. When a link asks for the plan
+      on a day that has none, the place is still there and says so.
+
+      With no plan, the link down to the work left stands beside where today
+      stands, above.
+    #}
+    {% if view.plan %}
+      <div id="{{ todays_plan_id }}" tabindex="-1"{{ lands(request, plan_lands) }}>
+        <details class="plan" open>
+          <summary>Today's saved plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
+          <p class="note">
+            {% if view.plan.too_much %}Kept to a shorter evening because {% if parent %}she{% else %}you{% endif %} said today was too much.{% endif %}
+            Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
+          </p>
+          {% with reading = plan_reading %}{% include "plan_reading.html" %}{% endwith %}
+        </details>
+      </div>
+    {% else %}
+      {% if plan_asked %}
+        <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
+      {% endif %}
+    {% endif %}
+
+    {% if view.plan and view.plan.decision in ("approved", "rejected") %}
+      <div class="from-parents {{ view.plan.decision }}">
+        <p class="from-heading">{% if parent %}Parent review{% else %}From your parents{% endif %}</p>
+        <p class="from-text">
+          {% if view.plan.decision == "approved" %}
+            Looks good.
+          {% elif view.nothing_to_plan %}
+            A change was asked for on this saved plan.
+          {% else %}
+            A change is asked for; plan again when {% if parent %}she is{% else %}you are{% endif %} ready.
+          {% endif %}
+          {% if view.plan.reason %}<q>{{ view.plan.reason }}</q>{% endif %}
+        </p>
+      </div>
+    {% elif view.plan and view.plan.decision == "expired" %}
+      <p class="note">Nobody reviewed this plan.</p>
+    {% elif view.plan %}
+      <p class="note">
+        A parent has not reviewed it yet.
+        {% if not view.nothing_to_plan %}{% if parent %}She{% else %}You{% endif %} can start anyway.{% endif %}
+      </p>
+    {% endif %}
+    {% if view.plan_uses_limit and parent and not (view.plan and view.plan.stale) %}
+      <p class="note">This plan fits within today's {{ view.budget_minutes }}-minute limit.</p>
+    {% endif %}
+    {% if view.nothing_to_plan %}
+      {{ places }}
+      {% if not view.plan %}{{ quieter }}{% endif %}
+      <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
+    {% else %}
+      {% if view.can_plan and plan_form %}
+        <div class="actions">
           <form method="post" action="/student/actions/plan" class="action"
                 data-pending="Making your plan"
                 data-pending-later="Still working. The planner reads your week and writes the plan, which can take up to about a minute and a half"
@@ -258,10 +318,8 @@
             {% for name, value in plan_form.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
             <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure and plan_failure.try_again %}Try again{% else %}{{ plan_label }}{% endif %}</button>
           </form>
-        {% endif %}
-        {{ signal_press }}
-        {{ to_help }}
-      </div>
+        </div>
+      {% endif %}
       {#
         Where the plan button is, what a plan is made from is said beside it, before
         the window's days, in words that suit either reader, and the button names this
@@ -280,52 +338,6 @@
       </p>
       {% endif %}
     {% endif %}
-
-    {#
-      Today's saved plan, unfolded on every visit, so her next step is on the
-      page without a remembered action: after planning, on a refresh, on the
-      way back from an assignment, and on an ordinary arrival alike, for a
-      plan read by its rows and one read as text, whatever a parent decided
-      and whether or not its work is done. It is a native fold she can close
-      on the page, and nothing remembers that she did. It sits after the
-      notices and the controls; help is below the homework, one link away
-      from the controls however long the plan is. The text is the record as
-      saved; nothing is cut or rewritten here.
-
-      The place around the fold has an id of its own, the same whichever plan
-      it holds, and that is where her links to today's plan land: a way back
-      written under one plan is followed later, when another may have taken
-      its place. The place takes the focus and the fold doesn't, since a fold
-      that can take the focus keeps Tab out of everything inside it. The plan
-      inside keeps the id made from its draft. When a link asks for the plan
-      on a day that has none, the place is still there and says so.
-
-      With no plan, and work left in the week shown, a card still to do or a
-      row due later still to do, the plan's place links down to the first of
-      them, whoever reads. It lands on that card or row itself, so the next Tab
-      is inside it and not on a school report or a fold of finished work above
-      it. The link has no id of its own, so the place a link to today's plan
-      lands on is there only when that link asked for it.
-    #}
-    {% if view.plan %}
-      <div id="{{ todays_plan_id }}" tabindex="-1"{{ lands(request, plan_lands) }}>
-        <details class="plan" open>
-          <summary>Today's saved plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
-          <p class="note">
-            {% if view.plan.too_much %}Kept to a shorter evening because {% if parent %}she{% else %}you{% endif %} said today was too much.{% endif %}
-            Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
-          </p>
-          {% with reading = plan_reading %}{% include "plan_reading.html" %}{% endwith %}
-        </details>
-      </div>
-    {% else %}
-      {% if plan_asked %}
-        <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
-      {% endif %}
-      {% if work_left %}
-        <p><a class="to-help" href="{{ see_homework_href }}">See homework</a></p>
-      {% endif %}
-    {% endif %}
   </section>
   {% else %}
     {#
@@ -339,7 +351,13 @@
     <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
   {% endif %}
 
-  {% include "student_earlier_work.html" %}
+  {#
+    Earlier homework to check follows the week's homework, which comes first;
+    near Today a link reaches it, with how many it lists.
+  #}
+  {% if view.earlier %}
+    <p class="support-links"><a href="#earlier-work">Earlier homework to check ({{ view.earlier|length }})</a></p>
+  {% endif %}
 
   {#
     What Done means is said once, above the cards, and each Done button on
@@ -492,6 +510,8 @@
       {% endif %}
     </section>
   {% endif %}
+
+  {% include "student_earlier_work.html" %}
 
   {% if view.week.current %}
     {#
