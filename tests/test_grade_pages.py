@@ -1305,7 +1305,8 @@ JUMP_RULE = (
     ".jump a {\n  display: inline-flex;\n  align-items: center;\n  min-height: 2.75rem;\n}\n"
 )
 """The jump rule, pinned whole with what it covers: a link that stands alone as tall as a
-button, its words at the size they have."""
+button, its words at the size they have. The one other `.jump` in the sheet is the screenshot
+review's rule that lets a card's title break, pinned with that page's rules."""
 
 
 def test_the_jump_rule_is_pinned_and_the_result_s_homework_page_takes_it_for_two_links() -> None:
@@ -1322,7 +1323,8 @@ def test_the_jump_rule_is_pinned_and_the_result_s_homework_page_takes_it_for_two
     )
     review = '<p class="jump"><a href="#search-words">Review your search words</a></p>'
 
-    assert css.count(".jump") == 1
+    assert css.count(".jump") == 2
+    assert css.count(".import-review .jump a,\n") == 1
     assert css.count(JUMP_RULE) == 1
     assert carriers == [
         "grade_result_homework.html",

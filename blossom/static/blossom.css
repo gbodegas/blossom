@@ -2014,8 +2014,9 @@ pre.example {
    size, and the input and its choose button are each as tall as a control, the browser
    keeping its own picker and the names of the files chosen. A date field's side padding goes
    to 2% of the screen's width there, as the plan panel's does.
-   School text, a long title or a link in a card's words among it, breaks inside its panel
-   only where its line can't hold it; a button's or a field's words never do. An
+   School text, a long title or a link in a card's words among it, and a link that names a
+   card by its title, breaks inside its panel only where its line can't hold it; a button's
+   or a field's words never do. An
    instruction's correction box sits under its label, as wide as its fieldset, starts two
    lines tall, not the height of the paste box, and grows as a reader drags it.
    Every screen 320 pixels or wider with ordinary text keeps the ordinary layout. */
@@ -2065,6 +2066,7 @@ pre.example {
 .import-review .effect,
 .import-review .problem,
 .import-review .choice > p,
+.import-review .jump a,
 .import-review li {
   overflow-wrap: anywhere;
 }

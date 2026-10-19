@@ -30,26 +30,34 @@
           {% endif %}
         </li>
   {% endmacro %}
+  {#
+    The screenshots read as her homework list, folded under their count: open on the page
+    when nothing is asked, and closed after the review's questions, preview and presses once
+    something is, so the questions come first whether the fold is opened or not.
+  #}
+  {% macro read_fold(read, opened, classes) %}
+    <details class="{{ classes }}"{% if opened %} open{% endif %}>
+      <summary>{{ read|length }} screenshot{% if read|length != 1 %}s{% endif %} read</summary>
+      <ul class="screenshot-list">
+        {% for image in read %}{{ shown(image) }}{% endfor %}
+      </ul>
+    </details>
+  {% endmacro %}
+  {#
+    Once the review asks its questions, a way to the first one still to answer comes first.
+    A screenshot still to read, one whose reading failed and one read as something else stay
+    in view at the top, above Read, with the note that says why reading waits or why the
+    screenshots are fixed. Before anything is read, every screenshot shows there.
+  #}
+  {% set read = images|selectattr("read")|list %}
+  {% set rest = images|rejectattr("read")|list %}
+  {% if rows and rows.first_open %}
+    <p class="jump"><a href="#{{ rows.first_open }}">First question to answer</a></p>
+  {% endif %}
+  {% if not rows or rest or frozen or under_way or no_key or read_ids %}
   <section class="panel" aria-labelledby="screenshots-heading">
     <h2 id="screenshots-heading">Screenshots</h2>
-    {#
-      The screenshots read as her homework list fold away under their count once the review
-      asks its questions, below a way to the first one still to answer. A screenshot still to
-      read, one whose reading failed and one read as something else stay in view, above Read.
-    #}
-    {% set read = images|selectattr("read")|list %}
-    {% set rest = images|rejectattr("read")|list %}
-    {% if rows and rows.first_open %}
-      <p class="jump"><a href="#{{ rows.first_open }}">First question to answer</a></p>
-    {% endif %}
-    {% if read %}
-      <details class="screenshot-fold"{% if not rows %} open{% endif %}>
-        <summary>{{ read|length }} screenshot{% if read|length != 1 %}s{% endif %} read</summary>
-        <ul class="screenshot-list">
-          {% for image in read %}{{ shown(image) }}{% endfor %}
-        </ul>
-      </details>
-    {% endif %}
+    {% if read and not rows %}{{ read_fold(read, true, "screenshot-fold") }}{% endif %}
     {% if rest or not read %}
       <ul class="screenshot-list">
         {% for image in rest %}{{ shown(image) }}{% endfor %}
@@ -77,7 +85,9 @@
       <div class="actions"><button type="submit" class="secondary" form="{{ discard.id }}">Discard the review</button></div>
     {% endif %}
   </section>
+  {% endif %}
   {% if rows %}{% include "import_rows.html" %}{% endif %}
+  {% if rows and read %}{{ read_fold(read, false, "panel screenshot-fold") }}{% endif %}
   {% if not full and not frozen %}
     <section class="panel" aria-labelledby="more-heading">
       <h2 id="more-heading">Add screenshots</h2>

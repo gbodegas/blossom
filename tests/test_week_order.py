@@ -853,7 +853,8 @@ SECONDARY: Final = (
     'class="support-links"',
     'class="notice"',
 )
-"""The planning controls and explanations, and the links to the other lists."""
+"""The planning controls and explanations, and the links to the other lists: every one of
+them shows with a saved plan and work to plan, whoever reads."""
 
 
 @pytest.mark.parametrize("reader", READERS)
@@ -876,9 +877,8 @@ def test_today_shows_her_plan_before_its_review_and_the_planning_controls(
     assert (reader == "a parent") == ("Too much right now</button>" not in today)
     if reader != "a parent":
         assert today.index("Too much right now</button>") < plan
-    shown = [mark for mark in SECONDARY if mark in today]
-    assert shown
-    assert all(review < today.index(mark) for mark in shown)
+    assert [mark for mark in SECONDARY if mark not in today] == []
+    assert [mark for mark in SECONDARY if today.index(mark) < review] == []
 
 
 def actions_in(today: str) -> list[str]:

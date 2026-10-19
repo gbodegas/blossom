@@ -2237,8 +2237,23 @@ def test_the_review_s_screenshots_are_a_list_without_markers(tmp_path: pathlib.P
 EIGHT = tuple(png(color=(30 * n, 90, 120)) for n in range(1, 9))
 """Eight screenshots, each a color of its own."""
 FOLD = re.compile(
-    r'<details class="screenshot-fold"( open)?>\s*<summary>(.*?)</summary>(.*?)</details>', re.S
+    r'<details class="(?:panel )?screenshot-fold"( open)?>\s*'
+    r"<summary>(.*?)</summary>(.*?)</details>",
+    re.S,
 )
+SHOWN_SCREENSHOT = re.compile(r"<li>\s*<a [^>]*><img [^>]*alt=\"(Screenshot \d+)\"")
+
+
+def screenshots_in(markup: str) -> list[str]:
+    """The screenshots a piece of the review page lists, by their place, in order."""
+    return SHOWN_SCREENSHOT.findall(markup)
+
+
+def beside_the_fold(page: str, fold: re.Match[str]) -> str:
+    """The review page without the fold of screenshots read."""
+    return page[: fold.start()] + page[fold.end() :]
+
+
 FIRST_OPEN = re.compile(r'<p class="jump"><a href="#([a-z]+-\d+)">First question to answer</a></p>')
 
 
@@ -2284,9 +2299,12 @@ def test_read_screenshots_fold_away_under_a_way_to_the_first_question_still_open
         assert link is not None
         assert fold.group(1) is None
         assert fold.group(2) == "8 screenshots read"
-        assert fold.group(3).count("<li>") == 8
-        assert link.start() < fold.start() < shown.index('id="where-heading"')
-        assert 'form="discard"' in shown[fold.end() :]
+        assert screenshots_in(fold.group(3)) == [f"Screenshot {n}" for n in range(1, 9)]
+        assert screenshots_in(beside_the_fold(shown, fold)) == []
+        # Opened or not, the fold follows the whole review form, its questions first.
+        form_end = shown.index("</form>", shown.index('id="review-form"'))
+        assert link.start() < shown.index('id="where-heading"') < form_end < fold.start()
+        assert 'form="discard"' in shown[: fold.start()]
     assert "answer:name:" in first_open(page)
     assert "answer:kind:" in first_open(answered)
     assert declared_for('.import-review .choice[tabindex="-1"]:focus') == [ARRIVAL_CUE]
@@ -2327,17 +2345,19 @@ def test_screenshots_still_to_read_or_read_as_something_else_stay_in_view_with_r
 
     fold = FOLD.search(mixed)
     assert "screenshot-fold" not in unread
-    assert unread.count("<li>") == 3
+    assert screenshots_in(unread) == ["Screenshot 1", "Screenshot 2", "Screenshot 3"]
     assert fold is not None
     assert fold.group(1) is None
     assert fold.group(2) == "1 screenshot read"
-    assert fold.group(3).count("<li>") == 1
-    assert "Screenshot 1:" in fold.group(3)
-    after = mixed[fold.end() :]
-    assert says(after, imports.FAILED["not_json"])
-    assert says(after, imports.LABELS["wrong_kind"])
-    assert f'action="/parent/imports/{draft_id}/read"' in after
-    assert says(after, imports.DISCLOSED)
+    assert screenshots_in(fold.group(3)) == ["Screenshot 1"]
+    above = mixed[: fold.start()]
+    assert screenshots_in(beside_the_fold(mixed, fold)) == ["Screenshot 2", "Screenshot 3"]
+    assert screenshots_in(above) == ["Screenshot 2", "Screenshot 3"]
+    assert says(above, imports.FAILED["not_json"])
+    assert says(above, imports.LABELS["wrong_kind"])
+    assert f'action="/parent/imports/{draft_id}/read"' in above
+    assert says(above, imports.DISCLOSED)
+    assert above.index('id="where-heading"') < above.index("</form>", above.index("review-form"))
 
 
 GOES = re.compile(
@@ -3174,8 +3194,9 @@ def test_after_a_partial_save_the_screenshots_are_fixed_and_a_remove_from_before
     for shown in (partial, reloaded):
         fold = FOLD.search(shown)
         assert fold is not None
-        assert fold.group(3).count("<li>") == 2
-        assert says(shown[fold.end() :], FROZEN)
+        assert screenshots_in(fold.group(3)) == ["Screenshot 1", "Screenshot 2"]
+        assert screenshots_in(beside_the_fold(shown, fold)) == []
+        assert says(beside_the_fold(shown, fold), FROZEN)
         assert "/remove" not in shown
         assert f'action="/parent/imports/{draft_id}/images"' not in shown
         assert f'action="/parent/imports/{draft_id}/read"' not in shown
@@ -3773,7 +3794,7 @@ IMPORT_REVIEW_RULES = (
     "  font-family: var(--font-display);\n  font-weight: 700;\n  cursor: pointer;\n}\n\n"
     ".import-review legend,\n.import-review .note,\n.import-review .source,\n"
     ".import-review .effect,\n.import-review .problem,\n.import-review .choice > p,\n"
-    ".import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
+    ".import-review .jump a,\n.import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
     ".import-review button,\n.import-review input {\n  overflow-wrap: normal;\n}\n\n"
     ".import-review .choice .lines {\n  flex-direction: column;\n  align-items: stretch;\n}\n\n"
     ".import-review textarea {\n  min-height: 3.6rem;\n}\n\n"
@@ -3801,7 +3822,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 24
+    assert css.count("import-review") == 25
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
     for landing in (
@@ -4913,6 +4934,13 @@ SCHOOL_TEXT: Final[dict[str, tuple[str, Callable[[Element], bool]]]] = {
     "the cards it couldn't read": (
         "partly saved",
         lambda e: e.tag == "li" and in_section(e, "unread-heading"),
+    ),
+    "the links back to a card's choices": (
+        "review",
+        lambda e: e.tag == "a"
+        and e.parent is not None
+        and "jump" in e.parent.classes
+        and e.text.startswith("Choices for "),
     ),
 }
 """The closed checklist: each element of the review and find pages that shows school text, by
