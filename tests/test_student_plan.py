@@ -1791,6 +1791,84 @@ def landing(page: str) -> list[str]:
     return re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", page)
 
 
+SCRIPT = pathlib.Path(student_routes.__file__).parents[1] / "static" / "blossom.js"
+GIVEN_BACK = """\
+  /* Back or Forward brings a page back, not its answer arriving again: an answer that takes
+     the focus as it arrives, a press's result or a check on a run, gives the focus back until
+     the reader moves it, so the page doesn't pull it away from where the reader returned. */
+  function settle(event) {
+    var focused = event && event.target && event.target.nodeType === 1
+      ? event.target
+      : document.activeElement;
+    if (focused && focused !== document.body && focused.hasAttribute("autofocus")) {
+      focused.blur();
+    }
+  }
+
+  function moved() {
+    document.removeEventListener("focusin", settle, true);
+    document.removeEventListener("keydown", moved, true);
+    document.removeEventListener("pointerdown", moved, true);
+  }
+
+  if (shownAgain) {
+    retire();
+    if (landing) {
+      land();
+      window.addEventListener("load", land);
+    } else if (arrival.type === "back_forward") {
+      settle();
+      document.addEventListener("focusin", settle, true);
+      document.addEventListener("keydown", moved, true);
+      document.addEventListener("pointerdown", moved, true);
+    }
+  }
+"""
+"""How the script treats a page Back or Forward brings back, whole: a place the address names
+is landed on as before, and otherwise an answer that took the focus as it arrived gives it
+back until the reader moves. Real history in a browser is checked in the evidence."""
+
+
+def test_a_page_brought_back_by_history_gives_back_its_answer_s_focus() -> None:
+    """Only a Back or Forward arrival gives the focus back, and only from an element the page
+    marked to take it as it arrived; a first arrival keeps its landing."""
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert script.count(GIVEN_BACK) == 1
+    assert script.count('focused.hasAttribute("autofocus")') == 1
+    assert script.count('arrival.type === "back_forward"') == 2
+
+
+def test_a_check_on_another_run_lands_nowhere() -> None:
+    """A check naming a run never made, while another run's line shows, and a check naming a
+    published run whose plan is not today's, land on nothing: the line or plan the page
+    shows is about another run."""
+    first = f"plan:{PLAN_DATE.isoformat()}:first"
+    older = f"plan:{PLAN_DATE.isoformat()}:older"
+    newer = f"plan:{PLAN_DATE.isoformat()}:newer"
+    with browser() as client:
+        state = state_of(client)
+        state.drafts.admit_run(
+            first, plan_date=PLAN_DATE, deadline_mono=state.monotonic() + RUN_DEADLINE_SECONDS
+        )
+        never = client.get(f"{PAGE}?run=plan:2026-08-19:never").text
+        state.drafts.end_run(first, reason="timed_out")
+        for name in (older, newer):
+            settled_run(
+                state.drafts,
+                draft(f"draft:{name}", "Plan for Wednesday"),
+                thread_id=name,
+                plan_date=PLAN_DATE,
+            )
+        replaced = client.get(f"{PAGE}?run={older}").text
+        current = client.get(f"{PAGE}?run={newer}").text
+
+    assert run_line(never) is not None
+    assert landing(never) == []
+    assert landing(replaced) == []
+    assert landing(current) == ['<div id="todays-plan" tabindex="-1" autofocus>']
+
+
 def test_a_check_on_a_run_lands_on_where_it_stands_or_on_the_plan_it_published() -> None:
     """Asked by its id, a run still being finished or ended puts the focus on its line, and a
     run that published puts it on today's plan; her week visited without asking takes none,

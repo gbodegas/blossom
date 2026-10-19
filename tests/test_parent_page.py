@@ -1522,6 +1522,17 @@ def test_a_run_asked_for_by_its_id_is_said_on_the_family_page() -> None:
     assert "service_failed" not in line
 
 
+def test_a_check_on_a_run_never_made_lands_nowhere_on_the_family_page() -> None:
+    """A check naming a run never made, while another run's line shows, lands on nothing."""
+    with browser() as client:
+        state = state_of(client)
+        state.drafts.admit_run(FAMILY_RUN, plan_date=TOMORROW, deadline_mono=state.monotonic() + 90)
+        never = client.get("/parent?run=plan:2026-08-19:never").text
+
+    assert run_line(never) is not None
+    assert re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", never) == []
+
+
 def test_a_check_on_a_run_lands_on_its_line_and_a_visit_takes_no_focus() -> None:
     """Asked by its id, a run being made or ended puts the focus on its line on the family
     page; the family page visited without asking takes none, whatever the line says."""
@@ -1568,6 +1579,35 @@ def test_a_check_on_a_run_that_published_lands_on_its_plan_waiting_or_decided() 
     assert focused(visited) == focused(never) == []
     assert "Looks good." in reviewed
     assert focused(reviewed) == [landing]
+
+
+def test_a_check_on_a_run_whose_plan_is_an_earlier_plan_opens_its_folds_and_lands_on_it() -> None:
+    """A checked run whose decided plan is listed under Earlier plans, an approved plan another
+    plan for the evening replaced, opens that list and that plan's fold, and lands on the
+    plan; another visit opens neither."""
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        record = state_of(client).drafts.latest_for(PLAN_DATE)
+        assert record is not None
+        decided = client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        again = client.post("/parent/actions/plan", data=family_plan(client, PLAN_DATE.isoformat()))
+        newest = state_of(client).drafts.latest_for(PLAN_DATE)
+        asked = client.get(f"/parent?run={record.thread_id}").text
+        visited = client.get("/parent").text
+
+    def earlier(page: str) -> str:
+        return page.split("<summary>Earlier plans</summary>", 1)[0].rsplit("<details", 1)[1]
+
+    landing = f'<div class="plan-reading" id="{anchor_for(draft_id)}" tabindex="-1" autofocus>'
+    assert (decided.status_code, again.status_code) == (303, 303)
+    assert newest is not None
+    assert newest.draft_id != draft_id
+    assert " open" in earlier(asked)
+    assert " open" not in earlier(visited)
+    plan = asked.split(landing, 1)[0].rsplit("<details", 1)[1]
+    assert plan.startswith(" open>")
+    assert re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", asked) == [landing]
+    assert "autofocus" not in visited
 
 
 def test_a_run_asked_for_that_adds_nothing_falls_back_on_the_family_page() -> None:

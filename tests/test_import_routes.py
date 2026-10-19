@@ -1142,6 +1142,28 @@ def test_each_press_lands_on_its_answer_and_an_ordinary_visit_takes_no_focus(
     assert focused(gone.text) == ['<p class="problem" role="alert" tabindex="-1" autofocus>']
 
 
+def test_a_visit_to_a_closed_or_missing_review_takes_no_focus_and_a_refused_press_does(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The page that says a review is finished or isn't available takes the focus only as the
+    answer to a press; opened from an address, it takes none."""
+    with here(open_settings(tmp_path)) as browser:
+        closed = made(browser, GREEN)
+        student = state_of(browser).project_state.student_id()
+        store = state_of(browser).import_drafts
+        store.discard_review(student, closed, version=store.snapshot(student, closed).version)
+        visited = browser.get(f"/parent/imports/{closed}")
+        missing = browser.get(f"/parent/imports/{'0' * 32}")
+        refused = upload(browser, BLUE, form={}, to=f"/parent/imports/{closed}/images")
+
+    landing = '<p class="problem" role="alert" tabindex="-1" autofocus>'
+    assert (visited.status_code, missing.status_code, refused.status_code) == (200, 404, 409)
+    assert says(visited.text, imports.SAID["closed"])
+    assert says(missing.text, imports.SAID["absent"])
+    assert focused(visited.text) == focused(missing.text) == []
+    assert focused(refused.text) == [landing]
+
+
 def test_a_page_made_before_a_newer_answer_keeps_nothing_and_says_the_review_changed(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

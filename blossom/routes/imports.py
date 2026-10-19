@@ -267,11 +267,17 @@ def refused_here(marks: object) -> Callable[[Request, Exception], Awaitable[Resp
 
 
 def said_page(request: Request, marks: object, said: str, status: int, *more: str) -> Response:
-    """A page that says why nothing more happened, its first sentence as the alert."""
+    """A page that says why nothing more happened, its first sentence as the alert, which takes
+    the focus when the page answers a press and not when an address opened it."""
     return templates.TemplateResponse(
         request,
         "import_said.html",
-        {"said": [said, *more], "marks": marks, "page": "parent"},
+        {
+            "said": [said, *more],
+            "marks": marks,
+            "page": "parent",
+            "answers_a_press": request.method == "POST",
+        },
         status_code=status,
     )
 

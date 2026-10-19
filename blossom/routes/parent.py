@@ -1156,7 +1156,7 @@ def review_page(
     ``open_plan`` is a plan a link came back to, whose folds are opened.
     ``problem_check`` links the problem to the run it names, and ``run_notice`` is what
     the page says about a planning run. ``run_asked`` is the run the address asked about:
-    its line takes the focus, or, with no line, the plan that run published. ``plan_answer``
+    its own line takes the focus, or, with none, the plan that run published. ``plan_answer``
     is a plan press's answer, whose first sentence takes the focus, so the press lands on
     its opening. A waiting plan no
     review could resume says so in place of its two buttons, as the decision itself refuses
@@ -1231,7 +1231,9 @@ def review_page(
         (
             record.draft_id
             for record in (*records.waiting, *records.decided)
-            if run_asked and run_notice is None and record.thread_id == run_asked
+            if run_asked
+            and (run_notice is None or run_notice.asked_for != run_asked)
+            and record.thread_id == run_asked
         ),
         None,
     )
@@ -1326,7 +1328,6 @@ def review_page(
             "problem_check": problem_check,
             "problem_opening": problem_opening,
             "run_notice": run_notice,
-            "run_asked": run_asked,
             "landing_plan": landing_plan,
             # Open when the latest run of an evening still ahead made no plan, so the
             # parent sees why without looking for it.

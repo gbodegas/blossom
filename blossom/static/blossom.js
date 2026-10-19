@@ -156,11 +156,34 @@
     /* A return to this page lands on its place, not on an offset kept from before. */
     history.scrollRestoration = "manual";
   }
+  /* Back or Forward brings a page back, not its answer arriving again: an answer that takes
+     the focus as it arrives, a press's result or a check on a run, gives the focus back until
+     the reader moves it, so the page doesn't pull it away from where the reader returned. */
+  function settle(event) {
+    var focused = event && event.target && event.target.nodeType === 1
+      ? event.target
+      : document.activeElement;
+    if (focused && focused !== document.body && focused.hasAttribute("autofocus")) {
+      focused.blur();
+    }
+  }
+
+  function moved() {
+    document.removeEventListener("focusin", settle, true);
+    document.removeEventListener("keydown", moved, true);
+    document.removeEventListener("pointerdown", moved, true);
+  }
+
   if (shownAgain) {
     retire();
     if (landing) {
       land();
       window.addEventListener("load", land);
+    } else if (arrival.type === "back_forward") {
+      settle();
+      document.addEventListener("focusin", settle, true);
+      document.addEventListener("keydown", moved, true);
+      document.addEventListener("pointerdown", moved, true);
     }
   }
 
@@ -223,8 +246,12 @@
     });
   }
 
+  /* The page's own Save press shows as done while every Type reads as the page wrote it,
+     and as "Save changes" once one differs, checked again when the page is shown, since the
+     browser may restore a Type after this file first runs. */
   var unchanged = review ? review.querySelector("button.primary[data-unchanged-label]") : null;
-  if (unchanged) {
+
+  function reconcile() {
     var restored = Array.prototype.some.call(
       review.querySelectorAll("select[name^='kind-']"),
       function (select) {
@@ -232,12 +259,20 @@
         return shown !== null && select.value !== shown.value;
       }
     );
-    if (!restored) {
-      unchanged.disabled = true;
+    unchanged.disabled = !restored;
+    unchanged.classList.toggle("done", !restored);
+    if (restored) {
+      unchanged.removeAttribute("aria-disabled");
+      unchanged.textContent = unchanged.dataset.changedLabel;
+    } else {
       unchanged.setAttribute("aria-disabled", "true");
-      unchanged.classList.add("done");
       unchanged.textContent = unchanged.dataset.unchangedLabel;
     }
+  }
+
+  if (unchanged) {
+    reconcile();
+    window.addEventListener("pageshow", reconcile);
   }
 
   document.addEventListener("click", function (event) {

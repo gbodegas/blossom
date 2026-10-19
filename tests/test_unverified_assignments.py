@@ -170,14 +170,26 @@ def test_every_assignment_in_the_window_reaches_the_page(tmp_path: pathlib.Path)
         if item["due_date"] is None
         or monday <= date.fromisoformat(item["due_date"]) <= monday + DUE_THIS_WEEK_SPAN
     ]
+    due_later = [
+        item
+        for item in assignments
+        if item["due_date"] is not None
+        and item["assigned_on"] is not None
+        and date.fromisoformat(item["due_date"]) > monday + DUE_THIS_WEEK_SPAN
+        and monday <= date.fromisoformat(item["assigned_on"]) <= monday + DUE_THIS_WEEK_SPAN
+    ]
     assert len(in_window) == len(assignments) - 3
+    assert due_later
 
     page = student_page(tmp_path)
+    later = page.partition("Assigned this week, due later")[2]
 
     for assignment in in_window:
         assert assignment["title"] in page, f"{assignment['title']} was dropped"
-    later = page.partition("Assigned this week, due later")[2].count('<span class="row-title"')
-    assert page.count("Entered by the family") == len(in_window) + later
+    for assignment in due_later:
+        assert f"<strong>{assignment['title']}</strong>" in later, assignment["title"]
+    assert later.count('<span class="row-title"') == len(due_later)
+    assert page.count("Entered by the family") == len(in_window) + len(due_later)
 
 
 def test_the_view_no_longer_carries_a_fabricated_workload_count() -> None:

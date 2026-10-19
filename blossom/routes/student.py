@@ -2576,7 +2576,7 @@ def student_page(
     status_code: int = status.HTTP_200_OK,
     today: date | None = None,
     run_notice: RunNotice | None = None,
-    run_asked: bool = False,
+    run_asked: str | None = None,
     signal_removed: bool = False,
     plan_answer: PlanAnswer | None = None,
     signal_answer: SignalAnswer | None = None,
@@ -2838,7 +2838,11 @@ def student_page(
             "plan_label_mark": PLAN_LABEL_MARK,
             "signal_form": fresh_signal_form(state, today).fields(),
             "run_notice": run_notice,
-            "run_asked": run_asked,
+            # A check on a run that published, with no line of its own, lands on its plan.
+            "plan_lands": run_asked is not None
+            and (run_notice is None or run_notice.asked_for != run_asked)
+            and record is not None
+            and record.thread_id == run_asked,
             # A notice about a run of today's evening links the past-due work it kept, as
             # the answer to its press does.
             "notice_checks": () if run_notice is None else date_checks(run_notice.past_due),
@@ -3065,7 +3069,7 @@ def due_this_week(
             earlier_note=chose,
             today=today,
             run_notice=run_notice(state, run, PAGE, parent=parent, today=today),
-            run_asked=run is not None,
+            run_asked=run,
             signal_removed=removed,
         )
     except sqlite3.Error as error:
@@ -3166,14 +3170,14 @@ def week_page(
     earlier_note: "EarlierNote | None" = None,
     today: date | None = None,
     run_notice: RunNotice | None = None,
-    run_asked: bool = False,
+    run_asked: str | None = None,
     signal_removed: bool = False,
 ) -> HTMLResponse:
     """Her week as an address asks for it, with the cards a visit keeps in place, what a
     choice in Earlier homework to check did, what today's panel says about a planning run,
-    whether the address asked where a run stands, and whether an Undo just removed a request
-    of hers, for the household day ``today`` the caller read. A record that cannot be read
-    raises ``sqlite3.Error``."""
+    the run the address asked about, and whether an Undo just removed a request of hers, for
+    the household day ``today`` the caller read. A record that cannot be read raises
+    ``sqlite3.Error``."""
     if week is None:
         return student_page(
             request,

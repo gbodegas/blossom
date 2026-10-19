@@ -491,7 +491,8 @@ def test_a_saved_rows_type_is_corrected_with_scripts_off_and_an_untouched_press_
 SCRIPT = pathlib.Path(inbox.__file__).parents[1] / "static" / "blossom.js"
 SHOWN_AS_DONE = """\
   var unchanged = review ? review.querySelector("button.primary[data-unchanged-label]") : null;
-  if (unchanged) {
+
+  function reconcile() {
     var restored = Array.prototype.some.call(
       review.querySelectorAll("select[name^='kind-']"),
       function (select) {
@@ -499,16 +500,26 @@ SHOWN_AS_DONE = """\
         return shown !== null && select.value !== shown.value;
       }
     );
-    if (!restored) {
-      unchanged.disabled = true;
+    unchanged.disabled = !restored;
+    unchanged.classList.toggle("done", !restored);
+    if (restored) {
+      unchanged.removeAttribute("aria-disabled");
+      unchanged.textContent = unchanged.dataset.changedLabel;
+    } else {
       unchanged.setAttribute("aria-disabled", "true");
-      unchanged.classList.add("done");
       unchanged.textContent = unchanged.dataset.unchangedLabel;
     }
   }
+
+  if (unchanged) {
+    reconcile();
+    window.addEventListener("pageshow", reconcile);
+  }
 """
-"""The script's part in the offered Save press, whole: on load it shows the press as done,
-in the words the page gave it, unless the browser restored a changed type."""
+"""The script's part in the offered Save press, whole: when it first runs and again when the
+page is shown, after the browser restores a Type, it shows the press as done in the words the
+page gave it while every Type reads as the page wrote it, and as "Save changes" once one
+differs."""
 
 
 def test_only_the_script_shows_the_offered_save_press_as_done() -> None:
@@ -518,6 +529,7 @@ def test_only_the_script_shows_the_offered_save_press_as_done() -> None:
 
     assert script.count(SHOWN_AS_DONE) == 1
     assert script.count("data-unchanged-label") == 1
+    assert script.count("reconcile") == 3
     assert script.count('review.querySelector("button.primary[disabled]")') == 1
     assert script.count("button.dataset.changedLabel") == 1
 
