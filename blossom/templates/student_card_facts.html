@@ -25,6 +25,11 @@
   details' evidence lists every claim, whatever it says, in one list, so a
   date two channels agree on shows what each of them gave.
 #}
+{#
+  Where the claims are not on this page, as on a row of work due later, ``evidence_href``
+  is the address of the evidence on the assignment's details, and the banner links there
+  by the assignment's name; on the details the banner points down the page.
+#}
 {% set show_date = part|default("all") != "evidence" %}
 {% set show_evidence = part|default("all") != "date" %}
 {% set every_claim = part|default("all") == "evidence" %}
@@ -95,7 +100,7 @@
         {% if show_date %}
         <p class="confidence disagree">
           <strong>Check this date.</strong> Sources disagree about it, and nothing has been chosen for you.
-          {% if not show_evidence %}<a href="#evidence">What the sources say is below.</a>{% endif %}
+          {% if not show_evidence %}{% if evidence_href is defined %}<a href="{{ evidence_href }}" aria-label="See what the sources say: {{ assignment.title }}, {{ assignment.course }}">See what the sources say</a>.{% else %}<a href="#evidence">What the sources say is below.</a>{% endif %}{% endif %}
         </p>
         {% endif %}
         {% if doubted_claims %}
@@ -125,7 +130,7 @@
         <p class="confidence disagree">
           <strong>Check this date.</strong> The school says otherwise.
           {% if assignment.due_date %}It gives a different date from the one recorded.{% else %}It gives a date where none is recorded.{% endif %}
-          {% if not show_evidence %}<a href="#evidence">What the sources say is below.</a>{% endif %}
+          {% if not show_evidence %}{% if evidence_href is defined %}<a href="{{ evidence_href }}" aria-label="See what the sources say: {{ assignment.title }}, {{ assignment.course }}">See what the sources say</a>.{% else %}<a href="#evidence">What the sources say is below.</a>{% endif %}{% endif %}
         </p>
         {% endif %}
         {% if doubted_claims %}

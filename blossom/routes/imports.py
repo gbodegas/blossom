@@ -88,7 +88,7 @@ from blossom.stores.import_drafts import (
     new_creation_token,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
-from blossom.templating import page_templates
+from blossom.templating import answering, page_templates
 from blossom.uploads import Upload, UploadRefused, prepare_upload, read_upload
 
 PREFIX: Final = "/parent/imports"
@@ -267,11 +267,16 @@ def refused_here(marks: object) -> Callable[[Request, Exception], Awaitable[Resp
 
 
 def said_page(request: Request, marks: object, said: str, status: int, *more: str) -> Response:
-    """A page that says why nothing more happened, its first sentence as the alert."""
+    """A page that says why nothing more happened, its first sentence as the alert, which takes
+    the focus when the page answers a press and not when an address opened it."""
     return templates.TemplateResponse(
         request,
         "import_said.html",
-        {"said": [said, *more], "marks": marks, "page": "parent"},
+        {
+            "said": [said, *more],
+            "marks": marks,
+            "page": "parent",
+        },
         status_code=status,
     )
 
@@ -839,6 +844,8 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
     if isinstance(found, Response):
         return found
     said = note_read(state.result_key, draft_id, request.cookies.get(NOTE_COOKIE))
+    if said:
+        answering(request)
     rows = await rows_of(request, state, found, said)
     answer = review_page(request, state, found, said, rows=rows)
     if request.cookies.get(NOTE_COOKIE) is not None:

@@ -535,7 +535,7 @@ SET_BY_THE_SCRIPT: Final = re.compile(
     r"(?<![\w-])(fresh|seen)(?![\w-])|\[\s*class\s*[~|^$*]?=|\[\s*aria-hidden", re.IGNORECASE
 )
 
-SCRIPT: Final = "eb3d1d7681f9cce0f432d0ddc7b16bfa65d772aa3cbb750fc07d207fe679339a"
+SCRIPT: Final = "0c7ad057d9b2c94a13b9821cf9fb3871fd9baf9bd49535ba12b0658272745502"
 """The SHA-256 of blossom.js as checked in a browser: any line of it can reach the petal."""
 
 LIFECYCLE: Final = (
@@ -549,8 +549,7 @@ LIFECYCLE: Final = (
     '(arrival.type === "back_forward" || arrival.type === "reload");',
     """  window.addEventListener("pageshow", function (event) {
     if (event.persisted) {
-      Array.prototype.forEach.call(forms, reset);
-      retire();
+      returned("restored");
     }
   });""",
     """  if (!shownAgain) {

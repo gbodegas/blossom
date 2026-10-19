@@ -6,6 +6,7 @@ import re
 from datetime import UTC, datetime
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -20,6 +21,7 @@ from blossom.retrieval import (
 )
 from blossom.routes.student import WorkloadSignalRequest
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
+from blossom.templating import answering, fresh_answer, lands
 from blossom.tools import TOOL_REGISTRY
 from blossom.views import ParentCheckpointView, StudentAssignmentView, VerifierClaimView
 from tests.support import SAME_ORIGIN, fixture_settings, fresh_signal_fields
@@ -439,3 +441,100 @@ def test_student_due_this_week_renders_disagreement() -> None:
     assert "What the sources say" in response.text
     assert "school portal: 2026-08-21" in response.text
     assert "family entry: 2026-08-22" in response.text
+
+
+# ------------------------------------------------------------------ where an answer lands
+
+TEMPLATES = PACKAGE / "templates"
+LITERAL_AUTOFOCUS = {
+    "family_check_recovery.html": 2,
+    "form_unreadable.html": 1,
+    "grade_add.html": 1,
+    "grade_result_homework.html": 2,
+    "inbox_preview.html": 5,
+    "inbox_unavailable.html": 1,
+    "page_unavailable.html": 1,
+    "parent_review.html": 11,
+    "plans_unavailable.html": 1,
+    "school_instructions_review.html": 1,
+    "sign_in.html": 1,
+    "student_assignment.html": 1,
+    "student_assignment_gone.html": 1,
+    "student_due_this_week.html": 5,
+    "student_earlier_item.html": 1,
+    "student_earlier_work.html": 1,
+    "student_hand_in.html": 3,
+    "student_note.html": 1,
+    "student_note_details.html": 1,
+    "student_note_gone.html": 1,
+    "student_note_help.html": 1,
+    "student_note_new.html": 1,
+    "student_note_search.html": 2,
+    "student_to_turn_in_rows.html": 1,
+    "student_update.html": 4,
+    "student_update_recovery.html": 2,
+}
+"""Every template that writes ``autofocus`` itself, and how often: the landings that are not
+the screenshot review's, the grade check's or a run check's."""
+LANDS_SITES = {
+    "grade_review.html": 1,
+    "import_find.html": 2,
+    "import_review.html": 1,
+    "import_said.html": 1,
+    "parent_review.html": 1,
+    "plan_reading.html": 1,
+    "student_due_this_week.html": 2,
+}
+"""Every place an answer lands only through ``lands``, which writes nothing on a showing that
+is not a fresh answer."""
+ANSWERING_CALLS = {"routes/imports.py": 1, "routes/parent.py": 1, "routes/student.py": 1}
+"""The routes that mark a GET as the first showing of an answer: the screenshot review reading
+a press's note, and her week and the family page asked about a run."""
+
+
+def test_every_landing_and_every_get_that_answers_is_one_the_guard_names() -> None:
+    """A new literal landing, a new place that lands through ``lands`` or a new route marking
+    a GET as an answer fails here, so it is added on purpose and under the same rule."""
+    literal: dict[str, int] = {}
+    through: dict[str, int] = {}
+    for page in sorted(TEMPLATES.glob("*.html")):
+        text = page.read_text(encoding="utf-8")
+        if found := len(re.findall(r"\bautofocus\b", text)):
+            literal[page.name] = found
+        if found := text.count("lands(request"):
+            through[page.name] = found
+    calls: dict[str, int] = {}
+    for module in sorted(PACKAGE.rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        found = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "answering"
+        )
+        if found:
+            calls[module.relative_to(PACKAGE).as_posix()] = found
+
+    assert literal == LITERAL_AUTOFOCUS
+    assert through == LANDS_SITES
+    assert calls == ANSWERING_CALLS
+
+
+def request_for(method: str) -> Request:
+    """A request with nothing but its method, as the seam reads one."""
+    return Request({"type": "http", "method": method, "path": "/", "headers": []})
+
+
+def test_an_answer_lands_on_a_press_or_a_get_marked_as_one_and_nowhere_else() -> None:
+    posted, visited, marked = request_for("POST"), request_for("GET"), request_for("GET")
+    answering(marked)
+
+    assert (fresh_answer(posted), fresh_answer(visited), fresh_answer(marked)) == (
+        True,
+        False,
+        True,
+    )
+    assert lands(posted, True) == lands(marked, True) == " autofocus"
+    assert lands(visited, True) == ""
+    assert lands(posted, False) == lands(marked, False) == ""

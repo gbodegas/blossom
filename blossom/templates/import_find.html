@@ -20,11 +20,12 @@
       <input type="text" id="find-words" name="words" value="{{ words }}" maxlength="200">
       <div class="actions"><button type="submit" class="primary">Find</button></div>
     </form>
-    {% if nothing %}<p class="note">{{ nothing }}</p>{% endif %}
+    {# A search's answer takes the focus: the first result, so the next Tab is its Choose this one, or that nothing matched. Opening the page searches nothing and takes none. #}
+    {% if nothing %}<p class="note" id="find-nothing" tabindex="-1"{{ lands(request, true) }}>{{ nothing }}</p>{% endif %}
     {% for result in results %}
       <form method="post" action="/parent/imports/{{ draft_id }}/review" class="choice">
         {% for name, value in result.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
-        <p>{{ result.label }}</p>
+        <p{% if loop.first %} id="find-first" tabindex="-1"{{ lands(request, true) }}{% endif %}>{{ result.label }}</p>
         <div class="actions"><button type="submit" class="secondary">Choose this one</button></div>
       </form>
     {% endfor %}

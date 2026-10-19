@@ -1372,9 +1372,11 @@ def review_page(
     left_out: list[str] | None = None,
     kept_sentence: str = BOTH_KEPT,
     status_code: int = 200,
+    about_the_name: bool = False,
 ) -> Response:
     """The review of the form's text, with what wasn't processed said first, and the fields and
-    ticks it keeps."""
+    ticks it keeps. ``about_the_name`` says that line asks for the answer about whose report
+    this is, so the question carries it as its description."""
     shown = review_context(review, form.draft, form.text, form.unrecognized, state)
     return templates.TemplateResponse(
         request,
@@ -1391,6 +1393,7 @@ def review_page(
             "recorded": recorded,
             "left_out": left_out,
             "left_out_said": LEFT_OUT,
+            "about_the_name": about_the_name,
         },
         status_code=status_code,
     )
@@ -1646,6 +1649,7 @@ def refused_answers(
         ticks=kept.ticks,
         kept_sentence=kept.sentence,
         status_code=422,
+        about_the_name=posted.answers is None,
     )
 
 

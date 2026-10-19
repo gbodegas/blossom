@@ -16,20 +16,26 @@
   it, so "What is shared" shows what it names.
 
   The third is for the review pages: when everything read is saved already,
-  its Save button is disabled, and a type changed on a card or a question
-  answered hands the button back, as "Save changes"; the card's own line
-  says what the changed type does. On the grade review, an entry picked by
-  hand from a row's list also selects that row's "Choose an existing
-  assignment"; the server still checks the row's answers either way.
+  the page offers its Save button as "Save changes", so a type changed on a
+  card is saved without this file. Here it shows as done until a type
+  changed on a card or a question answered hands it back; a type the browser
+  restored counts as changed. The card's own line says what the changed type
+  does. On the grade review, an entry picked by hand from a row's list also
+  selects that row's "Choose an existing assignment"; the server still checks
+  the row's answers either way.
 
   The fourth is for a page shown again: by the browser's back/forward cache,
   from a copy it kept, or fetched again by Back, Forward or a refresh. A new
   Done the page met her with was seen when it first arrived, so it is retired
   where it stands: the petal holds still, its words are left out of what a
   reader hears, nothing moves and the focus stays. The petal opens on its
-  first arrival only once this file has marked it. A page fetched again lands
-  on the place its address names, as a link there does, instead of an offset
-  kept from the page before her week regrouped.
+  first arrival only once this file has marked it. A page brought back from
+  the cache keeps the focus where the reader left it. A page fetched again
+  lands on the place its address names, as a link there does, instead of an
+  offset kept from the page before her week regrouped; fetched again by Back
+  or Forward with no such place, an answer that took the focus as it arrived
+  gives it back, until the reader's first key or press, or two frames after
+  the page loads.
 */
 (function () {
   "use strict";
@@ -154,20 +160,57 @@
     /* A return to this page lands on its place, not on an offset kept from before. */
     history.scrollRestoration = "manual";
   }
-  if (shownAgain) {
+  /* A page shown again: fetched again by Back, Forward or a refresh, or brought back from
+     the browser's back/forward cache as it was left. Either way a Done it met her with is
+     retired. Brought back from the cache, the page and the focus are as the reader left them,
+     and its controls are handed back. Fetched again, it lands on the place its address names,
+     as a link there does; fetched again by Back or Forward with no such place, an answer
+     that takes the focus as it arrives gives it back, so the page doesn't pull the focus
+     from where the reader returned. */
+  function giveBack() {
+    function settle(event) {
+      var focused = event && event.target && event.target.nodeType === 1
+        ? event.target
+        : document.activeElement;
+      if (focused && focused !== document.body && focused.hasAttribute("autofocus")) {
+        focused.blur();
+      }
+    }
+    function done() {
+      document.removeEventListener("focusin", settle, true);
+      document.removeEventListener("keydown", done, true);
+      document.removeEventListener("pointerdown", done, true);
+    }
+    settle();
+    document.addEventListener("focusin", settle, true);
+    document.addEventListener("keydown", done, true);
+    document.addEventListener("pointerdown", done, true);
+    /* The browser gives an answer the focus in the first frame after the page loads. */
+    window.addEventListener("load", function () {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(done);
+      });
+    });
+  }
+
+  function returned(how) {
     retire();
-    if (landing) {
+    if (how === "restored") {
+      Array.prototype.forEach.call(forms, reset);
+    } else if (landing) {
       land();
       window.addEventListener("load", land);
+    } else if (how === "back_forward") {
+      giveBack();
     }
   }
 
-  /* A page restored from the browser's cache comes back as it was left, busy
-     included; the controls are handed back, and a Done it met her with is retired. */
+  if (shownAgain) {
+    returned(arrival.type);
+  }
   window.addEventListener("pageshow", function (event) {
     if (event.persisted) {
-      Array.prototype.forEach.call(forms, reset);
-      retire();
+      returned("restored");
     }
   });
 
@@ -219,6 +262,35 @@
         button.textContent = button.dataset.changedLabel || button.textContent;
       }
     });
+  }
+
+  /* The page's own Save press shows as done while every Type reads as the page wrote it,
+     and as "Save changes" once one differs, checked again when the page is shown, since the
+     browser may restore a Type after this file first runs. */
+  var unchanged = review ? review.querySelector("button.primary[data-unchanged-label]") : null;
+
+  function reconcile() {
+    var restored = Array.prototype.some.call(
+      review.querySelectorAll("select[name^='kind-']"),
+      function (select) {
+        var shown = select.querySelector("option[selected]");
+        return shown !== null && select.value !== shown.value;
+      }
+    );
+    unchanged.disabled = !restored;
+    unchanged.classList.toggle("done", !restored);
+    if (restored) {
+      unchanged.removeAttribute("aria-disabled");
+      unchanged.textContent = unchanged.dataset.changedLabel;
+    } else {
+      unchanged.setAttribute("aria-disabled", "true");
+      unchanged.textContent = unchanged.dataset.unchangedLabel;
+    }
+  }
+
+  if (unchanged) {
+    reconcile();
+    window.addEventListener("pageshow", reconcile);
   }
 
   document.addEventListener("click", function (event) {

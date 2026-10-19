@@ -13,10 +13,11 @@
   </ol>
   {#
     A page a save or a check answered without saving says first what wasn't processed and
-    why, and keeps the text and every answer that still answers what the review asks.
+    why, and keeps the text and every answer that still answers what the review asks. That
+    line takes the focus, so the next Tab starts from it.
   #}
   {% if said %}
-    <p class="problem" role="alert" id="problem">{% for problem in problems %}{{ problem }} {% endfor %}{{ said }}{% if kept_sentence %} {{ kept_sentence }}{% endif %}{% if recorded %} <a href="{{ recorded }}">See what was saved</a>{% endif %}</p>
+    <p class="problem" role="alert" id="problem" tabindex="-1"{{ lands(request, true) }}>{% for problem in problems %}{{ problem }} {% endfor %}{{ said }}{% if kept_sentence %} {{ kept_sentence }}{% endif %}{% if recorded %} <a href="{{ recorded }}">See what was saved</a>{% endif %}</p>
     {% if left_out %}
       <p class="note">{{ left_out_said }}</p>
       <ul class="unread">
@@ -50,7 +51,7 @@
     <div class="review-main">
       <section class="panel" aria-labelledby="about-heading">
         <h2 id="about-heading">About this report</h2>
-        <fieldset class="choice identity" id="about-this-report">
+        <fieldset class="choice identity" id="about-this-report"{% if about_the_name %} aria-describedby="problem"{% endif %}>
           {% if identity == "matches" %}
             <legend>Shows <span class="authored-text">{{ student_line }}</span></legend>
             <input type="hidden" name="identity" value="shown">

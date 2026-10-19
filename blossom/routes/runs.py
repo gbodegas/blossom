@@ -542,6 +542,9 @@ class RunNotice:
     past_due: tuple[PastDueView, ...] = ()
     """The past-due work a run of today's evening kept, while the plan it was admitted
     against is still the evening's newest, which her week links after the notice."""
+    asked_for: str | None = None
+    """The run a page's ``?run=`` named, when this notice is that run's own; the page lands
+    on it. ``None`` for a notice a page says on load."""
 
 
 STORE_FAILURES: Final = (Unfinished, StoreBusy, WriterBusy, sqlite3.Error)
@@ -721,7 +724,7 @@ def run_notice(
     or that run adds nothing, what the page says on load, so a newer run still shows."""
     asked = None if run_id is None else asked_run(state, run_id, page, parent=parent)
     if asked is not None:
-        return asked
+        return replace(asked, asked_for=run_id)
     return latest_run_notice(state, page, parent=parent, today=today)
 
 

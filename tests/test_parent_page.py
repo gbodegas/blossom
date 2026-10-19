@@ -35,6 +35,7 @@ from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.intake import identity
 from blossom.noticing import read_week
+from blossom.plan_reading import anchor_for
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel
 from blossom.routes import parent as parent_routes
@@ -1519,6 +1520,94 @@ def test_a_run_asked_for_by_its_id_is_said_on_the_family_page() -> None:
     assert "hasn&#39;t changed" not in line
     assert "Your" not in line
     assert "service_failed" not in line
+
+
+def test_a_check_on_a_run_never_made_lands_nowhere_on_the_family_page() -> None:
+    """A check naming a run never made, while another run's line shows, lands on nothing."""
+    with browser() as client:
+        state = state_of(client)
+        state.drafts.admit_run(FAMILY_RUN, plan_date=TOMORROW, deadline_mono=state.monotonic() + 90)
+        never = client.get("/parent?run=plan:2026-08-19:never").text
+
+    assert run_line(never) is not None
+    assert re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", never) == []
+
+
+def test_a_check_on_a_run_lands_on_its_line_and_a_visit_takes_no_focus() -> None:
+    """Asked by its id, a run being made or ended puts the focus on its line on the family
+    page; the family page visited without asking takes none, whatever the line says."""
+    with browser() as client:
+        state = state_of(client)
+        state.drafts.admit_run(FAMILY_RUN, plan_date=TOMORROW, deadline_mono=state.monotonic() + 90)
+        running = client.get(f"/parent?run={FAMILY_RUN}").text
+        visited = client.get("/parent").text
+        state.drafts.end_run(FAMILY_RUN, reason="service_failed")
+        ended = client.get(f"/parent?run={FAMILY_RUN}").text
+
+    def landing(page: str) -> list[str]:
+        return re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", page)
+
+    on_the_line = '<p class="{kind}" role="status" id="plan-run" tabindex="-1" autofocus>'
+    assert landing(running) == [on_the_line.format(kind="note")]
+    assert landing(ended) == [on_the_line.format(kind="confidence disagree")]
+    assert run_line(visited) is not None
+    assert landing(visited) == []
+
+
+def test_a_check_on_a_run_that_published_lands_on_its_plan_waiting_or_decided() -> None:
+    """Asked by its id, a run whose plan was published puts the focus on that plan, waiting
+    for review and once decided as today's plan; the family page visited without asking, and
+    a check on a run never made, take none."""
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        record = state_of(client).drafts.latest_for(PLAN_DATE)
+        assert record is not None
+        asked = f"/parent?run={record.thread_id}"
+        waiting = client.get(asked).text
+        visited = client.get("/parent").text
+        never = client.get("/parent?run=plan:2026-08-19:never").text
+        client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        reviewed = client.get(asked).text
+
+    def focused(page: str) -> list[str]:
+        return re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", page)
+
+    landing = f'<div class="plan-reading" id="{anchor_for(draft_id)}" tabindex="-1" autofocus>'
+    assert record.draft_id == draft_id
+    assert run_line(waiting) is None
+    assert focused(waiting) == [landing]
+    assert focused(visited) == focused(never) == []
+    assert "Looks good." in reviewed
+    assert focused(reviewed) == [landing]
+
+
+def test_a_check_on_a_run_whose_plan_is_an_earlier_plan_opens_its_folds_and_lands_on_it() -> None:
+    """A checked run whose decided plan is listed under Earlier plans, an approved plan another
+    plan for the evening replaced, opens that list and that plan's fold, and lands on the
+    plan; another visit opens neither."""
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        record = state_of(client).drafts.latest_for(PLAN_DATE)
+        assert record is not None
+        decided = client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        again = client.post("/parent/actions/plan", data=family_plan(client, PLAN_DATE.isoformat()))
+        newest = state_of(client).drafts.latest_for(PLAN_DATE)
+        asked = client.get(f"/parent?run={record.thread_id}").text
+        visited = client.get("/parent").text
+
+    def earlier(page: str) -> str:
+        return page.split("<summary>Earlier plans</summary>", 1)[0].rsplit("<details", 1)[1]
+
+    landing = f'<div class="plan-reading" id="{anchor_for(draft_id)}" tabindex="-1" autofocus>'
+    assert (decided.status_code, again.status_code) == (303, 303)
+    assert newest is not None
+    assert newest.draft_id != draft_id
+    assert " open" in earlier(asked)
+    assert " open" not in earlier(visited)
+    plan = asked.split(landing, 1)[0].rsplit("<details", 1)[1]
+    assert plan.startswith(" open>")
+    assert re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", asked) == [landing]
+    assert "autofocus" not in visited
 
 
 def test_a_run_asked_for_that_adds_nothing_falls_back_on_the_family_page() -> None:

@@ -157,7 +157,8 @@ def test_one_channel_saying_a_date_twice_is_still_one_source() -> None:
 
 def test_every_assignment_in_the_window_reaches_the_page(tmp_path: pathlib.Path) -> None:
     """Nothing filters. With no sources, the week is the record's alone, and every
-    item the record puts in the school week is on the page, each saying so."""
+    item the record puts in the school week is on the page, each saying so, as each row
+    assigned this week and due later does."""
     fixtures = pathlib.Path("data/synthetic")
     assignments = json.loads((fixtures / "assignments.json").read_text(encoding="utf-8"))
     (tmp_path / "assignments.json").write_text(json.dumps(assignments), encoding="utf-8")
@@ -169,13 +170,26 @@ def test_every_assignment_in_the_window_reaches_the_page(tmp_path: pathlib.Path)
         if item["due_date"] is None
         or monday <= date.fromisoformat(item["due_date"]) <= monday + DUE_THIS_WEEK_SPAN
     ]
+    due_later = [
+        item
+        for item in assignments
+        if item["due_date"] is not None
+        and item["assigned_on"] is not None
+        and date.fromisoformat(item["due_date"]) > monday + DUE_THIS_WEEK_SPAN
+        and monday <= date.fromisoformat(item["assigned_on"]) <= monday + DUE_THIS_WEEK_SPAN
+    ]
     assert len(in_window) == len(assignments) - 3
+    assert due_later
 
     page = student_page(tmp_path)
+    later = page.partition("Assigned this week, due later")[2]
 
     for assignment in in_window:
         assert assignment["title"] in page, f"{assignment['title']} was dropped"
-    assert page.count("Entered by the family") == len(in_window)
+    for assignment in due_later:
+        assert f"<strong>{assignment['title']}</strong>" in later, assignment["title"]
+    assert later.count('<span class="row-title"') == len(due_later)
+    assert page.count("Entered by the family") == len(in_window) + len(due_later)
 
 
 def test_the_view_no_longer_carries_a_fabricated_workload_count() -> None:
@@ -475,9 +489,11 @@ def test_a_date_in_doubt_is_never_called_today_or_tomorrow(tmp_path: pathlib.Pat
 
 
 def test_every_card_carries_exactly_one_quiet_line_on_the_fixtures() -> None:
+    """So does every row assigned this week and due later."""
     for week in (None, "2026-08-24"):
         page = student_page(week=week)
-        assert page.count('<article class="assignment') == page.count('class="source"')
+        shown = page.count('<article class="assignment') + page.count('<span class="row-title"')
+        assert shown == page.count('class="source"')
 
 
 def test_only_disagreement_and_contradiction_are_made_prominent() -> None:

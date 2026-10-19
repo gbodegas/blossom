@@ -81,7 +81,8 @@ def test_the_sample_page_is_a_plain_week_with_the_reading_log_assigned_for_later
     assert "Reading log" not in cards
     assert "<strong>Reading log</strong> &middot; Humanities" in later
     assert "Due Monday, September 14" in later
-    assert this_week.count('<span class="source">School portal</span>') == 3
+    assert cards.count('<span class="source">School portal</span>') == 3
+    assert later.count('<span class="source">School portal</span>') == 1
     assert 'class="confidence disagree"' not in this_week
     assert "Reading log" in next_week
     assert "Assigned this week, due later" not in next_week

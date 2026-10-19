@@ -78,10 +78,12 @@
       still being finished: a run still running links to "Check on it.", and one
       that ended for today with no newer plan says why, and links to the dates of
       the past-due work it named, as the answer to its press did. A plan that was
-      published adds nothing here; it is shown.
+      published adds nothing here; it is shown. When the address asks where a run
+      stands, this line takes the focus when it is that run's own, or, for a run that
+      published today's plan, the plan does; a line or plan about another run takes none.
     #}
     {% if run_notice %}
-      <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run">{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}{% for work, href in notice_checks %} <a href="{{ href }}">Check the dates for {{ work }}.</a>{% endfor %}</p>
+      <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run"{% if run_notice.asked_for %} tabindex="-1"{{ lands(request, true) }}{% endif %}>{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}{% for work, href in notice_checks %} <a href="{{ href }}">Check the dates for {{ work }}.</a>{% endfor %}</p>
     {% endif %}
     {#
       Work the plan includes that she reports as done is said here,
@@ -91,7 +93,7 @@
     #}
     {% if view.plan and view.plan.reported_done %}
       <p class="confidence disagree" role="status">
-        <strong>Your updates.</strong> {{ view.plan.reported_done }}
+        <strong>{% if parent %}Her{% else %}Your{% endif %} updates.</strong> {{ view.plan.reported_done }}
         {#
           A plan read by its rows names the work as its rows do, by the saved
           title and course, each a link to the assignment's details; a plan
@@ -110,14 +112,14 @@
     {% endif %}
     {% if view.plan and view.plan.decision in ("approved", "rejected") %}
       <div class="from-parents {{ view.plan.decision }}">
-        <p class="from-heading">From your parents</p>
+        <p class="from-heading">{% if parent %}Parent review{% else %}From your parents{% endif %}</p>
         <p class="from-text">
           {% if view.plan.decision == "approved" %}
             Looks good.
           {% elif view.nothing_to_plan %}
             A change was asked for on this saved plan.
           {% else %}
-            A change is asked for; plan again when you are ready.
+            A change is asked for; plan again when {% if parent %}she is{% else %}you are{% endif %} ready.
           {% endif %}
           {% if view.plan.reason %}<q>{{ view.plan.reason }}</q>{% endif %}
         </p>
@@ -127,7 +129,7 @@
     {% elif view.plan %}
       <p class="note">
         A parent has not reviewed it yet.
-        {% if not view.nothing_to_plan %}You can start anyway.{% endif %}
+        {% if not view.nothing_to_plan %}{% if parent %}She{% else %}You{% endif %} can start anyway.{% endif %}
       </p>
     {% endif %}
     {% if view.plan and view.plan.stale %}
@@ -306,7 +308,7 @@
       lands on is there only when that link asked for it.
     #}
     {% if view.plan %}
-      <div id="{{ todays_plan_id }}" tabindex="-1">
+      <div id="{{ todays_plan_id }}" tabindex="-1"{{ lands(request, plan_lands) }}>
         <details class="plan" open>
           <summary>Today's saved plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
           <p class="note">
@@ -456,8 +458,7 @@
         {% for assignment in later_active %}
           <li id="{{ assignment_anchor(assignment.assignment_id) }}">
             <span class="row-title" id="{{ title_anchor(assignment.assignment_id) }}" tabindex="-1"><strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}</span>
-            <p class="due">Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}</p>
-            {% include "student_claim_warning.html" %}
+            {% with due_with_year = assignment.due_date.year != view.week.end.year, today_is = view.today, part = "date", evidence_href = details_href(assignment.assignment_id, fragment="evidence", return_to="week", week=view.week.start.isoformat()) %}{% include "student_card_facts.html" %}{% endwith %}
             {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
             {% with words = assignment.words, to_a_parent = report_contexts[assignment.assignment_id].viewer == "parent", review_href = none %}{% include "school_words.html" %}{% endwith %}{% with scores = school_scores.get(assignment.assignment_id) %}{% if scores and scores|length == 1 %}{% with score = scores[0] %}
             <p class="effect">{{ score.line }}</p>
@@ -476,8 +477,7 @@
             {% for assignment in later_done %}
               <li id="{{ assignment_anchor(assignment.assignment_id) }}">
                 <span class="row-title" id="{{ title_anchor(assignment.assignment_id) }}" tabindex="-1"><strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}</span>
-                <p class="due">Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}</p>
-                {% include "student_claim_warning.html" %}
+                {% with due_with_year = assignment.due_date.year != view.week.end.year, today_is = view.today, part = "date", evidence_href = details_href(assignment.assignment_id, fragment="evidence", return_to="week", week=view.week.start.isoformat()) %}{% include "student_card_facts.html" %}{% endwith %}
                 {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
                 {% with words = assignment.words, to_a_parent = report_contexts[assignment.assignment_id].viewer == "parent", review_href = none %}{% include "school_words.html" %}{% endwith %}{% with scores = school_scores.get(assignment.assignment_id) %}{% if scores and scores|length == 1 %}{% with score = scores[0] %}
                 <p class="effect">{{ score.line }}</p>

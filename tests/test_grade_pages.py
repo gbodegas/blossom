@@ -5035,6 +5035,44 @@ def test_only_an_entry_picked_by_hand_selects_choose_an_existing_assignment() ->
     assert script.count('addEventListener("change"') == 1
 
 
+def test_a_check_answered_without_saving_lands_on_what_it_says_and_a_review_takes_no_focus(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The review as first shown takes no focus; a check that comes back unsaved puts the
+    focus on its first line, the one place on the page that takes it."""
+    with at(open_household(tmp_path)) as browser:
+        shown = browser.post(REVIEW, data={"report_text": REPORT}, headers=PAGE).text
+        form = remembered_review(browser)
+        form.update({"choose.6": form["choices.6"].split()[0], "select.6": "1"})
+        answer = browser.post(CHECK, data=form, headers=PAGE)
+
+    landing = re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", answer.text)
+    assert re.findall(r"\sautofocus\b", shown) == []
+    assert answer.status_code == 422, answer.text
+    assert landing == ['<p class="problem" role="alert" id="problem" tabindex="-1" autofocus>']
+
+
+def test_a_save_without_the_answer_about_her_name_describes_that_question_with_its_line(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The question about whose report this is carries the unsaved answer's line as its
+    description, and takes the focus with it; the review as first shown describes it with
+    nothing."""
+    with at(open_household(tmp_path)) as browser:
+        page = review_page(browser)
+        form = sent_from(page)
+        form.pop("identity", None)
+        answer = browser.post(SAVE, data=form, headers=PAGE)
+
+    assert '<fieldset class="choice identity" id="about-this-report">' in page
+    assert answer.status_code == 422, answer.text
+    assert escape(grade_routes.ANSWER_THE_NAME) in answer.text
+    assert (
+        '<fieldset class="choice identity" id="about-this-report" aria-describedby="problem">'
+    ) in answer.text
+    assert '<p class="problem" role="alert" id="problem" tabindex="-1" autofocus>' in answer.text
+
+
 def test_a_returned_page_keeps_a_remembered_different_beside_a_pick_as_sent(
     tmp_path: pathlib.Path,
 ) -> None:

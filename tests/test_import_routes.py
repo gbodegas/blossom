@@ -37,6 +37,7 @@ from PIL import Image
 from blossom import screenshot_page, screenshot_posts, screenshot_reading, screenshot_save
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
+from blossom.household import UnreadableHouseholdSecret
 from blossom.routes import imports
 from blossom.screenshot_save import (
     CONFIRMABLE,
@@ -1091,6 +1092,108 @@ def test_keep_these_answers_stores_what_the_page_posts_and_says_so(
     assert set(answers.values()) == {'{"new":1}'}
     assert says(after, imports.PRESS_SAID["kept"])
     assert screenshot_page.SAID["preselected"] not in after
+
+
+def focused(page: str) -> list[str]:
+    """Each element of a page that takes the focus as it arrives, as its opening tag."""
+    return re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", page)
+
+
+def test_each_press_lands_on_its_answer_and_an_ordinary_visit_takes_no_focus(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep these answers, a search under another name and a refusal each answer with a page
+    whose answer takes the focus, once; the review opened again, the find page opened with no
+    words, and the review shown again after the answer take none."""
+    other = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([other])
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        visit = browser.get(f"/parent/imports/{draft_id}").text
+        piece = fields_named(review_form(page), "answer:destination:")[0]
+        opened = browser.post(f"/parent/imports/{draft_id}/find", data={"piece": piece}).text
+        found = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
+        ).text
+        nothing = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "zzzz"}
+        ).text
+        gone = browser.post(f"/parent/imports/{draft_id}/find", data={"piece": "x", "words": "a"})
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        again = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert focused(page) == focused(visit) == focused(opened) == focused(again) == []
+    assert focused(kept) == [
+        '<div class="problem" role="status" id="said" tabindex="-1" autofocus>'
+    ]
+    assert says(kept.split('id="said"', 1)[1].split("</div>", 1)[0], imports.PRESS_SAID["kept"])
+    assert focused(found) == ['<p id="find-first" tabindex="-1" autofocus>']
+    assert "Grammar Practice" in found.split('id="find-first"', 1)[1].split("</p>", 1)[0]
+    assert focused(nothing) == ['<p class="note" id="find-nothing" tabindex="-1" autofocus>']
+    assert gone.status_code == 404
+    assert focused(gone.text) == ['<p class="problem" role="alert" tabindex="-1" autofocus>']
+
+
+SAID_LANDS: Final = '<div class="problem" role="status" id="said" tabindex="-1" autofocus>'
+"""The screenshot review's answer block as it takes the focus."""
+
+
+def test_a_visit_that_shows_only_a_warning_takes_no_focus_and_a_press_s_answer_lands_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While her name can't be checked, the review opened from its address says so and takes
+    no focus, since a warning is no answer; the page a press is sent to, here a screenshot
+    already in the review, lands on its answer, the warning under it, and opened again takes
+    none."""
+
+    async def unreadable(*args: object, **kwargs: object) -> bytes:
+        raise UnreadableHouseholdSecret
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(browser, monkeypatch, (RED, homework_answer()))
+        monkeypatch.setattr(imports, "grade_name_key", unreadable)
+        visit = browser.get(f"/parent/imports/{draft_id}").text
+        sent = upload(browser, RED, form={}, to=f"/parent/imports/{draft_id}/images")
+        landed = browser.get(sent.headers["location"]).text
+        again = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert says(visit, imports.SAID["no_name_check"])
+    assert focused(visit) == []
+    assert sent.status_code == 303
+    assert focused(landed) == [SAID_LANDS]
+    assert says(landed, imports.SAID["no_name_check"])
+    assert focused(again) == []
+
+
+def test_a_visit_to_a_closed_or_missing_review_takes_no_focus_and_a_refused_press_does(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The page that says a review is finished or isn't available takes the focus only as the
+    answer to a press; opened from an address, it takes none."""
+    with here(open_settings(tmp_path)) as browser:
+        closed = made(browser, GREEN)
+        student = state_of(browser).project_state.student_id()
+        store = state_of(browser).import_drafts
+        store.discard_review(student, closed, version=store.snapshot(student, closed).version)
+        visited = browser.get(f"/parent/imports/{closed}")
+        missing = browser.get(f"/parent/imports/{'0' * 32}")
+        refused = upload(browser, BLUE, form={}, to=f"/parent/imports/{closed}/images")
+
+    landing = '<p class="problem" role="alert" tabindex="-1" autofocus>'
+    assert (visited.status_code, missing.status_code, refused.status_code) == (200, 404, 409)
+    assert says(visited.text, imports.SAID["closed"])
+    assert says(missing.text, imports.SAID["absent"])
+    assert focused(visited.text) == focused(missing.text) == []
+    assert focused(refused.text) == [landing]
 
 
 def test_a_page_made_before_a_newer_answer_keeps_nothing_and_says_the_review_changed(
@@ -3353,7 +3456,13 @@ IMPORT_REVIEW_RULES = (
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
     ".import-review .panel article {\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
-    '.import-review input[type="file"] {\n  max-width: 100%;\n}\n\n'
+    '.import-review input[type="file"] {\n  max-width: 100%;\n  min-height: 2.75rem;\n'
+    "  font: inherit;\n  font-family: var(--font-body);\n  color: var(--text);\n}\n\n"
+    '.import-review input[type="file"]::file-selector-button {\n  min-height: 2.75rem;\n'
+    "  margin-inline-end: 0.75rem;\n  padding: 0.55rem 1.1rem;\n"
+    "  border: 1.5px solid var(--pink);\n  border-radius: var(--pill);\n"
+    "  background: transparent;\n  color: var(--rose-ink);\n  font: inherit;\n"
+    "  font-family: var(--font-display);\n  font-weight: 700;\n  cursor: pointer;\n}\n\n"
     ".import-review legend,\n.import-review .note,\n.import-review .source,\n"
     ".import-review .effect,\n.import-review .problem,\n.import-review .choice > p,\n"
     ".import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
@@ -3369,7 +3478,8 @@ IMPORT_REVIEW_RULES = (
 """The screenshot review's rules, pinned whole: on a narrow screen with large text its
 fieldsets take the page's width, a panel's side padding gives way and the panel reaches into
 the page's margin, a card inside a panel gives way without reaching further, a file input is
-never wider than its panel, school text breaks where its line can't hold it while a
+never wider than its panel and it and its choose button are as tall as a control in the
+page's type at the reader's text size, school text breaks where its line can't hold it while a
 control's words never do, and an instruction's correction box sits under its label, two lines
 tall to start."""
 STYLESHEET = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
@@ -3383,7 +3493,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 19
+    assert css.count("import-review") == 20
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert carriers == ["import_find.html", "import_review.html", "parent_review.html"]
 
@@ -5768,6 +5878,36 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
         assert says(answer, imports.PRESS_SAID["kept"])
     if press == "later" and committed:
         assert says(answer, imports.PRESS_SAID["later"])
+
+
+@pytest.mark.parametrize("gone", ["expired", "removed"])
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+def test_a_press_on_an_expired_or_removed_review_lands_on_what_it_says(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, gone: str
+) -> None:
+    """Keep these answers, Save review for later and Save on a review that expired, or that the
+    sweep then removed, answer with the page that says so, its first line taking the focus,
+    the typing given back to copy and nothing stored."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, keeping, ready = typed_review(browser, monkeypatch)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        posted = [(n, press if n == "press" else v) for n, v in keeping]
+        if press == "save":
+            posted = [*[f for f in posted if f[0] != "unit"], ("unit", ready)]
+        before = assignment_count(browser)
+        clock_moved_to(monkeypatch, browser, expires + timedelta(hours=2))
+        if gone == "removed":
+            assert state.import_drafts.sweep().expired == 1
+        answer = send(browser, draft_id, posted)
+        after = assignment_count(browser)
+
+    assert answer.status_code == (410 if gone == "expired" else 404)
+    assert says(answer.text, imports.SAID["expired" if gone == "expired" else "absent"])
+    assert sorted(copyable(answer.text)) == sorted([TYPED_WORDS, TYPED_DATE])
+    assert focused(answer.text) == ['<p class="problem" role="alert" tabindex="-1" autofocus>']
+    assert after == before
 
 
 def test_a_press_on_a_review_the_sweep_removed_after_expiry_gives_back_what_was_typed(
