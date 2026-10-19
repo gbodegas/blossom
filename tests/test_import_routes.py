@@ -54,6 +54,7 @@ from blossom.stores.import_drafts import (
 from blossom.stores.project_state import Assignment, AssignmentKind
 from blossom.uploads import as_new_image, prepare_image
 from tests.support import (
+    ARRIVAL_CUE,
     HERS,
     PLAN_DATE,
     THEIRS,
@@ -62,11 +63,16 @@ from tests.support import (
     Rule,
     UnreadCss,
     View,
+    control_names,
+    declared_for,
     elements_of,
+    field_names,
     fixture_settings,
     homework_answer,
     homework_card,
     homework_from_a_note,
+    names_not_led_by_their_words,
+    names_without_their_words,
     selector,
     signed_in,
     signed_in_household,
@@ -2228,6 +2234,389 @@ def test_the_review_s_screenshots_are_a_list_without_markers(tmp_path: pathlib.P
     assert STYLESHEET.read_text(encoding="utf-8").count(SCREENSHOT_LIST_RULE) == 1
 
 
+EIGHT = tuple(png(color=(30 * n, 90, 120)) for n in range(1, 9))
+"""Eight screenshots, each a color of its own."""
+FOLD = re.compile(
+    r'<details class="(?:panel )?screenshot-fold"( open)?>\s*'
+    r"<summary>(.*?)</summary>(.*?)</details>",
+    re.S,
+)
+SHOWN_SCREENSHOT = re.compile(r"<li>\s*<a [^>]*><img [^>]*alt=\"(Screenshot \d+)\"")
+
+
+def screenshots_in(markup: str) -> list[str]:
+    """The screenshots a piece of the review page lists, by their place, in order."""
+    return SHOWN_SCREENSHOT.findall(markup)
+
+
+def beside_the_fold(page: str, fold: re.Match[str]) -> str:
+    """The review page without the fold of screenshots read."""
+    return page[: fold.start()] + page[fold.end() :]
+
+
+FIRST_OPEN = re.compile(r'<p class="jump"><a href="#([a-z]+-\d+)">First question to answer</a></p>')
+
+
+def eight_cards() -> tuple[tuple[bytes, object], ...]:
+    """Eight screenshots, each read as one card of a title of its own."""
+    return tuple(
+        (image, homework_answer(cards=[homework_card(title=f"Practice {n}")]))
+        for n, image in enumerate(EIGHT, 1)
+    )
+
+
+def fieldsets_of(page: str) -> list[tuple[str, str]]:
+    """Each fieldset of the review form, in page order, as (its id, its markup)."""
+    return re.findall(r'<fieldset class="choice" id="([^"]+)"[^>]*>(.*?)</fieldset>', page, re.S)
+
+
+def first_open(page: str) -> str:
+    """The markup of the fieldset the first-question link names, after checking that every
+    fieldset before it has an answer chosen and that it has none."""
+    link = FIRST_OPEN.search(page)
+    assert link is not None
+    shown = fieldsets_of(page)
+    ids = [found for found, _ in shown]
+    assert len(ids) == len(set(ids))
+    assert page.count(f'id="{link.group(1)}"') == 1
+    place = ids.index(link.group(1))
+    assert all(" checked" in markup for _, markup in shown[:place])
+    assert " checked" not in shown[place][1]
+    return shown[place][1]
+
+
+def test_read_screenshots_fold_away_under_a_way_to_the_first_question_still_open(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, *eight_cards())
+        answered = her_name_answered(browser, draft_id, page)
+
+    for shown in (page, answered):
+        fold = FOLD.search(shown)
+        link = FIRST_OPEN.search(shown)
+        assert fold is not None
+        assert link is not None
+        assert fold.group(1) is None
+        assert fold.group(2) == "8 screenshots read"
+        assert screenshots_in(fold.group(3)) == [f"Screenshot {n}" for n in range(1, 9)]
+        assert screenshots_in(beside_the_fold(shown, fold)) == []
+        # Opened or not, the fold follows the whole review form, its questions first.
+        form_end = shown.index("</form>", shown.index('id="review-form"'))
+        assert link.start() < shown.index('id="where-heading"') < form_end < fold.start()
+        assert 'form="discard"' in shown[: fold.start()]
+    assert "answer:name:" in first_open(page)
+    assert "answer:kind:" in first_open(answered)
+    assert declared_for('.import-review .choice[tabindex="-1"]:focus') == [ARRIVAL_CUE]
+
+
+def test_a_correction_refused_as_too_long_is_the_first_question_still_to_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Save review for later with an instruction past its field's length: the review keeps the
+    typing in its box and refuses it, and the first-question link goes to that box's question,
+    whatever else is answered."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, "instruction", "title")
+        [kind] = fields_named(review_form(page), "answer:kind:")
+        keep(browser, draft_id, ("kind", kind, "HOMEWORK"))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        typed = {boxes["instruction"]: LINES_OF_A + "a", boxes["title"]: "Typed title"}
+        refused = followed(browser, send(browser, draft_id, page_post(page, "later", typed=typed)))
+
+    link = FIRST_OPEN.search(refused)
+    box = f'name="{escape(boxes["instruction"])}"'
+    [holding] = [(anchor, markup) for anchor, markup in fieldsets_of(refused) if box in markup]
+    assert 'aria-invalid="true"' in holding[1]
+    assert link is not None
+    assert link.group(1) == holding[0]
+
+
+def test_screenshots_still_to_read_or_read_as_something_else_stay_in_view_with_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    reader.answers[GREEN] = ScreenshotAnswer(homework_answer(image_kind="unsupported"), None, 9, 4)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE, GREEN)
+        unread = browser.get(f"/parent/imports/{draft_id}").text
+        mixed = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(unread)).text
+
+    fold = FOLD.search(mixed)
+    assert "screenshot-fold" not in unread
+    assert screenshots_in(unread) == ["Screenshot 1", "Screenshot 2", "Screenshot 3"]
+    assert fold is not None
+    assert fold.group(1) is None
+    assert fold.group(2) == "1 screenshot read"
+    assert screenshots_in(fold.group(3)) == ["Screenshot 1"]
+    above = mixed[: fold.start()]
+    assert screenshots_in(beside_the_fold(mixed, fold)) == ["Screenshot 2", "Screenshot 3"]
+    assert screenshots_in(above) == ["Screenshot 2", "Screenshot 3"]
+    assert says(above, imports.FAILED["not_json"])
+    assert says(above, imports.LABELS["wrong_kind"])
+    assert f'action="/parent/imports/{draft_id}/read"' in above
+    assert says(above, imports.DISCLOSED)
+    assert above.index('id="where-heading"') < above.index("</form>", above.index("review-form"))
+
+
+def eight_read(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Eight screenshots, every one read as her homework list."""
+    return read_review(browser, monkeypatch, *eight_cards())[1]
+
+
+def some_unread(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """One screenshot read, one whose reading failed and one read as something else."""
+    reader = Reader(monkeypatch)
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    reader.answers[GREEN] = ScreenshotAnswer(homework_answer(image_kind="unsupported"), None, 9, 4)
+    draft_id = made(browser, RED, BLUE, GREEN)
+    unread = browser.get(f"/parent/imports/{draft_id}").text
+    return browser.post(f"/parent/imports/{draft_id}/read", data=read_form(unread)).text
+
+
+def partly_saved(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Two screenshots read and one group saved: the screenshots are fixed."""
+    lab = homework_answer(cards=[homework_card(course="Science 8", title="Lab Report")])
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()), (BLUE, lab))
+    page = her_name_answered(browser, draft_id, page)
+    tick = units_on(page)[:1]
+    return followed(browser, send(browser, draft_id, page_post(page, "save", tick=tick)))
+
+
+def none_read(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Two screenshots not read yet."""
+    return browser.get(f"/parent/imports/{made(browser, RED, BLUE)}").text
+
+
+SCREENSHOT_STATES: Final = {
+    "every screenshot read": eight_read,
+    "some still to read": some_unread,
+    "fixed after a save": partly_saved,
+    "nothing read yet": none_read,
+}
+SCREENSHOTS_HEADING: Final = '<h2 id="screenshots-heading">Screenshots</h2>'
+
+
+@pytest.mark.parametrize("state", list(SCREENSHOT_STATES))
+def test_one_screenshots_heading_leads_the_screenshots_read_wherever_they_are(
+    state: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page's headings name Screenshots once. When the screenshots read follow the review
+    form, that heading leads their section, so heading navigation reaches them; before the
+    review asks anything, it leads the screenshots at the top."""
+    with here(open_settings(tmp_path)) as browser:
+        page = SCREENSHOT_STATES[state](browser, monkeypatch)
+
+    headings = [re.sub(r"<[^>]+>", "", h) for h in re.findall(r"<h2[^>]*>(.*?)</h2>", page, re.S)]
+    assert headings.count("Screenshots") == 1
+    assert page.count(SCREENSHOTS_HEADING) == 1
+    heading = page.index(SCREENSHOTS_HEADING)
+    section = page.rfind("<section", 0, heading)
+    assert 'aria-labelledby="screenshots-heading"' in page[section:heading]
+    fold = FOLD.search(page)
+    if 'id="review-form"' in page:
+        assert fold is not None
+        form_end = page.index("</form>", page.index('id="review-form"'))
+        assert form_end < section < heading < fold.start()
+        assert "</section>" not in page[heading : fold.start()]
+        assert page.index('id="saving-heading"') < heading
+    else:
+        assert fold is None
+        assert headings[0] == "Screenshots"
+
+
+GOES = re.compile(
+    r'<p class="jump"><a href="#(saving-\d+)">See what saving does'
+    r'<span class="visually-hidden"> for ([^<]+)</span></a></p>'
+)
+SAVING = re.compile(
+    r'<article class="assignment" id="(saving-\d+)" tabindex="-1">(.*?)</article>', re.S
+)
+
+
+def links_between(page: str) -> tuple[dict[str, tuple[str, str]], dict[str, list[str]]]:
+    """Each card's choices by its fieldset's id, as (its piece, the group of what saving does
+    its link names); and each group of what saving does by its id, with the cards its links
+    name."""
+    cards = {}
+    for anchor, markup in fieldsets_of(page):
+        piece = re.search(r'name="answer:destination:([^"]+)"', markup)
+        if piece is None:
+            continue
+        goes = GOES.findall(markup)
+        assert len(goes) == 1, markup
+        cards[anchor] = (html.unescape(piece.group(1)), goes[0][0])
+    units = {
+        anchor: re.findall(r'<p class="jump"><a href="#(card-\d+)">', markup)
+        for anchor, markup in SAVING.findall(page)
+    }
+    return cards, units
+
+
+def kinds_answered(browser: TestClient, draft_id: str, page: str) -> str:
+    """The page after every card's Type is kept as homework, so each group can be ticked."""
+    for key in fields_named(review_form(page), "answer:kind:"):
+        keep(browser, draft_id, ("kind", key, "HOMEWORK"))
+    return browser.get(f"/parent/imports/{draft_id}").text
+
+
+def test_each_card_s_choices_and_the_group_of_what_saving_does_holding_it_link_to_each_other(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, *eight_cards())
+        page = kinds_answered(browser, draft_id, her_name_answered(browser, draft_id, page))
+        before = assignment_count(browser)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        )
+        added = assignment_count(browser) - before
+
+    cards, units = links_between(page)
+    held = {
+        anchor: unit.split("+")
+        for anchor, markup in SAVING.findall(page)
+        for unit in re.findall(r'name="unit" value="([^"]+)"', markup)
+    }
+    assert len(cards) == len(units) == len(held) == 8
+    for anchor, (piece, goes) in cards.items():
+        assert piece in held[goes]
+        assert anchor in units[goes]
+    assert sorted(a for linked in units.values() for a in linked) == sorted(cards)
+    assert says(saved, "8 assignments added. 0 updated.")
+    assert added == 8
+
+
+def test_a_destination_two_cards_go_to_is_one_group_both_link_to_and_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        _, page = two_names_found_onto_one_row(browser, monkeypatch, date(2026, 10, 8))
+
+    cards, units = links_between(page)
+    assert len(cards) == 2
+    assert len(units) == 1
+    [(goes, linked)] = units.items()
+    assert {unit for _, unit in cards.values()} == {goes}
+    assert sorted(linked) == sorted(cards)
+
+
+def test_one_title_s_cards_in_groups_of_their_own_each_link_to_their_own_group(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cards = [
+        homework_card(title="Practice", instruction="Page one."),
+        homework_card(title="Practice", instruction="Page two.", y_top=360, y_bottom=450),
+    ]
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=cards)))
+
+    shown, units = links_between(page)
+    where = re.search(r'aria-labelledby="where-heading">.*?</section>', page, re.S)
+    assert where is not None
+    assert where.group(0).count("<h3>") == 1
+    assert len(shown) == 2
+    assert len({goes for _, goes in shown.values()}) == 2
+    assert all(units[goes] == [anchor] for anchor, (_, goes) in shown.items())
+
+
+def test_repeated_controls_of_the_screenshot_review_name_their_card_and_keep_their_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, *eight_cards())
+        page = kinds_answered(browser, draft_id, her_name_answered(browser, draft_id, page))
+
+    shown = control_names(page) + field_names(page)
+    repeated = {
+        words: [name for said, name in shown if said == words]
+        for words in (
+            "Save this group",
+            "Leave this group unsaved",
+            "See what saving does",
+            "Find under another name…",
+            "Remove",
+            "View screenshot",
+        )
+    }
+    assert {words: len(names) for words, names in repeated.items()} == dict.fromkeys(repeated, 8)
+    assert all(len(set(names)) == 8 for names in repeated.values())
+    assert all(
+        re.search(r"Practice \d", name)
+        for words, names in repeated.items()
+        for name in names
+        if words not in ("Remove", "View screenshot")
+    )
+    assert names_without_their_words(page) == names_not_led_by_their_words(page) == []
+    assert "Suggested choice. You can change it." in page
+    assert "Preselected; kept" not in page
+
+
+def two_split_rows(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Alpha and Beta, each read under a Monday and a Tuesday heading: two rows whose assigned
+    days differ, each with its own "Leave this group unsaved"."""
+
+    def day(heading: str) -> object:
+        return homework_answer(
+            headings=[{"text": heading, "y": 150, "uncertain": None}],
+            cards=[
+                homework_card(title="Alpha", footer="Due (10/9/2026)"),
+                homework_card(title="Beta", footer="Due (10/9/2026)", y_top=360, y_bottom=450),
+            ],
+        )
+
+    _, page = read_review(
+        browser, monkeypatch, (RED, day("Monday 10/5/2026")), (BLUE, day("Tuesday 10/6/2026"))
+    )
+    return page
+
+
+def cards_unread(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Two cards that couldn't be read, each with its own "Set aside"."""
+    return read_review(browser, monkeypatch, (RED, unreadable_answer()))[1]
+
+
+def a_refused_group(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A row split into its two days, each kept as new homework: a refused group whose offers
+    each have a "Use this change"."""
+    monday, tuesday = split_answers()
+    draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+    [row] = fields_named(review_form(page), "answer:split:")
+    keep(browser, draft_id, ("split", row, json.dumps("split")))
+    split = browser.get(f"/parent/imports/{draft_id}").text
+    days = fields_named(review_form(split), "answer:destination:")
+    keep(browser, draft_id, *(("destination", d, '{"new":1}') for d in days))
+    return browser.get(f"/parent/imports/{draft_id}").text
+
+
+REPEATING: Final = {
+    "split rows": (two_split_rows, "Leave this group unsaved"),
+    "cards that couldn't be read": (cards_unread, "Set aside"),
+    "a refused group's offers": (a_refused_group, "Use this change"),
+}
+"""Reviews that show a control once per row, card or offer, and that control's words."""
+
+
+@pytest.mark.parametrize("case", list(REPEATING))
+def test_every_repeated_control_of_the_screenshot_review_has_a_name_of_its_own(
+    case: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every button, link and summary shown more than once says which row, card or offer it
+    acts on. A radio's label repeats across questions under each question's own legend, which
+    names its group."""
+    make, words = REPEATING[case]
+    with here(open_settings(tmp_path)) as browser:
+        page = make(browser, monkeypatch)
+
+    by_words: dict[str, list[str]] = {}
+    for said, name in control_names(page):
+        by_words.setdefault(said, []).append(name)
+    assert len(by_words[words]) >= 2
+    assert {said: names for said, names in by_words.items() if len(set(names)) < len(names)} == {}
+    assert names_without_their_words(page) == names_not_led_by_their_words(page) == []
+
+
 # ------------------------------------------------------------------ partial saves and holders
 
 
@@ -2869,7 +3258,11 @@ def test_after_a_partial_save_the_screenshots_are_fixed_and_a_remove_from_before
 
     assert f"/images/{first_image}/remove" in page
     for shown in (partial, reloaded):
-        assert says(shown, FROZEN)
+        fold = FOLD.search(shown)
+        assert fold is not None
+        assert screenshots_in(fold.group(3)) == ["Screenshot 1", "Screenshot 2"]
+        assert screenshots_in(beside_the_fold(shown, fold)) == []
+        assert says(beside_the_fold(shown, fold), FROZEN)
         assert "/remove" not in shown
         assert f'action="/parent/imports/{draft_id}/images"' not in shown
         assert f'action="/parent/imports/{draft_id}/read"' not in shown
@@ -3244,7 +3637,9 @@ def destination_cards(page: str) -> list[str]:
     """Each piece's destination control on the review form, whole."""
     return [
         card
-        for card in re.findall(r'<fieldset class="choice">.*?</fieldset>', review_form(page), re.S)
+        for card in re.findall(
+            r'<fieldset class="choice"[^>]*>.*?</fieldset>', review_form(page), re.S
+        )
         if 'name="answer:destination:' in card
     ]
 
@@ -3465,7 +3860,7 @@ IMPORT_REVIEW_RULES = (
     "  font-family: var(--font-display);\n  font-weight: 700;\n  cursor: pointer;\n}\n\n"
     ".import-review legend,\n.import-review .note,\n.import-review .source,\n"
     ".import-review .effect,\n.import-review .problem,\n.import-review .choice > p,\n"
-    ".import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
+    ".import-review .jump a,\n.import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
     ".import-review button,\n.import-review input {\n  overflow-wrap: normal;\n}\n\n"
     ".import-review .choice .lines {\n  flex-direction: column;\n  align-items: stretch;\n}\n\n"
     ".import-review textarea {\n  min-height: 3.6rem;\n}\n\n"
@@ -3493,8 +3888,14 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 20
+    assert css.count("import-review") == 25
     assert css.count(IMPORT_REVIEW_RULES) == 1
+    assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
+    for landing in (
+        '.import-review .choice[tabindex="-1"]',
+        '.import-review article[tabindex="-1"]',
+    ):
+        assert declared_for(landing) == ["scroll-margin-top: 0.75rem;"]
     assert carriers == ["import_find.html", "import_review.html", "parent_review.html"]
 
 
@@ -4599,6 +5000,13 @@ SCHOOL_TEXT: Final[dict[str, tuple[str, Callable[[Element], bool]]]] = {
     "the cards it couldn't read": (
         "partly saved",
         lambda e: e.tag == "li" and in_section(e, "unread-heading"),
+    ),
+    "the links back to a card's choices": (
+        "review",
+        lambda e: e.tag == "a"
+        and e.parent is not None
+        and "jump" in e.parent.classes
+        and e.text.startswith("Choices for "),
     ),
 }
 """The closed checklist: each element of the review and find pages that shows school text, by

@@ -1298,12 +1298,15 @@ YEAR_RANGE_RULE = ".year-range {\n  display: inline-block;\n}\n"
 
 JUMP_RULE = (
     "/* A link on a line of its own, as tall as a button: the jump at the top of an assignment's\n"
-    "   details, past the instructions to her update; and on a result's homework page, each other\n"
-    "   result's title and the way from refused search words to their field. */\n"
+    "   details, past the instructions to her update; on a result's homework page, each other\n"
+    "   result's title and the way from refused search words to their field; and on the\n"
+    "   screenshot review, the way to the first question still to answer, and the ways between a\n"
+    "   card's choices and what saving does with it. */\n"
     ".jump a {\n  display: inline-flex;\n  align-items: center;\n  min-height: 2.75rem;\n}\n"
 )
 """The jump rule, pinned whole with what it covers: a link that stands alone as tall as a
-button, its words at the size they have."""
+button, its words at the size they have. The one other `.jump` in the sheet is the screenshot
+review's rule that lets a card's title break, pinned with that page's rules."""
 
 
 def test_the_jump_rule_is_pinned_and_the_result_s_homework_page_takes_it_for_two_links() -> None:
@@ -1320,9 +1323,15 @@ def test_the_jump_rule_is_pinned_and_the_result_s_homework_page_takes_it_for_two
     )
     review = '<p class="jump"><a href="#search-words">Review your search words</a></p>'
 
-    assert css.count(".jump") == 1
+    assert css.count(".jump") == 2
+    assert css.count(".import-review .jump a,\n") == 1
     assert css.count(JUMP_RULE) == 1
-    assert carriers == ["grade_result_homework.html", "student_assignment.html"]
+    assert carriers == [
+        "grade_result_homework.html",
+        "import_review.html",
+        "import_rows.html",
+        "student_assignment.html",
+    ]
     assert page.count(other) == page.count(review) == 1
     assert page.count('class="jump"') == 2
     assert page.count('href="#search-words"') == 1

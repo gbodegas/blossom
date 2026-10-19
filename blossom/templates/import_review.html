@@ -15,22 +15,57 @@
       {% for line in said %}<p>{{ line }}</p>{% endfor %}
     </div>
   {% endif %}
-  <section class="panel" aria-labelledby="screenshots-heading">
-    <h2 id="screenshots-heading">Screenshots</h2>
-    <ul class="screenshot-list">
-      {% for image in images %}
+  {#
+    Each screenshot with its label and, while the review is open to changes, its Remove press.
+  #}
+  {% macro shown(image) %}
         <li>
           <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="160"></a>
           <p>Screenshot {{ image.place }}: {{ image.label }}</p>
-          <p><a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot</a></p>
+          <p><a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a></p>
           {% if not frozen %}
             <form method="post" action="/parent/imports/{{ draft_id }}/images/{{ image.id }}/remove">
-              <button type="submit" class="secondary">Remove</button>
+              <button type="submit" class="secondary">Remove<span class="visually-hidden"> screenshot {{ image.place }}</span></button>
             </form>
           {% endif %}
         </li>
-      {% endfor %}
-    </ul>
+  {% endmacro %}
+  {#
+    The screenshots read as her homework list, folded under their count: open on the page
+    when nothing is asked, and closed after the review's questions, preview and presses once
+    something is, so the questions come first whether the fold is opened or not.
+  #}
+  {% macro read_fold(read, opened, classes) %}
+    <details class="{{ classes }}"{% if opened %} open{% endif %}>
+      <summary>{{ read|length }} screenshot{% if read|length != 1 %}s{% endif %} read</summary>
+      <ul class="screenshot-list">
+        {% for image in read %}{{ shown(image) }}{% endfor %}
+      </ul>
+    </details>
+  {% endmacro %}
+  {#
+    Once the review asks its questions, a way to the first one still to answer comes first.
+    A screenshot still to read, one whose reading failed and one read as something else stay
+    in view at the top, above Read, with the note that says why reading waits or why the
+    screenshots are fixed. Before anything is read, every screenshot shows there. The page
+    names Screenshots in one heading: at the top before the review asks anything, and over
+    the screenshots read once they follow the review form.
+  #}
+  {% set read = images|selectattr("read")|list %}
+  {% set rest = images|rejectattr("read")|list %}
+  {% set read_below = rows and read %}
+  {% if rows and rows.first_open %}
+    <p class="jump"><a href="#{{ rows.first_open }}">First question to answer</a></p>
+  {% endif %}
+  {% if not rows or rest or frozen or under_way or no_key or read_ids %}
+  <section class="panel"{% if not read_below %} aria-labelledby="screenshots-heading"{% endif %}>
+    {% if not read_below %}<h2 id="screenshots-heading">Screenshots</h2>{% endif %}
+    {% if read and not rows %}{{ read_fold(read, true, "screenshot-fold") }}{% endif %}
+    {% if rest or not read %}
+      <ul class="screenshot-list">
+        {% for image in rest %}{{ shown(image) }}{% endfor %}
+      </ul>
+    {% endif %}
     {% set reads_here = read_ids and not frozen and not under_way and not no_key %}
     {% if frozen %}
       <p class="note">{{ frozen }}</p>
@@ -53,7 +88,14 @@
       <div class="actions"><button type="submit" class="secondary" form="{{ discard.id }}">Discard the review</button></div>
     {% endif %}
   </section>
+  {% endif %}
   {% if rows %}{% include "import_rows.html" %}{% endif %}
+  {% if read_below %}
+    <section class="panel" aria-labelledby="screenshots-heading">
+      <h2 id="screenshots-heading">Screenshots</h2>
+      {{ read_fold(read, false, "screenshot-fold") }}
+    </section>
+  {% endif %}
   {% if not full and not frozen %}
     <section class="panel" aria-labelledby="more-heading">
       <h2 id="more-heading">Add screenshots</h2>

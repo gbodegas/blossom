@@ -778,12 +778,16 @@ def review_page(
     status: int = 200,
     rows: RowsShown | None = None,
 ) -> Response:
-    """The review: its images with their labels, the Read press for the unread ones when a key
-    is set and no attempt is current, the form that adds more, "Discard the review" whatever
+    """The review: its images with their labels, those read as her homework list marked so
+    the page can fold them away, the Read press for the unread ones when a key is set and no
+    attempt is current, the form that adds more, "Discard the review" whatever
     is read, and once anything is read, the rows with their destinations, questions and the
     group preview."""
     keyed = model_configured(state.settings)
     unread = [image.image_id for image in snapshot.images if not image.read]
+    homework_lists = {
+        reading.sha256 for reading in snapshot.readings if reading.kind == "homework_list"
+    }
     ends = snapshot.attempt_ends
     when = None
     if ends is not None:
@@ -798,7 +802,12 @@ def review_page(
             "draft_id": snapshot.draft_id,
             "until": until_text(state, snapshot.expires_at),
             "images": [
-                {"id": image.image_id, "place": index + 1, "label": label_of(snapshot, index)}
+                {
+                    "id": image.image_id,
+                    "place": index + 1,
+                    "label": label_of(snapshot, index),
+                    "read": image.read and image.sha256 in homework_lists,
+                }
                 for index, image in enumerate(snapshot.images)
             ],
             "said": list(said),
