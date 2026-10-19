@@ -33,10 +33,10 @@
     sentence instead, as the answer built it, so the answer arrives with its
     opening on the screen however long the rest is. A plan press that ended without a plan links on
     to her homework, and to the dates of any assignment it names; the plan
-    button below offers to try again. Its See homework goes where the plan's
-    place sends it: the title of the first card or row still to do in the week
-    shown, or the week's homework heading when none is, so the page never offers
-    two.
+    button below offers to try again. Its See homework goes where the one under
+    where today stands goes: the title of the first card or row still to do in the
+    week shown, or the week's homework heading when none is, so the two never
+    disagree.
   #}
   {% set work_left = (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
   {% set see_homework_href = "#" ~ title_anchor(work_left[0].assignment_id) if work_left else "#homework" %}
@@ -213,7 +213,8 @@
 
     {#
       Her support follows where today stands and what she must know about her
-      plan: help and her signal, one press each, whatever a parent decided.
+      plan: help and her signal, one press each, whatever a parent decided, after
+      the plan button when there is no plan yet.
       Her plan comes next, then a parent's review of it, and only then the
       planning controls and what they use. With nothing in today's planning
       window left to plan, nothing here offers a plan or explains planning: the
@@ -228,9 +229,26 @@
       </div>
       {{ signal_said }}
     {% endset %}
+    {#
+      The plan button: first of her row with no plan yet, as the step that starts her
+      evening; with a plan, among the planning controls after a parent's review.
+    #}
+    {% set plan_press %}
+      {% if view.can_plan and plan_form %}
+      <form method="post" action="/student/actions/plan" class="action"
+            data-pending="Making your plan"
+            data-pending-later="Still working. The planner reads your week and writes the plan, which can take up to about a minute and a half"
+            data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
+        {% if in_place_said %}<input type="hidden" name="in_place" value="{{ in_place_said }}">{% endif %}
+        {% for name, value in plan_form.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+        <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure and plan_failure.try_again %}Try again{% else %}{{ plan_label }}{% endif %}</button>
+      </form>
+      {% endif %}
+    {% endset %}
     {% if not view.nothing_to_plan %}
       {{ signal_said }}
       <div class="actions">
+        {% if not view.plan %}{{ plan_press }}{% endif %}
         {{ signal_press }}
         {{ to_help }}
       </div>
@@ -308,16 +326,9 @@
       {% if not view.plan %}{{ quieter }}{% endif %}
       <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
     {% else %}
-      {% if view.can_plan and plan_form %}
+      {% if view.plan and view.can_plan and plan_form %}
         <div class="actions">
-          <form method="post" action="/student/actions/plan" class="action"
-                data-pending="Making your plan"
-                data-pending-later="Still working. The planner reads your week and writes the plan, which can take up to about a minute and a half"
-                data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
-            {% if in_place_said %}<input type="hidden" name="in_place" value="{{ in_place_said }}">{% endif %}
-            {% for name, value in plan_form.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
-            <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure and plan_failure.try_again %}Try again{% else %}{{ plan_label }}{% endif %}</button>
-          </form>
+          {{ plan_press }}
         </div>
       {% endif %}
       {#

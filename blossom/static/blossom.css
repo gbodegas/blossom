@@ -946,12 +946,15 @@ h1#homework:focus,
 }
 
 /* The headings of the week's homework, of Turning it in and of Help, the line that says
-   where her request for a shorter plan stands, Earlier homework to check, and the family
-   page's Help she asked for, stop a little below the top of the screen when a link or a
+   where her request for a shorter plan stands, Earlier homework to check, the family
+   page's Help she asked for, and on the screenshot review a question, a card's choices and
+   a group of what saving does, stop a little below the top of the screen when a link or a
    redirect lands on them, so their cue shows whole. */
 .list-heading,
 #too-much-state,
 #earlier-work,
+.import-review .choice[tabindex="-1"],
+.import-review article[tabindex="-1"],
 #turning-it-in,
 #help,
 #ask-for-help,

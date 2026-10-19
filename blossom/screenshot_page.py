@@ -382,7 +382,7 @@ def unread_shown(
     """The cards still open that couldn't be read, grouped by screenshot and reason, each with
     what was read of it and a "Set aside" form signed at the page's version."""
     still = set(open_keys)
-    grouped: dict[tuple[int, str], list[tuple[str, str]]] = {}
+    grouped: dict[tuple[int, str], list[tuple[str, str, str]]] = {}
     forms: list[OutsideForm] = []
     for index, item in enumerate(
         sorted(unread, key=lambda u: (places.get(u.sha256, 0), u.place or 0, u.key)), 1
@@ -403,7 +403,11 @@ def unread_shown(
         signed = [("version", str(version)), ("keys", keys)]
         signed.append(("check", page_check(page_key, signed)))
         forms.append(OutsideForm(form_id, "set-aside", tuple(signed)))
-        grouped.setdefault((places.get(item.sha256, 0), group), []).append((where + read, form_id))
+        shot = places.get(item.sha256, 0)
+        about = f"card {item.place + 1}" if item.place is not None else read
+        grouped.setdefault((shot, group), []).append(
+            (where + read, form_id, f"{about} of screenshot {shot}")
+        )
     out = []
     for (place, group), cards in sorted(grouped.items()):
         heading, said = UNREAD_SAID[group]
@@ -489,6 +493,9 @@ class Question:
     its text, so a page posted unchanged keeps it."""
     anchor: str = ""
     """Its fieldset's id on the page, by its place among the review's questions."""
+    about: str = ""
+    """For a split question: its row's title and cards, which its "Leave this group unsaved"
+    names."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -596,8 +603,9 @@ class UnreadGroup:
 
     heading: str
     said: str
-    cards: tuple[tuple[str, str], ...]
-    """(the card's place and what was read of it, the id of its "Set aside" form)."""
+    cards: tuple[tuple[str, str, str], ...]
+    """(the card's place and what was read of it, the id of its "Set aside" form, the card and
+    screenshot its "Set aside" names)."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -931,7 +939,13 @@ def _split_question(
     ]
     options.append((json.dumps("split"), SAID["split_apart"], stored == json.dumps("split")))
     legend = f"{row.reading.title}: {SAID['split']}"
-    return Question(answer_field("split", row.key), legend, tuple(options))
+    cards = "; ".join(card_text(places, c) for day in row.assigned for c in day.sources)
+    return Question(
+        answer_field("split", row.key),
+        legend,
+        tuple(options),
+        about=f"{row.reading.title} ({cards})",
+    )
 
 
 def rows_shown(
@@ -1243,9 +1257,12 @@ def _first_open(
     names: Sequence[NameQuestion], splits: Sequence[Question], groups: Sequence[GroupShown]
 ) -> str | None:
     """The id of the first fieldset, in the order the page shows them, with no option checked
-    and no correction typed: the first question still to answer."""
+    and no correction typed, or whose typing was refused: the first question still to
+    answer."""
 
     def answered(question: Question) -> bool:
+        if question.refused:
+            return False
         typed = question.text is not None and bool(question.text[1].strip())
         return typed or any(checked for _, _, checked in question.options)
 

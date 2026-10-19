@@ -2292,6 +2292,28 @@ def test_read_screenshots_fold_away_under_a_way_to_the_first_question_still_open
     assert declared_for('.import-review .choice[tabindex="-1"]:focus') == [ARRIVAL_CUE]
 
 
+def test_a_correction_refused_as_too_long_is_the_first_question_still_to_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Save review for later with an instruction past its field's length: the review keeps the
+    typing in its box and refuses it, and the first-question link goes to that box's question,
+    whatever else is answered."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, "instruction", "title")
+        [kind] = fields_named(review_form(page), "answer:kind:")
+        keep(browser, draft_id, ("kind", kind, "HOMEWORK"))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        typed = {boxes["instruction"]: LINES_OF_A + "a", boxes["title"]: "Typed title"}
+        refused = followed(browser, send(browser, draft_id, page_post(page, "later", typed=typed)))
+
+    link = FIRST_OPEN.search(refused)
+    box = f'name="{escape(boxes["instruction"])}"'
+    [holding] = [(anchor, markup) for anchor, markup in fieldsets_of(refused) if box in markup]
+    assert 'aria-invalid="true"' in holding[1]
+    assert link is not None
+    assert link.group(1) == holding[0]
+
+
 def test_screenshots_still_to_read_or_read_as_something_else_stay_in_view_with_read(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2443,6 +2465,70 @@ def test_repeated_controls_of_the_screenshot_review_name_their_card_and_keep_the
     assert names_without_their_words(page) == names_not_led_by_their_words(page) == []
     assert "Suggested choice. You can change it." in page
     assert "Preselected; kept" not in page
+
+
+def two_split_rows(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Alpha and Beta, each read under a Monday and a Tuesday heading: two rows whose assigned
+    days differ, each with its own "Leave this group unsaved"."""
+
+    def day(heading: str) -> object:
+        return homework_answer(
+            headings=[{"text": heading, "y": 150, "uncertain": None}],
+            cards=[
+                homework_card(title="Alpha", footer="Due (10/9/2026)"),
+                homework_card(title="Beta", footer="Due (10/9/2026)", y_top=360, y_bottom=450),
+            ],
+        )
+
+    _, page = read_review(
+        browser, monkeypatch, (RED, day("Monday 10/5/2026")), (BLUE, day("Tuesday 10/6/2026"))
+    )
+    return page
+
+
+def cards_unread(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Two cards that couldn't be read, each with its own "Set aside"."""
+    return read_review(browser, monkeypatch, (RED, unreadable_answer()))[1]
+
+
+def a_refused_group(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A row split into its two days, each kept as new homework: a refused group whose offers
+    each have a "Use this change"."""
+    monday, tuesday = split_answers()
+    draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+    [row] = fields_named(review_form(page), "answer:split:")
+    keep(browser, draft_id, ("split", row, json.dumps("split")))
+    split = browser.get(f"/parent/imports/{draft_id}").text
+    days = fields_named(review_form(split), "answer:destination:")
+    keep(browser, draft_id, *(("destination", d, '{"new":1}') for d in days))
+    return browser.get(f"/parent/imports/{draft_id}").text
+
+
+REPEATING: Final = {
+    "split rows": (two_split_rows, "Leave this group unsaved"),
+    "cards that couldn't be read": (cards_unread, "Set aside"),
+    "a refused group's offers": (a_refused_group, "Use this change"),
+}
+"""Reviews that show a control once per row, card or offer, and that control's words."""
+
+
+@pytest.mark.parametrize("case", list(REPEATING))
+def test_every_repeated_control_of_the_screenshot_review_has_a_name_of_its_own(
+    case: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every button, link and summary shown more than once says which row, card or offer it
+    acts on. A radio's label repeats across questions under each question's own legend, which
+    names its group."""
+    make, words = REPEATING[case]
+    with here(open_settings(tmp_path)) as browser:
+        page = make(browser, monkeypatch)
+
+    by_words: dict[str, list[str]] = {}
+    for said, name in control_names(page):
+        by_words.setdefault(said, []).append(name)
+    assert len(by_words[words]) >= 2
+    assert {said: names for said, names in by_words.items() if len(set(names)) < len(names)} == {}
+    assert names_without_their_words(page) == names_not_led_by_their_words(page) == []
 
 
 # ------------------------------------------------------------------ partial saves and holders
@@ -3715,9 +3801,14 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 22
+    assert css.count("import-review") == 24
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
+    for landing in (
+        '.import-review .choice[tabindex="-1"]',
+        '.import-review article[tabindex="-1"]',
+    ):
+        assert declared_for(landing) == ["scroll-margin-top: 0.75rem;"]
     assert carriers == ["import_find.html", "import_review.html", "parent_review.html"]
 
 

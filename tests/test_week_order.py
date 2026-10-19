@@ -881,6 +881,90 @@ def test_today_shows_her_plan_before_its_review_and_the_planning_controls(
     assert all(review < today.index(mark) for mark in shown)
 
 
+def actions_in(today: str) -> list[str]:
+    """Each button row of Today, in order, as the words of its buttons and links."""
+    return [
+        " | ".join(re.findall(r">([^<>]+)</(?:a|button)>", row))
+        for row in re.findall(r'<div class="actions">(.*?)</div>', today, re.S)
+    ]
+
+
+def today_in(page: str) -> str:
+    return page[at(page, TODAY) : page.index("</section>", at(page, TODAY))]
+
+
+@pytest.mark.parametrize("reader", READERS)
+def test_with_no_plan_the_plan_button_leads_the_row_her_support_is_in(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """With work to plan and no plan yet, the plan button is the first of Today's buttons and
+    help and Too much right now follow it in the same row, after See homework."""
+    with reading(reader, tmp_path, graphs=planner(fixture_week_plan)) as client:
+        today = today_in(main_of(page_of(client)))
+
+    to_help = "Her help requests" if reader == "a parent" else "Write down homework | Ask for help"
+    signal = "" if reader == "a parent" else "Too much right now | "
+    planned_here = 'action="/student/actions/plan"' in today
+    assert planned_here or reader == "a parent"
+    assert actions_in(today) == [("Plan today | " if planned_here else "") + signal + to_help]
+    standing = today.index(NO_PLAN_YET)
+    assert standing < today.index("See homework</a>") < today.index('<div class="actions">')
+    assert today.index('<div class="actions">') < today.index('class="note planning-window"')
+
+
+def admitted(client: TestClient, ended: bool) -> dict[str, str]:
+    """A plan request admitted and still running, or ended for today with no plan: the address
+    that asks where it stands."""
+    form = plan_form(client)
+    state = state_of(client)
+    state.drafts.admit_run(
+        form["run_id"], plan_date=PLAN_DATE, deadline_mono=state.monotonic() + 60
+    )
+    if ended:
+        state.drafts.end_run(form["run_id"], reason="timed_out")
+    return {"run": form["run_id"]}
+
+
+@pytest.mark.parametrize("ended", [False, True], ids=["running", "ended"])
+def test_a_run_s_line_stands_above_her_support_which_stays_one_press(
+    ended: bool, tmp_path: pathlib.Path
+) -> None:
+    with reading("her", tmp_path, graphs=planner(fixture_week_plan)) as client:
+        today = today_in(main_of(page_of(client, **admitted(client, ended))))
+
+    run_line = today.index('id="plan-run"')
+    assert today.index(NO_PLAN_YET) < run_line < today.index('<div class="actions">')
+    assert "Too much right now | Write down homework | Ask for help" in actions_in(today)[0]
+
+
+def test_with_no_key_her_support_stays_one_press_above_the_word_that_planning_is_off(
+    tmp_path: pathlib.Path,
+) -> None:
+    with reading("her", tmp_path) as client:
+        today = today_in(main_of(page_of(client)))
+
+    assert actions_in(today) == ["Too much right now | Write down homework | Ask for help"]
+    assert 'action="/student/actions/plan"' not in today
+    assert today.index('<div class="actions">') < today.index("Planning is unavailable right now.")
+
+
+@pytest.mark.parametrize("reader", READERS)
+def test_with_nothing_to_plan_a_saved_plan_follows_her_support_and_the_lists_follow_its_review(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    with reading(reader, tmp_path, graphs=planner(fixture_week_plan)) as client:
+        assert client.post(PLAN, data=plan_form(client)).status_code == 303
+        everything_done(store_of(client))
+        today = today_in(main_of(page_of(client)))
+
+    plan = today.index('<details class="plan" open>')
+    review = today.index(REVIEWED["waiting"])
+    support = today.index('<div class="actions">')
+    assert today.index(NOTHING_TO_PLAN) < support < plan < review
+    assert review < today.index('class="support-links"') < today.index("planning window is")
+    assert 'action="/student/actions/plan"' not in today
+
+
 # ------------------------------------------------------------------ anchors
 
 
