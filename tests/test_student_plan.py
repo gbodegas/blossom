@@ -1793,50 +1793,79 @@ def landing(page: str) -> list[str]:
 
 SCRIPT = pathlib.Path(student_routes.__file__).parents[1] / "static" / "blossom.js"
 GIVEN_BACK = """\
-  /* Back or Forward brings a page back, not its answer arriving again: an answer that takes
-     the focus as it arrives, a press's result or a check on a run, gives the focus back until
-     the reader moves it, so the page doesn't pull it away from where the reader returned. */
-  function settle(event) {
-    var focused = event && event.target && event.target.nodeType === 1
-      ? event.target
-      : document.activeElement;
-    if (focused && focused !== document.body && focused.hasAttribute("autofocus")) {
-      focused.blur();
+  /* A page shown again: fetched again by Back, Forward or a refresh, or brought back from
+     the browser's back/forward cache as it was left. Either way a Done it met her with is
+     retired. Brought back from the cache, the page and the focus are as the reader left them,
+     and its controls are handed back. Fetched again, it lands on the place its address names,
+     as a link there does; fetched again by Back or Forward with no such place, an answer
+     that takes the focus as it arrives gives it back, so the page doesn't pull the focus
+     from where the reader returned. */
+  function giveBack() {
+    function settle(event) {
+      var focused = event && event.target && event.target.nodeType === 1
+        ? event.target
+        : document.activeElement;
+      if (focused && focused !== document.body && focused.hasAttribute("autofocus")) {
+        focused.blur();
+      }
     }
+    function done() {
+      document.removeEventListener("focusin", settle, true);
+      document.removeEventListener("keydown", done, true);
+      document.removeEventListener("pointerdown", done, true);
+    }
+    settle();
+    document.addEventListener("focusin", settle, true);
+    document.addEventListener("keydown", done, true);
+    document.addEventListener("pointerdown", done, true);
+    /* The browser gives an answer the focus in the first frame after the page loads. */
+    window.addEventListener("load", function () {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(done);
+      });
+    });
   }
 
-  function moved() {
-    document.removeEventListener("focusin", settle, true);
-    document.removeEventListener("keydown", moved, true);
-    document.removeEventListener("pointerdown", moved, true);
+  function returned(how) {
+    retire();
+    if (how === "restored") {
+      Array.prototype.forEach.call(forms, reset);
+    } else if (landing) {
+      land();
+      window.addEventListener("load", land);
+    } else if (how === "back_forward") {
+      giveBack();
+    }
   }
 
   if (shownAgain) {
-    retire();
-    if (landing) {
-      land();
-      window.addEventListener("load", land);
-    } else if (arrival.type === "back_forward") {
-      settle();
-      document.addEventListener("focusin", settle, true);
-      document.addEventListener("keydown", moved, true);
-      document.addEventListener("pointerdown", moved, true);
-    }
+    returned(arrival.type);
   }
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) {
+      returned("restored");
+    }
+  });
 """
-"""How the script treats a page Back or Forward brings back, whole: a place the address names
-is landed on as before, and otherwise an answer that took the focus as it arrived gives it
-back until the reader moves. Real history in a browser is checked in the evidence."""
+"""How the script treats a page shown again, whole: brought back from the cache it keeps the
+focus where the reader left it and hands its controls back; fetched again it lands on a place
+the address names, and otherwise, by Back or Forward, an answer that took the focus as it
+arrived gives it back, until the reader's first key or press, or two frames after the page
+loads. Real history in a browser is checked in the evidence."""
 
 
 def test_a_page_brought_back_by_history_gives_back_its_answer_s_focus() -> None:
-    """Only a Back or Forward arrival gives the focus back, and only from an element the page
-    marked to take it as it arrived; a first arrival keeps its landing."""
+    """Both ways a page is shown again go through one function: the cache's restore changes
+    no focus, a first arrival keeps its landing, and the guard on an answer's focus after Back
+    or Forward ends at the reader's first key or press, or two frames after the page loads."""
     script = SCRIPT.read_text(encoding="utf-8")
 
     assert script.count(GIVEN_BACK) == 1
     assert script.count('focused.hasAttribute("autofocus")') == 1
-    assert script.count('arrival.type === "back_forward"') == 2
+    assert script.count("requestAnimationFrame(done)") == 1
+    assert script.count('returned("restored")') == 1
+    assert script.count("returned(arrival.type)") == 1
+    assert script.count("giveBack();") == 1
 
 
 def test_a_check_on_another_run_lands_nowhere() -> None:

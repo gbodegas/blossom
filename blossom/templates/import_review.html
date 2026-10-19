@@ -7,11 +7,11 @@
   <p class="note">Available until {{ until }}</p>
   <div class="import-review">
   {#
-    What a press answered, said only on the page that answers it, takes the focus there, so
-    the next Tab starts from the answer; an ordinary visit has nothing here.
+    What a press answered takes the focus on the page that first shows it, so the next Tab
+    starts from the answer. A visit may show a warning here, which takes no focus.
   #}
   {% if said %}
-    <div class="problem" role="status" id="said" tabindex="-1" autofocus>
+    <div class="problem" role="status" id="said" tabindex="-1"{{ lands(request, true) }}>
       {% for line in said %}<p>{{ line }}</p>{% endfor %}
     </div>
   {% endif %}

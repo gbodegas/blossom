@@ -311,7 +311,7 @@ from blossom.stores.workload_signals import (
     SignalUsed,
     WorkloadSignal,
 )
-from blossom.templating import page_templates
+from blossom.templating import answering, page_templates
 from blossom.to_turn_in import (
     COMPACT_ROWS,
     Attempt,
@@ -3029,6 +3029,8 @@ def due_this_week(
     asks again. The page that reads a removed signal's mark is sent the same way.
     """
     landing = landing_asked(request)
+    if run is not None:
+        answering(request)
     if in_place is not None:
         moved = sent_in_place(once_more(request), InPlace.read(named_once(request, IN_PLACE)))
         return moved if landing is None else forget_landing(moved, landing)

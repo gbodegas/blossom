@@ -37,6 +37,7 @@ from PIL import Image
 from blossom import screenshot_page, screenshot_posts, screenshot_reading, screenshot_save
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
+from blossom.household import UnreadableHouseholdSecret
 from blossom.routes import imports
 from blossom.screenshot_save import (
     CONFIRMABLE,
@@ -1140,6 +1141,37 @@ def test_each_press_lands_on_its_answer_and_an_ordinary_visit_takes_no_focus(
     assert focused(nothing) == ['<p class="note" id="find-nothing" tabindex="-1" autofocus>']
     assert gone.status_code == 404
     assert focused(gone.text) == ['<p class="problem" role="alert" tabindex="-1" autofocus>']
+
+
+SAID_LANDS: Final = '<div class="problem" role="status" id="said" tabindex="-1" autofocus>'
+"""The screenshot review's answer block as it takes the focus."""
+
+
+def test_a_visit_that_shows_only_a_warning_takes_no_focus_and_a_press_s_answer_lands_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While her name can't be checked, the review opened from its address says so and takes
+    no focus, since a warning is no answer; the page a press is sent to, here a screenshot
+    already in the review, lands on its answer, the warning under it, and opened again takes
+    none."""
+
+    async def unreadable(*args: object, **kwargs: object) -> bytes:
+        raise UnreadableHouseholdSecret
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(browser, monkeypatch, (RED, homework_answer()))
+        monkeypatch.setattr(imports, "grade_name_key", unreadable)
+        visit = browser.get(f"/parent/imports/{draft_id}").text
+        sent = upload(browser, RED, form={}, to=f"/parent/imports/{draft_id}/images")
+        landed = browser.get(sent.headers["location"]).text
+        again = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert says(visit, imports.SAID["no_name_check"])
+    assert focused(visit) == []
+    assert sent.status_code == 303
+    assert focused(landed) == [SAID_LANDS]
+    assert says(landed, imports.SAID["no_name_check"])
+    assert focused(again) == []
 
 
 def test_a_visit_to_a_closed_or_missing_review_takes_no_focus_and_a_refused_press_does(
@@ -5846,6 +5878,36 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
         assert says(answer, imports.PRESS_SAID["kept"])
     if press == "later" and committed:
         assert says(answer, imports.PRESS_SAID["later"])
+
+
+@pytest.mark.parametrize("gone", ["expired", "removed"])
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+def test_a_press_on_an_expired_or_removed_review_lands_on_what_it_says(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, gone: str
+) -> None:
+    """Keep these answers, Save review for later and Save on a review that expired, or that the
+    sweep then removed, answer with the page that says so, its first line taking the focus,
+    the typing given back to copy and nothing stored."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, keeping, ready = typed_review(browser, monkeypatch)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        posted = [(n, press if n == "press" else v) for n, v in keeping]
+        if press == "save":
+            posted = [*[f for f in posted if f[0] != "unit"], ("unit", ready)]
+        before = assignment_count(browser)
+        clock_moved_to(monkeypatch, browser, expires + timedelta(hours=2))
+        if gone == "removed":
+            assert state.import_drafts.sweep().expired == 1
+        answer = send(browser, draft_id, posted)
+        after = assignment_count(browser)
+
+    assert answer.status_code == (410 if gone == "expired" else 404)
+    assert says(answer.text, imports.SAID["expired" if gone == "expired" else "absent"])
+    assert sorted(copyable(answer.text)) == sorted([TYPED_WORDS, TYPED_DATE])
+    assert focused(answer.text) == ['<p class="problem" role="alert" tabindex="-1" autofocus>']
+    assert after == before
 
 
 def test_a_press_on_a_review_the_sweep_removed_after_expiry_gives_back_what_was_typed(

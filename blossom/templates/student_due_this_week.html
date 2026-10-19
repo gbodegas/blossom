@@ -83,7 +83,7 @@
       published today's plan, the plan does; a line or plan about another run takes none.
     #}
     {% if run_notice %}
-      <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run"{% if run_notice.asked_for %} tabindex="-1" autofocus{% endif %}>{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}{% for work, href in notice_checks %} <a href="{{ href }}">Check the dates for {{ work }}.</a>{% endfor %}</p>
+      <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run"{% if run_notice.asked_for %} tabindex="-1"{{ lands(request, true) }}{% endif %}>{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}{% for work, href in notice_checks %} <a href="{{ href }}">Check the dates for {{ work }}.</a>{% endfor %}</p>
     {% endif %}
     {#
       Work the plan includes that she reports as done is said here,
@@ -308,7 +308,7 @@
       lands on is there only when that link asked for it.
     #}
     {% if view.plan %}
-      <div id="{{ todays_plan_id }}" tabindex="-1"{% if plan_lands %} autofocus{% endif %}>
+      <div id="{{ todays_plan_id }}" tabindex="-1"{{ lands(request, plan_lands) }}>
         <details class="plan" open>
           <summary>Today's saved plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
           <p class="note">

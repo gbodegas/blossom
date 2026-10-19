@@ -88,7 +88,7 @@ from blossom.stores.import_drafts import (
     new_creation_token,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
-from blossom.templating import page_templates
+from blossom.templating import answering, page_templates
 from blossom.uploads import Upload, UploadRefused, prepare_upload, read_upload
 
 PREFIX: Final = "/parent/imports"
@@ -276,7 +276,6 @@ def said_page(request: Request, marks: object, said: str, status: int, *more: st
             "said": [said, *more],
             "marks": marks,
             "page": "parent",
-            "answers_a_press": request.method == "POST",
         },
         status_code=status,
     )
@@ -845,6 +844,8 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
     if isinstance(found, Response):
         return found
     said = note_read(state.result_key, draft_id, request.cookies.get(NOTE_COOKIE))
+    if said:
+        answering(request)
     rows = await rows_of(request, state, found, said)
     answer = review_page(request, state, found, said, rows=rows)
     if request.cookies.get(NOTE_COOKIE) is not None:

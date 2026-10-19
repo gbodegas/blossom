@@ -219,7 +219,7 @@ from blossom.stores.project_state import (
     normalize_note,
 )
 from blossom.stores.project_state import NOTE_MAX_LENGTH as CHECK_NOTE_MAX_LENGTH
-from blossom.templating import page_templates
+from blossom.templating import answering, page_templates
 from blossom.views import (
     ApprovalQueueView,
     ApprovalView,
@@ -1651,6 +1651,8 @@ def review(
     record cannot be read, a page that says so and offers the same address again. A run the
     address names is said where it stands; otherwise a run still running is said, since the
     plans that couldn't be made are listed below."""
+    if run is not None:
+        answering(request)
     said = [
         (CHECK_CONFIRMATIONS[name], value)
         for name, value in (

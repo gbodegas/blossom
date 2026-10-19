@@ -5,6 +5,7 @@
 import hashlib
 from typing import Final
 
+from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
 from blossom.agent.steps import step_label, step_sentence
@@ -73,6 +74,24 @@ def ended(words: str) -> str:
     return trimmed if trimmed.rstrip(CLOSING_MARKS).endswith(SENTENCE_ENDS) else f"{trimmed}."
 
 
+def answering(request: Request) -> None:
+    """Mark a GET as the first showing of an answer: a press's one-time note read, or a
+    check the address asks for."""
+    request.state.answering = True
+
+
+def fresh_answer(request: Request) -> bool:
+    """Whether this response first shows an answer to the reader's own request: a press,
+    which is every POST, or a GET its route marked with ``answering``."""
+    return request.method == "POST" or getattr(request.state, "answering", False) is True
+
+
+def lands(request: Request, here: object) -> str:
+    """The attribute that gives the focus to the element saying a fresh answer, where
+    ``here`` is true; nothing on any other showing of the page."""
+    return " autofocus" if here and fresh_answer(request) else ""
+
+
 def page_templates() -> Jinja2Templates:
     """The packaged templates, with ``clock`` for times, ``long_date`` for a date with its
     year, ``spoken_day`` for a day with its weekday, and its year when it is not today's,
@@ -87,7 +106,8 @@ def page_templates() -> Jinja2Templates:
     ``todays_plan_id`` and ``todays_plan_href`` for the place on her week that holds
     today's plan,
     ``instructions_id`` and ``update_or_turn_in_id`` for the places on an assignment's
-    details that its links land on,
+    details that its links land on, ``lands`` for the attribute that gives the element
+    saying a fresh answer the focus,
     ``asset_tag`` for the files a page links, ``source_url`` for the source the footer
     offers, ``wire`` for an instruction's words as a
     form carries them, ``step_label`` and ``step_sentence`` for a run's steps as a parent
@@ -127,4 +147,5 @@ def page_templates() -> Jinja2Templates:
     templates.env.globals["todays_plan_href"] = todays_plan_href
     templates.env.globals["instructions_id"] = INSTRUCTIONS
     templates.env.globals["update_or_turn_in_id"] = UPDATE_OR_TURN_IN
+    templates.env.globals["lands"] = lands
     return templates

@@ -17,7 +17,7 @@
     line takes the focus, so the next Tab starts from it.
   #}
   {% if said %}
-    <p class="problem" role="alert" id="problem" tabindex="-1" autofocus>{% for problem in problems %}{{ problem }} {% endfor %}{{ said }}{% if kept_sentence %} {{ kept_sentence }}{% endif %}{% if recorded %} <a href="{{ recorded }}">See what was saved</a>{% endif %}</p>
+    <p class="problem" role="alert" id="problem" tabindex="-1"{{ lands(request, true) }}>{% for problem in problems %}{{ problem }} {% endfor %}{{ said }}{% if kept_sentence %} {{ kept_sentence }}{% endif %}{% if recorded %} <a href="{{ recorded }}">See what was saved</a>{% endif %}</p>
     {% if left_out %}
       <p class="note">{{ left_out_said }}</p>
       <ul class="unread">
