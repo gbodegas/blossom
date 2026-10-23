@@ -2799,8 +2799,11 @@ async def ask_a_parent_about_a_result(result_id: str, request: Request, state: S
             )
     try:
         shown = result_ask_read(state, result_id)
-    except Exception:
-        logger.exception("a result could not be read for her request for help")
+    except Exception as error:
+        # The type alone: a stored grade value can ride in the error's message or its cause.
+        logger.warning(
+            "a result could not be read for her request for help: %s", type(error).__name__
+        )
         if refused is not None:
             # The form is refused before the result is weighed, and says so first.
             return result_help_not_sent(

@@ -6808,6 +6808,51 @@ def test_the_line_says_when_the_result_is_gone_or_can_t_be_read(
     assert count == 2
 
 
+DAMAGED_PRESENCE = "synthetic-stored-presence-q7"
+
+
+def test_a_damaged_grade_value_stays_out_of_the_log_on_the_ask_page_and_the_help_lines(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        signed_in(browser, HERS)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        form = ask_form_of(browser.get(ask, headers=PAGE).text)
+        help_store = state_of(browser).help_requests
+        help_store.ask(PLAN_DATE, "Synthetic earlier", grade_result_id=result_id)
+        store = store_of(browser)
+        store._connection.execute(
+            "UPDATE grade_result_observations SET points_presence = ? WHERE result_id = ?",
+            (DAMAGED_PRESENCE, result_id),
+        )
+        store._connection.commit()
+        caplog.clear()
+        caplog.set_level(logging.DEBUG)
+        sent = browser.post(ask, data={**form, "note": "Synthetic kept"}, headers=PAGE)
+        week = browser.get(HER_WEEK, headers=PAGE)
+        kept = help_store.listed().every()
+
+    records = [
+        (record.getMessage(), record.exc_info, record.exc_text, record.stack_info)
+        for record in caplog.records
+    ]
+    assert sent.status_code == 500
+    assert "Your request could not be sent, and nothing was changed." in words(sent.text)
+    assert "Synthetic kept" in sent.text
+    assert [one.note for one in kept] == ["Synthetic earlier"]
+    assert "Your result can't be read right now." in read_as(week.text)
+    assert DAMAGED_PRESENCE not in caplog.text
+    assert all(info is None and text is None and stack is None for _, info, text, stack in records)
+    said = [message for message, *_ in records]
+    assert "a result could not be read for her request for help: GradeValueUndecodable" in said
+    assert (
+        "the school results her requests are about could not be read: GradeValueUndecodable"
+    ) in said
+
+
 def test_a_used_or_changed_form_answers_409_whether_or_not_its_result_stands(
     tmp_path: pathlib.Path,
 ) -> None:

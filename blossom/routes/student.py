@@ -1216,7 +1216,9 @@ def results_named_by(
 ) -> Mapping[str, ResultNamed] | None:
     """The school results these requests are about, in one read of the file for all of them,
     and in none when no request is about a result. As for notes, a read that fails is logged
-    and answered as ``None``, which shows each such result as one that can't be read."""
+    and answered as ``None``, which shows each such result as one that can't be read. The log
+    names the failure's type alone, since a stored grade value can ride in its message or its
+    cause."""
     wanted = [request.grade_result_id for request in requests if request.grade_result_id]
     if not wanted:
         return {}
@@ -1224,8 +1226,11 @@ def results_named_by(
     try:
         with store.reading():
             return results_named(store, wanted)
-    except Exception:
-        logger.exception("the school results her requests are about could not be read")
+    except Exception as error:
+        logger.warning(
+            "the school results her requests are about could not be read: %s",
+            type(error).__name__,
+        )
         return None
 
 
