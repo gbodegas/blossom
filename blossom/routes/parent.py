@@ -174,8 +174,8 @@ from blossom.routes.student import (
     REQUEST_UNREADABLE,
     UNREADABLE_COUNT,
     help_view,
-    notes_named_by,
     set_apart,
+    subjects_named_by,
 )
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import (
@@ -1043,7 +1043,7 @@ def moved_over_json(
     except HTTPException as error:
         said = str(error.detail)
         raise HTTPException(error.status_code, detail=WITHOUT_THE_PAGE.get(said, said)) from error
-    return help_view(state, moved, notes_named_by(state, [moved]))
+    return help_view(state, moved, subjects_named_by(state, [moved]))
 
 
 @router.get("/help-requests")
@@ -1054,7 +1054,7 @@ def help_requests(state: State, response: Response) -> list[HelpRequestView]:
     listed = state.help_requests.listed()
     response.headers[UNREADABLE_COUNT] = str(listed.unreadable)
     asked = listed.every()
-    named = notes_named_by(state, asked)
+    named = subjects_named_by(state, asked)
     return [help_view(state, request, named) for request in asked]
 
 
@@ -1207,7 +1207,7 @@ def review_page(
             also=() if working is None else working.plan_assignment_ids or (),
         )
         notes = state.project_state.outstanding_captures()
-        named = notes_named_by(state, asked)
+        named = subjects_named_by(state, asked)
     # What stands about the dates is worked out once, from the same reading, for every
     # assignment the plans in force speak about: today's and each later evening's.
     live = [record for record in shown if record.draft_id in records.operative]

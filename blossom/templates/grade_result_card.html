@@ -9,9 +9,10 @@
   The title, a heading of ``level``, carries the result's ID and takes the focus, so a link to
   one result lands on it. ``way``, given to a parent reading class details, adds the line for
   the homework a link names, the quiet line for a result that waits for a parent's choice, and
-  the way to the result's homework page.
+  the way to the result's homework page. ``ask``, given to her reading class details, is the
+  address of the page that asks a parent about the result.
 #}
-{% macro result(item, result_id, level=3, way=none) %}
+{% macro result(item, result_id, level=3, way=none, ask=none) %}
   <section class="panel grade-card">
     <p class="{{ 'course' if item.category_reported else 'source' }}"><span class="authored-text">{{ item.category }}</span></p>
     <h{{ level }} class="card-title" id="{{ result_id }}" tabindex="-1"><span class="authored-text">{{ item.title }}</span></h{{ level }}>
@@ -28,6 +29,9 @@
     <p class="source">{{ way.waits }}</p>
       {%- endif %}
     <p class="details-link"><a class="assignment-link" href="{{ way.address }}" aria-label="{{ way.label }}">Homework for this result</a></p>
+    {%- endif %}
+    {%- if ask %}
+    <p class="details-link"><a class="assignment-link" href="{{ ask }}" aria-label="Ask a parent about this result: {{ item.title }}">Ask a parent about this result</a></p>
     {%- endif %}
     <details class="steps update">
       <summary>School record details{% if item.cues %}: {{ item.cues|join(", ") }}{% endif %}</summary>

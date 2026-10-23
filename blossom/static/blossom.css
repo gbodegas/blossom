@@ -1023,13 +1023,15 @@ h1#homework:focus,
   margin: 1.75rem 0 1rem;
 }
 
-/* In a request's row, Open homework note and Ask again can sit on lines next to each
-   other. Each keeps its 44 pixels to press inside its own line, which grows to hold
-   them, so neither reaches into the other. The family page shows the same request, and
-   its note link keeps the same 44 pixels above the reply's field. */
+/* In a request's row, Open homework note or Open the result and Ask again can sit on
+   lines next to each other. Each keeps its 44 pixels to press inside its own line, which
+   grows to hold them, so none reaches into another. The family page shows the same
+   request, and its note or result link keeps the same 44 pixels above the reply's field. */
 .help-panel .help-request a.ask-again,
 .help-panel .help-about-note a,
-#help-she-asked-for .help-about-note a {
+#help-she-asked-for .help-about-note a,
+.help-panel .help-about-result a,
+#help-she-asked-for .help-about-result a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: 0;

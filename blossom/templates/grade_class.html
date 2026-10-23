@@ -13,7 +13,8 @@
   shares. A parent reading also gets, on each card, the way to the result's homework page; for
   a linked result, which homework it is linked to; and for a result that waits for a parent's
   choice, a quiet line saying so. When who waits couldn't be worked out, one sentence before
-  the results says so, and each way in says it in its accessible name.
+  the results says so, and each way in says it in its accessible name. When she reads, each
+  card also carries the way to ask a parent about that result.
 #}
 {% from "grade_result_card.html" import result %}
 {% block content %}
@@ -35,11 +36,11 @@
     {%- endif %}
     {% if dated %}
       <h2 class="grade-heading">Assignments</h2>
-      {% for result_id, item in dated %}{{ result(item, result_id, 3, ways.get(result_id)) }}{% endfor %}
+      {% for result_id, item in dated %}{{ result(item, result_id, 3, ways.get(result_id), ask_at.format(result_id=result_id) if ask_at else none) }}{% endfor %}
     {% endif %}
     {% if undated %}
       <h2 class="grade-heading">Date not confirmed</h2>
-      {% for result_id, item in undated %}{{ result(item, result_id, 3, ways.get(result_id)) }}{% endfor %}
+      {% for result_id, item in undated %}{{ result(item, result_id, 3, ways.get(result_id), ask_at.format(result_id=result_id) if ask_at else none) }}{% endfor %}
     {% endif %}
     {% if categories %}
       <details class="steps">

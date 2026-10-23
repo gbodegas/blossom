@@ -49,7 +49,11 @@ templates = page_templates()
 
 SIGN_IN: Final = "/sign-in"
 HELP_ASKS: Final = frozenset(
-    {"/student/actions/ask-for-help", "/student/actions/homework-notes/{capture_id}/ask-for-help"}
+    {
+        "/student/actions/ask-for-help",
+        "/student/actions/homework-notes/{capture_id}/ask-for-help",
+        "/student/grades/results/{result_id}/ask",
+    }
 )
 """The routes that send her a request for help rather than save something."""
 BACK_TO_HELP: Final = ReturnLink(address(WEEK_PAGE, fragment="help"), "Back to Help")

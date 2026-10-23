@@ -1703,8 +1703,8 @@ def own_line_rule(css: str) -> list[str]:
 
 
 def test_ask_again_and_the_note_link_keep_their_press_areas_inside_their_own_lines() -> None:
-    """In a request's row the two links can sit on lines next to each other, and the family
-    page's note link sits on a line of its own above the reply's field."""
+    """In a request's row the links can sit on lines next to each other, and the family
+    page's note or result link sits on a line of its own above the reply's field."""
     own = own_line_rule(CSS)
     shared = in_sentence_rule(CSS)
 
@@ -1712,6 +1712,8 @@ def test_ask_again_and_the_note_link_keep_their_press_areas_inside_their_own_lin
         ".help-panel .help-request a.ask-again",
         ".help-panel .help-about-note a",
         "#help-she-asked-for .help-about-note a",
+        ".help-panel .help-about-result a",
+        "#help-she-asked-for .help-about-result a",
     ):
         assert selector in own
         assert selector not in shared

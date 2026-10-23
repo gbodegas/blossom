@@ -108,6 +108,7 @@ from blossom.stores.gradebook import (
     ClassTermRead,
     GradebookRecords,
     HomeworkClasses,
+    ResultPlace,
     class_for,
 )
 from blossom.stores.project_state import (
@@ -412,6 +413,64 @@ def title_of(value: CurrentValue) -> str:
     title left blank, unreadable or not in the copy."""
     cell = value.cells["assignment"]
     return cell[1] if cell[0] is Presence.REPORTED else presence_words("Title", cell)
+
+
+class ResultOwn(NamedTuple):
+    """A result's own class and term as its page reads them first: its place, its class, the
+    class and term's read, its current value, and its year's terms by place, folded."""
+
+    place: ResultPlace
+    named: ClassOfYear
+    read: ClassTermRead
+    value: CurrentValue
+    terms: list[str]
+
+    @property
+    def term_place(self) -> int:
+        """The term's place in its class's year, as a class details address names it."""
+        return self.terms.index(folded(self.place.term)) + 1
+
+
+def result_own(store: GradebookRecords, result_id: str) -> ResultOwn | None:
+    """A result's own class and term; None when no result of hers has that ID or it holds no
+    current value. A term not among its year's terms is ``GradeValueUndecodable``. A read."""
+    place = store.result_place(result_id)
+    named = None if place is None else store.class_named(place.class_id)
+    if place is None or named is None:
+        return None
+    read = store.class_term(place.class_id, place.term)
+    value = read.current.results.get(result_id)
+    if value is None:
+        return None
+    terms = [folded(one) for one in store.terms_of_year(named.year)]
+    if folded(place.term) not in terms:
+        # Its class's page can't be named: a term outside its year is a damaged record.
+        raise GradeValueUndecodable
+    return ResultOwn(place, named, read, value, terms)
+
+
+@dataclass(frozen=True)
+class ResultNamed:
+    """One of her results as a request for help names it: its class, the term's place for the
+    class details address, the class name, and the title as class details words it."""
+
+    class_id: str
+    term_place: int
+    class_name: str
+    title: str
+
+
+def results_named(store: GradebookRecords, result_ids: Iterable[str]) -> dict[str, ResultNamed]:
+    """The results these ids name that are hers and current, by id, each read as its own page
+    reads it; an id of no such result is left out. The caller holds one read of the file."""
+    found: dict[str, ResultNamed] = {}
+    for result_id in sorted(set(result_ids)):
+        own = result_own(store, result_id)
+        if own is not None:
+            found[result_id] = ResultNamed(
+                own.place.class_id, own.term_place, own.named.name, title_of(own.value)
+            )
+    return found
 
 
 def account_of(everything: Everything, assignment_id: str) -> HerAccount:

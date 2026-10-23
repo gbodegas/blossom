@@ -1,0 +1,48 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{% extends "base.html" %}
+{% set page = "grades" %}
+{% block title %}Blossom - Ask a parent about this result{% endblock %}
+{#
+  Asking a parent about one school result. Opening this page sends nothing: only the button
+  does. The result is shown as class details draws its card, under its class name and term,
+  and the field starts with a sentence naming it, which she can change or clear. The request
+  carries the result's id, so her parents can open the result from it, and nothing else of
+  it. A parent signed in is told the request is hers to make, and sees no form. A result not
+  on record says so.
+#}
+{% from "grade_result_card.html" import result %}
+{% block content %}
+  {% if missing %}
+    <p class="return"><a href="{{ grades }}">Back to Grades</a></p>
+    <h1>Ask a parent about this result</h1>
+    <p class="problem" role="alert" id="problem">{{ missing }}</p>
+  {% else %}
+    <p class="return"><a href="{{ back }}">Back to the class</a></p>
+    <h1>Ask a parent about this result</h1>
+    {% if problem %}
+      <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}{% if question_error and viewer != "parent" %}{% with field = "question" %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
+    {% endif %}
+    <h2><span class="authored-text">{{ name }}</span></h2>
+    <p>{{ term }}</p>
+    {{ result(item, result_id, 3) }}
+    {% if viewer == "parent" %}
+      <p class="note">{{ not_hers }} A request for help is hers to make.</p>
+    {% else %}
+      <form method="post" action="{{ action }}" class="ask">
+        <label for="help-question">Your question for a parent</label>
+        <input id="help-question" type="text" name="note"
+               value="{{ question }}"
+               maxlength="{{ note_max_length }}"
+               aria-describedby="{% if question_error %}note-problem {% endif %}help-question-hint"
+               {% if question_error %}aria-invalid="true"{% endif %}>
+        <input type="hidden" name="request_id" value="{{ request_id }}">
+        <p class="note" id="help-question-hint">Your parents see this question and can open this result. Nothing is sent until you press the button, and nothing goes to the school or to the planning model.</p>
+        <div class="actions">
+          <button type="submit" class="primary">Ask a parent</button>
+          <a class="cancel" href="{{ back }}">Not now</a>
+        </div>
+      </form>
+    {% endif %}
+  {% endif %}
+{% endblock %}

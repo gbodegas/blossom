@@ -6550,9 +6550,15 @@ def test_a_matched_result_s_page_draws_its_card_and_a_form_for_each_decision_on_
         (address, LOG_ID, "link", revision),
         (address, LOG_ID, "apart", revision),
     ]
+    ask = (
+        '\n    <p class="details-link"><a class="assignment-link" '
+        f'href="/student/grades/results/{log}/ask" aria-label="Ask a parent about this result: '
+        f'{LOG}">Ask a parent about this result</a></p>'
+    )
+    assert card_of(details, log).count(ask) == 1
     assert card_of(page, log).replace("h2 ", "h3 ").replace("</h2>", "</h3>") == card_of(
         details, log
-    )
+    ).replace(ask, "")
     assert '<h1 id="homework" tabindex="-1">Homework for this result</h1>' in page
     assert re.search(
         r'<p class="course">School result</p>\s*<section class="panel grade-card">', page

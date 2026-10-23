@@ -544,6 +544,34 @@ class HelpNoteView(BaseModel):
         return cls(capture_id=note.capture_id, text=note.text, archived=note.archived)
 
 
+class HelpResultView(BaseModel):
+    """The school result a request for help is about, as the gradebook holds it when the page
+    is read.
+
+    A request carries the result's id and nothing else of it, so the class name and title
+    are read now. ``gone`` means no result of hers has that id; ``unavailable``
+    means the reference or the gradebook can't be read. The request is shown all the same.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    result_id: str | None
+    """The result's id, or ``None`` when the reference can't be read: nothing of what was
+    held is given out."""
+    class_name: str | None = None
+    """The result's class name, as the gradebook holds it now."""
+    title: str | None = None
+    """The result's title as class details words it, or the words for a title not shown."""
+    her_address: str | None = None
+    """Her class details page at the result's card."""
+    family_address: str | None = None
+    """The family class details page at the result's card."""
+    gone: bool = False
+    """No result of hers has the request's result id."""
+    unavailable: bool = False
+    """The reference, or the gradebook read for it, can't be read."""
+
+
 class ParentUpdateView(BaseModel):
     """One update a parent added to a request, as both pages show it: the words, and when, in
     the household's zone, or no time for a reply kept from before updates."""
@@ -583,6 +611,8 @@ class HelpRequestView(BaseModel):
     """What parents added, in the order it came: the last is the latest."""
     about_note: HelpNoteView | None = None
     """The homework note the request is about, when it is about one."""
+    about_result: HelpResultView | None = None
+    """The school result the request is about, when it is about one."""
 
 
 class NamedAssignmentView(BaseModel):
