@@ -431,14 +431,25 @@ class ResultOwn(NamedTuple):
         return self.terms.index(folded(self.place.term)) + 1
 
 
-def result_own(store: GradebookRecords, result_id: str) -> ResultOwn | None:
+def result_own(
+    store: GradebookRecords,
+    result_id: str,
+    reads: dict[tuple[str, str], ClassTermRead] | None = None,
+) -> ResultOwn | None:
     """A result's own class and term; None when no result of hers has that ID or it holds no
-    current value. A term not among its year's terms is ``GradeValueUndecodable``. A read."""
+    current value. A term not among its year's terms is ``GradeValueUndecodable``. A read.
+    ``reads`` holds the class and term reads made so far within the caller's one read of the
+    file, by class ID and term, so results in the same class and term share one."""
     place = store.result_place(result_id)
     named = None if place is None else store.class_named(place.class_id)
     if place is None or named is None:
         return None
-    read = store.class_term(place.class_id, place.term)
+    scope = (place.class_id, place.term)
+    read = None if reads is None else reads.get(scope)
+    if read is None:
+        read = store.class_term(*scope)
+        if reads is not None:
+            reads[scope] = read
     value = read.current.results.get(result_id)
     if value is None:
         return None
@@ -462,10 +473,12 @@ class ResultNamed:
 
 def results_named(store: GradebookRecords, result_ids: Iterable[str]) -> dict[str, ResultNamed]:
     """The results these ids name that are hers and current, by id, each read as its own page
-    reads it; an id of no such result is left out. The caller holds one read of the file."""
+    reads it; an id of no such result is left out. The caller holds one read of the file, and
+    each class and term is read once within it; nothing read here is kept after it returns."""
     found: dict[str, ResultNamed] = {}
+    reads: dict[tuple[str, str], ClassTermRead] = {}
     for result_id in sorted(set(result_ids)):
-        own = result_own(store, result_id)
+        own = result_own(store, result_id, reads)
         if own is not None:
             found[result_id] = ResultNamed(
                 own.place.class_id, own.term_place, own.named.name, title_of(own.value)

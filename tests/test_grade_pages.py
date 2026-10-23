@@ -62,6 +62,7 @@ from blossom.grades.wording import ordinal, report_names, score_line, score_of
 from blossom.household import secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes import grades as grade_routes
+from blossom.routes import homework_scores
 from blossom.routes.forms import FormRoute, fields_of
 from blossom.settings import Settings
 from blossom.stores import gradebook, help_requests
@@ -6806,6 +6807,111 @@ def test_the_line_says_when_the_result_is_gone_or_can_t_be_read(
     assert "Her result is not on record." in theirs
     assert "Her result can't be read right now." in theirs
     assert count == 2
+
+
+def results_by_scope(store: gradebook.GradebookRecords) -> dict[tuple[str, str], list[str]]:
+    """Every result's ID, by the class ID and term label it is in."""
+    rows = store._connection.execute(
+        "SELECT class_id, term_label, result_id FROM grade_results ORDER BY result_id"
+    )
+    scopes: dict[tuple[str, str], list[str]] = {}
+    for class_id, term, result_id in rows:
+        scopes.setdefault((str(class_id), str(term)), []).append(str(result_id))
+    return scopes
+
+
+def class_term_reads(
+    store: gradebook.GradebookRecords, monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[str, str]]:
+    """Each class and term the store reads from now on, in the order it reads them."""
+    seen: list[tuple[str, str]] = []
+    real = store.class_term
+
+    def counted(class_id: str, term: str) -> gradebook.ClassTermRead:
+        seen.append((class_id, term))
+        return real(class_id, term)
+
+    monkeypatch.setattr(store, "class_term", counted)
+    return seen
+
+
+def named_one_by_one(
+    store: gradebook.GradebookRecords, result_ids: list[str]
+) -> dict[str, homework_scores.ResultNamed]:
+    """Each result as a request names it, read on its own with no shared reads."""
+    named = {}
+    for result_id in result_ids:
+        own = homework_scores.result_own(store, result_id)
+        assert own is not None
+        named[result_id] = homework_scores.ResultNamed(
+            own.place.class_id, own.term_place, own.named.name, homework_scores.title_of(own.value)
+        )
+    return named
+
+
+def test_results_in_one_class_and_term_share_one_class_term_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        seeded(browser, FIRST_TERM)
+        store = store_of(browser)
+        (scope, ids), *others = results_by_scope(store).items()
+        with store.reading():
+            alone = named_one_by_one(store, ids)
+        seen = class_term_reads(store, monkeypatch)
+        with store.reading():
+            named = homework_scores.results_named(store, ids)
+
+    assert others == []
+    assert len(ids) > 1
+    assert seen == [scope]
+    assert named == alone
+
+
+def test_results_in_other_classes_or_terms_are_read_with_their_own_class_and_term(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        seeded(browser, FIRST_TERM, SECOND_TERM)
+        seeded(browser, draft_of(OTHER_CLASS))
+        store = store_of(browser)
+        scopes = results_by_scope(store)
+        ids = [one for found in scopes.values() for one in found]
+        with store.reading():
+            alone = named_one_by_one(store, ids)
+        seen = class_term_reads(store, monkeypatch)
+        with store.reading():
+            named = homework_scores.results_named(store, ids)
+
+    assert len(scopes) == 3
+    assert len({class_id for class_id, _ in scopes}) == 2
+    assert len({term for _, term in scopes}) == 2
+    assert sorted(seen) == sorted(scopes)
+    assert named == alone
+
+
+def test_a_later_read_of_the_results_sees_the_record_as_it_stands_then(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        seeded(browser, FIRST_TERM, SECOND_TERM)
+        store = store_of(browser)
+        (first, first_ids), (second, second_ids) = results_by_scope(store).items()
+        ids = first_ids + second_ids
+        seen = class_term_reads(store, monkeypatch)
+        with store.reading():
+            before = homework_scores.results_named(store, ids)
+        read_first = list(seen)
+        class_term_deleted(browser, first_ids[0])
+        seen.clear()
+        with store.reading():
+            after = homework_scores.results_named(store, ids)
+
+    assert sorted(before) == sorted(ids)
+    assert sorted(read_first) == sorted([first, second])
+    assert sorted(after) == sorted(second_ids)
+    assert after == {one: before[one] for one in second_ids}
+    assert seen == [second]
 
 
 DAMAGED_PRESENCE = "synthetic-stored-presence-q7"
