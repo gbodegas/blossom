@@ -1292,46 +1292,90 @@ pre.body {
   padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);
 }
 
-/* A plan waiting for review, its review accepted or unsettled, holds the decision form,
-   whose helper's longest word is wider than the card's line on a phone with text at 200%.
-   The card's side padding gives way the same way, from its ordinary 1.6rem, or 1.2rem on
-   a narrow screen, so the form's lines and controls widen together and stay in line. A
-   card keeps its ordinary padding on every screen 271 pixels or wider with ordinary text,
+/* Each card of the family page sits in a plain section of the page or of one of its folds,
+   and gives way as a homework card on her week does: on a phone with text at 200%, a word of
+   a plan's rows, of a step beside the list's numbers, of a notice in a card, or of the helper
+   of a waiting plan's decision form is wider than its line once the ordinary side padding is
+   taken out. The side padding goes to 13vw - 1rem where that is narrower, and the card
+   reaches into the page's side margin until it is 13vw - 1rem from the screen's edge, wider
+   than the page's own line, so the cards of a section keep one width and a decision form's
+   lines and controls widen together. A card inside a panel keeps to the panel. A card keeps
+   its ordinary padding and margin on every screen 277 pixels or wider with ordinary text,
    and 640 pixels or wider with text at 200%. */
-.draft.outcome-accepted,
-.draft.outcome-unsettled {
+main > section:not(.panel) > .draft,
+.panel-fold > section:not(.panel) > .draft {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  max-width: none;
   padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
 }
 
 @media (max-width: 30rem) {
-  .draft.outcome-accepted,
-  .draft.outcome-unsettled {
+  main > section:not(.panel) > .draft,
+  .panel-fold > section:not(.panel) > .draft {
     padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
   }
 }
 
-/* The cards in a fold, for an earlier plan or for a run that ended without one, give way the
-   same way: on a phone with text at 200%, a word of a card's heading, summary or steps is
-   wider than its line once the ordinary side padding is taken out. A card keeps its
-   ordinary padding on every screen 271 pixels or wider with ordinary text, and 640 pixels or
-   wider with text at 200%. */
-.steps .draft {
-  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+/* A card a link lands on keeps its arrival cue on the screen while it reaches into the page's
+   side margin: the cue's spread narrows to the margin left beside the card less the bar's
+   0.25rem, so the wash thins and the bar keeps its width and moves in with it. The cue is as
+   it is wherever 0.625rem or more of the margin is left, on every screen 200 pixels or wider
+   with ordinary text and 400 pixels or wider with text at 200%. */
+main > section:not(.panel) > .draft[tabindex="-1"]:focus {
+  box-shadow:
+    0 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--arrival-tint),
+    -0.25rem 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--blue-action);
 }
 
-@media (max-width: 30rem) {
-  .steps .draft {
-    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
-  }
+/* Help she asked for and Turning work in hold such cards, and a link lands on Help she asked
+   for. On a phone with text at 200% each reaches into the page's side margin with its cards
+   and pads its own words back in by as much, so its cards stay inside it. Help she asked
+   for's arrival cue goes around them, its spread narrowing as a card's does, and its selector
+   outranks the cue it narrows wherever either sits in this file. Every screen 277 pixels or
+   wider with ordinary text, and 554 pixels or wider with text at 200%, keeps each section,
+   and its cue on every screen 200 or 400 pixels or wider. */
+#help-she-asked-for,
+#turning-work-in {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  padding-inline: clamp(0px, 2.25rem - 13vw, 2.25rem);
 }
 
-/* The line of finished work with school reports to check gives way as a problem line in Help
-   does: on a phone with text at 200%, a word of its sentence or of a title is wider than the
-   line once the ordinary side padding is taken out. The line keeps its ordinary padding on
-   every screen 240 pixels or wider with ordinary text, and 480 pixels or wider with text at
+section#help-she-asked-for:focus {
+  box-shadow:
+    0 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--arrival-tint),
+    -0.25rem 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--blue-action);
+}
+
+/* In a fold, a plan's rows sit under the list's indent. On a phone with text at 200% the
+   indent gives way to 13vw - 1rem where that is narrower, so a word of a row's reason stays
+   whole. Every screen 277 pixels or wider with ordinary text, and 554 pixels or wider with
+   text at 200%, keeps the ordinary indent. */
+.steps ol.plan-rows {
+  padding-left: clamp(0px, 13vw - 1rem, 1.25rem);
+}
+
+/* The line of finished work with school reports to check gives way as the homework cards
+   around it do: on a phone with text at 200%, a word of its sentence or of a title is
+   wider than the line once the ordinary side padding is taken out. The side padding goes to
+   13vw - 1rem where that is narrower, and the line reaches into the page's side margin until
+   it is 13vw - 1rem from the screen's edge. The line keeps its ordinary padding and margin on
+   every screen 277 pixels or wider with ordinary text, and 554 pixels or wider with text at
    200%. */
 .to-check {
+  margin-inline: min(0px, 13vw - 2.25rem);
   padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);
+}
+
+/* Add assignments' summary reads as a heading, and on a phone with text at 200% its word
+   "assignments" is wider than the page's own line. On a narrow screen the fold's panel sits
+   bare, 4% of the screen's width from each edge, and the summary reaches into the page's side
+   margin as far as the panel does and no further than 13vw - 1rem from the screen's edge, so
+   it never stands out beside the panel. With ordinary text it keeps the page's margin on every
+   screen 277 pixels or wider. */
+@media (max-width: 30rem) {
+  #add-assignments > summary {
+    margin-inline: clamp(4vw - 1.25rem, 13vw - 2.25rem, 0px);
+  }
 }
 
 /* The buttons of the grade paste and retry pages hold the page's own words, never a typed one.
@@ -1723,10 +1767,10 @@ select {
   align-items: end;
 }
 
-/* On a phone with large text, a word such as "assignments" in a button or in the fold's
-   summary is wider than its line. The summary, labels and buttons of Add assignments break
-   such a word where they must, so no control runs past the screen's edge; a line that fits
-   is as it was. */
+/* On a phone with large text, a word such as "assignments" in a button can be wider than its
+   line, and so can a word of the fold's summary on a screen narrower than its reach allows
+   for. The summary, labels and buttons of Add assignments break such a word where they must,
+   so no control runs past the screen's edge; a line that fits is as it was. */
 #add-assignments > summary,
 #add-assignments label,
 #add-assignments button {
@@ -2213,6 +2257,36 @@ pre.example {
    side margin for it, so the card keeps to the panel's own line. */
 .panel.apart .assignment {
   margin-inline: 0;
+}
+
+/* Her week's other panels, Today, To turn in, Homework notes and Help, and the panel of plans
+   shown as saved when a page's record can't be read, give way as her homework panels do: on
+   a phone with text at 200%, the day's name or a heading's word is wider than the page's own
+   line, and a word of a plan, a note, a title or a notice in the panel is wider than the line
+   its side padding leaves. Its side padding goes to 13vw - 1rem where that is narrower, and
+   the panel reaches into the page's side margin until it is 13vw - 1rem from the screen's
+   edge, wider than the page's own line; a plan's card inside sits bare on a narrow screen.
+   The same panels on her To turn in and Homework notes pages give way the same way. Every
+   screen 277 pixels or wider with ordinary text, and 640 pixels or wider with text at 200%,
+   keeps the ordinary padding and margin. */
+.panel.today,
+.panel.to-turn-in,
+.panel.homework-notes,
+.panel.help-panel,
+.panel.saved-plans {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  max-width: none;
+  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
+}
+
+@media (max-width: 30rem) {
+  .panel.today,
+  .panel.to-turn-in,
+  .panel.homework-notes,
+  .panel.help-panel,
+  .panel.saved-plans {
+    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
+  }
 }
 
 /* On a phone with text at 200%, class details' headings, a class's name among them, leave a

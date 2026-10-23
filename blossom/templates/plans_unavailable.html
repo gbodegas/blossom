@@ -24,7 +24,7 @@
   <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ alert }} <a href="{{ again }}">Try again</a></p>
   {% if plans %}
     {% if todays %}
-      <section class="panel" id="{{ todays_plan_id }}" tabindex="-1">
+      <section class="panel saved-plans" id="{{ todays_plan_id }}" tabindex="-1">
         <h2>Today's plan</h2>
         {% for draft, reading in plans %}
           {{ decided(draft) }}
@@ -32,7 +32,7 @@
         {% endfor %}
       </section>
     {% else %}
-      <section class="panel">
+      <section class="panel saved-plans">
         <h2>Plans for today and later evenings</h2>
         {% for draft, reading in plans %}
           <article class="draft">
