@@ -2041,23 +2041,49 @@ pre.example {
 .import-review input[type="file"] {
   max-width: 100%;
   min-height: 2.75rem;
+  padding-block: 0.6rem;
   font: inherit;
   font-family: var(--font-body);
   color: var(--text);
 }
 
-.import-review input[type="file"]::file-selector-button {
+/* The screenshot picker: the field's label is its button, in the app's own words and the look
+   of an outline button, and the browser's line beside it says what was chosen. The browser's
+   own button, worded by the browser, is hidden; a press on the label or on the line opens
+   the picker, and the focus rests on the line. The picker sits apart from the button that
+   sends it. */
+.import-review .file-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 0.9rem;
+  margin-block: 0.75rem 1.25rem;
+}
+
+.import-review .file-choose {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
   min-height: 2.75rem;
-  margin-inline-end: 0.75rem;
-  padding: 0.55rem 1.1rem;
+  padding: 0.6rem 1.35rem;
   border: 1.5px solid var(--pink);
   border-radius: var(--pill);
   background: transparent;
   color: var(--rose-ink);
-  font: inherit;
   font-family: var(--font-display);
   font-weight: 700;
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.import-review .file-choose:hover {
+  background: var(--rose-bg);
+  border-color: var(--pink-deep);
+}
+
+.import-review input[type="file"]::file-selector-button {
+  display: none;
 }
 
 .import-review legend,

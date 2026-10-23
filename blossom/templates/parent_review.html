@@ -568,20 +568,29 @@
         <li>2. Review</li>
         <li>3. Saved</li>
       </ol>
+      {#
+        Screenshots: the limits and when they are sent stay in view; how they are kept folds
+        under its own summary. The picker's button is the field's label, so its words are the
+        app's own; the browser's own button is hidden and its line says what was chosen.
+      #}
       {% if screenshots %}
         <div class="import-review">
         <h2>Add screenshots</h2>
-        <p class="note">{{ screenshots.aside }}</p>
         {% if screenshots.only_here %}
           <p class="note">{{ screenshots.only_here }}</p>
         {% else %}
-          <p class="note" id="screenshot-limits">{{ screenshots.limits }}</p>
-          <p class="note" id="screenshot-disclosure">{{ screenshots.disclosure }}</p>
+          <p class="note" id="screenshot-summary">{{ screenshots.summary }}</p>
+          <details class="steps">
+            <summary>How screenshots are kept</summary>
+            <p class="note" id="screenshot-disclosure">{{ screenshots.disclosure }}</p>
+          </details>
           <form method="post" action="/parent/imports" enctype="multipart/form-data">
             <input type="hidden" name="token" value="{{ screenshots.token }}">
             <input type="hidden" name="issued" value="{{ screenshots.issued }}">
-            <label for="screenshot-files">Screenshots</label>
-            <input type="file" id="screenshot-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="screenshot-limits screenshot-disclosure">
+            <div class="file-pick">
+              <label class="file-choose" for="screenshot-files">Choose screenshots</label>
+              <input type="file" id="screenshot-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="screenshot-summary screenshot-disclosure">
+            </div>
             <div class="actions">
               <button type="submit" class="primary">Add screenshots</button>
             </div>
@@ -597,7 +606,12 @@
         {% endif %}
         </div>
       {% endif %}
-      <h2>Paste school text</h2>
+      {% if screenshots %}
+        <h2 class="entry-heading">Paste school text</h2>
+        <p class="note">{{ screenshots.aside }}</p>
+      {% else %}
+        <h2>Paste school text</h2>
+      {% endif %}
       <p class="note">
         Paste text from the homework page, a downloaded weekly summary, or a Missing email.
         You will review it before saving.

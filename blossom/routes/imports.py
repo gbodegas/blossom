@@ -1549,6 +1549,12 @@ async def not_hers(request: Request, draft_id: str, state: State) -> Response:
 # ------------------------------------------------------------------ the entry in Family review
 
 ASIDE: Final = "Pasting the school's text stays the exact way on a computer."
+"""What Family review says beside Paste school text while screenshots are offered."""
+SUMMARY: Final = (
+    "Up to 10 screenshots per review, PNG or JPEG, 12 MB each. Screenshots are sent to "
+    "Anthropic's API only when you press Read."
+)
+"""What Family review shows above its screenshot picker: the limits, and what is sent and when."""
 DISCLOSURE: Final = (
     "When you press Read, Blossom sends the screenshots to Anthropic's API to be read. A "
     "review's screenshots, what Blossom read from them, and any progress saved for later are "
@@ -1557,8 +1563,8 @@ DISCLOSURE: Final = (
     "next start. It doesn't guarantee they are erased from the disk, and a backup taken while "
     "the review was open may still hold copies."
 )
-"""What Family review says beside Add screenshots: what is sent and when, what is removed and
-when, and the backup caveat."""
+"""What Family review folds under How screenshots are kept: what is sent and when, what is
+removed and when, and the backup caveat."""
 
 
 def screenshot_entry(request: Request, state: ApplicationState) -> dict[str, object] | None:
@@ -1586,7 +1592,7 @@ def screenshot_entry(request: Request, state: ApplicationState) -> dict[str, obj
     return {
         "aside": ASIDE,
         "only_here": None,
-        "limits": LIMITS,
+        "summary": SUMMARY,
         "disclosure": DISCLOSURE,
         "token": new_creation_token(),
         "issued": state.real_clock.now().isoformat(),

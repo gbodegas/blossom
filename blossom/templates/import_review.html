@@ -101,8 +101,10 @@
       <h2 id="more-heading">Add screenshots</h2>
       <p class="note" id="more-limits">{{ limits }}</p>
       <form method="post" action="/parent/imports/{{ draft_id }}/images" enctype="multipart/form-data">
-        <label for="more-files">Screenshots</label>
-        <input type="file" id="more-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="more-limits">
+        <div class="file-pick">
+          <label class="file-choose" for="more-files">Choose screenshots</label>
+          <input type="file" id="more-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="more-limits">
+        </div>
         <div class="actions">
           <button type="submit" class="primary">Add screenshots</button>
         </div>
