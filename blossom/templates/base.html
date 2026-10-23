@@ -7,6 +7,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Blossom{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/mark.svg">
+    {# Saved to a Home Screen or the Dock, Blossom opens as an app of its own: its icon, its
+       name, and no browser bar. iOS and iPadOS read the touch icon and the web app lines;
+       Safari on the Mac and other browsers read the manifest. #}
+    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Blossom">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="theme-color" content="#fdf5f7">
     <link rel="stylesheet" href="/static/blossom.css?v={{ asset_tag }}">
     <script src="/static/blossom.js?v={{ asset_tag }}" defer></script>
   </head>
