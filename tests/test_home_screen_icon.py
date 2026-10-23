@@ -43,26 +43,34 @@ def canvas() -> str:
     return found.group(1)
 
 
-def head_of(page: str) -> tuple[dict[str, str], dict[str, str]]:
-    """A page's links by rel and its metas by name."""
-    found = elements_of(page)
-    links = {e.attributes["rel"]: e.attributes.get("href", "") for e in found if e.tag == "link"}
-    metas = {
-        e.attributes["name"]: e.attributes.get("content", "")
-        for e in found
-        if e.tag == "meta" and "name" in e.attributes
-    }
+def head_of(page: str) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """A page's links by rel and its metas by name, each in page order, so a second one of a
+    kind is seen: a browser uses the first."""
+    links: dict[str, list[str]] = {}
+    metas: dict[str, list[str]] = {}
+    for e in elements_of(page):
+        if e.tag == "link":
+            links.setdefault(e.attributes["rel"], []).append(e.attributes.get("href", ""))
+        elif e.tag == "meta" and "name" in e.attributes:
+            metas.setdefault(e.attributes["name"], []).append(e.attributes.get("content", ""))
     return links, metas
+
+
+def names_exactly_once(page: str) -> None:
+    """The page names the touch icon, the manifest and each web app line once, as above."""
+    links, metas = head_of(page)
+    assert links.get("apple-touch-icon") == [TOUCH_ICON]
+    assert links.get("manifest") == [MANIFEST]
+    assert {name: metas.get(name) for name in WEB_APP} == {
+        name: [content] for name, content in WEB_APP.items()
+    }
 
 
 def test_her_week_names_the_icon_the_manifest_and_the_web_app_lines() -> None:
     with browser() as client:
         page = client.get(HER_PAGE, headers=PAGE_HEADERS)
     assert page.status_code == 200
-    links, metas = head_of(page.text)
-    assert links["apple-touch-icon"] == TOUCH_ICON
-    assert links["manifest"] == MANIFEST
-    assert {name: metas.get(name) for name in WEB_APP} == WEB_APP
+    names_exactly_once(page.text)
 
 
 def test_the_sign_in_page_names_them_too(tmp_path: pathlib.Path) -> None:
@@ -70,10 +78,7 @@ def test_the_sign_in_page_names_them_too(tmp_path: pathlib.Path) -> None:
     with client_for(signed_in_household(tmp_path)) as client:
         page = client.get("/sign-in", headers=PAGE_HEADERS)
     assert page.status_code == 200
-    links, metas = head_of(page.text)
-    assert links["apple-touch-icon"] == TOUCH_ICON
-    assert links["manifest"] == MANIFEST
-    assert {name: metas.get(name) for name in WEB_APP} == WEB_APP
+    names_exactly_once(page.text)
 
 
 def test_the_manifest_opens_her_week_in_its_own_window() -> None:
@@ -88,7 +93,8 @@ def test_the_manifest_opens_her_week_in_its_own_window() -> None:
     assert manifest["name"] == manifest["short_name"] == "Blossom"
     assert manifest["display"] == "standalone"
     assert manifest["start_url"] == HER_PAGE
-    assert manifest["start_url"].startswith(manifest["scope"])
+    # The whole site, so a parent's pages open in the app's window too.
+    assert manifest["scope"] == "/"
     assert manifest["background_color"] == manifest["theme_color"] == canvas()
     assert WEB_APP["theme-color"] == canvas()
 
