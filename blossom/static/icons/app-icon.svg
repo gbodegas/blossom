@@ -1,0 +1,53 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Gerardo Bodegas Martinez -->
+<!-- The app icon: the logo's lotus on its stone in still water, on the logo's blush paper,
+     without the wordmark. Square and opaque, so iOS, iPadOS and macOS round it themselves.
+     The drawing is in the logo's own coordinates (the lotus's base at 512, 500 of a 1024
+     square), scaled about the middle of the lotus and its ripples (512, 441). The PNGs
+     beside it are this drawing at their sizes. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img">
+  <title>Blossom</title>
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f9eaed"/>
+      <stop offset="1" stop-color="#f2dbe0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fdf5f7" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#fdf5f7" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="grain" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="7"/>
+      <feColorMatrix values="0 0 0 0 0.55  0 0 0 0 0.42  0 0 0 0 0.46  0 0 0 0.06 0"/>
+    </filter>
+    <linearGradient id="stone" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#cfe2f0"/>
+      <stop offset="1" stop-color="#a9c8e0"/>
+    </linearGradient>
+    <linearGradient id="petal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6cfd8"/>
+      <stop offset="1" stop-color="#efb4c2"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#paper)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+  <rect width="1024" height="1024" filter="url(#grain)"/>
+  <g transform="translate(512 525) scale(1.55) translate(-512 -441)">
+    <!-- Ripples, widest first, behind the stone. -->
+    <g fill="none" stroke="#bfd5e7" stroke-width="5.5">
+      <ellipse cx="512" cy="556" rx="250" ry="72"/>
+      <ellipse cx="512" cy="552" rx="214" ry="58"/>
+      <ellipse cx="512" cy="548" rx="178" ry="45"/>
+    </g>
+    <!-- The stone, with the light on its top. -->
+    <ellipse cx="502" cy="520" rx="130" ry="50" fill="url(#stone)" stroke="#9cbdd7" stroke-width="3"/>
+    <ellipse cx="482" cy="494" rx="84" ry="17" fill="#ddebf5" fill-opacity="0.85"/>
+    <!-- Petals over the stone: the side pair first, then the center petal, each a little
+         translucent, so the overlaps read deeper, as in the logo. -->
+    <g stroke="#dc97a9" stroke-width="4.5" stroke-linejoin="round" fill="url(#petal)">
+      <path d="M512 500 C 396 488, 332 403, 344 304 C 448 322, 506 403, 512 500 Z" fill-opacity="0.82"/>
+      <path d="M512 500 C 628 488, 692 403, 680 304 C 576 322, 518 403, 512 500 Z" fill-opacity="0.82"/>
+      <path d="M512 500 C 425 430, 431 330, 512 250 C 593 330, 599 430, 512 500 Z" fill-opacity="0.74"/>
+    </g>
+  </g>
+</svg>

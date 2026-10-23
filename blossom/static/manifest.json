@@ -1,0 +1,29 @@
+{
+  "name": "Blossom",
+  "short_name": "Blossom",
+  "start_url": "/student/due-this-week",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fdf5f7",
+  "theme_color": "#fdf5f7",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
