@@ -3902,6 +3902,8 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
+    # Strict on purpose, beside the exact rules: any text that names the class changes this
+    # count, a harmless comment included, and that upkeep is accepted.
     assert css.count("import-review") == 28
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
@@ -4192,6 +4194,28 @@ def test_every_import_answer_is_no_store_with_the_sign_in_off(
     assert [answer.headers["cache-control"] for answer in answers] == ["no-store"] * len(answers)
 
 
+SCREENSHOT_SUMMARY: Final = (
+    "Up to 10 screenshots per review, PNG or JPEG, 12 MB each. Screenshots are sent to "
+    "Anthropic's API only when you press Read."
+)
+"""The approved line above the picker, written out here rather than taken from the code, so a
+change to its words fails here."""
+SCREENSHOT_DISCLOSURE: Final = (
+    "When you press Read, Blossom sends the screenshots to Anthropic's API to be read. A "
+    "review's screenshots, what Blossom read from them, and any progress saved for later are "
+    "removed from Blossom's database file when the review finishes, is discarded, or expires, "
+    "48 hours after it starts. The removal can wait for Blossom's next hourly cleanup, or its "
+    "next start. It doesn't guarantee they are erased from the disk, and a backup taken while "
+    "the review was open may still hold copies."
+)
+"""How screenshots are kept, word for word as approved, written out here for the same reason."""
+
+
+def words_of(text: str) -> str:
+    """Rendered text with each run of whitespace read as one space."""
+    return " ".join(text.split())
+
+
 def test_family_review_offers_screenshots_while_import_is_on(tmp_path: pathlib.Path) -> None:
     with here(open_settings(tmp_path)) as browser:
         page = browser.get("/parent")
@@ -4205,8 +4229,8 @@ def test_family_review_offers_screenshots_while_import_is_on(tmp_path: pathlib.P
     assert page.status_code == 200
     assert says(page.text, "Add screenshots")
     assert says(page.text, imports.ASIDE)
-    assert says(page.text, imports.SUMMARY)
-    assert says(page.text, imports.DISCLOSURE)
+    assert says(page.text, SCREENSHOT_SUMMARY)
+    assert says(page.text, SCREENSHOT_DISCLOSURE)
     assert (
         '<form method="post" action="/parent/imports" enctype="multipart/form-data">' in page.text
     )
@@ -4232,10 +4256,10 @@ def test_family_review_keeps_the_screenshot_words_short_and_the_picker_in_its_ow
         return next(above for above in element.ancestors() if above.tag == "details")
 
     summary = by_id["screenshot-summary"]
-    assert summary.text.strip() == imports.SUMMARY
+    assert words_of(summary.text) == SCREENSHOT_SUMMARY
     assert fold_of(summary) is by_id["add-assignments"]
     disclosure = by_id["screenshot-disclosure"]
-    assert disclosure.text.strip() == imports.DISCLOSURE
+    assert words_of(disclosure.text) == SCREENSHOT_DISCLOSURE
     fold = fold_of(disclosure)
     assert fold is not by_id["add-assignments"]
     assert fold_of(fold) is by_id["add-assignments"]
