@@ -3852,12 +3852,24 @@ IMPORT_REVIEW_RULES = (
     ".import-review .panel article {\n"
     "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
     '.import-review input[type="file"] {\n  max-width: 100%;\n  min-height: 2.75rem;\n'
+    "  padding-block: 0.6rem;\n"
     "  font: inherit;\n  font-family: var(--font-body);\n  color: var(--text);\n}\n\n"
-    '.import-review input[type="file"]::file-selector-button {\n  min-height: 2.75rem;\n'
-    "  margin-inline-end: 0.75rem;\n  padding: 0.55rem 1.1rem;\n"
-    "  border: 1.5px solid var(--pink);\n  border-radius: var(--pill);\n"
-    "  background: transparent;\n  color: var(--rose-ink);\n  font: inherit;\n"
-    "  font-family: var(--font-display);\n  font-weight: 700;\n  cursor: pointer;\n}\n\n"
+    "/* The screenshot picker: the field's label is its button, in the app's own words and the"
+    " look\n   of an outline button, and the browser's line beside it says what was chosen. The"
+    " browser's\n   own button, worded by the browser, is hidden; a press on the label or on the"
+    " line opens\n   the picker, and the focus rests on the line. The picker sits apart from the"
+    " button that\n   sends it. */\n"
+    ".import-review .file-pick {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n"
+    "  gap: 0.6rem 0.9rem;\n  margin-block: 0.75rem 1.25rem;\n}\n\n"
+    ".import-review .file-choose {\n  display: inline-flex;\n  flex-direction: row;\n"
+    "  align-items: center;\n  justify-content: center;\n  min-height: 2.75rem;\n"
+    "  padding: 0.6rem 1.35rem;\n  border: 1.5px solid var(--pink);\n"
+    "  border-radius: var(--pill);\n  background: transparent;\n  color: var(--rose-ink);\n"
+    "  font-family: var(--font-display);\n  font-weight: 700;\n  cursor: pointer;\n"
+    "  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;\n}\n\n"
+    ".import-review .file-choose:hover {\n  background: var(--rose-bg);\n"
+    "  border-color: var(--pink-deep);\n}\n\n"
+    '.import-review input[type="file"]::file-selector-button {\n  display: none;\n}\n\n'
     ".import-review legend,\n.import-review .note,\n.import-review .source,\n"
     ".import-review .effect,\n.import-review .problem,\n.import-review .choice > p,\n"
     ".import-review .jump a,\n.import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
@@ -3873,8 +3885,10 @@ IMPORT_REVIEW_RULES = (
 """The screenshot review's rules, pinned whole: on a narrow screen with large text its
 fieldsets take the page's width, a panel's side padding gives way and the panel reaches into
 the page's margin, a card inside a panel gives way without reaching further, a file input is
-never wider than its panel and it and its choose button are as tall as a control in the
-page's type at the reader's text size, school text breaks where its line can't hold it while a
+never wider than its panel and as tall as a control in the page's type at the reader's text
+size, its picker's button is its label in the app's words, as tall and with the look of an
+outline button, with the browser's own button hidden and the picker set apart from the button
+that sends it, school text breaks where its line can't hold it while a
 control's words never do, and an instruction's correction box sits under its label, two lines
 tall to start."""
 STYLESHEET = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
@@ -3888,7 +3902,9 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         if "import-review" in page.read_text(encoding="utf-8")
     )
 
-    assert css.count("import-review") == 25
+    # Strict on purpose, beside the exact rules: any text that names the class changes this
+    # count, a harmless comment included, and that upkeep is accepted.
+    assert css.count("import-review") == 28
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
     for landing in (
@@ -4178,6 +4194,28 @@ def test_every_import_answer_is_no_store_with_the_sign_in_off(
     assert [answer.headers["cache-control"] for answer in answers] == ["no-store"] * len(answers)
 
 
+SCREENSHOT_SUMMARY: Final = (
+    "Up to 10 screenshots per review, PNG or JPEG, 12 MB each. Screenshots are sent to "
+    "Anthropic's API only when you press Read."
+)
+"""The approved line above the picker, written out here rather than taken from the code, so a
+change to its words fails here."""
+SCREENSHOT_DISCLOSURE: Final = (
+    "When you press Read, Blossom sends the screenshots to Anthropic's API to be read. A "
+    "review's screenshots, what Blossom read from them, and any progress saved for later are "
+    "removed from Blossom's database file when the review finishes, is discarded, or expires, "
+    "48 hours after it starts. The removal can wait for Blossom's next hourly cleanup, or its "
+    "next start. It doesn't guarantee they are erased from the disk, and a backup taken while "
+    "the review was open may still hold copies."
+)
+"""How screenshots are kept, word for word as approved, written out here for the same reason."""
+
+
+def words_of(text: str) -> str:
+    """Rendered text with each run of whitespace read as one space."""
+    return " ".join(text.split())
+
+
 def test_family_review_offers_screenshots_while_import_is_on(tmp_path: pathlib.Path) -> None:
     with here(open_settings(tmp_path)) as browser:
         page = browser.get("/parent")
@@ -4191,8 +4229,8 @@ def test_family_review_offers_screenshots_while_import_is_on(tmp_path: pathlib.P
     assert page.status_code == 200
     assert says(page.text, "Add screenshots")
     assert says(page.text, imports.ASIDE)
-    assert says(page.text, imports.LIMITS)
-    assert says(page.text, imports.DISCLOSURE)
+    assert says(page.text, SCREENSHOT_SUMMARY)
+    assert says(page.text, SCREENSHOT_DISCLOSURE)
     assert (
         '<form method="post" action="/parent/imports" enctype="multipart/form-data">' in page.text
     )
@@ -4201,6 +4239,54 @@ def test_family_review_offers_screenshots_while_import_is_on(tmp_path: pathlib.P
     assert f'href="/parent/imports/{draft_id}"' in listed
     assert "Homework screenshots from " in listed
     assert "Available until " in listed
+
+
+def test_family_review_keeps_the_screenshot_words_short_and_the_picker_in_its_own_words(
+    tmp_path: pathlib.Path,
+) -> None:
+    # The limits and when screenshots are sent stay in view; how they are kept folds under its
+    # summary, word for word; the paste hint moves to the paste; and the picker's button is the
+    # field's label, worded as the app's buttons are.
+    with here(open_settings(tmp_path)) as browser:
+        page = browser.get("/parent").text
+    found = elements_of(page)
+    by_id = {element.attributes["id"]: element for element in found if "id" in element.attributes}
+
+    def fold_of(element: Element) -> Element:
+        return next(above for above in element.ancestors() if above.tag == "details")
+
+    summary = by_id["screenshot-summary"]
+    assert words_of(summary.text) == SCREENSHOT_SUMMARY
+    assert fold_of(summary) is by_id["add-assignments"]
+    disclosure = by_id["screenshot-disclosure"]
+    assert words_of(disclosure.text) == SCREENSHOT_DISCLOSURE
+    fold = fold_of(disclosure)
+    assert fold is not by_id["add-assignments"]
+    assert fold_of(fold) is by_id["add-assignments"]
+    assert "open" not in fold.attributes
+    assert [e.text for e in found if e.tag == "summary" and e.parent is fold] == [
+        "How screenshots are kept"
+    ]
+    assert not says(page, imports.LIMITS)
+
+    picker = by_id["screenshot-files"]
+    labels = [
+        e for e in found if e.tag == "label" and e.attributes.get("for") == "screenshot-files"
+    ]
+    assert [(e.text, e.attributes.get("class")) for e in labels] == [
+        ("Choose screenshots", "file-choose")
+    ]
+    assert picker.parent is labels[0].parent
+    assert picker.parent is not None
+    assert picker.parent.classes == {"file-pick"}
+    assert picker.attributes["aria-describedby"] == "screenshot-summary screenshot-disclosure"
+
+    headings = [e for e in found if e.tag == "h2"]
+    paste = next(e for e in headings if e.text == "Paste school text")
+    hint = next(e for e in found if e.tag == "p" and e.text.strip() == imports.ASIDE)
+    assert paste.position < hint.position
+    assert paste.parent is hint.parent
+    assert not any("import-review" in above.classes for above in hint.ancestors())
 
 
 def test_family_review_from_another_computer_with_the_sign_in_off_says_where_to_add_them(
