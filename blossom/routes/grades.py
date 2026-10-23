@@ -2762,9 +2762,11 @@ async def ask_a_parent_about_a_result(result_id: str, request: Request, state: S
     read. Her words are read before the result is, so no refusal loses them. The same form
     sent again lands on the request it made; one that already asked with other words, or
     whose request was taken back or has gone, sends nothing, 409. A form that isn't whole,
-    or words too long, is refused first, 422. A result that is not on record, or leaves it
-    before the request is written, is 404 on the page that needs no result. A write the file
-    refuses is 500, on the page she sent it from.
+    or words too long, is refused first, 422. A result with no current value when it is read,
+    or deleted before the request is written, is 404 on the page that needs no result. One
+    that stops being current after it is read is asked about all the same, and the request's
+    line then says it is not on record. A write the file refuses is 500, on the page she sent
+    it from.
     """
     if viewer_of(request) == "parent":
         return result_help_not_sent(request, state, NOT_HERS_TO_ASK, "", 403)
