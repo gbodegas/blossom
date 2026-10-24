@@ -895,7 +895,8 @@ a.assignment-link:focus-visible {
    it in's among them. On class details, the title of a result a link lands on. On a
    result's homework page, its heading, where a press or the way in lands. On the
    screenshot review, a question or a card's choices, and a group of what saving
-   does, where their links land. Each
+   does, where their links land, and what an upload, a Read press or a save did, where
+   the press lands. Each
    takes the same calm cue, whether a click, a key or a
    redirect brought the focus: a pale wash around the place and a bar of the action
    color at its left, both drawn outside its box so nothing moves, and no outline
@@ -918,6 +919,9 @@ h1#homework:focus,
 #earlier-work:focus,
 .import-review .choice[tabindex="-1"]:focus,
 .import-review article[tabindex="-1"]:focus,
+#told:focus,
+#done:focus,
+#outcome-heading:focus,
 #too-much-state:focus {
   outline: 3px solid transparent;
   outline-offset: 4px;

@@ -4042,6 +4042,8 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
     assert css.count("import-review") == 35
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
+    for landing in ("#told:focus", "#done:focus", "#outcome-heading:focus"):
+        assert declared_for(landing) == [ARRIVAL_CUE]
     for landing in (
         '.import-review .choice[tabindex="-1"]',
         '.import-review article[tabindex="-1"]',
