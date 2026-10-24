@@ -2042,8 +2042,10 @@ def test_a_piece_s_digest_is_its_row_s_corrections_and_its_own_dates() -> None:
 
 
 def test_row_boxes_move_to_the_first_open_card_of_a_split_row(house: House) -> None:
-    """A split row's class, title and instructions boxes sit on its first open card: with its
-    first piece saved, on the next, and the post reader takes them from there."""
+    """A split row's class, title and instructions boxes sit on its first open card, and the post
+    reader takes them from there. A row's pieces are saved together and a saved review is
+    frozen, so a review never shows a split row with one piece saved; this test sets ``saved``
+    on one piece directly to pin the rule on that defensive path."""
     log = homework_card(
         badge="ASSIGNED",
         course=COURSE,
