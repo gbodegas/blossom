@@ -140,6 +140,7 @@ from blossom.reconciliation import (
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.homework_scores import (
     GradebookShown,
+    ResultNamed,
     ScoreShown,
     ToCheck,
     YearRead,
@@ -147,6 +148,7 @@ from blossom.routes.homework_scores import (
     check_standing,
     page_scores,
     read_score_facts,
+    results_named,
     results_read,
     rule_values,
     scores_left_out,
@@ -154,6 +156,7 @@ from blossom.routes.homework_scores import (
     week_to_check,
 )
 from blossom.routes.navigation import (
+    CLASS_AT,
     DETAILS,
     EVIDENCE,
     FAMILY_PAGE,
@@ -327,6 +330,7 @@ from blossom.views import (
     HandInView,
     HelpNoteView,
     HelpRequestView,
+    HelpResultView,
     NamedAssignmentView,
     ParentUpdateView,
     PastDueView,
@@ -1207,19 +1211,87 @@ def notes_named_by(state: ApplicationState, requests: list[HelpRequest]) -> Name
         return NamedCaptures({}, [])
 
 
+def results_named_by(
+    state: ApplicationState, requests: list[HelpRequest]
+) -> Mapping[str, ResultNamed] | None:
+    """The school results these requests are about, in one read of the file for all of them,
+    and in none when no request is about a result. As for notes, a read that fails is logged
+    and answered as ``None``, which shows each such result as one that can't be read. The log
+    names the failure's type alone, since a stored grade value can ride in its message or its
+    cause."""
+    wanted = [request.grade_result_id for request in requests if request.grade_result_id]
+    if not wanted:
+        return {}
+    store = state.project_state
+    try:
+        with store.reading():
+            return results_named(store, wanted)
+    except Exception as error:
+        logger.warning(
+            "the school results her requests are about could not be read: %s",
+            type(error).__name__,
+        )
+        return None
+
+
+@dataclass(frozen=True)
+class HelpSubjects:
+    """What the requests being shown are about, read once for all of them: the notes, and the
+    results by id, ``None`` when they could not be read."""
+
+    notes: NamedCaptures
+    results: Mapping[str, ResultNamed] | None
+
+
+NO_SUBJECTS: Final = HelpSubjects(NamedCaptures({}, []), {})
+"""What a page that shows no request names."""
+
+
+def subjects_named_by(state: ApplicationState, requests: list[HelpRequest]) -> HelpSubjects:
+    """The notes and the results these requests are about, each read once for all of them."""
+    return HelpSubjects(notes_named_by(state, requests), results_named_by(state, requests))
+
+
+def result_about(
+    request: HelpRequest, results: Mapping[str, ResultNamed] | None
+) -> HelpResultView | None:
+    """The result a request names, out of the results read for it; ``None`` for a request
+    about no result. One the read does not hold is gone from the record, and one whose
+    reference or read failed can't be read."""
+    if request.result_reference_unreadable:
+        return HelpResultView(result_id=None, unavailable=True)
+    result_id = request.grade_result_id
+    if result_id is None:
+        return None
+    if results is None:
+        return HelpResultView(result_id=result_id, unavailable=True)
+    found = results.get(result_id)
+    if found is None:
+        return HelpResultView(result_id=result_id, gone=True)
+    at = {"class_id": found.class_id, "n": found.term_place}
+    return HelpResultView(
+        result_id=result_id,
+        class_name=found.class_name,
+        title=found.title,
+        her_address=address(CLASS_AT.format(base=HER_GRADES, **at), result_id),
+        family_address=address(CLASS_AT.format(base=GRADES, **at), result_id),
+    )
+
+
 def help_view(
-    state: ApplicationState, request: HelpRequest, named: NamedCaptures
+    state: ApplicationState, request: HelpRequest, named: HelpSubjects
 ) -> HelpRequestView:
     """The request as both pages see it, with the time she asked and each update's time in
-    the household's zone, and the note it is about out of ``named``, the notes read for the
-    requests being shown."""
+    the household's zone, and the note or result it is about out of ``named``, what was read
+    for the requests being shown."""
     zone = state.clock.zone
     return HelpRequestView(
         about_note=HelpNoteView.about(
             request.capture_id,
-            named.notes,
+            named.notes.notes,
             unreadable_reference=request.capture_reference_unreadable,
         ),
+        about_result=result_about(request, named.results),
         request_id=request.request_id,
         evening=request.evening,
         asked_at=request.asked_at,
@@ -1250,7 +1322,7 @@ def help_requests_shown(state: ApplicationState, listed: HelpListed) -> list[Hel
     """Her requests as the JSON routes list them: open ones oldest first, then those resolved
     within two weeks, with the notes they name read once for all of them."""
     requests = listed.every()
-    about = notes_named_by(state, requests)
+    about = subjects_named_by(state, requests)
     return [help_view(state, request, about) for request in requests]
 
 
@@ -1417,7 +1489,7 @@ def ask_for_help(
                 raise HTTPException(status.HTTP_409_CONFLICT, detail=FORM_USED)
     return HelpRequestResponse(
         principal=Principal.STUDENT,
-        request=help_view(state, asked, notes_named_by(state, [asked])),
+        request=help_view(state, asked, subjects_named_by(state, [asked])),
     )
 
 
@@ -1990,7 +2062,7 @@ def build_student_due_this_week_view(
     today: date | None = None,
     everything: Everything | None = None,
     groups: HelpGroups | None | Unread = UNREAD,
-    named: NamedCaptures | None = None,
+    named: HelpSubjects | None = None,
 ) -> StudentDueThisWeekView:
     """Assemble the student's weekly view from the stores ``ApplicationState``
     opened at startup; nothing is opened or seeded per request. ``week`` is any
@@ -2079,7 +2151,7 @@ def build_student_due_this_week_view(
     if isinstance(groups, Unread):
         groups = help_read(state)
     if named is None:
-        named = NamedCaptures({}, []) if groups is None else notes_named_by(state, groups.every())
+        named = NO_SUBJECTS if groups is None else subjects_named_by(state, groups.every())
 
     def help_views(requests: list[HelpRequest]) -> list[HelpRequestView]:
         return [help_view(state, request, named) for request in requests]
@@ -2648,7 +2720,7 @@ def student_page(
             also=(*(() if record is None else record.plan_assignment_ids or ()), *about),
         )
         notes = state.project_state.outstanding_captures()
-        named = NamedCaptures({}, []) if groups is None else notes_named_by(state, groups.every())
+        named = NO_SUBJECTS if groups is None else subjects_named_by(state, groups.every())
         # The gradebook's results for the classes her homework names, with a parent's links
         # between a result and homework, read beside the record and no part of it: nothing a
         # plan, a digest, or a brief is made from holds one. A decoding that raises

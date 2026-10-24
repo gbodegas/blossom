@@ -1023,13 +1023,15 @@ h1#homework:focus,
   margin: 1.75rem 0 1rem;
 }
 
-/* In a request's row, Open homework note and Ask again can sit on lines next to each
-   other. Each keeps its 44 pixels to press inside its own line, which grows to hold
-   them, so neither reaches into the other. The family page shows the same request, and
-   its note link keeps the same 44 pixels above the reply's field. */
+/* In a request's row, Open homework note or Open the result and Ask again can sit on
+   lines next to each other. Each keeps its 44 pixels to press inside its own line, which
+   grows to hold them, so none reaches into another. The family page shows the same
+   request, and its note or result link keeps the same 44 pixels above the reply's field. */
 .help-panel .help-request a.ask-again,
 .help-panel .help-about-note a,
-#help-she-asked-for .help-about-note a {
+#help-she-asked-for .help-about-note a,
+.help-panel .help-about-result a,
+#help-she-asked-for .help-about-result a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: 0;
@@ -1721,6 +1723,15 @@ form.inline button {
     background: none;
     box-shadow: none;
     backdrop-filter: none;
+  }
+
+  /* Her question about a school result starts with a sentence that names the result. On a
+     narrow screen its box shows a prefilled sentence of about 120 characters whole, with
+     text at 200% on a 320 px screen too, and its side padding gives way, as the other
+     narrow fields' does, so a long word of a class or title stays whole. */
+  .result-question {
+    min-height: 18rem;
+    padding-inline: min(0.85rem, 2vw);
   }
 }
 

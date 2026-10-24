@@ -45,6 +45,15 @@ through two connections at once, and a name that is no note of this record
 writes nothing. Putting the note away later does not remove the reference,
 and a note that cannot be read later does not take the request with it.
 
+A request can be about one of her school results instead, never both. Its reference to the
+result is the result's id alone: no class name, title, score or status is kept with it. Her
+words are kept as she sent them, and the sentence her field starts with names the result's
+class and title, so those stay in her words unless she changes them. The result is
+looked for the same way, on this store's connection inside the transaction that writes the
+request, as a result of hers in the gradebook's own table. Nothing keeps the result from
+being deleted: a deleted result leaves the request standing, and its reference simply finds
+no result.
+
 Each form that asks carries an id of its own, and the request is kept under
 it. The same form sent again makes no second request, and an id once used
 never makes another, even after its request is taken back or gone: only the
@@ -68,6 +77,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from blossom.captures import capture_id_from
 from blossom.clock import Clock
+from blossom.stores.gradebook import HER_NAME_RECORD, RESULT_ID, RESULT_SCOPE
 from blossom.stores.paths import refuse_unsafe_path
 from blossom.stores.project_state import HeldText, normalize_note
 from blossom.unreadable import refusal_in_names, text_or_refusal
@@ -130,6 +140,13 @@ class HelpRequest(BaseModel):
     """The request is about a note, and what the file holds in the id's place is no id as
     this store writes one. The request stands and says its note is unavailable; what the
     column holds is never read into text, so nothing of it can reach a page or an answer."""
+    grade_result_id: str | None = None
+    """The school result the request is about, when it is about one. Only the id: nothing of
+    the result is copied here."""
+    result_reference_unreadable: bool = False
+    """The request is about a result, and what the file holds in the id's place is no result
+    id. The request stands and says its result can't be read; what the column holds is never
+    read into text."""
 
     @property
     def open(self) -> bool:
@@ -227,14 +244,22 @@ CLOSE: Final = """
     SET state = 'resolved', resolved_at = ?, accepted_at = COALESCE(accepted_at, ?)
     WHERE request_id = ? AND state <> 'resolved'
 """
+RESULT_COLUMN: Final = "ALTER TABLE help_requests ADD COLUMN grade_result_id TEXT"
 INSERT_HELP_REQUEST: Final = """
-    INSERT INTO help_requests (request_id, evening, asked_at, note, state, capture_id)
-    VALUES (?, ?, ?, ?, 'requested', ?)
+    INSERT INTO help_requests
+        (request_id, evening, asked_at, note, state, capture_id, grade_result_id)
+    VALUES (?, ?, ?, ?, 'requested', ?, ?)
 """
 NOTES_TABLE: Final = """
     SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'homework_captures'
 """
 NOTE_NAMED: Final = "SELECT 1 FROM homework_captures WHERE capture_id = ?"
+HER_RESULT_TABLES: Final = """
+    SELECT count(*) FROM sqlite_master
+    WHERE type = 'table' AND name IN ('grade_student', 'grade_name_forms', 'grade_results')
+"""
+"""How many of the tables her result is read from the file holds: all three, or none of her
+results is on record."""
 NOTES_NAMED_TABLE: Final = (
     "CREATE TABLE IF NOT EXISTS notes_named_by_requests (capture_id TEXT PRIMARY KEY)"
 )
@@ -283,6 +308,18 @@ REQUEST_ID: Final = re.compile(r"[0-9a-f]{32}")
 
 class NotARequestId(ValueError):
     """Raised for an id no form of these pages carries."""
+
+
+class NotAResultId(ValueError):
+    """Raised for a result id not in the one spelling the gradebook writes."""
+
+
+def result_id_from(value: str) -> str:
+    """A result id held to the one spelling the gradebook writes, or ``NotAResultId``."""
+    if type(value) is not str or RESULT_ID.fullmatch(value) is None:
+        msg = "not a result id"
+        raise NotAResultId(msg)
+    return value
 
 
 class UnreadableHelpRequest(ValueError):
@@ -375,8 +412,8 @@ class HelpAlreadyAsked:
 
 @dataclass(frozen=True)
 class HelpFormChanged:
-    """The form's id made a request with other words or about another note. Nothing is
-    written."""
+    """The form's id made a request with other words or about another note or result. Nothing
+    is written."""
 
     request: HelpRequest
 
@@ -394,6 +431,11 @@ class UnknownCaptureReference(LookupError):
     nothing about the page it came from, so nothing is written for it."""
 
 
+class UnknownResultReference(LookupError):
+    """A request named a school result that is no result of hers on record, a deleted one
+    included. Nothing is written for it."""
+
+
 class HelpRequestsStore:
     """SQLite-backed help requests, shared across threads behind a lock."""
 
@@ -402,7 +444,11 @@ class HelpRequestsStore:
         "Keep a request, with a parent's updates on it, until a parent closes it, and for "
         "fourteen days after, so the updates can be read; nothing older stays, and nothing is "
         "ever derived from how often she asks. The id of a note a request named is kept after "
-        "the request goes, and nothing else of it, so that note is never deleted. The id of "
+        "the request goes, and nothing else of it, so that note is never deleted. A request "
+        "about a school result refers to it by the result's id alone, and goes with the "
+        "request; her words are kept as she sent them, and the sentence she starts with names "
+        "the result's class and title. The result can still be deleted, and the request then "
+        "stays. The id of "
         "every request is kept for good, and nothing else of it, so a form sent again never "
         "asks twice."
     )
@@ -425,18 +471,21 @@ class HelpRequestsStore:
                 resolved_at TEXT,
                 response TEXT,
                 capture_id TEXT,
-                parent_updates TEXT
+                parent_updates TEXT,
+                grade_result_id TEXT
             )
             """
         )
-        # A file from before has the table without one or both of the last columns. Each
-        # nullable column is added, once: every request already there reads as about no
-        # note and with no updates, and a start that meets the columns again adds nothing.
+        # A file from before has the table without some of the last columns. Each nullable
+        # column is added, once: every request already there reads as about no note and no
+        # result, with no updates, and a start that meets the columns again adds nothing.
         columns = {str(row[1]) for row in self._connection.execute(HELP_REQUEST_COLUMNS)}
         if "capture_id" not in columns:
             self._connection.execute("ALTER TABLE help_requests ADD COLUMN capture_id TEXT")
         if "parent_updates" not in columns:
             self._connection.execute(UPDATES_COLUMN)
+        if "grade_result_id" not in columns:
+            self._connection.execute(RESULT_COLUMN)
         self._connection.commit()
         # The notes a request ever named, and the ids every request was asked under, by
         # id alone. Taking a request back or sweeping it leaves both. Each start fills
@@ -497,11 +546,18 @@ class HelpRequestsStore:
             self._connection.close()
 
     def ask(
-        self, evening: date, note: str | None = None, *, capture_id: str | None = None
+        self,
+        evening: date,
+        note: str | None = None,
+        *,
+        capture_id: str | None = None,
+        grade_result_id: str | None = None,
     ) -> HelpRequest:
         """Keep one request under a fresh id, asked now about ``evening``, and about one note
-        when it names one: ``ask_once`` for a caller with no form to send twice."""
-        outcome = self.ask_once(new_request_id(), evening, note, capture_id=capture_id)
+        or result when it names one: ``ask_once`` for a caller with no form to send twice."""
+        outcome = self.ask_once(
+            new_request_id(), evening, note, capture_id=capture_id, grade_result_id=grade_result_id
+        )
         if not isinstance(outcome, HelpAsked):
             msg = "a fresh help request id was already used"
             raise RuntimeError(msg)
@@ -514,39 +570,46 @@ class HelpRequestsStore:
         note: str | None = None,
         *,
         capture_id: str | None = None,
+        grade_result_id: str | None = None,
     ) -> AskOutcome:
         """Keep one request for the form whose id this is, and never a second.
 
-        The id and a name are held to their shapes before anything is read.
-        Then the writer is reserved on this store's own connection, and in
-        that one transaction the id is reserved, the note is looked for, the
-        request is written and the note's id is kept as asked about. An id
+        The id and a name are held to their shapes before anything is read,
+        and a request names a note or a result, never both. Then the writer
+        is reserved on this store's own connection, and in that one
+        transaction the id is reserved, the note or result is looked for, the
+        request is written and a note's id is kept as asked about. An id
         already used is not a new request: the same form sent again, with the
-        same words about the same note, is the request it made, as it stands;
-        other words or another note is a form that already asked; and an id
-        whose request was taken back or has gone asks nothing again. A name
-        that is no note of this record, including a deleted note's id, is
-        ``UnknownCaptureReference``. Whatever the file refuses is rolled back
-        whole, and the id is left unused.
+        same words about the same note or result, is the request it made, as
+        it stands; other words or another subject is a form that already
+        asked; and an id whose request was taken back or has gone asks
+        nothing again. A name that is no note of this record, including a
+        deleted note's id, is ``UnknownCaptureReference``; one that is no
+        result of hers, a deleted one included, is ``UnknownResultReference``.
+        Whatever the file refuses is rolled back whole, and the id is left
+        unused.
         """
         form = request_id_from(request_id)
-        name = None if capture_id is None else capture_id_from(capture_id)
+        name, result = subject_from(capture_id, grade_result_id)
         request = HelpRequest(
             request_id=form,
             evening=evening,
             asked_at=self._clock.now(),
             note=note,
             capture_id=name,
+            grade_result_id=result,
         )
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
                 if self._connection.execute(RESERVE_ID, (form,)).rowcount != 1:
-                    outcome = self._asked_before(form, note, name)
+                    outcome = self._asked_before(form, note, name, result)
                     self._connection.rollback()
                     return outcome
                 if name is not None and not self._note_on_record(name):
                     raise UnknownCaptureReference(name)
+                if result is not None and not self._result_on_record(result):
+                    raise UnknownResultReference(result)
                 self._connection.execute(
                     INSERT_HELP_REQUEST,
                     (
@@ -555,6 +618,7 @@ class HelpRequestsStore:
                         request.asked_at.isoformat(),
                         note,
                         name,
+                        result,
                     ),
                 )
                 if name is not None:
@@ -566,19 +630,26 @@ class HelpRequestsStore:
         return HelpAsked(request)
 
     def already_asked(
-        self, request_id: str, note: str | None = None, *, capture_id: str | None = None
+        self,
+        request_id: str,
+        note: str | None = None,
+        *,
+        capture_id: str | None = None,
+        grade_result_id: str | None = None,
     ) -> AskOutcome | None:
         """What sending the form whose id this is would answer, or None while its id is
         unused. It reads and never writes: ``ask_once`` decides again in its own
         transaction, so a caller may answer a form sent again before reading anything else."""
         form = request_id_from(request_id)
-        name = None if capture_id is None else capture_id_from(capture_id)
+        name, result = subject_from(capture_id, grade_result_id)
         with self._lock:
             if self._connection.execute(ID_KEPT, (form,)).fetchone() is None:
                 return None
-            return self._asked_before(form, note, name)
+            return self._asked_before(form, note, name, result)
 
-    def _asked_before(self, form: str, note: str | None, name: str | None) -> AskOutcome:
+    def _asked_before(
+        self, form: str, note: str | None, name: str | None, result: str | None
+    ) -> AskOutcome:
         """What an id already used stands for, read through this store's own connection."""
         row = self._held_row(RETAINED_ONE, (form, self._cutoff()))
         if row is None:
@@ -586,7 +657,10 @@ class HelpRequestsStore:
         standing = request_from(row)
         same_words = spaced(standing.note) == spaced(note)
         same_note = standing.capture_id == name and not standing.capture_reference_unreadable
-        if same_words and same_note:
+        same_result = (
+            standing.grade_result_id == result and not standing.result_reference_unreadable
+        )
+        if same_words and same_note and same_result:
             return HelpAlreadyAsked(standing)
         return HelpFormChanged(standing)
 
@@ -596,6 +670,17 @@ class HelpRequestsStore:
         if self._connection.execute(NOTES_TABLE).fetchone() is None:
             return False
         return self._connection.execute(NOTE_NAMED, (capture_id,)).fetchone() is not None
+
+    def _result_on_record(self, result_id: str) -> bool:
+        """Whether the file holds a result of this id under her student ID, read as the
+        gradebook reads it, through this connection, inside the caller's transaction. A file
+        with no gradebook, or no student record, holds none of her results."""
+        if self._connection.execute(HER_RESULT_TABLES).fetchone()[0] != 3:
+            return False
+        her = self._connection.execute(HER_NAME_RECORD).fetchone()
+        if her is None or type(her[0]) is not str:
+            return False
+        return self._connection.execute(RESULT_SCOPE, (her[0], result_id)).fetchone() is not None
 
     def take_back(self, request_id: str) -> bool:
         """Remove a request nobody has taken up yet. False when there is none to remove.
@@ -834,6 +919,19 @@ class HelpRequestsStore:
         return (read - timedelta(days=HELP_RETENTION_DAYS)).isoformat()
 
 
+def subject_from(
+    capture_id: str | None, grade_result_id: str | None
+) -> tuple[str | None, str | None]:
+    """The note and the result a request names, each held to its shape, or ``ValueError`` for
+    a request that names both."""
+    if capture_id is not None and grade_result_id is not None:
+        msg = "a request names a note or a result, never both"
+        raise ValueError(msg)
+    name = None if capture_id is None else capture_id_from(capture_id)
+    result = None if grade_result_id is None else result_id_from(grade_result_id)
+    return name, result
+
+
 def spaced(words: str | None) -> str:
     """Words with every run of spaces, tabs and line breaks said once, for telling a form sent
     again from one with other words."""
@@ -909,6 +1007,9 @@ def request_from(row: sqlite3.Row) -> HelpRequest:
         note = decoded(row["note"])
         response = decoded(row["response"])
         capture_id, unreadable = reference_from(held_reference(row["capture_id"]), request_id)
+        result_id, result_unreadable = result_reference_from(
+            held_reference(row["grade_result_id"]), request_id
+        )
         return HelpRequest(
             request_id=request_id,
             evening=date.fromisoformat(str(decoded(row["evening"]))),
@@ -921,6 +1022,8 @@ def request_from(row: sqlite3.Row) -> HelpRequest:
             parent_updates=updates_from(decoded(row["parent_updates"])),
             capture_id=capture_id,
             capture_reference_unreadable=unreadable,
+            grade_result_id=result_id,
+            result_reference_unreadable=result_unreadable,
         )
     except (ValueError, TypeError, RecursionError) as fault:
         why = refusal_in_names(fault, HelpRequest.model_fields)
@@ -936,8 +1039,9 @@ def decoded(value: object) -> object:
 
 
 def held_reference(value: object) -> object:
-    """What the note's place holds, as ``reference_from`` reads it: text decoded, and text
-    that is not UTF-8 left as plain bytes, which is no id."""
+    """What the note's or the result's place holds, as ``reference_from`` and
+    ``result_reference_from`` read it: text decoded, and text that is not UTF-8 left as plain
+    bytes, which is no id."""
     try:
         return decoded(value)
     except UnicodeDecodeError:
@@ -980,6 +1084,22 @@ def reference_from(held: object, request_id: str) -> tuple[str | None, bool]:
             pass
     logger.warning(
         "help request %s holds a %s that is no note id in the place of one",
+        request_id,
+        type(held).__name__,
+    )
+    return None, True
+
+
+def result_reference_from(held: object, request_id: str) -> tuple[str | None, bool]:
+    """The result a request is about, from what the file holds: the id, and whether something
+    is held that is no result id. As for a note, anything but a ``str`` in the one spelling is
+    never turned into text; the request is marked, and the log names only the type held."""
+    if held is None:
+        return None, False
+    if type(held) is str and RESULT_ID.fullmatch(held) is not None:
+        return held, False
+    logger.warning(
+        "help request %s holds a %s that is no result id in the place of one",
         request_id,
         type(held).__name__,
     )

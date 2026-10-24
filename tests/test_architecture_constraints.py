@@ -470,6 +470,7 @@ LITERAL_AUTOFOCUS = {
     "student_note_help.html": 1,
     "student_note_new.html": 1,
     "student_note_search.html": 2,
+    "student_result_help.html": 1,
     "student_to_turn_in_rows.html": 1,
     "student_update.html": 4,
     "student_update_recovery.html": 2,

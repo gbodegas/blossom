@@ -110,6 +110,12 @@ from blossom.grades.wording import (
 from blossom.homework_search import PAGE_SIZE
 from blossom.household import UnreadableHouseholdSecret, read_authority, secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
+from blossom.routes.captures import (
+    HELP_FIELDS,
+    HELP_NOT_ASKED,
+    HELP_WITHOUT_THE_PAGE,
+    QUESTION_TOO_LONG,
+)
 from blossom.routes.forms import fields_of
 from blossom.routes.homework_scores import (
     FoundState,
@@ -130,6 +136,7 @@ from blossom.routes.homework_scores import (
     read_grade_facts,
     read_links,
     result_homework,
+    result_own,
     results_read,
     rule_values,
     title_of,
@@ -141,15 +148,26 @@ from blossom.routes.navigation import (
     HER_GRADES,
     RESULT_HOMEWORK,
     RESULT_HOMEWORK_AT,
+    WEEK_PAGE,
+    address,
 )
-from blossom.routes.student import parent_reads, templates, viewer_of
+from blossom.routes.student import (
+    FORM_SENT_OTHER_WORDS,
+    FORM_USED,
+    HELP_FORM_NOT_WHOLE,
+    NOT_HERS_TO_ASK,
+    NOT_HERS_TO_UPDATE,
+    ReturnLink,
+    parent_reads,
+    templates,
+    viewer_of,
+)
 from blossom.stores.gradebook import (
     ACCEPTANCE_ID,
     CLASS_ID,
     RESULT_ID,
     REVISION_MAX,
     UNCONNECTED,
-    ClassOfYear,
     ClassTermRead,
     ConfirmedBy,
     ContextChanged,
@@ -167,7 +185,6 @@ from blossom.stores.gradebook import (
     LinkDecision,
     NamedClass,
     RequiredIndexUnavailable,
-    ResultPlace,
     Term,
     TermNotOnRecord,
     Viewer,
@@ -175,8 +192,20 @@ from blossom.stores.gradebook import (
     class_for,
     name_key,
 )
+from blossom.stores.help_requests import (
+    NOTE_MAX_LENGTH,
+    AskOutcome,
+    HelpAlreadyAsked,
+    HelpAsked,
+    HelpFormChanged,
+    HelpFormUsed,
+    NotARequestId,
+    UnknownResultReference,
+    new_request_id,
+    request_id_from,
+)
 from blossom.stores.paths import UnsafeCheckpointPath
-from blossom.stores.project_state import ProjectStateStore
+from blossom.stores.project_state import ProjectStateStore, normalize_note
 
 logger = logging.getLogger(__name__)
 
@@ -2444,6 +2473,7 @@ def class_page(request: Request, state: ApplicationState, class_id: str, n: str)
     context: dict[str, object] = {
         "family_tree": request.url.path.startswith(GRADES),
         "grades": GRADES if family else HER_GRADES,
+        "ask_at": None if family else RESULT_ASK,
         "marks": state.settings.page_marks,
     }
     shown = class_page_read(state, class_id, n, family=family)
@@ -2571,6 +2601,261 @@ def her_class(class_id: str, n: str, request: Request, state: State) -> Response
 def family_class(class_id: str, n: str, request: Request, state: State) -> Response:
     """Route 9p: class details in a parent's voice."""
     return class_page(request, state, class_id, n)
+
+
+RESULT_ASK: Final = HER_GRADES + "/results/{result_id}/ask"
+"""Her page that asks a parent about one result: its address holds the result's ID alone."""
+ASK_TITLED: Final = "Can you help me understand my result for {title} in {class_name}?"
+ASK_UNTITLED: Final = "Can you help me understand this result in {class_name}?"
+ASK_PLAIN: Final = "Can you help me understand this result?"
+
+
+def asked_about(title: str | None, class_name: str) -> str:
+    """The sentence her field starts with: the result's title and class, or the class alone
+    when there is no title to show or the sentence with it is longer than a request keeps, or
+    neither when that is longer too."""
+    if title is not None:
+        sentence = ASK_TITLED.format(title=title, class_name=class_name)
+        if len(sentence) <= NOTE_MAX_LENGTH:
+            return sentence
+    sentence = ASK_UNTITLED.format(class_name=class_name)
+    return sentence if len(sentence) <= NOTE_MAX_LENGTH else ASK_PLAIN
+
+
+def result_ask_read(state: ApplicationState, result_id: str) -> dict[str, object] | None:
+    """What the page that asks about a result shows: the result's card as class details draws
+    it, under its class name and term, the way back to its card, and the sentence the field
+    starts with. None for an ID of no such shape or no current result of hers. A read."""
+    store = state.project_state
+    if not RESULT_ID.fullmatch(result_id):
+        return None
+    with store.reading():
+        own = result_own(store, result_id)
+        if own is None:
+            return None
+        place, named, read, value, _ = own
+        term = store.terms_of_year(named.year)[own.term_place - 1]
+        _, shown = result_shown(
+            value,
+            year=named.year,
+            first_month=store.first_month_of(named.year),
+            newest=newest_current(read.reports),
+            names=report_names(read.reports, state.clock.zone),
+        )
+    titled = value.cells["assignment"][0] is Presence.REPORTED
+    asked = asked_about(shown.title if titled else None, named.name)
+    at = {"class_id": place.class_id, "n": own.term_place}
+    return {
+        "name": named.name,
+        "term": term_named((named.year, term)),
+        "result_id": result_id,
+        "item": shown,
+        "her_back": address(CLASS_AT.format(base=HER_GRADES, **at), result_id),
+        "family_back": address(CLASS_AT.format(base=GRADES, **at), result_id),
+        "asked": asked,
+    }
+
+
+def result_ask_page(
+    request: Request,
+    state: ApplicationState,
+    shown: dict[str, object],
+    *,
+    question: str | None = None,
+    problem: str | None = None,
+    question_error: bool = False,
+    status_code: int = 200,
+) -> Response:
+    """The page that asks a parent about a result, from what ``result_ask_read`` gave, with her
+    words in the field when a refusal keeps them, or the sentence it starts with. Its ways back
+    go to the reader's own class details. Rendering it sends nothing, and each time it is made
+    its form gets a fresh id."""
+    return templates.TemplateResponse(
+        request,
+        "student_result_help.html",
+        {
+            **shown,
+            "back": shown["family_back"] if parent_reads(request) else shown["her_back"],
+            "question": shown["asked"] if question is None else question,
+            "problem": problem,
+            "question_error": question_error,
+            "viewer": viewer_of(request),
+            "not_hers": NOT_HERS_TO_UPDATE,
+            "action": RESULT_ASK.format(result_id=shown["result_id"]),
+            "note_max_length": NOTE_MAX_LENGTH,
+            "request_id": new_request_id(),
+            "marks": state.settings.page_marks,
+        },
+        status_code=status_code,
+    )
+
+
+def result_help_not_sent(
+    request: Request,
+    state: ApplicationState,
+    problem: str,
+    question: str,
+    status_code: int,
+    *,
+    before: AskOutcome | None = None,
+    fresh: bool = False,
+) -> Response:
+    """The page for a request about a result that was refused where no result can be shown
+    beside it. It reads no store: what happened, her question as she typed it, and the ways
+    back, to the reader's own Grades. A form whose id already asked, with other words or for
+    a request since taken back, says that with 409 and links to the help form on her week;
+    so does a form refused beside a result that can't be read (``fresh``). A parent is shown
+    no question."""
+    mine = viewer_of(request) != "parent"
+    week = "Back to my week" if mine else "Back to her week"
+    fresh_form = address(WEEK_PAGE, "ask-for-help") if fresh else None
+    if isinstance(before, HelpFormChanged | HelpFormUsed):
+        problem = FORM_USED if isinstance(before, HelpFormUsed) else FORM_SENT_OTHER_WORDS
+        status_code = 409
+        fresh_form = address(WEEK_PAGE, "ask-for-help")
+    grades = GRADES if parent_reads(request) else HER_GRADES
+    return templates.TemplateResponse(
+        request,
+        "student_update_recovery.html",
+        {
+            "card": None,
+            "hand_in_card": None,
+            "heading": "Request not sent",
+            "note_problem": problem,
+            "help_question": question if mine else "",
+            "help_fresh_form": fresh_form,
+            "ways_back": [ReturnLink(grades, "Back to Grades"), ReturnLink(WEEK_PAGE, week)],
+            "marks": state.settings.page_marks,
+        },
+        status_code=status_code,
+    )
+
+
+@student_router.get("/results/{result_id}/ask", response_class=HTMLResponse)
+def ask_about_a_result(result_id: str, request: Request, state: State) -> Response:
+    """Her page that offers to ask a parent about one result: the result as it stands, and a
+    question she can change. Opening it sends nothing. A parent reading it sees no form."""
+    try:
+        shown = result_ask_read(state, result_id)
+    except GradeValueUndecodable as error:
+        return grade_page_not_shown(error)
+    if shown is None:
+        return templates.TemplateResponse(
+            request,
+            "student_result_help.html",
+            {
+                "missing": RESULT_NOT_ON_RECORD,
+                "grades": HER_GRADES,
+                "marks": state.settings.page_marks,
+            },
+            status_code=404,
+        )
+    return result_ask_page(request, state, shown)
+
+
+@student_router.post("/results/{result_id}/ask", response_class=HTMLResponse)
+async def ask_a_parent_about_a_result(result_id: str, request: Request, state: State) -> Response:
+    """Ask a parent about one result, with her words as she sent them, each line break kept as
+    one, so they are counted against the cap as her field counts them.
+
+    Only this, an explicit submit from her, makes a request. It carries the result's id and
+    her words, and nothing else of the result. A parent is answered 403 before the form is
+    read. Her words are read before the result is, so no refusal loses them. The same form
+    sent again lands on the request it made; one that already asked with other words, or
+    whose request was taken back or has gone, sends nothing, 409. A form that isn't whole,
+    or words too long, is refused first, 422. A result with no current value when it is read,
+    or deleted before the request is written, is 404 on the page that needs no result. One
+    that stops being current after it is read is asked about all the same, and the request's
+    line then says it is not on record. A write the file refuses is 500, on the page she sent
+    it from.
+    """
+    if viewer_of(request) == "parent":
+        return result_help_not_sent(request, state, NOT_HERS_TO_ASK, "", 403)
+    fields, whole = await fields_of(request, HELP_FIELDS)
+    question = fields.get("note", "")
+    # A browser counts a line break once against the field's limit and sends it as CR LF.
+    words = normalize_note(question) or ""
+    try:
+        form: str | None = request_id_from(fields.get("request_id", ""))
+    except NotARequestId:
+        form = None
+    sound = whole and form is not None
+    refused = (
+        None
+        if sound and len(words) <= NOTE_MAX_LENGTH
+        else (QUESTION_TOO_LONG if sound else HELP_FORM_NOT_WHOLE)
+    )
+    if not RESULT_ID.fullmatch(result_id):
+        return result_help_not_sent(request, state, RESULT_NOT_ON_RECORD, question, 404)
+    before: AskOutcome | None = None
+    if form is not None and refused is None:
+        try:
+            before = state.help_requests.already_asked(
+                form, words or None, grade_result_id=result_id
+            )
+        except Exception:
+            logger.exception("the form for her request for help about a result was not read")
+            return result_help_not_sent(request, state, HELP_NOT_ASKED, question, 500)
+        if isinstance(before, HelpAlreadyAsked):
+            return RedirectResponse(
+                address(WEEK_PAGE, "help-result", asked_again=before.request.request_id),
+                status_code=303,
+            )
+    try:
+        shown = result_ask_read(state, result_id)
+    except Exception as error:
+        # The type alone: a stored grade value can ride in the error's message or its cause.
+        logger.warning(
+            "a result could not be read for her request for help: %s", type(error).__name__
+        )
+        if refused is not None:
+            # The form is refused before the result is weighed, and says so first.
+            return result_help_not_sent(
+                request, state, HELP_WITHOUT_THE_PAGE[refused], question, 422, fresh=True
+            )
+        return result_help_not_sent(request, state, HELP_NOT_ASKED, question, 500, before=before)
+    if shown is None:
+        return result_help_not_sent(
+            request, state, RESULT_NOT_ON_RECORD, question, 404, before=before
+        )
+    if form is None or refused is not None:
+        return result_ask_page(
+            request,
+            state,
+            shown,
+            question=question,
+            problem=refused,
+            question_error=sound,
+            status_code=422,
+        )
+    if isinstance(before, HelpFormChanged | HelpFormUsed):
+        said = FORM_USED if isinstance(before, HelpFormUsed) else FORM_SENT_OTHER_WORDS
+        return result_ask_page(
+            request, state, shown, question=question, problem=said, status_code=409
+        )
+    try:
+        async with state.decision_lock:
+            outcome = state.help_requests.ask_once(
+                form, state.clock.today(), words or None, grade_result_id=result_id
+            )
+    except UnknownResultReference:
+        return result_help_not_sent(request, state, RESULT_NOT_ON_RECORD, question, 404)
+    except Exception:
+        logger.exception("her request for help about a result could not be sent")
+        return result_ask_page(
+            request, state, shown, question=question, problem=HELP_NOT_ASKED, status_code=500
+        )
+    match outcome:
+        case HelpAsked(request=asked):
+            where = address(WEEK_PAGE, "help-result", asked=asked.request_id)
+        case HelpAlreadyAsked(request=asked):
+            where = address(WEEK_PAGE, "help-result", asked_again=asked.request_id)
+        case HelpFormChanged() | HelpFormUsed():
+            said = FORM_USED if isinstance(outcome, HelpFormUsed) else FORM_SENT_OTHER_WORDS
+            return result_ask_page(
+                request, state, shown, question=question, problem=said, status_code=409
+            )
+    return RedirectResponse(where, status_code=303)
 
 
 STATE_LINE: Final = "state"
@@ -2891,35 +3176,6 @@ def result_said(view: ResultHomework) -> tuple[Said, list[Said], list[Said]]:
     return state, withheld, waiting
 
 
-class ResultOwn(NamedTuple):
-    """A result's own class and term as its page reads them first: its place, its class, the
-    class and term's read, its current value, and its year's terms by place, folded."""
-
-    place: ResultPlace
-    named: ClassOfYear
-    read: ClassTermRead
-    value: CurrentValue
-    terms: list[str]
-
-
-def result_own(store: ProjectStateStore, result_id: str) -> ResultOwn | None:
-    """A result's own class and term; None when no result of hers has that ID or it holds no
-    current value. A term not among its year's terms is ``GradeValueUndecodable``. A read."""
-    place = store.result_place(result_id)
-    named = None if place is None else store.class_named(place.class_id)
-    if place is None or named is None:
-        return None
-    read = store.class_term(place.class_id, place.term)
-    value = read.current.results.get(result_id)
-    if value is None:
-        return None
-    terms = [folded(one) for one in store.terms_of_year(named.year)]
-    if folded(place.term) not in terms:
-        # Its class's page can't be named: a term outside its year is a damaged record.
-        raise GradeValueUndecodable
-    return ResultOwn(place, named, read, value, terms)
-
-
 def result_page_read(
     state: ApplicationState, result_id: str, *, search: tuple[str, str] | None = None
 ) -> dict[str, object] | None:
@@ -2933,7 +3189,7 @@ def result_page_read(
         own = result_own(store, result_id)
         if own is None:
             return None
-        place, named, read, value, terms = own
+        place, named, read, value, _ = own
         names = report_names(read.reports, state.clock.zone)
         _, shown = result_shown(
             value,
@@ -2980,9 +3236,7 @@ def result_page_read(
             rows.setdefault(row.assignment_id, row)
     return {
         "missing": None,
-        "back": CLASS_AT.format(
-            base=GRADES, class_id=place.class_id, n=terms.index(folded(place.term)) + 1
-        ),
+        "back": CLASS_AT.format(base=GRADES, class_id=place.class_id, n=own.term_place),
         "class_name": named.name,
         "term_name": place.term,
         "year": named.year,

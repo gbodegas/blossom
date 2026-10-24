@@ -162,6 +162,7 @@ HER_NOTE_PRESSES: Final = (
 )
 REPORT: Final = f"/student/actions/assignments/{ESSAY_ID}/report"
 ASK: Final = "/student/actions/ask-for-help"
+RESULT_ASK: Final = f"/student/grades/results/result-{uuid4().hex}/ask"
 HERS_TREE: Final = (
     REPORT,
     f"/student/actions/assignments/{ESSAY_ID}/undo-report",
@@ -172,6 +173,7 @@ HERS_TREE: Final = (
     *[f"/student/actions/homework-notes/{NOTE}/{press}" for press in HER_NOTE_PRESSES],
     f"/student/actions/homework-notes/{NOT_A_NOTE}/edit",
     f"/student/actions/homework-notes/{NOT_A_NOTE}/ask-for-help",
+    RESULT_ASK,
 )
 PASTE: Final = "/parent/inbox/read"
 DECIDE: Final = "/parent/actions/decide/draft-not-here"
@@ -211,7 +213,7 @@ def expected(path: str, reader: str) -> tuple[str, str, list[tuple[str, str]]]:
         return "Nothing was saved", NOTHING_SAVED, [("/parent", "Back to Family review")]
     week = (WEEK, "Back to her week" if reader == "parent" else "Back to my week")
     note = [(f"/student/homework-notes/{NOTE}", "Back to the note")] if NOTE in path else []
-    if path.endswith("/ask-for-help"):
+    if path.endswith("/ask-for-help") or path == RESULT_ASK:
         return "Request not sent", NOTHING_SENT, [*note, BACK_TO_HELP]
     return "Nothing was saved", NOTHING_SAVED, [*note, week]
 

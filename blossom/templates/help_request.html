@@ -5,7 +5,7 @@
   to a line: where it stands, her words under a label for whoever reads the
   page, when she asked, by the request's own day and time in the household's
   zone, the evening it was asked for when that is another day, the homework
-  note it is about, and a parent's updates. The latest update comes first,
+  note or school result it is about, and a parent's updates. The latest update comes first,
   under Parent update, with the day and time it was added; the earlier ones
   fold under Earlier updates, in the order they came. A reply kept from
   before updates had times reads as Earlier reply, with no time. The state
@@ -34,6 +34,9 @@
 {% endif %}
 {% if ask.about_note %}
 <p class="help-about">{% with about = ask.about_note, viewer = "student" if hers else "parent" %}{% include "help_about_note.html" %}{% endwith %}</p>
+{% endif %}
+{% if ask.about_result %}
+<p class="help-about">{% with about = ask.about_result, viewer = "student" if hers else "parent" %}{% include "help_about_result.html" %}{% endwith %}</p>
 {% endif %}
 {% if ask.updates %}
 {{ update_lines(ask.updates[-1], today) }}

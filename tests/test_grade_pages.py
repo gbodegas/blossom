@@ -62,9 +62,10 @@ from blossom.grades.wording import ordinal, report_names, score_line, score_of
 from blossom.household import secret_beside
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes import grades as grade_routes
+from blossom.routes import homework_scores
 from blossom.routes.forms import FormRoute, fields_of
 from blossom.settings import Settings
-from blossom.stores import gradebook
+from blossom.stores import gradebook, help_requests
 from blossom.stores.gradebook import (
     VIEW_TABLES,
     GradeReportNotSaved,
@@ -97,6 +98,7 @@ from tests.support import (
     save_grade,
     signed_in,
     signed_in_household,
+    state_of,
     store_of,
     whole_form,
     without_columns,
@@ -142,7 +144,14 @@ FAMILY_GRADE_ROUTES = {
     ("POST", HOMEWORK_CLASSES),
 }
 """Every family grade route and method, named here so a route added without a row fails."""
-HER_GRADE_ROUTES = {("GET", HER_GRADES), ("POST", HER_VIEW), ("GET", HER_CLASS_AT)}
+HER_ASK = "/student/grades/results/{result_id}/ask"
+HER_GRADE_ROUTES = {
+    ("GET", HER_GRADES),
+    ("POST", HER_VIEW),
+    ("GET", HER_CLASS_AT),
+    ("GET", HER_ASK),
+    ("POST", HER_ASK),
+}
 """Every grade route of her pages, which any viewer may open."""
 LOOPBACK = "127.0.0.1:8781"
 
@@ -1401,6 +1410,9 @@ RESULT_CARD = """  <section class="panel grade-card">
       {%- endif %}
     <p class="details-link"><a class="assignment-link" href="{{ way.address }}" aria-label="{{ way.label }}">Homework for this result</a></p>
     {%- endif %}
+    {%- if ask %}
+    <p class="details-link"><a class="assignment-link" href="{{ ask }}" aria-label="Ask a parent about this result: {{ item.title }}">Ask a parent about this result</a></p>
+    {%- endif %}
     <details class="steps update">
 """  # noqa: E501
 """A result's card on class details and a result's homework page, pinned as written, in the
@@ -1408,7 +1420,8 @@ week card's order: the category as the kicker when the school reported it and as
 when it didn't, the title, a heading of the level the page gives, which carries the result's
 ID and takes the focus so a link can land on it, the due line with the gradebook status as its
 quieter phrase, the score, where it was last shown, a parent's way in with the quiet line for a
-result that waits just before it, and the school record details under the card's rule."""
+result that waits just before it, her way to ask a parent about it, and the school record
+details under the card's rule."""
 REVIEW_ROW = (
     "              <p class=\"{{ 'course' if shown.category.name.presence.name == 'REPORTED' "
     'else \'source\' }}">{{ cell(shown.category.name, "Category name") }}</p>\n'
@@ -2984,7 +2997,8 @@ def test_class_details_show_each_score_cell_the_save_kept(tmp_path: pathlib.Path
             for address in (HER_CLASS_AT, CLASS_AT)
         ]
 
-    for said, way in zip(pages, ("", " Homework for this result"), strict=True):
+    ways = (" Ask a parent about this result", " Homework for this result")
+    for said, way in zip(pages, ways, strict=True):
         for n, (points, most, average) in enumerate(states, start=1):
             line = score_said(points, most, average)
             card = (
@@ -6498,3 +6512,708 @@ def test_removing_a_connection_returns_the_name_to_waiting_and_writes_nothing_el
     assert state_of_name(end[3]) == NOT_CONNECTED
     assert after == before
     assert any(name.endswith("rows of assignments") for name in before)
+
+
+# ------------------------------------------------------------------ asking a parent about a result
+
+
+OSMOSIS = "Osmosis with Potato Slices"
+HER_WEEK = "/student/due-this-week"
+ASKED_ABOUT_OSMOSIS = (
+    "Can you help me understand my result for Osmosis with Potato Slices in Biology?"
+)
+
+
+def card_of(page: str, title: str) -> str:
+    """The ID of the result whose card on class details has this title."""
+    found = re.search(
+        rf'id="(result-[0-9a-f]{{32}})" tabindex="-1"><span class="authored-text">'
+        rf"{re.escape(title)}</span>",
+        page,
+    )
+    assert found is not None, title
+    return found.group(1)
+
+
+def ask_form_of(page: str) -> dict[str, str]:
+    """The ask page's form as a browser sends it: the field's words and the form's id."""
+    field = re.search(r'<textarea id="help-question"[^>]*>\n(.*?)</textarea>', page, re.S)
+    form = re.search(r'name="request_id" value="([0-9a-f]{32})"', page)
+    assert field is not None
+    assert form is not None
+    return {"note": unescape(field.group(1)), "request_id": form.group(1)}
+
+
+def read_as(html: str) -> str:
+    """A piece of a page as a browser reads it out: tags dropped where they stand."""
+    return " ".join(unescape(re.sub(r"<[^>]+>", "", html)).split())
+
+
+def class_term_deleted(browser: TestClient, result_id: str) -> None:
+    """The result's class and term deleted through the gradebook's own delete."""
+    store = store_of(browser)
+    place = store.result_place(result_id)
+    assert place is not None
+    preview = store.delete_preview(place.class_id, place.term)
+    assert isinstance(preview, gradebook.DeletePreview)
+    store.delete_class_term(place.class_id, place.term, revision=preview.revision, role="parent")
+
+
+def test_she_asks_a_parent_about_a_result_from_its_card_and_both_pages_name_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        signed_in(browser, HERS)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        opened = browser.get(ask, headers=PAGE)
+        nothing_sent = state_of(browser).help_requests.listed().every()
+        form = ask_form_of(opened.text)
+        sent = browser.post(ask, data=form, headers=PAGE)
+        again = browser.post(ask, data=form, headers=PAGE)
+        kept = state_of(browser).help_requests.listed().every()
+        week = browser.get(HER_WEEK, headers=PAGE)
+        listed = browser.get("/student/help-requests").json()
+        browser.post("/sign-out")
+        signed_in(browser, THEIRS)
+        family = browser.get("/parent", headers=PAGE)
+
+    her_card = f"{HER_CLASS_AT.format(class_id=class_id, n=1)}#{result_id}"
+    family_card = f"{CLASS_AT.format(class_id=class_id, n=1)}#{result_id}"
+    card = details.text.split(f'id="{result_id}"', 1)[1].split("</section>", 1)[0]
+    assert (
+        f'<a class="assignment-link" href="{ask}" aria-label="Ask a parent about this result: '
+        f'{OSMOSIS}">Ask a parent about this result</a>'
+    ) in card
+    assert card.index("School score") < card.index(ask) < card.index("School record details")
+    assert opened.status_code == 200
+    assert nothing_sent == []
+    main = main_of(opened.text)
+    assert f'<p class="return"><a href="{her_card}">Back to the class</a></p>' in main
+    assert "<h1>Ask a parent about this result</h1>" in main
+    assert main.index("Biology") < main.index("T1 · 2026-2027") < main.index(f'id="{result_id}"')
+    assert form["note"] == ASKED_ABOUT_OSMOSIS
+    said = words(main)
+    assert "Your question for a parent" in said
+    assert (
+        "Your parents see this question and can open this result. Nothing is sent until you "
+        "press the button, and nothing goes to the school or to the planning model."
+    ) in said
+    assert '<button type="submit" class="primary">Ask a parent</button>' in main
+    assert f'<a class="cancel" href="{her_card}">Not now</a>' in main
+    assert (sent.status_code, again.status_code) == (303, 303)
+    assert sent.headers["location"] == f"{HER_WEEK}?asked={form['request_id']}#help-result"
+    assert again.headers["location"] == f"{HER_WEEK}?asked_again={form['request_id']}#help-result"
+    assert [(one.request_id, one.note, one.grade_result_id) for one in kept] == [
+        (form["request_id"], ASKED_ABOUT_OSMOSIS, result_id)
+    ]
+    assert f"About your result in Biology: {OSMOSIS} Open the result" in read_as(week.text)
+    assert f'<a href="{her_card}">Open the result</a>' in week.text
+    assert f"About her result in Biology: {OSMOSIS} Open the result" in read_as(family.text)
+    assert f'<a href="{family_card}">Open the result</a>' in family.text
+    assert listed[0]["about_result"] == {
+        "result_id": result_id,
+        "class_name": "Biology",
+        "title": OSMOSIS,
+        "her_address": her_card,
+        "family_address": family_card,
+        "gone": False,
+        "unavailable": False,
+    }
+    assert listed[0]["about_note"] is None
+
+
+def test_her_own_words_and_a_blank_field_are_sent_as_she_sent_them(tmp_path: pathlib.Path) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        mine = ask_form_of(browser.get(ask, headers=PAGE).text)
+        blank = ask_form_of(browser.get(ask, headers=PAGE).text)
+        browser.post(ask, data={**mine, "note": "  Why is this one missing?\n"}, headers=PAGE)
+        browser.post(ask, data={**blank, "note": ""}, headers=PAGE)
+        kept = state_of(browser).help_requests.listed().every()
+
+    assert sorted((one.note or "", one.grade_result_id) for one in kept) == [
+        ("", result_id),
+        ("Why is this one missing?", result_id),
+    ]
+
+
+def test_the_field_starts_with_a_sentence_a_request_can_keep() -> None:
+    limit = help_requests.NOTE_MAX_LENGTH
+    room = limit - len(grade_routes.ASK_TITLED.format(title="", class_name="Biology"))
+    fits, too_long = "L" * room, "L" * (room + 1)
+
+    assert grade_routes.asked_about(fits, "Biology") == (
+        f"Can you help me understand my result for {fits} in Biology?"
+    )
+    assert len(grade_routes.asked_about(fits, "Biology")) == limit
+    for title in (too_long, None):
+        assert grade_routes.asked_about(title, "Biology") == (
+            "Can you help me understand this result in Biology?"
+        )
+    untitled_room = limit - len(grade_routes.ASK_UNTITLED.format(class_name=""))
+    long_class, longer_class = "C" * untitled_room, "C" * (untitled_room + 1)
+    assert grade_routes.asked_about(None, long_class) == (
+        f"Can you help me understand this result in {long_class}?"
+    )
+    for title in ("Osmosis", None):
+        assert grade_routes.asked_about(title, longer_class) == (
+            "Can you help me understand this result?"
+        )
+
+
+def test_a_parent_sees_no_way_to_ask_and_a_parent_s_press_sends_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        signed_in(browser, THEIRS)
+        hers = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        theirs = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(hers.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        opened = browser.get(ask, headers=PAGE)
+        signed_in(browser, HERS)
+        hers_opened = browser.get(ask, headers=PAGE)
+        signed_in(browser, THEIRS)
+        pressed = browser.post(
+            ask, data={"note": "Synthetic words", "request_id": uuid.uuid4().hex}, headers=PAGE
+        )
+        unread = browser.post(ask, content=b"\xff\xfe not a form", headers=PAGE)
+        kept = state_of(browser).help_requests.listed().every()
+
+    for page in (hers, theirs):
+        assert "/ask" not in page.text
+        assert "Ask a parent about this result" not in page.text
+        assert "Homework for this result" in page.text
+    main = main_of(opened.text)
+    assert opened.status_code == 200
+    assert "<form" not in main
+    assert "Sign in as the student to update. A request for help is hers to make." in words(main)
+    assert f'id="{result_id}"' in main
+    family_card = f"{CLASS_AT.format(class_id=class_id, n=1)}#{result_id}"
+    her_card = f"{HER_CLASS_AT.format(class_id=class_id, n=1)}#{result_id}"
+    assert f'<p class="return"><a href="{family_card}">Back to the class</a></p>' in main
+    hers_main = main_of(hers_opened.text)
+    assert f'<p class="return"><a href="{her_card}">Back to the class</a></p>' in hers_main
+    assert f'<a class="cancel" href="{her_card}">Not now</a>' in hers_main
+    assert (pressed.status_code, unread.status_code) == (403, 403)
+    assert "Synthetic words" not in pressed.text
+    assert '<a href="/parent/grades">Back to Grades</a>' in pressed.text
+    assert '<a href="/student/grades">Back to Grades</a>' not in pressed.text
+    assert kept == []
+
+
+def test_refusals_keep_her_words_and_send_nothing(tmp_path: pathlib.Path) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+
+        def fresh() -> dict[str, str]:
+            return ask_form_of(browser.get(ask, headers=PAGE).text)
+
+        too_long = browser.post(ask, data={**fresh(), "note": "Synthetic " * 60}, headers=PAGE)
+        not_whole = browser.post(ask, data={"note": "Synthetic not whole"}, headers=PAGE)
+        help_store = state_of(browser).help_requests
+        help_store._connection.execute(
+            "CREATE TRIGGER refuse_requests BEFORE INSERT ON help_requests "
+            "BEGIN SELECT RAISE(ABORT, 'the file refused'); END"
+        )
+        help_store._connection.commit()
+        refused = browser.post(ask, data={**fresh(), "note": "Synthetic refused"}, headers=PAGE)
+        help_store._connection.execute("DROP TRIGGER refuse_requests")
+        help_store._connection.commit()
+        used = fresh()
+        browser.post(ask, data={**used, "note": "Synthetic first"}, headers=PAGE)
+        other_words = browser.post(ask, data={**used, "note": "Synthetic other"}, headers=PAGE)
+        assert help_store.take_back(used["request_id"])
+        taken_back = browser.post(ask, data={**used, "note": "Synthetic first"}, headers=PAGE)
+        last = fresh()
+        class_term_deleted(browser, result_id)
+        gone = browser.post(ask, data={**last, "note": "Synthetic gone"}, headers=PAGE)
+        gone_page = browser.get(ask, headers=PAGE)
+        kept = help_store.listed().every()
+
+    assert too_long.status_code == 422
+    assert "Synthetic " * 59 in unescape(too_long.text)
+    assert "Keep your question to 500 characters or fewer." in words(too_long.text)
+    assert not_whole.status_code == 422
+    assert "Synthetic not whole" in not_whole.text
+    assert refused.status_code == 500
+    assert "Your request could not be sent, and nothing was changed." in words(refused.text)
+    assert "Synthetic refused" in refused.text
+    assert other_words.status_code == 409
+    assert "This form already sent a request with other words" in words(other_words.text)
+    assert "Synthetic other" in other_words.text
+    assert taken_back.status_code == 409
+    assert "This form was already used." in words(taken_back.text)
+    assert gone.status_code == 404
+    assert "Blossom has no current record of this result." in words(gone.text)
+    assert "Synthetic gone" in gone.text
+    assert gone_page.status_code == 404
+    assert kept == []
+
+
+def test_the_line_says_when_the_result_is_gone_or_can_t_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        seeded(browser, FIRST_TERM)
+        store = store_of(browser)
+        first, second = (
+            str(row[0])
+            for row in store._connection.execute(
+                "SELECT result_id FROM grade_results ORDER BY result_id LIMIT 2"
+            )
+        )
+        help_store = state_of(browser).help_requests
+        about_first = help_store.ask(PLAN_DATE, "Synthetic first", grade_result_id=first)
+        help_store.ask(PLAN_DATE, "Synthetic second", grade_result_id=second)
+        help_store._connection.execute(
+            "UPDATE help_requests SET grade_result_id = 'INJECTED' WHERE request_id = ?",
+            (about_first.request_id,),
+        )
+        help_store._connection.commit()
+        signed_in(browser, HERS)
+        before = read_as(browser.get(HER_WEEK, headers=PAGE).text)
+
+        def fails(result_id: str) -> None:
+            raise sqlite3.OperationalError
+
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "result_place", fails)
+            unread = read_as(browser.get(HER_WEEK, headers=PAGE).text)
+        class_term_deleted(browser, second)
+        hers = read_as(browser.get(HER_WEEK, headers=PAGE).text)
+        tables_after = help_store._connection.execute("SELECT count(*) FROM help_requests")
+        count = tables_after.fetchone()[0]
+        browser.post("/sign-out")
+        signed_in(browser, THEIRS)
+        theirs = read_as(browser.get("/parent", headers=PAGE).text)
+
+    assert before.count("Your result can't be read right now.") == 1
+    assert "About your result in Biology:" in before
+    assert unread.count("Your result can't be read right now.") == 2
+    assert "INJECTED" not in before + unread + hers + theirs
+    assert "Your result is not on record." in hers
+    assert "Your result can't be read right now." in hers
+    assert "Her result is not on record." in theirs
+    assert "Her result can't be read right now." in theirs
+    assert count == 2
+
+
+def results_by_scope(store: gradebook.GradebookRecords) -> dict[tuple[str, str], list[str]]:
+    """Every result's ID, by the class ID and term label it is in."""
+    rows = store._connection.execute(
+        "SELECT class_id, term_label, result_id FROM grade_results ORDER BY result_id"
+    )
+    scopes: dict[tuple[str, str], list[str]] = {}
+    for class_id, term, result_id in rows:
+        scopes.setdefault((str(class_id), str(term)), []).append(str(result_id))
+    return scopes
+
+
+def class_term_reads(
+    store: gradebook.GradebookRecords, monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[str, str]]:
+    """Each class and term the store reads from now on, in the order it reads them."""
+    seen: list[tuple[str, str]] = []
+    real = store.class_term
+
+    def counted(class_id: str, term: str) -> gradebook.ClassTermRead:
+        seen.append((class_id, term))
+        return real(class_id, term)
+
+    monkeypatch.setattr(store, "class_term", counted)
+    return seen
+
+
+def named_one_by_one(
+    store: gradebook.GradebookRecords, result_ids: list[str]
+) -> dict[str, homework_scores.ResultNamed]:
+    """Each result as a request names it, read on its own with no shared reads."""
+    named = {}
+    for result_id in result_ids:
+        own = homework_scores.result_own(store, result_id)
+        assert own is not None
+        named[result_id] = homework_scores.ResultNamed(
+            own.place.class_id, own.term_place, own.named.name, homework_scores.title_of(own.value)
+        )
+    return named
+
+
+def test_results_in_one_class_and_term_share_one_class_term_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        seeded(browser, FIRST_TERM)
+        store = store_of(browser)
+        (scope, ids), *others = results_by_scope(store).items()
+        with store.reading():
+            alone = named_one_by_one(store, ids)
+        seen = class_term_reads(store, monkeypatch)
+        with store.reading():
+            named = homework_scores.results_named(store, ids)
+
+    assert others == []
+    assert len(ids) > 1
+    assert seen == [scope]
+    assert named == alone
+
+
+def test_results_in_other_classes_or_terms_are_read_with_their_own_class_and_term(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        seeded(browser, FIRST_TERM, SECOND_TERM)
+        seeded(browser, draft_of(OTHER_CLASS))
+        store = store_of(browser)
+        scopes = results_by_scope(store)
+        ids = [one for found in scopes.values() for one in found]
+        with store.reading():
+            alone = named_one_by_one(store, ids)
+        seen = class_term_reads(store, monkeypatch)
+        with store.reading():
+            named = homework_scores.results_named(store, ids)
+
+    assert len(scopes) == 3
+    assert len({class_id for class_id, _ in scopes}) == 2
+    assert len({term for _, term in scopes}) == 2
+    assert sorted(seen) == sorted(scopes)
+    assert named == alone
+
+
+def test_a_later_read_of_the_results_sees_the_record_as_it_stands_then(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        seeded(browser, FIRST_TERM, SECOND_TERM)
+        store = store_of(browser)
+        (first, first_ids), (second, second_ids) = results_by_scope(store).items()
+        ids = first_ids + second_ids
+        seen = class_term_reads(store, monkeypatch)
+        with store.reading():
+            before = homework_scores.results_named(store, ids)
+        read_first = list(seen)
+        class_term_deleted(browser, first_ids[0])
+        seen.clear()
+        with store.reading():
+            after = homework_scores.results_named(store, ids)
+
+    assert sorted(before) == sorted(ids)
+    assert sorted(read_first) == sorted([first, second])
+    assert sorted(after) == sorted(second_ids)
+    assert after == {one: before[one] for one in second_ids}
+    assert seen == [second]
+
+
+DAMAGED_PRESENCE = "synthetic-stored-presence-q7"
+
+
+def test_a_damaged_grade_value_stays_out_of_the_log_on_the_ask_page_and_the_help_lines(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        signed_in(browser, HERS)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        form = ask_form_of(browser.get(ask, headers=PAGE).text)
+        help_store = state_of(browser).help_requests
+        help_store.ask(PLAN_DATE, "Synthetic earlier", grade_result_id=result_id)
+        store = store_of(browser)
+        store._connection.execute(
+            "UPDATE grade_result_observations SET points_presence = ? WHERE result_id = ?",
+            (DAMAGED_PRESENCE, result_id),
+        )
+        store._connection.commit()
+        caplog.clear()
+        caplog.set_level(logging.DEBUG)
+        sent = browser.post(ask, data={**form, "note": "Synthetic kept"}, headers=PAGE)
+        week = browser.get(HER_WEEK, headers=PAGE)
+        kept = help_store.listed().every()
+
+    records = [
+        (record.getMessage(), record.exc_info, record.exc_text, record.stack_info)
+        for record in caplog.records
+    ]
+    assert sent.status_code == 500
+    assert "Your request could not be sent, and nothing was changed." in words(sent.text)
+    assert "Synthetic kept" in sent.text
+    assert [one.note for one in kept] == ["Synthetic earlier"]
+    assert "Your result can't be read right now." in read_as(week.text)
+    assert DAMAGED_PRESENCE not in caplog.text
+    assert all(info is None and text is None and stack is None for _, info, text, stack in records)
+    said = [message for message, *_ in records]
+    assert "a result could not be read for her request for help: GradeValueUndecodable" in said
+    assert (
+        "the school results her requests are about could not be read: GradeValueUndecodable"
+    ) in said
+
+
+def test_a_used_or_changed_form_answers_409_whether_or_not_its_result_stands(
+    tmp_path: pathlib.Path,
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        changed = ask_form_of(browser.get(ask, headers=PAGE).text)
+        used = ask_form_of(browser.get(ask, headers=PAGE).text)
+        browser.post(ask, data={**changed, "note": "Synthetic first"}, headers=PAGE)
+        browser.post(ask, data={**used, "note": "Synthetic used"}, headers=PAGE)
+        help_store = state_of(browser).help_requests
+        assert help_store.take_back(used["request_id"])
+        standing = browser.post(ask, data={**changed, "note": "Synthetic other"}, headers=PAGE)
+        class_term_deleted(browser, result_id)
+        other_words = browser.post(ask, data={**changed, "note": "Synthetic other"}, headers=PAGE)
+        taken_back = browser.post(ask, data={**used, "note": "Synthetic used"}, headers=PAGE)
+        kept = help_store.listed().every()
+
+    assert standing.status_code == 409
+    assert other_words.status_code == 409
+    assert "This form already sent a request with other words" in words(other_words.text)
+    assert "Synthetic other" in other_words.text
+    assert taken_back.status_code == 409
+    assert "This form was already used." in words(taken_back.text)
+    assert "Synthetic used" in taken_back.text
+    for page in (other_words, taken_back):
+        assert "Blossom has no current record of this result." not in words(page.text)
+        assert '<a href="/student/due-this-week#ask-for-help">Open a new help form</a>' in page.text
+    assert [one.note for one in kept] == ["Synthetic first"]
+
+
+def test_a_refused_form_beside_a_result_that_can_t_be_read_is_422_and_keeps_her_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        form = ask_form_of(browser.get(ask, headers=PAGE).text)
+
+        def fails(*_: object) -> None:
+            raise sqlite3.OperationalError
+
+        monkeypatch.setattr(store_of(browser), "result_place", fails)
+        too_long = browser.post(ask, data={**form, "note": "Synthetic " * 60}, headers=PAGE)
+        not_whole = browser.post(ask, data={"note": "Synthetic not whole"}, headers=PAGE)
+        unread = browser.post(ask, data={**form, "note": "Synthetic unread"}, headers=PAGE)
+        kept = state_of(browser).help_requests.listed().every()
+
+    assert too_long.status_code == 422
+    assert "Nothing was sent, because the question is longer than 500 characters." in words(
+        too_long.text
+    )
+    assert "Synthetic " * 59 in unescape(too_long.text)
+    assert not_whole.status_code == 422
+    assert "Synthetic not whole" in not_whole.text
+    for page in (too_long, not_whole):
+        assert '<a href="/student/due-this-week#ask-for-help">Open a new help form</a>' in page.text
+    assert unread.status_code == 500
+    assert "Synthetic unread" in unread.text
+    assert kept == []
+
+
+def test_a_result_deleted_between_the_page_s_read_and_the_write_is_404_and_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        form = ask_form_of(browser.get(ask, headers=PAGE).text)
+        read = grade_routes.result_ask_read
+
+        def read_then_deleted(state: object, named: str) -> object:
+            shown = read(state, named)  # type: ignore[arg-type]
+            class_term_deleted(browser, named)
+            return shown
+
+        monkeypatch.setattr(grade_routes, "result_ask_read", read_then_deleted)
+        gone = browser.post(ask, data={**form, "note": "Synthetic late"}, headers=PAGE)
+        help_store = state_of(browser).help_requests
+        kept = help_store.listed().every()
+        unused = help_store.already_asked(form["request_id"], "Synthetic late")
+
+    assert gone.status_code == 404
+    assert "Blossom has no current record of this result." in words(gone.text)
+    assert "Synthetic late" in gone.text
+    assert kept == []
+    assert unused is None
+
+
+def test_a_parent_s_json_list_and_move_name_the_result(tmp_path: pathlib.Path) -> None:
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        signed_in(browser, HERS)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        asked = state_of(browser).help_requests.ask(
+            PLAN_DATE, "Synthetic question", grade_result_id=result_id
+        )
+        signed_in(browser, THEIRS)
+        listed = browser.get("/parent/help-requests")
+        moved = browser.post(f"/parent/help-requests/{asked.request_id}/accept", json={})
+
+    family_card = f"{CLASS_AT.format(class_id=class_id, n=1)}#{result_id}"
+    assert moved.status_code == 200
+    for about in (listed.json()[0]["about_result"], moved.json()["about_result"]):
+        assert about["result_id"] == result_id
+        assert (about["class_name"], about["title"]) == ("Biology", OSMOSIS)
+        assert about["family_address"] == family_card
+
+
+def form_id_of(page: str) -> str:
+    """The id the ask page gave its form, whatever its field is."""
+    found = re.search(r'name="request_id" value="([0-9a-f]{32})"', page)
+    assert found is not None
+    return found.group(1)
+
+
+def test_line_breaks_count_once_against_the_cap_and_are_kept_as_one_kind(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A browser counts a line break once against the field's limit and sends it as CR LF; the
+    route counts and keeps it as one LF, so a question is never refused as too long for what
+    she could type."""
+    at_cap = "\r\n".join(["a" * 125, "b" * 124, "c" * 124, "d" * 124])
+    over_cap = at_cap + "e"
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        ask = HER_ASK.format(result_id=card_of(details.text, OSMOSIS))
+        refused = browser.post(
+            ask,
+            data={"note": over_cap, "request_id": form_id_of(browser.get(ask).text)},
+            headers=PAGE,
+        )
+        after_refusal = state_of(browser).help_requests.listed().every()
+        sent = browser.post(
+            ask,
+            data={"note": at_cap, "request_id": form_id_of(browser.get(ask).text)},
+            headers=PAGE,
+        )
+        kept = state_of(browser).help_requests.listed().every()
+
+    assert len(at_cap.replace("\r\n", "\n")) == help_requests.NOTE_MAX_LENGTH
+    assert refused.status_code == 422
+    assert after_refusal == []
+    assert sent.status_code == 303
+    assert [one.note for one in kept] == [at_cap.replace("\r\n", "\n")]
+
+
+def test_every_kind_of_line_break_is_kept_as_lf_and_shown_on_both_pages(
+    tmp_path: pathlib.Path,
+) -> None:
+    question = "Which part?\nThe second one\r\nor the third\rone"
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        signed_in(browser, HERS)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        ask = HER_ASK.format(result_id=card_of(details.text, OSMOSIS))
+        sent = browser.post(
+            ask,
+            data={"note": question, "request_id": form_id_of(browser.get(ask).text)},
+            headers=PAGE,
+        )
+        kept = state_of(browser).help_requests.listed().every()
+        week = browser.get(HER_WEEK, headers=PAGE).text
+        browser.post("/sign-out")
+        signed_in(browser, THEIRS)
+        family = browser.get("/parent", headers=PAGE).text
+
+    shown = '<q class="authored-text">Which part?\nThe second one\nor the third\none</q>'
+    assert sent.status_code == 303
+    assert [one.note for one in kept] == ["Which part?\nThe second one\nor the third\none"]
+    assert shown in week
+    assert shown in family
+
+
+@pytest.mark.parametrize("refusal", ["too long", "not whole"])
+def test_a_refused_question_comes_back_in_the_field_as_she_sent_it(
+    refusal: str, tmp_path: pathlib.Path
+) -> None:
+    question = (
+        '\nLine <one> & "two"\r\nline three\rline four\n'
+        + ("x" * 500 if refusal == "too long" else "fits")
+        + " "
+    )
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        ask = HER_ASK.format(result_id=card_of(details.text, OSMOSIS))
+        form = {"note": question}
+        if refusal == "too long":
+            form["request_id"] = form_id_of(browser.get(ask).text)
+        answer = browser.post(ask, data=form, headers=PAGE)
+        kept = state_of(browser).help_requests.listed().every()
+
+    field = re.search(r'<textarea id="help-question"([^>]*)>\n(.*?)</textarea>', answer.text, re.S)
+    assert answer.status_code == 422
+    assert field is not None
+    assert field.group(2) == str(escape(question))
+    assert field.group(2).startswith("\nLine")
+    assert field.group(2).endswith("fits ") or field.group(2).endswith("x ")
+    assert ' wrap="soft"' in field.group(1)
+    assert ' maxlength="500"' in field.group(1)
+    assert kept == []
+
+
+def test_the_same_form_sent_again_with_cr_lf_breaks_at_the_cap_is_a_replay(
+    tmp_path: pathlib.Path,
+) -> None:
+    at_cap = "\r\n".join(["a" * 125, "b" * 124, "c" * 124, "d" * 124])
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        ask = HER_ASK.format(result_id=card_of(details.text, OSMOSIS))
+        form = {"note": at_cap, "request_id": form_id_of(browser.get(ask).text)}
+        first = browser.post(ask, data=form, headers=PAGE)
+        again = browser.post(ask, data=form, headers=PAGE)
+        kept = state_of(browser).help_requests.listed().every()
+
+    assert (first.status_code, again.status_code) == (303, 303)
+    assert again.headers["location"] == f"{HER_WEEK}?asked_again={form['request_id']}#help-result"
+    assert [(one.request_id, one.note) for one in kept] == [
+        (form["request_id"], at_cap.replace("\r\n", "\n"))
+    ]
+
+
+@pytest.mark.parametrize("path", ["gone", "unread"])
+def test_a_refused_question_keeps_its_leading_line_break_on_the_page_without_the_result(
+    path: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = "\nWhich part?\nThe second one "
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        form = {"note": question, "request_id": form_id_of(browser.get(ask).text)}
+        if path == "gone":
+            class_term_deleted(browser, result_id)
+        else:
+
+            def fails(*_: object) -> None:
+                raise sqlite3.OperationalError
+
+            monkeypatch.setattr(store_of(browser), "result_place", fails)
+        answer = browser.post(ask, data=form, headers=PAGE)
+
+    assert answer.status_code == (404 if path == "gone" else 500)
+    assert (
+        f'<textarea id="kept-help-question" rows="3" readonly>\n{escape(question)}</textarea>'
+        in answer.text
+    )

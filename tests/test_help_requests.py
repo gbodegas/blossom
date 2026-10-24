@@ -2352,7 +2352,7 @@ def failing(*_: object, **__: object) -> None:
     raise sqlite3.OperationalError(msg)
 
 
-@pytest.mark.parametrize("fails", ["the list read", "the notes read after it"])
+@pytest.mark.parametrize("fails", ["the list read", "what they name, read after it"])
 @pytest.mark.parametrize("path", ["/student/help-requests", "/parent/help-requests"])
 def test_a_json_list_that_fails_sends_no_unreadable_count(
     path: str, fails: str, monkeypatch: pytest.MonkeyPatch
@@ -2367,8 +2367,8 @@ def test_a_json_list_that_fails_sends_no_unreadable_count(
         if fails == "the list read":
             monkeypatch.setattr(HelpRequestsStore, "listed", failing)
         else:
-            monkeypatch.setattr(student_routes, "notes_named_by", failing)
-            monkeypatch.setattr(parent_routes, "notes_named_by", failing)
+            monkeypatch.setattr(student_routes, "subjects_named_by", failing)
+            monkeypatch.setattr(parent_routes, "subjects_named_by", failing)
         answer = client.get(path)
 
     assert answer.status_code == 500

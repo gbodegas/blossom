@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""A request for help about one homework note: the reference, and what becomes of it.
+"""A request for help about one homework note or one school result: the reference, and what
+becomes of it.
 
 The help store has a connection of its own to the record's file. A request that names a
-note is checked and written in one transaction on that connection, begun before the
-note is looked for, and nothing else about asking for help changes.
+note or a result is checked and written in one transaction on that connection, begun before
+the note or result is looked for, and nothing else about asking for help changes.
 """
 
 import pathlib
@@ -14,10 +15,32 @@ from datetime import UTC, date, datetime
 import pytest
 
 from blossom.captures import STUDENT, CaptureChanged, CaptureCreated, NotACaptureId, new_capture_id
+from blossom.grades.draft import capture_key
+from blossom.grades.identity import name_form_key
+from blossom.grades.review import GradeReportSaved
+from blossom.grades.text_reader import read_grade_report
 from blossom.reconciliation import SourceChannel
-from blossom.stores.help_requests import HelpRequestsStore, UnknownCaptureReference
+from blossom.stores.gradebook import DeletePreview
+from blossom.stores.help_requests import (
+    HelpAlreadyAsked,
+    HelpAsked,
+    HelpFormChanged,
+    HelpFormUsed,
+    HelpRequestsStore,
+    NotAResultId,
+    UnknownCaptureReference,
+    UnknownResultReference,
+    new_request_id,
+)
 from blossom.stores.project_state import ProjectStateStore
-from tests.support import PLAN_DATE, fixture_clock, practice_store
+from tests.support import (
+    FIXTURES,
+    PLAN_DATE,
+    fixture_clock,
+    grade_answers,
+    practice_store,
+    save_grade,
+)
 
 AT = datetime(2026, 9, 14, 21, 0, tzinfo=UTC)
 MONDAY = date(2026, 9, 14)
@@ -337,3 +360,273 @@ def test_a_request_is_use_even_before_the_help_store_has_kept_its_note(
     help_store._connection.commit()
 
     assert store.capture_use(name) == "asked"
+
+
+# ------------------------------------------------------------------ a result
+
+
+GRADE_REPORT = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
+"""Wren's synthetic report: Biology, 2026-2027, T1."""
+GRADE_KEY = name_form_key(b"5" * 64)
+
+
+def result_in(store: ProjectStateStore) -> str:
+    """One of her results, saved from the synthetic report through the store."""
+    draft = read_grade_report(GRADE_REPORT).draft
+    assert draft is not None
+    review = store.review_grade_report(draft, capture_key(draft), key=GRADE_KEY)
+    outcome = save_grade(store, draft, key=GRADE_KEY, review=review, answers=grade_answers(review))
+    assert isinstance(outcome, GradeReportSaved), outcome
+    (result_id,) = store._connection.execute(
+        "SELECT result_id FROM grade_results ORDER BY result_id LIMIT 1"
+    ).fetchone()
+    return str(result_id)
+
+
+def deleted(store: ProjectStateStore, result_id: str) -> None:
+    """Her result's class and term deleted through the gradebook's own delete."""
+    place = store.result_place(result_id)
+    assert place is not None
+    preview = store.delete_preview(place.class_id, place.term)
+    assert isinstance(preview, DeletePreview)
+    store.delete_class_term(place.class_id, place.term, revision=preview.revision, role="parent")
+
+
+def help_tables(help_store: HelpRequestsStore) -> dict[str, list[tuple[object, ...]]]:
+    return {
+        table: [tuple(row) for row in help_store._connection.execute(f"SELECT * FROM {table}")]  # noqa: S608
+        for table in ("help_requests", "help_request_ids", "notes_named_by_requests")
+    }
+
+
+def test_a_request_about_a_result_keeps_its_id_and_nothing_of_the_result(
+    stores: tuple[ProjectStateStore, HelpRequestsStore],
+) -> None:
+    record, help_store = stores
+    result_id = result_in(record)
+    form = new_request_id()
+
+    outcome = help_store.ask_once(
+        form, MONDAY, "what does missing mean?", grade_result_id=result_id
+    )
+
+    assert isinstance(outcome, HelpAsked)
+    kept = help_store.get(form)
+    assert kept is not None
+    assert (kept.grade_result_id, kept.note, kept.capture_id) == (
+        result_id,
+        "what does missing mean?",
+        None,
+    )
+    assert kept.result_reference_unreadable is False
+    held = " ".join(repr(row) for rows in help_tables(help_store).values() for row in rows)
+    assert "Biology" not in held
+    assert "Osmosis" not in held
+
+
+@pytest.mark.parametrize("which", ["unknown", "another student", "deleted"])
+def test_a_result_that_is_no_result_of_hers_writes_nothing_and_leaves_the_form_unused(
+    stores: tuple[ProjectStateStore, HelpRequestsStore], which: str
+) -> None:
+    record, help_store = stores
+    result_id = result_in(record)
+    if which == "unknown":
+        named = f"result-{new_request_id()}"
+    elif which == "another student":
+        named = f"result-{new_request_id()}"
+        record._connection.execute(
+            "INSERT INTO grade_results (result_id, student_id, class_id, term_label, made_at) "
+            "SELECT ?, 'student-someone-else', class_id, term_label, made_at FROM grade_results "
+            "WHERE result_id = ?",
+            (named, result_id),
+        )
+        record._connection.commit()
+    else:
+        named = result_id
+        deleted(record, result_id)
+    before = help_tables(help_store)
+    form = new_request_id()
+
+    with pytest.raises(UnknownResultReference):
+        help_store.ask_once(form, MONDAY, "which one?", grade_result_id=named)
+
+    assert help_tables(help_store) == before
+    assert not help_store._connection.in_transaction
+    assert help_store.already_asked(form, "which one?", grade_result_id=named) is None
+    assert isinstance(help_store.ask_once(form, MONDAY, "which one?"), HelpAsked)
+
+
+@pytest.mark.parametrize(
+    "named", ["", "result-", "RESULT-" + "a" * 32, "result-" + "A" * 32, "class-" + "a" * 32]
+)
+def test_a_malformed_result_id_is_refused_before_anything_is_read(
+    stores: tuple[ProjectStateStore, HelpRequestsStore], named: str
+) -> None:
+    _, help_store = stores
+    seen: list[str] = []
+    help_store._connection.set_trace_callback(seen.append)
+    form = new_request_id()
+
+    with pytest.raises(NotAResultId):
+        help_store.ask_once(form, MONDAY, None, grade_result_id=named)
+    with pytest.raises(NotAResultId):
+        help_store.already_asked(form, None, grade_result_id=named)
+    help_store._connection.set_trace_callback(None)
+
+    assert seen == []
+    assert help_store.already_asked(form) is None
+
+
+def test_a_request_names_a_note_or_a_result_never_both(
+    stores: tuple[ProjectStateStore, HelpRequestsStore],
+) -> None:
+    record, help_store = stores
+    note, result_id = note_in(record), result_in(record)
+    seen: list[str] = []
+    help_store._connection.set_trace_callback(seen.append)
+    form = new_request_id()
+
+    with pytest.raises(ValueError, match="note or a result"):
+        help_store.ask_once(form, MONDAY, None, capture_id=note, grade_result_id=result_id)
+    help_store._connection.set_trace_callback(None)
+
+    assert seen == []
+    assert help_store.already_asked(form) is None
+
+
+def test_the_result_is_looked_for_inside_the_transaction_that_writes_the_request(
+    stores: tuple[ProjectStateStore, HelpRequestsStore],
+) -> None:
+    record, help_store = stores
+    result_id = result_in(record)
+    seen: list[str] = []
+    help_store._connection.set_trace_callback(seen.append)
+
+    help_store.ask_once(new_request_id(), MONDAY, None, grade_result_id=result_id)
+    help_store._connection.set_trace_callback(None)
+
+    said = [" ".join(statement.split()) for statement in seen]
+    assert said[0] == "BEGIN IMMEDIATE"
+    assert said[-1] == "COMMIT"
+    reserved = next(i for i, one in enumerate(said) if "INTO help_request_ids" in one)
+    read = next(i for i, one in enumerate(said) if "FROM grade_results" in one)
+    wrote = next(i for i, one in enumerate(said) if one.startswith("INSERT INTO help_requests"))
+    assert 0 < reserved < read < wrote < len(said) - 1
+
+
+def test_the_same_form_about_a_result_is_a_replay_and_other_words_or_results_changed(
+    stores: tuple[ProjectStateStore, HelpRequestsStore],
+) -> None:
+    record, help_store = stores
+    result_id = result_in(record)
+    other = f"result-{new_request_id()}"
+    form = new_request_id()
+    first = help_store.ask_once(form, MONDAY, "which part?", grade_result_id=result_id)
+    assert isinstance(first, HelpAsked)
+
+    again = help_store.ask_once(form, MONDAY, "which  part?", grade_result_id=result_id)
+    looked = help_store.already_asked(form, "which part?", grade_result_id=result_id)
+    other_words = help_store.ask_once(form, MONDAY, "another", grade_result_id=result_id)
+    other_result = help_store.already_asked(form, "which part?", grade_result_id=other)
+    no_result = help_store.ask_once(form, MONDAY, "which part?")
+
+    assert isinstance(again, HelpAlreadyAsked)
+    assert again.request == first.request
+    assert isinstance(looked, HelpAlreadyAsked)
+    assert isinstance(other_words, HelpFormChanged)
+    assert isinstance(other_result, HelpFormChanged)
+    assert isinstance(no_result, HelpFormChanged)
+    assert len(help_store.open_requests()) == 1
+    assert help_store.take_back(form)
+    assert isinstance(
+        help_store.ask_once(form, MONDAY, "which part?", grade_result_id=result_id), HelpFormUsed
+    )
+
+
+def test_delete_then_ask_writes_nothing_and_ask_then_delete_keeps_the_request(
+    stores: tuple[ProjectStateStore, HelpRequestsStore],
+) -> None:
+    record, help_store = stores
+    result_id = result_in(record)
+    asked = help_store.ask(MONDAY, "is this late?", grade_result_id=result_id)
+    before = help_tables(help_store)
+
+    deleted(record, result_id)
+
+    assert help_tables(help_store) == before
+    kept = help_store.get(asked.request_id)
+    assert kept is not None
+    assert (kept.grade_result_id, kept.note) == (result_id, "is this late?")
+    with pytest.raises(UnknownResultReference):
+        help_store.ask(MONDAY, "and this one?", grade_result_id=result_id)
+    assert help_tables(help_store) == before
+    assert help_store.resolve(asked.request_id, "It was turned in.").grade_result_id == result_id
+
+
+def test_a_file_from_before_gains_the_result_column_once(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "record.sqlite3"
+    first = HelpRequestsStore.open(path, fixture_clock())
+    asked = first.ask(PLAN_DATE, "the essay outline")
+    first._connection.execute("ALTER TABLE help_requests DROP COLUMN grade_result_id")
+    first._connection.commit()
+    first.close()
+
+    second = HelpRequestsStore.open(path, fixture_clock())
+    second.close()
+    third = HelpRequestsStore.open(path, fixture_clock())
+    columns = [str(row[1]) for row in third._connection.execute("PRAGMA table_info(help_requests)")]
+
+    assert columns.count("grade_result_id") == 1
+    kept = third.get(asked.request_id)
+    assert kept is not None
+    assert (kept.grade_result_id, kept.result_reference_unreadable) == (None, False)
+    assert kept.note == "the essay outline"
+
+
+@pytest.mark.parametrize("held", [b"INJECTED reference", "INJECTED words", "CAPITALS", 7, 1.5])
+def test_a_result_reference_that_is_no_id_is_kept_as_unreadable_and_not_as_text(
+    stores: tuple[ProjectStateStore, HelpRequestsStore], held: object
+) -> None:
+    record, help_store = stores
+    result_id = result_in(record)
+    asked = help_store.ask(MONDAY, "which part?", grade_result_id=result_id)
+    value = result_id.upper() if held == "CAPITALS" else held
+    help_store._connection.execute("UPDATE help_requests SET grade_result_id = ?", (value,))
+    help_store._connection.commit()
+
+    read = help_store.get(asked.request_id)
+
+    assert read is not None
+    assert (read.grade_result_id, read.result_reference_unreadable) == (None, True)
+    assert (read.capture_id, read.capture_reference_unreadable) == (None, False)
+    assert read.note == "which part?"
+    assert [item.request_id for item in help_store.open_requests()] == [asked.request_id]
+    assert "INJECTED" not in read.model_dump_json()
+    assert result_id.upper() not in read.model_dump_json()
+    replay = help_store.already_asked(asked.request_id, "which part?", grade_result_id=result_id)
+    assert isinstance(replay, HelpFormChanged)
+
+
+def test_an_unreadable_result_reference_is_no_request_about_no_result() -> None:
+    """A request whose result reference can't be read is about a result all the same, so the
+    same form sent again with the same words and no result is a changed form, not a replay."""
+    alone = HelpRequestsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    form = new_request_id()
+    alone.ask_once(form, MONDAY, "which part?")
+    alone._connection.execute("UPDATE help_requests SET grade_result_id = 'INJECTED'")
+    alone._connection.commit()
+
+    assert isinstance(alone.already_asked(form, "which part?"), HelpFormChanged)
+    assert isinstance(alone.ask_once(form, MONDAY, "which part?"), HelpFormChanged)
+
+
+def test_a_file_with_no_gradebook_in_it_has_no_result_to_name() -> None:
+    alone = HelpRequestsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    form = new_request_id()
+
+    with pytest.raises(UnknownResultReference):
+        alone.ask_once(form, MONDAY, None, grade_result_id=f"result-{new_request_id()}")
+
+    assert alone.open_requests() == []
+    assert alone.already_asked(form) is None
+    assert not alone._connection.in_transaction
