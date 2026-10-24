@@ -3911,33 +3911,31 @@ def test_every_heading_breaks_a_word_only_when_it_cannot_fit(
 def test_no_heading_or_fold_note_is_cut_or_shrunk_on_any_screen(
     rendered: dict[str, str], opened: dict[str, str], text_pages: dict[str, str]
 ) -> None:
-    """No heading or fold note is kept on one line, cut off, or given a text size by a rule
-    some screens follow and others don't. A page's heading follows one size rule on every
-    screen, a size that gives way with the screen's width, pinned word for word below."""
     sheet = read_sheet(stylesheet())
     for name, page in (rendered | opened | text_pages).items():
         held = headings_of(page) + (fold_notes_of(page) if name.endswith("family") else [])
         assert cut_or_shrunk(sheet, held) == [], name
 
 
-PAGE_HEADING_GIVES_WAY = (
-    "   heading's ordinary size, and every screen 277 or 554 pixels or wider its ordinary"
-    " margin. */\n"
+PAGE_HEADING = (
     "h1 {\n"
-    "  font-size: clamp(1.5rem, 15vw, 2.1rem);\n"
+    "  font-size: 2.1rem;\n"
     "  font-weight: 700;\n"
     "  color: var(--blue-action);\n"
     "  margin: 0.75rem 0 0.25rem;\n"
     "  letter-spacing: 0.01em;\n"
-    "}\n\n"
+    "}\n"
+)
+"""A page's heading at its one size, 2.1 times the text's, on every screen, pinned whole."""
+PAGE_HEADING_REACHES = (
+    "   the heading's ordinary margin. */\n"
     "main > h1 {\n"
     "  margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);\n"
     "}\n"
 )
-"""A page's heading on a narrow screen with large text, pinned from the last line of its
-comment: it reaches into the page's side margin, and its size gives way to 15% of the screen's
-width, never below 1.5 times the text's. Check every page's heading in Edge at 320 px with
-text at 200%, and at 390, 768 and 1280 px, before changing it."""
+"""A page's heading on a narrow screen with large text reaching into the page's side margin,
+pinned from the last line of its comment. Check every page's heading in Edge at 320 px with
+the browser's text at 200%, and at 390, 768 and 1280 px, before changing it."""
 PAGE_HEADING_CUE_STAYS_ON_SCREEN = (
     "   at 200%. */\n"
     "main > h1#homework:focus {\n"
@@ -3948,6 +3946,22 @@ PAGE_HEADING_CUE_STAYS_ON_SCREEN = (
 )
 """The arrival cue of a page's heading a link lands on, its spread narrowed to the margin left
 beside the reaching heading, pinned from the last line of its comment."""
+PAGE_HEADING_HYPHENATES = (
+    "   narrower. */\n"
+    "@media (max-width: 13.75rem) {\n"
+    "  main > h1 {\n"
+    "    -webkit-hyphens: auto;\n"
+    "    hyphens: auto;\n"
+    "    -webkit-hyphenate-limit-before: 3;\n"
+    "    -webkit-hyphenate-limit-after: 3;\n"
+    "    hyphenate-limit-chars: auto 3 3;\n"
+    "  }\n"
+    "}\n"
+)
+"""A page's heading on a screen too narrow for its widest word at the browser's text size,
+allowed to break a word between syllables with a hyphen and three letters each side, pinned
+from the last line of its comment. Check it in Edge with the browser's own text size and page
+zoom before changing it."""
 PAGE_MARGIN = "main {\n  max-width: 46rem;\n  margin: 0 auto;\n  padding: 0.5rem 1.25rem 3rem;\n}\n"
 """The page's side margin the heading's numbers are worked out from, pinned as it stands."""
 CLASS_HEADINGS_REACH = (
@@ -3960,36 +3974,54 @@ RULES_NAMING_H1 = [
     "main > h1 {",
     "main > h1#homework:focus {",
     "h1,",
+    "  main > h1 {",
     "h1#homework:focus,",
     ".assignment.detail h1 {",
 ]
 """Every line of the stylesheet that names an h1, in order: the headings' typeface, the page
-heading's rules and cue, the headings' word breaking, the shared arrival cue, and the
-heading inside an assignment's details card, which keeps to its card."""
+heading's size, its reach and its cue, the headings' word breaking, the page heading's
+hyphens, the shared arrival cue, and the heading inside an assignment's details card, which
+keeps to its card."""
+VIEWPORT_TEXT = re.compile(r"\d(vw|vh|vi|vb|vmin|vmax|cqw|cqh|cqi|cqb|cqmin|cqmax)\b")
+"""A length measured against the screen or a container, which would size text by the width
+rather than by the reader's text size."""
 
 
 def test_a_page_s_heading_rules_are_pinned_and_every_line_naming_an_h1_is_listed() -> None:
     """Each pinned text occurs once, and every line of the stylesheet that names an h1 is
-    listed, so a new rule naming one fails here. The pages write an h1 bare, as class details'
-    heading, whose own rule reaches by the same amount, or as a result's homework heading,
-    whose id only its cues name."""
+    listed, so a new rule naming one fails here. No text anywhere is sized by the screen's
+    width, so the heading's size is its pinned 2.1rem with any text size, and only the page
+    heading hyphenates. The pages write an h1 bare, as class details' heading, whose own rule
+    reaches by the same amount, or as a result's homework heading, whose id only its cues
+    name, each on a page of the shared layout, which names its language."""
     styles = stylesheet()
-    pages = "".join(
-        page.read_text(encoding="utf-8")
-        for page in sorted((REPOSITORY_ROOT / "blossom" / "templates").glob("*.html"))
-    )
+    templates = sorted((REPOSITORY_ROOT / "blossom" / "templates").glob("*.html"))
+    pages = {page.name: page.read_text(encoding="utf-8") for page in templates}
 
-    assert styles.count(PAGE_HEADING_GIVES_WAY) == 1
+    assert styles.count(PAGE_HEADING) == 1
+    assert styles.count(PAGE_HEADING_REACHES) == 1
     assert styles.count(PAGE_HEADING_CUE_STAYS_ON_SCREEN) == 1
+    assert styles.count(PAGE_HEADING_HYPHENATES) == 1
     assert styles.count(PAGE_MARGIN) == 1
+    assert styles.count(CLASS_HEADINGS_REACH) == 1
     assert styles.count("clamp(0px, 26vw - 3.5rem, 0.375rem)") == 2
+    assert styles.count("hyphens") == 2
+    assert styles.count("hyphenate") == 3
     assert [line for line in styles.splitlines() if re.search(r"\bh1\b", line)] == RULES_NAMING_H1
-    assert sorted(set(re.findall(r"<h1\b[^>]*>", pages))) == [
+    assert [
+        line for line in styles.splitlines() if "font-size" in line and VIEWPORT_TEXT.search(line)
+    ] == []
+    assert sorted({tag for text in pages.values() for tag in re.findall(r"<h1\b[^>]*>", text)}) == [
         '<h1 class="grade-heading">',
         '<h1 id="homework" tabindex="-1">',
         "<h1>",
     ]
-    assert styles.count(CLASS_HEADINGS_REACH) == 1
+    assert [
+        name
+        for name, text in pages.items()
+        if "<h1" in text and '{% extends "base.html" %}' not in text
+    ] == []
+    assert pages["base.html"].count('<html lang="en">') == 1
 
 
 @pytest.mark.parametrize("view", VIEWS, ids=str)

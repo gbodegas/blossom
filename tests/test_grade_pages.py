@@ -1478,8 +1478,8 @@ HEADING_RULE = ".grade-heading {\n  margin-inline: clamp(-0.95rem, 26vw - 4.5rem
 into the page's side margin until it is 0.3rem from the screen's edge, so a word of a class's
 name breaks only where the whole line can't hold it."""
 SHARED_HEADING_RULES = (
-    "h1 {\n  font-size: clamp(1.5rem, 15vw, 2.1rem);\n  font-weight: 700;\n"
-    "  color: var(--blue-action);\n  margin: 0.75rem 0 0.25rem;\n  letter-spacing: 0.01em;\n}\n",
+    "h1 {\n  font-size: 2.1rem;\n  font-weight: 700;\n  color: var(--blue-action);\n"
+    "  margin: 0.75rem 0 0.25rem;\n  letter-spacing: 0.01em;\n}\n",
     "h2 {\n  font-size: 1.3rem;\n  font-weight: 600;\n  color: var(--blue-action);\n"
     "  margin: 0 0 0.6rem;\n}\n",
     SHARED_CARD_RULES[0],

@@ -202,25 +202,20 @@ main {
   padding: 0.5rem 1.25rem 3rem;
 }
 
-/* On a phone with text at 200%, a page's heading leaves a line too short for a word in its
-   large type, and some words, such as "Homework" and "assignments", are wider than the whole
-   screen. Its side margin gives way first: a page's heading reaches into the page's 1.25rem
-   side margin, as class details' headings do, until it is 0.3rem from the screen's edge. A
-   heading in a card keeps to the card. Then its size gives way, to 15% of the screen's width
-   where that is smaller, never less than 1.5 times the text's size, so it stays larger than
-   every lower heading, and with larger text it is never smaller than with ordinary text on
-   any screen 224 pixels or wider. The widest word of the pages' own headings, "assignments",
-   stays whole on every screen 320 pixels or wider with text up to 200%. Every screen 224
-   pixels or wider with ordinary text, and 448 pixels or wider with text at 200%, keeps the
-   heading's ordinary size, and every screen 277 or 554 pixels or wider its ordinary margin. */
 h1 {
-  font-size: clamp(1.5rem, 15vw, 2.1rem);
+  font-size: 2.1rem;
   font-weight: 700;
   color: var(--blue-action);
   margin: 0.75rem 0 0.25rem;
   letter-spacing: 0.01em;
 }
 
+/* On a phone with large text, a page's heading in its full enlarged size leaves a line too
+   short for some of its words. Its side margin gives way before any word breaks: a page's
+   heading reaches into the page's 1.25rem side margin, as class details' headings do, until
+   it is 0.3rem from the screen's edge. A heading in a card keeps to the card. Every screen
+   277 pixels or wider with ordinary text, and 554 pixels or wider with text at 200%, keeps
+   the heading's ordinary margin. */
 main > h1 {
   margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);
 }
@@ -262,6 +257,26 @@ h1,
 h2,
 h3 {
   overflow-wrap: anywhere;
+}
+
+/* A page's heading keeps its full size. On a screen narrower than about 13.6 times the
+   browser's text size, the widest word of the pages' own headings, "assignments", is wider
+   than the heading's whole line even with its margin given way. On a screen no wider than
+   13.75 times that size, a page's heading may also break a word between syllables, with a
+   hyphen, where the browser's dictionary for the page's language allows, keeping at least
+   three letters on each side of the hyphen, so a two-letter syllable, such as the "re" of
+   "review", is not left at the end of a line. A word it can't break that way breaks where it
+   must, by the rule above. With ordinary text no phone is that narrow; with text at 150% a
+   screen 330 pixels wide or narrower is, and with text at 200% one 440 pixels wide or
+   narrower. */
+@media (max-width: 13.75rem) {
+  main > h1 {
+    -webkit-hyphens: auto;
+    hyphens: auto;
+    -webkit-hyphenate-limit-before: 3;
+    -webkit-hyphenate-limit-after: 3;
+    hyphenate-limit-chars: auto 3 3;
+  }
 }
 
 section {
