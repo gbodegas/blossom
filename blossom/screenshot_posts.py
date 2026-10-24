@@ -23,10 +23,12 @@ from blossom.screenshot_review import (
     ROW_FIELDS,
     Corrections,
     answer_names,
+    dates_key,
     dest_kind,
     field_most,
     instruction_index,
     typed_day,
+    usable_correction,
     value_json,
     value_of,
 )
@@ -464,10 +466,12 @@ OLD_FIELDS: Final = frozenset({"course", "title", "instruction", *OLD_DATES})
 
 class SavedProgress(NamedTuple):
     """What Save review for later keeps: the typed corrections by key and field, and the row
-    keys of the groups ticked. Nothing else, and never an answer."""
+    keys of the groups ticked, in the shape they were written in. Nothing else, and never an
+    answer."""
 
     corrected: dict[str, dict[str, str | None]]
     selected: frozenset[str]
+    shape: int = PROGRESS_SHAPE
 
 
 def progress_text(corrected: Corrections, selected: Iterable[str]) -> str:
@@ -528,4 +532,28 @@ def progress_read(text: str | None) -> SavedProgress | None:
         if not all(_kept(shape, str(key), str(field), value) for field, value in fields.items()):
             return None
         out[str(key)] = {str(field): value for field, value in fields.items()}
-    return SavedProgress(out, frozenset(selected))
+    return SavedProgress(out, frozenset(selected), shape)
+
+
+def shape_four(state: ReviewState, corrections: Corrections) -> dict[str, dict[str, str | None]]:
+    """Corrections of saved progress of shape 3 as shape 4 holds them: each box as the page
+    shows it, from the pieces those corrections give (``state``), kept where it differs from
+    its value with no correction, as a first press posting the page untouched keeps it."""
+    boxes: dict[tuple[str, str], str] = {}
+    for piece in state.open:
+        read = piece.as_read
+        if read is None:
+            continue
+        if (piece.key, "course") not in boxes:
+            boxes[(piece.key, "course")] = piece.course
+            boxes[(piece.key, "title")] = piece.title
+            old = corrections.get(piece.key, {}).get("instruction")
+            replaced = old is not None and usable_correction("instruction", old)
+            for index, text in enumerate(read.texts):
+                kept = (str(old).strip() if index == 0 else "") if replaced else text
+                boxes[(piece.key, f"instruction:{index}")] = kept
+        key = dates_key(piece.name)
+        due = piece.due if piece.due_resolved else None
+        boxes[(key, "due")] = "" if due is None else due.isoformat()
+        boxes[(key, "assigned")] = "" if piece.assigned is None else piece.assigned.isoformat()
+    return box_corrections(state, boxes, {}, ()).corrections

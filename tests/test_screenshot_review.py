@@ -1123,9 +1123,9 @@ def test_already_saved_sees_the_corrected_none() -> None:
     assert chosen(read, dated) == {read.name: {"existing": dated.assignment_id}}
 
 
-def test_a_date_answer_no_longer_offered_is_named_still_to_answer() -> None:
-    """The probe of a stale date answer: one whose date the piece's corrected dates no longer
-    offer leaves its unit open and is named among the questions still open."""
+def test_a_date_answer_not_offered_is_named_still_to_answer() -> None:
+    """The probe of a stale date answer: one whose date the piece's corrected dates don't offer
+    leaves its unit open and is named among the questions still open."""
     p = piece("a", WED, [W1])
     saved = row("assignment-vocab-quiz-r1", THU, [W1])
     dest = ("id", saved.assignment_id)

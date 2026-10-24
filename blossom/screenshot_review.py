@@ -584,8 +584,8 @@ def date_questions(
 
 
 def date_answered(question: DateQuestion, answers: Mapping[tuple[str, str], Any]) -> bool:
-    """Whether a date question's stored answer is one of the dates it offers now; an answer
-    left from options a correction changed is no answer."""
+    """Whether a date question's stored answer is one of the dates it offers; an answer
+    given for options a correction changed is no answer."""
     got = answers.get((question.kind, question.subject))
     return any(day.isoformat() == got for _, day in question.options)
 

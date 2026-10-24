@@ -703,6 +703,9 @@ class Question:
     notes: tuple[tuple[str, str], ...] = ()
     """Lines said above its options, each with the field of a question it links to, if any
     (resolved to that question's anchor once the page's questions are placed)."""
+    answered: bool = False
+    """For a field the reader wasn't sure of: whether a correction in the fold answers it, as
+    it does for the save, with no option checked."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1366,7 +1369,11 @@ def rows_shown(
                 continue
             fold = folds[first_of_row[key]] if field not in ("footer", "heading") else folds[host]
             checks.append(
-                dataclasses.replace(confirm_question(piece, field, values, fold), about=about)
+                dataclasses.replace(
+                    confirm_question(piece, field, values, fold),
+                    about=about,
+                    answered=fold_answers(piece, field, corrections),
+                )
             )
         boxes = fold_boxes(piece, own, corrections, unsaved, both)
         sources = tuple(
@@ -1378,11 +1385,17 @@ def rows_shown(
             for c in piece.cards
         )
         read_as = None
+        course, title = (
+            (piece.course, piece.title)
+            if piece.as_read is None
+            else (piece.as_read.course, piece.as_read.title)
+        )
         if head is not None and (folded(head.course), folded(head.title)) != (
-            folded(piece.course),
-            folded(piece.title),
+            folded(course),
+            folded(title),
         ):
-            read_as = SAID["read_as"].format(title=piece.title)
+            named = title if folded(course) == folded(head.course) else f"{course}: {title}"
+            read_as = SAID["read_as"].format(title=named)
         control = PieceControl(
             piece.name,
             _choices(state, piece, piece.name in state.defaulted, labels),
@@ -1737,11 +1750,12 @@ def _first_open(
 ) -> str | None:
     """The id of the first place still to answer: a fold whose box a press refused, since
     nothing of that press was kept until it is put right; else, in the order the page shows
-    them, a fieldset with no option checked. A Type left unchosen saves as its line says, so it
-    is never still to answer."""
+    them, a fieldset with no option checked, an unsure field answered by its fold's correction
+    aside. A Type left unchosen saves as its line says, so it is never still to answer."""
 
     def answered(question: Question | NameQuestion) -> bool:
-        return any(checked for _, _, checked in question.options)
+        corrected = isinstance(question, Question) and question.answered
+        return corrected or any(checked for _, _, checked in question.options)
 
     cards = [card for unit in units for block in unit.blocks for card in block.cards]
     refused = next((card.fold for card in cards if card.fold_open), None)

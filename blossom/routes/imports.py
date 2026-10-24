@@ -49,12 +49,14 @@ from blossom.screenshot_page import (
 )
 from blossom.screenshot_page import SAID as PAGE_SAID
 from blossom.screenshot_posts import (
+    PROGRESS_SHAPE,
     PostRefused,
     ReviewPost,
     progress_read,
     progress_text,
     read_change,
     read_review,
+    shape_four,
     typed_back,
 )
 from blossom.screenshot_reading import read_screenshots
@@ -729,6 +731,20 @@ def picked(progress: str | None) -> frozenset[str] | None:
     return None if read is None else read.selected
 
 
+async def saved_corrections(
+    state: ApplicationState, snapshot: DraftSnapshot
+) -> dict[str, dict[str, str | None]]:
+    """The corrections a review's saved progress keeps, in the shape a press posts them:
+    progress of shape 3 read as the boxes its corrections give, so its answers and "Not saved
+    yet" are worked out against what the page posts, and its card's destination asks again
+    once, not after every press."""
+    read = progress_read(snapshot.progress)
+    if read is None or read.shape == PROGRESS_SHAPE or not read.corrected:
+        return {} if read is None else read.corrected
+    review = await state_of_review(state, snapshot, read.corrected)
+    return {} if review is None else shape_four(review, read.corrected)
+
+
 def corrections_of(progress: str | None) -> dict[str, dict[str, str | None]]:
     """The typed corrections a review's saved progress keeps, by key and field; none when
     there is no progress or it isn't in a shape it reads."""
@@ -805,7 +821,8 @@ async def rows_of(
     or, when a press's typing comes back, as it sent them; None before anything is read."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
-    corrections = corrections_of(snapshot.progress) if typed is None else typed
+    kept = await saved_corrections(state, snapshot)
+    corrections = kept if typed is None else typed
     review = await state_of_review(state, snapshot, corrections)
     open_keys = [row.key for row in snapshot.rows if row.state == "open"]
     items_open = any(not row.readable and row.state == "open" for row in snapshot.rows)
@@ -826,7 +843,7 @@ async def rows_of(
         until=until_text(state, snapshot.expires_at),
         corrections=corrections,
         selected=row_keys(review, ticked) if ticked is not None else picked(snapshot.progress),
-        unsaved=frozenset() if typed is None else unsaved_typing(snapshot, typed),
+        unsaved=frozenset() if typed is None else unsaved_typing(snapshot, typed, kept),
         open_keys=open_keys,
         unread=unread,
         frozen=snapshot.frozen,
@@ -1058,10 +1075,12 @@ PRESS_SAID: Final = {
     ),
     "later_failed": "Your answers couldn't be kept, and nothing was saved for later. Try again.",
     "answers_kept": "Your answers are kept.",
-    "none_chosen": "Choose at least one group to save.",
+    "none_chosen": "Choose at least one assignment to save.",
     "left_open": "Your answers on the rows left open are kept.",
     "already": "Already saved from this review.",
-    "changed": "Saving this group would now do this instead. Check it and save again.",
+    "changed": (
+        "Saving an assignment you ticked would now do this instead. Check it and save again."
+    ),
     "changed_by_answers": (
         "Your answers are kept. They change what saving does, so nothing was saved yet. Check "
         "the effects below, then save."
@@ -1080,10 +1099,10 @@ PRESS_SAID: Final = {
 """What the review's presses say, all in one place."""
 NOT_SAVED_BECAUSE: Final = {
     "gate": "a screenshot isn't read yet",
-    "open": "a group you chose still has a question to answer",
+    "open": "an assignment you ticked still has a question to answer",
     "names": (
-        "the groups you chose come from screenshots with different names; save each name's "
-        "groups on their own"
+        "the assignments you ticked come from screenshots with different names; save each "
+        "name's assignments on their own"
     ),
     "stale": "this review changed in another tab",
 }
@@ -1115,13 +1134,13 @@ def counted(added: int, updated: int, already: int, left: int) -> str:
 
 def refused_said(post: ReviewPost) -> list[str]:
     """What a press refused whole for a box it can't take says: a correction too long, and each
-    box that can't be left as posted, in the box's own words."""
-    lines = [PRESS_SAID["too_long"]] if post.too_long else []
+    box that can't be left as posted, in the box's own words, and that nothing was kept or
+    saved, once."""
     boxes = [NEEDED[field] for _, field in post.needed if field in NEEDED]
     boxes += [PAGE_SAID["both"]] if post.both else []
-    if boxes:
-        lines += [*dict.fromkeys(boxes), PRESS_SAID["nothing_kept"]]
-    return lines
+    if post.too_long:
+        return [PRESS_SAID["too_long"], *dict.fromkeys(boxes)]
+    return [*dict.fromkeys(boxes), PRESS_SAID["nothing_kept"]]
 
 
 def not_saved(outcome: NotSaved, answered: bool) -> list[str]:
@@ -1144,7 +1163,7 @@ async def review_post(
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
-    saved = corrections_of(found.progress)
+    saved = await saved_corrections(state, found)
     review = await state_of_review(state, found, saved)
     if review is None:
         return None, named
@@ -1430,16 +1449,17 @@ async def partly_saved(
     if isinstance(after, Response):
         return after
     problems = list(said)
-    if unsaved_typing(after, post.corrections):
+    if unsaved_typing(after, post.corrections, await saved_corrections(state, after)):
         problems.append(PRESS_SAID["unsaved_typing"])
     return await with_typing(request, state, draft_id, post, problems, 200, done)
 
 
-def unsaved_typing(snapshot: DraftSnapshot, typed: Corrections) -> frozenset[tuple[str, str]]:
-    """The corrections a press posted for a row still open that saved progress doesn't hold,
-    and those saved progress holds that the press put back, by key and field. A row a save
-    just took has nothing unsaved left."""
-    kept = corrections_of(snapshot.progress)
+def unsaved_typing(
+    snapshot: DraftSnapshot, typed: Corrections, kept: Corrections
+) -> frozenset[tuple[str, str]]:
+    """The corrections a press posted for a row still open that saved progress (``kept``, as
+    ``saved_corrections`` reads it) doesn't hold, and those it holds that the press put back,
+    by key and field. A row a save just took has nothing unsaved left."""
     still = {row.key for row in snapshot.rows if row.state == "open"}
     both = {
         (key, field)
@@ -1525,7 +1545,7 @@ async def find(request: Request, draft_id: str, state: State) -> Response:
         return said_page(request, marks_of(state), FIND_SAID["gone"], 400)
     piece_name = posted.get("piece", "")
     words = posted.get("words", "")[:MOST_WORDS]
-    review = await state_of_review(state, found, corrections_of(found.progress))
+    review = await state_of_review(state, found, await saved_corrections(state, found))
     piece = None if review is None else review.by_name.get(piece_name)
     if review is None or piece is None or piece.name in review.saved:
         return said_page(request, marks_of(state), FIND_SAID["gone"], 404)

@@ -1323,8 +1323,8 @@ def test_saving_one_group_leaves_the_rest_open_with_the_answers_kept(
 
 
 REFUSED_OPEN = (
-    "The homework wasn't saved: a group you chose still has a question to answer. Nothing of "
-    "it was written."
+    "The homework wasn't saved: an assignment you ticked still has a question to answer. "
+    "Nothing of it was written."
 )
 
 
@@ -4843,8 +4843,8 @@ def test_find_under_another_name_is_a_button_whose_search_posts_and_whose_choice
         ]
         after = followed(browser, send(browser, draft_id, fields))
 
-    assert f'form="{form_id}" aria-describedby="{form_id}-typing">Find under another name' in page
-    assert says(page.split(f'id="{form_id}-typing"', 1)[1], screenshot_page.SAID["typing_lost"])
+    assert f'form="{form_id}" aria-describedby="typing-lost">Find under another name' in page
+    assert says(page.split('id="typing-lost"', 1)[1], screenshot_page.SAID["typing_lost"])
     assert opened.status_code == 200
     assert 'name="words"' in search.group(2)
     assert results.status_code == 200
@@ -6584,7 +6584,7 @@ def test_a_press_on_a_review_the_sweep_removed_after_expiry_gives_back_what_was_
 
 
 def progress_after(browser: TestClient, draft_id: str) -> dict[str, dict[str, str | None]]:
-    """The corrections the review's saved progress holds now."""
+    """The corrections the review's saved progress holds."""
     found = progress_on(browser, draft_id)
     assert found is not None
     return found.corrected
@@ -6862,9 +6862,9 @@ def test_old_date_corrections_convert_on_the_first_press_and_ask_once(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A day heading's correction kept in shape 3, its destination answer kept against it: the
-    review reads it as it always has, its card not asked again; the first press posts it in the
-    new form, so where the card goes is asked once after Keep these answers, and never again
-    once Save review for later keeps the new form."""
+    review reads it as the boxes it gives, so where the card goes is asked once, and once the
+    card is placed again, Keep these answers never asks again, nor marks anything she never
+    typed as not saved; Save review for later then writes it in shape 4."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(
             browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
@@ -6883,31 +6883,50 @@ def test_old_date_corrections_convert_on_the_first_press_and_ask_once(
                 AnswerToKeep("destination", piece, '{"new":1}', correction_digest(old), (piece,))
             ],
         )
-        reading = browser.get(f"/parent/imports/{draft_id}").text
-        kept = followed(browser, send(browser, draft_id, page_post(reading, "keep")))
-        asked = browser.get(f"/parent/imports/{draft_id}").text
-        chosen = followed(
-            browser,
-            send(
-                browser,
-                draft_id,
-                page_post(asked, "later", choose={f"answer:destination:{piece}": '{"new":1}'}),
-            ),
+        place = {f"answer:destination:{piece}": '{"new":1}'}
+        pages = [browser.get(f"/parent/imports/{draft_id}").text]
+        kept = followed(
+            browser, send(browser, draft_id, page_post(pages[-1], "keep", choose=place))
         )
+        for _ in range(2):
+            pages.append(browser.get(f"/parent/imports/{draft_id}").text)
+            kept = followed(browser, send(browser, draft_id, page_post(pages[-1], "keep")))
+        pages.append(browser.get(f"/parent/imports/{draft_id}").text)
+        later_page = later(browser, draft_id, pages[-1])
         held = progress_after(browser, draft_id)
-        settled = browser.get(f"/parent/imports/{draft_id}").text
 
     lost = screenshot_page.SAID["lost_correction"]
-    assigned = f"correct:{box_subject(reading, 'assigned')}"
-    assert box_of(review_form(reading), assigned)[1] == "2026-10-06"  # type: ignore[index]
-    assert says(reading, "Assigned Tuesday, October 6.")
-    assert not says(reading, lost)
-    assert not says(kept, lost)
-    assert says(asked, lost)
-    assert not says(chosen, lost)
+    assigned = f"correct:{box_subject(pages[0], 'assigned')}"
+    assert [says(shown, lost) for shown in pages] == [True, False, False, False]
+    assert all(says(shown, "Assigned Tuesday, October 6.") for shown in [*pages, later_page])
+    assert box_of(review_form(pages[0]), assigned)[1] == "2026-10-06"  # type: ignore[index]
+    assert not says(kept, screenshot_page.SAID["not_saved_yet"])
+    assert not says(kept, imports.PRESS_SAID["unsaved_typing"])
     assert held == {f"date:{piece}": {"assigned": "2026-10-06"}}
-    assert not says(settled, lost)
-    assert says(settled, "Assigned Tuesday, October 6.")
+    assert not says(later_page, lost)
+
+
+def test_an_unsure_field_corrected_in_the_fold_isn_t_the_first_question(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A title the reader wasn't sure of, corrected under Correct what was read: the save takes
+    it as answered and "Still to answer" leaves it out, so the first-question link doesn't
+    point at its question either."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        asked = FIRST_OPEN.search(page)
+        box = f"correct:{box_subject(page, 'title')}"
+        kept = followed(
+            browser, send(browser, draft_id, page_post(page, "keep", typed={box: "Sentence Craft"}))
+        )
+
+    [question] = re.findall(r"<fieldset[^>]*id=\"(ask-\d+)\"[^>]*>\s*<legend>The reader wasn", page)
+    assert asked is not None
+    assert asked.group(1) == question
+    assert not says(kept, screenshot_page.OPEN_NAMES["confirm"])
+    link = FIRST_OPEN.search(kept)
+    assert link is None or link.group(1) != question
 
 
 def test_each_field_has_one_box_on_the_page(
@@ -7032,9 +7051,9 @@ def test_a_save_with_a_new_instruction_correction_doesn_t_save_a_stale_choice(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Which instructions apply, chosen on a page, and a correction of one of those texts typed
-    in the same press as Save: the choice names a text the corrected card no longer has, so
-    what saving does changed since the page, so nothing is saved, and the question is asked
-    of the corrected text with nothing chosen."""
+    in the same press as Save: the choice names a text the corrected card doesn't have, and
+    what saving does differs from what the page showed, so nothing is saved, and the question
+    is asked of the corrected text with nothing chosen."""
     first, second = "Read pages 1 to 3.", "Read pages 4 to 6."
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, subject = two_names_with_instructions(browser, monkeypatch, first, second)
@@ -7461,10 +7480,10 @@ def test_the_status_line_and_the_asked_again_line_are_the_design_s(
 def test_each_separate_form_says_typing_isn_t_kept(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every button of a form of its own, which reads saved progress, points to a note saying
-    typing in the fold isn't kept by it: Find under another name, Leave this group unsaved,
-    Use this change, Set aside, Finish without the rest, Remove and Remove only this
-    screenshot."""
+    """The note that typing in the fold isn't kept by a form of its own is said once, beside the
+    status line, and every button of such a form, which reads saved progress, points to it:
+    Find under another name, Leave this group unsaved, Use this change, Set aside, Finish
+    without the rest, Remove and Remove only this screenshot."""
     with here(open_settings(tmp_path)) as browser:
         pages = [
             read_review(browser, monkeypatch, (RED, homework_answer()))[1],
@@ -7475,6 +7494,9 @@ def test_each_separate_form_says_typing_isn_t_kept(
     said = screenshot_page.SAID["typing_lost"]
     seen: set[str] = set()
     for page in pages:
+        assert page.count(str(escape(said))) == 1
+        status = page.index('id="review-status"')
+        assert status < page.index('id="typing-lost"') < page.index('value="save"', status)
         notes = {
             anchor: html.unescape(text)
             for anchor, text in re.findall(r'<p class="helper" id="([^"]+)">([^<]*)</p>', page)
@@ -7599,3 +7621,25 @@ def test_a_correction_saved_with_its_group_isn_t_said_to_be_unsaved(
     assert "Sentence Craft" in titles
     assert not says(taken.text, imports.PRESS_SAID["unsaved_typing"])
     assert not says(taken.text, screenshot_page.SAID["not_saved_yet"])
+
+
+def test_a_press_refused_for_two_boxes_says_nothing_was_kept_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press with an instruction past its limit and a cleared title: the refusal says each
+    box's sentence and that nothing was kept or saved, once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, "instruction")
+        typed = {boxes["instruction"]: LINES_OF_A + "a", boxes["title"]: ""}
+        refused = send(browser, draft_id, page_post(page, "keep", typed=typed))
+        cleared = send(browser, draft_id, page_post(page, "keep", typed={boxes["title"]: ""}))
+
+    lines = lines_in(PROBLEM.search(refused.text))
+    assert refused.status_code == cleared.status_code == 422
+    assert lines == [imports.PRESS_SAID["too_long"], "A title is needed."]
+    assert sum("nothing was kept or saved" in line.casefold() for line in lines) == 1
+    assert lines_in(PROBLEM.search(cleared.text)) == [
+        "A title is needed.",
+        imports.PRESS_SAID["nothing_kept"],
+    ]
+    assert imports.PRESS_SAID["none_chosen"] == "Choose at least one assignment to save."

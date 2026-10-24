@@ -30,7 +30,8 @@
   {#
     Each screenshot as one compact row: its thumbnail at a fixed width, its place and how it
     stands, then View screenshot and, while the review is open to changes, its Remove press on
-    one line. Once the review asks its questions, Remove says typing in the fold isn't kept.
+    one line. Once the review asks its questions, Remove points to the note that says typing in
+    the fold isn't kept.
   #}
   {% macro shown(image) %}
         <li>
@@ -40,7 +41,7 @@
             <div class="actions">
               <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a>
               {% if not frozen %}
-                <button type="submit" class="secondary" form="remove-shot-{{ image.id }}"{% if rows %} aria-describedby="shots-typing"{% endif %}>Remove<span class="visually-hidden"> screenshot {{ image.place }}</span></button>
+                <button type="submit" class="secondary" form="remove-shot-{{ image.id }}"{% if rows %} aria-describedby="typing-lost"{% endif %}>Remove<span class="visually-hidden"> screenshot {{ image.place }}</span></button>
               {% endif %}
             </div>
           </div>
@@ -59,9 +60,7 @@
       </ul>
     </details>
   {% endmacro %}
-  {% macro typing_note(where) %}
-    {% if rows and not frozen %}<p class="helper" id="{{ where }}">{{ rows.words.typing_lost }}</p>{% endif %}
-  {% endmacro %}
+
   {#
     Once the review asks its questions, a way to the first one still to answer comes first.
     A screenshot still to read, one whose reading failed and one read as something else stay
@@ -79,7 +78,7 @@
   {% if not rows or rest or frozen or under_way or no_key or read_ids %}
   <section class="panel"{% if not read_below %} aria-labelledby="screenshots-heading"{% endif %}>
     {% if not read_below %}<h2 id="screenshots-heading">Screenshots</h2>
-    <p class="note">{{ counts }}</p>{{ typing_note("shots-typing") }}{% endif %}
+    <p class="note">{{ counts }}</p>{% endif %}
     {% if read and not rows %}{{ read_fold(read, true, "screenshot-fold") }}{% endif %}
     {% if rest or not read %}
       <ul class="screenshot-list">
@@ -114,7 +113,6 @@
     <section class="panel" aria-labelledby="screenshots-heading">
       <h2 id="screenshots-heading">Screenshots</h2>
       <p class="note">{{ counts }}</p>
-      {{ typing_note("shots-typing") }}
       {{ read_fold(read, false, "screenshot-fold") }}
     </section>
   {% endif %}
