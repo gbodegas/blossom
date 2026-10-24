@@ -907,8 +907,8 @@ async def read_in_time[T](reading: Awaitable[T], budget: RunBudget) -> T:
 WAITED_FOR: Final = {"plan": "plan", "critique": "verdict"}
 
 ADMISSION_ALLOWANCE_SECONDS: Final = 0.25
-"""How far past its store wait an admission is waited for: room for the statement the
-file's busy handler is in when the wait ends."""
+"""How far past its store wait an admission is waited for: room for the attempt or statement
+the store began before the wait ended to finish."""
 
 
 async def admit(
@@ -925,10 +925,10 @@ async def admit(
     The deadline is the end of the request's budget, on the store's clock. A run
     still running is ``AlreadyPlanning``; an admission that doesn't finish in time,
     or fails, is ``CouldNotStart``. One the route stopped waiting for can still insert
-    its row, since the file's busy wait can overrun its cap on Windows, and that row
-    refuses presses until its own deadline. A run already recorded under ``run_id`` is
-    ``SameRun``; with ``basis``, a page that didn't know the evening's newest plan is
-    ``StaleBasis``, and one naming a plan never published is ``UnknownBasis``.
+    its row, since an attempt the store began before its wait ended can finish after it,
+    and that row refuses presses until its own deadline. A run already recorded under
+    ``run_id`` is ``SameRun``; with ``basis``, a page that didn't know the evening's newest
+    plan is ``StaleBasis``, and one naming a plan never published is ``UnknownBasis``.
     """
     wait = min(budget.remaining(), STORE_WAIT_SECONDS)
     admission = partial(
