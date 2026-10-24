@@ -3851,9 +3851,8 @@ class _Trickle(httpx.SyncByteStream):
             yield self.body[start : start + 8]
 
 
-def trickling_answer(answer: object, seconds: float, every: float = 0.05) -> httpx.MockTransport:
-    """A mock service whose answer, a message holding ``answer`` as JSON text, trickles in
-    eight bytes at a time for about ``seconds``. Nothing leaves the machine."""
+def answer_body(answer: object) -> bytes:
+    """The body of a service's message holding ``answer`` as JSON text."""
     message = {
         "id": "msg_synthetic",
         "type": "message",
@@ -3863,7 +3862,14 @@ def trickling_answer(answer: object, seconds: float, every: float = 0.05) -> htt
         "stop_sequence": None,
         "usage": {"input_tokens": 1500, "output_tokens": 300},
     }
-    body = json.dumps(message).encode()
+    return json.dumps(message).encode()
+
+
+def trickling_answer(answer: object, seconds: float, every: float = 0.05) -> httpx.MockTransport:
+    """A mock service whose answer, a message holding ``answer`` as JSON text, trickles in
+    eight bytes at a time for about ``seconds``, or longer when the message alone needs more
+    pieces. Nothing leaves the machine."""
+    body = answer_body(answer)
     body += b" " * max(0, int(seconds / every) * 8 - len(body))
     return httpx.MockTransport(
         lambda request: httpx.Response(

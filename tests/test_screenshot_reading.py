@@ -725,7 +725,7 @@ def test_a_reader_that_raises_ends_unfinished_and_is_logged_by_its_kind_alone(
 # ------------------------------------------------------------------ calls that trickle
 
 TRICKLE_SECONDS = 3.0
-"""How long each trickling answer would take to arrive in full."""
+"""The least time each trickling answer takes to arrive in full; a longer message takes longer."""
 
 HELD_POOL_THREADS = 16
 """The held-workers test's thread pool: fewer than its twenty calls, and the default size on a
