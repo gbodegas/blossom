@@ -8,26 +8,43 @@
   <div class="import-review">
   {#
     What a press answered takes the focus on the page that first shows it, so the next Tab
-    starts from the answer. A visit may show a warning here, which takes no focus.
+    starts from the answer: what a save did, in the success panel; what an upload or a Read
+    press did, in the status style; what it found wrong, in the problem style. The first of
+    them takes the focus. A visit may show a warning here, which takes no focus.
   #}
+  {% if done %}
+    <div class="panel grade-outcome" role="status" id="done" tabindex="-1"{{ lands(request, true) }}>
+      {% for line in done %}<p>{{ line }}</p>{% endfor %}
+    </div>
+  {% endif %}
+  {% if told %}
+    <div role="status" id="told" tabindex="-1"{{ lands(request, not done) }}>
+      {% for line in told %}<p class="note">{{ line }}</p>{% endfor %}
+    </div>
+  {% endif %}
   {% if said %}
-    <div class="problem" role="status" id="said" tabindex="-1"{{ lands(request, true) }}>
+    <div class="problem" role="status" id="said" tabindex="-1"{{ lands(request, not done and not told) }}>
       {% for line in said %}<p>{{ line }}</p>{% endfor %}
     </div>
   {% endif %}
   {#
-    Each screenshot with its label and, while the review is open to changes, its Remove press.
+    Each screenshot as one compact row: its thumbnail at a fixed width, its place and how it
+    stands, then View screenshot and, while the review is open to changes, its Remove press on
+    one line. Once the review asks its questions, Remove points to the note that says typing in
+    the fold isn't kept.
   #}
   {% macro shown(image) %}
         <li>
-          <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="160"></a>
-          <p>Screenshot {{ image.place }}: {{ image.label }}</p>
-          <p><a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a></p>
-          {% if not frozen %}
-            <form method="post" action="/parent/imports/{{ draft_id }}/images/{{ image.id }}/remove">
-              <button type="submit" class="secondary">Remove<span class="visually-hidden"> screenshot {{ image.place }}</span></button>
-            </form>
-          {% endif %}
+          <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="72"></a>
+          <div>
+            <p>Screenshot {{ image.place }} · {{ image.label }}</p>
+            <div class="actions">
+              <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a>
+              {% if not frozen %}
+                <button type="submit" class="secondary" form="remove-shot-{{ image.id }}"{% if rows %} aria-describedby="typing-lost"{% endif %}>Remove<span class="visually-hidden"> screenshot {{ image.place }}</span></button>
+              {% endif %}
+            </div>
+          </div>
         </li>
   {% endmacro %}
   {#
@@ -43,6 +60,7 @@
       </ul>
     </details>
   {% endmacro %}
+
   {#
     Once the review asks its questions, a way to the first one still to answer comes first.
     A screenshot still to read, one whose reading failed and one read as something else stay
@@ -59,7 +77,8 @@
   {% endif %}
   {% if not rows or rest or frozen or under_way or no_key or read_ids %}
   <section class="panel"{% if not read_below %} aria-labelledby="screenshots-heading"{% endif %}>
-    {% if not read_below %}<h2 id="screenshots-heading">Screenshots</h2>{% endif %}
+    {% if not read_below %}<h2 id="screenshots-heading">Screenshots</h2>
+    <p class="note">{{ counts }}</p>{% endif %}
     {% if read and not rows %}{{ read_fold(read, true, "screenshot-fold") }}{% endif %}
     {% if rest or not read %}
       <ul class="screenshot-list">
@@ -75,11 +94,11 @@
       <p class="note">{{ no_key }}</p>
     {% elif read_ids %}
       <p class="note" id="read-disclosed">{{ disclosed }}</p>
-      <form method="post" action="/parent/imports/{{ draft_id }}/read">
+      <form method="post" action="/parent/imports/{{ draft_id }}/read" data-pending="{{ reading }}">
         <input type="hidden" name="images" value="{{ read_ids }}">
         <input type="hidden" name="check" value="{{ read_check }}">
         <div class="actions">
-          <button type="submit" class="primary" aria-describedby="read-disclosed">Read</button>
+          <button type="submit" class="primary" aria-describedby="read-disclosed">{{ read_label }}</button>
           {% if not rows %}<button type="submit" class="secondary" form="{{ discard.id }}">Discard the review</button>{% endif %}
         </div>
       </form>
@@ -93,6 +112,7 @@
   {% if read_below %}
     <section class="panel" aria-labelledby="screenshots-heading">
       <h2 id="screenshots-heading">Screenshots</h2>
+      <p class="note">{{ counts }}</p>
       {{ read_fold(read, false, "screenshot-fold") }}
     </section>
   {% endif %}
@@ -105,8 +125,9 @@
           <label class="file-choose" for="more-files">Choose screenshots</label>
           <input type="file" id="more-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="more-limits">
         </div>
+        <p class="note" role="status" data-chosen></p>
         <div class="actions">
-          <button type="submit" class="primary">Add screenshots</button>
+          <button type="submit" class="primary">Upload chosen screenshots</button>
         </div>
       </form>
     </section>
@@ -114,6 +135,9 @@
   <form method="post" action="/parent/imports/{{ draft_id }}/{{ discard.action }}" id="{{ discard.id }}">
     {% for name, value in discard.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   </form>
+  {% if not frozen %}{% for image in images %}
+    <form method="post" action="/parent/imports/{{ draft_id }}/images/{{ image.id }}/remove" id="remove-shot-{{ image.id }}"></form>
+  {% endfor %}{% endif %}
   </div>
   <p class="return"><a href="/parent">Back to Family review</a></p>
 {% endblock %}

@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""The screenshot review as a parent reads it: one destination control per piece, the questions
-each destination asks, and the group preview with its refusals and offers.
+"""The screenshot review as a parent reads it: each group of what saving adds as her week's
+card, each card going there with its source, its corrections and its questions, and the
+group's refusals and offers.
 
 Everything here is worked out from the review's state, which the save works from too, so the
 page and the save agree. A preselected destination is shown checked and is never stored until
-a press posts it. Every sentence the review's rows can show is in this module, in one place.
+a press posts it; a Type is never preselected, and the line under it says what saving does
+with it as Save does. Every box of "Correct what was read" holds its field's whole current
+value. Every sentence the review's rows can show is in this module, in one place.
 """
 
 import dataclasses
@@ -16,11 +19,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from typing import Final
 
+from blossom.grades.draft import folded
 from blossom.school_instructions import to_wire
 from blossom.screenshot_review import (
-    CORRECTION_MOST,
-    DATE_FIELDS,
+    KINDS,
     ChangeTold,
+    Corrections,
     DateQuestion,
     Destination,
     Offer,
@@ -30,34 +34,43 @@ from blossom.screenshot_review import (
     SavedRow,
     UnitCheck,
     Validation,
-    date_target,
+    dates_key,
+    dest_key,
     dest_kind,
     facts,
+    field_most,
+    kind_question,
     offers,
     reference,
     settles_due,
     subject_for,
     typed_day,
     unit_name,
-    usable_correction,
     value_json,
     value_of,
+    wordless_field,
 )
 from blossom.screenshot_save import (
-    CORRECTABLE,
-    MANY_LINES,
+    PIECE_FIELDS,
     ReviewState,
     confirm_fields,
-    confirm_subject,
+    confirm_of,
+    confirm_owner,
+    fold_answers,
     instruction_subject,
+    own_wordless,
+    read_digest,
     unit_digests,
+    unreadable_dates,
 )
 from blossom.screenshots import CardPlace, ScreenshotRow, UnreadCard
 
 SAID: Final = {
     "status": (
-        "Answers are kept when you submit them. Corrections you type are kept only when you "
-        "press Save review for later."
+        "Save review for later keeps your choices and your corrections. Keep these answers "
+        "keeps your choices; where a card goes is asked again if you come back before saving "
+        "its corrections. Save selected homework saves the ticked assignments with your "
+        "corrections."
     ),
     "preselected": "Suggested choice. You can change it.",
     "not_saved_yet": "Not saved yet.",
@@ -80,17 +93,83 @@ SAID: Final = {
     "confirm": "Confirm as read",
     "homework": "Homework",
     "task": "Task",
-    "type": "Type",
+    "type": "Homework or task?",
     "type_helper": "Task: a form to sign, supplies to bring, or similar.",
     "due_differs": "Its due line and its day heading name different dates. Which due date does "
     "Blossom use?",
-    "correction": "Correction",
     "too_long": "Keep the {named} to {most:,} characters or fewer.",
     "nothing": "none",
-    "lost_correction": "This row's answer depended on a correction that wasn't kept, so it asks "
+    "lost_correction": "This card's corrections changed since you chose, so choose where it goes "
     "again.",
+    "where": "Where it goes",
+    "unsure": "The reader wasn't sure of the {named}.",
+    "correct_it": "or correct it under",
+    "fold": "Correct what was read",
+    "said_fold": "What the screenshot said",
+    "source": "From screenshot {shot}, card {card}",
+    "wordless_box": "Instructions on screenshot {shot}, card {card}",
+    "read_as": "read as {title}",
+    "view": "View screenshot",
+    "due_hint": "Choose which due date applies above, or type the right one.",
+    "assigned_hint": "Leave it empty to keep the date as read.",
+    "no_assigned_given": "No assigned date was given",
+    "both": "Choose an assigned date or No assigned date was given, not both.",
+    "unreadable": "The date given was \u201c{value}\u201d, which is not a date Blossom can read.",
+    "new_assignment": "New assignment.",
+    "already": "Already saved. Nothing new is written.",
+    "updates": "Updates {title}.",
+    "no_assigned_line": "No assigned date.",
+    "no_due_line": "No due date",
+    "choose_first": "Choose where it goes first.",
+    "kind_first": "Answer \u201cHomework or task for {label}?\u201d first.",
+    "typing_lost": "Typed corrections aren't kept by this button; use Save review for later first.",
+    "tick_one": "Save this assignment",
+    "tick_many": "Save these assignments",
 }
 """The fixed sentences and labels of the review's rows."""
+
+NEEDED: Final = {
+    "course": "A class is needed.",
+    "title": "A title is needed.",
+    "due": "A due date is needed.",
+}
+"""What a cleared box that can't be empty says beneath it."""
+
+BOX_LABELS: Final = {
+    "course": "Class",
+    "title": "Title",
+    "instruction": "Instructions",
+    "due": "Due date",
+    "assigned": "Assigned date",
+}
+"""Each box of "Correct what was read", by field."""
+
+BOX_NAMED: Final = {
+    "course": "class",
+    "title": "title",
+    "instruction": "instructions",
+    "due": "due date",
+    "assigned": "assigned date",
+}
+"""How a box's field is named in "Keep the {named} to {most} characters or fewer."."""
+
+KIND_WORD: Final = {"HOMEWORK": "homework", "TASK": "a task"}
+"""A kind as a line says it."""
+
+TYPE_LINE: Final = {
+    "suggested": "Saving now: {kind}, suggested from the title.",
+    "saved": "Saving now: {kind}, as saved.",
+    "chosen": "Saving now: {kind}, your choice.",
+    "chosen_for": "Saving now: {kind}, chosen for {card}.",
+}
+"""The line under a row's Type, by where the kind Save writes comes from."""
+
+KIND_LINE: Final = {
+    "suggested": "Saved as {kind}, as suggested.",
+    "saved": "Stays {kind}, as saved.",
+    "chosen": "Saved as {kind}.",
+}
+"""The preview's kind line, by where the kind Save writes or keeps comes from."""
 
 CHANGE_SAID: Final = {
     "cleared": "Your screenshots changed, so these rows' answers were cleared: {labels}. Answer "
@@ -127,12 +206,15 @@ FIELD_NAMES: Final = {
 }
 """How an uncertain field is named in "The reader wasn't sure of the {field}."."""
 
-WRITTEN_KIND: Final = {"HOMEWORK": "Saved as homework.", "TASK": "Saved as a task."}
-
 
 def day_text(day: date | None) -> str:
     """A day as the review's rows say it: "Wed 10/14"."""
     return "" if day is None else f"{day:%a} {day.month}/{day.day}"
+
+
+def long_day(day: date) -> str:
+    """A day as her week's card says it: "Thursday, October 8"."""
+    return f"{day:%A, %B} {day.day}"
 
 
 def card_text(places: Mapping[str, int], card: CardPlace) -> str:
@@ -280,67 +362,211 @@ def due_option(piece: Piece, day: date) -> str:
 
 
 def confirm_question(
-    piece: Piece,
-    field: str,
-    places: Mapping[str, int],
-    values: Mapping[tuple[str, str], str],
-    typed: Mapping[str, str],
-    unsaved: bool,
+    piece: Piece, field: str, values: Mapping[tuple[str, str], str], fold: str
 ) -> "Question":
-    """Confirm as read, and for a field a parent may correct, its box: a date for the due line
-    or the day heading, several lines for an instruction, one line of text otherwise. No box
-    limits its length, so a paste reaches Blossom whole; a correction longer than its field
-    takes comes back in its box as typed, with a sentence beneath it saying how long the field
-    can be. The due or assigned label is confirmed only. A typed date Blossom can't read is
-    said beneath its box and carried back as typed beside it, never dropped."""
-    subject = confirm_subject(piece.key, field)
-    named = FIELD_NAMES[field]
-    if date_target(piece.reading, field) == "due":
-        named = "due date"
-    legend = f"{piece_text(places, piece)}: The reader wasn't sure of the {named}."
+    """Confirm as read, for a field the reader wasn't sure of, pointing to the box of "Correct
+    what was read" that corrects it (``fold``, its fold's id), except for the due or assigned
+    label, which is confirmed only."""
+    subject = confirm_of(piece, field)
+    legend = SAID["unsure"].format(named=FIELD_NAMES[field])
     options = (("as_read", SAID["confirm"], values.get(("confirm", subject)) == "as_read"),)
-    if field not in CORRECTABLE:
-        return Question(answer_field("confirm", subject), legend, options)
-    value = typed.get(field, "")
-    refused = None
-    carried = None
-    most = CORRECTION_MOST[field]
-    if len(value) > most:
-        refused = SAID["too_long"].format(named=named, most=most)
-    label, kind = SAID["correction"], "lines" if field in MANY_LINES else "text"
-    if field in DATE_FIELDS:
-        kind = "date"
-        label = "Due date" if named == "due date" else "Assigned date (day heading)"
-        day = typed_day(value) if value else None
-        if value and day is None:
-            refused = refused or (
-                f"The date given was \u201c{value}\u201d, which is not a date Blossom can read."
-            )
-            carried = (f"refused:{subject}", value)
-        value = "" if day is None else day.isoformat()
     return Question(
         answer_field("confirm", subject),
         legend,
         options,
-        text=(f"correct:{subject}", value),
-        unsaved=unsaved,
-        text_label=label,
-        text_type=kind,
-        refused=refused,
-        mark=SAID["not_saved_yet"] if unsaved else None,
-        carried=carried,
+        fold="" if field == "badge" else fold,
     )
 
 
-def piece_read(piece: Piece, course: str) -> str:
-    """What was read for a card, as corrected, in the form an entry takes: its title (with its
-    class where the group's heading gives another), due date, assigned date and words."""
-    title = piece.title if piece.course == course else f"{piece.course}: {piece.title}"
-    due = f"due {day_text(piece.due)}" if piece.due else SAID["no_due"]
-    assigned = f"assigned {day_text(piece.assigned)}" if piece.assigned else SAID["no_assigned"]
-    texts = list(dict.fromkeys(i.text for i in piece.reading.instructions)) if piece.reading else []
-    words = ", ".join(f"\u201c{text}\u201d" for text in texts) or SAID["no_words"]
-    return f"This card: {title}, {due}, {assigned}, {words}"
+@dataclasses.dataclass(frozen=True)
+class Box:
+    """One box of "Correct what was read": its posted name, label, kind and whole current
+    value, the digest of its value with no correction, and what is said beneath it."""
+
+    name: str
+    label: str
+    kind: str
+    """``text`` for one line, ``lines`` for several, ``date`` for a date."""
+    value: str
+    read: str
+    refused: str | None = None
+    mark: str | None = None
+    hint: str | None = None
+    none: tuple[str, bool] | None = None
+    """For an assigned date: the name of "No assigned date was given", and whether it is
+    checked."""
+    carried: tuple[str, str] | None = None
+    """For a typed date Blossom can't read: the hidden field that carries it back as typed, and
+    its text, so a page posted unchanged keeps it."""
+
+    @property
+    def subject(self) -> str:
+        """Its key and field, as its name and the signed list name it."""
+        return self.name.removeprefix("correct:")
+
+
+def box_name(key: str, field: str) -> str:
+    """The posted name of a box."""
+    return "correct:" + json.dumps([key, field], separators=(",", ":"))
+
+
+def _text_box(
+    key: str,
+    field: str,
+    label: str,
+    kind: str,
+    read: str,
+    typed: str | None,
+    unsaved: bool,
+) -> Box:
+    """A box of the row's text: its current value, the correction where there is one and the
+    value as read where there isn't; with what a refusal says beneath it."""
+    value = read if typed is None else typed
+    named = BOX_NAMED["instruction" if field.startswith("instruction") else field]
+    refused = None
+    if typed == "" and field in NEEDED:
+        refused = NEEDED[field]
+    elif typed is not None and len(typed) > field_most(field):
+        refused = SAID["too_long"].format(named=named, most=field_most(field))
+    return Box(
+        box_name(key, field),
+        label,
+        kind,
+        value,
+        read_digest(read),
+        refused,
+        SAID["not_saved_yet"] if unsaved else None,
+    )
+
+
+def _date_box(
+    piece: Piece,
+    field: str,
+    typed: str | None,
+    given: bool,
+    shown: date | None,
+    unsaved: bool,
+    both: bool,
+) -> Box:
+    """A box of the piece's own date: a date field holding the current date, the correction
+    where there is one; empty where none is current. A typed date Blossom can't read is said
+    beneath it and carried back as typed beside it, never dropped."""
+    key = dates_key(piece.name)
+    name = box_name(key, field)
+    read = piece.as_read
+    as_read = None if read is None else (read.due if field == "due" else read.assigned)
+    refused = carried = None
+    value = "" if shown is None else shown.isoformat()
+    if given and typed is not None:
+        day = typed_day(typed) if typed else None
+        if typed == "" and field in NEEDED:
+            refused = NEEDED[field]
+        elif len(typed) > field_most(field):
+            refused = SAID["too_long"].format(named=BOX_NAMED[field], most=field_most(field))
+            carried = (f"refused:{name.removeprefix('correct:')}", typed)
+        elif typed and day is None:
+            refused = SAID["unreadable"].format(value=typed)
+            carried = (f"refused:{name.removeprefix('correct:')}", typed)
+        value = "" if day is None else day.isoformat()
+    if both:
+        refused = SAID["both"]
+    hint = None
+    if field == "due" and not piece.due_resolved:
+        hint = SAID["due_hint"]
+    elif field == "assigned":
+        hint = SAID["assigned_hint"]
+    none = None
+    if field == "assigned":
+        none = ("none:" + name.removeprefix("correct:"), (given and typed is None) or both)
+    return Box(
+        name,
+        BOX_LABELS[field],
+        "date",
+        value,
+        read_digest("" if as_read is None else as_read.isoformat()),
+        refused,
+        SAID["not_saved_yet"] if unsaved else None,
+        hint,
+        none,
+        carried,
+    )
+
+
+def fold_boxes(
+    piece: Piece,
+    row_boxes: bool,
+    corrections: Corrections,
+    unsaved: frozenset[tuple[str, str]],
+    both: frozenset[str],
+    wordless: Sequence[tuple[str, str]],
+) -> tuple[Box, ...]:
+    """The boxes of a card's "Correct what was read", each holding its field's whole current
+    value: the row's class, title, one box per instruction text and one empty box per open card
+    read with no words the reader wasn't sure of (``wordless``, by field and label, the label
+    naming its screenshot and card) when ``row_boxes`` (on the row's first open card), then
+    the piece's due and assigned dates."""
+    read = piece.as_read
+    if read is None:
+        return ()
+    out: list[Box] = []
+    row = corrections.get(piece.key, {})
+    if row_boxes:
+        for field in ("course", "title"):
+            typed = row.get(field)
+            out.append(
+                _text_box(
+                    piece.key,
+                    field,
+                    BOX_LABELS[field],
+                    "text",
+                    getattr(read, field),
+                    typed,
+                    (piece.key, field) in unsaved,
+                )
+            )
+        boxes = [
+            (f"instruction:{i}", BOX_LABELS["instruction"], t) for i, t in enumerate(read.texts)
+        ]
+        boxes += [(field, label, "") for field, label in wordless]
+        for field, label, text in boxes:
+            typed = (row[field] or "") if field in row else None
+            out.append(
+                _text_box(
+                    piece.key,
+                    field,
+                    label,
+                    "lines",
+                    text,
+                    typed,
+                    (piece.key, field) in unsaved,
+                )
+            )
+    key = dates_key(piece.name)
+    own = corrections.get(key, {})
+    due = piece.due if piece.due_resolved else None
+    out.append(
+        _date_box(
+            piece,
+            "due",
+            own.get("due"),
+            "due" in own,
+            due,
+            (key, "due") in unsaved,
+            False,
+        )
+    )
+    out.append(
+        _date_box(
+            piece,
+            "assigned",
+            own.get("assigned"),
+            "assigned" in own,
+            piece.assigned,
+            (key, "assigned") in unsaved,
+            key in both,
+        )
+    )
+    return tuple(out)
 
 
 UNREAD_SAID: Final = {
@@ -443,31 +669,25 @@ class Choice:
 
 @dataclasses.dataclass(frozen=True)
 class PieceControl:
-    """One piece's destination control: its legend, its choices and the find link."""
+    """One piece's destination control: its choices, the find button's form, and why it asks
+    again, if it does."""
 
     name: str
-    legend: str
     choices: tuple[Choice, ...]
     find: str
     """The id of the small form its "Find under another name…" button posts."""
     preselected: bool
     stale: bool
-    read: str = ""
-    """What was read for the card, as corrected: its title, due date, assigned date and words,
-    in the form its entries take, so the two can be compared."""
-    said: tuple[str, ...] = ()
-    """What each of its cards said of its dates, as the screenshot showed them."""
     lost: str | None = None
-    """Why it asks again when its answer depended on a correction that wasn't kept."""
+    """Why it asks again when its answer depended on corrections that changed since."""
     anchor: str = ""
     """Its fieldset's id on the page, by its place among the open pieces."""
-    goes: str = ""
-    """The id of the group of what saving does that holds it, the one its unit shows."""
 
 
 @dataclasses.dataclass(frozen=True)
 class Question:
-    """A question one destination asks, with nothing preselected that isn't stored."""
+    """A question one destination or one card asks, with nothing preselected that isn't
+    stored."""
 
     field: str
     legend: str
@@ -475,27 +695,20 @@ class Question:
     """(value, label, checked)."""
     many: bool = False
     helper: str | None = None
-    unsaved: bool = False
-    """Whether the correction in its box is typing this press sent that isn't saved."""
-    text_label: str = ""
-    text_type: str = "text"
-    """``text`` for one line, ``lines`` for several, ``date`` for a date."""
-    refused: str | None = None
-    """A typed date Blossom can't read, or a correction longer than its field takes, said
-    beneath its box rather than dropped."""
-    mark: str | None = None
     leave: str | None = None
     """The "Leave this group unsaved" form a split question's row may be set aside with."""
-    text: tuple[str, str] | None = None
-    """For a field the reader wasn't sure of: the correction's field name and its typed value."""
-    carried: tuple[str, str] | None = None
-    """For a typed date Blossom can't read: the hidden field that carries it back as typed, and
-    its text, so a page posted unchanged keeps it."""
     anchor: str = ""
     """Its fieldset's id on the page, by its place among the review's questions."""
     about: str = ""
-    """For a split question: its row's title and cards, which its "Leave this group unsaved"
-    names."""
+    """The card or row it is about, which its legend names to a screen reader."""
+    fold: str = ""
+    """For a field the reader wasn't sure of: the id of the fold whose box corrects it."""
+    notes: tuple[tuple[str, str], ...] = ()
+    """Lines said above its options, each with the field of a question it links to, if any
+    (resolved to that question's anchor once the page's questions are placed)."""
+    answered: bool = False
+    """For a field the reader wasn't sure of: whether a correction in the fold answers it, as
+    it does for the save, with no option checked."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -518,22 +731,62 @@ class OfferShown:
 
 
 @dataclasses.dataclass(frozen=True)
-class EntryShown:
-    """One destination of the group preview, as text."""
+class CardHead:
+    """What saving adds there as her week's card shows it: the class, the title, the due date,
+    the school's words saving adds, and the quiet lines of what saving does."""
 
-    label: str
-    cards: tuple[str, ...]
-    lines: tuple[str, ...]
-    still_open: str | None
+    course: str
+    title: str
+    due: str | None
+    words: tuple[tuple[str, str], ...]
+    """(how the words are led in, the school's words)."""
+    quiet: tuple[str, ...]
+    lines: tuple[str, ...] = ()
+    """What saving does with the dates and instructions it was asked about, and where else
+    the card's words are saved."""
+    still_open: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class CardShown:
+    """One card of the review: where it was read, its questions about what was read, its fold
+    of corrections, what its screenshot said of its dates, where it goes, and its Type."""
+
+    name: str
+    about: str
+    """The card by title and place, which its repeated controls' names end with."""
+    sources: tuple[tuple[str, str, str], ...]
+    """(where it was read, the screenshot's address, the screenshot's number)."""
+    read_as: str | None
+    checks: tuple[Question, ...]
+    boxes: tuple[Box, ...]
+    fold: str
+    fold_open: bool
+    said: tuple[str, ...]
+    control: PieceControl
+    type: Question | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class BlockShown:
+    """One destination of a group, or a card with no destination yet: her week's card, the
+    cards going there, and the destination's own questions."""
+
+    head: CardHead
+    cards: tuple[CardShown, ...]
+    questions: tuple[Question, ...] = ()
+    chosen: bool = True
+    """Whether it is a destination, not a card still to place."""
 
 
 @dataclasses.dataclass(frozen=True)
 class UnitShown:
-    """One unit of the group preview: its destinations, whether it can be ticked to save, what
-    it waits for, its refusals and their offers, and its "Leave this group unsaved" form."""
+    """One group of what saving adds: its destinations and cards, whether it can be ticked to
+    save, what it waits for, its refusals and their offers, and its "Leave this group unsaved"
+    form."""
 
     unit: str
-    entries: tuple[EntryShown, ...]
+    blocks: tuple[BlockShown, ...]
     tick: bool
     ticked: bool
     """Ticked on the page, for display only: with saved progress, when its selection names every
@@ -545,20 +798,9 @@ class UnitShown:
     leave: str
     anchor: str = ""
     """Its id on the page, by its place among the units."""
-    cards: tuple[tuple[str, str], ...] = ()
-    """(legend, fieldset id) of each card of the unit with choices on the page, so each links
-    to the other by what the unit holds."""
     about: str = ""
     """The unit's cards by title and place, which its repeated controls' names end with."""
-
-
-@dataclasses.dataclass(frozen=True)
-class GroupShown:
-    """A name group: its heading, its pieces' controls and its questions."""
-
-    heading: str
-    pieces: tuple[PieceControl, ...]
-    questions: tuple[Question, ...]
+    tick_label: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -580,8 +822,7 @@ class RowsShown:
 
     names: tuple[NameQuestion, ...]
     splits: tuple[Question, ...]
-    groups: tuple[GroupShown, ...]
-    preview: tuple[UnitShown, ...]
+    units: tuple[UnitShown, ...]
     hidden: tuple[tuple[str, str], ...]
     status: str
     forms: tuple[OutsideForm, ...]
@@ -593,7 +834,10 @@ class RowsShown:
     saved: tuple[str, ...] = ()
     """The cards of this review already saved, each by its title and place."""
     first_open: str | None = None
-    """The id of the first fieldset, in page order, with no answer chosen or typed."""
+    """The id of the first fieldset, in page order, with no answer chosen or typed, or the fold
+    whose box was refused."""
+    words: Mapping[str, str] = dataclasses.field(default_factory=lambda: dict(SAID))
+    """The fixed sentences and labels the page shows beside the rows' own."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -727,22 +971,49 @@ def _dest_label(
     return label
 
 
-def _preview_lines(
+def _kind_line(entry: PreviewEntry, row: SavedRow | None, lead: Piece) -> str | None:
+    """The kind Save writes or keeps there, said only where it writes something: her choice,
+    the title's suggestion on a new assignment, or the saved assignment's own kind; nothing
+    while the kind question waits."""
+    if entry.nothing_new or "kind" in entry.open_questions:
+        return None
+    if entry.written_kind in KINDS:
+        return KIND_LINE["chosen"].format(kind=KIND_WORD[entry.written_kind])
+    if row is None:
+        if lead.reading is None:
+            return None
+        return KIND_LINE["suggested"].format(kind=KIND_WORD[lead.reading.kind.value])
+    if row.kind not in KIND_WORD:
+        return None
+    return KIND_LINE["saved"].format(kind=KIND_WORD[row.kind])
+
+
+def _assigned_line(entry: PreviewEntry, row: SavedRow | None, members: Sequence[Piece]) -> str:
+    """The assigned date saving leaves there: a saved assignment's own date stays where the
+    cards carry none, said as saved; none where none is written."""
+    if entry.assigned is None:
+        return SAID["no_assigned_line"]
+    if (
+        row is not None
+        and row.assigned == entry.assigned
+        and all(m.assigned is None for m in members)
+    ):
+        return f"Assigned {long_day(entry.assigned)}, as saved."
+    return f"Assigned {long_day(entry.assigned)}."
+
+
+def _effect_lines(
     state: ReviewState,
     entry: PreviewEntry,
     labels: Mapping[str, str],
-    label: str,
     until: str,
     last_open: bool,
 ) -> list[str]:
+    """What saving does with the dates a destination asked about, which instructions apply,
+    and where else the cards' words are saved."""
     row = state.rows.get(entry.stands_for) if entry.stands_for else None
     members = [state.by_name[n] for n in entry.pieces]
-    if entry.nothing_new and entry.defaulted_entries:
-        return [f"Already saved in {label}. {SAID['nothing_new']}"]
     lines = []
-    if entry.due is not None:
-        lines.append(f"Due {day_text(entry.due)}.")
-    lines.append(f"Assigned {day_text(entry.assigned)}." if entry.assigned else "No assigned date.")
     asked = {
         q.kind: q
         for q in state.validation.of(entry.pieces[0]).questions
@@ -773,14 +1044,6 @@ def _preview_lines(
                 else f"{day_text(other)} isn't saved with the homework; it stays in this review "
                 f"until {until}, and is removed from Blossom by the next hourly cleanup after that."
             )
-    if entry.adds:
-        lines += [f"Adds \u201c{words}\u201d" for words in entry.adds]
-    else:
-        lines.append(SAID["no_new_words"])
-    if entry.nothing_new:
-        lines.append(SAID["nothing_new"])
-    if entry.written_kind in WRITTEN_KIND:
-        lines.append(WRITTEN_KIND[entry.written_kind])
     if entry.instruction_choice is not None:
         lines.append(
             "Instructions that apply: "
@@ -796,6 +1059,78 @@ def _preview_lines(
         whose = "These cards' words are" if len(members) > 1 else "This card's words are"
         lines.append(f"{whose} also saved in {' and '.join(holders)}.")
     return lines
+
+
+def _card_head(
+    state: ReviewState,
+    entry: PreviewEntry,
+    labels: Mapping[str, str],
+    until: str,
+    last_open: bool,
+    still_open: str | None,
+) -> CardHead:
+    """What saving adds there, as her week's card: under the saved assignment's class and
+    title, or the lead card's for a new one, its due date, the school's words saving adds,
+    then the assigned date, what saving does and the kind it writes or keeps."""
+    row = state.rows.get(entry.stands_for) if entry.stands_for else None
+    members = sorted((state.by_name[n] for n in entry.pieces), key=lambda p: p.name)
+    lead = members[0]
+    course, title = (row.course, row.title) if row is not None else (lead.course, lead.title)
+    due = f"Due {long_day(entry.due)}" if entry.due else SAID["no_due_line"]
+    words: tuple[tuple[str, str], ...] = ()
+    if entry.nothing_new:
+        effect = SAID["already"]
+    else:
+        effect = SAID["new_assignment"] if row is None else SAID["updates"].format(title=row.title)
+        lead_in = "From the school:" if row is None else "Adds"
+        words = tuple((lead_in, text) for text in entry.adds)
+    kind = _kind_line(entry, row, lead)
+    quiet = [_assigned_line(entry, row, members), effect if kind is None else f"{effect} {kind}"]
+    if not entry.nothing_new and not entry.adds:
+        quiet.insert(0, SAID["no_new_words"])
+    return CardHead(
+        course,
+        title,
+        due,
+        words,
+        tuple(quiet),
+        tuple(_effect_lines(state, entry, labels, until, last_open)),
+        still_open,
+    )
+
+
+def _own_head(piece: Piece) -> CardHead:
+    """A card with no destination yet, as it was read and corrected: its class, title, due
+    date when settled, its words and its assigned date."""
+    due = f"Due {long_day(piece.due)}" if piece.due and piece.due_resolved else None
+    texts = row_texts_of(piece)
+    assigned = (
+        SAID["no_assigned_line"]
+        if piece.assigned is None
+        else f"Assigned {long_day(piece.assigned)}."
+    )
+    return CardHead(
+        piece.course,
+        piece.title,
+        due,
+        tuple(("From the school:", text) for text in texts),
+        (assigned,),
+    )
+
+
+def row_texts_of(piece: Piece) -> tuple[str, ...]:
+    """A piece's instruction texts as corrected, in reading order."""
+    if piece.reading is None:
+        return tuple(sorted(piece.words))
+    return tuple(dict.fromkeys(i.text for i in piece.reading.instructions))
+
+
+def _preview_text(state: ReviewState, entry: PreviewEntry, labels: Mapping[str, str]) -> list[str]:
+    """What saving does there, as an offer's lines say it in one paragraph."""
+    head = _card_head(state, entry, labels, "", False, None)
+    lines = [] if head.due is None else [f"{head.due}."]
+    lines += [f"{lead} \u201c{text}\u201d" for lead, text in head.words]
+    return [*lines, *head.quiet, *head.lines]
 
 
 def _refusal_text(
@@ -843,9 +1178,7 @@ def _offer_shown(
             continue
         title = state.by_name[entry.pieces[0]].title
         label = _dest_label(state, entry, labels, title)
-        lines.append(
-            f"{label}: " + " ".join(_preview_lines(state, entry, labels, label, "", False))
-        )
+        lines.append(f"{label}: " + " ".join(_preview_text(state, entry, labels)))
     fields = [("version", str(version)), ("press", "keep")]
     fields += [(answer_field("destination", n), v) for n, v in offer.changes]
     fields.append(("offer", page_check(page_key, fields)))
@@ -958,18 +1291,23 @@ def rows_shown(
     progress_revision: int,
     acceptance: str,
     until: str,
-    corrections: Mapping[str, Mapping[str, str]],
+    corrections: Corrections,
     selected: frozenset[str] | None = None,
     open_keys: Sequence[str] = (),
     unread: Sequence[UnreadCard] = (),
     unsaved: frozenset[tuple[str, str]] = frozenset(),
     frozen: bool = False,
+    image_ids: Mapping[str, str] | None = None,
+    href: str = "",
+    both: frozenset[str] = frozenset(),
 ) -> RowsShown:
-    """The review's rows: the name questions, the split questions, one control per open piece
-    by name group, each destination's questions once, under the first name group with cards
-    going there, and the group preview with its refusals and offers, plus the signed fields
-    the review form carries."""
+    """The review's rows: the name questions, the split questions, and one group of what
+    saving adds per unit, each destination as her week's card with the cards going there and
+    its own questions, each card with its source, its questions about what was read, its fold
+    of corrections and where it goes, a row's Type on its first open card; then the group's
+    refusals, offers and tick, plus the signed fields the review form carries."""
     values = dict(state.values)
+    image_ids = image_ids or {}
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
     for unit in state.validation.units:
         if not unit.refusals:
@@ -997,167 +1335,166 @@ def rows_shown(
         return (*min(cards), piece.name)
 
     open_pieces = sorted(state.open, key=first_card)
-    groups: dict[tuple[str, str], list[Piece]] = {}
-    for piece in open_pieces:
-        groups.setdefault(piece.pair, []).append(piece)
-    previews = {e.dest: e for e in state.preview}
-    asked_fields: list[tuple[str, str]] = [
-        (q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in names
-    ] + [(q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in splits]
-    shown_groups = []
-    asked_dests: set[tuple[str, ...]] = set()
+    order = {piece.name: index for index, piece in enumerate(open_pieces)}
     finds = {piece.name: f"find-{number}" for number, piece in enumerate(open_pieces, 1)}
     choices_at = {piece.name: f"card-{number}" for number, piece in enumerate(open_pieces, 1)}
+    folds = {piece.name: f"fix-{number}" for number, piece in enumerate(open_pieces, 1)}
+    first_of_row: dict[str, str] = {}
+    for piece in open_pieces:
+        first_of_row.setdefault(piece.key, piece.name)
+    confirm_on: dict[tuple[str, str], str] = {}
+    asking: dict[tuple[str, str], list[Piece]] = {}
+    for piece in open_pieces:
+        for field in sorted(confirm_fields(piece)):
+            # A date's question is its own piece's, on its card; any other field's is its
+            # row's, on the row's first open card.
+            whose = confirm_owner(piece, field)
+            host = piece.name if field in PIECE_FIELDS else first_of_row[piece.key]
+            confirm_on.setdefault((whose, field), host)
+            asking.setdefault((whose, field), []).append(piece)
+    previews = {e.dest: e for e in state.preview}
+    digests = unit_digests(state)
+    wordless: dict[str, list[tuple[str, str]]] = {}
+    for place, owner in sorted(
+        ((c, p) for p in open_pieces for c in own_wordless(p)),
+        key=lambda found: (places.get(found[0].sha256, 0), found[0].place),
+    ):
+        label = SAID["wordless_box"].format(shot=places.get(place.sha256, 0), card=place.place + 1)
+        wordless.setdefault(owner.key, []).append((wordless_field(place), label))
+
+    def card_of(piece: Piece, head: CardHead | None) -> CardShown:
+        about = piece_text(places, piece)
+        own = first_of_row[piece.key] == piece.name
+        checks: list[Question] = []
+        if piece.due_choices and not settles_due(piece, corrections):
+            got = values.get(("due_read", piece.name))
+            checks.append(
+                Question(
+                    answer_field("due_read", piece.name),
+                    SAID["due_differs"],
+                    tuple(
+                        (day.isoformat(), due_option(piece, day), got == day.isoformat())
+                        for day in piece.due_choices
+                    ),
+                    about=about,
+                )
+            )
+        for (whose, field), host in confirm_on.items():
+            if host != piece.name:
+                continue
+            fold = folds[host] if field in PIECE_FIELDS else folds[first_of_row[whose]]
+            # A row's question stands for every open piece unsure of that field, and a date's
+            # for its own piece, as "Still to answer" and the save read them.
+            askers = asking[(whose, field)]
+            checks.append(
+                dataclasses.replace(
+                    confirm_question(piece, field, values, fold),
+                    about=about,
+                    answered=all(fold_answers(p, field, corrections) for p in askers),
+                )
+            )
+        boxes = fold_boxes(piece, own, corrections, unsaved, both, wordless.get(piece.key, ()))
+        sources = tuple(
+            (
+                SAID["source"].format(shot=places.get(c.sha256, 0), card=c.place + 1),
+                f"{href}/images/{image_ids[c.sha256]}" if c.sha256 in image_ids else "",
+                str(places.get(c.sha256, 0)),
+            )
+            for c in piece.cards
+        )
+        read_as = None
+        course, title = (
+            (piece.course, piece.title)
+            if piece.as_read is None
+            else (piece.as_read.course, piece.as_read.title)
+        )
+        if head is not None and (folded(head.course), folded(head.title)) != (
+            folded(course),
+            folded(title),
+        ):
+            named = title if folded(course) == folded(head.course) else f"{course}: {title}"
+            read_as = SAID["read_as"].format(title=named)
+        control = PieceControl(
+            piece.name,
+            _choices(state, piece, piece.name in state.defaulted, labels),
+            finds[piece.name],
+            piece.name in state.defaults and piece.name not in state.stored,
+            piece.name in state.validation.of(piece.name).stale,
+            SAID["lost_correction"] if piece.name in state.lost else None,
+            choices_at[piece.name],
+        )
+        kind = None
+        if own:
+            got = values.get(("kind", piece.key))
+            row_pieces = [p for p in open_pieces if p.key == piece.key]
+            kind = Question(
+                answer_field("kind", piece.key),
+                SAID["type"],
+                (
+                    ("HOMEWORK", SAID["homework"], got == "HOMEWORK"),
+                    ("TASK", SAID["task"], got == "TASK"),
+                ),
+                helper=SAID["type_helper"],
+                about=about,
+                notes=_type_lines(state, row_pieces, labels, places, previews),
+            )
+        return CardShown(
+            piece.name,
+            about,
+            sources,
+            read_as,
+            tuple(checks),
+            boxes,
+            folds[piece.name],
+            any(box.refused for box in boxes),
+            dates_said(piece, places),
+            control,
+            kind,
+        )
+
     ordered = sorted(
         state.validation.units, key=lambda u: min(first_card(state.by_name[n]) for n in u.unit)
     )
-    held_at = {name: f"saving-{n}" for n, unit in enumerate(ordered, 1) for name in unit.unit}
-    for pieces in groups.values():
-        controls = tuple(
-            PieceControl(
-                p.name,
-                piece_text(places, p),
-                _choices(state, p, p.name in state.defaulted, labels),
-                finds[p.name],
-                p.name in state.defaults and p.name not in state.stored,
-                p.name in state.validation.of(p.name).stale,
-                piece_read(p, pieces[0].course),
-                dates_said(p, places),
-                SAID["lost_correction"] if p.name in state.lost else None,
-                choices_at[p.name],
-                held_at[p.name],
-            )
-            for p in pieces
-        )
-        for control in controls:
-            asked_fields.append(
-                (
-                    answer_field("destination", control.name),
-                    json.dumps([c.value for c in control.choices], separators=(",", ":")),
-                )
-            )
-        questions: list[Question] = []
-        dests = sorted(
-            {
-                d
-                for d, names_there in state.validation.destinations.items()
-                if set(names_there) & {p.name for p in pieces} and d not in asked_dests
-            }
-        )
-        asked_dests.update(dests)
-        for dest in dests:
-            entry = previews.get(dest)
-            if entry is None:
-                continue
-            label = _dest_label(state, entry, labels, pieces[0].title)
-            unit = state.validation.of(entry.pieces[0])
-            for q in unit.questions:
-                if q.subject == subject_for(dest, entry.pieces):
-                    questions.append(_date_question(state, q, label))
-            for kq in unit.kind_questions:
-                if kq.subject == subject_for(dest, entry.pieces):
-                    got = values.get(("kind", kq.subject))
-                    questions.append(
-                        Question(
-                            answer_field("kind", kq.subject),
-                            f"Homework or task for {label}?",
-                            (
-                                ("HOMEWORK", SAID["homework"], got == "HOMEWORK"),
-                                ("TASK", SAID["task"], got == "TASK"),
-                            ),
-                        )
-                    )
-            change = state.asked.get(dest)
-            if change is not None:
-                subject = instruction_subject(
-                    dest, list(entry.pieces), change.instructions_revision
-                )
-                got = values.get(("instructions", subject))
-                chosen = set(json.loads(got)) if got else set()
-                # Each instruction travels as one JSON string in ASCII, so a browser posts it
-                # back exactly, line endings included; "none apply" is the empty value.
-                options = tuple(
-                    (to_wire(s.text), f"\u201c{s.text}\u201d", s.text in chosen)
-                    for s in change.instructions_shown
-                )
-                questions.append(
-                    Question(
-                        answer_field("instructions", subject),
-                        f"Which instructions apply to {label}?",
-                        (*options, ("", SAID["none_apply"], got == "[]")),
-                        many=True,
-                    )
-                )
-        typed: dict[str, Piece] = {}
-        for piece in pieces:
-            typed.setdefault(piece.key, piece)
-        for key, piece in typed.items():
-            got = values.get(("kind", key))
-            questions.append(
-                Question(
-                    answer_field("kind", key),
-                    f"{SAID['type']}: {piece_text(places, piece)}",
-                    (
-                        ("HOMEWORK", SAID["homework"], got == "HOMEWORK"),
-                        ("TASK", SAID["task"], got == "TASK"),
-                    ),
-                    helper=SAID["type_helper"],
-                )
-            )
-        for piece in pieces:
-            if piece.due_choices and not settles_due(piece, corrections):
-                got = values.get(("due_read", piece.name))
-                questions.append(
-                    Question(
-                        answer_field("due_read", piece.name),
-                        f"{piece_text(places, piece)}: {SAID['due_differs']}",
-                        tuple(
-                            (day.isoformat(), due_option(piece, day), got == day.isoformat())
-                            for day in piece.due_choices
-                        ),
-                    )
-                )
-        confirming: dict[tuple[str, str], Piece] = {}
-        for piece in pieces:
-            for field in sorted(confirm_fields(piece)):
-                confirming.setdefault((piece.key, field), piece)
-        for (key, field), piece in confirming.items():
-            questions.append(
-                confirm_question(
-                    piece, field, places, values, corrections.get(key, {}), (key, field) in unsaved
-                )
-            )
-        for question in questions:
-            offered = [o[0] for o in question.options]
-            asked_fields.append((question.field, json.dumps(offered, separators=(",", ":"))))
-        shown_groups.append(
-            GroupShown(f"{pieces[0].course}: {pieces[0].title}", controls, tuple(questions))
-        )
-    digests = unit_digests(state)
     forms = [OutsideForm(form_id, "find", (("piece", name),)) for name, form_id in finds.items()]
     shown_units = []
     for number, unit in enumerate(ordered, 1):
-        here = [e for e in state.preview if set(e.pieces) <= set(unit.unit)]
         last_open = set(unit.unit) >= {p.name for p in open_pieces}
-        entries_shown = []
+        blocks: list[tuple[int, BlockShown]] = []
+        placed: set[str] = set()
         still_any = False
-        for entry in here:
-            title = state.by_name[entry.pieces[0]].title
-            label = _dest_label(state, entry, labels, title)
-            lines = _preview_lines(state, entry, labels, label, until, last_open)
-            members = [state.by_name[n] for n in entry.pieces]
+        for dest, names_there in state.validation.destinations.items():
+            if not set(names_there) <= set(unit.unit) or dest not in previews:
+                continue
+            entry = previews[dest]
+            members = sorted((state.by_name[n] for n in entry.pieces), key=first_card)
             still = _still_open(entry, members, values, waiting, corrections)
             still_any = still_any or bool(still)
-            entries_shown.append(
-                EntryShown(
-                    label,
-                    tuple(piece_text(places, m) for m in members),
-                    tuple(lines),
-                    None
-                    if not still
-                    else "Still to answer: " + ", ".join(OPEN_NAMES[q] for q in still) + ".",
+            said_open = (
+                None
+                if not still
+                else "Still to answer: " + ", ".join(OPEN_NAMES[q] for q in still) + "."
+            )
+            head = _card_head(state, entry, labels, until, last_open, said_open)
+            label = _dest_label(state, entry, labels, members[0].title)
+            blocks.append(
+                (
+                    min(order[m.name] for m in members),
+                    BlockShown(
+                        head,
+                        tuple(card_of(m, head) for m in members),
+                        tuple(_dest_questions(state, entry, label, values)),
+                    ),
                 )
             )
+            placed |= set(entry.pieces)
+        for name in unit.unit:
+            if name in placed:
+                continue
+            piece = state.by_name[name]
+            blocks.append(
+                (order[name], BlockShown(_own_head(piece), (card_of(piece, None),), (), False))
+            )
+        blocks.sort(key=lambda block: block[0])
         refusals = tuple(_refusal_text(r, state, places, labels) for r in unit.refusals)
         shown_offers: list[OfferShown] = []
         for index, (offer, reshown) in enumerate(reworked.get(unit.unit, []), 1):
@@ -1172,10 +1509,11 @@ def rows_shown(
         forms.append(OutsideForm(f"leave-{number}", "set-aside", tuple(leave)))
         tickable = unit.ready and not still_any and unit_name(unit.unit) in digests
         held = sorted((state.by_name[n] for n in unit.unit), key=first_card)
+        chosen_blocks = sum(1 for _, block in blocks if block.chosen)
         shown_units.append(
             UnitShown(
                 unit_name(unit.unit),
-                tuple(entries_shown),
+                tuple(block for _, block in blocks),
                 tickable,
                 tickable
                 and (
@@ -1186,14 +1524,39 @@ def rows_shown(
                 tuple(shown_offers),
                 f"leave-{number}",
                 f"saving-{number}",
-                tuple(
-                    (piece_text(places, m), choices_at[m.name])
-                    for m in held
-                    if m.name in choices_at
-                ),
                 "; ".join(piece_text(places, m) for m in held),
+                SAID["tick_one"] if chosen_blocks <= 1 else SAID["tick_many"],
             )
         )
+    shown_units = _placed(names, splits, shown_units)
+    names = [dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(names, 1)]
+    splits = tuple(
+        dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(splits, len(names) + 1)
+    )
+    asked_fields: list[tuple[str, str]] = [
+        (q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in names
+    ] + [(q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in splits]
+    for shown_unit in shown_units:
+        for block in shown_unit.blocks:
+            for card in block.cards:
+                asked_fields.append(
+                    (
+                        answer_field("destination", card.name),
+                        json.dumps([c.value for c in card.control.choices], separators=(",", ":")),
+                    )
+                )
+                for question in (*card.checks, *((card.type,) if card.type else ())):
+                    offered = [o[0] for o in question.options]
+                    asked_fields.append(
+                        (question.field, json.dumps(offered, separators=(",", ":")))
+                    )
+                for box in card.boxes:
+                    asked_fields.append((box.name, "[]"))
+                    if box.none is not None:
+                        asked_fields.append((box.none[0], json.dumps(["none"])))
+            for question in block.questions:
+                offered = [o[0] for o in question.options]
+                asked_fields.append((question.field, json.dumps(offered, separators=(",", ":"))))
     hidden = [
         ("version", str(version)),
         ("progress_revision", str(progress_revision)),
@@ -1227,21 +1590,9 @@ def rows_shown(
     finishing.append(("check", page_check(page_key, [*finishing, ("action", "finish")])))
     forms.append(OutsideForm("finish", "finish", tuple(finishing)))
     forms.append(signed_action("not-hers", page_key, version))
-    names = [dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(names, 1)]
-    splits = tuple(
-        dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(splits, len(names) + 1)
-    )
-    start = len(names) + len(splits) + 1
-    for index, group in enumerate(shown_groups):
-        asked_here = tuple(
-            dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(group.questions, start)
-        )
-        shown_groups[index] = dataclasses.replace(group, questions=asked_here)
-        start += len(asked_here)
     return RowsShown(
         tuple(names),
         splits,
-        tuple(shown_groups),
         tuple(shown_units),
         tuple(hidden),
         SAID["status"],
@@ -1249,28 +1600,193 @@ def rows_shown(
         bool(names) and not state.saved,
         unread_groups,
         tuple(piece_text(places, p) for p in state.pieces if p.name in state.saved),
-        _first_open(names, splits, shown_groups),
+        _first_open(names, splits, shown_units),
     )
 
 
+def _dest_questions(
+    state: ReviewState, entry: PreviewEntry, label: str, values: Mapping[tuple[str, str], str]
+) -> list[Question]:
+    """A destination's own questions: its due and assigned dates, its kind where its cards'
+    choices disagree or differ from the saved one, and which instructions apply."""
+    out: list[Question] = []
+    unit = state.validation.of(entry.pieces[0])
+    for q in unit.questions:
+        if q.subject == subject_for(entry.dest, entry.pieces):
+            out.append(_date_question(state, q, label))
+    for kq in unit.kind_questions:
+        if kq.subject == subject_for(entry.dest, entry.pieces):
+            got = values.get(("kind", kq.subject))
+            out.append(
+                Question(
+                    answer_field("kind", kq.subject),
+                    f"Homework or task for {label}?",
+                    (
+                        ("HOMEWORK", SAID["homework"], got == "HOMEWORK"),
+                        ("TASK", SAID["task"], got == "TASK"),
+                    ),
+                )
+            )
+    change = state.asked.get(entry.dest)
+    if change is not None:
+        subject = instruction_subject(entry.dest, list(entry.pieces), change.instructions_revision)
+        got = values.get(("instructions", subject))
+        chosen = set(json.loads(got)) if got else set()
+        # Each instruction travels as one JSON string in ASCII, so a browser posts it back
+        # exactly, line endings included; "none apply" is the empty value.
+        options = tuple(
+            (to_wire(s.text), f"\u201c{s.text}\u201d", s.text in chosen)
+            for s in change.instructions_shown
+        )
+        out.append(
+            Question(
+                answer_field("instructions", subject),
+                f"Which instructions apply to {label}?",
+                (*options, ("", SAID["none_apply"], got == "[]")),
+                many=True,
+            )
+        )
+    return out
+
+
+def _type_lines(
+    state: ReviewState,
+    pieces: Sequence[Piece],
+    labels: Mapping[str, str],
+    places: Mapping[str, int],
+    previews: Mapping[tuple[str, ...], PreviewEntry],
+) -> tuple[tuple[str, str], ...]:
+    """What saving does with a row's Type, by Save's own rule, one line per open piece of the
+    row, each led by its date when the row has more than one."""
+    out = []
+    for piece in pieces:
+        text, target = _type_line(state, piece, labels, places, previews)
+        if len(pieces) > 1:
+            text = f"{day_text(piece.assigned or piece.due)}: {text}"
+        out.append((text, target))
+    return tuple(out)
+
+
+def _type_line(
+    state: ReviewState,
+    piece: Piece,
+    labels: Mapping[str, str],
+    places: Mapping[str, int],
+    previews: Mapping[tuple[str, ...], PreviewEntry],
+) -> tuple[str, str]:
+    """The kind Save writes for a piece's destination and where it comes from, as
+    ``destination_kind`` and the save work it out: a destination's kind question answered or
+    waiting, her choice on this row or on another card going there, else the lead card's
+    title's suggestion on a new assignment or the saved assignment's kind. A piece with no
+    destination waits for one. With the field of the question it links to, if any."""
+    value = state.mapping.get(piece.name)
+    dest = None if value is None else dest_key(piece, value)
+    names = None if dest is None else state.validation.destinations.get(dest)
+    if dest is None or not names or piece.name not in names:
+        return SAID["choose_first"], ""
+    members = [state.by_name[n] for n in names]
+    row = state.rows.get(dest[1]) if dest[0] != "new" else None
+    question = kind_question(dest, members, row, state.kinds)
+    if question is not None:
+        got = state.values.get(("kind", question.subject))
+        if got not in KINDS:
+            entry = previews[dest]
+            label = _dest_label(state, entry, labels, members[0].title)
+            return SAID["kind_first"].format(label=label), answer_field("kind", question.subject)
+        return TYPE_LINE["chosen"].format(kind=KIND_WORD[got]), ""
+    if piece.name in state.kinds:
+        return TYPE_LINE["chosen"].format(kind=KIND_WORD[state.kinds[piece.name]]), ""
+    chosen = sorted(
+        (m for m in members if m.name in state.kinds),
+        key=lambda m: (min((places.get(c.sha256, 0), c.place) for c in m.cards), m.name),
+    )
+    if chosen:
+        other = chosen[0]
+        kind = KIND_WORD[state.kinds[other.name]]
+        return TYPE_LINE["chosen_for"].format(kind=kind, card=piece_text(places, other)), ""
+    if row is None:
+        lead = sorted(members, key=lambda m: m.name)[0]
+        if lead.reading is None:
+            return SAID["choose_first"], ""
+        return TYPE_LINE["suggested"].format(kind=KIND_WORD[lead.reading.kind.value]), ""
+    return TYPE_LINE["saved"].format(kind=KIND_WORD.get(row.kind or "", "homework")), ""
+
+
+def _placed(
+    names: Sequence[NameQuestion], splits: Sequence[Question], units: Sequence[UnitShown]
+) -> list[UnitShown]:
+    """Every card's and destination's questions with their anchors, numbered after the name
+    and split questions in the order the page shows them, and each line under a Type that
+    links to a question pointing at that question's anchor."""
+    number = len(names) + len(splits)
+    anchors: dict[str, str] = {}
+
+    def anchored(question: Question) -> Question:
+        nonlocal number
+        number += 1
+        anchors[question.field] = f"ask-{number}"
+        return dataclasses.replace(question, anchor=f"ask-{number}")
+
+    out = []
+    for unit in units:
+        blocks = []
+        for block in unit.blocks:
+            cards = []
+            for card in block.cards:
+                checks = tuple(anchored(q) for q in card.checks)
+                kind = None if card.type is None else anchored(card.type)
+                cards.append(dataclasses.replace(card, checks=checks, type=kind))
+            questions = tuple(anchored(q) for q in block.questions)
+            blocks.append(dataclasses.replace(block, cards=tuple(cards), questions=questions))
+        out.append(dataclasses.replace(unit, blocks=tuple(blocks)))
+
+    def linked(question: Question | None) -> Question | None:
+        if question is None or not question.notes:
+            return question
+        notes = tuple((text, anchors.get(field, "")) for text, field in question.notes)
+        return dataclasses.replace(question, notes=notes)
+
+    return [
+        dataclasses.replace(
+            unit,
+            blocks=tuple(
+                dataclasses.replace(
+                    block,
+                    cards=tuple(
+                        dataclasses.replace(card, type=linked(card.type)) for card in block.cards
+                    ),
+                )
+                for block in unit.blocks
+            ),
+        )
+        for unit in out
+    ]
+
+
 def _first_open(
-    names: Sequence[NameQuestion], splits: Sequence[Question], groups: Sequence[GroupShown]
+    names: Sequence[NameQuestion], splits: Sequence[Question], units: Sequence[UnitShown]
 ) -> str | None:
-    """The id of the first fieldset, in the order the page shows them, with no option checked
-    and no correction typed, or whose typing was refused: the first question still to
-    answer."""
+    """The id of the first place still to answer: a fold whose box a press refused, since
+    nothing of that press was kept until it is put right; else, in the order the page shows
+    them, a fieldset with no option checked, an unsure field answered by its fold's correction
+    aside. A Type left unchosen saves as its line says, so it is never still to answer."""
 
-    def answered(question: Question) -> bool:
-        if question.refused:
-            return False
-        typed = question.text is not None and bool(question.text[1].strip())
-        return typed or any(checked for _, _, checked in question.options)
+    def answered(question: Question | NameQuestion) -> bool:
+        corrected = isinstance(question, Question) and question.answered
+        return corrected or any(checked for _, _, checked in question.options)
 
-    asked = [(q.anchor, any(checked for _, _, checked in q.options)) for q in names]
+    cards = [card for unit in units for block in unit.blocks for card in block.cards]
+    refused = next((card.fold for card in cards if card.fold_open), None)
+    if refused is not None:
+        return refused
+    asked = [(q.anchor, answered(q)) for q in names]
     asked += [(q.anchor, answered(q)) for q in splits]
-    for group in groups:
-        asked += [(p.anchor, any(c.checked for c in p.choices)) for p in group.pieces]
-        asked += [(q.anchor, answered(q)) for q in group.questions]
+    for unit in units:
+        for block in unit.blocks:
+            for card in block.cards:
+                asked += [(q.anchor, answered(q)) for q in card.checks]
+                asked.append((card.control.anchor, any(c.checked for c in card.control.choices)))
+            asked += [(q.anchor, answered(q)) for q in block.questions]
     return next((anchor for anchor, done in asked if not done), None)
 
 
@@ -1279,20 +1795,23 @@ def _still_open(
     members: Sequence[Piece],
     values: Mapping[tuple[str, str], str],
     waiting: set[str],
-    corrections: Mapping[str, Mapping[str, str]],
+    corrections: Corrections,
 ) -> list[str]:
     """A destination's questions still open: its dates and kind, its instructions, a field the
-    reader wasn't sure of, and the student name of a screenshot its cards came from."""
+    reader wasn't sure of, a date typed as text Blossom can't read, which due date Blossom
+    uses, and the student name of a screenshot its cards came from."""
     still = list(entry.open_questions)
     if entry.instruction_revision is not None and entry.instruction_choice is None:
         still.append("instructions")
     if any(
-        values.get(("confirm", confirm_subject(m.key, f))) is None
-        and not usable_correction(f, corrections.get(m.key, {}).get(f))
+        values.get(("confirm", confirm_of(m, f))) is None and not fold_answers(m, f, corrections)
         for m in members
         for f in confirm_fields(m)
     ):
         still.append("confirm")
+    for field in sorted({f for m in members for f in unreadable_dates(m, corrections)}):
+        if field not in still:
+            still.append(field)
     if any(not m.due_resolved for m in members):
         still.append("due_read")
     if any(c.sha256 in waiting for m in members for c in m.cards):
