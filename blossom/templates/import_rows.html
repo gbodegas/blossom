@@ -1,14 +1,81 @@
 {# SPDX-License-Identifier: AGPL-3.0-or-later #}
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {#
-  The review's rows once anything is read: the student-name and split questions, one
-  destination control per piece by name group, each destination's questions, and the group
-  preview with its refusals and offers. Each piece's control links to the group of the preview
-  that holds it, and each group back to the controls of the pieces it holds. One form holds
-  every answer, with its three buttons; the smaller actions are forms of their own after it,
-  which their buttons name, so nothing needs scripts. A press shown once per row, card or
-  offer names which one it acts on.
+  The review's rows once anything is read: the student-name and split questions, then what
+  saving adds, one group at a time. Each destination shows as her week's card, the class above
+  the title, the due date, the school's words set apart from Blossom's own and quiet lines of
+  what saving does; under it each card going there, with where it was read and its screenshot
+  at its foot, its questions about what was read, "Correct what was read" holding every field
+  whole, "What the screenshot said", where it goes and its row's Type; then the destination's
+  own questions. A card with no destination yet shows as it was read. Legends name their
+  question; a control shown once per card names its card in words only a screen reader hears.
+  One form holds every answer and box, with its presses; the smaller actions are forms of
+  their own after it, which their buttons name, so nothing needs scripts. Each of those
+  buttons says typing in the fold isn't kept by it.
 #}
+{% set words = rows.words %}
+{% macro question_fields(question) %}
+  {% for text, target in question.notes %}<p class="note">{% if target %}<a href="#{{ target }}">{{ text }}</a>{% else %}{{ text }}{% endif %}</p>{% endfor %}
+  {% for value, label, checked in question.options %}
+    <label><input type="{% if question.many or question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
+  {% endfor %}
+  {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
+  {% if question.fold %}<p class="helper">{{ words.correct_it }} <a href="#{{ question.fold }}">{{ words.fold }}</a></p>{% endif %}
+{% endmacro %}
+{% macro asked(question) %}
+  <fieldset class="choice" id="{{ question.anchor }}" tabindex="-1">
+    <legend>{{ question.legend }}{% if question.about %}<span class="visually-hidden"> for {{ question.about }}</span>{% endif %}</legend>
+    {{ question_fields(question) }}
+  </fieldset>
+{% endmacro %}
+{% macro head_of(head) %}
+  <p class="course">{{ head.course }}</p>
+  <h3>{{ head.title }}</h3>
+  {% if head.due %}<p class="due">{{ head.due }}</p>{% endif %}
+  {% for lead, said in head.words %}<p class="from-teacher">{{ lead }} <q class="authored-text">{{ said }}</q></p>{% endfor %}
+  {% for line in head.quiet %}<p class="source">{{ line }}</p>{% endfor %}
+  {% for line in head.lines %}<p class="effect">{{ line }}</p>{% endfor %}
+  {% if head.still_open %}<p class="note">{{ head.still_open }}</p>{% endif %}
+{% endmacro %}
+{% macro box_of(box, about) %}
+  <input type="hidden" name="read:{{ box.subject }}" value="{{ box.read }}">
+  {% if box.kind == "lines" %}
+  <label class="lines">{{ box.label }}<span class="visually-hidden"> for {{ about }}</span> <textarea name="{{ box.name }}" rows="4"{% if box.refused %} aria-invalid="true"{% endif %}>
+{{ box.value }}</textarea></label>
+  {% else %}
+  <label>{{ box.label }}<span class="visually-hidden"> for {{ about }}</span> <input type="{{ box.kind }}" name="{{ box.name }}" value="{{ box.value }}"{% if box.refused %} aria-invalid="true"{% endif %}></label>
+  {% endif %}
+  {% if box.hint %}<p class="helper">{{ box.hint }}</p>{% endif %}
+  {% if box.none %}<div class="choice"><label><input type="checkbox" name="{{ box.none[0] }}" value="none"{% if box.none[1] %} checked{% endif %}> <span>{{ words.no_assigned_given }}<span class="visually-hidden"> for {{ about }}</span></span></label></div>{% endif %}
+  {% if box.carried %}<input type="hidden" name="{{ box.carried[0] }}" value="{{ box.carried[1] }}">{% endif %}
+  {% if box.refused %}<p class="note">{{ box.refused }}</p>{% endif %}
+  {% if box.mark %}<p class="note">{{ box.mark }}</p>{% endif %}
+{% endmacro %}
+{% macro card_of(card) %}
+  <p class="source">{% for where, href, shot in card.sources %}{% if not loop.first %}; {% endif %}{{ where }}{% if loop.last and card.read_as %}, {{ card.read_as }}{% endif %}{% if href %} · <a href="{{ href }}">{{ words.view }}<span class="visually-hidden"> {{ shot }} for {{ card.about }}</span></a>{% endif %}{% endfor %}</p>
+  {% for question in card.checks %}{{ asked(question) }}{% endfor %}
+  <details class="steps" id="{{ card.fold }}" tabindex="-1"{% if card.fold_open %} open{% endif %}>
+    <summary>{{ words.fold }}<span class="visually-hidden"> for {{ card.about }}</span></summary>
+    {% for box in card.boxes %}{{ box_of(box, card.about) }}{% endfor %}
+  </details>
+  <details class="steps">
+    <summary>{{ words.said_fold }}<span class="visually-hidden"> for {{ card.about }}</span></summary>
+    {% for line in card.said %}<p class="note">{{ line }}</p>{% endfor %}
+  </details>
+  {% set piece = card.control %}
+  <fieldset class="choice" id="{{ piece.anchor }}" tabindex="-1">
+    <legend>{{ words.where }}<span class="visually-hidden"> for {{ card.about }}</span></legend>
+    {% for choice in piece.choices %}
+      <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
+    {% endfor %}
+    {% if piece.preselected %}<p class="note">{{ words.preselected }}</p>{% endif %}
+    {% if piece.stale %}<p class="problem">{{ words.choose_again }}</p>{% endif %}
+    {% if piece.lost %}<p class="problem">{{ piece.lost }}</p>{% endif %}
+    <div class="actions"><button type="submit" class="secondary" form="{{ piece.find }}" aria-describedby="{{ piece.find }}-typing">Find under another name&hellip;<span class="visually-hidden"> for {{ card.about }}</span></button></div>
+    <p class="helper" id="{{ piece.find }}-typing">{{ words.typing_lost }}</p>
+  </fieldset>
+  {% if card.type %}{{ asked(card.type) }}{% endif %}
+{% endmacro %}
 <form method="post" action="/parent/imports/{{ draft_id }}/review" class="review-form" id="review-form">
   {% for name, value in rows.hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   {% if rows.names %}
@@ -21,13 +88,15 @@
             <label><input type="{% if question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
           {% endfor %}
         </fieldset>
-        {% if question.remove %}
-          <div class="actions">
-            {% for image_id, label in question.remove %}<button type="submit" class="secondary" form="remove-{{ image_id }}">{{ label }}</button>{% endfor %}
-          </div>
-        {% endif %}
       {% endfor %}
-      {% if rows.not_hers %}<div class="actions"><button type="submit" class="secondary" form="not-hers">Not hers</button></div>{% endif %}
+      {% set removes = rows.names|map(attribute="remove")|sum(start=()) %}
+      {% if removes or rows.not_hers %}
+        <div class="actions">
+          {% for image_id, label in removes %}<button type="submit" class="secondary" form="remove-{{ image_id }}" aria-describedby="name-typing">{{ label }}</button>{% endfor %}
+          {% if rows.not_hers %}<button type="submit" class="secondary" form="not-hers">Not hers</button>{% endif %}
+        </div>
+        {% if removes %}<p class="helper" id="name-typing">{{ words.typing_lost }}</p>{% endif %}
+      {% endif %}
     </section>
   {% endif %}
   {% if rows.splits %}
@@ -36,54 +105,40 @@
       {% for question in rows.splits %}
         <fieldset class="choice" id="{{ question.anchor }}" tabindex="-1">
           <legend>{{ question.legend }}</legend>
-          {% for value, label, checked in question.options %}
-            <label><input type="radio" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
-          {% endfor %}
+          {{ question_fields(question) }}
         </fieldset>
-        {% if question.leave %}<div class="actions"><button type="submit" class="secondary" form="{{ question.leave }}">Leave this group unsaved<span class="visually-hidden"> for {{ question.about }}</span></button></div>{% endif %}
+        {% if question.leave %}<div class="actions"><button type="submit" class="secondary" form="{{ question.leave }}" aria-describedby="split-typing">{{ words.leave }}<span class="visually-hidden"> for {{ question.about }}</span></button></div>{% endif %}
       {% endfor %}
+      <p class="helper" id="split-typing">{{ words.typing_lost }}</p>
     </section>
   {% endif %}
-  {% if rows.groups %}
-    <section class="panel" aria-labelledby="where-heading">
-      <h2 id="where-heading">Where each card goes</h2>
-      {% for group in rows.groups %}
-        <h3>{{ group.heading }}</h3>
-        {% for piece in group.pieces %}
-          <fieldset class="choice" id="{{ piece.anchor }}" tabindex="-1">
-            <legend>{{ piece.legend }}</legend>
-            <p class="note">{{ piece.read }}</p>
-            {% for line in piece.said %}<p class="note">{{ line }}</p>{% endfor %}
-            {% for choice in piece.choices %}
-              <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
-            {% endfor %}
-            <div class="actions"><button type="submit" class="secondary" form="{{ piece.find }}">Find under another name&hellip;<span class="visually-hidden"> for {{ piece.legend }}</span></button></div>
-            <p class="jump"><a href="#{{ piece.goes }}">See what saving does<span class="visually-hidden"> for {{ piece.legend }}</span></a></p>
-            {% if piece.preselected %}<p class="note">Suggested choice. You can change it.</p>{% endif %}
-            {% if piece.stale %}<p class="problem">A choice here isn't offered any more; choose again.</p>{% endif %}
-            {% if piece.lost %}<p class="problem">{{ piece.lost }}</p>{% endif %}
-          </fieldset>
-        {% endfor %}
-        {% for question in group.questions %}
-          <fieldset class="choice" id="{{ question.anchor }}" tabindex="-1">
-            <legend>{{ question.legend }}</legend>
-            {% for value, label, checked in question.options %}
-              <label><input type="{% if question.many or question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
-            {% endfor %}
-            {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
-            {% if question.text %}
-              {% if question.text_type == "lines" %}
-              <label class="lines">{{ question.text_label }} <textarea name="{{ question.text[0] }}" rows="2"{% if question.refused %} aria-invalid="true"{% endif %}>
-{{ question.text[1] }}</textarea></label>
-              {% else %}
-              <label>{{ question.text_label }} <input type="{{ question.text_type }}" name="{{ question.text[0] }}" value="{{ question.text[1] }}"{% if question.refused %} aria-invalid="true"{% endif %}></label>
-              {% endif %}
-              {% if question.carried %}<input type="hidden" name="{{ question.carried[0] }}" value="{{ question.carried[1] }}">{% endif %}
-              {% if question.refused %}<p class="note">{{ question.refused }}</p>{% endif %}
-              {% if question.mark %}<p class="note">{{ question.mark }}</p>{% endif %}
-            {% endif %}
-          </fieldset>
-        {% endfor %}
+  {% if rows.units %}
+    <section class="panel" aria-labelledby="saving-heading">
+      <h2 id="saving-heading">What saving adds</h2>
+      {% for unit in rows.units %}
+        <article class="assignment" id="{{ unit.anchor }}" tabindex="-1">
+          {% for block in unit.blocks %}
+            {{ head_of(block.head) }}
+            {% for card in block.cards %}{{ card_of(card) }}{% endfor %}
+            {% for question in block.questions %}{{ asked(question) }}{% endfor %}
+          {% endfor %}
+          {% for refusal in unit.refusals %}<p class="problem">{{ refusal }}</p>{% endfor %}
+          {% for offer in unit.offers %}
+            <div class="choice">
+              {% for move in offer.moves %}<p class="effect">{{ move }}</p>{% endfor %}
+              {% for line in offer.lines %}<p class="source">{{ line }}</p>{% endfor %}
+              <div class="actions"><button type="submit" class="secondary" form="{{ offer.form }}" aria-describedby="{{ unit.anchor }}-typing">{{ words.use_change }}<span class="visually-hidden"> for {{ offer.moves|join("; ") }}</span></button></div>
+            </div>
+          {% endfor %}
+          {% for wait in unit.waits %}<p class="note">{{ wait }}</p>{% endfor %}
+          {% if unit.tick %}
+            <div class="choice">
+              <label><input type="checkbox" name="unit" value="{{ unit.unit }}"{% if unit.ticked %} checked{% endif %}> <span>{{ unit.tick_label }}<span class="visually-hidden"> for {{ unit.about }}</span></span></label>
+            </div>
+          {% endif %}
+          <div class="actions"><button type="submit" class="secondary" form="{{ unit.leave }}" aria-describedby="{{ unit.anchor }}-typing">{{ words.leave }}<span class="visually-hidden"> for {{ unit.about }}</span></button></div>
+          <p class="helper" id="{{ unit.anchor }}-typing">{{ words.typing_lost }}</p>
+        </article>
       {% endfor %}
     </section>
   {% endif %}
@@ -103,50 +158,28 @@
         <p class="note">{{ group.said }}</p>
         <ul>
           {% for text, form_id, about in group.cards %}
-            <li><p>{{ text }}</p><div class="actions"><button type="submit" class="secondary" form="{{ form_id }}">Set aside<span class="visually-hidden"> for {{ about }}</span></button></div></li>
+            <li><p>{{ text }}</p><div class="actions"><button type="submit" class="secondary" form="{{ form_id }}" aria-describedby="unread-typing">Set aside<span class="visually-hidden"> for {{ about }}</span></button></div></li>
           {% endfor %}
         </ul>
       {% endfor %}
+      <p class="helper" id="unread-typing">{{ words.typing_lost }}</p>
     </section>
   {% endif %}
-  <section class="panel" aria-labelledby="saving-heading">
-    <h2 id="saving-heading">What saving does</h2>
-    {% for unit in rows.preview %}
-      <article class="assignment" id="{{ unit.anchor }}" tabindex="-1">
-        {% for entry in unit.entries %}
-          <h3>{{ entry.label }}</h3>
-          <p class="source">{{ entry.cards|join("; ") }}</p>
-          {% for line in entry.lines %}<p class="effect">{{ line }}</p>{% endfor %}
-          {% if entry.still_open %}<p class="note">{{ entry.still_open }}</p>{% endif %}
-        {% endfor %}
-        {% for refusal in unit.refusals %}<p class="problem">{{ refusal }}</p>{% endfor %}
-        {% for offer in unit.offers %}
-          <div class="choice">
-            {% for move in offer.moves %}<p class="effect">{{ move }}</p>{% endfor %}
-            {% for line in offer.lines %}<p class="source">{{ line }}</p>{% endfor %}
-            <div class="actions"><button type="submit" class="secondary" form="{{ offer.form }}">Use this change<span class="visually-hidden"> for {{ offer.moves|join("; ") }}</span></button></div>
-          </div>
-        {% endfor %}
-        {% for wait in unit.waits %}<p class="note">{{ wait }}</p>{% endfor %}
-        {% for legend, anchor in unit.cards %}<p class="jump"><a href="#{{ anchor }}">Choices for {{ legend }}</a></p>{% endfor %}
-        {% if unit.tick %}
-          <div class="choice">
-            <label><input type="checkbox" name="unit" value="{{ unit.unit }}"{% if unit.ticked %} checked{% endif %}> <span>Save this group<span class="visually-hidden"> for {{ unit.about }}</span></span></label>
-          </div>
-        {% endif %}
-        <div class="actions"><button type="submit" class="secondary" form="{{ unit.leave }}">Leave this group unsaved<span class="visually-hidden"> for {{ unit.about }}</span></button></div>
-      </article>
-    {% endfor %}
+  <section class="panel">
     <p class="note" id="review-status">{{ rows.status }}</p>
     <div class="actions">
       <button type="submit" class="primary" name="press" value="save" aria-describedby="review-status">Save selected homework</button>
-      <button type="submit" class="secondary" name="press" value="keep" aria-describedby="review-status">Keep these answers</button>
-      <button type="submit" class="secondary" name="press" value="later" aria-describedby="review-status">Save review for later</button>
     </div>
-    <div class="actions">
-      <button type="submit" class="secondary" form="finish">Finish without the rest</button>
-      <button type="submit" class="secondary" form="discard">Discard the review</button>
-    </div>
+    <details class="steps">
+      <summary>Other choices</summary>
+      <div class="actions">
+        <button type="submit" class="secondary" name="press" value="keep" aria-describedby="review-status">Keep these answers</button>
+        <button type="submit" class="secondary" name="press" value="later" aria-describedby="review-status">Save review for later</button>
+        <button type="submit" class="secondary" form="finish" aria-describedby="finish-typing">Finish without the rest</button>
+        <button type="submit" class="secondary" form="discard">Discard the review</button>
+      </div>
+      <p class="helper" id="finish-typing">{{ words.typing_lost }}</p>
+    </details>
   </section>
 </form>
 {% for form in rows.forms %}

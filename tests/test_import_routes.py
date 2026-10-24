@@ -679,7 +679,7 @@ def test_an_image_never_read_is_never_told_to_read_again(tmp_path: pathlib.Path)
         draft_id = made(browser, RED)
         page = browser.get(f"/parent/imports/{draft_id}").text
 
-    assert says(page, "Screenshot 1: Not read yet.")
+    assert says(page, "Screenshot 1 \u00b7 Not read yet.")
     assert "Read again" not in page
 
 
@@ -745,6 +745,13 @@ def fields_named(form: str, prefix: str) -> list[str]:
     return list(dict.fromkeys(html.unescape(name) for name in found))
 
 
+def box_subject(page: str, field: str, nth: int = 0) -> str:
+    """The subject of the nth box of "Correct what was read" for this field, in page order:
+    ``course``, ``title``, ``instruction:{i}``, ``due`` or ``assigned``."""
+    found = [s for s in fields_named(review_form(page), "correct:") if json.loads(s)[1] == field]
+    return found[nth]
+
+
 def her_name_answered(browser: TestClient, draft_id: str, page: str) -> str:
     [form] = fields_named(review_form(page), "answer:name:")
     keep(browser, draft_id, ("name", form, "hers"))
@@ -767,8 +774,10 @@ def test_the_rows_appear_once_read_each_lone_card_preselected_and_nothing_stored
     ]
     assert form.count(screenshot_page.SAID["preselected"]) == 2
     assert says(page, "A new Sentence Composing (1)")
-    assert says(page, "A new Sentence Composing, due Thu 10/8")
-    assert says(page, "Adds \u201cComplete pages 12 to 14.\u201d")
+    assert "<h3>Sentence Composing</h3>" in form
+    assert says(page, "Due Thursday, October 8")
+    assert 'From the school: <q class="authored-text">Complete pages 12 to 14.</q>' in form
+    assert form.count(screenshot_page.SAID["new_assignment"]) == 2
     assert says(page, "Screenshot 1 names Wren. Is this her name? Answer before saving its rows.")
     assert form.count("Still to answer: the student name.") == 2
     assert 'name="unit"' not in form
@@ -791,7 +800,16 @@ def test_the_review_form_signs_its_fields_with_the_review_s_own_key(
         )
     ]
     names = [name for name, _ in hidden]
-    signed = [(name, value) for name, value in hidden if name != "check"]
+    signed = [
+        (name, value)
+        for name, value in hidden
+        if name != "check" and not name.startswith(screenshot_posts.READ_PREFIX)
+    ]
+    # Beside each box, after the signed fields, a digest of its value with no correction,
+    # read only to give typing back from a review that has gone, and never signed.
+    assert all(
+        name.startswith(screenshot_posts.READ_PREFIX) for name in names[names.index("check") + 1 :]
+    )
     assert names[:6] == [
         "version",
         "progress_revision",
@@ -841,7 +859,12 @@ def test_same_name_assignments_are_each_listed_with_their_facts_and_none_is_pres
         _, page = read_review(browser, monkeypatch, (RED, homework_answer()))
 
     form = review_form(page)
-    composing = re.search(r"<legend>Sentence Composing \(.*?</fieldset>", form, re.S)
+    composing = re.search(
+        r"<legend>Where it goes<span class=\"visually-hidden\"> for Sentence Composing \(.*?"
+        r"</fieldset>",
+        form,
+        re.S,
+    )
     assert composing is not None
     control = composing.group(0)
     assert " checked" not in control
@@ -863,7 +886,7 @@ def test_a_card_saved_before_starts_on_already_saved_with_every_alternative_besi
         first, page = read_review(browser, monkeypatch, (RED, answer))
         page = her_name_answered(browser, first, page)
         saved = send(browser, first, page_post(page, "save", tick=units_on(page)))
-        assert says(saved.text, imports.counted(1, 0, 0))
+        assert says(saved.text, imports.counted(1, 0, 0, 0))
         _, again = read_review(browser, monkeypatch, (RED, answer))
 
     form = review_form(again)
@@ -874,7 +897,8 @@ def test_a_card_saved_before_starts_on_already_saved_with_every_alternative_besi
     assert len([n for n, _ in checked_values(form) if n.startswith("answer:destination:")]) == 1
     assert "A new Sentence Composing (1)" in form
     assert screenshot_page.SAID["find"] in html.unescape(form)
-    assert f"Already saved in {label}. Nothing new is written." in html.unescape(form)
+    assert screenshot_page.SAID["already"] in html.unescape(form)
+    assert "Saved as homework" not in form
 
 
 def test_a_destination_due_another_day_asks_with_nothing_chosen_and_says_what_is_kept(
@@ -933,8 +957,16 @@ def test_a_field_the_reader_wasnt_sure_of_asks_to_be_confirmed_or_corrected(
         _, page = read_review(browser, monkeypatch, (RED, answer))
 
     form = html.unescape(review_form(page))
-    assert "Sentence Composing (screenshot 1, card 1): The reader wasn't sure of the title." in form
-    assert screenshot_page.SAID["confirm"] in form
+    unsure = re.search(
+        r"<legend>The reader wasn't sure of the title\.<span class=\"visually-hidden\"> for "
+        r"Sentence Composing \(screenshot 1, card 1\)</span></legend>(.*?)</fieldset>",
+        form,
+        re.S,
+    )
+    assert unsure is not None
+    assert screenshot_page.SAID["confirm"] in unsure.group(1)
+    assert 'name="correct:' not in unsure.group(1)
+    assert 'or correct it under <a href="#fix-1">Correct what was read</a>' in unsure.group(1)
     assert 'name="correct:' in form
     assert "Still to answer: a field the reader wasn't sure of, the student name." in form
 
@@ -963,7 +995,7 @@ def test_a_row_whose_assigned_days_differ_asks_first_and_names_both_days(
     assert says(page, "Assigned Mon 10/5 (screenshot 1, card 1)")
     assert says(page, "Assigned Tue 10/6 (screenshot 2, card 1)")
     assert says(page, screenshot_page.SAID["split_apart"])
-    assert " checked" not in form.split("Where each card goes")[0].split("Different assigned")[-1]
+    assert " checked" not in form.split("What saving adds")[0].split("Different assigned")[-1]
 
 
 def test_a_refused_group_names_its_cause_and_offers_whole_changes_that_store_nothing(
@@ -1108,9 +1140,9 @@ def focused(page: str) -> list[str]:
 def test_each_press_lands_on_its_answer_and_an_ordinary_visit_takes_no_focus(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Keep these answers, a search under another name and a refusal each answer with a page
-    whose answer takes the focus, once; the review opened again, the find page opened with no
-    words, and the review shown again after the answer take none."""
+    """Read, Keep these answers, a search under another name and a refusal each answer with a
+    page whose answer takes the focus, once; the review opened again, the find page opened with
+    no words, and the review shown again after the answer take none."""
     other = Assignment(
         assignment_id="assignment-grammar-practice-eeee4444",
         course="English 8",
@@ -1137,7 +1169,9 @@ def test_each_press_lands_on_its_answer_and_an_ordinary_visit_takes_no_focus(
         kept = followed(browser, send(browser, draft_id, page_post(page, "keep")))
         again = browser.get(f"/parent/imports/{draft_id}").text
 
-    assert focused(page) == focused(visit) == focused(opened) == focused(again) == []
+    assert focused(page) == [TOLD_LANDS]
+    assert says(page.split('id="told"', 1)[1].split("</div>", 1)[0], imports.read_said_line(1, 2))
+    assert focused(visit) == focused(opened) == focused(again) == []
     assert focused(kept) == [
         '<div class="problem" role="status" id="said" tabindex="-1" autofocus>'
     ]
@@ -1151,6 +1185,9 @@ def test_each_press_lands_on_its_answer_and_an_ordinary_visit_takes_no_focus(
 
 SAID_LANDS: Final = '<div class="problem" role="status" id="said" tabindex="-1" autofocus>'
 """The screenshot review's answer block as it takes the focus."""
+TOLD_LANDS: Final = '<div role="status" id="told" tabindex="-1" autofocus>'
+"""The screenshot review's status lines, what an upload or a Read press did, as they take the
+focus."""
 
 
 def test_a_visit_that_shows_only_a_warning_takes_no_focus_and_a_press_s_answer_lands_once(
@@ -1259,10 +1296,10 @@ def test_save_selected_homework_saves_the_ticked_groups_and_a_resend_writes_noth
         made_after = assignment_count(browser)
 
     assert saved.status_code == 200
-    assert says(saved.text, imports.counted(2, 0, 0))
+    assert says(saved.text, imports.counted(2, 0, 0, 0))
     assert says(saved.text, imports.SAID["closed"])
     assert made_now - before == made_after - before == 2
-    assert says(again.text, imports.counted(2, 0, 0))
+    assert says(again.text, imports.counted(2, 0, 0, 0))
 
 
 def test_saving_one_group_leaves_the_rest_open_with_the_answers_kept(
@@ -1278,10 +1315,10 @@ def test_saving_one_group_leaves_the_rest_open_with_the_answers_kept(
         again = followed(browser, send(browser, draft_id, fields))
         made = assignment_count(browser)
 
-    assert says(after, imports.counted(1, 0, 1))
+    assert says(after, imports.counted(1, 0, 0, 1))
     assert says(after, imports.PRESS_SAID["left_open"])
     assert units_on(after) == [second]
-    assert says(again, imports.counted(1, 0, 1))
+    assert says(again, imports.counted(1, 0, 0, 1))
     assert made - before == 1
 
 
@@ -1319,7 +1356,7 @@ def test_a_save_is_refused_while_a_ticked_group_still_has_a_question(
     assert says(no_name, REFUSED_OPEN)
     assert says(unconfirmed, REFUSED_OPEN)
     assert made == before
-    assert says(saved.text, imports.counted(1, 0, 0))
+    assert says(saved.text, imports.counted(1, 0, 0, 0))
 
 
 def test_a_failure_inside_the_homework_transaction_writes_none_of_it_and_says_so(
@@ -1372,7 +1409,7 @@ def test_a_failure_after_the_commit_keeps_and_reports_the_save(
 
     assert saved.status_code == 200
     assert says(saved.text, imports.PRESS_SAID["incomplete"])
-    assert says(saved.text, imports.counted(2, 0, 0))
+    assert says(saved.text, imports.counted(2, 0, 0, 0))
     assert made - before == 2
 
 
@@ -1412,7 +1449,7 @@ def test_save_for_later_keeps_the_typed_corrections_and_a_page_behind_keeps_its_
     )
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, answer))
-        [field] = fields_named(review_form(page), "correct:")
+        field = box_subject(page, "title")
         typed = {f"correct:{field}": "Sentence Combining"}
         later = followed(browser, send(browser, draft_id, page_post(page, "later", typed=typed)))
         student = state_of(browser).project_state.student_id()
@@ -1429,7 +1466,7 @@ def test_save_for_later_keeps_the_typed_corrections_and_a_page_behind_keeps_its_
     assert says(later, imports.PRESS_SAID["later"])
     assert "Saved for later at " in later
     assert json.loads(str(progress)) == {
-        "v": 3,
+        "v": 4,
         "corrected": {json.loads(field)[0]: {"title": "Sentence Combining"}},
         "selected": [],
     }
@@ -1555,10 +1592,22 @@ def test_a_row_s_type_is_chosen_with_the_paste_page_s_words_and_can_ask_the_kind
         after = followed(browser, send(browser, draft_id, chosen))
 
     form = html.unescape(review_form(page))
-    assert "Type: Sentence Composing (screenshot 1, card 1)" in form
+    assert (
+        'Homework or task?<span class="visually-hidden"> for Sentence Composing (screenshot 1, '
+        "card 1)</span>"
+    ) in form
     assert screenshot_page.SAID["type_helper"] in form
-    assert "Homework or task for Sentence Composing, due Thu 10/8" in html.unescape(after)
+    asked = re.search(
+        r'<fieldset class="choice" id="(ask-\d+)"[^>]*>\s*<legend>Homework or task for '
+        r"Sentence Composing, due Thu 10/8",
+        html.unescape(after),
+    )
+    assert asked is not None
     assert "homework or task" in html.unescape(after)
+    assert (
+        f'<a href="#{asked.group(1)}">Answer \u201cHomework or task for Sentence Composing, due '
+        "Thu 10/8"
+    ) in html.unescape(after)
 
 
 def test_the_name_answered_in_the_same_press_is_kept_first_and_read_by_the_save(
@@ -1583,7 +1632,7 @@ def test_the_name_answered_in_the_same_press_is_kept_first_and_read_by_the_save(
             .fetchone()
         )
 
-    assert says(saved.text, imports.counted(1, 0, 0))
+    assert says(saved.text, imports.counted(1, 0, 0, 0))
     assert made - before == 1
     assert tuple(row) == ("first_use", "hers")
 
@@ -1669,7 +1718,7 @@ def test_the_name_was_misread_saves_and_adds_no_form(
         saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
         forms = name_forms(browser)
 
-    assert says(saved.text, imports.counted(1, 0, 0))
+    assert says(saved.text, imports.counted(1, 0, 0, 0))
     assert forms == []
 
 
@@ -1977,19 +2026,31 @@ def unreadable_answer() -> dict[str, object]:
     )
 
 
-def test_each_card_shows_what_was_read_for_it_beside_its_destination_choices(
+def test_each_card_s_fold_holds_what_was_read_for_it_whole(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Each card's "Correct what was read" holds every field as read, beside its destination
+    choices: its row's class, title and instruction texts, and its own dates, empty where none
+    was read."""
     with here(open_settings(tmp_path)) as browser:
         _, page = read_review(browser, monkeypatch, (RED, homework_answer()))
 
-    form = html.unescape(review_form(page))
-    assert (
-        "This card: Sentence Composing, due Thu 10/8, assigned Mon 10/5, “Complete pages 12 to 14.”"
-    ) in form
-    assert "This card: Chains Reading Guide 6, due Mon 10/5, no assigned date, no instructions" in (
-        form
-    )
+    form = review_form(page)
+    held = {
+        field: [
+            str((box_of(form, f"correct:{s}") or ("", ""))[1])
+            for s in fields_named(form, "correct:")
+            if json.loads(s)[1] == field
+        ]
+        for field in ("course", "title", "instruction:0", "due", "assigned")
+    }
+    assert held == {
+        "course": ["English 8", "Science 8"],
+        "title": ["Sentence Composing", "Chains Reading Guide 6"],
+        "instruction:0": ["Complete pages 12 to 14."],
+        "due": ["2026-10-08", "2026-10-05"],
+        "assigned": ["2026-10-05", ""],
+    }
 
 
 def test_a_found_row_chosen_for_a_card_shows_the_same_facts_as_every_other_entry(
@@ -2064,7 +2125,7 @@ def test_a_card_that_couldn_t_be_read_can_be_set_aside_and_the_review_then_finis
     assert says(refused, imports.CHANGED_IN_ANOTHER_TAB)
     assert sorted(states.values()) == ["discarded", "open", "open"]
     assert left_again.status_code == 303
-    assert says(saved.text, imports.counted(1, 0, 0))
+    assert says(saved.text, imports.counted(1, 0, 0, 0))
     assert done
 
 
@@ -2112,7 +2173,7 @@ def test_keep_these_answers_answers_with_the_review_and_the_typing_still_in_the_
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
-        [field] = fields_named(review_form(page), "correct:")
+        field = box_subject(page, "title")
         typed = {f"correct:{field}": "Sentence Combining"}
         kept = send(browser, draft_id, page_post(page, "keep", typed=typed))
         answers = stored_answers(browser, draft_id)
@@ -2136,7 +2197,7 @@ def test_a_save_that_saves_nothing_answers_with_the_typing_in_the_form(
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
-        [field] = fields_named(review_form(page), "correct:")
+        field = box_subject(page, "title")
         typed = {f"correct:{field}": "Sentence Combining"}
         units = digests_on(page)
         refused = send(browser, draft_id, page_post(page, "save", tick=units, typed=typed))
@@ -2168,7 +2229,7 @@ def test_a_page_from_before_a_change_answers_with_its_typing_in_the_current_revi
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
-        [field] = fields_named(review_form(page), "correct:")
+        field = box_subject(page, "title")
         send(browser, draft_id, page_post(page, "keep"))
         typed = {f"correct:{field}": "Sentence Craft"}
         stale = send(browser, draft_id, page_post(page, "keep", typed=typed))
@@ -2188,20 +2249,33 @@ def test_saved_progress_is_kept_in_its_one_shape_and_any_other_reads_as_none(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
         page = her_name_answered(browser, draft_id, page)
-        [field] = fields_named(review_form(page), "correct:")
+        field = box_subject(page, "title")
         key = json.loads(field)[0]
+        dates = f"date:{key}"
         typed = {f"correct:{field}": "Sentence Combining"}
         send(browser, draft_id, page_post(page, "later", typed=typed))
         student = state_of(browser).project_state.student_id()
         drafts = state_of(browser).import_drafts
         written = drafts.snapshot(student, draft_id).progress
+        title = {"title": "Sentence Combining"}
         shown = []
         for other in (
-            {"corrections": {key: {"title": "Sentence Combining"}}, "selected": []},
-            {"v": 2, "corrected": {key: {"title": "Sentence Combining"}}, "selected": []},
-            {"v": 3, "corrected": {key: {"title": "Sentence Combining"}}, "selected": [], "x": 1},
+            {"corrections": {key: title}, "selected": []},
+            {"v": 2, "corrected": {key: title}, "selected": []},
+            {"v": 3, "corrected": {key: title}, "selected": [], "x": 1},
             {"v": 3, "corrected": {key: {"shade": "red"}}, "selected": []},
-            {"v": 3, "corrected": {key: {"title": "Sentence Combining"}}, "selected": [7]},
+            {"v": 3, "corrected": {key: title}, "selected": [7]},
+            {"v": 3, "corrected": {key: {**title, "instruction:0": "x"}}, "selected": []},
+            {"v": 3, "corrected": {key: {**title, "instruction": None}}, "selected": []},
+            {"v": 4, "corrected": {key: {**title, "footer": "2026-10-09"}}, "selected": []},
+            {"v": 4, "corrected": {key: {**title, "instruction": "x"}}, "selected": []},
+            {"v": 4, "corrected": {key: {**title, "course": None}}, "selected": []},
+            {"v": 4, "corrected": {key: title, dates: {"due": None}}, "selected": []},
+            {"v": 4, "corrected": {key: title, dates: {"course": "x"}}, "selected": []},
+            {"v": 4, "corrected": {key: {**title, "due": "2026-10-09"}}, "selected": []},
+            {"v": 4, "corrected": {key: {**title, "instruction:01": "x"}}, "selected": []},
+            {"v": 4, "corrected": {key: {**title, "instruction:0": "   "}}, "selected": []},
+            {"v": True, "corrected": {key: title}, "selected": []},
         ):
             snapshot = drafts.snapshot(student, draft_id)
             drafts.save_progress(
@@ -2213,7 +2287,7 @@ def test_saved_progress_is_kept_in_its_one_shape_and_any_other_reads_as_none(
             shown.append(browser.get(f"/parent/imports/{draft_id}").text)
 
     assert json.loads(str(written)) == {
-        "v": 3,
+        "v": 4,
         "corrected": {key: {"title": "Sentence Combining"}},
         "selected": [],
     }
@@ -2294,19 +2368,21 @@ def test_read_screenshots_fold_away_under_a_way_to_the_first_question_still_open
 
     for shown in (page, answered):
         fold = FOLD.search(shown)
-        link = FIRST_OPEN.search(shown)
         assert fold is not None
-        assert link is not None
         assert fold.group(1) is None
         assert fold.group(2) == "8 screenshots read"
         assert screenshots_in(fold.group(3)) == [f"Screenshot {n}" for n in range(1, 9)]
         assert screenshots_in(beside_the_fold(shown, fold)) == []
         # Opened or not, the fold follows the whole review form, its questions first.
         form_end = shown.index("</form>", shown.index('id="review-form"'))
-        assert link.start() < shown.index('id="where-heading"') < form_end < fold.start()
+        assert shown.index('id="saving-heading"') < form_end < fold.start()
         assert 'form="discard"' in shown[: fold.start()]
+    link = FIRST_OPEN.search(page)
+    assert link is not None
+    assert link.start() < page.index('id="saving-heading"')
     assert "answer:name:" in first_open(page)
-    assert "answer:kind:" in first_open(answered)
+    # A Type left unchosen saves as its line says, so it is no question still to answer.
+    assert FIRST_OPEN.search(answered) is None
     assert declared_for('.import-review .choice[tabindex="-1"]:focus') == [ARRIVAL_CUE]
 
 
@@ -2326,8 +2402,15 @@ def test_a_correction_refused_as_too_long_is_the_first_question_still_to_answer(
 
     link = FIRST_OPEN.search(refused)
     box = f'name="{escape(boxes["instruction"])}"'
-    [holding] = [(anchor, markup) for anchor, markup in fieldsets_of(refused) if box in markup]
+    [holding] = [
+        (anchor, markup)
+        for anchor, markup in re.findall(
+            r'<details class="steps" id="([^"]+)"[^>]*>(.*?)</details>', refused, re.S
+        )
+        if box in markup
+    ]
     assert 'aria-invalid="true"' in holding[1]
+    assert re.search(rf'<details class="steps" id="{holding[0]}" tabindex="-1" open>', refused)
     assert link is not None
     assert link.group(1) == holding[0]
 
@@ -2357,7 +2440,7 @@ def test_screenshots_still_to_read_or_read_as_something_else_stay_in_view_with_r
     assert says(above, imports.LABELS["wrong_kind"])
     assert f'action="/parent/imports/{draft_id}/read"' in above
     assert says(above, imports.DISCLOSED)
-    assert above.index('id="where-heading"') < above.index("</form>", above.index("review-form"))
+    assert above.index('id="saving-heading"') < above.index("</form>", above.index("review-form"))
 
 
 def eight_read(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
@@ -2426,32 +2509,23 @@ def test_one_screenshots_heading_leads_the_screenshots_read_wherever_they_are(
         assert headings[0] == "Screenshots"
 
 
-GOES = re.compile(
-    r'<p class="jump"><a href="#(saving-\d+)">See what saving does'
-    r'<span class="visually-hidden"> for ([^<]+)</span></a></p>'
-)
 SAVING = re.compile(
     r'<article class="assignment" id="(saving-\d+)" tabindex="-1">(.*?)</article>', re.S
 )
 
 
-def links_between(page: str) -> tuple[dict[str, tuple[str, str]], dict[str, list[str]]]:
-    """Each card's choices by its fieldset's id, as (its piece, the group of what saving does
-    its link names); and each group of what saving does by its id, with the cards its links
-    name."""
-    cards = {}
-    for anchor, markup in fieldsets_of(page):
-        piece = re.search(r'name="answer:destination:([^"]+)"', markup)
-        if piece is None:
-            continue
-        goes = GOES.findall(markup)
-        assert len(goes) == 1, markup
-        cards[anchor] = (html.unescape(piece.group(1)), goes[0][0])
-    units = {
-        anchor: re.findall(r'<p class="jump"><a href="#(card-\d+)">', markup)
+def cards_held(page: str) -> dict[str, list[str]]:
+    """Each group of what saving adds by its id, with the pieces whose choices it holds, after
+    checking that every piece's choices on the page sit inside a group."""
+    held = {
+        anchor: [html.unescape(p) for p in re.findall(r'name="answer:destination:([^"]+)"', markup)]
         for anchor, markup in SAVING.findall(page)
     }
-    return cards, units
+    everywhere = fields_named(review_form(page), "answer:destination:")
+    assert sorted(p for pieces in held.values() for p in dict.fromkeys(pieces)) == sorted(
+        everywhere
+    )
+    return {anchor: list(dict.fromkeys(pieces)) for anchor, pieces in held.items()}
 
 
 def kinds_answered(browser: TestClient, draft_id: str, page: str) -> str:
@@ -2461,9 +2535,11 @@ def kinds_answered(browser: TestClient, draft_id: str, page: str) -> str:
     return browser.get(f"/parent/imports/{draft_id}").text
 
 
-def test_each_card_s_choices_and_the_group_of_what_saving_does_holding_it_link_to_each_other(
+def test_each_card_s_choices_sit_inside_the_group_of_what_saving_adds_holding_it(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Each card's choices, its fold and its Type sit inside the group of what saving adds that
+    holds it, under her week's card of where it goes, so no link between them is needed."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, *eight_cards())
         page = kinds_answered(browser, draft_id, her_name_answered(browser, draft_id, page))
@@ -2473,36 +2549,37 @@ def test_each_card_s_choices_and_the_group_of_what_saving_does_holding_it_link_t
         )
         added = assignment_count(browser) - before
 
-    cards, units = links_between(page)
-    held = {
+    held = cards_held(page)
+    ticks = {
         anchor: unit.split("+")
         for anchor, markup in SAVING.findall(page)
         for unit in re.findall(r'name="unit" value="([^"]+)"', markup)
     }
-    assert len(cards) == len(units) == len(held) == 8
-    for anchor, (piece, goes) in cards.items():
-        assert piece in held[goes]
-        assert anchor in units[goes]
-    assert sorted(a for linked in units.values() for a in linked) == sorted(cards)
-    assert says(saved, "8 assignments added. 0 updated.")
+    assert len(held) == len(ticks) == 8
+    assert all(held[anchor] == ticks[anchor] for anchor in held)
+    for _, markup in SAVING.findall(page):
+        assert markup.count("<h3>") == 1
+        assert markup.index("<h3>") < markup.index("answer:destination:")
+        assert markup.count('name="answer:kind:') == 2
+    assert "See what saving does" not in page
+    assert says(saved, "Saved: 8 new assignments.")
     assert added == 8
 
 
-def test_a_destination_two_cards_go_to_is_one_group_both_link_to_and_back(
+def test_a_destination_two_cards_go_to_is_one_group_holding_both(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
         _, page = two_names_found_onto_one_row(browser, monkeypatch, date(2026, 10, 8))
 
-    cards, units = links_between(page)
-    assert len(cards) == 2
-    assert len(units) == 1
-    [(goes, linked)] = units.items()
-    assert {unit for _, unit in cards.values()} == {goes}
-    assert sorted(linked) == sorted(cards)
+    held = cards_held(page)
+    [(_, pieces)] = held.items()
+    [(_, markup)] = SAVING.findall(page)
+    assert len(pieces) == 2
+    assert markup.count("<h3>") == 1
 
 
-def test_one_title_s_cards_in_groups_of_their_own_each_link_to_their_own_group(
+def test_one_title_s_cards_in_groups_of_their_own_each_show_their_title_once(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cards = [
@@ -2512,13 +2589,14 @@ def test_one_title_s_cards_in_groups_of_their_own_each_link_to_their_own_group(
     with here(open_settings(tmp_path)) as browser:
         _, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=cards)))
 
-    shown, units = links_between(page)
-    where = re.search(r'aria-labelledby="where-heading">.*?</section>', page, re.S)
-    assert where is not None
-    assert where.group(0).count("<h3>") == 1
-    assert len(shown) == 2
-    assert len({goes for _, goes in shown.values()}) == 2
-    assert all(units[goes] == [anchor] for anchor, (_, goes) in shown.items())
+    held = cards_held(page)
+    assert len(held) == 2
+    assert all(len(pieces) == 1 for pieces in held.values())
+    for _, markup in SAVING.findall(page):
+        assert markup.count("<h3>Practice</h3>") == 1
+        assert "(screenshot 1, card" not in re.sub(
+            r'<span class="visually-hidden">[^<]*</span>', "", markup
+        )
 
 
 def test_repeated_controls_of_the_screenshot_review_name_their_card_and_keep_their_words(
@@ -2529,24 +2607,33 @@ def test_repeated_controls_of_the_screenshot_review_name_their_card_and_keep_the
         page = kinds_answered(browser, draft_id, her_name_answered(browser, draft_id, page))
 
     shown = control_names(page) + field_names(page)
+    each = (
+        "Save this assignment",
+        "Leave this group unsaved",
+        "Find under another name…",
+        "Remove",
+        "Correct what was read",
+        "What the screenshot said",
+        "Where it goes",
+        "Homework or task?",
+        "Class",
+        "Title",
+        "Due date",
+        "Assigned date",
+        "No assigned date was given",
+    )
     repeated = {
         words: [name for said, name in shown if said == words]
-        for words in (
-            "Save this group",
-            "Leave this group unsaved",
-            "See what saving does",
-            "Find under another name…",
-            "Remove",
-            "View screenshot",
-        )
+        for words in (*each, "View screenshot")
     }
-    assert {words: len(names) for words, names in repeated.items()} == dict.fromkeys(repeated, 8)
-    assert all(len(set(names)) == 8 for names in repeated.values())
+    counts = {words: len(names) for words, names in repeated.items()}
+    assert counts == {**dict.fromkeys(each, 8), "View screenshot": 16}
+    assert all(len(set(names)) == len(names) for names in repeated.values())
     assert all(
         re.search(r"Practice \d", name)
         for words, names in repeated.items()
         for name in names
-        if words not in ("Remove", "View screenshot")
+        if words != "Remove" and not re.fullmatch(r"View screenshot \d", name)
     )
     assert names_without_their_words(page) == names_not_led_by_their_words(page) == []
     assert "Suggested choice. You can change it." in page
@@ -2659,7 +2746,7 @@ def test_a_partial_save_returns_the_rows_left_open_with_their_typing_marked_unsa
 
     for answer in (saved, again):
         assert answer.status_code == 200
-        assert says(answer.text, imports.counted(1, 0, 1))
+        assert says(answer.text, imports.counted(1, 0, 0, 1))
         assert says(answer.text, imports.PRESS_SAID["unsaved_typing"])
         form = review_form(answer.text)
         assert 'value="Chains Reading Guide Six"' in form
@@ -2672,7 +2759,7 @@ def test_typing_already_saved_for_later_isn_t_marked_unsaved(
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
-        [field] = fields_named(review_form(page), "correct:")
+        field = box_subject(page, "title")
         typed = {f"correct:{field}": "Sentence Combining"}
         later = followed(browser, send(browser, draft_id, page_post(page, "later", typed=typed)))
         kept = send(browser, draft_id, page_post(later, "keep"))
@@ -2721,7 +2808,12 @@ def test_a_refusal_s_holder_outside_the_card_s_list_is_offered_as_its_destinatio
         answers = stored_answers(browser, draft_id)
 
     form = html.unescape(review_form(refused))
-    control = re.search(r"<legend>Sentence Composing \(.*?</fieldset>", form, re.S)
+    control = re.search(
+        r'<legend>Where it goes<span class="visually-hidden"> for Sentence Composing \(.*?'
+        r"</fieldset>",
+        form,
+        re.S,
+    )
     assert control is not None
     assert "would copy the words of" in form
     assert f'value="{offered}"' in control.group(0)
@@ -2733,11 +2825,18 @@ def test_a_refusal_s_holder_outside_the_card_s_list_is_offered_as_its_destinatio
     assert answers[("destination", piece)] == offered
 
 
-def preview_labels(page: str) -> list[str]:
-    """The destination each entry of the group preview names, as the page reads."""
+def preview_cards(page: str) -> list[tuple[str, str, str]]:
+    """Each destination of what saving adds as her week's card shows it: its class, its title
+    and its due date, as the page reads."""
     found = re.search(r'aria-labelledby="saving-heading">.*?</section>', page, re.S)
     assert found is not None
-    return [html.unescape(h) for h in re.findall(r"<h3>(.*?)</h3>", found.group(0))]
+    return [
+        (html.unescape(card[0]), html.unescape(card[1]), html.unescape(card[2]))
+        for card in re.findall(
+            r'<p class="course">([^<]*)</p>\s*<h3>([^<]*)</h3>\s*<p class="due">([^<]*)</p>',
+            found.group(0),
+        )
+    ]
 
 
 def test_an_assignment_reads_the_same_in_its_control_and_in_the_preview(
@@ -2783,7 +2882,8 @@ def test_an_assignment_reads_the_same_in_its_control_and_in_the_preview(
     shown = re.search(rf'value="{re.escape(str(escape(listed)))}" checked> <span>([^<]*)', card)
     assert shown is not None
     assert shown.group(1).strip() == plain
-    assert plain in preview_labels(kept)
+    assert preview_cards(kept) == [("English 8", "Sentence Composing", "Due Thursday, October 8")]
+    assert says(kept, screenshot_page.SAID["updates"].format(title="Sentence Composing"))
 
 
 def test_a_refused_destination_reads_the_same_in_the_refusal_its_control_and_the_preview(
@@ -2821,7 +2921,8 @@ def test_a_refused_destination_reads_the_same_in_the_refusal_its_control_and_the
     radios = [html.unescape(label).strip() for label in re.findall(r"> <span>([^<]*)", card)]
     assert f"Found under another name: {destination}" in radios
     assert holder in radios
-    assert f"Found under another name: {destination}" in preview_labels(refused)
+    assert destination.startswith("Grammar Practice, due Fri 10/30")
+    assert preview_cards(refused) == [("English 8", "Grammar Practice", "Due Friday, October 30")]
 
 
 # ------------------------------------------------------------------ a box left unticked
@@ -2998,7 +3099,7 @@ def test_two_cards_in_one_assignment_count_once_added_and_once_already_saved(
 
     assert len(pieces) == 2
     assert made == 1
-    assert says(added, "1 assignment added. 0 updated.")
+    assert says(added, "Saved: 1 new assignment.")
     assert added_counts is not None
     assert added_counts[0] == 1
     assert unchanged_counts is not None
@@ -3062,7 +3163,7 @@ def test_two_cards_of_other_names_found_onto_one_row_count_once_and_each_name_is
             [("English 8", "Vocab Test"), ("English 8", "Spelling List")]
         )
 
-    assert says(saved, "0 assignments added. 1 updated.")
+    assert says(saved, "Saved: 0 new assignments. 1 updated.")
     assert counts is not None
     assert counts[:3] == (0, 1, 0)
     landed = {
@@ -3146,7 +3247,7 @@ def test_the_instruction_question_of_one_destination_is_asked_once_and_saves_aft
     assert legends_starting(page, "Which instructions apply to") == 1
     assert [json.loads(v) for v in offered] == ["Study list one.", "Study list two."]
     assert [v for n, v in posted if n.startswith("answer:instructions:")] == offered
-    assert says(saved, "0 assignments added. 1 updated.")
+    assert says(saved, "Saved: 0 new assignments. 1 updated.")
 
 
 def test_the_due_date_question_of_one_destination_is_asked_once(
@@ -3277,19 +3378,12 @@ def test_after_a_partial_save_the_screenshots_are_fixed_and_a_remove_from_before
 # ------------------------------------------------------------------ a found row or an offer
 
 
-def typed_on(page: str) -> list[str]:
-    """The text in each correction box, a one-line box's or a text area's, in page order."""
-    one_line = r'name="correct:[^"]*" value="([^"]*)"'
-    lines = r'<textarea name="correct:[^"]*"[^>]*>(.*?)</textarea>'
-    found = re.finditer(f"{one_line}|{lines}", page, re.S)
-    shown = [html.unescape(m.group(1) if m.group(2) is None else m.group(2)) for m in found]
-    return [text[1:] if text.startswith("\n") else text for text in shown]
-
-
-def assert_returned_with_saved_typing(page: str, chosen: str, typed: str) -> None:
+def assert_returned_with_saved_typing(page: str, chosen: str, box: str, typed: str) -> None:
     """The page a found row's or an offer's post returns: the correction saved for later in
-    its box, the destination posted chosen, and no answer set aside for a lost correction."""
-    assert typed_on(page) == [typed]
+    its box, marked as nothing unsaved, the destination posted chosen, and no answer set aside
+    for a lost correction."""
+    assert box_of(review_form(page), box)[1] == typed  # type: ignore[index]
+    assert not says(page, screenshot_page.SAID["not_saved_yet"])
     assert not says(page, screenshot_page.SAID["lost_correction"])
     assert chosen in [html.unescape(v) for _, v in checked_values(review_form(page))]
 
@@ -3309,18 +3403,15 @@ def test_a_found_row_or_an_offer_returns_the_page_with_the_corrections_saved_for
         kind=AssignmentKind.HOMEWORK,
     )
     unsure = homework_card(uncertain=[{"field": "instruction", "reason": "blurred"}])
-    same_words = "Complete pages 12 to 14."
+    moved = "2026-10-09"
     with here(open_settings(tmp_path)) as browser:
         first, page = read_review(browser, monkeypatch, (BLUE, later_card))
         page = her_name_answered(browser, first, page)
         send(browser, first, page_post(page, "save", tick=units_on(page)))
         state_of(browser).project_state.upsert_assignments([found_row])
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[unsure])))
-        [box] = fields_named(review_form(page), "correct:")
-        followed(
-            browser,
-            send(browser, draft_id, page_post(page, "later", typed={f"correct:{box}": same_words})),
-        )
+        box = f"correct:{box_subject(page, 'due')}"
+        followed(browser, send(browser, draft_id, page_post(page, "later", typed={box: moved})))
         [piece] = fields_named(review_form(page), "answer:destination:")
         finding = browser.post(
             f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
@@ -3335,15 +3426,15 @@ def test_a_found_row_or_an_offer_returns_the_page_with_the_corrections_saved_for
         ]
         found_page = followed(browser, send(browser, draft_id, fields))
         found = json.dumps({"found": found_row.assignment_id}, separators=(",", ":"))
-        assert_returned_with_saved_typing(found_page, found, same_words)
+        assert_returned_with_saved_typing(found_page, found, box, moved)
         _, offer_fields = outside(found_page, "offer-1-1")
         offered = dict(offer_fields)[f"answer:destination:{piece}"]
         offer_page = followed(browser, press_outside(browser, found_page, "offer-1-1"))
 
-    assert_returned_with_saved_typing(offer_page, offered, same_words)
+    assert_returned_with_saved_typing(offer_page, offered, box, moved)
 
 
-def test_each_card_s_own_line_shows_its_instructions_whole(
+def test_each_card_shows_its_instructions_whole_as_the_school_s_words(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     long = "Complete pages 12 to 14, then write three sentences about each of the stories."
@@ -3352,8 +3443,11 @@ def test_each_card_s_own_line_shows_its_instructions_whole(
             browser, monkeypatch, (RED, homework_answer(cards=[homework_card(instruction=long)]))
         )
 
-    line = f"This card: Sentence Composing, due Thu 10/8, assigned Mon 10/5, \u201c{long}\u201d"
-    assert line in html.unescape(review_form(page))
+    form = review_form(page)
+    assert f'<p class="from-teacher">From the school: <q class="authored-text">{long}</q></p>' in (
+        form
+    )
+    assert box_of(form, f"correct:{box_subject(page, 'instruction:0')}")[1] == long  # type: ignore[index]
 
 
 # ------------------------------------------------------------------ dates as the screenshot said
@@ -3396,7 +3490,12 @@ def test_a_due_card_whose_line_and_heading_disagree_shows_both_and_waits_for_a_c
     assert says(refused.text, REFUSED_OPEN)
     assert made == before
     assert after == piece
-    assert "This card: Sentence Composing, due Thu 10/8" in html.unescape(review_form(settled))
+    due_box = box_of(review_form(page), f"correct:{box_subject(page, 'due')}")
+    assert due_box is not None
+    assert due_box[1] == ""
+    assert screenshot_page.SAID["due_hint"] in form
+    assert '<p class="due">Due Thursday, October 8</p>' in review_form(settled)
+    assert screenshot_page.SAID["due_hint"] not in html.unescape(review_form(settled))
     assert units_on(settled)
 
 
@@ -3416,11 +3515,11 @@ def test_the_heading_shown_for_a_card_is_the_one_its_row_was_dated_by(
         _, page = read_review(browser, monkeypatch, (RED, answer))
 
     form = html.unescape(review_form(page))
-    assert "This card: Sentence Composing, due Tue 10/6" in form
+    assert '<p class="due">Due Tuesday, October 6</p>' in form
     assert "said: due line none; day heading \u201cTuesday 10/6/2026\u201d." in form
 
 
-def test_a_due_card_has_one_due_date_box_and_an_assigned_card_its_two_labeled(
+def test_a_due_card_asks_once_of_its_due_date_and_an_assigned_card_of_each_date(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     unsure_dates = [
@@ -3439,13 +3538,17 @@ def test_a_due_card_has_one_due_date_box_and_an_assigned_card_its_two_labeled(
         _, assigned_page = read_review(browser, monkeypatch, (BLUE, assigned_card))
 
     due_form = html.unescape(review_form(due_page))
-    assert due_form.count('type="date"') == 1
-    assert "The reader wasn't sure of the due date." in due_form
-    assert '>Due date <input type="date"' in due_form
     assigned_form = html.unescape(review_form(assigned_page))
-    assert assigned_form.count('type="date"') == 2
-    assert '>Due date <input type="date"' in assigned_form
-    assert '>Assigned date (day heading) <input type="date"' in assigned_form
+    unsure = r"<legend>(The reader wasn't sure of the [^<]*)<span"
+    assert re.findall(unsure, due_form) == ["The reader wasn't sure of the due date."]
+    assert re.findall(unsure, assigned_form) == [
+        "The reader wasn't sure of the due date.",
+        "The reader wasn't sure of the assigned date (day heading).",
+    ]
+    for form in (due_form, assigned_form):
+        assert form.count('type="date"') == 2
+        assert re.search(r">Due date<span [^>]*>[^<]*</span> <input type=\"date\"", form)
+        assert re.search(r">Assigned date<span [^>]*>[^<]*</span> <input type=\"date\"", form)
 
 
 def test_the_due_or_assigned_label_is_confirmed_never_typed(
@@ -3461,12 +3564,25 @@ def test_the_due_or_assigned_label_is_confirmed_never_typed(
         refused = followed(browser, send(browser, draft_id, forged))
 
     form = review_form(page)
-    assert 'name="correct:' not in form
-    assert screenshot_page.SAID["confirm"] in form
+    label = re.search(
+        r"<legend>The reader wasn't sure of the due or assigned label\.<span[^>]*>[^<]*</span>"
+        r"</legend>(.*?)</fieldset>",
+        html.unescape(form),
+        re.S,
+    )
+    assert label is not None
+    assert 'name="correct:' not in label.group(1)
+    assert screenshot_page.SAID["correct_it"] not in label.group(1)
+    assert screenshot_page.SAID["confirm"] in label.group(1)
     assert says(refused, imports.PRESS_SAID["keep_invalid"])
     key = json.loads(subject)[0]
-    badge = {"v": 3, "corrected": {key: {"badge": "DUE"}}, "selected": []}
-    assert screenshot_posts.progress_read(json.dumps(badge)) is None
+    for shape in (3, 4):
+        badge: dict[str, object] = {
+            "v": shape,
+            "corrected": {key: {"badge": "DUE"}},
+            "selected": [],
+        }
+        assert screenshot_posts.progress_read(json.dumps(badge)) is None
 
 
 def test_a_typed_date_blossom_can_t_read_is_said_and_not_used(
@@ -3477,12 +3593,13 @@ def test_a_typed_date_blossom_can_t_read_is_said_and_not_used(
     )
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, answer))
-        [field] = fields_named(review_form(page), "correct:")
+        field = box_subject(page, "due")
         kept = send(browser, draft_id, page_post(page, "keep", typed={f"correct:{field}": "10/14"}))
 
     shown = html.unescape(kept.text)
     assert "The date given was “10/14”, which is not a date Blossom can read." in shown
-    assert "This card: Sentence Composing, due Thu 10/8" in shown
+    assert '<p class="due">Due Thursday, October 8</p>' in shown
+    assert "Still to answer: a field the reader wasn't sure of, the due date" in shown
 
 
 def test_a_partial_save_lists_the_saved_cards_as_saved(
@@ -3738,7 +3855,7 @@ def test_an_answer_whose_correction_wasn_t_kept_says_why_its_row_asks_again(
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
-        [field] = fields_named(review_form(page), "correct:")
+        field = box_subject(page, "title")
         typed = {f"correct:{field}": "Sentence Combining"}
         send(browser, draft_id, page_post(page, "keep", typed=typed))
         reopened = browser.get(f"/parent/imports/{draft_id}").text
@@ -3820,7 +3937,7 @@ def test_a_due_date_typed_in_the_box_settles_the_question_and_is_the_one_saved(
         )
         page = her_name_answered(browser, draft_id, page)
         asked = review_form(page)
-        [field] = fields_named(review_form(page), "correct:")
+        field = box_subject(page, "due")
         [subject] = fields_named(review_form(page), "answer:confirm:")
         kept = send(
             browser,
@@ -3870,12 +3987,28 @@ IMPORT_REVIEW_RULES = (
     ".import-review .file-choose:hover {\n  background: var(--rose-bg);\n"
     "  border-color: var(--pink-deep);\n}\n\n"
     '.import-review input[type="file"]::file-selector-button {\n  display: none;\n}\n\n'
-    ".import-review legend,\n.import-review .note,\n.import-review .source,\n"
+    ".import-review legend,\n.import-review h3,\n.import-review .note,\n"
+    ".import-review .source,\n"
     ".import-review .effect,\n.import-review .problem,\n.import-review .choice > p,\n"
     ".import-review .jump a,\n.import-review li {\n  overflow-wrap: anywhere;\n}\n\n"
     ".import-review button,\n.import-review input {\n  overflow-wrap: normal;\n}\n\n"
     ".import-review .choice .lines {\n  flex-direction: column;\n  align-items: stretch;\n}\n\n"
     ".import-review textarea {\n  min-height: 3.6rem;\n}\n\n"
+    "/* A question's words sit inside its box, above its choices, and wrap there, never across"
+    " its\n   border. */\n"
+    ".import-review fieldset.choice > legend {\n  float: left;\n  width: 100%;\n  padding: 0;\n"
+    "  margin-bottom: 0.5rem;\n}\n\n"
+    ".import-review fieldset.choice > legend + * {\n  clear: both;\n}\n\n"
+    "/* Each screenshot is one compact row: its thumbnail at a fixed width, then its place, how"
+    " it\n   stands and its links. Each box of a card's corrections stands apart from the one"
+    " above. */\n"
+    ".import-review .screenshot-list li {\n  display: grid;\n"
+    "  grid-template-columns: 4.5rem minmax(0, 1fr);\n  gap: 0.75rem;\n  align-items: start;\n"
+    "  margin-block: 0.75rem;\n}\n\n"
+    ".import-review .screenshot-list img {\n  display: block;\n  width: 100%;\n  height: auto;\n"
+    "  border: 1px solid var(--edge);\n  border-radius: var(--radius-small);\n}\n\n"
+    ".import-review .screenshot-list p {\n  margin: 0 0 0.35rem;\n}\n\n"
+    ".import-review .steps > label {\n  margin-top: 0.75rem;\n}\n\n"
     "@media (max-width: 30rem) {\n"
     "  .import-review .panel,\n  .import-review .panel article {\n"
     "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n\n"
@@ -3889,8 +4022,10 @@ never wider than its panel and as tall as a control in the page's type at the re
 size, its picker's button is its label in the app's words, as tall and with the look of an
 outline button, with the browser's own button hidden and the picker set apart from the button
 that sends it, school text breaks where its line can't hold it while a
-control's words never do, and an instruction's correction box sits under its label, two lines
-tall to start."""
+control's words never do, an instruction's correction box sits under its label, two lines
+tall to start, a question's words sit inside its box, each screenshot is one compact row
+with a fixed thumbnail, and each box of a card's corrections stands apart from the one
+above."""
 STYLESHEET = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
 
 
@@ -3904,7 +4039,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
 
     # Strict on purpose, beside the exact rules: any text that names the class changes this
     # count, a harmless comment included, and that upkeep is accepted.
-    assert css.count("import-review") == 28
+    assert css.count("import-review") == 35
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
     for landing in (
@@ -4472,9 +4607,9 @@ def left_shapes() -> dict[str, tuple[tuple[bytes, object], ...]]:
 @pytest.mark.parametrize(
     ("shape", "said", "left"),
     [
-        ("a split question open", "1 assignment added. 0 updated. 1 still needs checking.", 1),
-        ("two cards it couldn't read", "1 assignment added. 0 updated. 2 still need checking.", 2),
-        ("nothing left", "1 assignment added. 0 updated. 0 still need checking.", 0),
+        ("a split question open", "Saved: 1 new assignment. 1 still needs checking.", 1),
+        ("two cards it couldn't read", "Saved: 1 new assignment. 2 still need checking.", 2),
+        ("nothing left", "Saved: 1 new assignment.", 0),
     ],
 )
 def test_still_needs_checking_counts_every_open_piece_split_question_and_unreadable_card(
@@ -4500,7 +4635,7 @@ def test_still_needs_checking_counts_every_open_piece_split_question_and_unreada
 def test_a_recorded_acceptance_answers_only_for_its_own_review(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    outcome = "1 assignment added. 0 updated. 0 still need checking."
+    outcome = "Saved: 1 new assignment."
     with here(open_settings(tmp_path)) as browser:
         mine, page = read_review(
             browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
@@ -4705,7 +4840,8 @@ def test_find_under_another_name_is_a_button_whose_search_posts_and_whose_choice
         ]
         after = followed(browser, send(browser, draft_id, fields))
 
-    assert f'form="{form_id}">Find under another name' in page
+    assert f'form="{form_id}" aria-describedby="{form_id}-typing">Find under another name' in page
+    assert says(page.split(f'id="{form_id}-typing"', 1)[1], screenshot_page.SAID["typing_lost"])
     assert opened.status_code == 200
     assert 'name="words"' in search.group(2)
     assert results.status_code == 200
@@ -4821,8 +4957,12 @@ def mixed_row(*unsure: str) -> dict[str, object]:
 
 
 def boxes_of(page: str) -> dict[str, str]:
-    """Each correction box's subject, by its field."""
+    """Each correction box's subject, by its field, on a review of one card."""
     return {json.loads(s)[1]: s for s in fields_named(review_form(page), "correct:")}
+
+
+BOX_FOR: Final = {"footer": "due", "heading": "assigned"}
+"""The box of a card's own date that corrects an unsure due line or day heading."""
 
 
 def due_choice(page: str, said: str) -> str:
@@ -4855,15 +4995,16 @@ def test_an_assigned_date_correction_leaves_the_due_date_question_and_its_choice
         page = her_name_answered(browser, draft_id, page)
         boxes = boxes_of(page)
         [piece] = fields_named(review_form(page), "answer:destination:")
-        typed = {f"correct:{boxes['heading']}": "2026-10-06"}
+        typed = {f"correct:{boxes['assigned']}": "2026-10-06"}
         choose: dict[str, str] = {}
         if case == "with the due date chosen":
             choose = {
                 f"answer:due_read:{piece}": due_choice(page, "Due Fri 10/9, as the due line says")
             }
         if case == "due date typed":
-            typed = {f"correct:{boxes['footer']}": "2026-10-09"}
-            choose = {f"answer:confirm:{boxes['heading']}": "as_read"}
+            typed = {f"correct:{boxes['due']}": "2026-10-09"}
+            heading = json.dumps([piece, "heading"], separators=(",", ":"))
+            choose = {f"answer:confirm:{heading}": "as_read"}
         kept = followed(
             browser, send(browser, draft_id, page_post(page, "keep", typed=typed, choose=choose))
         )
@@ -4904,7 +5045,7 @@ def test_the_returned_page_posted_unchanged_keeps_a_date_blossom_can_t_read(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, answer))
         page = her_name_answered(browser, draft_id, page)
-        box = boxes_of(page)[field]
+        box = boxes_of(page)[BOX_FOR[field]]
         [piece] = fields_named(review_form(page), "answer:destination:")
         key = json.loads(box)[0]
         kept = followed(
@@ -4926,7 +5067,7 @@ def test_the_returned_page_posted_unchanged_keeps_a_date_blossom_can_t_read(
 
     saved = screenshot_posts.progress_read(progress)
     assert saved is not None
-    assert saved.corrected[key][field] == "10/14"
+    assert saved.corrected[key][BOX_FOR[field]] == "10/14"
     for shown in (kept, reloaded, again):
         assert says(shown, refused)
         assert says(shown, screenshot_page.OPEN_NAMES["confirm"])
@@ -5073,26 +5214,21 @@ SCHOOL_TEXT: Final[dict[str, tuple[str, Callable[[Element], bool]]]] = {
         "find",
         lambda e: e.tag == "p" and "note" in e.classes and in_section(e, "find-heading"),
     ),
-    "the piece legends": ("review", lambda e: e.tag == "legend" and not e.text.startswith("Type:")),
-    "the question legends": ("review", lambda e: e.tag == "legend" and e.text.startswith("Type:")),
-    "the card's own line": (
+    "the legends": ("review", lambda e: e.tag == "legend"),
+    "the card's class": ("review", lambda e: e.tag == "p" and "course" in e.classes),
+    "the card's title": ("review", lambda e: e.tag == "h3" and in_section(e, "saving-heading")),
+    "the school's words": ("review", lambda e: "from-teacher" in e.classes),
+    "the notes, the Type's lines among them": (
         "review",
-        lambda e: e.tag == "p" and "note" in e.classes and e.text.startswith("This card:"),
+        lambda e: e.tag == "p" and "note" in e.classes and in_section(e, "saving-heading"),
     ),
-    "the facts": ("review", lambda e: "source" in e.classes),
+    "the facts and the card's source": ("review", lambda e: "source" in e.classes),
     "the preview's lines": ("review", lambda e: "effect" in e.classes),
     "the problems": ("review", lambda e: "problem" in e.classes),
     "the saved cards": ("partly saved", lambda e: e.tag == "li" and in_section(e, "saved-heading")),
     "the cards it couldn't read": (
         "partly saved",
         lambda e: e.tag == "li" and in_section(e, "unread-heading"),
-    ),
-    "the links back to a card's choices": (
-        "review",
-        lambda e: e.tag == "a"
-        and e.parent is not None
-        and "jump" in e.parent.classes
-        and e.text.startswith("Choices for "),
     ),
 }
 """The closed checklist: each element of the review and find pages that shows school text, by
@@ -5502,7 +5638,7 @@ def test_a_screenshot_with_no_name_added_after_the_confirmation_asks_for_it_agai
     assert len(digests_on(read)) == 2
     assert field not in checked_names(forced)
     assert len(units_on(answered)) == 2
-    assert says(saved, "2 assignments added.")
+    assert says(saved, "Saved: 2 new assignments.")
     assert after == before + 2
 
 
@@ -5630,7 +5766,8 @@ def unsure_review(
     browser: TestClient, monkeypatch: pytest.MonkeyPatch, *fields: str
 ) -> tuple[str, str, dict[str, str]]:
     """A review of one card whose given fields the reader wasn't sure of, her name answered:
-    its id, the page, and each field's correction box by field."""
+    its id, the page, and each box of "Correct what was read" by field, its one instruction
+    text's box also named ``instruction``."""
     card = homework_card(uncertain=[{"field": f, "reason": "faint"} for f in fields])
     draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[card])))
     page = her_name_answered(browser, draft_id, page)
@@ -5638,6 +5775,7 @@ def unsure_review(
         str(json.loads(subject)[1]): f"correct:{subject}"
         for subject in fields_named(review_form(page), "correct:")
     }
+    boxes["instruction"] = boxes["instruction:0"]
     return draft_id, page, boxes
 
 
@@ -5672,13 +5810,15 @@ def test_no_correction_box_cuts_what_is_typed_or_pasted(
 
     form = review_form(page)
     tags = {field: str((box_of(form, name) or ("", ""))[0]) for field, name in boxes.items()}
-    assert set(tags) == {"course", "title", "instruction"}
+    assert set(tags) == {"course", "title", "instruction", "instruction:0", "due", "assigned"}
     assert tags["course"].startswith('<input type="text"')
     assert tags["title"].startswith('<input type="text"')
     assert tags["instruction"].startswith("<textarea ")
+    assert tags["due"].startswith('<input type="date"')
+    assert tags["assigned"].startswith('<input type="date"')
     assert "maxlength" not in form
     assert "maxlength" not in review_form(dated)
-    assert set(date_boxes) == {"footer"}
+    assert set(date_boxes) == set(boxes)
 
 
 def test_a_long_title_and_instruction_are_corrected_and_kept_whole_through_every_press(
@@ -5706,8 +5846,8 @@ def test_a_long_title_and_instruction_are_corrected_and_kept_whole_through_every
         assert box_of(shown, boxes["instruction"])[1] == LONG_WORDS  # type: ignore[index]
     assert progress is not None
     [corrected] = progress.corrected.values()
-    assert corrected == {"title": LONG_TITLE, "instruction": LONG_WORDS}
-    assert says(saved, "1 assignment added.")
+    assert corrected == {"title": LONG_TITLE, "instruction:0": LONG_WORDS}
+    assert says(saved, "Saved: 1 new assignment.")
     [row] = rows
     assert readings.readable[row.assignment_id].texts == (LONG_WORDS,)
 
@@ -5739,7 +5879,7 @@ def test_an_instruction_correction_of_4000_characters_is_kept_and_one_longer_is_
         assert says(later, imports.PRESS_SAID["later"])
         assert progress is not None
         [corrected] = progress.corrected.values()
-        assert corrected == {"instruction": words}
+        assert corrected == {"instruction:0": words}
     else:
         assert says(later, imports.PRESS_SAID["too_long"])
         assert progress is None
@@ -5766,24 +5906,36 @@ def test_a_multiline_instruction_correction_keeps_its_line_breaks_through_a_brow
         readings = record.school_instruction_readings([row.assignment_id])
 
     assert progress is not None
-    assert list(progress.corrected.values()) == [{"instruction": words}]
+    assert list(progress.corrected.values()) == [{"instruction:0": words}]
     assert box_of(reloaded, boxes["instruction"])[1] == words  # type: ignore[index]
     assert readings.readable[row.assignment_id].texts == (words,)
 
 
 @pytest.mark.parametrize(
-    ("field", "most"),
-    [("course", 200), ("title", 300), ("instruction", 4000), ("footer", 200), ("heading", 200)],
+    ("shape", "key", "field", "most"),
+    [
+        (3, "k1", "course", 200),
+        (3, "k1", "title", 300),
+        (3, "k1", "instruction", 4000),
+        (3, "k1", "footer", 200),
+        (3, "k1", "heading", 200),
+        (4, "k1", "course", 200),
+        (4, "k1", "title", 300),
+        (4, "k1", "instruction:0", 4000),
+        (4, "k1", "instruction:12", 4000),
+        (4, "date:k1", "due", 200),
+        (4, "date:k1|2026-10-05", "assigned", 200),
+    ],
 )
 def test_saved_progress_holds_each_correction_up_to_its_field_s_limit(
-    field: str, most: int
+    shape: int, key: str, field: str, most: int
 ) -> None:
     def progress(length: int) -> str:
-        return json.dumps({"v": 3, "corrected": {"k1": {field: "a" * length}}, "selected": []})
+        return json.dumps({"v": shape, "corrected": {key: {field: "a" * length}}, "selected": []})
 
     within = screenshot_posts.progress_read(progress(most))
     assert within is not None
-    assert within.corrected == {"k1": {field: "a" * most}}
+    assert within.corrected == {key: {field: "a" * most}}
     assert screenshot_posts.progress_read(progress(most + 1)) is None
 
 
@@ -5845,7 +5997,7 @@ def test_a_save_committing_between_a_closing_press_and_its_transaction_is_report
         accepted = acceptances_of(browser, draft_id)
         snapshot = store.snapshot(student, draft_id)
 
-    assert says(str(seen["saved"]), "1 assignment added.")
+    assert says(str(seen["saved"]), "Saved: 1 new assignment.")
     assert seen["before"] == seen["after"]
     assert after == before + 1
     assert accepted == 1
@@ -6038,7 +6190,7 @@ def test_a_merged_row_saves_with_both_confirmations_before_and_after_another_gro
 
     assert waited == start + len(unnamed_cards)
     assert merged in ready
-    assert says(saved, "1 assignment added.")
+    assert says(saved, "Saved: 1 new assignment.")
     assert after == waited + 1
     assert again == after
     assert not says(resent, "wasn't saved")
@@ -6053,6 +6205,8 @@ def test_a_merged_row_saves_with_both_confirmations_before_and_after_another_gro
 FIELD_LIMITS: Final = {"course": 200, "title": 300, "instruction": 4000}
 """Each one-line or multi-line correction's most characters, counted in code points."""
 FIELD_SAID: Final = {"course": "class", "title": "title", "instruction": "instructions"}
+STORED_AS: Final = {"course": "course", "title": "title", "instruction": "instruction:0"}
+"""Each box's field as saved progress keeps it: an instruction by its text's index."""
 
 
 def at_most(field: str, extra: str = "") -> str:
@@ -6083,7 +6237,7 @@ def test_a_correction_of_its_field_s_most_code_points_is_kept_whole(
     assert len(words.encode("utf-16-le")) // 2 == FIELD_LIMITS[field] + 1
     assert says(later, imports.PRESS_SAID["later"])
     assert progress is not None
-    assert list(progress.corrected.values()) == [{field: words}]
+    assert list(progress.corrected.values()) == [{STORED_AS[field]: words}]
     assert box_of(reloaded, boxes[field])[1] == words  # type: ignore[index]
 
 
@@ -6126,7 +6280,7 @@ def test_a_date_typed_past_its_limit_is_refused_whole_and_kept_until_a_date_is_c
     typed = "the Thursday after next, " + "e" * 180
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, boxes = unsure_review(browser, monkeypatch, "footer")
-        box = boxes["footer"]
+        box = boxes["due"]
         refused = send(browser, draft_id, page_post(page, "later", typed={box: typed}))
         assert refused.status_code == 422
         again = send(browser, draft_id, page_post(refused.text, "later"))
@@ -6143,7 +6297,7 @@ def test_a_date_typed_past_its_limit_is_refused_whole_and_kept_until_a_date_is_c
     assert says(again.text, "Keep the due date to 200 characters or fewer.")
     assert chosen.status_code == 303
     assert progress is not None
-    assert list(progress.corrected.values()) == [{"footer": "2026-10-09"}]
+    assert list(progress.corrected.values()) == [{"due": "2026-10-09"}]
 
 
 # ------------------------------------------------------- the save's clock, read inside its writer
@@ -6209,7 +6363,7 @@ def test_a_save_that_passed_its_checks_before_expiry_completes_after_it(
         accepted = acceptances_of(browser, draft_id)
 
     assert moved == [True]
-    assert says(saved, "1 assignment added.")
+    assert says(saved, "Saved: 1 new assignment.")
     assert after == before + 1
     assert accepted == 1
 
@@ -6231,8 +6385,8 @@ def test_a_save_recorded_before_expiry_replays_its_outcome_after_it_and_writes_n
         after_replay = assignment_count(browser)
         accepted = acceptances_of(browser, draft_id)
 
-    assert says(saved, "1 assignment added.")
-    assert says(replayed, "1 assignment added.")
+    assert says(saved, "Saved: 1 new assignment.")
+    assert says(replayed, "Saved: 1 new assignment.")
     assert not says(replayed, imports.SAID["expired"])
     assert after_replay == after_save
     assert accepted == 1
@@ -6267,11 +6421,10 @@ def typed_review(
         browser, monkeypatch, (RED, homework_answer(cards=[unsure, plain]))
     )
     page = her_name_answered(browser, draft_id, page)
-    boxes = {
-        str(json.loads(subject)[1]): f"correct:{subject}"
-        for subject in fields_named(review_form(page), "correct:")
+    typed = {
+        f"correct:{box_subject(page, 'instruction:0')}": TYPED_WORDS,
+        f"correct:{box_subject(page, 'due')}": TYPED_DATE,
     }
-    typed = {boxes["instruction"]: TYPED_WORDS, boxes["footer"]: TYPED_DATE}
     return draft_id, page, page_post(page, "keep", typed=typed), units_on(page)[-1]
 
 
@@ -6360,7 +6513,7 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
     assert expires_after == stored_before[0]
     committed = moment == "after it commits"
     if press == "save" and committed:
-        assert says(answer, "1 assignment added.")
+        assert says(answer, "Saved: 1 new assignment.")
         assert after == before + 1
     else:
         assert after == before
