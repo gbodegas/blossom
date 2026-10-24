@@ -4000,11 +4000,12 @@ IMPORT_REVIEW_RULES = (
     "  margin-bottom: 0.5rem;\n}\n\n"
     ".import-review fieldset.choice > legend + * {\n  clear: both;\n}\n\n"
     "/* Each screenshot is one compact row: its thumbnail at a fixed width, then its place, how"
-    " it\n   stands and its links. Each box of a card's corrections stands apart from the one"
-    " above. */\n"
-    ".import-review .screenshot-list li {\n  display: grid;\n"
-    "  grid-template-columns: 4.5rem minmax(0, 1fr);\n  gap: 0.75rem;\n  align-items: start;\n"
-    "  margin-block: 0.75rem;\n}\n\n"
+    " it\n   stands and its links, which go under the thumbnail where the line can't hold them."
+    " Each box\n   of a card's corrections stands apart from the one above. */\n"
+    ".import-review .screenshot-list li {\n  display: flex;\n  flex-wrap: wrap;\n"
+    "  gap: 0.75rem;\n  align-items: flex-start;\n  margin-block: 0.75rem;\n}\n\n"
+    ".import-review .screenshot-list li > a {\n  flex: 0 0 4.5rem;\n}\n\n"
+    ".import-review .screenshot-list li > div {\n  flex: 1 1 12rem;\n  min-width: 0;\n}\n\n"
     ".import-review .screenshot-list img {\n  display: block;\n  width: 100%;\n  height: auto;\n"
     "  border: 1px solid var(--edge);\n  border-radius: var(--radius-small);\n}\n\n"
     ".import-review .screenshot-list p {\n  margin: 0 0 0.35rem;\n}\n\n"
@@ -4039,7 +4040,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
 
     # Strict on purpose, beside the exact rules: any text that names the class changes this
     # count, a harmless comment included, and that upkeep is accepted.
-    assert css.count("import-review") == 35
+    assert css.count("import-review") == 37
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
     for landing in ("#told:focus", "#done:focus", "#outcome-heading:focus"):

@@ -2185,13 +2185,23 @@ pre.example {
 }
 
 /* Each screenshot is one compact row: its thumbnail at a fixed width, then its place, how it
-   stands and its links. Each box of a card's corrections stands apart from the one above. */
+   stands and its links, which go under the thumbnail where the line can't hold them. Each box
+   of a card's corrections stands apart from the one above. */
 .import-review .screenshot-list li {
-  display: grid;
-  grid-template-columns: 4.5rem minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
-  align-items: start;
+  align-items: flex-start;
   margin-block: 0.75rem;
+}
+
+.import-review .screenshot-list li > a {
+  flex: 0 0 4.5rem;
+}
+
+.import-review .screenshot-list li > div {
+  flex: 1 1 12rem;
+  min-width: 0;
 }
 
 .import-review .screenshot-list img {
