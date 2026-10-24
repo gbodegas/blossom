@@ -31,7 +31,8 @@ from blossom.agent.steps import StepRecord, describe_past_due
 from blossom.app import create_app
 from blossom.clock import FrozenClock, spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
-from blossom.drafts import Draft
+from blossom.drafts import Draft, DraftStatus
+from blossom.hand_in import NEEDS_HAND_IN, HandInSaved
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.intake import identity
 from blossom.noticing import read_week
@@ -62,7 +63,9 @@ from tests.support import (
     SAME_ORIGIN,
     SHOWN_BELOW_WAITING,
     THAT_PLAN_SHOWN_BELOW,
+    Element,
     Scripted,
+    elements_of,
     ended_run,
     family_line,
     family_line_focused,
@@ -79,12 +82,15 @@ from tests.support import (
     ok,
     plan_fold_open,
     record,
+    reported,
     runs_recorded,
+    school_missing,
     settled_run,
     sign_in_as,
     state_of,
     store_of,
     unwrapped,
+    waiting_note,
     whole_form,
 )
 
@@ -2480,3 +2486,108 @@ def test_a_refusal_keeps_no_reason_when_none_was_typed(blank: str) -> None:
     for answer in (refused, gone):
         assert kept_under_the_problem(answer.text) is None
         assert 'id="kept-reason"' not in answer.text
+
+
+# ------------------------------------------------------------------ every card's place
+
+
+def a_page_of_every_card(*, waiting: bool) -> str:
+    """The family page with a card of each kind it draws: her help request and homework note,
+    a check, a school report, a record that can't be read, a hand-in, an earlier plan, a run
+    that ended without one, and today's plan decided or, with ``waiting``, one waiting."""
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        for _ in range(2):
+            state.drafts.record_decision(
+                waiting_draft_id(client),
+                status=DraftStatus.APPROVED_FOR_MANUAL_SEND,
+                decision="approved",
+                reason="Synthetic note.",
+            )
+        if waiting:
+            waiting_draft_id(client)
+        reported(store, "done", "assignment-canal-essay")
+        store.record_status_reports("assignment-canal-essay", [school_missing(PLAN_DATE)])
+        store.record_status_reports("assignment-vocabulary-quiz", [school_missing(PLAN_DATE)])
+        reported(store, "not_yet", "assignment-reading-log")
+        with store._lock, store._connection:
+            store._connection.execute(
+                "UPDATE student_reports SET status = 'finished' WHERE assignment_id = ?",
+                ("assignment-reading-log",),
+            )
+        handed = store.record_hand_in(
+            "assignment-algebra-set",
+            NEEDS_HAND_IN,
+            None,
+            None,
+            expected_head=None,
+            now=CREATED,
+            today=PLAN_DATE,
+        )
+        assert isinstance(handed, HandInSaved), handed
+        state.help_requests.ask(PLAN_DATE, "A synthetic question about the essay.")
+        waiting_note(store, course="Geometry", title="Questions 4-8", text="Synthetic note.")
+        run_id = family_plan(client, PLAN_DATE.isoformat())["run_id"]
+        ended_run(state.drafts, thread_id=run_id, plan_date=PLAN_DATE, outcome="interrupted")
+        return client.get("/parent").text
+
+
+def site_of(card: Element) -> str:
+    """Which of the family page's card sites drew ``card``."""
+    section = card.parent
+    assert section is not None
+    in_fold = section.parent is not None and section.parent.tag == "details"
+    named = card.attributes.get("id", "")
+    if any(one.startswith("help-") for one in card.classes):
+        return "help"
+    if "homework-note" in card.classes:
+        return "homework note"
+    if "needs-review" in card.classes:
+        return "worth checking together"
+    if named == "update-assignment-vocabulary-quiz":
+        return "school report"
+    if named == "update-assignment-reading-log":
+        return "record that can't be read"
+    if section.attributes.get("id") == "turning-work-in":
+        return "turning work in"
+    if any(one.startswith("decided-") for one in card.classes):
+        return "earlier plan" if in_fold else "today's plan"
+    if any(one.startswith("outcome-") for one in card.classes):
+        return "plan that couldn't be made" if in_fold else "waiting plan"
+    return f"unknown {sorted(card.classes)}"
+
+
+EVERY_SITE = {
+    "help",
+    "homework note",
+    "worth checking together",
+    "school report",
+    "record that can't be read",
+    "turning work in",
+    "earlier plan",
+    "plan that couldn't be made",
+}
+"""The card sites a family page with all of its records shows, whatever today's plan is."""
+
+
+@pytest.mark.parametrize("waiting", [False, True], ids=["today-decided", "a-plan-waiting"])
+def test_each_card_of_the_family_page_sits_where_its_narrow_rule_finds_it(waiting: bool) -> None:
+    """Every card is a child of a plain section that is a child of the page's main or of a
+    fold, the place the stylesheet's rule for the family page's cards names; a wrapper around
+    a card, or a card moved into a panel, fails here."""
+    page = a_page_of_every_card(waiting=waiting)
+    cards = [one for one in elements_of(page) if one.tag == "article" and "draft" in one.classes]
+
+    today = "waiting plan" if waiting else "today's plan"
+    assert {site_of(card) for card in cards} == EVERY_SITE | {today}
+    for card in cards:
+        section = card.parent
+        assert section is not None, site_of(card)
+        assert section.tag == "section", site_of(card)
+        assert "panel" not in section.classes, site_of(card)
+        above = section.parent
+        assert above is not None, site_of(card)
+        assert above.tag == "main" or (above.tag == "details" and "panel-fold" in above.classes), (
+            site_of(card)
+        )

@@ -14,12 +14,14 @@ import json
 import pathlib
 import re
 from datetime import date
+from typing import get_args
 
 import pytest
 from fastapi.testclient import TestClient
 
 from blossom.agent.prompts import PLANNER_SYSTEM
 from blossom.app import create_app
+from blossom.drafts import Decision
 from blossom.noticing import monday_of
 from blossom.reconciliation import SourceConfidence
 from blossom.routes.navigation import details_href
@@ -334,6 +336,79 @@ def test_her_week_s_homework_panels_narrow_rule_is_pinned_and_only_her_week_writ
     assert writers["student_due_this_week.html"].count('<section class="panel apart">') == 1
     assert writers["student_due_this_week.html"].count('<section class="panel assigned">') == 1
     assert writers["student_earlier_work.html"].count('class="panel assigned earlier-work"') == 1
+
+
+CARDS_GIVE_WAY = (
+    "   and 640 pixels or wider with text at 200%. */\n"
+    "main > section:not(.panel) > .draft,\n.panel-fold > section:not(.panel) > .draft {\n"
+    "  margin-inline: min(0px, 13vw - 2.25rem);\n"
+    "  max-width: none;\n"
+    "  padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);\n}\n\n"
+    "@media (max-width: 30rem) {\n"
+    "  main > section:not(.panel) > .draft,\n  .panel-fold > section:not(.panel) > .draft {\n"
+    "    padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);\n  }\n}\n"
+)
+"""The rule that lets every card of the family page give up side padding and reach into the
+page's side margin on a narrow screen with large text, pinned from the last line of its
+comment through its narrow block. Check the family page in a browser at 320 px and 1280 px."""
+
+
+CARD_CUE_STAYS_ON_SCREEN = (
+    "   with ordinary text and 400 pixels or wider with text at 200%. */\n"
+    'main > section:not(.panel) > .draft[tabindex="-1"]:focus {\n'
+    "  box-shadow:\n"
+    "    0 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--arrival-tint),\n"
+    "    -0.25rem 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--blue-action);\n}\n"
+)
+"""The arrival cue of a family card a link lands on, its spread narrowed to the margin left
+beside the card, pinned from the last line of its comment."""
+SECTIONS_REACH_WITH_THEIR_CARDS = (
+    "   and its cue on every screen 200 or 400 pixels or wider. */\n"
+    "#help-she-asked-for,\n#turning-work-in {\n"
+    "  margin-inline: min(0px, 13vw - 2.25rem);\n"
+    "  padding-inline: clamp(0px, 2.25rem - 13vw, 2.25rem);\n}\n\n"
+    "section#help-she-asked-for:focus {\n"
+    "  box-shadow:\n"
+    "    0 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--arrival-tint),\n"
+    "    -0.25rem 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--blue-action);\n}\n"
+)
+"""The two family sections a link lands on that hold cards, reaching with their cards and
+padding their words back in, and the narrowed cue of the one that has a cue, pinned from the
+last line of their comment. Check both landings in a browser at 320 px with text at 200%."""
+
+
+def test_the_family_page_s_landing_cues_are_pinned_word_for_word() -> None:
+    """Each pinned text occurs once, and the narrowed spread is written only in those two cues,
+    so a cue put back to its full spread, or a section that stops reaching, fails here."""
+    styles = (STATIC / "blossom.css").read_text(encoding="utf-8")
+
+    assert styles.count(CARD_CUE_STAYS_ON_SCREEN) == 1
+    assert styles.count(SECTIONS_REACH_WITH_THEIR_CARDS) == 1
+    assert styles.count("clamp(0px, 13vw - 1.25rem, 0.375rem)") == 4
+    assert styles.count("#turning-work-in") == 1
+
+
+def test_the_family_page_s_cards_narrow_rule_is_pinned_and_no_decision_has_its_own() -> None:
+    """The pinned text occurs once; the family page writes ten cards and the page of plans
+    shown as saved one, inside its panel; and no rule names a plan's decision, of the four
+    there are, so a card of any decision takes the shared rule."""
+    styles = (STATIC / "blossom.css").read_text(encoding="utf-8")
+    writers = {
+        page.name: text
+        for page in sorted(TEMPLATES.glob("*.html"))
+        if 'class="draft' in (text := page.read_text(encoding="utf-8"))
+    }
+
+    assert styles.count(CARDS_GIVE_WAY) == 1
+    assert styles.count("> section:not(.panel) > .draft") == 5
+    assert sorted(writers) == ["parent_review.html", "plans_unavailable.html"]
+    assert writers["parent_review.html"].count('<article class="draft') == 10
+    assert writers["parent_review.html"].count('class="draft decided-{{ draft.decision }}"') == 2
+    assert writers["plans_unavailable.html"].count('<article class="draft">') == 1
+    assert writers["plans_unavailable.html"].count('<section class="panel saved-plans">') == 1
+    assert get_args(Decision) == ("approved", "rejected", "expired", "superseded")
+    for decision in get_args(Decision):
+        assert f"decided-{decision}" not in styles
 
 
 LATER_ROWS = {

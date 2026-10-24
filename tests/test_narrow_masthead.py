@@ -4488,21 +4488,23 @@ def test_the_whole_word_check_fails_where_a_help_line_can_break_a_word(
 
 # ------------------------------------------------------------- a plan's card that gives way
 
-CARD_GIVING_WAY = """.draft.outcome-accepted,
-.draft.outcome-unsettled {
+CARD_GIVING_WAY = """main > section:not(.panel) > .draft,
+.panel-fold > section:not(.panel) > .draft {
+  margin-inline: min(0px, 13vw - 2.25rem);
+  max-width: none;
   padding-inline: clamp(0px, 13vw - 1rem, 1.6rem);
 }
 
 @media (max-width: 30rem) {
-  .draft.outcome-accepted,
-  .draft.outcome-unsettled {
+  main > section:not(.panel) > .draft,
+  .panel-fold > section:not(.panel) > .draft {
     padding-inline: clamp(0px, 13vw - 1rem, 1.2rem);
   }
 }"""
-"""The side padding of a plan's card waiting for review, as the stylesheet writes it: from the
-card's ordinary 1.6rem, and from 1.2rem where the narrow layout's query holds. Measured in
-Edge at 300 to 414 pixels with text at 200%, where the form's helper keeps each word whole,
-and on wider screens, where nothing moves."""
+"""The side padding of every card of the family page, a plan's card waiting for review among
+them, as the stylesheet writes it: from the card's ordinary 1.6rem, and from 1.2rem where the
+narrow layout's query holds. Measured in Edge at 320 to 414 pixels with text at 200%, where
+the form's helper keeps each word whole, and on wider screens, where nothing moves."""
 CARD_GIVES_WAY = {
     False: "clamp(0px, 13vw - 1rem, 1.6rem)",
     True: "clamp(0px, 13vw - 1rem, 1.2rem)",
@@ -4562,7 +4564,7 @@ def family_with_a_waiting_plan(verdict: CriticVerdict, folder: pathlib.Path) -> 
 
 
 def plan_cards(page: str) -> list[Element]:
-    """Each card on the page that matches the rule, after checking that they are exactly the
+    """Each plan card waiting for review on the page, after checking that they are exactly the
     cards holding a plan's decision form."""
     found = elements_of(page)
     marked = [
@@ -4614,14 +4616,16 @@ def test_a_waiting_plans_card_gives_way_on_a_phone_with_large_text(
         pytest.param(CARD_GIVING_WAY.split("\n\n")[0], {"narrow"}, id="no-narrow"),
         pytest.param(CARD_GIVING_WAY.split("\n\n")[1], {"wide"}, id="no-wide"),
         pytest.param(
-            CARD_GIVING_WAY.replace(",\n.draft.outcome-unsettled", "").replace(
-                ",\n  .draft.outcome-unsettled", ""
+            CARD_GIVING_WAY.replace("main > section:not(.panel) > .draft,\n", "").replace(
+                "  main > section:not(.panel) > .draft,\n", ""
             ),
             {"narrow", "wide"},
-            id="no-unsettled",
+            id="no-page-sections",
         ),
         pytest.param(
-            CARD_GIVING_WAY + "\n.draft.outcome-accepted { padding: 1.1rem 1.2rem; }",
+            CARD_GIVING_WAY
+            + "\nmain > section > .draft.outcome-accepted { padding: 1.1rem 1.2rem; }"
+            + "\nmain > section > .draft.outcome-unsettled { padding: 1.1rem 1.2rem; }",
             {"narrow", "wide"},
             id="undone-later",
         ),

@@ -1664,9 +1664,18 @@ def test_help_takes_the_arrival_cue_on_focus_its_links_are_tall_and_its_words_wr
 
 def test_help_she_asked_for_stops_below_the_top_of_the_screen_as_her_help_does() -> None:
     """The family page's Help section shares the rule that stops her Help heading a little
-    below the top of the screen, so the whole arrival cue shows when a press lands on it."""
-    assert declared_for("#help-she-asked-for") == ["scroll-margin-top: 0.75rem;"]
-    assert rules_named("#help-she-asked-for") == rules_named("#help")
+    below the top of the screen, so the whole arrival cue shows when a press lands on it; its
+    one other rule, shared with Turning work in, has it reach with its cards on a narrow
+    screen with large text."""
+    assert declared_for("#help-she-asked-for") == [
+        "scroll-margin-top: 0.75rem;",
+        "margin-inline: min(0px, 13vw - 2.25rem);"
+        " padding-inline: clamp(0px, 2.25rem - 13vw, 2.25rem);",
+    ]
+    assert rules_named("#help-she-asked-for") == [
+        *rules_named("#help"),
+        *rules_named("#turning-work-in"),
+    ]
 
 
 def margins_of(css: str, selector: str) -> tuple[float, float]:
