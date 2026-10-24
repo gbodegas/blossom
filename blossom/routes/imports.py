@@ -745,13 +745,6 @@ async def saved_corrections(
     return {} if review is None else shape_four(review, read.corrected)
 
 
-def corrections_of(progress: str | None) -> dict[str, dict[str, str | None]]:
-    """The typed corrections a review's saved progress keeps, by key and field; none when
-    there is no progress or it isn't in a shape it reads."""
-    read = progress_read(progress)
-    return {} if read is None else read.corrected
-
-
 def row_keys(review: ReviewState, units: Iterable[str]) -> frozenset[str]:
     """The row keys of the groups named, as saved progress keeps a selection."""
     return frozenset(

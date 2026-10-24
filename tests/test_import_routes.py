@@ -6993,8 +6993,8 @@ def test_an_untouched_empty_instructions_box_answers_nothing_and_saves_nothing(
     for shown in (kept, spaces, later_page):
         assert says(shown, f"Still to answer: {unsure}.")
         assert box_of(review_form(shown), box)[1] == ""  # type: ignore[index]
+        assert not says(shown, screenshot_page.SAID["not_saved_yet"])
     assert held == {}
-    assert not says(later_page, screenshot_page.SAID["not_saved_yet"])
     assert says(refused, REFUSED_OPEN)
     assert after == before
 
