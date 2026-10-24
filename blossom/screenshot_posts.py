@@ -22,7 +22,9 @@ from blossom.screenshot_review import (
     PIECE_DATES,
     ROW_FIELDS,
     Corrections,
+    Piece,
     answer_names,
+    date_target,
     dates_key,
     dest_kind,
     field_most,
@@ -31,18 +33,19 @@ from blossom.screenshot_review import (
     usable_correction,
     value_json,
     value_of,
+    wordless_card,
+    wordless_field,
 )
 from blossom.screenshot_save import (
     ReviewState,
-    box_texts,
     canonical,
     correctable,
     correction_digest,
     correction_text,
     fold_reads,
+    own_wordless,
     piece_digest,
     read_digest,
-    wordless_rows,
 )
 from blossom.stores.import_drafts import AnswerToKeep
 
@@ -493,15 +496,19 @@ def progress_text(corrected: Corrections, selected: Iterable[str]) -> str:
 def _kept(shape: int, key: str, field: str, value: object) -> bool:
     """Whether one entry of saved progress is one its shape holds: text within its field's
     limit that isn't blank; in the new shape, under a piece's dates key its due or assigned
-    date, under a row key its class, title or an instruction text, a removal (null) only for
-    an instruction text or an assigned date."""
+    date, under a row key its class, title, an instruction text or the words of a card read
+    with none, a removal (null) only for an instruction text or an assigned date."""
     if shape == OLD_SHAPE:
         if field not in OLD_FIELDS:
             return False
     elif key.startswith("date:"):
         if field not in PIECE_DATES:
             return False
-    elif field not in ROW_FIELDS and instruction_index(field) is None:
+    elif (
+        field not in ROW_FIELDS
+        and instruction_index(field) is None
+        and wordless_card(field) is None
+    ):
         return False
     if value is None:
         return shape != OLD_SHAPE and (field == "assigned" or instruction_index(field) is not None)
@@ -540,23 +547,49 @@ def progress_read(text: str | None) -> SavedProgress | None:
 def shape_four(state: ReviewState, corrections: Corrections) -> dict[str, dict[str, str | None]]:
     """Corrections of saved progress of shape 3 as shape 4 holds them: each box as the page
     shows it, from the pieces those corrections give (``state``), kept where it differs from
-    its value with no correction, as a first press posting the page untouched keeps it."""
+    its value with no correction, as a first press posting the page untouched keeps it. An
+    instruction correction, which replaced every text, is every text's box and, where words
+    were added for a card read with none, that card's box. A due line or day heading Blossom
+    can't read as a date is kept as typed in the box of the date it sets
+    (``unreadable_old_dates``)."""
     boxes: dict[tuple[str, str], str] = {}
-    wordless = wordless_rows(state.open)
     for piece in state.open:
         read = piece.as_read
         if read is None:
             continue
+        fields = corrections.get(piece.key, {})
+        old = fields.get("instruction")
+        words = str(old).strip() if usable_correction("instruction", old) else None
         if (piece.key, "course") not in boxes:
             boxes[(piece.key, "course")] = piece.course
             boxes[(piece.key, "title")] = piece.title
-            old = corrections.get(piece.key, {}).get("instruction")
-            replaced = old is not None and usable_correction("instruction", old)
-            for index, text in enumerate(box_texts(piece, wordless)):
-                kept = (str(old).strip() if index == 0 else "") if replaced else text
-                boxes[(piece.key, f"instruction:{index}")] = kept
+            for index, text in enumerate(read.texts):
+                boxes[(piece.key, f"instruction:{index}")] = text if words is None else words
+        for card in own_wordless(piece):
+            boxes[(piece.key, wordless_field(card))] = "" if words is None else words
         key = dates_key(piece.name)
         due = piece.due if piece.due_resolved else None
         boxes[(key, "due")] = "" if due is None else due.isoformat()
         boxes[(key, "assigned")] = "" if piece.assigned is None else piece.assigned.isoformat()
+        for target, text in unreadable_old_dates(piece, fields).items():
+            boxes[(key, target)] = text
     return box_corrections(state, boxes, {}, ()).corrections
+
+
+def unreadable_old_dates(piece: Piece, fields: Mapping[str, str | None]) -> dict[str, str]:
+    """The due line and day heading of saved progress of shape 3 that Blossom can't read as
+    dates, as typed, by the date each sets (``date_target``), where no correction it can read
+    sets that date; the day heading after the due line where both set one, as they apply."""
+    readable = {
+        date_target(piece.reading, field)
+        for field in OLD_DATES
+        if usable_correction(field, fields.get(field))
+    }
+    out: dict[str, str] = {}
+    for field in OLD_DATES:
+        value = fields.get(field)
+        target = date_target(piece.reading, field)
+        if value is None or not value.strip() or target is None or target in readable:
+            continue
+        out[target] = value
+    return out

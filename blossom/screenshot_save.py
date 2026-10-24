@@ -57,6 +57,7 @@ from blossom.screenshot_review import (
     defaults,
     destination_kind,
     entries,
+    instruction_field,
     instruction_index,
     pieces_from,
     preview,
@@ -70,6 +71,8 @@ from blossom.screenshot_review import (
     validate,
     value_json,
     value_of,
+    wordless_card,
+    wordless_field,
     written_dates,
 )
 from blossom.screenshots import (
@@ -355,14 +358,14 @@ among them."""
 
 def correctable(field: str) -> bool:
     """Whether a field takes a typed correction."""
-    return field in CORRECTABLE or instruction_index(field) is not None
+    return field in CORRECTABLE or instruction_field(field)
 
 
 def correction_text(field: str, value: str) -> str:
     """A typed correction as it is kept: in a box of several lines, which a browser posts with
     a carriage return and a line feed, every line ending made one line feed, as a paste's are;
     otherwise as typed."""
-    if field not in MANY_LINES and instruction_index(field) is None:
+    if field not in MANY_LINES and not instruction_field(field):
         return value
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -403,22 +406,28 @@ def confirm_fields(piece: Piece) -> frozenset[str]:
 
 def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
     """Whether a correction Blossom can use answers an unsure field: the row's box for its
-    class, title or instructions (a text's removal among them; on a row read with no text, only
-    words typed in its one empty box), and the piece's own box for its due date (``footer``) or
-    assigned date (``heading``), an assigned date given as none among them. In saved progress
-    of shape 3, the field's own correction answers it."""
+    class, title or instructions (a text's removal among them, and words typed in the empty box
+    of one of its cards read with none), and the piece's own box for its due date (``footer``)
+    or assigned date (``heading``), an assigned date given as none among them. An instruction
+    correction answers only where it takes effect: for a text the row has, or for one of the
+    row's cards read with no words. In saved progress of shape 3, the field's own correction
+    answers it."""
     row = corrections.get(piece.key, {})
     dates = corrections.get(dates_key(piece.name), {})
     if usable_correction(field, row.get(field)):
         return True
     if field == "instruction":
-        if piece.as_read is not None and not piece.as_read.texts:
-            return usable_correction("instruction:0", row.get("instruction:0"))
-        return any(
-            instruction_index(name) is not None
-            and (value is None or usable_correction(name, value))
-            for name, value in row.items()
-        )
+        read = piece.as_read
+        texts = 0 if read is None else len(read.texts)
+        cards = () if read is None else read.wordless
+        for name, value in row.items():
+            index = instruction_index(name)
+            if index is not None and index < texts:
+                if value is None or usable_correction(name, value):
+                    return True
+            elif wordless_card(name) in cards and usable_correction(name, value):
+                return True
+        return False
     if field == "footer":
         return usable_correction("due", dates.get("due"))
     if field == "heading":
@@ -427,45 +436,31 @@ def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
     return False
 
 
-def wordless_rows(pieces: Iterable[Piece]) -> frozenset[str]:
-    """The rows read with no instruction text whose instructions the reader wasn't sure of:
-    each offers one empty Instructions box, for the words that weren't read."""
-    return frozenset(
-        piece.key
-        for piece in pieces
-        if piece.as_read is not None
-        and not piece.as_read.texts
-        and "instruction" in confirm_fields(piece)
-    )
-
-
-def box_texts(piece: Piece, wordless: Collection[str]) -> tuple[str, ...]:
-    """The instruction texts a piece's row's boxes hold with no correction, one box each: its
-    texts as read, or one empty box on a row of ``wordless_rows``."""
+def own_wordless(piece: Piece) -> tuple[CardPlace, ...]:
+    """The piece's own cards read with no instruction words whose instructions the reader
+    wasn't sure of: each offers one empty Instructions box, among its row's boxes, whose words
+    go to this piece."""
     read = piece.as_read
-    if read is None:
-        return ()
-    if read.texts:
-        return read.texts
-    return ("",) if piece.key in wordless else ()
+    return () if read is None else tuple(c for c in read.wordless if c in piece.cards)
 
 
 def fold_reads(state: "ReviewState") -> dict[tuple[str, str], str | None]:
     """Each box the review's open cards offer, by key and field, with its value with no
     correction as a box is compared with it: a row's class, title and each instruction text,
-    canonical, the one empty box of a row read with no words it wasn't sure of among them; a
+    canonical, and the empty box of each open card read with no words it wasn't sure of; a
     piece's due date (none while which due date waits) and assigned date, as ISO dates or
     None."""
     out: dict[tuple[str, str], str | None] = {}
-    wordless = wordless_rows(state.open)
     for piece in state.open:
         read = piece.as_read
         if read is None:
             continue
         out[(piece.key, "course")] = canonical(read.course)
         out[(piece.key, "title")] = canonical(read.title)
-        for index, text in enumerate(box_texts(piece, wordless)):
+        for index, text in enumerate(read.texts):
             out[(piece.key, f"instruction:{index}")] = canonical(text)
+        for card in own_wordless(piece):
+            out[(piece.key, wordless_field(card))] = ""
         key = dates_key(piece.name)
         out[(key, "due")] = None if read.due is None else read.due.isoformat()
         out[(key, "assigned")] = None if read.assigned is None else read.assigned.isoformat()
@@ -516,8 +511,14 @@ def correction_digest(
 
 def piece_digest(piece: Piece, corrections: Corrections) -> str:
     """The digest a piece's destination answer is stored with: its row's corrections and its
-    own dates, so an edit of another piece's date leaves it."""
-    return correction_digest(corrections.get(piece.key), corrections.get(dates_key(piece.name)))
+    own dates, so an edit of another piece's date, or words typed for another piece's card read
+    with none, leaves it."""
+    row = {
+        field: value
+        for field, value in (corrections.get(piece.key) or {}).items()
+        if (card := wordless_card(field)) is None or card in piece.cards
+    }
+    return correction_digest(row, corrections.get(dates_key(piece.name)))
 
 
 # ------------------------------------------------------------------ the review's state
@@ -1004,7 +1005,7 @@ def _values_read(
         return frozenset(days - {None})
     if target == "assigned":
         return frozenset({one.heading_day for one in piece.seen if one.card == "assigned"} - {None})
-    attribute = "instruction" if instruction_index(field) is not None else field
+    attribute = "instruction" if instruction_field(field) else field
     cards = [placed[c].card for c in piece.cards if c in placed]
     return frozenset(getattr(card, attribute) for card in cards if card is not None)
 

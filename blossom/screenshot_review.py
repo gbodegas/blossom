@@ -25,7 +25,7 @@ import blossom.intake as intake
 from blossom.grades.draft import folded
 from blossom.intake import Reading
 from blossom.reconciliation import SourceChannel
-from blossom.school_instructions import InstructionSeen
+from blossom.school_instructions import InstructionSeen, instruction_words
 from blossom.screenshots import (
     INSTRUCTION_MOST,
     KEY_INSTANT,
@@ -33,6 +33,7 @@ from blossom.screenshots import (
     TITLE_MOST,
     CardPlace,
     HomeworkReading,
+    PlacedCard,
     ScreenshotRow,
     cards_placed,
     homework_assembly,
@@ -79,13 +80,16 @@ class SavedRow:
 class AsRead:
     """What a piece's fields are with no correction: its row's class, title and distinct
     instruction texts as read, in reading order, and its own due and assigned dates after the
-    split answer and the stored "which due date" answer (no due date while that waits)."""
+    split answer and the stored "which due date" answer (no due date while that waits); and
+    its row's cards read with no instruction words whose instructions the reader wasn't sure
+    of, each of which offers one empty Instructions box."""
 
     course: str
     title: str
     texts: tuple[str, ...]
     due: date | None
     assigned: date | None
+    wordless: tuple[CardPlace, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1084,8 +1088,9 @@ def typed_day(value: str) -> date | None:
 
 Corrections = Mapping[str, Mapping[str, str | None]]
 """Typed corrections by key and field. A row's key holds its class, title and instruction
-texts; ``date:{piece name}`` holds that piece's due and assigned dates. A text's removal, and
-an assigned date given as none, are ``None``."""
+texts, and the words typed for each of its cards read with none (``WORDLESS_FIELD``);
+``date:{piece name}`` holds that piece's due and assigned dates. A text's removal, and an
+assigned date given as none, are ``None``."""
 
 ROW_FIELDS: Final = ("course", "title")
 """A row's corrected text fields besides its instruction texts."""
@@ -1098,7 +1103,12 @@ DATE_FIELDS: Final = frozenset({*OLD_DATES, *PIECE_DATES})
 """The fields a parent corrects with a date."""
 INSTRUCTION_FIELD: Final = re.compile(r"instruction:(0|[1-9][0-9]{0,3})")
 """One instruction text's field: ``instruction:`` and the text's index among its row's
-distinct texts as read; on a row read with no text, ``instruction:0`` is the words added."""
+distinct texts as read."""
+WORDLESS_FIELD: Final = re.compile(r"instruction:([0-9a-f]{64}):(0|[1-9][0-9]{0,3})")
+"""The field of one card read with no instruction words whose instructions the reader wasn't
+sure of: ``instruction:``, its screenshot's SHA-256 and its place in that screenshot's reading.
+Its words are added to the piece holding that card, wherever its row's other cards and texts
+fall."""
 
 
 CORRECTION_MOST: Final = {
@@ -1128,9 +1138,26 @@ def instruction_index(field: str) -> int | None:
     return None if found is None else int(found.group(1))
 
 
+def wordless_field(card: CardPlace) -> str:
+    """The field of the Instructions box of a card read with no instruction words."""
+    return f"instruction:{card.sha256}:{card.place}"
+
+
+def wordless_card(field: str) -> CardPlace | None:
+    """The card read with no instruction words a field adds words for, or None for any other
+    field."""
+    found = WORDLESS_FIELD.fullmatch(field)
+    return None if found is None else CardPlace(found.group(1), int(found.group(2)))
+
+
+def instruction_field(field: str) -> bool:
+    """Whether a field is an Instructions box's: one text's, or one card's read with none."""
+    return instruction_index(field) is not None or wordless_card(field) is not None
+
+
 def field_most(field: str) -> int:
     """The most characters a field's correction takes; 0 for a field that takes none."""
-    if instruction_index(field) is not None:
+    if instruction_field(field):
         return INSTRUCTION_MOST
     return CORRECTION_MOST.get(field, 0)
 
@@ -1138,6 +1165,22 @@ def field_most(field: str) -> int:
 def row_texts(reading: Reading) -> tuple[str, ...]:
     """A reading's distinct instruction texts, in reading order, as its boxes index them."""
     return tuple(dict.fromkeys(i.text for i in reading.instructions))
+
+
+def wordless_of(
+    placed: Mapping[CardPlace, PlacedCard], cards: Iterable[CardPlace]
+) -> tuple[CardPlace, ...]:
+    """The cards among these read with no instruction words whose instructions the reader
+    wasn't sure of, in their order."""
+    out = []
+    for place in cards:
+        found = placed.get(place)
+        if found is None or found.card is None:
+            continue
+        card = found.card
+        if not instruction_words(card.instruction) and "instruction" in card.uncertain_fields:
+            out.append(place)
+    return tuple(out)
 
 
 def usable_correction(field: str, value: str | None) -> bool:
@@ -1180,12 +1223,13 @@ def corrected(
     fields: Mapping[str, str | None] | None,
     dates: Mapping[str, str | None] | None = None,
     texts: Sequence[str] = (),
+    wordless: Sequence[CardPlace] = (),
 ) -> Reading:
     """The reading with the parent's corrections: its row's class and title, the kind its
     corrected title suggests, each instruction text replaced or removed by its index among
-    ``texts``, and its own due and assigned dates, the assigned date set to none where she
-    said none was given. On a row read with no instruction text, text 0 is the words that
-    weren't read, added. In saved progress of shape 3, an instruction correction replaces
+    ``texts``, the words typed for each of its own cards read with none (``wordless``) added,
+    each text once, and its own due and assigned dates, the assigned date set to none where she
+    said none was given. In saved progress of shape 3, an instruction correction replaces
     every text, or is added where none was read, and the due line and day heading set the
     dates ``date_target`` names. A correction Blossom can't use is passed over."""
     fields, dates = fields or {}, dates or {}
@@ -1204,7 +1248,7 @@ def corrected(
         if (index := instruction_index(field)) is not None and index < len(texts)
     }
     old = fields.get("instruction")
-    added = None if texts else fields.get("instruction:0")
+    seen: list[InstructionSeen] | None = None
     if by_text:
         seen = []
         for one in reading.instructions:
@@ -1219,14 +1263,18 @@ def corrected(
                 if usable_correction("instruction", value)
                 else one
             )
-        change["instructions"] = tuple({i.text: i for i in seen}.values())
     elif old is not None and usable_correction("instruction", old):
         words = old.strip()
-        replaced = [dataclasses.replace(i, text=words) for i in reading.instructions]
-        replaced = replaced or [InstructionSeen(words, SourceChannel.LMS)]
-        change["instructions"] = tuple({i.text: i for i in replaced}.values())
-    elif added is not None and usable_correction("instruction:0", added):
-        seen = [*reading.instructions, InstructionSeen(added.strip(), SourceChannel.LMS)]
+        seen = [dataclasses.replace(i, text=words) for i in reading.instructions]
+        seen = seen or [InstructionSeen(words, SourceChannel.LMS)]
+    added = [
+        InstructionSeen(str(value).strip(), SourceChannel.LMS)
+        for field in map(wordless_field, wordless)
+        if usable_correction(field, value := fields.get(field))
+    ]
+    if added:
+        seen = [*(reading.instructions if seen is None else seen), *added]
+    if seen is not None:
         change["instructions"] = tuple({i.text: i for i in seen}.values())
     due = None
     for field in OLD_DATES:
@@ -1296,6 +1344,7 @@ def pieces_from(
     undated cards, each read from its own cards and dated by them alone. Each piece keeps its
     fields with no correction beside the corrected ones."""
     rows = list(homework_assembly(list(readings), now=now).rows)
+    placed = cards_placed(readings)
     corrections = corrections or {}
     out: list[Piece] = []
     asking: list[ScreenshotRow] = []
@@ -1309,11 +1358,18 @@ def pieces_from(
         marks: frozenset[str],
     ) -> Piece:
         texts = row_texts(row.reading)
+        wordless = wordless_of(placed, row.sources)
+        mine = [card for card in wordless if card in cards]
         fixed = corrected(
-            reading, corrections.get(row.key), corrections.get(dates_key(name)), texts
+            reading, corrections.get(row.key), corrections.get(dates_key(name)), texts, mine
         )
         read = AsRead(
-            row.reading.course, row.reading.title, texts, reading.due_date, reading.assigned_on
+            row.reading.course,
+            row.reading.title,
+            texts,
+            reading.due_date,
+            reading.assigned_on,
+            wordless,
         )
         return _piece(name, row.key, fixed, cards, is_split, marks, read)
 

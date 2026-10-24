@@ -49,18 +49,18 @@ from blossom.screenshot_review import (
     usable_correction,
     value_json,
     value_of,
+    wordless_field,
 )
 from blossom.screenshot_save import (
     ReviewState,
-    box_texts,
     confirm_fields,
     confirm_subject,
     fold_answers,
     instruction_subject,
+    own_wordless,
     read_digest,
     unit_digests,
     unreadable_dates,
-    wordless_rows,
 )
 from blossom.screenshots import CardPlace, ScreenshotRow, UnreadCard
 
@@ -106,6 +106,7 @@ SAID: Final = {
     "fold": "Correct what was read",
     "said_fold": "What the screenshot said",
     "source": "From screenshot {shot}, card {card}",
+    "wordless_box": "Instructions on screenshot {shot}, card {card}",
     "read_as": "read as {title}",
     "view": "View screenshot",
     "due_hint": "Choose which due date applies above, or type the right one.",
@@ -496,12 +497,14 @@ def fold_boxes(
     corrections: Corrections,
     unsaved: frozenset[tuple[str, str]],
     both: frozenset[str],
-    texts: Sequence[str],
+    wordless: Sequence[tuple[str, str]],
 ) -> tuple[Box, ...]:
     """The boxes of a card's "Correct what was read", each holding its field's whole current
-    value: the row's class, title and one box per instruction text of ``texts`` (``box_texts``,
-    one empty box where the reader wasn't sure of words it didn't read) when ``row_boxes`` (on
-    the row's first open card), then the piece's due and assigned dates."""
+    value: the row's class, title, one box per instruction text and one empty box per open card
+    read with no words the reader wasn't sure of (``wordless``, by field and label, the label
+    naming its screenshot and card) when ``row_boxes`` (on the row's first open card), then
+    the piece's due and assigned dates. An instruction correction of saved progress of shape 3,
+    which replaced every text, is in each of the row's Instructions boxes."""
     read = piece.as_read
     if read is None:
         return ()
@@ -522,20 +525,24 @@ def fold_boxes(
                 )
             )
         old = row.get("instruction")
-        for index, text in enumerate(texts):
-            field = f"instruction:{index}"
+        words = (
+            old.strip() if isinstance(old, str) and usable_correction("instruction", old) else None
+        )
+        boxes = [
+            (f"instruction:{i}", BOX_LABELS["instruction"], t) for i, t in enumerate(read.texts)
+        ]
+        boxes += [(field, label, "") for field, label in wordless]
+        for field, label, text in boxes:
             if field in row:
                 typed = row[field]
                 typed = "" if typed is None else typed
-            elif isinstance(old, str) and usable_correction("instruction", old):
-                typed = old.strip() if index == 0 else ""
             else:
-                typed = None
+                typed = words
             out.append(
                 _text_box(
                     piece.key,
                     field,
-                    BOX_LABELS["instruction"],
+                    label,
                     "lines",
                     text,
                     typed,
@@ -1350,7 +1357,13 @@ def rows_shown(
             confirm_on.setdefault((piece.key, field), host)
     previews = {e.dest: e for e in state.preview}
     digests = unit_digests(state)
-    wordless = wordless_rows(open_pieces)
+    wordless: dict[str, list[tuple[str, str]]] = {}
+    for place, owner in sorted(
+        ((c, p) for p in open_pieces for c in own_wordless(p)),
+        key=lambda found: (places.get(found[0].sha256, 0), found[0].place),
+    ):
+        label = SAID["wordless_box"].format(shot=places.get(place.sha256, 0), card=place.place + 1)
+        wordless.setdefault(owner.key, []).append((wordless_field(place), label))
 
     def card_of(piece: Piece, head: CardHead | None) -> CardShown:
         about = piece_text(places, piece)
@@ -1380,7 +1393,7 @@ def rows_shown(
                     answered=fold_answers(piece, field, corrections),
                 )
             )
-        boxes = fold_boxes(piece, own, corrections, unsaved, both, box_texts(piece, wordless))
+        boxes = fold_boxes(piece, own, corrections, unsaved, both, wordless.get(piece.key, ()))
         sources = tuple(
             (
                 SAID["source"].format(shot=places.get(c.sha256, 0), card=c.place + 1),

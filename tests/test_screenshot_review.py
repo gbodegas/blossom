@@ -1104,21 +1104,39 @@ def test_an_old_instruction_correction_replaces_every_text() -> None:
     assert replaced.words == frozenset({W3})
 
 
-def test_words_typed_for_a_row_read_without_any_are_added_once() -> None:
-    """On a row read with no instruction text, text 0 is the words typed for it, added once;
-    another index, or the words cleared, adds nothing."""
-    readings = [shot("wed", "Wednesday 10/14/2026", due_card(None))]  # type: ignore[arg-type]
-    read = one_piece(readings)
-    added = one_piece(readings, {read.key: {"instruction:0": f"  {W1}  "}})
-    beyond = one_piece(readings, {read.key: {"instruction:1": W1}})
-    cleared = one_piece(readings, {read.key: {"instruction:0": None}})
+def wordless_due_card(top: int = 450) -> dict[str, object]:
+    """The due card read with no words, the reader unsure of its instructions."""
+    card = due_card("", top)
+    card.update(instruction=None, uncertain=[{"field": "instruction", "reason": "faint"}])
+    return card
 
+
+def test_words_typed_for_a_card_read_without_any_are_added_to_its_piece_once() -> None:
+    """A card read with no words whose instructions the reader wasn't sure of has a field of its
+    own, its screenshot and place: words typed there are added to its piece once, stripped,
+    beside the row's other words. A text index, the words cleared, a card read with words or
+    another screenshot's card adds nothing."""
+    readings = mon_wed_row(assigned_card(W1), wordless_due_card())
+    read = one_piece(readings)
     assert read.as_read is not None
-    assert read.as_read.texts == ()
-    assert added.words == frozenset({W1})
+    [card] = read.as_read.wordless
+    field = review.wordless_field(card)
+    added = one_piece(readings, {read.key: {field: f"  {W2}  "}})
+    twice = one_piece(readings, {read.key: {field: W1}})
+    elsewhere = review.wordless_field(CardPlace("0" * 64, card.place))
+    others: list[dict[str, str | None]] = [{"instruction:1": W2}, {field: None}, {elsewhere: W2}]
+    if card.place != 0:
+        others.append({review.wordless_field(CardPlace(card.sha256, 0)): W2})
+
+    assert read.as_read.texts == (W1,)
+    assert review.wordless_card(field) == card
+    assert added.words == frozenset({W1, W2})
     assert added.reading is not None
-    assert [i.text for i in added.reading.instructions] == [W1]
-    assert beyond.words == cleared.words == frozenset()
+    assert [i.text for i in added.reading.instructions] == [W1, W2]
+    assert twice.words == frozenset({W1})
+    assert [one_piece(readings, {read.key: other}).words for other in others] == [
+        frozenset({W1})
+    ] * len(others)
 
 
 def test_already_saved_sees_the_corrected_none() -> None:

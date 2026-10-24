@@ -24,7 +24,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Final
 from urllib.parse import urlencode
 
@@ -34,7 +34,13 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 from PIL import Image
 
-from blossom import screenshot_page, screenshot_posts, screenshot_reading, screenshot_save
+from blossom import (
+    screenshot_page,
+    screenshot_posts,
+    screenshot_reading,
+    screenshot_review,
+    screenshot_save,
+)
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
 from blossom.household import UnreadableHouseholdSecret
@@ -6922,7 +6928,7 @@ def wordless_review(
     draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[card])))
     page = her_name_answered(browser, draft_id, page)
     [confirm] = fields_named(review_form(page), "answer:confirm:")
-    box = f"correct:{box_subject(page, 'instruction:0')}"
+    [box] = word_boxes(page)
     return draft_id, page, box, f"answer:confirm:{confirm}"
 
 
@@ -7002,13 +7008,14 @@ def test_an_untouched_empty_instructions_box_answers_nothing_and_saves_nothing(
 def test_a_removal_kept_for_a_row_read_without_words_answers_nothing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Saved progress holding a removal for the empty box's index, or words at another index,
-    as a change of screenshots can leave it: the box stays empty, the question stays to
-    answer, and the next press keeps neither."""
+    """Saved progress holding a removal or words for a text the row doesn't have, or words for
+    a card that isn't the row's, as a change of screenshots can leave it: the box stays empty,
+    the question stays to answer, and the next press keeps none of them."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, box, _ = wordless_review(browser, monkeypatch)
         key = json.loads(box.removeprefix("correct:"))[0]
-        kept = {key: {"instruction:0": None, "instruction:1": MISSING_WORDS}}
+        gone = f"instruction:{'0' * 64}:0"
+        kept = {key: {"instruction:0": None, "instruction:1": MISSING_WORDS, gone: MISSING_WORDS}}
         saved_progress(browser, draft_id, {"v": 4, "corrected": kept, "selected": []})
         shown = browser.get(f"/parent/imports/{draft_id}").text
         later_page = later(browser, draft_id, shown)
@@ -7067,8 +7074,8 @@ def test_words_typed_for_missing_instructions_survive_later_reopening_and_a_refu
         )
         texts = saved_texts(browser)
 
-    key = json.loads(box.removeprefix("correct:"))[0]
-    assert held == {key: {"instruction:0": MISSING_WORDS}}
+    key, field = json.loads(box.removeprefix("correct:"))
+    assert held == {key: {field: MISSING_WORDS}}
     for shown in (later_page, reopened, refused.text, kept):
         assert box_of(review_form(shown), box)[1] == MISSING_WORDS  # type: ignore[index]
         assert not says(shown, screenshot_page.OPEN_NAMES["confirm"])
@@ -7098,11 +7105,339 @@ def test_old_progress_with_words_for_a_row_read_without_any_reads_back_in_its_bo
         )
         texts = saved_texts(browser)
 
+    field = json.loads(box.removeprefix("correct:"))[1]
     assert box_of(review_form(shown), box)[1] == MISSING_WORDS  # type: ignore[index]
     assert not says(shown, screenshot_page.OPEN_NAMES["confirm"])
-    assert held == {key: {"instruction:0": MISSING_WORDS}}
+    assert held == {key: {field: MISSING_WORDS}}
     assert says(saved, imports.counted(1, 0, 0, 0))
     assert texts == (MISSING_WORDS,)
+
+
+# ------------------------------------------- an unsure card read without words, beside others
+
+
+WORD_BOX: Final = re.compile(r"instruction:[0-9a-f]{64}:(0|[1-9][0-9]*)")
+"""The field of the Instructions box of a card read without words."""
+
+
+def word_boxes(page: str) -> list[str]:
+    """The names of the Instructions boxes of cards read without words, in page order."""
+    return [
+        f"correct:{subject}"
+        for subject in fields_named(review_form(page), "correct:")
+        if WORD_BOX.fullmatch(json.loads(subject)[1])
+    ]
+
+
+def label_of(page: str, name: str) -> str:
+    """The visible words of a box's label."""
+    found = re.search(
+        rf'<label class="lines">([^<]*)<span class="visually-hidden">[^<]*</span> '
+        rf'<textarea name="{re.escape(str(escape(name)))}"',
+        page,
+    )
+    assert found is not None
+    return found.group(1)
+
+
+def kept_texts(browser: TestClient, title: str = "Sentence Composing") -> list[tuple[str, ...]]:
+    """The instruction texts kept for each English 8 assignment of this title."""
+    record = state_of(browser).project_state
+    rows = [a for a in record.all_assignments() if (a.course, a.title) == ("English 8", title)]
+    readable = record.school_instruction_readings([a.assignment_id for a in rows]).readable
+    return [readable[a.assignment_id].texts if a.assignment_id in readable else () for a in rows]
+
+
+UNSURE_WORDS: Final = [{"field": "instruction", "reason": "faint"}]
+READ_AT: Final = datetime(2026, 10, 6, 12, tzinfo=UTC)
+"""An instant to read pieces at; no key or word reads it."""
+
+
+def on_day(day: str, *cards: dict[str, Any]) -> dict[str, Any]:
+    return homework_answer(headings=[{"text": day, "y": 150, "uncertain": None}], cards=list(cards))
+
+
+def joined_answers() -> tuple[dict[str, Any], dict[str, Any]]:
+    """The reported case: an assigned card with words under Monday, and the same assignment's
+    due card under Thursday, read without words and unsure of them."""
+    return (
+        on_day("Monday 10/5/2026", homework_card()),
+        on_day(
+            "Thursday 10/8/2026",
+            homework_card(badge="DUE", instruction=None, footer=None, uncertain=UNSURE_WORDS),
+        ),
+    )
+
+
+def test_an_unsure_card_read_without_words_beside_one_with_words_has_its_own_box(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The due card read without words beside the assigned card's words: the row keeps its
+    text's box and adds one empty box for the due card, labeled with its screenshot and card.
+    Left empty it answers nothing; words typed there survive Save review for later and
+    reopening, and are saved once beside the other card's words."""
+    monday, thursday = joined_answers()
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, thursday))
+        page = her_name_answered(browser, draft_id, page)
+        [box] = word_boxes(page)
+        text = f"correct:{box_subject(page, 'instruction:0')}"
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        later_page = later(browser, draft_id, kept, **{box: MISSING_WORDS})
+        held = progress_after(browser, draft_id)
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+        saved = followed(
+            browser, send(browser, draft_id, page_post(reopened, "save", tick=units_on(reopened)))
+        )
+        texts = kept_texts(browser)
+
+    form = review_form(page)
+    key, field = json.loads(box.removeprefix("correct:"))
+    unsure = screenshot_page.OPEN_NAMES["confirm"]
+    assert box_of(form, text)[1] == "Complete pages 12 to 14."  # type: ignore[index]
+    assert box_of(form, box)[1] == ""  # type: ignore[index]
+    assert label_of(form, box) == "Instructions on screenshot 2, card 1"
+    assert label_of(form, text) == "Instructions"
+    assert says(kept, f"Still to answer: {unsure}.")
+    assert held == {key: {field: MISSING_WORDS}}
+    for shown in (later_page, reopened):
+        assert box_of(review_form(shown), box)[1] == MISSING_WORDS  # type: ignore[index]
+        assert box_of(review_form(shown), text)[1] == "Complete pages 12 to 14."  # type: ignore[index]
+        assert not says(shown, unsure)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert texts == [("Complete pages 12 to 14.", MISSING_WORDS)]
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "saved"),
+    [
+        (
+            "Read chapter 3.",
+            "Answer questions 1 to 5.",
+            ("Read chapter 3.", "Answer questions 1 to 5."),
+        ),
+        ("Read chapter 3.", "Read chapter 3.", ("Read chapter 3.",)),
+    ],
+    ids=["different words", "the same words"],
+)
+def test_each_unsure_card_read_without_words_has_its_own_box_and_its_words_are_saved_once(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first: str,
+    second: str,
+    saved: tuple[str, ...],
+) -> None:
+    """Two cards of one assignment read without words, each unsure: one empty box each, named
+    by its screenshot and card. What each holds survives Save review for later and reopening,
+    and is saved once, the same words once in all."""
+    assigned = homework_card(instruction=None, uncertain=UNSURE_WORDS)
+    due = homework_card(badge="DUE", instruction=None, footer=None, uncertain=UNSURE_WORDS)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser,
+            monkeypatch,
+            (RED, on_day("Monday 10/5/2026", assigned)),
+            (BLUE, on_day("Thursday 10/8/2026", due)),
+        )
+        page = her_name_answered(browser, draft_id, page)
+        boxes = word_boxes(page)
+        typed = dict(zip(boxes, (first, second), strict=True))
+        later_page = later(browser, draft_id, page, **typed)
+        held = progress_after(browser, draft_id)
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+        pressed = followed(
+            browser, send(browser, draft_id, page_post(reopened, "save", tick=units_on(reopened)))
+        )
+        texts = kept_texts(browser)
+
+    form = review_form(page)
+    [key] = {json.loads(b.removeprefix("correct:"))[0] for b in boxes}
+    assert len(boxes) == 2
+    assert [label_of(form, b) for b in boxes] == [
+        "Instructions on screenshot 1, card 1",
+        "Instructions on screenshot 2, card 1",
+    ]
+    assert held == {key: {json.loads(b.removeprefix("correct:"))[1]: typed[b] for b in boxes}}
+    for shown in (later_page, reopened):
+        assert [box_of(review_form(shown), b)[1] for b in boxes] == [first, second]  # type: ignore[index]
+    assert says(pressed, imports.counted(1, 0, 0, 0))
+    assert [set(found) for found in texts] == [set(saved)]
+    assert [len(found) for found in texts] == [len(saved)]
+
+
+def test_words_for_an_unsure_card_go_to_its_own_piece_and_leave_the_other_piece_s_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row split by its assigned days, Tuesday's card read without words and unsure: its box
+    sits with the row's boxes, labeled with its screenshot and card, and the words typed there
+    go to Tuesday's piece alone. Kept with those words and opened again before they were saved,
+    only Tuesday's piece asks where it goes again; Monday's keeps its words and its answer."""
+    monday = on_day("Monday 10/5/2026", homework_card(instruction="Read chapter 1."))
+    tuesday = on_day("Tuesday 10/6/2026", homework_card(instruction=None, uncertain=UNSURE_WORDS))
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        page = her_name_answered(browser, draft_id, page)
+        [row] = fields_named(review_form(page), "answer:split:")
+        keep(browser, draft_id, ("split", row, json.dumps("split")))
+        split = browser.get(f"/parent/imports/{draft_id}").text
+        days = fields_named(review_form(split), "answer:destination:")
+        chosen = {f"answer:destination:{d}": f'{{"new":{n}}}' for n, d in enumerate(days, 1)}
+        placed = followed(browser, send(browser, draft_id, page_post(split, "keep", choose=chosen)))
+        [box] = word_boxes(placed)
+        send(browser, draft_id, page_post(placed, "keep", typed={box: MISSING_WORDS}))
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+        student = state_of(browser).project_state.student_id()
+        tables = state_of(browser).project_state.draft_for_save(student, draft_id)
+        assert tables is not None
+        key, field = json.loads(box.removeprefix("correct:"))
+        pieces, _, _ = screenshot_review.pieces_from(
+            tables.readings,
+            {row: "split"},
+            frozenset(),
+            READ_AT,
+            {key: {field: MISSING_WORDS}},
+        )
+
+    by_day = {p.name.split("|")[1]: p for p in pieces}
+    assert label_of(review_form(placed), box) == "Instructions on screenshot 2, card 1"
+    assert by_day["2026-10-05"].words == frozenset({"Read chapter 1."})
+    assert by_day["2026-10-06"].words == frozenset({MISSING_WORDS})
+    assert [
+        name for name, _ in checked_values(review_form(reopened)) if "destination:" in name
+    ] == [f"answer:destination:{days[0]}"]
+    assert reopened.count(str(escape(screenshot_page.SAID["lost_correction"]))) == 1
+
+
+def test_an_old_instruction_correction_on_a_split_row_reaches_every_piece(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saved progress of shape 3 holding one instruction correction for a split row whose
+    pieces read different words: it replaced every text, so every piece holds the corrected
+    words, before the first press converts it and after."""
+    words = "Read both chapters."
+    monday = on_day("Monday 10/5/2026", homework_card(instruction="Read chapter 1."))
+    tuesday = on_day("Tuesday 10/6/2026", homework_card(instruction="Read chapter 2."))
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        page = her_name_answered(browser, draft_id, page)
+        [row] = fields_named(review_form(page), "answer:split:")
+        keep(browser, draft_id, ("split", row, json.dumps("split")))
+        saved_progress(
+            browser, draft_id, {"v": 3, "corrected": {row: {"instruction": words}}, "selected": []}
+        )
+        shown = browser.get(f"/parent/imports/{draft_id}").text
+        later(browser, draft_id, shown)
+        held = progress_after(browser, draft_id)
+        student = state_of(browser).project_state.student_id()
+        tables = state_of(browser).project_state.draft_for_save(student, draft_id)
+        assert tables is not None
+
+    def words_of(corrections: screenshot_review.Corrections) -> list[frozenset[str]]:
+        pieces, _, _ = screenshot_review.pieces_from(
+            tables.readings, {row: "split"}, frozenset(), READ_AT, corrections
+        )
+        return [p.words for p in pieces if p.key == row]
+
+    texts = [f"correct:{box_subject(shown, f'instruction:{i}')}" for i in range(2)]
+    assert [box_of(review_form(shown), t)[1] for t in texts] == [words, words]  # type: ignore[index]
+    assert words_of({row: {"instruction": words}}) == [frozenset({words})] * 2
+    assert held == {row: {"instruction:0": words, "instruction:1": words}}
+    assert words_of(held) == [frozenset({words})] * 2
+
+
+@pytest.mark.parametrize(
+    ("old", "box"),
+    [("footer", "due"), ("heading", "assigned")],
+)
+def test_old_date_text_blossom_can_t_read_is_kept_as_typed_in_its_box(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, old: str, box: str
+) -> None:
+    """Saved progress of shape 3 holding a due line or day heading Blossom can't read as a date:
+    the box that date goes to holds the text as typed, says it can't be read, and Save review
+    for later keeps it as typed there."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        page = her_name_answered(browser, draft_id, page)
+        key = json.loads(box_subject(page, "title"))[0]
+        saved_progress(
+            browser, draft_id, {"v": 3, "corrected": {key: {old: "next Tuesday"}}, "selected": []}
+        )
+        shown = browser.get(f"/parent/imports/{draft_id}").text
+        later_page = later(browser, draft_id, shown)
+        held = progress_after(browser, draft_id)
+
+    named = f"correct:{box_subject(shown, box)}"
+    said = screenshot_page.SAID["unreadable"].format(value="next Tuesday")
+    for page_shown in (shown, later_page):
+        assert says(page_shown, said)
+        assert box_of(review_form(page_shown), f"refused:{named.removeprefix('correct:')}")
+    assert held == {f"date:{key}": {box: "next Tuesday"}}
+
+
+def test_a_kept_correction_for_an_instruction_box_the_row_lacks_answers_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saved progress holding words at an index past the row's texts, which no box offers: the
+    unsure instructions stay to answer, as the save holds them, and the next press keeps
+    nothing of it."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, boxes = unsure_review(browser, monkeypatch, "instruction")
+        key = json.loads(boxes["instruction"].removeprefix("correct:"))[0]
+        stale = {key: {"instruction:3": MISSING_WORDS}}
+        saved_progress(browser, draft_id, {"v": 4, "corrected": stale, "selected": []})
+        shown = browser.get(f"/parent/imports/{draft_id}").text
+        refused = followed(
+            browser, send(browser, draft_id, page_post(shown, "save", tick=digests_on(shown)))
+        )
+        later_page = later(browser, draft_id, refused)
+        held = progress_after(browser, draft_id)
+
+    unsure = screenshot_page.OPEN_NAMES["confirm"]
+    assert says(shown, f"Still to answer: {unsure}.")
+    assert says(refused, REFUSED_OPEN)
+    assert says(later_page, f"Still to answer: {unsure}.")
+    assert held == {}
+
+
+def test_a_save_that_closed_the_review_says_so_when_her_week_can_t_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The save committed and closed the review, then reading the assignments for the way to
+    her week fails: the press still answers with the saved outcome, with no way to her week, and
+    a resend of it answers the same."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        record = state_of(browser).project_state
+        real_save, real_read = screenshot_save.save_homework, record.all_assignments
+        committed: list[object] = []
+
+        def save_then_mark(*args: object, **kwargs: object) -> object:
+            outcome = real_save(*args, **kwargs)  # type: ignore[arg-type]
+            committed.append(outcome)
+            return outcome
+
+        def read_unless_saved() -> list[Assignment]:
+            if committed:
+                failed = "synthetic: the read failed"
+                raise sqlite3.OperationalError(failed)
+            return real_read()
+
+        monkeypatch.setattr(imports, "save_homework", save_then_mark)
+        monkeypatch.setattr(record, "all_assignments", read_unless_saved)
+        posted = page_post(page, "save", tick=units_on(page))
+        saved = send(browser, draft_id, posted)
+        again = send(browser, draft_id, posted)
+        monkeypatch.setattr(record, "all_assignments", real_read)
+        made = [a for a in record.all_assignments() if a.course in ("English 8", "Science 8")]
+
+    for answer in (saved, again):
+        assert answer.status_code == 200
+        assert says(answer.text, "Saved: 2 new assignments.")
+        assert "See them on her week" not in answer.text
+    assert len(made) == 2
 
 
 def test_an_unsure_field_corrected_in_the_fold_isn_t_the_first_question(
