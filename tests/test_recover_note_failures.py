@@ -1281,7 +1281,8 @@ def test_a_help_form_refused_on_a_note_that_cannot_be_read_says_the_form_first(
         alert=f"{said} This homework note can't be shown right now. Your words are below.",
     )
     assert (
-        f'<textarea id="kept-help-question" rows="3" readonly>{escape(question)}</textarea>' in main
+        f'<textarea id="kept-help-question" rows="3" readonly>\n{escape(question)}</textarea>'
+        in main
     )
     assert '<a href="/student/due-this-week#ask-for-help">Open a new help form</a>' in main
     assert after == before

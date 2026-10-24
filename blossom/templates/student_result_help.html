@@ -31,11 +31,11 @@
     {% else %}
       <form method="post" action="{{ action }}" class="ask">
         <label for="help-question">Your question for a parent</label>
-        <input id="help-question" type="text" name="note"
-               value="{{ question }}"
-               maxlength="{{ note_max_length }}"
-               aria-describedby="{% if question_error %}note-problem {% endif %}help-question-hint"
-               {% if question_error %}aria-invalid="true"{% endif %}>
+        <textarea id="help-question" class="result-question" name="note" rows="4" wrap="soft"
+                  maxlength="{{ note_max_length }}"
+                  aria-describedby="{% if question_error %}note-problem {% endif %}help-question-hint"
+                  {% if question_error %}aria-invalid="true"{% endif %}>
+{{ question }}</textarea>
         <input type="hidden" name="request_id" value="{{ request_id }}">
         <p class="note" id="help-question-hint">Your parents see this question and can open this result. Nothing is sent until you press the button, and nothing goes to the school or to the planning model.</p>
         <div class="actions">

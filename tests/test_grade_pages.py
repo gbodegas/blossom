@@ -6537,7 +6537,7 @@ def card_of(page: str, title: str) -> str:
 
 def ask_form_of(page: str) -> dict[str, str]:
     """The ask page's form as a browser sends it: the field's words and the form's id."""
-    field = re.search(r'<input id="help-question" type="text" name="note"\s+value="([^"]*)"', page)
+    field = re.search(r'<textarea id="help-question"[^>]*>\n(.*?)</textarea>', page, re.S)
     form = re.search(r'name="request_id" value="([0-9a-f]{32})"', page)
     assert field is not None
     assert form is not None
@@ -7073,3 +7073,147 @@ def test_a_parent_s_json_list_and_move_name_the_result(tmp_path: pathlib.Path) -
         assert about["result_id"] == result_id
         assert (about["class_name"], about["title"]) == ("Biology", OSMOSIS)
         assert about["family_address"] == family_card
+
+
+def form_id_of(page: str) -> str:
+    """The id the ask page gave its form, whatever its field is."""
+    found = re.search(r'name="request_id" value="([0-9a-f]{32})"', page)
+    assert found is not None
+    return found.group(1)
+
+
+def test_line_breaks_count_once_against_the_cap_and_are_kept_as_one_kind(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A browser counts a line break once against the field's limit and sends it as CR LF; the
+    route counts and keeps it as one LF, so a question is never refused as too long for what
+    she could type."""
+    at_cap = "\r\n".join(["a" * 125, "b" * 124, "c" * 124, "d" * 124])
+    over_cap = at_cap + "e"
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        ask = HER_ASK.format(result_id=card_of(details.text, OSMOSIS))
+        refused = browser.post(
+            ask,
+            data={"note": over_cap, "request_id": form_id_of(browser.get(ask).text)},
+            headers=PAGE,
+        )
+        after_refusal = state_of(browser).help_requests.listed().every()
+        sent = browser.post(
+            ask,
+            data={"note": at_cap, "request_id": form_id_of(browser.get(ask).text)},
+            headers=PAGE,
+        )
+        kept = state_of(browser).help_requests.listed().every()
+
+    assert len(at_cap.replace("\r\n", "\n")) == help_requests.NOTE_MAX_LENGTH
+    assert refused.status_code == 422
+    assert after_refusal == []
+    assert sent.status_code == 303
+    assert [one.note for one in kept] == [at_cap.replace("\r\n", "\n")]
+
+
+def test_every_kind_of_line_break_is_kept_as_lf_and_shown_on_both_pages(
+    tmp_path: pathlib.Path,
+) -> None:
+    question = "Which part?\nThe second one\r\nor the third\rone"
+    with at(signed_in_household(tmp_path), host="testserver") as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        signed_in(browser, HERS)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        ask = HER_ASK.format(result_id=card_of(details.text, OSMOSIS))
+        sent = browser.post(
+            ask,
+            data={"note": question, "request_id": form_id_of(browser.get(ask).text)},
+            headers=PAGE,
+        )
+        kept = state_of(browser).help_requests.listed().every()
+        week = browser.get(HER_WEEK, headers=PAGE).text
+        browser.post("/sign-out")
+        signed_in(browser, THEIRS)
+        family = browser.get("/parent", headers=PAGE).text
+
+    shown = '<q class="authored-text">Which part?\nThe second one\nor the third\none</q>'
+    assert sent.status_code == 303
+    assert [one.note for one in kept] == ["Which part?\nThe second one\nor the third\none"]
+    assert shown in week
+    assert shown in family
+
+
+@pytest.mark.parametrize("refusal", ["too long", "not whole"])
+def test_a_refused_question_comes_back_in_the_field_as_she_sent_it(
+    refusal: str, tmp_path: pathlib.Path
+) -> None:
+    question = (
+        '\nLine <one> & "two"\r\nline three\rline four\n'
+        + ("x" * 500 if refusal == "too long" else "fits")
+        + " "
+    )
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        ask = HER_ASK.format(result_id=card_of(details.text, OSMOSIS))
+        form = {"note": question}
+        if refusal == "too long":
+            form["request_id"] = form_id_of(browser.get(ask).text)
+        answer = browser.post(ask, data=form, headers=PAGE)
+        kept = state_of(browser).help_requests.listed().every()
+
+    field = re.search(r'<textarea id="help-question"([^>]*)>\n(.*?)</textarea>', answer.text, re.S)
+    assert answer.status_code == 422
+    assert field is not None
+    assert field.group(2) == str(escape(question))
+    assert field.group(2).startswith("\nLine")
+    assert field.group(2).endswith("fits ") or field.group(2).endswith("x ")
+    assert ' wrap="soft"' in field.group(1)
+    assert ' maxlength="500"' in field.group(1)
+    assert kept == []
+
+
+def test_the_same_form_sent_again_with_cr_lf_breaks_at_the_cap_is_a_replay(
+    tmp_path: pathlib.Path,
+) -> None:
+    at_cap = "\r\n".join(["a" * 125, "b" * 124, "c" * 124, "d" * 124])
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        ask = HER_ASK.format(result_id=card_of(details.text, OSMOSIS))
+        form = {"note": at_cap, "request_id": form_id_of(browser.get(ask).text)}
+        first = browser.post(ask, data=form, headers=PAGE)
+        again = browser.post(ask, data=form, headers=PAGE)
+        kept = state_of(browser).help_requests.listed().every()
+
+    assert (first.status_code, again.status_code) == (303, 303)
+    assert again.headers["location"] == f"{HER_WEEK}?asked_again={form['request_id']}#help-result"
+    assert [(one.request_id, one.note) for one in kept] == [
+        (form["request_id"], at_cap.replace("\r\n", "\n"))
+    ]
+
+
+@pytest.mark.parametrize("path", ["gone", "unread"])
+def test_a_refused_question_keeps_its_leading_line_break_on_the_page_without_the_result(
+    path: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = "\nWhich part?\nThe second one "
+    with at(open_household(tmp_path)) as browser:
+        class_id = seeded(browser, FIRST_TERM)
+        details = browser.get(HER_CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+        result_id = card_of(details.text, OSMOSIS)
+        ask = HER_ASK.format(result_id=result_id)
+        form = {"note": question, "request_id": form_id_of(browser.get(ask).text)}
+        if path == "gone":
+            class_term_deleted(browser, result_id)
+        else:
+
+            def fails(*_: object) -> None:
+                raise sqlite3.OperationalError
+
+            monkeypatch.setattr(store_of(browser), "result_place", fails)
+        answer = browser.post(ask, data=form, headers=PAGE)
+
+    assert answer.status_code == (404 if path == "gone" else 500)
+    assert (
+        f'<textarea id="kept-help-question" rows="3" readonly>\n{escape(question)}</textarea>'
+        in answer.text
+    )

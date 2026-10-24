@@ -1227,7 +1227,7 @@ def test_a_note_form_sent_again_is_answered_by_its_id_whatever_became_of_the_not
         fresh = f"{HER_PAGE}#ask-for-help"
         assert again.status_code == 409
         assert (FORM_USED if sent == "taken back" else FORM_SENT_OTHER_WORDS) in again.text
-        assert f"readonly>{words}</textarea>" in again.text
+        assert f"readonly>\n{words}</textarea>" in again.text
         assert f'<a href="{fresh}">Open a new help form</a>' in again.text
         assert (f'href="{note_href(name)}"' in again.text) is (what != "gone")
         assert whole_form(landed.text, "/student/actions/ask-for-help")["request_id"]
@@ -1292,7 +1292,7 @@ def test_a_note_form_that_already_asked_says_so_through_failed_reads_and_after_t
     for answer in failed:
         assert answer.status_code == 409
         assert problem in answer.text
-        assert f"readonly>{words}</textarea>" in answer.text
+        assert f"readonly>\n{words}</textarea>" in answer.text
         assert f'<a href="{link}">Open a new help form</a>' in answer.text
     assert recovered.status_code == 409
     assert problem in recovered.text

@@ -205,7 +205,7 @@ from blossom.stores.help_requests import (
     request_id_from,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
-from blossom.stores.project_state import ProjectStateStore
+from blossom.stores.project_state import ProjectStateStore, normalize_note
 
 logger = logging.getLogger(__name__)
 
@@ -2755,7 +2755,8 @@ def ask_about_a_result(result_id: str, request: Request, state: State) -> Respon
 
 @student_router.post("/results/{result_id}/ask", response_class=HTMLResponse)
 async def ask_a_parent_about_a_result(result_id: str, request: Request, state: State) -> Response:
-    """Ask a parent about one result, with her words as she sent them.
+    """Ask a parent about one result, with her words as she sent them, each line break kept as
+    one, so they are counted against the cap as her field counts them.
 
     Only this, an explicit submit from her, makes a request. It carries the result's id and
     her words, and nothing else of the result. A parent is answered 403 before the form is
@@ -2772,7 +2773,8 @@ async def ask_a_parent_about_a_result(result_id: str, request: Request, state: S
         return result_help_not_sent(request, state, NOT_HERS_TO_ASK, "", 403)
     fields, whole = await fields_of(request, HELP_FIELDS)
     question = fields.get("note", "")
-    words = question.strip()
+    # A browser counts a line break once against the field's limit and sends it as CR LF.
+    words = normalize_note(question) or ""
     try:
         form: str | None = request_id_from(fields.get("request_id", ""))
     except NotARequestId:

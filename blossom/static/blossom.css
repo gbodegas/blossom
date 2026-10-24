@@ -1680,6 +1680,15 @@ form.inline button {
     box-shadow: none;
     backdrop-filter: none;
   }
+
+  /* Her question about a school result starts with a sentence that names the result. On a
+     narrow screen its box shows a prefilled sentence of about 120 characters whole, with
+     text at 200% on a 320 px screen too, and its side padding gives way, as the other
+     narrow fields' does, so a long word of a class or title stays whole. */
+  .result-question {
+    min-height: 18rem;
+    padding-inline: min(0.85rem, 2vw);
+  }
 }
 
 /* On Review assignments, the save button's words break where they must. */
