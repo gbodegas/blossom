@@ -406,17 +406,21 @@ def confirm_fields(piece: Piece) -> frozenset[str]:
 
 def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
     """Whether a correction Blossom can use answers an unsure field: the row's box for its
-    class, title or instructions (a text's removal among them, and words typed in the empty box
-    of one of its cards read with none), and the piece's own box for its due date (``footer``)
-    or assigned date (``heading``), an assigned date given as none among them. An instruction
-    correction answers only where it takes effect: for a text the row has, or for one of the
-    row's cards read with no words. In saved progress of shape 3, the field's own correction
-    answers it."""
+    class, title or instructions (a text's removal among them), and the piece's own box for its
+    due date (``footer``) or assigned date (``heading``), an assigned date given as none among
+    them. Where the piece has cards read with no words whose instructions the reader wasn't
+    sure of, only words typed in each one's own empty box answer its instructions; nothing
+    typed elsewhere stands for them. Otherwise an instruction correction answers where it takes
+    effect: for a text the row has, or for one of the row's cards read with no words. In saved
+    progress of shape 3, the field's own correction answers it."""
     row = corrections.get(piece.key, {})
     dates = corrections.get(dates_key(piece.name), {})
     if usable_correction(field, row.get(field)):
         return True
     if field == "instruction":
+        own = own_wordless(piece)
+        if own:
+            return all(usable_correction(f, row.get(f)) for f in map(wordless_field, own))
         read = piece.as_read
         texts = 0 if read is None else len(read.texts)
         cards = () if read is None else read.wordless

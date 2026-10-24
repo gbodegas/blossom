@@ -7308,6 +7308,161 @@ def test_words_for_an_unsure_card_go_to_its_own_piece_and_leave_the_other_piece_
     assert reopened.count(str(escape(screenshot_page.SAID["lost_correction"]))) == 1
 
 
+def still_open_tick_and_save(
+    browser: TestClient, draft_id: str, page: str
+) -> tuple[bool, bool, str]:
+    """Whether the page names the unsure field still to answer, whether its group can be
+    ticked, and what Save of every group says."""
+    unsure = says(page, f"Still to answer: {screenshot_page.OPEN_NAMES['confirm']}.")
+    tickable = bool(units_on(page))
+    saved = followed(
+        browser, send(browser, draft_id, page_post(page, "save", tick=digests_on(page)))
+    )
+    return unsure, tickable, saved
+
+
+def test_a_correction_of_another_card_s_words_doesn_t_answer_an_unsure_card_read_without_any(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reported case with only the assigned card's words corrected: the due card's empty box
+    is untouched, so its instructions stay to answer, its group can't be ticked and Save
+    refuses it. "Confirm as read" then says it has none, and the edited words are saved
+    alone."""
+    monday, thursday = joined_answers()
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, thursday))
+        page = her_name_answered(browser, draft_id, page)
+        text = f"correct:{box_subject(page, 'instruction:0')}"
+        [box] = word_boxes(page)
+        [confirm] = fields_named(review_form(page), "answer:confirm:")
+        edited = {text: "Complete pages 12 to 16."}
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep", typed=edited)))
+        before = assignment_count(browser)
+        unsure, tickable, refused = still_open_tick_and_save(browser, draft_id, kept)
+        assert (unsure, tickable) == (True, False)
+        assert says(refused, REFUSED_OPEN)
+        assert assignment_count(browser) == before
+        chosen = {f"answer:confirm:{confirm}": "as_read"}
+        confirmed = followed(
+            browser,
+            send(browser, draft_id, page_post(kept, "keep", typed=edited, choose=chosen)),
+        )
+        still, ready, saved = still_open_tick_and_save(browser, draft_id, confirmed)
+        texts = kept_texts(browser)
+
+    assert box_of(review_form(kept), box)[1] == ""  # type: ignore[index]
+    assert (still, ready) == (False, True)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert texts == [("Complete pages 12 to 16.",)]
+
+
+def test_each_unsure_card_read_without_words_needs_its_own_words_or_the_confirmation(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two cards of one assignment read without words, each unsure, words typed in one box
+    alone: the other card's instructions stay to answer, its group can't be ticked and Save
+    refuses it. "Confirm as read" then answers for the other, and the one card's words are
+    saved alone."""
+    assigned = homework_card(instruction=None, uncertain=UNSURE_WORDS)
+    due = homework_card(badge="DUE", instruction=None, footer=None, uncertain=UNSURE_WORDS)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser,
+            monkeypatch,
+            (RED, on_day("Monday 10/5/2026", assigned)),
+            (BLUE, on_day("Thursday 10/8/2026", due)),
+        )
+        page = her_name_answered(browser, draft_id, page)
+        first, _ = word_boxes(page)
+        [confirm] = fields_named(review_form(page), "answer:confirm:")
+        typed = {first: MISSING_WORDS}
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep", typed=typed)))
+        before = assignment_count(browser)
+        unsure, tickable, refused = still_open_tick_and_save(browser, draft_id, kept)
+        assert (unsure, tickable) == (True, False)
+        assert says(refused, REFUSED_OPEN)
+        assert assignment_count(browser) == before
+        chosen = {f"answer:confirm:{confirm}": "as_read"}
+        confirmed = followed(
+            browser, send(browser, draft_id, page_post(kept, "keep", typed=typed, choose=chosen))
+        )
+        still, ready, saved = still_open_tick_and_save(browser, draft_id, confirmed)
+        texts = kept_texts(browser)
+
+    assert (still, ready) == (False, True)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert texts == [(MISSING_WORDS,)]
+
+
+def test_on_a_split_row_the_question_waits_for_the_unsure_card_s_own_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A split row whose Tuesday card was read without words and unsure, its question on
+    Monday's card: Monday's words corrected alone leave it to answer there too, so the first
+    question to answer is that question; Tuesday's words answer it."""
+    monday = on_day("Monday 10/5/2026", homework_card(instruction="Read chapter 1."))
+    tuesday = on_day("Tuesday 10/6/2026", homework_card(instruction=None, uncertain=UNSURE_WORDS))
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        page = her_name_answered(browser, draft_id, page)
+        [row] = fields_named(review_form(page), "answer:split:")
+        keep(browser, draft_id, ("split", row, json.dumps("split")))
+        split = browser.get(f"/parent/imports/{draft_id}").text
+        days = fields_named(review_form(split), "answer:destination:")
+        chosen = {f"answer:destination:{d}": f'{{"new":{n}}}' for n, d in enumerate(days, 1)}
+        text = f"correct:{box_subject(split, 'instruction:0')}"
+        [box] = word_boxes(split)
+        edited = {text: "Read chapter 1 twice."}
+        monday_only = followed(
+            browser,
+            send(browser, draft_id, page_post(split, "keep", typed=edited, choose=chosen)),
+        )
+        both = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(monday_only, "keep", typed={**edited, box: MISSING_WORDS}),
+            ),
+        )
+
+    unsure = screenshot_page.OPEN_NAMES["confirm"]
+    [question] = re.findall(
+        r'<fieldset[^>]*id="(ask-\d+)"[^>]*>\s*<legend>The reader wasn', review_form(split)
+    )
+    link = FIRST_OPEN.search(monday_only)
+    assert says(monday_only, f"Still to answer: {unsure}.")
+    assert link is not None
+    assert link.group(1) == question
+    assert not says(both, unsure)
+    later_link = FIRST_OPEN.search(both)
+    assert later_link is None or later_link.group(1) != question
+
+
+def test_only_a_card_the_reader_was_unsure_of_and_read_without_words_has_an_empty_box(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Of two cards read without words, only the one whose instructions the reader wasn't sure
+    of has an empty Instructions box; Chains Reading Guide 6, read without words and sure, has
+    none."""
+    unsure = homework_card(instruction=None, uncertain=UNSURE_WORDS)
+    sure = homework_answer()["cards"][1]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[unsure, sure]))
+        )
+        page = her_name_answered(browser, draft_id, page)
+
+    form = review_form(page)
+    [box] = word_boxes(page)
+    assert (sure["title"], sure["instruction"], sure["uncertain"]) == (
+        "Chains Reading Guide 6",
+        None,
+        [],
+    )
+    assert label_of(form, box) == "Instructions on screenshot 1, card 1"
+
+
 def test_an_old_instruction_correction_on_a_split_row_reaches_every_piece(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

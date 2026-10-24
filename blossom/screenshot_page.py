@@ -46,7 +46,6 @@ from blossom.screenshot_review import (
     subject_for,
     typed_day,
     unit_name,
-    usable_correction,
     value_json,
     value_of,
     wordless_field,
@@ -503,8 +502,7 @@ def fold_boxes(
     value: the row's class, title, one box per instruction text and one empty box per open card
     read with no words the reader wasn't sure of (``wordless``, by field and label, the label
     naming its screenshot and card) when ``row_boxes`` (on the row's first open card), then
-    the piece's due and assigned dates. An instruction correction of saved progress of shape 3,
-    which replaced every text, is in each of the row's Instructions boxes."""
+    the piece's due and assigned dates."""
     read = piece.as_read
     if read is None:
         return ()
@@ -524,20 +522,12 @@ def fold_boxes(
                     (piece.key, field) in unsaved,
                 )
             )
-        old = row.get("instruction")
-        words = (
-            old.strip() if isinstance(old, str) and usable_correction("instruction", old) else None
-        )
         boxes = [
             (f"instruction:{i}", BOX_LABELS["instruction"], t) for i, t in enumerate(read.texts)
         ]
         boxes += [(field, label, "") for field, label in wordless]
         for field, label, text in boxes:
-            if field in row:
-                typed = row[field]
-                typed = "" if typed is None else typed
-            else:
-                typed = words
+            typed = (row[field] or "") if field in row else None
             out.append(
                 _text_box(
                     piece.key,
@@ -1351,10 +1341,12 @@ def rows_shown(
     for piece in open_pieces:
         first_of_row.setdefault(piece.key, piece.name)
     confirm_on: dict[tuple[str, str], str] = {}
+    asking: dict[tuple[str, str], list[Piece]] = {}
     for piece in open_pieces:
         for field in sorted(confirm_fields(piece)):
             host = piece.name if field in ("footer", "heading") else first_of_row[piece.key]
             confirm_on.setdefault((piece.key, field), host)
+            asking.setdefault((piece.key, field), []).append(piece)
     previews = {e.dest: e for e in state.preview}
     digests = unit_digests(state)
     wordless: dict[str, list[tuple[str, str]]] = {}
@@ -1385,12 +1377,16 @@ def rows_shown(
         for (key, field), host in confirm_on.items():
             if host != piece.name:
                 continue
-            fold = folds[first_of_row[key]] if field not in ("footer", "heading") else folds[host]
+            dated = field in ("footer", "heading")
+            fold = folds[host] if dated else folds[first_of_row[key]]
+            # A row's question stands for every open piece unsure of that field, as "Still to
+            # answer" and the save read it; a date's question, for its own piece.
+            askers = [piece] if dated else asking[(key, field)]
             checks.append(
                 dataclasses.replace(
                     confirm_question(piece, field, values, fold),
                     about=about,
-                    answered=fold_answers(piece, field, corrections),
+                    answered=all(fold_answers(p, field, corrections) for p in askers),
                 )
             )
         boxes = fold_boxes(piece, own, corrections, unsaved, both, wordless.get(piece.key, ()))
