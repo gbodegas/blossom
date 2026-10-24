@@ -2039,3 +2039,67 @@ def test_a_piece_s_digest_is_its_row_s_corrections_and_its_own_dates() -> None:
         correction_digest(row_fields)
         == hashlib.sha256(json.dumps(row_fields, separators=(",", ":")).encode()).hexdigest()[:12]
     )
+
+
+def test_row_boxes_move_to_the_first_open_card_of_a_split_row(house: House) -> None:
+    """A split row's class, title and instructions boxes sit on its first open card: with its
+    first piece saved, on the next, and the post reader takes them from there."""
+    log = homework_card(
+        badge="ASSIGNED",
+        course=COURSE,
+        title="Reading Log",
+        instruction="Read it.",
+        footer="Due (8/24/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    draft_id = read_review(
+        house,
+        homework_answer(
+            headings=[{"text": "Thursday 8/20/2026", "y": 150, "uncertain": None}], cards=[log]
+        ),
+        homework_answer(
+            headings=[{"text": "Friday 8/21/2026", "y": 150, "uncertain": None}], cards=[log]
+        ),
+    )
+    [row] = state_of(house, draft_id).asking
+    kept(house, draft_id, ("split", row.key, json.dumps("split")))
+    state = state_of(house, draft_id)
+    thursday, friday = sorted(state.pieces, key=lambda p: p.name)
+    tables = house.record.draft_for_save(house.student, draft_id)
+    assert tables is not None
+    taken = review_state(
+        house.record,
+        tables._replace(saved={thursday.name: "assignment-reading-log-x1"}),
+        now=OBSERVED_AT,
+        corrections={},
+    )
+
+    def boxes(shown: screenshot_page.RowsShown) -> dict[str, list[str]]:
+        return {
+            card.name: [json.loads(b.subject)[1] for b in card.boxes]
+            for unit in shown.units
+            for block in unit.blocks
+            for card in block.cards
+        }
+
+    def shown_for(review: ReviewState) -> screenshot_page.RowsShown:
+        images = house.drafts.snapshot(house.student, draft_id).images
+        return screenshot_page.rows_shown(
+            review,
+            places={image.sha256: n for n, image in enumerate(images, 1)},
+            images=[],
+            page_key=b"synthetic-page-key",
+            version=1,
+            progress_revision=0,
+            acceptance="a" * 32,
+            until="",
+            corrections={},
+        )
+
+    row_fields = ["course", "title", "instruction:0", "due", "assigned"]
+    assert boxes(shown_for(state)) == {thursday.name: row_fields, friday.name: ["due", "assigned"]}
+    assert boxes(shown_for(taken)) == {friday.name: row_fields}
+    reads = screenshot_save.fold_reads(taken)
+    assert (row.key, "title") in reads
+    assert (dates_key(thursday.name), "due") not in reads

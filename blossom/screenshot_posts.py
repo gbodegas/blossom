@@ -351,10 +351,10 @@ def box_corrections(
     correction, both stripped with line endings made line feeds and dates read as dates; the
     length check runs on corrections only. A cleared class, title or settled due date is
     refused; a cleared instruction text is its removal (``None``); a cleared assigned date is
-    the date as read, and with "No assigned date was given" none (``None``), where one was
-    read. A date typed beside "No assigned date was given" is refused. A box the page signed
-    for a card another press has since saved, or that a change of screenshots took away, is
-    passed over, as the answers about it are."""
+    the date as read. "No assigned date was given" is none (``None``) where one was read, its
+    box left empty or holding the date as read; beside any other date it is refused. A box the
+    page signed for a card another press has since saved, or that a change of screenshots took
+    away, is passed over, as the answers about it are."""
     reads = fold_reads(state)
     nones = set(none_given)
     out: dict[str, dict[str, str | None]] = {}
@@ -373,7 +373,8 @@ def box_corrections(
         if field in PIECE_DATES:
             typed = value.strip() or carried.get((key, field), "").strip()
             none = field == "assigned" and key in nones
-            if none and typed:
+            day = typed_day(typed) if typed else None
+            if none and typed and (day is None or day.isoformat() != read):
                 both.add(key)
                 keep(key, field, typed)
             elif none:
@@ -386,12 +387,10 @@ def box_corrections(
             elif len(typed) > field_most(field):
                 too_long.add((key, field))
                 keep(key, field, typed)
-            else:
-                day = typed_day(typed)
-                if day is None:
-                    keep(key, field, typed)
-                elif day.isoformat() != read:
-                    keep(key, field, day.isoformat())
+            elif day is None:
+                keep(key, field, typed)
+            elif day.isoformat() != read:
+                keep(key, field, day.isoformat())
             continue
         text = correction_text(field, value)
         if canonical(text) == read:
