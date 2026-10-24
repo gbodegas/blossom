@@ -1185,8 +1185,8 @@ def corrected(
     corrected title suggests, each instruction text replaced or removed by its index among
     ``texts``, and its own due and assigned dates, the assigned date set to none where she
     said none was given. In saved progress of shape 3, an instruction correction replaces
-    every text, and the due line and day heading set the dates ``date_target`` names. A correction Blossom
-    can't use is passed over."""
+    every text, and the due line and day heading set the dates ``date_target`` names. A
+    correction Blossom can't use is passed over."""
     fields, dates = fields or {}, dates or {}
     if not fields and not dates:
         return reading
