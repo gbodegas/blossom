@@ -80,9 +80,11 @@ class SavedRow:
 class AsRead:
     """What a piece's fields are with no correction: its row's class, title and distinct
     instruction texts as read, in reading order, and its own due and assigned dates after the
-    split answer and the stored "which due date" answer (no due date while that waits); and
-    its row's cards read with no instruction words whose instructions the reader wasn't sure
-    of, each of which offers one empty Instructions box."""
+    split answer and the stored "which due date" answer (no due date while that waits); its
+    row's cards read with no instruction words whose instructions the reader wasn't sure of,
+    each of which offers one empty Instructions box; and its row's cards read with words whose
+    instructions the reader wasn't sure of, each with the index among ``texts`` of the words
+    it read."""
 
     course: str
     title: str
@@ -90,6 +92,7 @@ class AsRead:
     due: date | None
     assigned: date | None
     wordless: tuple[CardPlace, ...] = ()
+    unsure_texts: tuple[tuple[CardPlace, int], ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1183,6 +1186,24 @@ def wordless_of(
     return tuple(out)
 
 
+def unsure_texts_of(
+    placed: Mapping[CardPlace, PlacedCard], cards: Iterable[CardPlace], texts: Sequence[str]
+) -> tuple[tuple[CardPlace, int], ...]:
+    """The cards among these read with instruction words whose instructions the reader wasn't
+    sure of, in their order, each with the index among ``texts`` of the words it read (a card's
+    instruction is its row's text as read, word for word)."""
+    out = []
+    for place in cards:
+        found = placed.get(place)
+        if found is None or found.card is None:
+            continue
+        card = found.card
+        words = card.instruction
+        if words in texts and "instruction" in card.uncertain_fields:
+            out.append((place, texts.index(str(words))))
+    return tuple(out)
+
+
 def usable_correction(field: str, value: str | None) -> bool:
     """Whether a typed correction is one Blossom can use: text that isn't blank and fits
     within its field's limit, and for a date field, a date it can read. One it can't use
@@ -1370,6 +1391,7 @@ def pieces_from(
             reading.due_date,
             reading.assigned_on,
             wordless,
+            unsure_texts_of(placed, row.sources, texts),
         )
         return _piece(name, row.key, fixed, cards, is_split, marks, read)
 

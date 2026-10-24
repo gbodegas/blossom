@@ -406,12 +406,14 @@ def confirm_fields(piece: Piece) -> frozenset[str]:
 
 def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
     """Whether a correction Blossom can use answers an unsure field: the row's box for its
-    class, title or instructions (a text's removal among them), and the piece's own box for its
-    due date (``footer``) or assigned date (``heading``), an assigned date given as none among
-    them. Where the piece has cards read with no words whose instructions the reader wasn't
-    sure of, only words typed in each one's own empty box answer its instructions; nothing
-    typed elsewhere stands for them. Otherwise an instruction correction answers where it takes
-    effect: for a text the row has, or for one of the row's cards read with no words. In saved
+    class, title or instructions, and the piece's own box for its due date (``footer``) or
+    assigned date (``heading``), an assigned date given as none among them. The instructions
+    are answered card by card: each of the piece's cards whose instructions the reader wasn't
+    sure of only by its own correction, a card that read words by a replacement or removal of
+    the text it read (one text read by two cards answers for both), a card read with none by
+    words typed in its own empty box; nothing typed for another card stands for it. Where no
+    card of the piece is marked so, an instruction correction answers where it takes effect:
+    for a text the row has, or for one of the row's cards read with no words. In saved
     progress of shape 3, the field's own correction answers it."""
     row = corrections.get(piece.key, {})
     dates = corrections.get(dates_key(piece.name), {})
@@ -419,8 +421,13 @@ def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
         return True
     if field == "instruction":
         own = own_wordless(piece)
-        if own:
-            return all(usable_correction(f, row.get(f)) for f in map(wordless_field, own))
+        read_words = own_unsure_texts(piece)
+        if own or read_words:
+            boxes = [f"instruction:{index}" for index in read_words]
+            return all(
+                name in row and (row[name] is None or usable_correction(name, row[name]))
+                for name in boxes
+            ) and all(usable_correction(f, row.get(f)) for f in map(wordless_field, own))
         read = piece.as_read
         texts = 0 if read is None else len(read.texts)
         cards = () if read is None else read.wordless
@@ -438,6 +445,15 @@ def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
         given = dates.get("assigned")
         return "assigned" in dates and (given is None or usable_correction("assigned", given))
     return False
+
+
+def own_unsure_texts(piece: Piece) -> tuple[int, ...]:
+    """The indexes of the texts the piece's own cards read whose instructions the reader wasn't
+    sure of, each once."""
+    read = piece.as_read
+    if read is None:
+        return ()
+    return tuple(dict.fromkeys(index for card, index in read.unsure_texts if card in piece.cards))
 
 
 def own_wordless(piece: Piece) -> tuple[CardPlace, ...]:
