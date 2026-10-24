@@ -564,6 +564,102 @@ def test_the_sign_in_brings_the_browser_back_to_the_whole_address(
     assert came_in.headers["location"] == wanted
 
 
+# ------------------------------------------------------------------ the bare address
+
+
+def test_without_a_sign_in_the_bare_address_shows_the_sign_in_and_a_call_is_told_401(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The bare address is a page like any other: a browser is sent to the sign-in, which
+    asks for no place to return to, and a JSON call is told 401."""
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        page = client.get("/", headers=PAGE)
+        asked = client.get(page.headers["location"], headers=PAGE)
+        call = client.get("/")
+
+    assert page.status_code == 303
+    assert page.headers["location"] == "/sign-in?next=%2F"
+    assert asked.status_code == 200
+    assert "<h1>Who is this?</h1>" in asked.text
+    assert 'name="next"' not in asked.text
+    assert call.status_code == 401
+    assert call.json() == {"detail": "Sign in first."}
+    for answer in (page, asked, call):
+        assert answer.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    ("passphrase", "home"), [(HERS, "/student/due-this-week"), (THEIRS, "/parent")]
+)
+def test_signing_in_from_the_bare_address_lands_at_home(
+    tmp_path: pathlib.Path, passphrase: str, home: str
+) -> None:
+    """A return address of the bare address names no page, so the sign-in sends her to
+    her week and a parent to the family review, with no stop at the bare address."""
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        came_in = client.post("/sign-in", data={"passphrase": passphrase, "next": "/"})
+        landed = client.get(came_in.headers["location"], headers=PAGE)
+
+    assert came_in.status_code == 303
+    assert came_in.headers["location"] == home
+    assert COOKIE in came_in.cookies
+    assert landed.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("passphrase", "home", "heading"),
+    [(THEIRS, "/parent", "Family review")],
+)
+def test_signed_in_the_bare_address_sends_each_person_home(
+    tmp_path: pathlib.Path, passphrase: str, home: str, heading: str
+) -> None:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        client.post("/sign-in", data={"passphrase": passphrase})
+        sent = client.get("/", headers=PAGE)
+        landed = client.get(sent.headers.get("location", "/"), headers=PAGE)
+
+    assert sent.status_code == 303
+    assert sent.headers["location"] == home
+    assert sent.headers["cache-control"] == "no-store"
+    assert landed.status_code == 200
+    assert f"<h1>{heading}</h1>" in landed.text
+
+
+@pytest.mark.parametrize(
+    ("passphrase", "wanted"),
+    [(HERS, "/student/grades"), (THEIRS, "/student/grades"), (THEIRS, "/parent/grades")],
+)
+def test_a_return_address_naming_a_page_is_followed(
+    tmp_path: pathlib.Path, passphrase: str, wanted: str
+) -> None:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        came_in = client.post("/sign-in", data={"passphrase": passphrase, "next": wanted})
+
+    assert came_in.status_code == 303
+    assert came_in.headers["location"] == wanted
+
+
+def test_with_the_sign_in_off_the_bare_address_goes_to_her_week() -> None:
+    """With the sign-in off nobody is known, and the bare address goes where the masthead's
+    brand does: her week."""
+    with browser() as client:
+        sent = client.get("/", headers=PAGE)
+        landed = client.get(sent.headers.get("location", "/"), headers=PAGE)
+
+    assert sent.status_code == 303
+    assert sent.headers["location"] == "/student/due-this-week"
+    assert landed.status_code == 200
+    assert "<h1>My week</h1>" in landed.text
+
+
 def test_with_no_passphrases_nothing_asks(tmp_path: pathlib.Path) -> None:
     open_settings = fixture_settings(
         BLOSSOM_TODAY="2026-08-19",

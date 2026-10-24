@@ -46,6 +46,16 @@ def safe_next(value: str | None) -> str | None:
     return value
 
 
+def next_place(value: str | None) -> str | None:
+    """The page to go to after signing in, or ``None`` for the person's home.
+
+    A place ``safe_next`` refuses is no place, and so is the bare address,
+    which names no page: either way the sign-in sends each person home.
+    """
+    wanted = safe_next(value)
+    return None if wanted == "/" else wanted
+
+
 def sign_in_page(
     request: Request,
     *,
@@ -69,12 +79,22 @@ def sign_in_page(
     )
 
 
+@router.get("/", include_in_schema=False)
+def bare_address(request: Request, state: State) -> Response:
+    """Send whoever opens the bare address home, as a sign-in does. The gate has already
+    asked who is there; with the sign-in off, nobody is known and her week is the answer."""
+    if not state.settings.household_sign_in:
+        return RedirectResponse(home_of(Principal.STUDENT), status_code=status.HTTP_303_SEE_OTHER)
+    role: Principal = request.state.household
+    return RedirectResponse(home_of(role), status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.get("/sign-in", response_class=HTMLResponse, include_in_schema=False)
 def sign_in(request: Request, state: State, next: str | None = None) -> Response:
     """Ask who is there. With the sign-in off, there is nothing to ask; her week is the answer."""
     if not state.settings.household_sign_in:
         return RedirectResponse(home_of(Principal.STUDENT), status_code=303)
-    return sign_in_page(request, next_path=safe_next(next))
+    return sign_in_page(request, next_path=next_place(next))
 
 
 def take_passphrase(
@@ -96,7 +116,7 @@ def take_passphrase(
     if wait:
         return sign_in_page(
             request,
-            next_path=safe_next(next),
+            next_path=next_place(next),
             problem=WAIT,
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             headers={"Retry-After": str(wait)},
@@ -104,12 +124,12 @@ def take_passphrase(
     if role is None:
         return sign_in_page(
             request,
-            next_path=safe_next(next),
+            next_path=next_place(next),
             problem=WRONG,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     token = issue(role, request.app.state.household_keys[role], now)
-    destination = safe_next(next) or home_of(role)
+    destination = next_place(next) or home_of(role)
     response = RedirectResponse(destination, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         COOKIE, token, max_age=SESSION_SECONDS, httponly=True, samesite="lax", path="/"
