@@ -7573,3 +7573,29 @@ def test_a_confident_field_corrected_saves_with_no_call(
     assert says(saved, "Saved: 1 new assignment.")
     assert row.due_date == date(2026, 10, 9)
     assert len(reader.calls) == calls == 1
+
+
+def test_a_correction_saved_with_its_group_isn_t_said_to_be_unsaved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A correction typed on the group a save takes is saved with it, so the rows left open
+    aren't said to hold unsaved changes. One typed on a row left open still is, as
+    ``test_a_partial_save_returns_the_rows_left_open_with_their_typing_marked_unsaved``
+    shows."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        saved_box = f"correct:{box_subject(page, 'title', 0)}"
+        kept = followed(
+            browser,
+            send(browser, draft_id, page_post(page, "keep", typed={saved_box: "Sentence Craft"})),
+        )
+        assert says(kept, imports.PRESS_SAID["kept"])
+        first = next(u for u in units_on(kept) if u in digests_on(kept))
+        taken = send(browser, draft_id, page_post(kept, "save", tick=[first]))
+        titles = [a.title for a in state_of(browser).project_state.all_assignments()]
+
+    assert says(taken.text, "Saved: 1 new assignment. 1 still needs checking.")
+    assert "Sentence Craft" in titles
+    assert not says(taken.text, imports.PRESS_SAID["unsaved_typing"])
+    assert not says(taken.text, screenshot_page.SAID["not_saved_yet"])

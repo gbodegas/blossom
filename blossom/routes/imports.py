@@ -1436,11 +1436,17 @@ async def partly_saved(
 
 
 def unsaved_typing(snapshot: DraftSnapshot, typed: Corrections) -> frozenset[tuple[str, str]]:
-    """The corrections a press posted that saved progress doesn't hold, and those saved
-    progress holds that the press put back, by key and field."""
+    """The corrections a press posted for a row still open that saved progress doesn't hold,
+    and those saved progress holds that the press put back, by key and field. A row a save
+    just took has nothing unsaved left."""
     kept = corrections_of(snapshot.progress)
+    still = {row.key for row in snapshot.rows if row.state == "open"}
     both = {
-        (key, field) for given in (typed, kept) for key, fields in given.items() for field in fields
+        (key, field)
+        for given in (typed, kept)
+        for key, fields in given.items()
+        for field in fields
+        if key.removeprefix("date:").split("|")[0] in still
     }
     return frozenset(
         (key, field)
