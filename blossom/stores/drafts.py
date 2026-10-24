@@ -76,6 +76,10 @@ unless its caller gives it less."""
 SETTLE_GRACE_SECONDS: Final = 1.0
 """How long past its run's deadline a publication authorized in time may wait to commit."""
 
+BUSY_PAUSE_SECONDS: Final = 0.01
+"""How long a write pauses before it asks again for the file's writer, or for its commit,
+after the file refused it as busy."""
+
 RUNNING: Final = "running"
 """The outcome a run holds from admission until its draft is composed. Never shown."""
 
@@ -556,31 +560,31 @@ class DraftsStore:
     ) -> Iterator["_Session"]:
         """One call's hold on the store: the store, writer and commit waits share ``wait``.
 
-        The file's busy timeout is set to what is left before the first statement and again
-        before the commit, so no call inherits another's. ``StoreBusy`` and ``WriterBusy``
-        are raised before any transaction begins. A write reserves the writer with
-        ``BEGIN IMMEDIATE`` before it reads, and commits inside the scope that rolls back,
-        so a commit the file refuses leaves nothing open.
+        The file's busy timeout is set to what is left before a read's first statement and
+        before a write's first statement after ``BEGIN IMMEDIATE``, so no call inherits
+        another's. A write asks for the writer and for its commit with the busy timeout at 0,
+        and asks again only while ``time.monotonic`` is before that wait's end, so time the
+        process is held up counts. ``StoreBusy`` and ``WriterBusy`` are raised before any
+        transaction begins. A write reserves the writer before it reads, and commits inside
+        the scope that rolls back, so a commit the file refuses leaves nothing open.
         """
         ends = time.monotonic() + max(0.0, wait)
         if not self._lock.acquire(timeout=max(0.0, wait)):
             raise StoreBusy
         try:
             session = _Session(ends)
-            self._wait_until(ends)
             if not write:
+                self._wait_until(ends)
                 yield session
                 return
+            self._connection.execute("PRAGMA busy_timeout=0")
+            self._begin(ends)
             try:
-                self._connection.execute("BEGIN IMMEDIATE")
-            except sqlite3.OperationalError as error:
-                if error.sqlite_errorcode == sqlite3.SQLITE_BUSY:
-                    raise WriterBusy from error
-                raise
-            try:
+                self._wait_until(ends)
                 yield session
-                self._wait_until(session.commit_ends)
-                self._connection.commit()
+                # The busy handler doesn't wait for the commit: its attempts keep to the clock.
+                self._wait_until(time.monotonic())
+                self._commit(session)
             except BaseException:
                 self._connection.rollback()
                 raise
@@ -591,6 +595,39 @@ class DraftsStore:
         """Let the file's busy handler wait until ``ends``, an instant on ``time.monotonic``."""
         milliseconds = max(0, int((ends - time.monotonic()) * 1000))
         self._connection.execute(f"PRAGMA busy_timeout={milliseconds}")
+
+    def _begin(self, ends: float) -> None:
+        """Reserve the file's writer, asking again after each busy refusal while
+        ``time.monotonic`` is before ``ends``. The first attempt is always made."""
+        while True:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as error:
+                if not _busy(error):
+                    raise
+                if not _paused(ends):
+                    raise WriterBusy from error
+
+    def _commit(self, session: "_Session") -> None:
+        """Commit, asking again after each busy refusal while ``time.monotonic`` is before
+        the commit's end; past it the refusal is raised, for the caller's rollback."""
+        if session.commit_bounded and time.monotonic() >= session.commit_ends:
+            msg = "database is locked"
+            raise sqlite3.OperationalError(msg)
+        while True:
+            try:
+                self._connection.commit()
+                return
+            except sqlite3.OperationalError as error:
+                # A commit with no transaction open does nothing, so a retry then would
+                # report as written what is not.
+                if (
+                    not _busy(error)
+                    or not _paused(session.commit_ends)
+                    or not self._connection.in_transaction
+                ):
+                    raise
 
     def record_waiting(
         self,
@@ -903,10 +940,13 @@ class DraftsStore:
             if row is None:
                 msg = f"no run {run_id!r} to settle"
                 raise KeyError(msg)
+            # The commit's clock is read first, so where it is the run's clock too the
+            # commit's end never comes after the deadline plus ``grace``.
+            since = time.monotonic()
             now = self._monotonic()
             if row["deadline_mono"] is not None:
                 commit_wait = min(STORE_WAIT_SECONDS, float(row["deadline_mono"]) + grace - now)
-                session.commit_ends = time.monotonic() + max(0.0, commit_wait)
+                session.commit_within(commit_wait, since)
             if row["status"] == "running":
                 candidate = self._connection.execute(
                     "SELECT draft_id, published, decision FROM drafts WHERE thread_id=?",
@@ -1593,3 +1633,26 @@ class _Session:
     def __init__(self, ends: float) -> None:
         self.ends = ends
         self.commit_ends = ends
+        self.commit_bounded = False
+        """Whether no commit attempt starts at or after ``commit_ends``, the first included."""
+
+    def commit_within(self, seconds: float, since: float) -> None:
+        """End the commit's attempts ``seconds`` after ``since``. A wait still positive starts
+        none at or after its end; one already over makes a single attempt."""
+        self.commit_ends = since + max(0.0, seconds)
+        self.commit_bounded = seconds > 0
+
+
+def _busy(error: sqlite3.OperationalError) -> bool:
+    """Whether the file refused a statement as busy, an extended busy code included."""
+    return (error.sqlite_errorcode & 0xFF) == sqlite3.SQLITE_BUSY
+
+
+def _paused(ends: float) -> bool:
+    """Pause before asking the busy file again, never past ``ends``, an instant on
+    ``time.monotonic``; whether ``ends`` is still ahead once the pause is over."""
+    left = ends - time.monotonic()
+    if left <= 0:
+        return False
+    time.sleep(min(BUSY_PAUSE_SECONDS, left))
+    return time.monotonic() < ends

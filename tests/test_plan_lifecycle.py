@@ -35,6 +35,7 @@ from blossom.agent.runs import (
     RUN_DEADLINE_SECONDS,
     RunBudget,
     RunTimedOut,
+    bounded,
     run_config,
 )
 from blossom.agent.steps import (
@@ -84,6 +85,7 @@ from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import (
     SETTLE_GRACE_SECONDS,
     STORE_WAIT_SECONDS,
+    Displaced,
     DraftRecord,
     DraftsStore,
     RunEnded,
@@ -2022,6 +2024,147 @@ def test_a_settle_waiting_for_the_writer_past_the_deadline_is_timed_out(
     assert ended is not None
     assert (ended.status, ended.reason) == ("ended", "timed_out")
     assert neighbor.record is not None
+
+
+def held_up_inside_the_settle(state: ApplicationState, seconds: float) -> None:
+    """Hold the settle up for ``seconds`` inside its transaction, once its checks have
+    authorized the publication and before its commit, as a stopped or slowed process is."""
+    publishing = state.drafts._published
+
+    def held_up(draft_id: str) -> list[Displaced]:
+        time.sleep(seconds)
+        return publishing(draft_id)
+
+    state.drafts._published = held_up  # type: ignore[method-assign]
+
+
+def test_a_publication_held_up_inside_its_transaction_past_the_grace_is_unconfirmed_and_unpublished(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The settle's checks pass before the deadline, and its process is then held up inside
+    the transaction past the deadline and the grace. No commit is attempted: the answer is
+    unconfirmed with no lookup of the record, and a later check ends the run timed out with
+    nothing published."""
+    state = application(tmp_path)
+    held_up_inside_the_settle(state, 1.0 + SETTLE_GRACE_SECONDS + 0.1)
+    reads = state.drafts.run_status
+    looked: list[int] = []
+
+    def spied(
+        run_id: str, wait: float = STORE_WAIT_SECONDS, *, reconcile: bool = True
+    ) -> RunState | None:
+        looked.append(1)
+        return reads(run_id, wait, reconcile=reconcile)
+
+    state.drafts.run_status = spied  # type: ignore[method-assign]
+    try:
+
+        async def scenario() -> tuple[BaseException | None, float]:
+            began = time.monotonic()
+            try:
+                await make_plan(
+                    accepted_graph(state), PLAN_DATE, state, budget=RunBudget(seconds=1.0)
+                )
+            except Unconfirmed as error:
+                return error, time.monotonic() - began
+            return None, time.monotonic() - began
+
+        caught, answered_in = asyncio.run(scenario())
+        during = list(looked)
+        assert isinstance(caught, Unconfirmed)
+        later = reads(caught.run_id)
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert during == []
+    assert answered_in < 1.0 + SETTLE_GRACE_SECONDS + 0.5
+    assert later is not None
+    assert (later.status, later.reason) == ("ended", "timed_out")
+    assert latest is None
+
+
+def test_a_publication_held_up_inside_its_transaction_past_the_stores_wait_is_not_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store's wait, cut to 0.3 seconds, ends the commit's attempts long before the
+    deadline, and the settle is held up inside its transaction past it. No commit is
+    attempted: the read-back finds the run running, the answer is not saved, and the run ends
+    interrupted with nothing published."""
+    monkeypatch.setattr(drafts_module, "STORE_WAIT_SECONDS", 0.3)
+    state = application(tmp_path)
+    held_up_inside_the_settle(state, 0.5)
+    reads = state.drafts.run_status
+    read_back: list[str | None] = []
+
+    def spied(
+        run_id: str, wait: float = STORE_WAIT_SECONDS, *, reconcile: bool = True
+    ) -> RunState | None:
+        found = reads(run_id, wait, reconcile=reconcile)
+        read_back.append(None if found is None else found.status)
+        return found
+
+    state.drafts.run_status = spied  # type: ignore[method-assign]
+    try:
+
+        async def scenario() -> tuple[BaseException | None, list[str | None], RunState]:
+            caught: BaseException | None = None
+            try:
+                await make_plan(accepted_graph(state), PLAN_DATE, state, budget=RunBudget(30))
+            except NotSaved as error:
+                caught = error
+            answered = list(read_back)
+            latest = await until(state.drafts.latest_run)
+            ended = await until(lambda: ended_run_of(state, latest.run_id), 10)
+            return caught, answered, ended
+
+        caught, answered, ended = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert isinstance(caught, NotSaved)
+    assert answered == ["running"]
+    assert (ended.status, ended.reason) == ("ended", "interrupted")
+    assert latest is None
+
+
+@pytest.mark.parametrize("budget", [1.0, 30.0])
+def test_the_commits_attempts_end_no_later_than_the_answers_wait_for_the_settle(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, budget: float
+) -> None:
+    """The settle's commit attempts end at the deadline plus the grace, or at the store's wait
+    when that comes first: never after the route stops waiting for the settle."""
+    state = application(tmp_path)
+    commit_ends: list[float] = []
+    route_ends: list[float] = []
+
+    class Noted(drafts_module._Session):
+        def commit_within(self, seconds: float, since: float) -> None:
+            super().commit_within(seconds, since)
+            commit_ends.append(self.commit_ends)
+
+    async def noted[T](call: Callable[[], T], wait: float) -> T:
+        if getattr(call, "func", None) == state.drafts.settle_run:
+            route_ends.append(time.monotonic() + wait)
+        return await bounded(call, wait)
+
+    monkeypatch.setattr(drafts_module, "_Session", Noted)
+    monkeypatch.setattr(runs_module, "bounded", noted)
+    try:
+        made = asyncio.run(
+            make_plan(accepted_graph(state), PLAN_DATE, state, budget=RunBudget(seconds=budget))
+        )
+    finally:
+        state.close()
+    deadline = value_of(
+        tmp_path, "SELECT deadline_mono FROM runs WHERE thread_id=?", made.view.thread_id
+    )
+
+    assert made.record is not None
+    assert isinstance(deadline, float)
+    assert len(commit_ends) == len(route_ends) == 1
+    assert commit_ends[0] <= deadline + SETTLE_GRACE_SECONDS <= route_ends[0]
 
 
 def test_a_decision_on_an_unpublished_or_unresumable_draft_is_refused(
