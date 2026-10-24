@@ -2230,6 +2230,36 @@ def test_a_commit_refused_three_times_then_accepted_publishes_once(
     assert again.run.status == "published"
 
 
+def test_writes_given_no_wait_on_a_free_file_still_land(tmp_path: pathlib.Path) -> None:
+    """Each write's wait is over before it begins, and nothing holds the file. Its first
+    attempt at the writer and at the commit is still made: the run is admitted, its draft
+    saved and published, and a second run admitted and ended."""
+    store, _ = file_store(tmp_path)
+    try:
+        first = store.admit_run(
+            "tb", plan_date=PLAN_DATE, deadline_mono=monotonic() + RUN_DEADLINE_SECONDS, wait=0.0
+        )
+        store.record_waiting(
+            draft(), thread_id="tb", plan_date=PLAN_DATE, outcome="accepted", wait=0.0
+        )
+        settled = store.settle_run("tb", wait=0.0)
+        second = store.admit_run(
+            "tc", plan_date=PLAN_DATE, deadline_mono=monotonic() + RUN_DEADLINE_SECONDS, wait=0.0
+        )
+        ended = store.end_run("tc", reason=INTERRUPTED, wait=0.0)
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert first is None
+    assert settled.run.status == "published"
+    assert second is None
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", INTERRUPTED)
+    assert latest is not None
+    assert latest.draft_id == draft().draft_id
+
+
 def test_a_page_read_after_a_short_settle_waits_its_own_time(tmp_path: pathlib.Path) -> None:
     """The settle's commit wait was 0.2 seconds; a page read after it still waits the store's
     own time for a file another connection holds for 0.6 seconds."""

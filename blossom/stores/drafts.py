@@ -583,6 +583,9 @@ class DraftsStore:
                 self._wait_until(ends)
                 yield session
                 # The busy handler doesn't wait for the commit: its attempts keep to the clock.
+                # This reset goes through ``_wait_until`` and the one before ``BEGIN`` doesn't,
+                # so a write's second ``_wait_until`` is the one just before its commit, where
+                # a test makes the commit fail.
                 self._wait_until(time.monotonic())
                 self._commit(session)
             except BaseException:
@@ -925,7 +928,9 @@ class DraftsStore:
         published order and closes every published draft still waiting for its
         evening as superseded by it. Otherwise the run ends ``timed_out``,
         ``overtaken`` or ``interrupted`` and its draft is deleted. A run that is
-        not running is returned as it stands, so a repeated call changes nothing.
+        not running is returned as it stands, so a repeated call changes nothing,
+        unless the call is held up past its commit's end: then it raises, and nothing
+        is written.
 
         The commit waits until the deadline plus ``grace``, at most
         ``STORE_WAIT_SECONDS``. What is returned was read inside the transaction,
