@@ -56,6 +56,7 @@ from functools import partial
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response, status
+from fastapi.openapi.constants import REF_PREFIX
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
@@ -190,6 +191,7 @@ from blossom.stores.drafts import (
     UnknownBasis,
 )
 from blossom.stores.help_requests import (
+    HELP_RETENTION_DAYS,
     NOTE_MAX_LENGTH,
     AlreadyTakenUp,
     HelpRequest,
@@ -234,6 +236,7 @@ from blossom.views import (
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
+    ProblemView,
     RunStatusView,
     RunView,
     SchoolStatementView,
@@ -1046,6 +1049,96 @@ def moved_over_json(
     return help_view(state, moved, notes_named_by(state, [moved]))
 
 
+def help_move_answers(conflicts: str, sentences: str) -> dict[int | str, dict[str, Any]]:
+    """Every body one JSON move on a request answers a caller that doesn't ask for a page
+    with, besides the request: ``conflicts`` says what its 409 refuses, and ``sentences`` what
+    its 422 says in a sentence. A caller that asks for a page is answered by the sign-in gate
+    with a page or a redirect, as on every family route, and those aren't listed here."""
+    return {
+        status.HTTP_400_BAD_REQUEST: {
+            "model": ProblemView,
+            "description": (
+                "A body the framework can't decode at all, in its own answer: one not in a JSON "
+                "text encoding, or nested too deeply. Nothing was written."
+            ),
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "model": ProblemView,
+            "description": (
+                "No sign-in, with the household sign-in on, for a caller that doesn't ask for a "
+                "page. Nothing was read."
+            ),
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "model": ProblemView,
+            "description": (
+                "A student's sign-in, before the body is read, for a caller that doesn't ask "
+                "for a page; or, in plain text, a request that doesn't show it comes from this "
+                "site: from another origin, or naming no origin at all."
+            ),
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "model": ProblemView,
+            "description": (
+                "No request kept under that id, in a sentence; a request resolved more than "
+                f"{HELP_RETENTION_DAYS} days ago is not kept. Nothing was written."
+            ),
+        },
+        status.HTTP_409_CONFLICT: {
+            "model": ProblemView,
+            "description": f"In a sentence: {conflicts}. Nothing was written.",
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "description": (
+                f"In a sentence: {sentences}. Or FastAPI's list of field errors for a body that "
+                "isn't a move, such as JSON that doesn't parse, a field no move takes, or an "
+                "update_id that isn't 32 lowercase hexadecimal characters. Nothing was written."
+            ),
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "anyOf": [
+                            {"$ref": f"{REF_PREFIX}{ProblemView.__name__}"},
+                            {"$ref": f"{REF_PREFIX}HTTPValidationError"},
+                        ]
+                    }
+                }
+            },
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "model": ProblemView,
+            "description": (
+                "In a sentence: a kept request that can't be read, refused before anything was "
+                "written. Or, in plain text, the server's own error, as for any route."
+            ),
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+        },
+    }
+
+
+PAST_THE_CAP: Final = f"words past the {NOTE_MAX_LENGTH}-character cap, counted as they'd be kept"
+"""What a 422 on every move says in a sentence."""
+ACCEPT_ANSWERS: Final = help_move_answers(
+    "a request already closed, unless this update_id added these words to it; or one a parent "
+    "took up already, sent words not among its updates",
+    PAST_THE_CAP,
+)
+"""Every body I can help over JSON answers with besides the request."""
+UPDATE_ANSWERS: Final = help_move_answers(
+    "a request already closed, unless this update_id added these words to it; one nobody has "
+    "taken up yet; or an update_id that already added other words",
+    f"{PAST_THE_CAP}, or no words at all",
+)
+"""Every body Add an update over JSON answers with besides the request."""
+RESOLVE_ANSWERS: Final = help_move_answers(
+    "words for a request already closed, unless this update_id added them; or an update_id "
+    "that already added other words",
+    PAST_THE_CAP,
+)
+"""Every body Close request over JSON answers with besides the request."""
+
+
 @router.get("/help-requests")
 def help_requests(state: State, response: Response) -> list[HelpRequestView]:
     """Every request she has open, oldest first, then those resolved within two weeks, each
@@ -1058,7 +1151,7 @@ def help_requests(state: State, response: Response) -> list[HelpRequestView]:
     return [help_view(state, request, named) for request in asked]
 
 
-@router.post("/help-requests/{request_id}/accept")
+@router.post("/help-requests/{request_id}/accept", responses=ACCEPT_ANSWERS)
 def accept_help_request(
     request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
 ) -> HelpRequestView:
@@ -1066,7 +1159,7 @@ def accept_help_request(
     return moved_over_json(state, request_id, "accept", payload)
 
 
-@router.post("/help-requests/{request_id}/update")
+@router.post("/help-requests/{request_id}/update", responses=UPDATE_ANSWERS)
 def update_help_request(
     request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
 ) -> HelpRequestView:
@@ -1074,7 +1167,7 @@ def update_help_request(
     return moved_over_json(state, request_id, "update", payload)
 
 
-@router.post("/help-requests/{request_id}/resolve")
+@router.post("/help-requests/{request_id}/resolve", responses=RESOLVE_ANSWERS)
 def resolve_help_request(
     request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
 ) -> HelpRequestView:

@@ -3,6 +3,7 @@
 """Asking for help: one press from her page, a state a parent moves, each step shown to her,
 and a parent's updates, added without closing the request."""
 
+import json
 import logging
 import pathlib
 import re
@@ -2492,3 +2493,253 @@ def test_a_start_over_a_reply_that_is_not_utf_8_leaves_it_and_sets_it_apart(
     assert after == before
     assert [request.request_id for request in held.requests] == [readable.request_id]
     assert held.unreadable == 1
+
+
+# ------------------------------------------------------------ what the JSON moves declare
+
+
+SCHEMAS = "#/components/schemas/"
+SCHEMA_KEYWORDS = frozenset(
+    {
+        "$ref",
+        "anyOf",
+        "enum",
+        "type",
+        "format",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "title",
+        "description",
+        "default",
+    }
+)
+"""The keywords the schemas these moves name use; a schema with any other fails the check."""
+FORMATS: dict[str, Callable[[str], object]] = {
+    "date": date.fromisoformat,
+    "date-time": datetime.fromisoformat,
+}
+JSON_KINDS: dict[str, Callable[[object], bool]] = {
+    "string": lambda value: isinstance(value, str),
+    "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
+    "boolean": lambda value: isinstance(value, bool),
+    "null": lambda value: value is None,
+    "object": lambda value: isinstance(value, dict),
+    "array": lambda value: isinstance(value, list),
+}
+
+
+def is_of(value: object, schema: dict[str, Any], schemas: dict[str, Any]) -> bool:
+    """Whether a decoded body has the shape a declared schema gives it, read through the
+    keywords above and refusing any other. An object that lists its properties carries its
+    required keys and none it doesn't list."""
+    unknown = set(schema) - SCHEMA_KEYWORDS
+    assert not unknown, f"a keyword this check doesn't read: {sorted(unknown)}"
+    assert schema.get("additionalProperties", False) is False, schema
+    if "$ref" in schema:
+        return is_of(value, schemas[schema["$ref"].removeprefix(SCHEMAS)], schemas)
+    if "anyOf" in schema:
+        return any(is_of(value, part, schemas) for part in schema["anyOf"])
+    if "enum" in schema and value not in schema["enum"]:
+        return False
+    kind = schema.get("type")
+    if kind is None:
+        shaped = {"properties", "items", "required"} & set(schema)
+        assert not shaped, f"a shape with no type, which this check doesn't read: {schema}"
+        return True
+    if not JSON_KINDS[kind](value):
+        return False
+    if "format" in schema:
+        try:
+            FORMATS[schema["format"]](str(value))
+        except ValueError:
+            return False
+    if isinstance(value, list):
+        return all(is_of(item, schema["items"], schemas) for item in value)
+    if isinstance(value, dict) and "properties" in schema:
+        properties = schema["properties"]
+        if not set(schema.get("required", [])) <= set(value) <= set(properties):
+            return False
+        return all(is_of(item, properties[key], schemas) for key, item in value.items())
+    return True
+
+
+def declared_bodies(entry: dict[str, Any]) -> set[tuple[str, str, str]]:
+    """Every status, media type and body an operation declares, a JSON body by the name of
+    its schema and plain text as ``text``."""
+    declared: set[tuple[str, str, str]] = set()
+    for code, answer in entry["responses"].items():
+        for media, body in answer["content"].items():
+            schema = body["schema"]
+            if media == "text/plain":
+                assert schema == {"type": "string"}, code
+                declared.add((code, media, "text"))
+                continue
+            assert media == "application/json", (code, media)
+            parts = schema.get("anyOf", [schema])
+            assert set(schema) == {"anyOf"} or parts == [schema], (code, schema)
+            for part in parts:
+                assert set(part) == {"$ref"}, (code, part)
+                declared.add((code, media, part["$ref"].removeprefix(SCHEMAS)))
+    return declared
+
+
+def body_given(
+    answer: Answer, declared: set[tuple[str, str, str]], schemas: dict[str, Any]
+) -> tuple[str, str, str]:
+    """The declared status, media type and body an answer is: exactly one must fit it."""
+    code = str(answer.status_code)
+    media = answer.headers["content-type"].split(";")[0]
+    if media == "text/plain":
+        return code, media, "text"
+    body = json.loads(answer.text)
+    fitting = [
+        name
+        for given_code, given_media, name in sorted(declared)
+        if (given_code, given_media) == (code, media)
+        and is_of(body, {"$ref": f"{SCHEMAS}{name}"}, schemas)
+    ]
+    assert len(fitting) == 1, (code, media, fitting, answer.text)
+    return code, media, fitting[0]
+
+
+TOO_LONG = f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is {NOTE_MAX_LENGTH + 1}."
+EVERY_MOVE: dict[str, tuple[int, str | None]] = {
+    "made": (200, None),
+    "not in a JSON text encoding": (400, "There was an error parsing the body"),
+    "nested too deeply": (400, "There was an error parsing the body"),
+    "no sign-in": (401, "Sign in first."),
+    "her sign-in": (403, "This page is for a parent."),
+    "from another origin": (403, None),
+    "unknown": (404, "no help request '00000000000000000000000000000000'"),
+    "past the cap": (422, TOO_LONG),
+    "JSON that doesn't parse": (422, None),
+    "a field no move takes": (422, None),
+    "an update_id of another shape": (422, None),
+    "a request that can't be read": (500, CANNOT_BE_READ),
+    "the file refuses": (500, None),
+}
+"""What every move answers a JSON caller, by cause: its status, and its sentence if any."""
+EACH_MOVE: dict[str, dict[str, tuple[int, str | None]]] = {
+    "accept": {
+        "closed": (409, ALREADY_CLOSED),
+        "taken up with other words": (409, ALREADY_TAKEN_UP_JSON),
+    },
+    "update": {
+        "closed": (409, CLOSED_BEFORE_UPDATE),
+        "not taken up": (409, NOT_TAKEN_UP_YET_JSON),
+        "the form added other words": (409, FORM_ADDED_OTHER_WORDS_JSON),
+        "no words": (422, UPDATE_NEEDS_WORDS),
+    },
+    "resolve": {
+        "closed": (409, ALREADY_CLOSED),
+        "the form added other words": (409, FORM_ADDED_OTHER_WORDS_JSON),
+    },
+}
+"""What each move answers besides, by cause."""
+STORE_MOVES = {"accept": "accept", "update": "add_update", "resolve": "resolve"}
+
+
+def moves_answered(
+    client: TestClient, step: str, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Answer]:
+    """One move sent for each cause it answers, with the sign-in off, by cause."""
+
+    def sent(request_id: str, body: object = None, move: str = step, **how: Any) -> Answer:  # noqa: ANN401
+        if body is not None:
+            how["json"] = body
+        return client.post(f"/parent/help-requests/{request_id}/{move}", **how)
+
+    def taken_up() -> str:
+        request_id = asked_for(client)
+        sent(request_id, {}, "accept")
+        return request_id
+
+    whole = taken_up() if step == "update" else asked_for(client)
+    form = uuid4().hex
+    answers = {
+        "made": sent(whole, {"response": "Synthetic words"}),
+        "not in a JSON text encoding": sent(whole, content=b"\xff\xfe{", headers=JSON_TYPE),
+        "nested too deeply": sent(whole, content=b"[" * 100_000, headers=JSON_TYPE),
+        "from another origin": sent(whole, {}, headers={"Origin": "http://elsewhere.example"}),
+        "unknown": sent("0" * 32, {}),
+        "past the cap": sent(whole, {"response": "w" * (NOTE_MAX_LENGTH + 1)}),
+        "JSON that doesn't parse": sent(whole, content=b"{not json", headers=JSON_TYPE),
+        "a field no move takes": sent(whole, {"status": "done"}),
+        "an update_id of another shape": sent(whole, {"update_id": "not-an-id"}),
+    }
+    if step == "accept":
+        closed = asked_for(client)
+        sent(closed, {}, "resolve")
+        answers["closed"] = sent(closed, {"response": "Synthetic other"})
+        first = asked_for(client)
+        sent(first, {"response": "Synthetic first"}, "accept")
+        answers["taken up with other words"] = sent(first, {"response": "Synthetic other"})
+    if step in ("update", "resolve"):
+        closed = taken_up()
+        sent(closed, {}, "resolve")
+        answers["closed"] = sent(closed, {"response": "Synthetic other"})
+        used = taken_up()
+        sent(used, {"response": "Synthetic first", "update_id": form}, "update")
+        answers["the form added other words"] = sent(
+            used, {"response": "Synthetic other", "update_id": form}
+        )
+    if step == "update":
+        answers["not taken up"] = sent(asked_for(client), {"response": "Synthetic other"})
+        answers["no words"] = sent(taken_up(), {"response": " \n "})
+    _, damaged, _ = three_requests(state_of(client), "updates that are no list")
+    answers["a request that can't be read"] = sent(damaged, {})
+    monkeypatch.setattr(state_of(client).help_requests, STORE_MOVES[step], refusing())
+    answers["the file refuses"] = sent(taken_up() if step == "update" else asked_for(client), {})
+    monkeypatch.undo()
+    return answers
+
+
+@pytest.mark.parametrize("step", ["accept", "update", "resolve"])
+def test_each_json_move_declares_every_answer_it_gives_a_json_caller_and_no_other(
+    step: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each answer a family move over JSON gives a caller that doesn't ask for a page has its
+    status, media type and body's shape declared, and each declared one is given: an answer
+    its schema doesn't name fails, and so does a declaration no answer gives. Each cause is
+    answered with its own status and sentence."""
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
+    with TestClient(
+        app, follow_redirects=False, headers=SAME_ORIGIN, raise_server_exceptions=False
+    ) as client:
+        api = client.get("/openapi.json").json()
+        answers = moves_answered(client, step, monkeypatch)
+    gated = signed_in(tmp_path)
+    try:
+        answers["her sign-in"] = gated.post(f"/parent/help-requests/{'0' * 32}/{step}", json={})
+        gated.post("/sign-out")
+        answers["no sign-in"] = gated.post(f"/parent/help-requests/{'0' * 32}/{step}", json={})
+    finally:
+        gated.__exit__(None, None, None)
+
+    expected = EVERY_MOVE | EACH_MOVE[step]
+    assert set(answers) == set(expected)
+    for cause, answer in answers.items():
+        code, sentence = expected[cause]
+        assert answer.status_code == code, (cause, answer.text)
+        if sentence is not None:
+            assert json.loads(answer.text) == {"detail": sentence}, cause
+    schemas = api["components"]["schemas"]
+    declared = declared_bodies(api["paths"][f"/parent/help-requests/{{request_id}}/{step}"]["post"])
+    given = {cause: body_given(answer, declared, schemas) for cause, answer in answers.items()}
+    assert set(given.values()) == declared
+    assert given["from another origin"] == ("403", "text/plain", "text")
+    assert given["the file refuses"] == ("500", "text/plain", "text")
+    assert given["JSON that doesn't parse"] == ("422", "application/json", "HTTPValidationError")
+    # The check can fail: a sentence where a list is declared, a key no schema lists, a
+    # location given as a string, a state no request has, and a date that isn't one.
+    assert not is_of({"detail": "words"}, {"$ref": f"{SCHEMAS}HTTPValidationError"}, schemas)
+    assert not is_of({"detail": "words", "code": 1}, {"$ref": f"{SCHEMAS}ProblemView"}, schemas)
+    error = {"$ref": f"{SCHEMAS}ValidationError"}
+    assert not is_of({"loc": "body", "msg": "m", "type": "t"}, error, schemas)
+    made = json.loads(answers["made"].text)
+    view = {"$ref": f"{SCHEMAS}HelpRequestView"}
+    assert is_of(made, view, schemas)
+    assert not is_of({**made, "state": "shrugged"}, view, schemas)
+    assert not is_of({**made, "evening": "not a date"}, view, schemas)
