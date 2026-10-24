@@ -1285,7 +1285,8 @@ HOMEWORK_HEADING_LANDING = (
     '.list-heading:focus,\nh1#homework:focus,\n.assignment h2[tabindex="-1"]:focus,\n'
 )
 """The result's homework heading among the places a press or a link lands on, pinned in the
-landing rule's selector list as written."""
+landing rule's selector list as written. A page's heading narrows that cue's spread where it
+reaches into the page's side margin, by a rule pinned with the page heading's rules."""
 
 
 def test_the_result_s_homework_heading_and_its_search_s_found_heading_take_the_landing_rule() -> (
@@ -1295,7 +1296,8 @@ def test_the_result_s_homework_heading_and_its_search_s_found_heading_take_the_l
     page = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
 
     assert css.count(HOMEWORK_HEADING_LANDING) == 1
-    assert css.count("h1#homework") == 1
+    assert css.count("h1#homework") == 2
+    assert css.count("main > h1#homework:focus {") == 1
     assert page.count('<h1 id="homework" tabindex="-1">Homework for this result</h1>') == 1
     found = '<h2 class="list-heading" id="found" tabindex="-1">{{ found_heading }}</h2>'
     assert page.count(found) == page.count("list-heading") == 1
@@ -1476,8 +1478,8 @@ HEADING_RULE = ".grade-heading {\n  margin-inline: clamp(-0.95rem, 26vw - 4.5rem
 into the page's side margin until it is 0.3rem from the screen's edge, so a word of a class's
 name breaks only where the whole line can't hold it."""
 SHARED_HEADING_RULES = (
-    "h1 {\n  font-size: 2.1rem;\n  font-weight: 700;\n  color: var(--blue-action);\n"
-    "  margin: 0.75rem 0 0.25rem;\n  letter-spacing: 0.01em;\n}\n",
+    "h1 {\n  font-size: clamp(1.5rem, 15vw, 2.1rem);\n  font-weight: 700;\n"
+    "  color: var(--blue-action);\n  margin: 0.75rem 0 0.25rem;\n  letter-spacing: 0.01em;\n}\n",
     "h2 {\n  font-size: 1.3rem;\n  font-weight: 600;\n  color: var(--blue-action);\n"
     "  margin: 0 0 0.6rem;\n}\n",
     SHARED_CARD_RULES[0],
