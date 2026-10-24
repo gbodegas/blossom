@@ -15,10 +15,12 @@ the environment. Left to itself, ``ChatAnthropic`` resolves its endpoint from
 ``ANTHROPIC_PROXY``, and a hosted gateway from ``LANGSMITH_GATEWAY``; the
 SDK's default HTTP client then mounts whatever ``HTTP_PROXY``, ``HTTPS_PROXY``,
 and ``ALL_PROXY`` name and trusts whatever certificate ``SSL_CERT_FILE`` points
-at. Here the key comes from ``Settings``, the endpoint is the public API, and
-the HTTP clients are built in this file with environment trust switched off,
-so no variable in a shell can change where a prompt is sent or which
-certificates the connection trusts. Two defaults that would surprise are
+at, and the SDK adds the headers ``ANTHROPIC_CUSTOM_HEADERS`` lists after its
+key and API version. Here the key comes from ``Settings``, the endpoint is the
+public API, the HTTP clients are built in this file with environment trust
+switched off, and each SDK client keeps only the headers passed to it, so no
+variable in a shell can change where a prompt is sent, which certificates the
+connection trusts, or which headers a request carries. Two defaults that would surprise are
 pinned as well. The integration takes ``max_tokens`` from its model profile,
 and the pinned release has no profile for ``claude-opus-5-5``, so it would
 send its fallback of 4,096, well below the model's own limit of 128,000. It
@@ -36,7 +38,7 @@ import base64
 import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from functools import cached_property
 from typing import Any, Final, Literal, NamedTuple
 
@@ -121,24 +123,39 @@ def model_configured(settings: Settings) -> bool:
     return bool((settings.anthropic_api_key or "").strip())
 
 
+def _with_only_these_headers[C: (anthropic.Client, anthropic.AsyncClient)](
+    client: C, headers: Mapping[str, str]
+) -> C:
+    """``client`` with exactly ``headers`` as its own. The SDK adds the lines of
+    ``ANTHROPIC_CUSTOM_HEADERS`` to them as it builds a client, after its key and API
+    version, so the variable could add a beta or replace the key. ``copy`` and
+    ``with_options`` build a client again and read the variable again, so this file
+    calls neither."""
+    client._custom_headers = dict(headers)
+    return client
+
+
 class PinnedChatAnthropic(ChatAnthropic):
     """``ChatAnthropic`` whose HTTP clients ignore the environment.
 
     The integration exposes no way to supply an HTTP client, and the SDK's
     default client honors the proxy and certificate variables. These two
     properties are the integration's own, rebuilt around clients constructed
-    here with ``trust_env`` off and no proxy mounts.
+    here with ``trust_env`` off and no proxy mounts, each keeping only the
+    headers the integration passes.
     """
 
     @cached_property
     def _client(self) -> anthropic.Client:
         http_client = httpx.Client(timeout=TIMEOUT_SECONDS, trust_env=False)
-        return anthropic.Client(**self._client_params, http_client=http_client)
+        client = anthropic.Client(**self._client_params, http_client=http_client)
+        return _with_only_these_headers(client, self._client_params["default_headers"])
 
     @cached_property
     def _async_client(self) -> anthropic.AsyncClient:
         http_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS, trust_env=False)
-        return anthropic.AsyncClient(**self._client_params, http_client=http_client)
+        client = anthropic.AsyncClient(**self._client_params, http_client=http_client)
+        return _with_only_these_headers(client, self._client_params["default_headers"])
 
 
 def chat_model(settings: Settings, *, effort: Effort) -> ChatAnthropic:
@@ -267,8 +284,9 @@ class _Until(httpx.SyncByteStream):
 def _reader_client(
     key: str, timeout: float, transport: httpx.BaseTransport | None
 ) -> anthropic.Anthropic:
-    """The reader's own client: the public endpoint, no environment trust, no retry of its
-    own, and the timeout it is given for each network operation. Through ``_InTime`` the
+    """The reader's own client: the public endpoint, no environment trust, no headers but
+    the SDK's own, no retry of its own, and the timeout it is given for each network
+    operation. Through ``_InTime`` the
     answer's body is also checked against the call's time; the connection, the request and
     the answer's head are bounded only by each operation's timeout."""
     inner = httpx.HTTPTransport(trust_env=False) if transport is None else transport
@@ -277,9 +295,10 @@ def _reader_client(
         trust_env=False,
         transport=_InTime(inner, time.monotonic() + timeout),
     )
-    return anthropic.Anthropic(
+    client = anthropic.Anthropic(
         api_key=key, base_url=ENDPOINT, max_retries=0, timeout=timeout, http_client=http_client
     )
+    return _with_only_these_headers(client, {})
 
 
 def read_screenshot(

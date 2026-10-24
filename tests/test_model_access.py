@@ -7,10 +7,12 @@ of the settings; hosted tracing for the model framework is off after startup
 no matter which of its environment spellings a shell set; and the one model
 client the package can construct sends to the public endpoint through an HTTP
 client that ignores the environment, carries no provider-side tools, and
-refuses to exist without a key.
+refuses to exist without a key. Headers a shell variable lists never reach a
+request from the planner or the screenshot reader.
 """
 
 import ast
+import asyncio
 import base64
 import dataclasses
 import hashlib
@@ -511,6 +513,135 @@ def test_the_reader_client_ignores_the_environment_and_never_retries_on_its_own(
         assert client.timeout == 12.5
         assert client._client._trust_env is False
         assert client._client._mounts == {}
+
+
+CUSTOM_HEADERS_VARIABLE = "ANTHROPIC_CUSTOM_HEADERS"
+"""The SDK reads extra headers for every client from this variable, one ``name: value`` a line."""
+
+SHELL_HEADERS: dict[str, str] = {
+    "a-beta": "anthropic-beta: synthetic-beta-2099-01-01",
+    "names-the-client-sets": "\n".join(
+        (
+            "anthropic-beta: synthetic-beta-2099-01-01",
+            "X-Api-Key: sk-from-the-shell",
+            "anthropic-version: 2099-01-01",
+            "User-Agent: synthetic-agent",
+            "x-synthetic: from-the-shell",
+        )
+    ),
+}
+"""Values a shell could give the variable: a beta alone, and headers whose names the client
+sets itself, the key among them, alongside one the client never sends."""
+
+SENT_HEADERS = frozenset(
+    {
+        "accept",
+        "accept-encoding",
+        "anthropic-version",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "user-agent",
+        "x-api-key",
+        "x-stainless-arch",
+        "x-stainless-async",
+        "x-stainless-lang",
+        "x-stainless-os",
+        "x-stainless-package-version",
+        "x-stainless-read-timeout",
+        "x-stainless-retry-count",
+        "x-stainless-runtime",
+        "x-stainless-runtime-version",
+        "x-stainless-timeout",
+    }
+)
+"""Every header a model request carries: the ones the SDK, its HTTP client and the
+integration set, and nothing a shell adds. An added header fails the pin."""
+
+
+def assert_only_the_clients_headers(sent: httpx.Request) -> None:
+    """The request carries exactly the pinned header names, the key from settings, and the
+    SDK's API version."""
+    assert set(sent.headers) == SENT_HEADERS
+    assert sent.headers["x-api-key"] == "sk-test-value"
+    assert sent.headers["anthropic-version"] == "2023-06-01"
+
+
+def test_a_reading_sends_only_the_headers_the_client_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(CUSTOM_HEADERS_VARIABLE, raising=False)
+    service = Service(message(json.dumps(AN_ANSWER)))
+
+    read(service)
+
+    [sent] = service.sent
+    assert_only_the_clients_headers(sent)
+
+
+@pytest.mark.parametrize("value", SHELL_HEADERS.values(), ids=SHELL_HEADERS.keys())
+def test_a_reading_sends_the_same_headers_whatever_the_shell_adds(
+    value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(CUSTOM_HEADERS_VARIABLE, raising=False)
+    service = Service(message(json.dumps(AN_ANSWER)), message(json.dumps(AN_ANSWER)))
+    read(service)
+
+    monkeypatch.setenv(CUSTOM_HEADERS_VARIABLE, value)
+    read(service)
+
+    plain, with_variable = service.sent
+    assert_only_the_clients_headers(with_variable)
+    assert sorted(with_variable.headers.multi_items()) == sorted(plain.headers.multi_items())
+
+
+def planner_request(*, asynchronous: bool) -> httpx.Request:
+    """One planner request through the real integration and SDK, on a mock transport put
+    in place of the network beneath the client ``chat_model`` builds. Nothing leaves the
+    machine."""
+    sent: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return message(json.dumps({"week": "planned"}))
+
+    model = chat_model(settings_with_key(), effort="low")
+    asking = [HumanMessage("Plan Wren's week.")]
+    if asynchronous:
+        model._async_client._client._transport = httpx.MockTransport(handle)
+        asyncio.run(model.ainvoke(asking))
+    else:
+        model._client._client._transport = httpx.MockTransport(handle)
+        model.invoke(asking)
+    [request] = sent
+    return request
+
+
+@pytest.mark.parametrize("asynchronous", [True, False], ids=["async", "sync"])
+def test_a_planner_request_sends_only_the_headers_the_client_sets(
+    asynchronous: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(CUSTOM_HEADERS_VARIABLE, raising=False)
+
+    sent = planner_request(asynchronous=asynchronous)
+
+    assert_only_the_clients_headers(sent)
+
+
+@pytest.mark.parametrize("asynchronous", [True, False], ids=["async", "sync"])
+@pytest.mark.parametrize("value", SHELL_HEADERS.values(), ids=SHELL_HEADERS.keys())
+def test_a_planner_request_sends_the_same_headers_whatever_the_shell_adds(
+    value: str, asynchronous: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(CUSTOM_HEADERS_VARIABLE, raising=False)
+    plain = planner_request(asynchronous=asynchronous)
+
+    monkeypatch.setenv(CUSTOM_HEADERS_VARIABLE, value)
+    with_variable = planner_request(asynchronous=asynchronous)
+
+    assert_only_the_clients_headers(with_variable)
+    assert sorted(with_variable.headers.multi_items()) == sorted(plain.headers.multi_items())
 
 
 def test_a_reading_sends_the_timeout_it_is_given_with_its_request() -> None:
