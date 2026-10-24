@@ -7580,6 +7580,136 @@ def test_only_a_card_the_reader_was_unsure_of_and_read_without_words_has_an_empt
     assert label_of(form, box) == "Instructions on screenshot 1, card 1"
 
 
+def split_unsure_dates(field: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One assigned card read under Monday and under Tuesday, the reader unsure of the day
+    heading over each (``heading``) or of the card's due line (``footer``)."""
+    marks = [{"field": "footer", "reason": "faint"}] if field == "footer" else []
+    unsure = "faint" if field == "heading" else None
+    card = homework_card(footer="Due (10/9/2026)", uncertain=marks)
+
+    def under(day: str) -> dict[str, Any]:
+        return homework_answer(
+            headings=[{"text": day, "y": 150, "uncertain": unsure}], cards=[card]
+        )
+
+    return under("Monday 10/5/2026"), under("Tuesday 10/6/2026")
+
+
+@pytest.mark.parametrize(
+    ("field", "box", "typed", "named"),
+    [
+        ("heading", "assigned", "2026-10-04", "assigned date (day heading)"),
+        ("footer", "due", "2026-10-10", "due date"),
+    ],
+    ids=["assigned date", "due date"],
+)
+def test_each_piece_of_a_split_row_asks_of_its_own_unsure_date(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    box: str,
+    typed: str,
+    named: str,
+) -> None:
+    """A row split by its assigned days, the reader unsure of a date on each piece: each piece
+    asks of its own date. Monday's date corrected alone leaves Tuesday's question open, the
+    first question to answer, with no tick and Save refused; Tuesday's "Confirm as read"
+    answers it alone, and the row saves."""
+    monday, tuesday = split_unsure_dates(field)
+    legend = screenshot_page.SAID["unsure"].format(named=named)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        page = her_name_answered(browser, draft_id, page)
+        [row] = fields_named(review_form(page), "answer:split:")
+        keep(browser, draft_id, ("split", row, json.dumps("split")))
+        split = browser.get(f"/parent/imports/{draft_id}").text
+        days = fields_named(review_form(split), "answer:destination:")
+        chosen = {f"answer:destination:{d}": f'{{"new":{n}}}' for n, d in enumerate(days, 1)}
+        first = {f"correct:{box_subject(split, box, 0)}": typed}
+        kept = followed(
+            browser, send(browser, draft_id, page_post(split, "keep", typed=first, choose=chosen))
+        )
+        questions = re.findall(
+            rf'<fieldset[^>]*id="(ask-\d+)"[^>]*>\s*<legend>{re.escape(str(escape(legend)))}',
+            review_form(kept),
+        )
+        link = FIRST_OPEN.search(kept)
+        before = assignment_count(browser)
+        unsure, tickable, refused = still_open_tick_and_save(browser, draft_id, kept)
+        assert (unsure, tickable) == (True, False)
+        assert says(refused, REFUSED_OPEN)
+        assert assignment_count(browser) == before
+        confirms = fields_named(review_form(kept), "answer:confirm:")
+        tuesday_only = {f"answer:confirm:{confirms[-1]}": "as_read"}
+        confirmed = followed(
+            browser,
+            send(browser, draft_id, page_post(kept, "keep", typed=first, choose=tuesday_only)),
+        )
+        still, ready, saved = still_open_tick_and_save(browser, draft_id, confirmed)
+
+    assert len(questions) == 2
+    assert link is not None
+    assert link.group(1) == questions[1]
+    assert len(confirms) == 2
+    assert (still, ready) == (False, True)
+    assert says(saved, imports.counted(2, 0, 0, 0))
+
+
+@pytest.mark.parametrize("field", ["heading", "footer"], ids=["assigned date", "due date"])
+def test_confirm_as_read_answers_only_its_own_piece_s_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """A split row, the reader unsure of a date on each piece: Monday's "Confirm as read" alone
+    leaves Tuesday's question the first to answer, with no tick and Save refused; both
+    confirmed, the row saves, and the record counts two dates confirmed."""
+    monday, tuesday = split_unsure_dates(field)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        page = her_name_answered(browser, draft_id, page)
+        [row] = fields_named(review_form(page), "answer:split:")
+        keep(browser, draft_id, ("split", row, json.dumps("split")))
+        split = browser.get(f"/parent/imports/{draft_id}").text
+        days = fields_named(review_form(split), "answer:destination:")
+        chosen = {f"answer:destination:{d}": f'{{"new":{n}}}' for n, d in enumerate(days, 1)}
+        mon, tue = fields_named(review_form(split), "answer:confirm:")
+        questions = re.findall(
+            r'<fieldset[^>]*id="(ask-\d+)"[^>]*>\s*<legend>The reader wasn', split
+        )
+        first = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(split, "keep", choose={**chosen, f"answer:confirm:{mon}": "as_read"}),
+            ),
+        )
+        link = FIRST_OPEN.search(first)
+        unsure, tickable, refused = still_open_tick_and_save(browser, draft_id, first)
+        assert (unsure, tickable) == (True, False)
+        assert says(refused, REFUSED_OPEN)
+        both = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(first, "keep", choose={f"answer:confirm:{tue}": "as_read"}),
+            ),
+        )
+        still, ready, saved = still_open_tick_and_save(browser, draft_id, both)
+        counts = (
+            sqlite3.connect(tmp_path / "blossom.sqlite3")
+            .execute("SELECT corrected, confirmed FROM grade_acceptances")
+            .fetchall()
+        )
+
+    assert [json.loads(subject) for subject in (mon, tue)] == [[days[0], field], [days[1], field]]
+    assert link is not None
+    assert link.group(1) == questions[1]
+    assert (still, ready) == (False, True)
+    assert says(saved, imports.counted(2, 0, 0, 0))
+    assert counts == [(0, 2)]
+
+
 def test_an_old_instruction_correction_on_a_split_row_reaches_every_piece(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

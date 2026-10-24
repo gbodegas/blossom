@@ -51,9 +51,11 @@ from blossom.screenshot_review import (
     wordless_field,
 )
 from blossom.screenshot_save import (
+    PIECE_FIELDS,
     ReviewState,
     confirm_fields,
-    confirm_subject,
+    confirm_of,
+    confirm_owner,
     fold_answers,
     instruction_subject,
     own_wordless,
@@ -365,7 +367,7 @@ def confirm_question(
     """Confirm as read, for a field the reader wasn't sure of, pointing to the box of "Correct
     what was read" that corrects it (``fold``, its fold's id), except for the due or assigned
     label, which is confirmed only."""
-    subject = confirm_subject(piece.key, field)
+    subject = confirm_of(piece, field)
     legend = SAID["unsure"].format(named=FIELD_NAMES[field])
     options = (("as_read", SAID["confirm"], values.get(("confirm", subject)) == "as_read"),)
     return Question(
@@ -1344,9 +1346,12 @@ def rows_shown(
     asking: dict[tuple[str, str], list[Piece]] = {}
     for piece in open_pieces:
         for field in sorted(confirm_fields(piece)):
-            host = piece.name if field in ("footer", "heading") else first_of_row[piece.key]
-            confirm_on.setdefault((piece.key, field), host)
-            asking.setdefault((piece.key, field), []).append(piece)
+            # A date's question is its own piece's, on its card; any other field's is its
+            # row's, on the row's first open card.
+            whose = confirm_owner(piece, field)
+            host = piece.name if field in PIECE_FIELDS else first_of_row[piece.key]
+            confirm_on.setdefault((whose, field), host)
+            asking.setdefault((whose, field), []).append(piece)
     previews = {e.dest: e for e in state.preview}
     digests = unit_digests(state)
     wordless: dict[str, list[tuple[str, str]]] = {}
@@ -1374,14 +1379,13 @@ def rows_shown(
                     about=about,
                 )
             )
-        for (key, field), host in confirm_on.items():
+        for (whose, field), host in confirm_on.items():
             if host != piece.name:
                 continue
-            dated = field in ("footer", "heading")
-            fold = folds[host] if dated else folds[first_of_row[key]]
-            # A row's question stands for every open piece unsure of that field, as "Still to
-            # answer" and the save read it; a date's question, for its own piece.
-            askers = [piece] if dated else asking[(key, field)]
+            fold = folds[host] if field in PIECE_FIELDS else folds[first_of_row[whose]]
+            # A row's question stands for every open piece unsure of that field, and a date's
+            # for its own piece, as "Still to answer" and the save read them.
+            askers = asking[(whose, field)]
             checks.append(
                 dataclasses.replace(
                     confirm_question(piece, field, values, fold),
@@ -1800,8 +1804,7 @@ def _still_open(
     if entry.instruction_revision is not None and entry.instruction_choice is None:
         still.append("instructions")
     if any(
-        values.get(("confirm", confirm_subject(m.key, f))) is None
-        and not fold_answers(m, f, corrections)
+        values.get(("confirm", confirm_of(m, f))) is None and not fold_answers(m, f, corrections)
         for m in members
         for f in confirm_fields(m)
     ):

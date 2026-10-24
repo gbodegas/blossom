@@ -499,8 +499,26 @@ def unreadable_dates(piece: Piece, corrections: Corrections) -> tuple[str, ...]:
 
 
 def confirm_subject(key: str, field: str) -> str:
-    """A confirmation's subject: the row key and the field."""
+    """A confirmation's subject: the row key and the field, or for a date, the piece name and
+    the field (``confirm_of``)."""
     return json.dumps([key, field], separators=(",", ":"))
+
+
+PIECE_FIELDS: Final = frozenset({"footer", "heading"})
+"""The unsure fields each piece confirms or corrects on its own: its due date and its assigned
+date, which its own date boxes set. Every other field is its row's."""
+
+
+def confirm_owner(piece: Piece, field: str) -> str:
+    """Whose confirmation answers a piece's unsure field: the piece's own for a date, its row's
+    for any other field. A piece of a row that isn't split is named by its row key, so both
+    are the same there."""
+    return piece.name if field in PIECE_FIELDS else piece.key
+
+
+def confirm_of(piece: Piece, field: str) -> str:
+    """The subject of the confirmation that answers a piece's unsure field."""
+    return confirm_subject(confirm_owner(piece, field), field)
 
 
 def student_line(body: str) -> str | None:
@@ -888,7 +906,7 @@ def _homework_transaction(
         if kind in ("split", "name"):
             return False
         if kind == "confirm":
-            return str(json.loads(subject)[0]) in whole_rows
+            return str(json.loads(subject)[0]) in done
         about = answer_names(kind, subject)
         return bool(about) and set(about) <= done
 
@@ -970,7 +988,7 @@ def _correction_counts(
         rows.setdefault(piece.key, piece)
         pieces.append(piece)
         for field in sorted(confirm_fields(piece)):
-            unsure.setdefault((piece.key, field), piece)
+            unsure.setdefault((confirm_owner(piece, field), field), piece)
     corrected = 0
     fixed: set[tuple[str, str]] = set()
     boxes = [
@@ -979,7 +997,7 @@ def _correction_counts(
         for field, value in sorted(corrections.get(key, {}).items())
     ]
     boxes += [
-        (piece.key, piece, field, value)
+        (piece.name, piece, field, value)
         for piece in pieces
         for field, value in sorted(corrections.get(dates_key(piece.name), {}).items())
     ]
@@ -1043,7 +1061,7 @@ def _unconfirmed(
     pieces = [state.by_name[name] for name in unit]
     return (
         any(
-            ("confirm", confirm_subject(piece.key, field)) not in answers
+            ("confirm", confirm_of(piece, field)) not in answers
             and not fold_answers(piece, field, corrections)
             for piece in pieces
             for field in confirm_fields(piece)

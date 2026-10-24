@@ -121,7 +121,7 @@ def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
     if kind in ("split", "kind") and not subject.startswith("["):
         return subject
     if kind == "confirm":
-        return str(json.loads(subject)[0])
+        return str(json.loads(subject)[0]).split("|")[0]
     names = answer_names(kind, subject)
     piece = state.by_name.get(names[0]) if names else None
     return None if piece is None else piece.key
@@ -130,8 +130,8 @@ def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
 def _names_of(state: ReviewState, kind: str, subject: str) -> tuple[str, ...]:
     """The piece names an answer is about, so one for pieces another save took is dropped."""
     if kind == "confirm":
-        key = str(json.loads(subject)[0])
-        return tuple(p.name for p in state.pieces if p.key == key)
+        owner = str(json.loads(subject)[0])
+        return tuple(p.name for p in state.pieces if owner in (p.key, p.name))
     if kind == "split" or (kind == "kind" and not subject.startswith("[")):
         return tuple(p.name for p in state.pieces if p.key == subject)
     return tuple(answer_names(kind, subject))
