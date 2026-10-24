@@ -34,6 +34,7 @@ from blossom.screenshot_review import (
 )
 from blossom.screenshot_save import (
     ReviewState,
+    box_texts,
     canonical,
     correctable,
     correction_digest,
@@ -41,6 +42,7 @@ from blossom.screenshot_save import (
     fold_reads,
     piece_digest,
     read_digest,
+    wordless_rows,
 )
 from blossom.stores.import_drafts import AnswerToKeep
 
@@ -540,6 +542,7 @@ def shape_four(state: ReviewState, corrections: Corrections) -> dict[str, dict[s
     shows it, from the pieces those corrections give (``state``), kept where it differs from
     its value with no correction, as a first press posting the page untouched keeps it."""
     boxes: dict[tuple[str, str], str] = {}
+    wordless = wordless_rows(state.open)
     for piece in state.open:
         read = piece.as_read
         if read is None:
@@ -549,7 +552,7 @@ def shape_four(state: ReviewState, corrections: Corrections) -> dict[str, dict[s
             boxes[(piece.key, "title")] = piece.title
             old = corrections.get(piece.key, {}).get("instruction")
             replaced = old is not None and usable_correction("instruction", old)
-            for index, text in enumerate(read.texts):
+            for index, text in enumerate(box_texts(piece, wordless)):
                 kept = (str(old).strip() if index == 0 else "") if replaced else text
                 boxes[(piece.key, f"instruction:{index}")] = kept
         key = dates_key(piece.name)

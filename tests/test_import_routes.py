@@ -6906,6 +6906,205 @@ def test_old_date_corrections_convert_on_the_first_press_and_ask_once(
     assert not says(later_page, lost)
 
 
+# ------------------------------------------- instructions the reader was unsure of and read none of
+
+
+MISSING_WORDS: Final = "Read chapter 3 and answer the questions."
+
+
+def wordless_review(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str, str, str]:
+    """A review of one card whose instructions the reader wasn't sure of and read none of, her
+    name answered: its id, the page, the name of its Instructions box and the field of its
+    question."""
+    card = homework_card(instruction=None, uncertain=[{"field": "instruction", "reason": "faint"}])
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[card])))
+    page = her_name_answered(browser, draft_id, page)
+    [confirm] = fields_named(review_form(page), "answer:confirm:")
+    box = f"correct:{box_subject(page, 'instruction:0')}"
+    return draft_id, page, box, f"answer:confirm:{confirm}"
+
+
+def saved_texts(browser: TestClient) -> tuple[str, ...]:
+    """The instruction texts kept for the one English 8 Sentence Composing assignment."""
+    record = state_of(browser).project_state
+    [row] = [
+        a
+        for a in record.all_assignments()
+        if (a.course, a.title) == ("English 8", "Sentence Composing")
+    ]
+    found = record.school_instruction_readings([row.assignment_id]).readable.get(row.assignment_id)
+    return () if found is None else found.texts
+
+
+def test_unsure_instructions_read_as_none_offer_one_empty_box_whose_words_save_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Instructions the reader wasn't sure of and read none of: the card's "Correct what was
+    read" holds one empty Instructions box, the one the question's link points to. Words typed
+    there answer the question and reach the saved assignment once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, box, _ = wordless_review(browser, monkeypatch)
+        typed = {box: MISSING_WORDS}
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep", typed=typed)))
+        saved = followed(
+            browser, send(browser, draft_id, page_post(kept, "save", tick=units_on(kept)))
+        )
+        texts = saved_texts(browser)
+
+    form = review_form(page)
+    words = [s for s in fields_named(form, "correct:") if json.loads(s)[1].startswith("instr")]
+    [question] = re.findall(r"<legend>The reader wasn.*?</fieldset>", form, re.S)
+    [fold] = re.findall(r'<a href="#([^"]+)">', question)
+    pointed = re.search(rf'<details class="steps" id="{fold}".*?</details>', form, re.S)
+    assert words == [box.removeprefix("correct:")]
+    assert box_of(form, box) is not None
+    assert str(box_of(form, box)[0]).startswith("<textarea ")  # type: ignore[index]
+    assert box_of(form, box)[1] == ""  # type: ignore[index]
+    assert pointed is not None
+    assert box_of(pointed.group(0), box) is not None
+    assert not says(kept, screenshot_page.OPEN_NAMES["confirm"])
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert texts == (MISSING_WORDS,)
+
+
+def test_an_untouched_empty_instructions_box_answers_nothing_and_saves_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The empty Instructions box left as it is, or holding only spaces: no correction is kept
+    or saved for later, the question stays to answer, and the card isn't saved."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, box, _ = wordless_review(browser, monkeypatch)
+        before = assignment_count(browser)
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        spaces = followed(
+            browser, send(browser, draft_id, page_post(kept, "keep", typed={box: "  \n "}))
+        )
+        later_page = later(browser, draft_id, spaces)
+        held = progress_after(browser, draft_id)
+        refused = followed(
+            browser,
+            send(browser, draft_id, page_post(later_page, "save", tick=digests_on(later_page))),
+        )
+        after = assignment_count(browser)
+
+    unsure = screenshot_page.OPEN_NAMES["confirm"]
+    for shown in (kept, spaces, later_page):
+        assert says(shown, f"Still to answer: {unsure}.")
+        assert box_of(review_form(shown), box)[1] == ""  # type: ignore[index]
+    assert held == {}
+    assert not says(later_page, screenshot_page.SAID["not_saved_yet"])
+    assert says(refused, REFUSED_OPEN)
+    assert after == before
+
+
+def test_a_removal_kept_for_a_row_read_without_words_answers_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saved progress holding a removal for the empty box's index, or words at another index,
+    as a change of screenshots can leave it: the box stays empty, the question stays to
+    answer, and the next press keeps neither."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, box, _ = wordless_review(browser, monkeypatch)
+        key = json.loads(box.removeprefix("correct:"))[0]
+        kept = {key: {"instruction:0": None, "instruction:1": MISSING_WORDS}}
+        saved_progress(browser, draft_id, {"v": 4, "corrected": kept, "selected": []})
+        shown = browser.get(f"/parent/imports/{draft_id}").text
+        later_page = later(browser, draft_id, shown)
+        held = progress_after(browser, draft_id)
+
+    unsure = screenshot_page.OPEN_NAMES["confirm"]
+    for page_shown in (shown, later_page):
+        assert says(page_shown, f"Still to answer: {unsure}.")
+        assert box_of(review_form(page_shown), box)[1] == ""  # type: ignore[index]
+    assert held == {}
+
+
+def test_confirm_as_read_with_the_instructions_box_empty_saves_no_instructions(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only "Confirm as read" says the card has no instructions: ticked beside the empty box, it
+    answers the question, and the assignment is saved with none."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, confirm = wordless_review(browser, monkeypatch)
+        posted = page_post(page, "keep", choose={confirm: "as_read"})
+        kept = followed(browser, send(browser, draft_id, posted))
+        saved = followed(
+            browser, send(browser, draft_id, page_post(kept, "save", tick=units_on(kept)))
+        )
+        texts = saved_texts(browser)
+
+    assert not says(kept, screenshot_page.OPEN_NAMES["confirm"])
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert texts == ()
+
+
+def test_words_typed_for_missing_instructions_survive_later_reopening_and_a_refused_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Words typed in the empty Instructions box are saved for later as the text the reading
+    lacked, held by the box when the review opens again, when a save is refused for a cleared
+    title and when the title is put back, and saved on the assignment once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, box, _ = wordless_review(browser, monkeypatch)
+        title = f"correct:{box_subject(page, 'title')}"
+        later_page = later(browser, draft_id, page, **{box: MISSING_WORDS})
+        held = progress_after(browser, draft_id)
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+        cleared = {title: ""}
+        refused = send(
+            browser,
+            draft_id,
+            page_post(reopened, "save", tick=units_on(reopened), typed=cleared),
+        )
+        restored = {title: "Sentence Composing"}
+        kept = followed(
+            browser, send(browser, draft_id, page_post(refused.text, "keep", typed=restored))
+        )
+        saved = followed(
+            browser, send(browser, draft_id, page_post(kept, "save", tick=units_on(kept)))
+        )
+        texts = saved_texts(browser)
+
+    key = json.loads(box.removeprefix("correct:"))[0]
+    assert held == {key: {"instruction:0": MISSING_WORDS}}
+    for shown in (later_page, reopened, refused.text, kept):
+        assert box_of(review_form(shown), box)[1] == MISSING_WORDS  # type: ignore[index]
+        assert not says(shown, screenshot_page.OPEN_NAMES["confirm"])
+    assert refused.status_code == 422
+    assert says(refused.text, screenshot_page.NEEDED["title"])
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert texts == (MISSING_WORDS,)
+
+
+def test_old_progress_with_words_for_a_row_read_without_any_reads_back_in_its_box(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saved progress of shape 3 holding instructions typed for a row read with none: the empty
+    box holds those words, which answer the question; the next press writes them as the text
+    the reading lacked, and they are saved once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, box, _ = wordless_review(browser, monkeypatch)
+        key = json.loads(box.removeprefix("correct:"))[0]
+        old = {"v": 3, "corrected": {key: {"instruction": f" {MISSING_WORDS} "}}, "selected": []}
+        saved_progress(browser, draft_id, old)
+        shown = browser.get(f"/parent/imports/{draft_id}").text
+        later_page = later(browser, draft_id, shown)
+        held = progress_after(browser, draft_id)
+        saved = followed(
+            browser,
+            send(browser, draft_id, page_post(later_page, "save", tick=units_on(later_page))),
+        )
+        texts = saved_texts(browser)
+
+    assert box_of(review_form(shown), box)[1] == MISSING_WORDS  # type: ignore[index]
+    assert not says(shown, screenshot_page.OPEN_NAMES["confirm"])
+    assert held == {key: {"instruction:0": MISSING_WORDS}}
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert texts == (MISSING_WORDS,)
+
+
 def test_an_unsure_field_corrected_in_the_fold_isn_t_the_first_question(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

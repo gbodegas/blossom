@@ -1104,6 +1104,23 @@ def test_an_old_instruction_correction_replaces_every_text() -> None:
     assert replaced.words == frozenset({W3})
 
 
+def test_words_typed_for_a_row_read_without_any_are_added_once() -> None:
+    """On a row read with no instruction text, text 0 is the words typed for it, added once;
+    another index, or the words cleared, adds nothing."""
+    readings = [shot("wed", "Wednesday 10/14/2026", due_card(None))]  # type: ignore[arg-type]
+    read = one_piece(readings)
+    added = one_piece(readings, {read.key: {"instruction:0": f"  {W1}  "}})
+    beyond = one_piece(readings, {read.key: {"instruction:1": W1}})
+    cleared = one_piece(readings, {read.key: {"instruction:0": None}})
+
+    assert read.as_read is not None
+    assert read.as_read.texts == ()
+    assert added.words == frozenset({W1})
+    assert added.reading is not None
+    assert [i.text for i in added.reading.instructions] == [W1]
+    assert beyond.words == cleared.words == frozenset()
+
+
 def test_already_saved_sees_the_corrected_none() -> None:
     """With "No assigned date was given", "Already saved" matches a saved assignment with no
     assigned date and not one that has one, as for a reading that had none."""

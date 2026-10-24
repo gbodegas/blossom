@@ -403,14 +403,17 @@ def confirm_fields(piece: Piece) -> frozenset[str]:
 
 def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
     """Whether a correction Blossom can use answers an unsure field: the row's box for its
-    class, title or instructions (a text's removal among them), and the piece's own box for
-    its due date (``footer``) or assigned date (``heading``), an assigned date given as none
-    among them. In saved progress of shape 3, the field's own correction answers it."""
+    class, title or instructions (a text's removal among them; on a row read with no text, only
+    words typed in its one empty box), and the piece's own box for its due date (``footer``) or
+    assigned date (``heading``), an assigned date given as none among them. In saved progress
+    of shape 3, the field's own correction answers it."""
     row = corrections.get(piece.key, {})
     dates = corrections.get(dates_key(piece.name), {})
     if usable_correction(field, row.get(field)):
         return True
     if field == "instruction":
+        if piece.as_read is not None and not piece.as_read.texts:
+            return usable_correction("instruction:0", row.get("instruction:0"))
         return any(
             instruction_index(name) is not None
             and (value is None or usable_correction(name, value))
@@ -424,19 +427,44 @@ def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
     return False
 
 
+def wordless_rows(pieces: Iterable[Piece]) -> frozenset[str]:
+    """The rows read with no instruction text whose instructions the reader wasn't sure of:
+    each offers one empty Instructions box, for the words that weren't read."""
+    return frozenset(
+        piece.key
+        for piece in pieces
+        if piece.as_read is not None
+        and not piece.as_read.texts
+        and "instruction" in confirm_fields(piece)
+    )
+
+
+def box_texts(piece: Piece, wordless: Collection[str]) -> tuple[str, ...]:
+    """The instruction texts a piece's row's boxes hold with no correction, one box each: its
+    texts as read, or one empty box on a row of ``wordless_rows``."""
+    read = piece.as_read
+    if read is None:
+        return ()
+    if read.texts:
+        return read.texts
+    return ("",) if piece.key in wordless else ()
+
+
 def fold_reads(state: "ReviewState") -> dict[tuple[str, str], str | None]:
     """Each box the review's open cards offer, by key and field, with its value with no
     correction as a box is compared with it: a row's class, title and each instruction text,
-    canonical; a piece's due date (none while which due date waits) and assigned date, as ISO
-    dates or None."""
+    canonical, the one empty box of a row read with no words it wasn't sure of among them; a
+    piece's due date (none while which due date waits) and assigned date, as ISO dates or
+    None."""
     out: dict[tuple[str, str], str | None] = {}
+    wordless = wordless_rows(state.open)
     for piece in state.open:
         read = piece.as_read
         if read is None:
             continue
         out[(piece.key, "course")] = canonical(read.course)
         out[(piece.key, "title")] = canonical(read.title)
-        for index, text in enumerate(read.texts):
+        for index, text in enumerate(box_texts(piece, wordless)):
             out[(piece.key, f"instruction:{index}")] = canonical(text)
         key = dates_key(piece.name)
         out[(key, "due")] = None if read.due is None else read.due.isoformat()

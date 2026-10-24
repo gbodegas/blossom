@@ -1098,7 +1098,7 @@ DATE_FIELDS: Final = frozenset({*OLD_DATES, *PIECE_DATES})
 """The fields a parent corrects with a date."""
 INSTRUCTION_FIELD: Final = re.compile(r"instruction:(0|[1-9][0-9]{0,3})")
 """One instruction text's field: ``instruction:`` and the text's index among its row's
-distinct texts as read."""
+distinct texts as read; on a row read with no text, ``instruction:0`` is the words added."""
 
 
 CORRECTION_MOST: Final = {
@@ -1184,9 +1184,10 @@ def corrected(
     """The reading with the parent's corrections: its row's class and title, the kind its
     corrected title suggests, each instruction text replaced or removed by its index among
     ``texts``, and its own due and assigned dates, the assigned date set to none where she
-    said none was given. In saved progress of shape 3, an instruction correction replaces
-    every text, and the due line and day heading set the dates ``date_target`` names. A
-    correction Blossom can't use is passed over."""
+    said none was given. On a row read with no instruction text, text 0 is the words that
+    weren't read, added. In saved progress of shape 3, an instruction correction replaces
+    every text, or is added where none was read, and the due line and day heading set the
+    dates ``date_target`` names. A correction Blossom can't use is passed over."""
     fields, dates = fields or {}, dates or {}
     if not fields and not dates:
         return reading
@@ -1203,6 +1204,7 @@ def corrected(
         if (index := instruction_index(field)) is not None and index < len(texts)
     }
     old = fields.get("instruction")
+    added = None if texts else fields.get("instruction:0")
     if by_text:
         seen = []
         for one in reading.instructions:
@@ -1223,6 +1225,9 @@ def corrected(
         replaced = [dataclasses.replace(i, text=words) for i in reading.instructions]
         replaced = replaced or [InstructionSeen(words, SourceChannel.LMS)]
         change["instructions"] = tuple({i.text: i for i in replaced}.values())
+    elif added is not None and usable_correction("instruction:0", added):
+        seen = [*reading.instructions, InstructionSeen(added.strip(), SourceChannel.LMS)]
+        change["instructions"] = tuple({i.text: i for i in seen}.values())
     due = None
     for field in OLD_DATES:
         value = fields.get(field)
