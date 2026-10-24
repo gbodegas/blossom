@@ -84,7 +84,9 @@ class AsRead:
     row's cards read with no instruction words whose instructions the reader wasn't sure of,
     each of which offers one empty Instructions box; and its row's cards read with words whose
     instructions the reader wasn't sure of, each with the index among ``texts`` of the words
-    it read."""
+    it read. Its row's cards read with no words whose instructions the reader was sure of
+    offer no box, except one holding words that an instruction correction of saved progress of
+    shape 3 added to its piece (``carried``)."""
 
     course: str
     title: str
@@ -93,6 +95,12 @@ class AsRead:
     assigned: date | None
     wordless: tuple[CardPlace, ...] = ()
     unsure_texts: tuple[tuple[CardPlace, int], ...] = ()
+    bare: tuple[CardPlace, ...] = ()
+    """The row's cards read with no instruction words whose instructions the reader was sure
+    of."""
+    carried: tuple[CardPlace, ...] = ()
+    """Those of ``bare`` whose own field holds words Blossom can use: words converted there
+    from saved progress of shape 3, each of which offers that card's box holding them."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1171,17 +1179,18 @@ def row_texts(reading: Reading) -> tuple[str, ...]:
 
 
 def wordless_of(
-    placed: Mapping[CardPlace, PlacedCard], cards: Iterable[CardPlace]
+    placed: Mapping[CardPlace, PlacedCard], cards: Iterable[CardPlace], *, unsure: bool = True
 ) -> tuple[CardPlace, ...]:
     """The cards among these read with no instruction words whose instructions the reader
-    wasn't sure of, in their order."""
+    wasn't sure of, in their order; with ``unsure`` false, those it was sure of."""
     out = []
     for place in cards:
         found = placed.get(place)
         if found is None or found.card is None:
             continue
         card = found.card
-        if not instruction_words(card.instruction) and "instruction" in card.uncertain_fields:
+        marked = "instruction" in card.uncertain_fields
+        if not instruction_words(card.instruction) and marked == unsure:
             out.append(place)
     return tuple(out)
 
@@ -1380,7 +1389,10 @@ def pieces_from(
     ) -> Piece:
         texts = row_texts(row.reading)
         wordless = wordless_of(placed, row.sources)
-        mine = [card for card in wordless if card in cards]
+        bare = wordless_of(placed, row.sources, unsure=False)
+        fields = corrections.get(row.key) or {}
+        carried = tuple(c for c in bare if usable_correction(f := wordless_field(c), fields.get(f)))
+        mine = [card for card in (*wordless, *carried) if card in cards]
         fixed = corrected(
             reading, corrections.get(row.key), corrections.get(dates_key(name)), texts, mine
         )
@@ -1392,6 +1404,8 @@ def pieces_from(
             reading.assigned_on,
             wordless,
             unsure_texts_of(placed, row.sources, texts),
+            bare,
+            carried,
         )
         return _piece(name, row.key, fixed, cards, is_split, marks, read)
 

@@ -39,6 +39,8 @@ from blossom.screenshot_review import (
 from blossom.screenshot_save import (
     ReviewState,
     canonical,
+    confirm_fields,
+    confirm_of,
     correctable,
     correction_digest,
     correction_text,
@@ -280,6 +282,9 @@ def read_review(
         if name in chosen and kind != "instructions":
             raise PostRefused
         chosen.setdefault(name, []).append(value)
+    for name in none_confirms(state, none_given):
+        if name in offered and "as_read" in offered[name]:
+            chosen.setdefault(name, ["as_read"])
     folded = box_corrections(state, boxes, carried, none_given)
     corrections = folded.corrections
     answers = []
@@ -419,6 +424,22 @@ def box_corrections(
     return Folded(out, tuple(sorted(too_long)), tuple(sorted(needed)), tuple(sorted(both)))
 
 
+def none_confirms(state: ReviewState, none_given: Iterable[str]) -> list[str]:
+    """The confirmations that "No assigned date was given" gives: on a piece that read no
+    assigned date under a day heading the reader wasn't sure of, ticking it says the date as
+    read, none, is right, so it answers that piece's question as "Confirm as read" does, and,
+    being the date as read, writes no correction."""
+    reads = fold_reads(state)
+    out = []
+    for key in none_given:
+        piece = state.by_name.get(key.removeprefix("date:"))
+        if piece is None or (key, "assigned") not in reads or reads[(key, "assigned")] is not None:
+            continue
+        if "heading" in confirm_fields(piece):
+            out.append(f"answer:confirm:{confirm_of(piece, 'heading')}")
+    return out
+
+
 def typed_back(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
     """Each correction a post typed, by field, in the order it was posted: a box's text that
     differs from its value with no correction as the ``read:`` field beside it names it, or for
@@ -548,11 +569,14 @@ def shape_four(state: ReviewState, corrections: Corrections) -> dict[str, dict[s
     """Corrections of saved progress of shape 3 as shape 4 holds them: each box as the page
     shows it, from the pieces those corrections give (``state``), kept where it differs from
     its value with no correction, as a first press posting the page untouched keeps it. An
-    instruction correction, which replaced every text, is every text's box and, where words
-    were added for a card read with none, that card's box. A due line or day heading Blossom
-    can't read as a date is kept as typed in the box of the date it sets
-    (``unreadable_old_dates``)."""
+    instruction correction, which replaced every text or was added to a piece read with none,
+    is every text's box and every box of a card read with none that the reader wasn't sure of;
+    on a piece with neither, it is kept on the field of the piece's first card read with no
+    words, the reader sure of it, which then offers that card's box holding it
+    (``own_carried``). A due line or day heading Blossom can't read as a date is kept as typed
+    in the box of the date it sets (``unreadable_old_dates``)."""
     boxes: dict[tuple[str, str], str] = {}
+    added: dict[str, dict[str, str]] = {}
     for piece in state.open:
         read = piece.as_read
         if read is None:
@@ -565,15 +589,23 @@ def shape_four(state: ReviewState, corrections: Corrections) -> dict[str, dict[s
             boxes[(piece.key, "title")] = piece.title
             for index, text in enumerate(read.texts):
                 boxes[(piece.key, f"instruction:{index}")] = text if words is None else words
-        for card in own_wordless(piece):
+        own = own_wordless(piece)
+        for card in own:
             boxes[(piece.key, wordless_field(card))] = "" if words is None else words
+        bare = [c for c in read.bare if c in piece.cards]
+        worded = any(c not in read.wordless and c not in read.bare for c in piece.cards)
+        if words is not None and not worded and not own and bare:
+            added.setdefault(piece.key, {})[wordless_field(bare[0])] = canonical(words)
         key = dates_key(piece.name)
         due = piece.due if piece.due_resolved else None
         boxes[(key, "due")] = "" if due is None else due.isoformat()
         boxes[(key, "assigned")] = "" if piece.assigned is None else piece.assigned.isoformat()
         for target, text in unreadable_old_dates(piece, fields).items():
             boxes[(key, target)] = text
-    return box_corrections(state, boxes, {}, ()).corrections
+    out = box_corrections(state, boxes, {}, ()).corrections
+    for key, carried in added.items():
+        out.setdefault(key, {}).update(carried)
+    return out
 
 
 def unreadable_old_dates(piece: Piece, fields: Mapping[str, str | None]) -> dict[str, str]:

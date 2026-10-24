@@ -7747,6 +7747,91 @@ def test_an_old_instruction_correction_on_a_split_row_reaches_every_piece(
     assert words_of(held) == [frozenset({words})] * 2
 
 
+@pytest.mark.parametrize("bare", [None, ""], ids=["no instruction", "an empty instruction"])
+def test_an_old_instruction_correction_reaches_a_split_piece_read_without_words_and_sure(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, bare: str | None
+) -> None:
+    """Saved progress of shape 3 holding one instruction correction for a split row whose
+    Tuesday card was read without words, the reader sure of it: the correction added the words
+    to Tuesday's piece, so they convert onto that card's own box, shown with its words and
+    named by its screenshot and card, and every piece saves them once."""
+    words = "Read both chapters."
+    monday = on_day("Monday 10/5/2026", homework_card(instruction="Read chapter 1."))
+    tuesday = on_day("Tuesday 10/6/2026", homework_card(instruction=bare))
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        page = her_name_answered(browser, draft_id, page)
+        [row] = fields_named(review_form(page), "answer:split:")
+        keep(browser, draft_id, ("split", row, json.dumps("split")))
+        old = {"v": 3, "corrected": {row: {"instruction": words}}, "selected": []}
+        saved_progress(browser, draft_id, old)
+        shown = browser.get(f"/parent/imports/{draft_id}").text
+        later_page = later(browser, draft_id, shown)
+        held = progress_after(browser, draft_id)
+        student = state_of(browser).project_state.student_id()
+        tables = state_of(browser).project_state.draft_for_save(student, draft_id)
+        assert tables is not None
+        days = fields_named(review_form(later_page), "answer:destination:")
+        chosen = {f"answer:destination:{d}": f'{{"new":{n}}}' for n, d in enumerate(days, 1)}
+        placed = followed(
+            browser, send(browser, draft_id, page_post(later_page, "keep", choose=chosen))
+        )
+        _, _, saved = still_open_tick_and_save(browser, draft_id, placed)
+        texts = kept_texts(browser)
+
+    [box] = word_boxes(shown)
+    field = json.loads(box.removeprefix("correct:"))[1]
+    pieces, _, _ = screenshot_review.pieces_from(
+        tables.readings, {row: "split"}, frozenset(), READ_AT, held
+    )
+    assert label_of(review_form(shown), box) == "Instructions on screenshot 2, card 1"
+    assert box_of(review_form(shown), box)[1] == words  # type: ignore[index]
+    assert held == {row: {"instruction:0": words, field: words}}
+    assert [p.words for p in pieces if p.key == row] == [frozenset({words})] * 2
+    assert says(saved, imports.counted(2, 0, 0, 0))
+    assert texts == [(words,), (words,)]
+
+
+def test_no_assigned_date_given_answers_an_unsure_day_heading_that_read_no_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An assigned card under a day heading the reader wasn't sure of and read no date from:
+    "No assigned date was given" ticked answers its question, writing no correction since none
+    was read. It stays ticked through Keep these answers, Save review for later and reopening,
+    and the card saves with no assigned date."""
+    card = homework_card(footer="Due (10/8/2026)")
+    answer = homework_answer(
+        headings=[{"text": "Monday", "y": 150, "uncertain": "faint"}], cards=[card]
+    )
+    unsure = f"Still to answer: {screenshot_page.OPEN_NAMES['confirm']}."
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        [none] = fields_named(review_form(page), "none:")
+        ticked = {f"none:{none}": "none"}
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep", choose=ticked)))
+        still, tickable = says(kept, unsure), bool(units_on(kept))
+        later_page = later(browser, draft_id, kept)
+        held = progress_after(browser, draft_id)
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+        again, ready, saved = still_open_tick_and_save(browser, draft_id, reopened)
+        made = [
+            a
+            for a in state_of(browser).project_state.all_assignments()
+            if a.title == "Sentence Composing"
+        ]
+
+    checked = f'name="{escape("none:" + none)}" value="none" checked'
+    assert says(page, unsure)
+    assert (still, tickable) == (False, True)
+    assert held == {}
+    for shown in (kept, later_page, reopened):
+        assert checked in review_form(shown)
+    assert (again, ready) == (False, True)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert [row.assigned_on for row in made] == [None]
+
+
 @pytest.mark.parametrize(
     ("old", "box"),
     [("footer", "due"), ("heading", "assigned")],

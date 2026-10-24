@@ -58,6 +58,7 @@ from blossom.screenshot_save import (
     confirm_owner,
     fold_answers,
     instruction_subject,
+    own_carried,
     own_wordless,
     read_digest,
     unit_digests,
@@ -447,10 +448,13 @@ def _date_box(
     shown: date | None,
     unsaved: bool,
     both: bool,
+    confirmed: bool = False,
 ) -> Box:
     """A box of the piece's own date: a date field holding the current date, the correction
     where there is one; empty where none is current. A typed date Blossom can't read is said
-    beneath it and carried back as typed beside it, never dropped."""
+    beneath it and carried back as typed beside it, never dropped. "No assigned date was given"
+    is ticked where she gave the date as none, or where it answered an unsure day heading that
+    read no date (``confirmed``)."""
     key = dates_key(piece.name)
     name = box_name(key, field)
     read = piece.as_read
@@ -477,7 +481,8 @@ def _date_box(
         hint = SAID["assigned_hint"]
     none = None
     if field == "assigned":
-        none = ("none:" + name.removeprefix("correct:"), (given and typed is None) or both)
+        ticked = (given and typed is None) or both or (confirmed and not given)
+        none = ("none:" + name.removeprefix("correct:"), ticked)
     return Box(
         name,
         BOX_LABELS[field],
@@ -499,6 +504,7 @@ def fold_boxes(
     unsaved: frozenset[tuple[str, str]],
     both: frozenset[str],
     wordless: Sequence[tuple[str, str]],
+    none_confirmed: bool = False,
 ) -> tuple[Box, ...]:
     """The boxes of a card's "Correct what was read", each holding its field's whole current
     value: the row's class, title, one box per instruction text and one empty box per open card
@@ -564,6 +570,7 @@ def fold_boxes(
             piece.assigned,
             (key, "assigned") in unsaved,
             key in both,
+            none_confirmed,
         )
     )
     return tuple(out)
@@ -1356,7 +1363,7 @@ def rows_shown(
     digests = unit_digests(state)
     wordless: dict[str, list[tuple[str, str]]] = {}
     for place, owner in sorted(
-        ((c, p) for p in open_pieces for c in own_wordless(p)),
+        ((c, p) for p in open_pieces for c in (*own_wordless(p), *own_carried(p))),
         key=lambda found: (places.get(found[0].sha256, 0), found[0].place),
     ):
         label = SAID["wordless_box"].format(shot=places.get(place.sha256, 0), card=place.place + 1)
@@ -1393,7 +1400,16 @@ def rows_shown(
                     answered=all(fold_answers(p, field, corrections) for p in askers),
                 )
             )
-        boxes = fold_boxes(piece, own, corrections, unsaved, both, wordless.get(piece.key, ()))
+        read = piece.as_read
+        none_confirmed = (
+            read is not None
+            and read.assigned is None
+            and "heading" in confirm_fields(piece)
+            and values.get(("confirm", confirm_of(piece, "heading"))) == "as_read"
+        )
+        boxes = fold_boxes(
+            piece, own, corrections, unsaved, both, wordless.get(piece.key, ()), none_confirmed
+        )
         sources = tuple(
             (
                 SAID["source"].format(shot=places.get(c.sha256, 0), card=c.place + 1),

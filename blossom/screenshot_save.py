@@ -456,6 +456,13 @@ def own_unsure_texts(piece: Piece) -> tuple[int, ...]:
     return tuple(dict.fromkeys(index for card, index in read.unsure_texts if card in piece.cards))
 
 
+def own_carried(piece: Piece) -> tuple[CardPlace, ...]:
+    """The piece's own cards read with no words, the reader sure of them, whose own field
+    holds words converted from saved progress of shape 3: each offers its box, holding them."""
+    read = piece.as_read
+    return () if read is None else tuple(c for c in read.carried if c in piece.cards)
+
+
 def own_wordless(piece: Piece) -> tuple[CardPlace, ...]:
     """The piece's own cards read with no instruction words whose instructions the reader
     wasn't sure of: each offers one empty Instructions box, among its row's boxes, whose words
@@ -467,7 +474,8 @@ def own_wordless(piece: Piece) -> tuple[CardPlace, ...]:
 def fold_reads(state: "ReviewState") -> dict[tuple[str, str], str | None]:
     """Each box the review's open cards offer, by key and field, with its value with no
     correction as a box is compared with it: a row's class, title and each instruction text,
-    canonical, and the empty box of each open card read with no words it wasn't sure of; a
+    canonical, the empty box of each open card read with no words it wasn't sure of, and the
+    box of each open card read with no words that holds converted words (``own_carried``); a
     piece's due date (none while which due date waits) and assigned date, as ISO dates or
     None."""
     out: dict[tuple[str, str], str | None] = {}
@@ -479,7 +487,7 @@ def fold_reads(state: "ReviewState") -> dict[tuple[str, str], str | None]:
         out[(piece.key, "title")] = canonical(read.title)
         for index, text in enumerate(read.texts):
             out[(piece.key, f"instruction:{index}")] = canonical(text)
-        for card in own_wordless(piece):
+        for card in (*own_wordless(piece), *own_carried(piece)):
             out[(piece.key, wordless_field(card))] = ""
         key = dates_key(piece.name)
         out[(key, "due")] = None if read.due is None else read.due.isoformat()
