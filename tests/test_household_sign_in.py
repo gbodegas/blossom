@@ -612,7 +612,7 @@ def test_signing_in_from_the_bare_address_lands_at_home(
 
 @pytest.mark.parametrize(
     ("passphrase", "home", "heading"),
-    [(THEIRS, "/parent", "Family review")],
+    [(HERS, "/student/due-this-week", "My week"), (THEIRS, "/parent", "Family review")],
 )
 def test_signed_in_the_bare_address_sends_each_person_home(
     tmp_path: pathlib.Path, passphrase: str, home: str, heading: str
