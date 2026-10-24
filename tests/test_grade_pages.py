@@ -1227,7 +1227,9 @@ def test_the_review_s_closing_buttons_are_one_group_with_the_way_back_under_it(
     assert after.lstrip().startswith(way_back)
 
 
-def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_page_carries_its_class() -> None:
+def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_pages_carry_its_class() -> None:
+    """The outcome card is the grade save's, and the screenshot review's save takes the same
+    pattern: its outcome page, and the success panel on a review a save leaves open."""
     css = STYLESHEET.read_text(encoding="utf-8")
     carriers = sorted(
         page.name
@@ -1239,10 +1241,12 @@ def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_page_carries_its_c
     assert css.count(CARD_RULES) == 1
     for shared in SHARED_CARD_RULES:
         assert css.count(shared) == 1, shared
-    assert carriers == ["grade_saved.html"]
-    page = (TEMPLATES / "grade_saved.html").read_text(encoding="utf-8")
+    assert carriers == ["grade_saved.html", "import_review.html", "import_said.html"]
     outcome = '<section class="panel grade-outcome" aria-labelledby="outcome-heading">'
-    assert page.count(outcome) == 1
+    for name in ("grade_saved.html", "import_said.html"):
+        assert (TEMPLATES / name).read_text(encoding="utf-8").count(outcome) == 1
+    review = (TEMPLATES / "import_review.html").read_text(encoding="utf-8")
+    assert review.count('<div class="panel grade-outcome" role="status" id="done"') == 1
 
 
 def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> None:
@@ -1338,7 +1342,6 @@ def test_the_jump_rule_is_pinned_and_the_result_s_homework_page_takes_it_for_two
     assert carriers == [
         "grade_result_homework.html",
         "import_review.html",
-        "import_rows.html",
         "student_assignment.html",
     ]
     assert page.count(other) == page.count(review) == 1
@@ -5049,13 +5052,16 @@ selects that row's "Choose an existing assignment", before the inbox review's ow
 
 def test_only_an_entry_picked_by_hand_selects_choose_an_existing_assignment() -> None:
     """Nothing on load, on a page shown again or on a value restored moves a row's answer: the
-    one listener is pinned whole, and no other line of the script names a row's answer or list."""
+    review form's one listener is pinned whole, no other line of the script names a row's
+    answer or list, and the only other change listener is the screenshot picker's, which says
+    how many screenshots are chosen."""
     script = SCRIPT.read_text(encoding="utf-8")
 
     assert script.count(REVIEW_LISTENER) == 1
     rest = script.replace(REVIEW_LISTENER, "")
     assert [line for line in rest.splitlines() if "choose." in line or "match." in line] == []
-    assert script.count('addEventListener("change"') == 1
+    assert script.count('addEventListener("change"') == 2
+    assert rest.count('    picker.addEventListener("change", count);\n') == 1
 
 
 def test_a_check_answered_without_saving_lands_on_what_it_says_and_a_review_takes_no_focus(
