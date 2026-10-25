@@ -61,7 +61,13 @@ from blossom.settings import (
     enforce_local_only_tracing,
 )
 from blossom.stores.import_drafts import FAILURES
-from tests.support import SAME_ORIGIN, fixture_settings, hosted_tracer_attached, trickling_answer
+from tests.support import (
+    SAME_ORIGIN,
+    answer_body,
+    fixture_settings,
+    hosted_tracer_attached,
+    trickling_answer,
+)
 
 # Variables the model library or the HTTP client beneath it reads to pick an
 # endpoint, a proxy, or a certificate store. Each alone changes a client built
@@ -881,14 +887,58 @@ def test_a_trickling_answer_ends_busy_by_the_calls_time_plus_one_read() -> None:
     assert answer == anthropic_client.ScreenshotAnswer(None, "service_busy", 0, 0)
 
 
-def test_an_answer_that_arrives_in_time_is_read_whole_through_the_time_check() -> None:
-    """An answer that trickles in for about 0.3 seconds under a 5 second call reads in full."""
+class _ReaderClock:
+    """The reader's ``time`` in a test: a monotonic clock that moves only when the test moves
+    it, counting its reads."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.reads = 0
+
+    def monotonic(self) -> float:
+        self.reads += 1
+        return self.now
+
+
+class _Arriving(httpx.SyncByteStream):
+    """A body in ``pieces`` pieces, each moving ``clock`` on by ``every`` seconds as it
+    arrives. No real time passes."""
+
+    def __init__(self, body: bytes, clock: _ReaderClock, pieces: int, every: float) -> None:
+        self.body = body
+        self.clock = clock
+        self.size = -(-len(body) // pieces)
+        self.every = every
+
+    def __iter__(self) -> Iterator[bytes]:
+        for start in range(0, len(self.body), self.size):
+            self.clock.now += self.every
+            yield self.body[start : start + self.size]
+
+
+def test_an_answer_that_arrives_in_time_is_read_whole_through_the_time_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An answer whose six pieces arrive over 4.8 seconds of a 5 second call reads in full.
+    The reader's clock moves only as the pieces arrive: it is read once for the call's time
+    and once for each piece."""
+    clock = _ReaderClock()
+    monkeypatch.setattr(anthropic_client, "time", clock)
+    body = _Arriving(answer_body(AN_ANSWER), clock, pieces=6, every=0.8)
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, headers={"content-type": "application/json"}, stream=body
+        )
+    )
+
     answer = anthropic_client.read_screenshot(
-        settings_with_key(), synthetic_png(), timeout=5.0, transport=trickling(0.3)
+        settings_with_key(), synthetic_png(), timeout=5.0, transport=transport
     )
 
     assert answer.failure is None
     assert answer.answer == AN_ANSWER
+    assert clock.reads == 1 + 6
+    assert clock.now == pytest.approx(4.8)
 
 
 def test_the_reader_client_bounds_its_own_transport_when_none_is_given(

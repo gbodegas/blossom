@@ -1289,7 +1289,8 @@ HOMEWORK_HEADING_LANDING = (
     '.list-heading:focus,\nh1#homework:focus,\n.assignment h2[tabindex="-1"]:focus,\n'
 )
 """The result's homework heading among the places a press or a link lands on, pinned in the
-landing rule's selector list as written."""
+landing rule's selector list as written. A page's heading narrows that cue's spread where it
+reaches into the page's side margin, by a rule pinned with the page heading's rules."""
 
 
 def test_the_result_s_homework_heading_and_its_search_s_found_heading_take_the_landing_rule() -> (
@@ -1299,8 +1300,9 @@ def test_the_result_s_homework_heading_and_its_search_s_found_heading_take_the_l
     page = (TEMPLATES / "grade_result_homework.html").read_text(encoding="utf-8")
 
     assert css.count(HOMEWORK_HEADING_LANDING) == 1
-    assert css.count("h1#homework") == 1
-    assert page.count('<h1 id="homework" tabindex="-1">Homework for this result</h1>') == 1
+    assert css.count("h1#homework") == 2
+    assert css.count("main > h1#homework:focus {") == 1
+    assert page.count('<h1 id="homework" tabindex="-1">Home&shy;work for this result</h1>') == 1
     found = '<h2 class="list-heading" id="found" tabindex="-1">{{ found_heading }}</h2>'
     assert page.count(found) == page.count("list-heading") == 1
 
@@ -5835,7 +5837,7 @@ def test_homework_class_names_lists_each_name_once_with_its_state_and_one_choose
     said = words(page.text)
 
     assert page.status_code == 200
-    assert "<h1>Homework class names</h1>" in page.text
+    assert "<h1>Home&shy;work class names</h1>" in page.text
     assert INTRODUCTION in said
     assert "6 homework class names aren't connected to a class yet. " + WAITING_NOTE in said
     assert [name_of(block) for block in blocks] == names
@@ -5931,7 +5933,7 @@ def test_with_no_class_to_choose_one_name_waits_under_the_count_and_one_sentence
 
     assert page.status_code == 200
     assert said_from_the_heading(page.text) == (
-        "Homework class names 1 homework class name isn't connected to a class yet. "
+        "Home\u00adwork class names 1 homework class name isn't connected to a class yet. "
         f"{ADD_A_REPORT} Geometry {NOT_CONNECTED}"
     )
     assert page.text.count(f'<p class="note">{ADD_A_REPORT}</p>') == 1
@@ -5961,7 +5963,7 @@ def test_with_no_class_to_choose_every_name_on_record_waits_in_the_page_s_order(
     assert [written for _, written in grade_routes.names_on_record(courses)] == names
     assert said_from_the_heading(page.text) == " ".join(
         [
-            "Homework class names",
+            "Home\u00adwork class names",
             "4 homework class names aren't connected to a class yet.",
             ADD_A_REPORT,
             *[f"{name} {NOT_CONNECTED}" for name in names],
@@ -5985,9 +5987,9 @@ def test_with_no_class_and_no_homework_on_record_the_page_says_no_grade_reports_
         page = browser.get(HOMEWORK_CLASSES, headers=PAGE)
 
     assert page.status_code == 200
-    assert "<h1>Homework class names</h1>" in page.text
+    assert "<h1>Home&shy;work class names</h1>" in page.text
     assert said_from_the_heading(page.text) == (
-        "Homework class names No grade reports yet. Add one to start."
+        "Home\u00adwork class names No grade reports yet. Add one to start."
     )
     assert name_blocks(page.text) == []
     assert "<form " not in page.text.split("<main", 1)[1]
@@ -6001,7 +6003,7 @@ def test_with_a_class_and_no_homework_on_record_the_page_is_its_heading_and_intr
         page = browser.get(HOMEWORK_CLASSES, headers=PAGE)
 
     assert page.status_code == 200
-    assert said_from_the_heading(page.text) == f"Homework class names {INTRODUCTION}"
+    assert said_from_the_heading(page.text) == f"Home\u00adwork class names {INTRODUCTION}"
     assert name_blocks(page.text) == []
 
 
@@ -6037,7 +6039,8 @@ def test_with_no_class_to_choose_a_post_is_refused_at_its_name_and_writes_nothin
     assert any(name.endswith("rows of assignments") for name in before)
     assert any(name.endswith(f"rows of {MAPPING}") for name in before)
     assert said_from_the_heading(answer.text).startswith(
-        f"Homework class names {first}2 homework class names aren't connected to a class yet. "
+        f"Home\u00adwork class names {first}"
+        "2 homework class names aren't connected to a class yet. "
         f"{ADD_A_REPORT} Biology {NOT_CONNECTED}"
     )
     assert words(answer.text).count(said) == 1

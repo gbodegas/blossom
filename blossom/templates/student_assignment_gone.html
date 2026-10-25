@@ -13,7 +13,7 @@
 #}
 {% block content %}
   <p class="return"><a href="{{ back.href }}">{{ back.label }}</a></p>
-  <h1>Assignment</h1>
+  <h1>Assign&shy;ment</h1>
   <p class="problem" role="alert" id="problem-summary" tabindex="-1"{% if pressed %} autofocus{% endif %}>{{ problem }}</p>
   {% if card and card.status %}
     <p>Your choice: {% if card.status == "done" %}Done{% else %}Not yet{% endif %}. It was not saved.</p>

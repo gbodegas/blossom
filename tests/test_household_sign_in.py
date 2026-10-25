@@ -26,14 +26,17 @@ from blossom.household import (
     ATTEMPT_LIMIT,
     COOKIE,
     COOLDOWN_SECONDS,
+    ELSEWHERE,
     SESSION_SECONDS,
     SKEW_SECONDS,
     SignInAttempts,
     UnreadableHouseholdSecret,
+    home_of,
     issue,
     read_token,
 )
 from blossom.principals import Principal
+from blossom.routes import household as sign_in_routes
 from blossom.settings import PARENT_PASSPHRASE_VARIABLE, STUDENT_PASSPHRASE_VARIABLE, Settings
 from blossom.stores.paths import SECRET_NAME
 from tests.support import FIXTURES, SAME_ORIGIN, browser, fixture_settings
@@ -562,6 +565,150 @@ def test_the_sign_in_brings_the_browser_back_to_the_whole_address(
     assert asked.status_code == 200
     assert f'name="next" value="{escape(wanted)}"' in asked.text
     assert came_in.headers["location"] == wanted
+
+
+# ------------------------------------------------------------------ the bare address
+
+
+def test_without_a_sign_in_the_bare_address_shows_the_sign_in_and_a_call_is_told_401(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The bare address is a page like any other: a browser is sent to the sign-in, which
+    asks for no place to return to, and a JSON call is told 401."""
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        page = client.get("/", headers=PAGE)
+        asked = client.get(page.headers["location"], headers=PAGE)
+        call = client.get("/")
+
+    assert page.status_code == 303
+    assert page.headers["location"] == "/sign-in?next=%2F"
+    assert asked.status_code == 200
+    assert "<h1>Who is this?</h1>" in asked.text
+    assert 'name="next"' not in asked.text
+    assert call.status_code == 401
+    assert call.json() == {"detail": "Sign in first."}
+    for answer in (page, asked, call):
+        assert answer.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    ("passphrase", "home", "heading"),
+    [(HERS, "/student/due-this-week", "My week"), (THEIRS, "/parent", "Family review")],
+)
+def test_signing_in_from_the_bare_address_lands_at_home(
+    tmp_path: pathlib.Path, passphrase: str, home: str, heading: str
+) -> None:
+    """A return address of the bare address names no page, so the sign-in sends her to
+    her week and a parent to the family review, with no stop at the bare address."""
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        came_in = client.post("/sign-in", data={"passphrase": passphrase, "next": "/"})
+        landed = client.get(came_in.headers["location"], headers=PAGE)
+
+    assert came_in.status_code == 303
+    assert came_in.headers["location"] == home
+    assert COOKIE in came_in.cookies
+    assert landed.status_code == 200
+    assert f"<h1>{heading}</h1>" in landed.text
+
+
+@pytest.mark.parametrize(
+    ("passphrase", "home", "heading"),
+    [(HERS, "/student/due-this-week", "My week"), (THEIRS, "/parent", "Family review")],
+)
+def test_signed_in_the_bare_address_sends_each_person_home(
+    tmp_path: pathlib.Path, passphrase: str, home: str, heading: str
+) -> None:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        came_in = client.post("/sign-in", data={"passphrase": passphrase})
+        sent = client.get("/", headers=PAGE)
+        landed = client.get(sent.headers.get("location", "/"), headers=PAGE)
+
+    assert came_in.status_code == 303
+    assert came_in.headers["location"] == home
+    assert COOKIE in came_in.cookies
+    assert sent.status_code == 303
+    assert sent.headers["location"] == home
+    assert sent.headers["cache-control"] == "no-store"
+    assert landed.status_code == 200
+    assert f"<h1>{heading}</h1>" in landed.text
+
+
+def test_her_press_on_the_bare_address_runs_nothing_and_leaves_her_signed_in(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate lets her reach the bare address, which answers a read only. A press from
+    this site is told 405 by the router, with no handler run and her sign-in as it was; a
+    press from elsewhere is still the gate's 403."""
+    sent_home: list[Principal] = []
+
+    def counted(role: Principal) -> str:
+        sent_home.append(role)
+        return home_of(role)
+
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        came_in = client.post("/sign-in", data={"passphrase": HERS})
+        signed_in = client.cookies.get(COOKIE)
+        monkeypatch.setattr(sign_in_routes, "home_of", counted)
+        pressed = client.post("/", data={"note": "hi"}, headers=PAGE)
+        sent_home_by_the_press = list(sent_home)
+        elsewhere = client.post(
+            "/", data={"note": "hi"}, headers={**PAGE, "Origin": "http://example.org"}
+        )
+        kept = client.cookies.get(COOKIE)
+        still_hers = client.get("/", headers=PAGE)
+
+    assert came_in.status_code == 303
+    assert signed_in is not None
+    assert pressed.status_code == 405
+    assert pressed.headers["allow"] == "GET"
+    assert pressed.headers["cache-control"] == "no-store"
+    assert "set-cookie" not in pressed.headers
+    assert sent_home_by_the_press == []
+    assert elsewhere.status_code == 403
+    assert elsewhere.text == ELSEWHERE
+    assert elsewhere.headers["cache-control"] == "no-store"
+    assert "set-cookie" not in elsewhere.headers
+    assert kept == signed_in
+    assert still_hers.status_code == 303
+    assert still_hers.headers["location"] == "/student/due-this-week"
+    assert sent_home == [Principal.STUDENT]
+
+
+@pytest.mark.parametrize(
+    ("passphrase", "wanted"),
+    [(HERS, "/student/grades"), (THEIRS, "/student/grades"), (THEIRS, "/parent/grades")],
+)
+def test_a_return_address_naming_a_page_is_followed(
+    tmp_path: pathlib.Path, passphrase: str, wanted: str
+) -> None:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        came_in = client.post("/sign-in", data={"passphrase": passphrase, "next": wanted})
+
+    assert came_in.status_code == 303
+    assert came_in.headers["location"] == wanted
+
+
+def test_with_the_sign_in_off_the_bare_address_goes_to_her_week() -> None:
+    """With the sign-in off nobody is known, and the bare address goes where the masthead's
+    brand does: her week."""
+    with browser() as client:
+        sent = client.get("/", headers=PAGE)
+        landed = client.get(sent.headers.get("location", "/"), headers=PAGE)
+
+    assert sent.status_code == 303
+    assert sent.headers["location"] == "/student/due-this-week"
+    assert landed.status_code == 200
+    assert "<h1>My week</h1>" in landed.text
 
 
 def test_with_no_passphrases_nothing_asks(tmp_path: pathlib.Path) -> None:

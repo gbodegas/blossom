@@ -16,7 +16,7 @@ import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
-from time import monotonic
+from time import monotonic, sleep
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -26,12 +26,14 @@ from blossom.agent.runs import RUN_DEADLINE_SECONDS
 from blossom.agent.steps import PastDueWork, RunTiming, StageTime, StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Draft, DraftStatus
+from blossom.stores import drafts as drafts_module
 from blossom.stores.drafts import (
     INTERRUPTED,
     OVERTAKEN,
     SUPERSEDED_REASON,
     TIMED_OUT,
     AlreadyDecided,
+    Displaced,
     DraftsStore,
     IncompatibleReplay,
     NotPublished,
@@ -1645,12 +1647,18 @@ def test_a_decision_about_an_unpublished_draft_is_refused() -> None:
     assert decided.decision == "rejected"
 
 
-def test_each_call_sets_its_wait_before_it_begins_and_before_it_commits_and_nothing_after() -> None:
-    """A settle whose deadline is 0.2 seconds off waits for its commit until the deadline and
-    the grace, at most; the statement before the commit sets that wait, and the commit is
-    the last statement the settle runs."""
+def test_each_call_sets_its_wait_before_it_begins_and_before_it_commits_and_nothing_after(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A settle given 0.3 seconds stops asking for a held writer then. One whose deadline is
+    0.2 seconds off stops asking for a commit a reading holds at the deadline and the grace,
+    or at the store's wait when that comes first. The commit is the last statement it runs."""
     fake = FakeTime()
-    store, traced = traced_store(fake)
+    path = tmp_path / "state" / "blossom.sqlite3"
+    path.parent.mkdir(parents=True)
+    connection = sqlite3.connect(path, check_same_thread=False)
+    store = DraftsStore(connection, fixture_clock(), fake)
+    traced = Traced(connection)
     try:
         save_and_publish_on(store, fake)
         admitted(store, "tb", now=fake, seconds=0.2)
@@ -1660,6 +1668,22 @@ def test_each_call_sets_its_wait_before_it_begins_and_before_it_commits_and_noth
             plan_date=PLAN_DATE,
             outcome="accepted",
         )
+        with held(path, "BEGIN IMMEDIATE", 0.7):
+            began = monotonic()
+            with pytest.raises(WriterBusy):
+                store.settle_run("tb", wait=0.3)
+            writer_wait = monotonic() - began
+        with held(path, "BEGIN", 1.6):
+            began = monotonic()
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                store.settle_run("tb", wait=2.0)
+            commit_wait = monotonic() - began
+        monkeypatch.setattr(drafts_module, "STORE_WAIT_SECONDS", 0.4)
+        with held(path, "BEGIN", 0.8):
+            began = monotonic()
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                store.settle_run("tb", wait=2.0)
+            capped_wait = monotonic() - began
         traced.statements.clear()
         settled = store.settle_run("tb", wait=2.0)
         statements = list(traced.statements)
@@ -1667,12 +1691,15 @@ def test_each_call_sets_its_wait_before_it_begins_and_before_it_commits_and_noth
         store.close()
 
     assert settled.run.status == "published"
+    assert 0.3 <= writer_wait < 0.6
+    assert 1.2 <= commit_wait < 1.5
+    assert 0.4 <= capped_wait < 0.7
+    assert statements[0] == "PRAGMA busy_timeout=0"
     assert statements[1] == "BEGIN IMMEDIATE"
+    statement_wait = int(statements[2].removeprefix("PRAGMA busy_timeout="))
+    assert 1500 < statement_wait <= 2000
+    assert statements[-2] == "PRAGMA busy_timeout=0"
     assert statements[-1] == "COMMIT"
-    begin_wait = int(statements[0].removeprefix("PRAGMA busy_timeout="))
-    commit_wait = int(statements[-2].removeprefix("PRAGMA busy_timeout="))
-    assert 1500 < begin_wait <= 2000
-    assert 1000 < commit_wait <= 1200
 
 
 def save_and_publish_on(store: DraftsStore, fake: FakeTime) -> None:
@@ -1895,6 +1922,342 @@ def test_a_commit_held_behind_a_reading_lands_once_the_reading_ends(
 
     assert settled.run.status == "published"
     assert 0.3 < landed_after < 5.0
+
+
+def due_in(store: DraftsStore, seconds: float) -> None:
+    """The evening's plan published, and run ``tb`` waiting with its deadline ``seconds`` off."""
+    save_and_publish(
+        store,
+        Draft(draft_id="draft:a", body="a", created_at=CREATED),
+        thread_id="ta",
+        plan_date=PLAN_DATE,
+        outcome="accepted",
+    )
+    admitted(store, "tb", seconds=seconds)
+    store.record_waiting(draft(), thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+
+
+def deadline_of(store: DraftsStore, run_id: str) -> float:
+    (deadline,) = store._connection.execute(
+        "SELECT deadline_mono FROM runs WHERE thread_id=?", (run_id,)
+    ).fetchone()
+    return float(deadline)
+
+
+def plan_before_stands(store: DraftsStore) -> bool:
+    """Whether run ``tb`` is still running and the evening's plan is still ``draft:a``."""
+    standing = store.run_status("tb", reconcile=False)
+    latest = store.latest_for(PLAN_DATE)
+    return (
+        standing is not None
+        and standing.status == "running"
+        and latest is not None
+        and latest.draft_id == "draft:a"
+    )
+
+
+class LengthenedSleeps:
+    """The drafts store's ``time``: the real clock, and every sleep ``extra`` seconds longer,
+    as a held-up process wakes late. ``then`` runs as the first sleep begins."""
+
+    def __init__(self, extra: float, then: Callable[[], object] | None = None) -> None:
+        self.extra = extra
+        self.then = then
+        self.asked: list[float] = []
+
+    @staticmethod
+    def monotonic() -> float:
+        return monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        self.asked.append(seconds)
+        then, self.then = self.then, None
+        if then is not None:
+            then()
+        sleep(seconds + self.extra)
+
+
+def test_a_settle_is_refused_the_writer_on_time_when_each_sleep_runs_long(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every sleep of the store's waits runs a tenth of a second long. A settle given 0.3
+    seconds is still refused a writer held for 0.7 by then, and the plan before stands."""
+    lengthened = LengthenedSleeps(0.1)
+    store, path = file_store(tmp_path)
+    try:
+        one_published_and_one_waiting(store)
+        monkeypatch.setattr(drafts_module, "time", lengthened)
+        with held(path, "BEGIN IMMEDIATE", 0.7):
+            started = monotonic()
+            with pytest.raises(WriterBusy):
+                store.settle_run("tb", wait=0.3)
+            refused_after = monotonic() - started
+        stands = plan_before_stands(store)
+    finally:
+        store.close()
+
+    assert lengthened.asked
+    assert 0.25 < refused_after < 0.7
+    assert stands
+
+
+def test_a_commit_is_refused_at_its_deadline_when_each_sleep_runs_long(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every sleep of the store's waits runs a tenth of a second long. A commit due by a
+    deadline 0.3 seconds off, with no grace, is still refused then behind a reading held for
+    1.2: it rolls back and the plan before stands."""
+    lengthened = LengthenedSleeps(0.1)
+    store, path = file_store(tmp_path)
+    try:
+        due_in(store, 0.3)
+        monkeypatch.setattr(drafts_module, "time", lengthened)
+        with held(path, "BEGIN", 1.2):
+            started = monotonic()
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                store.settle_run("tb", grace=0.0)
+            refused_after = monotonic() - started
+        stands = plan_before_stands(store)
+    finally:
+        store.close()
+
+    assert lengthened.asked
+    assert 0.15 < refused_after < 1.0
+    assert stands
+
+
+class SlowBusyClock(sqlite3.Connection):
+    """A connection whose busy handler waits four times each busy timeout it is given, as a
+    held-up process's handler does: it adds up the sleeps it asked for, not the time passed."""
+
+    def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:
+        asked = sql.removeprefix("PRAGMA busy_timeout=")
+        if asked != sql:
+            sql = f"PRAGMA busy_timeout={int(asked) * 4}"
+        return super().execute(sql, parameters)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("held_for", ["the writer", "the commit"])
+def test_a_wait_ends_on_the_clock_however_slowly_the_busy_handler_counts(
+    tmp_path: pathlib.Path, held_for: str
+) -> None:
+    """The file's busy handler counts each busy timeout four times over. A settle given 0.3
+    seconds is still refused a writer held for 0.7 by then, and a commit due by a deadline 0.3
+    seconds off is still refused then behind a reading held for 0.9: the plan before stands."""
+    path = tmp_path / "state" / "blossom.sqlite3"
+    path.parent.mkdir(parents=True)
+    store = DraftsStore(
+        sqlite3.connect(path, check_same_thread=False, factory=SlowBusyClock), fixture_clock()
+    )
+    try:
+        if held_for == "the writer":
+            one_published_and_one_waiting(store)
+            with held(path, "BEGIN IMMEDIATE", 0.7):
+                started = monotonic()
+                with pytest.raises(WriterBusy):
+                    store.settle_run("tb", wait=0.3)
+                refused_after = monotonic() - started
+        else:
+            due_in(store, 0.3)
+            with held(path, "BEGIN", 0.9):
+                started = monotonic()
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    store.settle_run("tb", grace=0.0)
+                refused_after = monotonic() - started
+        stands = plan_before_stands(store)
+    finally:
+        store.close()
+
+    assert 0.15 < refused_after < 0.6
+    assert stands
+
+
+@pytest.mark.parametrize("ends", ["at the deadline", "at the store's wait"])
+def test_a_publication_held_up_inside_its_transaction_past_the_commits_end_is_never_committed(
+    monkeypatch: pytest.MonkeyPatch, ends: str
+) -> None:
+    """The settle's checks pass, and the process is then held up inside the transaction past
+    the commit's end, set by a deadline 0.3 seconds off or by a store wait of 0.3. No commit
+    is attempted: the transaction rolls back and the plan before stands."""
+    store, traced = traced_store()
+    try:
+        due_in(store, 0.3 if ends == "at the deadline" else RUN_DEADLINE_SECONDS)
+        if ends == "at the store's wait":
+            monkeypatch.setattr(drafts_module, "STORE_WAIT_SECONDS", 0.3)
+        publishing = store._published
+
+        def held_up(draft_id: str) -> list[Displaced]:
+            sleep(0.5)
+            return publishing(draft_id)
+
+        monkeypatch.setattr(store, "_published", held_up)
+        traced.statements.clear()
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store.settle_run("tb", grace=0.0)
+        statements = list(traced.statements)
+        stands = plan_before_stands(store)
+        candidate = store.get(draft().draft_id)
+    finally:
+        store.close()
+
+    assert "COMMIT" not in statements
+    assert statements[-1] == "ROLLBACK"
+    assert stands
+    assert candidate is not None
+    assert not candidate.published
+
+
+@pytest.mark.parametrize("held_for", ["the writer", "the commit"])
+def test_a_file_let_go_during_a_last_sleep_that_runs_past_the_waits_end_is_not_asked_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, held_for: str
+) -> None:
+    """Another connection lets the file go as the wait's sleep begins, and the sleep runs half
+    a second long, past the wait's end, as a held-up process wakes late. The clock is read on
+    waking, so nothing is asked for again: the settle is refused and the plan before stands."""
+    store, path = file_store(tmp_path)
+    other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    lengthened = LengthenedSleeps(0.5, then=lambda: other.execute("ROLLBACK"))
+    try:
+        due_in(store, 0.3)
+        monkeypatch.setattr(drafts_module, "time", lengthened)
+        if held_for == "the writer":
+            other.execute("BEGIN IMMEDIATE")
+            with pytest.raises(WriterBusy):
+                store.settle_run("tb", wait=0.3)
+        else:
+            other.execute("BEGIN")
+            other.execute("SELECT COUNT(*) FROM drafts").fetchone()
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                store.settle_run("tb", grace=0.0)
+        stands = plan_before_stands(store)
+    finally:
+        other.close()
+        store.close()
+
+    assert len(lengthened.asked) == 1
+    assert stands
+
+
+def test_a_status_read_during_the_commits_attempts_waits_for_the_settle_and_reads_its_outcome(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The run's deadline passes while the settle asks again for a commit a reading holds. A
+    status read that ends a run past its deadline waits for the settle, and reads the run
+    published once the reading lets go inside the grace: never timed out."""
+    store, path = file_store(tmp_path)
+    traced = Traced(store._connection)
+    seen: dict[str, object] = {}
+    try:
+        due_in(store, 0.3)
+        deadline = deadline_of(store, "tb")
+
+        def reading() -> None:
+            sleep(max(0.0, deadline - monotonic()) + 0.1)
+            seen["asked_at"] = monotonic()
+            seen["status"] = store.run_status("tb")
+
+        reader = threading.Thread(target=reading)
+
+        def first_commit() -> None:
+            traced.on.clear()
+            reader.start()
+
+        traced.on["COMMIT"] = first_commit
+        with held(path, "BEGIN", 0.8):
+            settled = store.settle_run("tb")
+            settled_at = monotonic()
+        reader.join(timeout=5)
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    status = seen["status"]
+    asked_at = seen["asked_at"]
+    assert isinstance(asked_at, float)
+    assert deadline < asked_at < settled_at
+    assert settled.run.status == "published"
+    assert isinstance(status, RunState)
+    assert (status.status, status.reason) == ("published", "accepted")
+    assert latest is not None
+    assert latest.draft_id == draft().draft_id
+
+
+def rows_in(path: pathlib.Path, sql: str) -> list[tuple[object, ...]]:
+    with sqlite3.connect(path) as reading:
+        rows = reading.execute(sql).fetchall()
+    reading.close()
+    return rows
+
+
+def test_a_commit_refused_three_times_then_accepted_publishes_once(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A reading holds the file through the settle's first three commit attempts and lets go
+    as the fourth begins. The plan is published once: the published order rises by one, and
+    the plan before is superseded once, by it."""
+    store, path = file_store(tmp_path)
+    other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    traced = Traced(store._connection)
+    attempts: list[float] = []
+
+    def attempted() -> None:
+        attempts.append(monotonic())
+        if len(attempts) == 4:
+            other.execute("ROLLBACK")
+
+    try:
+        one_published_and_one_waiting(store)
+        before = connection_order(path, "draft:a")
+        other.execute("BEGIN")
+        other.execute("SELECT COUNT(*) FROM drafts").fetchone()
+        traced.on["COMMIT"] = attempted
+        settled = store.settle_run("tb")
+        traced.on.clear()
+        again = store.settle_run("tb")
+    finally:
+        other.close()
+        store.close()
+
+    assert len(attempts) == 4
+    assert settled.run.status == "published"
+    assert settled.displaced == [Displaced("draft:a", "ta")]
+    assert connection_order(path, "draft:b") == before + 1
+    assert rows_in(path, "SELECT MAX(published_order) FROM drafts") == [(before + 1,)]
+    assert rows_in(
+        path, "SELECT draft_id, superseded_by FROM drafts WHERE decision='superseded'"
+    ) == [("draft:a", "draft:b")]
+    assert again.displaced == []
+    assert again.run.status == "published"
+
+
+def test_writes_given_no_wait_on_a_free_file_still_land(tmp_path: pathlib.Path) -> None:
+    """Each write's wait is over before it begins, and nothing holds the file. Its first
+    attempt at the writer and at the commit is still made: the run is admitted, its draft
+    saved and published, and a second run admitted and ended."""
+    store, _ = file_store(tmp_path)
+    try:
+        first = store.admit_run(
+            "tb", plan_date=PLAN_DATE, deadline_mono=monotonic() + RUN_DEADLINE_SECONDS, wait=0.0
+        )
+        store.record_waiting(
+            draft(), thread_id="tb", plan_date=PLAN_DATE, outcome="accepted", wait=0.0
+        )
+        settled = store.settle_run("tb", wait=0.0)
+        second = store.admit_run(
+            "tc", plan_date=PLAN_DATE, deadline_mono=monotonic() + RUN_DEADLINE_SECONDS, wait=0.0
+        )
+        ended = store.end_run("tc", reason=INTERRUPTED, wait=0.0)
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert first is None
+    assert settled.run.status == "published"
+    assert second is None
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", INTERRUPTED)
+    assert latest is not None
+    assert latest.draft_id == draft().draft_id
 
 
 def test_a_page_read_after_a_short_settle_waits_its_own_time(tmp_path: pathlib.Path) -> None:

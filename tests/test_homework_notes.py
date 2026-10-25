@@ -2573,7 +2573,7 @@ def test_the_new_note_page_says_what_a_note_is_for_and_where_a_week_is_copied() 
         hers = client.get(NEW_NOTE_PAGE).text
 
     assert "<title>Blossom - Write down homework</title>" in hers
-    assert "<h1>Write down homework</h1>" in hers
+    assert "<h1>Write down home&shy;work</h1>" in hers
     assert (
         "Save it in your own words now. From the note you can make it new homework, or connect "
         "it to homework the school already lists."
@@ -2591,7 +2591,7 @@ def test_a_parent_on_the_new_note_page_is_sent_to_family_review(tmp_path: pathli
     finally:
         client.__exit__(None, None, None)
 
-    assert "<h1>Write down homework</h1>" in theirs
+    assert "<h1>Write down home&shy;work</h1>" in theirs
     assert "Copying a whole week from the school's site?" in theirs
     assert '<a href="/parent#add-assignments">Paste it on Family review</a>' in theirs
     assert "your own words" not in theirs

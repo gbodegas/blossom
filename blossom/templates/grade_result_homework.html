@@ -33,11 +33,11 @@
 {% block content %}
   {% if missing %}
     <p class="return"><a href="{{ grades }}">Back to Grades</a></p>
-    <h1>Homework for this result</h1>
+    <h1>Home&shy;work for this result</h1>
     <p class="problem" role="alert" id="problem" tabindex="-1" autofocus>{{ missing }}</p>
   {% else %}
     <p class="return"><a href="{{ back }}">Back to <span class="authored-text">{{ class_name }}</span></a></p>
-    <h1 id="homework" tabindex="-1">Homework for this result</h1>
+    <h1 id="homework" tabindex="-1">Home&shy;work for this result</h1>
     {% if problem %}
       <p class="problem" role="alert" id="problem" tabindex="-1" autofocus>{{ problem }}</p>
       {% if words_refused %}

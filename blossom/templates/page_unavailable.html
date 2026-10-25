@@ -15,6 +15,6 @@
   {% for link in ways_back %}
     <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
   {% endfor %}
-  <h1>{{ heading }}</h1>
+  <h1>{{ heading|heading_breaks }}</h1>
   <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ alert }} <a href="{{ again }}">Try again</a></p>
 {% endblock %}

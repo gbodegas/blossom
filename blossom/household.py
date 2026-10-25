@@ -331,8 +331,9 @@ def home_of(role: Principal) -> str:
 
 
 def may_open(role: Principal, path: str) -> bool:
-    """Her page is hers and a parent's; the parent's page and the verifier's are a parent's."""
-    if path.startswith("/student"):
+    """Her page is hers and a parent's; the parent's page and the verifier's are a parent's.
+    The bare address is everyone's, since all it does is send each person home."""
+    if path == "/" or path.startswith("/student"):
         return True
     return role is Principal.PARENT
 
