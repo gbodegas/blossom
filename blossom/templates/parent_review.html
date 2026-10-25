@@ -571,7 +571,8 @@
       {#
         Screenshots: the limits and when they are sent stay in view; how they are kept folds
         under its own summary. The picker's button is the field's label, so its words are the
-        app's own; the browser's own button is hidden and its line says what was chosen.
+        app's own; the browser's own button is hidden and its line says what was chosen, with
+        the count of screenshots chosen said beneath it where scripts run.
       #}
       {% if screenshots %}
         <div class="import-review">
@@ -591,8 +592,9 @@
               <label class="file-choose" for="screenshot-files">Choose screenshots</label>
               <input type="file" id="screenshot-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="screenshot-summary screenshot-disclosure">
             </div>
+            <p class="note" role="status" data-chosen></p>
             <div class="actions">
-              <button type="submit" class="primary">Add screenshots</button>
+              <button type="submit" class="primary">Upload chosen screenshots</button>
             </div>
           </form>
         {% endif %}

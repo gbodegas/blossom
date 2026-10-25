@@ -22,7 +22,7 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import Annotated, Final
+from typing import Annotated, Final, NamedTuple
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
@@ -33,7 +33,9 @@ from blossom.dependencies import ApplicationState, get_application_state
 from blossom.household import UnreadableHouseholdSecret
 from blossom.routes.forms import FormUnreadable, fields_of, form_of
 from blossom.routes.grades import from_this_computer, grade_name_key
+from blossom.routes.navigation import week_href
 from blossom.screenshot_page import (
+    NEEDED,
     ImageName,
     RowsShown,
     answer_field,
@@ -45,17 +47,20 @@ from blossom.screenshot_page import (
     same_signature,
     signed_action,
 )
+from blossom.screenshot_page import SAID as PAGE_SAID
 from blossom.screenshot_posts import (
+    PROGRESS_SHAPE,
     PostRefused,
     ReviewPost,
     progress_read,
     progress_text,
     read_change,
     read_review,
+    shape_four,
     typed_back,
 )
 from blossom.screenshot_reading import read_screenshots
-from blossom.screenshot_review import change_told, value_json
+from blossom.screenshot_review import Corrections, change_told, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
     NotSaved,
@@ -179,6 +184,9 @@ LIMITS: Final = (
     "Up to 10 screenshots at a time, PNG or JPEG, up to 12 MB each. A review holds up to 10 "
     "screenshots."
 )
+READING: Final = "Reading the screenshots"
+"""What the Read press says while it waits; the script's pulsing dots after it are its
+ellipsis."""
 DISCLOSED: Final = (
     "These screenshots will be sent to Anthropic's API to be read. Nothing is sent until you "
     "press Read."
@@ -304,41 +312,79 @@ def note_check(key: bytes, body: str) -> str:
     return hmac.new(key, body.encode(), hashlib.sha256).hexdigest()[:32]
 
 
-def note_for(key: bytes, draft_id: str, said: Sequence[str]) -> str:
-    """A note for one review: what an upload refused or found there already, signed."""
-    body = base64.urlsafe_b64encode(json.dumps([draft_id, list(said)]).encode()).decode()
+class Note(NamedTuple):
+    """What a press says on the review it redirects to: its problems, its status lines, and a
+    save's outcome lines, each shown in its own style."""
+
+    said: list[str]
+    told: list[str]
+    done: list[str]
+
+
+def note_for(
+    key: bytes,
+    draft_id: str,
+    said: Sequence[str],
+    told: Sequence[str] = (),
+    done: Sequence[str] = (),
+) -> str:
+    """A note for one review: what a press found wrong, what it did and what a save did,
+    signed."""
+    payload = json.dumps([draft_id, list(said), list(told), list(done)])
+    body = base64.urlsafe_b64encode(payload.encode()).decode()
     return f"{body}.{note_check(key, body)}"
 
 
-def note_read(key: bytes, draft_id: str, value: str | None) -> list[str]:
-    """The sentences a note holds for this review, or none when it is another's or unsigned."""
+def note_read(key: bytes, draft_id: str, value: str | None) -> Note:
+    """The lines a note holds for this review, or none when it is another's or unsigned. A
+    note of two parts holds problems only."""
+    nothing = Note([], [], [])
     if not value or "." not in value:
-        return []
+        return nothing
     body, check = value.rsplit(".", 1)
     if not same_signature(check, note_check(key, body)):
-        return []
+        return nothing
     try:
-        named, said = json.loads(base64.urlsafe_b64decode(body.encode()))
+        found = json.loads(base64.urlsafe_b64decode(body.encode()))
     except (ValueError, TypeError):
-        return []
-    if named != draft_id or not isinstance(said, list):
-        return []
-    return [str(line) for line in said if isinstance(line, str)]
+        return nothing
+    if not isinstance(found, list) or len(found) not in (2, 4) or found[0] != draft_id:
+        return nothing
+    parts = [part if isinstance(part, list) else [] for part in found[1:]]
+    lines = [[str(line) for line in part if isinstance(line, str)] for part in parts]
+    return Note(*lines) if len(lines) == 3 else Note(lines[0], [], [])
 
 
-def to_review(state: ApplicationState, draft_id: str, said: Sequence[str] = ()) -> Response:
+def to_review(
+    state: ApplicationState,
+    draft_id: str,
+    said: Sequence[str] = (),
+    told: Sequence[str] = (),
+    done: Sequence[str] = (),
+) -> Response:
     """The redirect every committed press answers with, carrying its note when it has one."""
     answer = RedirectResponse(f"{PREFIX}/{draft_id}", status_code=303)
-    if said:
+    if said or told or done:
         answer.set_cookie(
             NOTE_COOKIE,
-            note_for(state.result_key, draft_id, said),
+            note_for(state.result_key, draft_id, said, told, done),
             max_age=NOTE_SECONDS,
             path=f"{PREFIX}/{draft_id}",
             httponly=True,
             samesite="strict",
         )
     return answer
+
+
+def uploaded_said(added: int, total: int, read: int) -> list[str]:
+    """What an upload says it added, from what the review holds after it: nothing when it added
+    none; the first upload's count; or the count it added beside the review's."""
+    if added == 0:
+        return []
+    noun = "screenshot" if added == 1 else "screenshots"
+    if added == total:
+        return [f"{added} {noun} uploaded. None read yet."]
+    return [f"{added} more {noun} uploaded. {total} in this review, {read} read."]
 
 
 def upload_said(
@@ -408,6 +454,8 @@ TYPED_LABELS: Final = {
     "instruction": "Instructions",
     "footer": "Due date",
     "heading": "Date (day heading)",
+    "due": "Due date",
+    "assigned": "Assigned date",
 }
 """How each correction given back is labeled, since the review's cards aren't shown with it."""
 TYPED_SAID: Final = (
@@ -423,28 +471,49 @@ async def gone_with_typing(
     anything committed, then why the review can't take more, and every correction the post
     typed in a box to copy, read from the post alone. Nothing of the review is shown, nothing
     is stored, and nothing more can be saved from it."""
-    try:
-        form = await form_of(request)
-    except FormUnreadable:
-        form = None
-    items = (
-        []
-        if form is None
-        else [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
-    )
-    typed = [(TYPED_LABELS[field], text) for field, text in typed_back(items)]
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
             "said": [*said, SAID[gone]],
-            "typed": typed,
+            "typed": await typing_of(request),
             "typed_said": TYPED_SAID,
             "marks": marks_of(state),
             "page": "parent",
         },
         status_code=status,
     )
+
+
+async def typing_of(request: Request) -> list[tuple[str, str]]:
+    """Every correction a press's post typed, labeled, read from the post alone (``typed_back``),
+    to give back in boxes to copy where the review can't keep it."""
+    try:
+        form = await form_of(request)
+    except FormUnreadable:
+        return []
+    items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
+    return [(TYPED_LABELS[field.partition(":")[0]], text) for field, text in typed_back(items)]
+
+
+def gone_by(error: Exception) -> str:
+    """Which of the review's endings a store's refusal names: ``expired``, or ``absent``."""
+    return "expired" if isinstance(error, DraftExpired) else "absent"
+
+
+async def saved_unread(
+    request: Request,
+    state: ApplicationState,
+    done: Sequence[str],
+    said: Sequence[str] = (),
+    week: str | None = None,
+) -> Response:
+    """A save that committed whose review the store refuses to read: what it saved, in the
+    success panel whose heading takes the focus, with what else the press said beneath it and
+    no word that the review is finished, since that isn't known, and every correction the press
+    typed given back to copy."""
+    typed = await typing_of(request)
+    return saved_outcome(request, state, done, week, finished=False, typed=typed, notes=said)
 
 
 async def refused_keeping_typing(
@@ -485,13 +554,23 @@ async def snapshot_keeping_typing(
     draft_id: str,
     said: Sequence[str] = (),
     status: int | None = None,
+    done: Sequence[str] = (),
 ) -> DraftSnapshot | Response:
     """The review as one read sees it after a press, or the page that says why it can't be
-    shown: for a review that expired or is gone, what the press did and its typing."""
+    shown: for a review that expired or is gone, what the press did and its typing. After a
+    save that committed (``done``, what it saved), a review the store refuses to read answers
+    with what it saved and the press's typing (``saved_unread``), never that nothing was
+    saved; one known to have expired, or to be gone, says so beneath what it saved."""
     student = state.project_state.student_id()
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (DraftExpired, DraftNotFound) as error:
+        if done:
+            return await saved_unread(request, state, done, [*said, SAID[gone_by(error)]])
+        return await refused_keeping_typing(request, state, error, said, status)
     except STORE_REFUSALS as error:
+        if done:
+            return await saved_unread(request, state, done, said)
         return await refused_keeping_typing(request, state, error, said, status)
     if snapshot.closed_at is not None:
         return said_page(request, marks_of(state), SAID["closed"], 200)
@@ -540,7 +619,22 @@ async def first_upload(request: Request, state: State) -> Response:
         lines = [image_refusal(place + 1, kind) for place, kind in prepared.refused]
         return said_page(request, marks_of(state), "Nothing was added.", 422, *lines)
     places = [place for place, _ in prepared.images]
-    return to_review(state, added.draft_id, upload_said(added, places, prepared.refused))
+    told = await upload_told(state, added)
+    return to_review(state, added.draft_id, upload_said(added, places, prepared.refused), told)
+
+
+async def upload_told(state: ApplicationState, added: Added) -> list[str]:
+    """What an upload says it added, beside how many screenshots the review holds and how many
+    are read, as the review stands after its commit."""
+    if not added.added:
+        return []
+    student = state.project_state.student_id()
+    try:
+        after = await asyncio.to_thread(state.import_drafts.snapshot, student, added.draft_id)
+    except STORE_REFUSALS:
+        return []
+    read = sum(1 for image in after.images if image.read)
+    return uploaded_said(len(added.added), len(after.images), read)
 
 
 @router.post("/{draft_id}/images")
@@ -573,7 +667,8 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
     places = [place for place, _ in prepared.images]
-    return to_review(state, draft_id, upload_said(added, places, prepared.refused))
+    told = await upload_told(state, added)
+    return to_review(state, draft_id, upload_said(added, places, prepared.refused), told)
 
 
 async def tables_of(state: ApplicationState, draft_id: str) -> DraftForSave | None:
@@ -667,11 +762,18 @@ def picked(progress: str | None) -> frozenset[str] | None:
     return None if read is None else read.selected
 
 
-def corrections_of(progress: str | None) -> dict[str, dict[str, str]]:
-    """The typed corrections a review's saved progress keeps, by row key and field; none when
-    there is no progress or it isn't in its one shape."""
-    read = progress_read(progress)
-    return {} if read is None else read.corrected
+async def saved_corrections(
+    state: ApplicationState, snapshot: DraftSnapshot
+) -> dict[str, dict[str, str | None]]:
+    """The corrections a review's saved progress keeps, in the shape a press posts them:
+    progress of shape 3 read as the boxes its corrections give, so its answers and "Not saved
+    yet" are worked out against what the page posts, and its card's destination asks again
+    once, not after every press."""
+    read = progress_read(snapshot.progress)
+    if read is None or read.shape == PROGRESS_SHAPE or not read.corrected:
+        return {} if read is None else read.corrected
+    review = await state_of_review(state, snapshot, read.corrected)
+    return {} if review is None else shape_four(review, read.corrected)
 
 
 def row_keys(review: ReviewState, units: Iterable[str]) -> frozenset[str]:
@@ -716,7 +818,7 @@ async def image_names(
 
 
 async def state_of_review(
-    state: ApplicationState, snapshot: DraftSnapshot, corrections: Mapping[str, Mapping[str, str]]
+    state: ApplicationState, snapshot: DraftSnapshot, corrections: Corrections
 ) -> ReviewState | None:
     """The review's state as the save works it out, from its stored tables and the record now;
     None when there is no such homework review."""
@@ -734,15 +836,17 @@ async def rows_of(
     state: ApplicationState,
     snapshot: DraftSnapshot,
     said: list[str],
-    typed: Mapping[str, Mapping[str, str]] | None = None,
+    typed: Corrections | None = None,
     ticked: Sequence[str] | None = None,
+    both: Sequence[str] = (),
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
     or, when a press's typing comes back, as it sent them; None before anything is read."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
-    corrections = corrections_of(snapshot.progress) if typed is None else typed
+    kept = await saved_corrections(state, snapshot)
+    corrections = kept if typed is None else typed
     review = await state_of_review(state, snapshot, corrections)
     open_keys = [row.key for row in snapshot.rows if row.state == "open"]
     items_open = any(not row.readable and row.state == "open" for row in snapshot.rows)
@@ -763,10 +867,13 @@ async def rows_of(
         until=until_text(state, snapshot.expires_at),
         corrections=corrections,
         selected=row_keys(review, ticked) if ticked is not None else picked(snapshot.progress),
-        unsaved=frozenset() if typed is None else unsaved_typing(snapshot, typed),
+        unsaved=frozenset() if typed is None else unsaved_typing(snapshot, typed, kept),
         open_keys=open_keys,
         unread=unread,
         frozen=snapshot.frozen,
+        image_ids={image.sha256: image.image_id for image in snapshot.images},
+        href=f"{PREFIX}/{snapshot.draft_id}",
+        both=frozenset(both),
     )
 
 
@@ -777,12 +884,14 @@ def review_page(
     said: Sequence[str] = (),
     status: int = 200,
     rows: RowsShown | None = None,
+    told: Sequence[str] = (),
+    done: Sequence[str] = (),
 ) -> Response:
-    """The review: its images with their labels, those read as her homework list marked so
+    """The review: what a press did and found wrong, each in its own style, its images with
+    their labels and how many are uploaded and read, those read as her homework list marked so
     the page can fold them away, the Read press for the unread ones when a key is set and no
-    attempt is current, the form that adds more, "Discard the review" whatever
-    is read, and once anything is read, the rows with their destinations, questions and the
-    group preview."""
+    attempt is current, the form that adds more, "Discard the review" whatever is read, and
+    once anything is read, the rows with their cards, questions and what saving adds."""
     keyed = model_configured(state.settings)
     unread = [image.image_id for image in snapshot.images if not image.read]
     homework_lists = {
@@ -811,6 +920,14 @@ def review_page(
                 for index, image in enumerate(snapshot.images)
             ],
             "said": list(said),
+            "told": list(told),
+            "done": list(done),
+            "counts": (
+                f"{len(snapshot.images)} uploaded \u00b7 "
+                f"{sum(1 for image in snapshot.images if image.read)} read"
+            ),
+            "read_label": f"Read {len(unread)} screenshot{'' if len(unread) == 1 else 's'}",
+            "reading": READING,
             "under_way": None if when is None else under_way(when),
             "read_ids": (
                 ",".join(unread)
@@ -852,11 +969,12 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
     found = await snapshot_or_page(request, state, draft_id)
     if isinstance(found, Response):
         return found
-    said = note_read(state.result_key, draft_id, request.cookies.get(NOTE_COOKIE))
-    if said:
+    note = note_read(state.result_key, draft_id, request.cookies.get(NOTE_COOKIE))
+    said = note.said
+    if said or note.told or note.done:
         answering(request)
     rows = await rows_of(request, state, found, said)
-    answer = review_page(request, state, found, said, rows=rows)
+    answer = review_page(request, state, found, said, rows=rows, told=note.told, done=note.done)
     if request.cookies.get(NOTE_COOKIE) is not None:
         answer.delete_cookie(NOTE_COOKIE, path=f"{PREFIX}/{draft_id}")
     return answer
@@ -903,6 +1021,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
     if isinstance(after, Response):
         return after
     said = await change_lines(state, draft_id, before)
+    told: list[str] = []
     if outcome is not None:
         places = {image.image_id: index + 1 for index, image in enumerate(after.images)}
         read_now = {image.image_id for image in after.images if image.read}
@@ -911,8 +1030,36 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
             for image_id in outcome.busy
             if image_id in places and image_id not in read_now
         ]
+        told = read_said(after, state.real_clock.now())
     rows = await rows_of(request, state, after, said)
-    return review_page(request, state, after, said, rows=rows)
+    return review_page(request, state, after, said, rows=rows, told=told)
+
+
+def read_said(snapshot: DraftSnapshot, now: datetime) -> list[str]:
+    """What a Read press says the review's screenshots read as: how many are read as homework
+    lists and the assignments they hold, and how many are read as something else."""
+    kinds = {reading.sha256: reading.kind for reading in snapshot.readings}
+    read = [image for image in snapshot.images if image.read]
+    lists = sum(1 for image in read if kinds.get(image.sha256) == "homework_list")
+    out = []
+    if lists:
+        out.append(read_said_line(lists, len(homework_assembly(snapshot.readings, now=now).rows)))
+    if len(read) > lists:
+        out.append(not_a_list_line(len(read) - lists))
+    return out
+
+
+def read_said_line(lists: int, found: int) -> str:
+    """ "1 screenshot read: 3 assignments found."."""
+    return (
+        f"{lists} screenshot{'' if lists == 1 else 's'} read: "
+        f"{found} assignment{'' if found == 1 else 's'} found."
+    )
+
+
+def not_a_list_line(count: int) -> str:
+    """ "1 screenshot read: not a homework list."."""
+    return f"{count} screenshot{'' if count == 1 else 's'} read: not a homework list."
 
 
 # ------------------------------------------------------------------ the review's presses
@@ -933,6 +1080,7 @@ PRESS_SAID: Final = {
         "A correction is longer than its field takes, so nothing was kept or saved. Shorten it "
         "and press again."
     ),
+    "nothing_kept": "Nothing was kept or saved.",
     "save_stale": "Your answers on that page weren't kept, and nothing was saved.",
     "save_invalid": (
         "Some of these questions changed before you answered, so nothing was kept or saved. "
@@ -951,10 +1099,12 @@ PRESS_SAID: Final = {
     ),
     "later_failed": "Your answers couldn't be kept, and nothing was saved for later. Try again.",
     "answers_kept": "Your answers are kept.",
-    "none_chosen": "Choose at least one group to save.",
+    "none_chosen": "Choose at least one assignment to save.",
     "left_open": "Your answers on the rows left open are kept.",
     "already": "Already saved from this review.",
-    "changed": "Saving this group would now do this instead. Check it and save again.",
+    "changed": (
+        "Saving an assignment you ticked would now do this instead. Check it and save again."
+    ),
     "changed_by_answers": (
         "Your answers are kept. They change what saving does, so nothing was saved yet. Check "
         "the effects below, then save."
@@ -973,10 +1123,10 @@ PRESS_SAID: Final = {
 """What the review's presses say, all in one place."""
 NOT_SAVED_BECAUSE: Final = {
     "gate": "a screenshot isn't read yet",
-    "open": "a group you chose still has a question to answer",
+    "open": "an assignment you ticked still has a question to answer",
     "names": (
-        "the groups you chose come from screenshots with different names; save each name's "
-        "groups on their own"
+        "the assignments you ticked come from screenshots with different names; save each "
+        "name's assignments on their own"
     ),
     "stale": "this review changed in another tab",
 }
@@ -988,12 +1138,33 @@ def saved_for_later_at(state: ApplicationState) -> str:
     return f"Saved for later at {until_text(state, state.real_clock.now())}."
 
 
-def counted(added: int, updated: int, left: int) -> str:
-    """A save's counts: "4 assignments added. 1 updated. 1 still needs checking."."""
-    return (
-        f"{added} assignment{'' if added == 1 else 's'} added. {updated} updated. "
-        f"{left} still need{'s' if left == 1 else ''} checking."
-    )
+def counted(added: int, updated: int, already: int, left: int) -> str:
+    """A save's counts: "Saved: 2 new assignments. 1 updated. 1 already up to date. 1 still
+    needs checking.", each but the new ones said only when not zero; or, when nothing was new,
+    "Nothing new to save: 2 assignments already up to date." with what still needs checking."""
+    still = f" {left} still need{'s' if left == 1 else ''} checking." if left else ""
+    if not added and not updated:
+        return (
+            f"Nothing new to save: {already} assignment{'' if already == 1 else 's'} already up "
+            f"to date.{still}"
+        )
+    parts = [f"Saved: {added} new assignment{'' if added == 1 else 's'}."]
+    if updated:
+        parts.append(f"{updated} updated.")
+    if already:
+        parts.append(f"{already} already up to date.")
+    return " ".join(parts) + still
+
+
+def refused_said(post: ReviewPost) -> list[str]:
+    """What a press refused whole for a box it can't take says: a correction too long, and each
+    box that can't be left as posted, in the box's own words, and that nothing was kept or
+    saved, once."""
+    boxes = [NEEDED[field] for _, field in post.needed if field in NEEDED]
+    boxes += [PAGE_SAID["both"]] if post.both else []
+    if post.too_long:
+        return [PRESS_SAID["too_long"], *dict.fromkeys(boxes)]
+    return [*dict.fromkeys(boxes), PRESS_SAID["nothing_kept"]]
 
 
 def not_saved(outcome: NotSaved, answered: bool) -> list[str]:
@@ -1016,7 +1187,7 @@ async def review_post(
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
-    saved = corrections_of(found.progress)
+    saved = await saved_corrections(state, found)
     review = await state_of_review(state, found, saved)
     if review is None:
         return None, named
@@ -1050,8 +1221,8 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     if post is None:
         refused = {"save": "save_invalid", "later": "later_invalid"}.get(named, "keep_invalid")
         return to_review(state, draft_id, [PRESS_SAID[refused]])
-    if post.too_long:
-        return await with_typing(request, state, draft_id, post, [PRESS_SAID["too_long"]], 422)
+    if post.refused:
+        return await with_typing(request, state, draft_id, post, refused_said(post), 422)
     if post.press == "later":
         return await later_press(request, state, found, post)
     if post.press == "save":
@@ -1083,19 +1254,23 @@ async def with_typing(
     post: ReviewPost,
     said: Sequence[str],
     status: int,
+    done: Sequence[str] = (),
 ) -> Response:
-    """A press that saved nothing answers with the review as it stands now, the corrections it
-    typed and the groups it ticked still in the form, so nothing typed is lost and an answer
-    just kept stays matched to the corrections it was given with. A press that posts no ticks,
-    an offer or a found row, is ticked as a plain load would tick the page. A review that
-    expired meanwhile answers with what the press did and its typing to copy."""
-    after = await snapshot_keeping_typing(request, state, draft_id, said, status)
+    """A press that saved nothing, or a save that left the review open, answers with the
+    review as it stands now, the corrections it typed and the groups it ticked still in the
+    form, so nothing typed is lost and an answer just kept stays matched to the corrections it
+    was given with. A press that posts no ticks, an offer or a found row, is ticked as a plain
+    load would tick the page. A review that expired meanwhile answers with what the press did
+    and its typing to copy."""
+    after = await snapshot_keeping_typing(request, state, draft_id, said, status, done)
     if isinstance(after, Response):
         return after
     lines = list(said)
     ticked = post.units if post.ticked else None
-    rows = await rows_of(request, state, after, lines, typed=post.corrections, ticked=ticked)
-    return review_page(request, state, after, lines, status, rows=rows)
+    rows = await rows_of(
+        request, state, after, lines, typed=post.corrections, ticked=ticked, both=post.both
+    )
+    return review_page(request, state, after, lines, status, rows=rows, done=done)
 
 
 async def later_press(
@@ -1212,9 +1387,10 @@ async def outcome_page(
     post: ReviewPost,
 ) -> Response:
     """What a Save press answers with, by what committed: "nothing was saved" only when the
-    homework transaction didn't commit, and a save that committed is reported as saved, with
-    anything after it that didn't finish. A review that expired, or is gone, gives the press's
-    typing back with what it says, never in place of a save that committed."""
+    homework transaction didn't commit, and a save that committed is reported as saved, in the
+    success pattern, with anything after it that didn't finish. A review that expired, or is
+    gone, gives the press's typing back with what it says, never in place of a save that
+    committed."""
     if isinstance(outcome, NotSaved):
         if outcome.reason in ("absent", "expired"):
             return await gone_with_typing(request, state, outcome.reason, [], 409)
@@ -1227,49 +1403,117 @@ async def outcome_page(
     if isinstance(outcome, AlreadySaved):
         return await with_typing(request, state, draft_id, post, [PRESS_SAID["already"]], 200)
     if isinstance(outcome, Replayed):
-        return await saved_page(request, state, draft_id, outcome.acceptance_id, [])
-    said = [counted(outcome.counts[0], outcome.counts[1], outcome.counts[3])]
+        return await saved_page(request, state, draft_id, outcome.acceptance_id, [], post)
+    done = [counted(*outcome.counts)]
     if outcome.already_units:
-        said.append(PRESS_SAID["already"])
-    if outcome.changed_units:
-        said.append(PRESS_SAID["changed"])
+        done.append(PRESS_SAID["already"])
+    problems = [PRESS_SAID["changed"]] if outcome.changed_units else []
     if outcome.incomplete:
-        lines = [PRESS_SAID["incomplete"], *said]
+        lines = [PRESS_SAID["incomplete"], *done, *problems]
         gone = await gone_now(state, draft_id)
         if gone is not None:
             return await gone_with_typing(request, state, gone, lines, 200)
         return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
     if outcome.closed:
-        return said_page(request, marks_of(state), said[0], 200, *said[1:], SAID["closed"])
+        week = await week_of(state, outcome.pairs)
+        return saved_outcome(request, state, [*done, *problems], week)
     if answered:
-        said.append(PRESS_SAID["left_open"])
-    return await partly_saved(request, state, draft_id, post, said)
+        done.append(PRESS_SAID["left_open"])
+    return await partly_saved(request, state, draft_id, post, done, problems)
+
+
+async def week_of(state: ApplicationState, pairs: Iterable[tuple[str, str]]) -> str | None:
+    """Her week at the earliest due date among the assignments a save wrote, with that card in
+    view; None when none of them has a due date, or when the assignments can't be read once the
+    save has committed, so the saved outcome still shows, with no way to her week."""
+    targets = {target for _, target in pairs}
+    try:
+        everything = await asyncio.to_thread(state.project_state.all_assignments)
+    except Exception as error:
+        logger.warning("Her week couldn't be read after a save: %s", type(error).__name__)
+        return None
+    dated = sorted(
+        (item.due_date, item.assignment_id)
+        for item in everything
+        if item.assignment_id in targets and item.due_date is not None
+    )
+    if not dated:
+        return None
+    day, assignment_id = dated[0]
+    return week_href(day, assignment_id)
+
+
+def saved_outcome(
+    request: Request,
+    state: ApplicationState,
+    lines: Sequence[str],
+    week: str | None,
+    *,
+    finished: bool = True,
+    typed: Sequence[tuple[str, str]] = (),
+    notes: Sequence[str] = (),
+) -> Response:
+    """A save that finished the review, as the grade save's outcome shows one: the steps line
+    at Saved, the counts as the panel's heading, her week, and that the review is finished.
+    Where whether it finished isn't known (``finished`` false), it isn't said, what else the
+    press said (``notes``) is, and the corrections the post typed (``typed``) are given back to
+    copy."""
+    return templates.TemplateResponse(
+        request,
+        "import_said.html",
+        {
+            "said": [SAID["closed"], *notes] if finished else list(notes),
+            "outcome": list(lines),
+            "week": week,
+            "typed": list(typed),
+            "typed_said": TYPED_SAID,
+            "marks": marks_of(state),
+            "page": "parent",
+        },
+        status_code=200,
+    )
 
 
 async def partly_saved(
-    request: Request, state: ApplicationState, draft_id: str, post: ReviewPost, said: list[str]
+    request: Request,
+    state: ApplicationState,
+    draft_id: str,
+    post: ReviewPost,
+    done: list[str],
+    said: Sequence[str] = (),
 ) -> Response:
-    """A save that leaves the review open: the outcome, and the rows left open with the
-    corrections the press typed still in the form, marked as not saved, none of them stored.
-    A review that expired since answers with the outcome and the typing to copy."""
-    after = await snapshot_keeping_typing(request, state, draft_id, said, 200)
+    """A save that leaves the review open: the outcome in the success style, and the rows left
+    open with the corrections the press typed still in the form, marked as not saved, none of
+    them stored. A review that expired since answers with the outcome and the typing to
+    copy."""
+    after = await snapshot_keeping_typing(request, state, draft_id, said, 200, done)
     if isinstance(after, Response):
         return after
-    if unsaved_typing(after, post.corrections):
-        said = [*said, PRESS_SAID["unsaved_typing"]]
-    return await with_typing(request, state, draft_id, post, said, 200)
+    problems = list(said)
+    if unsaved_typing(after, post.corrections, await saved_corrections(state, after)):
+        problems.append(PRESS_SAID["unsaved_typing"])
+    return await with_typing(request, state, draft_id, post, problems, 200, done)
 
 
 def unsaved_typing(
-    snapshot: DraftSnapshot, typed: Mapping[str, Mapping[str, str]]
+    snapshot: DraftSnapshot, typed: Corrections, kept: Corrections
 ) -> frozenset[tuple[str, str]]:
-    """The corrections a press typed that saved progress doesn't hold, by row key and field."""
-    kept = corrections_of(snapshot.progress)
+    """The corrections a press posted for a row still open that saved progress (``kept``, as
+    ``saved_corrections`` reads it) doesn't hold, and those it holds that the press put back,
+    by key and field. A row a save just took has nothing unsaved left."""
+    still = {row.key for row in snapshot.rows if row.state == "open"}
+    both = {
+        (key, field)
+        for given in (typed, kept)
+        for key, fields in given.items()
+        for field in fields
+        if key.removeprefix("date:").split("|")[0] in still
+    }
     return frozenset(
         (key, field)
-        for key, fields in typed.items()
-        for field, value in fields.items()
-        if kept.get(key, {}).get(field) != value
+        for key, field in both
+        if (field in typed.get(key, {}), typed.get(key, {}).get(field))
+        != (field in kept.get(key, {}), kept.get(key, {}).get(field))
     )
 
 
@@ -1299,22 +1543,36 @@ async def saved_page(
     post: ReviewPost | None = None,
 ) -> Response:
     """A resent press whose acceptance id is recorded: that save's counts, and nothing
-    written. With the review still open, a press that carries its typing gets it back, as
-    the save it repeats did."""
-    student = state.project_state.student_id()
-    counts = await asyncio.to_thread(
-        state.project_state.homework_counts, student, draft_id, acceptance
-    )
-    lines = [*said, counted(counts[0], counts[1], counts[3])] if counts else said
+    written. A review it finished says so. With the review still open, the press gets its
+    typing back in the review, as the save it repeats did, its post read here when the
+    caller had none. A review the store refuses to read (busy, or gone) can't say whether it
+    finished: the counts show in the success panel with no word of that, and every
+    correction the post typed is given back to copy. A review known to have expired, or to be
+    gone, says so beneath the counts as a refused press does."""
+    record = state.project_state
+    student = record.student_id()
+    counts = await asyncio.to_thread(record.homework_counts, student, draft_id, acceptance)
+    lines = [*said, counted(*counts)] if counts else said
+    gone: list[str] = []
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (DraftExpired, DraftNotFound) as error:
+        snapshot, gone = None, [SAID[gone_by(error)]]
     except STORE_REFUSALS:
         snapshot = None
     if snapshot is None or snapshot.closed_at is not None or snapshot.finished:
-        return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
+        if not counts:
+            return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
+        pairs = await asyncio.to_thread(record.homework_acceptance, student, draft_id, acceptance)
+        week = await week_of(state, pairs or ())
+        if snapshot is None:
+            return await saved_unread(request, state, lines, gone, week)
+        return saved_outcome(request, state, lines, week)
+    if post is None:
+        post, _ = await review_post(request, state, snapshot)
     if post is not None:
         return await partly_saved(request, state, draft_id, post, lines)
-    return to_review(state, draft_id, lines)
+    return to_review(state, draft_id, done=lines)
 
 
 # ------------------------------------------------------------------ find under another name
@@ -1340,7 +1598,7 @@ async def find(request: Request, draft_id: str, state: State) -> Response:
         return said_page(request, marks_of(state), FIND_SAID["gone"], 400)
     piece_name = posted.get("piece", "")
     words = posted.get("words", "")[:MOST_WORDS]
-    review = await state_of_review(state, found, corrections_of(found.progress))
+    review = await state_of_review(state, found, await saved_corrections(state, found))
     piece = None if review is None else review.by_name.get(piece_name)
     if review is None or piece is None or piece.name in review.saved:
         return said_page(request, marks_of(state), FIND_SAID["gone"], 404)

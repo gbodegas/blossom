@@ -21,6 +21,7 @@ from blossom.screenshot_review import EarlierPick, Piece, Refusal, SavedRow
 from blossom.screenshot_save import confirm_fields
 from blossom.screenshots import CardPlace, ScreenshotRow, homework_assembly
 from blossom.stores.import_drafts import Carry, StoredReading
+from blossom.stores.project_state import AssignmentKind
 from tests.support import OBSERVED_AT, homework_answer, homework_card, stored_homework
 
 C, Q, T = "English 7", "Vocab Quiz", "Vocab Test"
@@ -549,6 +550,42 @@ def one_piece_preview(
     return entry
 
 
+def test_the_preview_digest_holds_what_its_lines_read_of_the_saved_row() -> None:
+    """A preview's digest changes with each thing its lines read of the saved row a card goes
+    to: its kind, class and title, and whether saving writes nothing there; the same inputs give
+    the same digest. The row is one found under another name, so a new name keeps it offered."""
+
+    def found(saved: SavedRow, words: Sequence[str], writes: bool) -> review.PreviewEntry:
+        p = piece("a", WED, words)
+        rows = rows_of(saved)
+        mapping = {"a": {"found": saved.assignment_id, "offer": "basis"}}
+        [entry] = review.preview(
+            review.validate([p], mapping, rows, [], {}, {}),
+            [p],
+            mapping,
+            rows,
+            {},
+            (),
+            {},
+            writes_nothing=lambda piece, target: writes,
+        )
+        return entry
+
+    saved = row("assignment-word-study-r1", WED, [W1], title="Word Study", kind="HOMEWORK")
+    plain = found(saved, [W1, W2], True).digest
+    changed = [
+        dataclasses.replace(saved, kind="TASK"),
+        dataclasses.replace(saved, title="Word Study Guide"),
+        dataclasses.replace(saved, course="English 9"),
+    ]
+    same, other = found(saved, [W1], True), found(saved, [W1], False)
+
+    assert found(saved, [W1, W2], True).digest == plain
+    assert [found(c, [W1, W2], True).digest != plain for c in changed] == [True] * 3
+    assert (same.nothing_new, other.nothing_new) == (True, False)
+    assert same.digest != other.digest
+
+
 def test_a_filled_assigned_date_is_not_nothing_new() -> None:
     entry = one_piece_preview(
         piece("a", WED, [W1], assigned=MON), row("assignment-vocab-quiz-r1", WED, [W1])
@@ -809,10 +846,12 @@ def faint(day: str, y: int = 150) -> dict[str, object]:
     return {"text": day, "y": y, "uncertain": "faint"}
 
 
-def routed_shapes() -> dict[str, tuple[list[StoredReading], bool, str]]:
+def routed_shapes() -> dict[str, tuple[list[StoredReading], bool, str, frozenset[str]]]:
     """Each piece shape, as readings whose day headings the reader wasn't sure of, whether its
-    row is answered "These are different assignments", and which date its day heading's
-    correction sets."""
+    row is answered "These are different assignments", which date a day heading's correction
+    in saved progress of shape 3 sets, and the unsure fields its own cards ask about: the due date
+    (``footer``) for a heading over a due card, the assigned date (``heading``) over an
+    assigned card."""
     due_only = stored_homework(
         "due", homework_answer(headings=[faint("Wednesday 10/14/2026")], cards=[due_card(W1, 200)])
     )
@@ -831,16 +870,24 @@ def routed_shapes() -> dict[str, tuple[list[StoredReading], bool, str]]:
         "tue", homework_answer(headings=[faint("Tuesday 10/13/2026")], cards=[assigned_card(W2)])
     )
     return {
-        "a due card": ([due_only], False, "due"),
-        "an assigned card": ([assigned_only], False, "assigned"),
-        "a mixed row": ([mixed], False, "assigned"),
-        "a split piece": ([mixed, other_day], True, "assigned"),
-        "the undated piece of a split row": ([mixed, other_day], True, "due"),
+        "a due card": ([due_only], False, "due", frozenset({"footer"})),
+        "an assigned card": ([assigned_only], False, "assigned", frozenset({"heading"})),
+        "a mixed row": ([mixed], False, "assigned", frozenset({"footer", "heading"})),
+        "a split piece": ([mixed, other_day], True, "assigned", frozenset({"heading"})),
+        "the undated piece of a split row": (
+            [mixed, other_day],
+            True,
+            "due",
+            frozenset({"footer"}),
+        ),
     }
 
 
-def routed_piece(shape: str, corrections: Mapping[str, Mapping[str, str]] | None = None) -> Piece:
-    readings, split, _ = routed_shapes()[shape]
+def routed_piece(
+    shape: str,
+    corrections: Mapping[str, Mapping[str, str | None]] | None = None,
+) -> Piece:
+    readings, split, _, _ = routed_shapes()[shape]
     rows = homework_assembly(readings, now=OBSERVED_AT).rows
     answers = {r.key: "split" for r in rows} if split else {}
     pieces, asking, _ = review.pieces_from(
@@ -862,12 +909,17 @@ def routed_piece(shape: str, corrections: Mapping[str, Mapping[str, str]] | None
 
 @pytest.mark.parametrize("shape", list(routed_shapes()))
 def test_one_routing_decides_which_date_each_correction_sets(shape: str) -> None:
-    expected = routed_shapes()[shape][2]
+    """In saved progress of shape 3, a day heading's correction sets the date ``date_target``
+    names; a piece's own boxes set exactly the date they name; and an unsure day heading asks
+    about the date of the card it is over."""
+    _, _, expected, unsure = routed_shapes()[shape]
     piece = routed_piece(shape)
     typed = {piece.key: {"heading": TYPED_DAY.isoformat()}}
     moved = routed_piece(shape, typed)
-    field = "heading" if "heading" in confirm_fields(piece) else "footer"
-    box = screenshot_page.confirm_question(piece, field, {}, {}, {}, unsaved=False)
+    own_due = routed_piece(shape, {review.dates_key(piece.name): {"due": TYPED_DAY.isoformat()}})
+    own_assigned = routed_piece(
+        shape, {review.dates_key(piece.name): {"assigned": TYPED_DAY.isoformat()}}
+    )
 
     assert review.date_target(piece.reading, "heading") == expected
     assert review.date_target(piece.reading, "footer") == "due"
@@ -875,11 +927,13 @@ def test_one_routing_decides_which_date_each_correction_sets(shape: str) -> None
         assert (moved.due, moved.assigned) == (TYPED_DAY, piece.assigned)
     else:
         assert (moved.due, moved.assigned) == (piece.due, TYPED_DAY)
+    assert (own_due.due, own_due.assigned) == (TYPED_DAY, piece.assigned)
+    assert (own_assigned.due, own_assigned.assigned) == (piece.due, TYPED_DAY)
     assert review.settles_due(piece, typed) == (expected == "due")
     assert review.settles_due(piece, {piece.key: {"footer": TYPED_DAY.isoformat()}})
+    assert review.settles_due(piece, {review.dates_key(piece.name): {"due": "2026-10-06"}})
     assert not review.settles_due(piece, {piece.key: {"footer": "10/14"}})
-    assert field == ("heading" if expected == "assigned" else "footer")
-    assert box.text_label == ("Due date" if expected == "due" else "Assigned date (day heading)")
+    assert confirm_fields(piece) == unsure
 
 
 # ------------------------------------------------------- her homework confirmed across a change
@@ -942,3 +996,238 @@ def test_a_change_clears_the_missing_name_confirmation_only_for_a_new_screenshot
     assert told.name_asked == asks
     assert (screenshot_page.CHANGE_SAID["name"] in screenshot_page.change_said(told)) == asks
     assert not unanswered.name_asked
+
+
+# ------------------------------------------------------- corrections, each of the field it names
+
+
+def mon_wed_row(*cards: dict[str, object]) -> list[StoredReading]:
+    """One screenshot of an assigned card under Monday, due Wednesday, and the due card under
+    Wednesday: one row, assigned Monday and due Wednesday."""
+    return [
+        stored_homework(
+            "mon-wed",
+            homework_answer(
+                headings=[
+                    {"text": "Monday 10/12/2026", "y": 150, "uncertain": None},
+                    {"text": "Wednesday 10/14/2026", "y": 400, "uncertain": None},
+                ],
+                cards=list(cards) or [assigned_card(W1), due_card(W2)],
+            ),
+        )
+    ]
+
+
+def one_piece(
+    readings: Sequence[StoredReading], corrections: review.Corrections | None = None
+) -> Piece:
+    [found], _, _ = review.pieces_from(readings, {}, frozenset(), OBSERVED_AT, corrections)
+    return found
+
+
+def test_an_assigned_date_edit_on_a_split_piece_moves_only_that_piece() -> None:
+    """The probe of a split row: its Monday piece's assigned date moved to Sunday moves nothing
+    of its Tuesday piece or of the due card's piece, whose due date stays Wednesday."""
+    readings = split_readings()
+    [row_] = homework_assembly(readings, now=OBSERVED_AT).rows
+    split = {row_.key: "split"}
+    before, _, _ = review.pieces_from(readings, split, frozenset(), OBSERVED_AT)
+    monday = f"{row_.key}|2026-10-12"
+    sunday = date(2026, 10, 11)
+    typed = {review.dates_key(monday): {"assigned": sunday.isoformat()}}
+    after, _, _ = review.pieces_from(readings, split, frozenset(), OBSERVED_AT, typed)
+
+    moved = {p.name: (p.due, p.assigned) for p in after}
+    kept = {p.name: (p.due, p.assigned) for p in before}
+    assert moved[monday] == (WED, sunday)
+    assert {n: d for n, d in moved.items() if n != monday} == {
+        n: d for n, d in kept.items() if n != monday
+    }
+    assert moved[f"{row_.key}|due"] == (WED, None)
+
+
+def test_a_due_card_s_due_box_moves_its_due_date_and_claims() -> None:
+    """The probe of a due card joined to its assigned card, inverted: its due box moves the due
+    date, and the claims that asserted the date as read, and leaves the assigned date."""
+    readings = mon_wed_row()
+    read = one_piece(readings)
+    moved = one_piece(readings, {review.dates_key(read.name): {"due": THU.isoformat()}})
+
+    assert (read.due, read.assigned) == (WED, MON)
+    assert (moved.due, moved.assigned) == (THU, MON)
+    assert read.reading is not None
+    assert moved.reading is not None
+    assert WED.isoformat() in {c.asserted_value for c in read.reading.claims}
+    assert WED.isoformat() not in {c.asserted_value for c in moved.reading.claims}
+    assert THU.isoformat() in {c.asserted_value for c in moved.reading.claims}
+    assert moved.as_read is not None
+    assert (moved.as_read.due, moved.as_read.assigned) == (WED, MON)
+
+
+def test_an_assigned_date_can_be_set_where_none_was_read() -> None:
+    readings = [shot("wed", "Wednesday 10/14/2026", due_card(W1, top=200))]
+    read = one_piece(readings)
+    set_ = one_piece(readings, {review.dates_key(read.name): {"assigned": TUE.isoformat()}})
+
+    assert (read.due, read.assigned) == (WED, None)
+    assert (set_.due, set_.assigned) == (WED, TUE)
+
+
+def test_no_assigned_date_leaves_the_due_date_and_its_claims() -> None:
+    """ "No assigned date was given" sets the piece's assigned date to none and changes nothing
+    else: its due date, its claims and its words are as read."""
+    readings = mon_wed_row()
+    read = one_piece(readings)
+    none = one_piece(readings, {review.dates_key(read.name): {"assigned": None}})
+
+    assert none.assigned is None
+    assert (none.due, none.words, none.title, none.course) == (
+        read.due,
+        read.words,
+        read.title,
+        read.course,
+    )
+    assert none.reading is not None
+    assert read.reading is not None
+    assert none.reading.claims == read.reading.claims
+    assert none.reading.due_date == read.reading.due_date
+
+
+def test_the_kind_follows_the_corrected_title() -> None:
+    """The probe of a title edit: the reading's kind is the corrected title's suggestion, as a
+    new assignment saves it."""
+    readings = [shot("wed", "Wednesday 10/14/2026", due_card(W1, top=200))]
+    read = one_piece(readings)
+    slip = one_piece(readings, {read.key: {"title": "Permission slip"}})
+    back = one_piece(readings, {read.key: {"title": Q}})
+
+    assert read.reading is not None
+    assert slip.reading is not None
+    assert back.reading is not None
+    assert read.reading.kind == intake.kind_of(Q)
+    assert slip.reading.kind == intake.kind_of("Permission slip") == AssignmentKind.TASK
+    assert back.reading.kind == read.reading.kind
+
+
+def test_each_instruction_text_has_its_own_index_and_removing_one_keeps_another() -> None:
+    """A row's instruction texts are indexed once each, in reading order; removing text 0 keeps
+    text 1's correction, and an untouched text stays as read."""
+    readings = [
+        *mon_wed_row(assigned_card(W1), due_card(W2)),
+        shot("copy", "Monday 10/12/2026", assigned_card(W1)),
+    ]
+    read = one_piece(readings)
+    assert read.as_read is not None
+    assert read.as_read.texts == (W1, W2)
+    revised = "Study list two, revised."
+    both = one_piece(readings, {read.key: {"instruction:0": None, "instruction:1": revised}})
+    first = one_piece(readings, {read.key: {"instruction:0": None}})
+    second = one_piece(readings, {read.key: {"instruction:1": revised}})
+
+    assert both.words == frozenset({revised})
+    assert first.words == frozenset({W2})
+    assert second.words == frozenset({W1, revised})
+
+
+def test_an_old_instruction_correction_replaces_every_text() -> None:
+    """Saved progress of shape 3 keeps one instruction correction for the row, which replaces
+    every text, as it always has."""
+    readings = mon_wed_row()
+    read = one_piece(readings)
+    replaced = one_piece(readings, {read.key: {"instruction": W3}})
+
+    assert read.words == frozenset({W1, W2})
+    assert replaced.words == frozenset({W3})
+
+
+def wordless_due_card(top: int = 450) -> dict[str, object]:
+    """The due card read with no words, the reader unsure of its instructions."""
+    card = due_card("", top)
+    card.update(instruction=None, uncertain=[{"field": "instruction", "reason": "faint"}])
+    return card
+
+
+def test_words_typed_for_a_card_read_without_any_are_added_to_its_piece_once() -> None:
+    """A card read with no words whose instructions the reader wasn't sure of has a field of its
+    own, its screenshot and place: words typed there are added to its piece once, stripped,
+    beside the row's other words. A text index, the words cleared, a card read with words or
+    another screenshot's card adds nothing."""
+    readings = mon_wed_row(assigned_card(W1), wordless_due_card())
+    read = one_piece(readings)
+    assert read.as_read is not None
+    [card] = read.as_read.wordless
+    field = review.wordless_field(card)
+    added = one_piece(readings, {read.key: {field: f"  {W2}  "}})
+    twice = one_piece(readings, {read.key: {field: W1}})
+    elsewhere = review.wordless_field(CardPlace("0" * 64, card.place))
+    others: list[dict[str, str | None]] = [{"instruction:1": W2}, {field: None}, {elsewhere: W2}]
+    if card.place != 0:
+        others.append({review.wordless_field(CardPlace(card.sha256, 0)): W2})
+
+    assert read.as_read.texts == (W1,)
+    assert review.wordless_card(field) == card
+    assert added.words == frozenset({W1, W2})
+    assert added.reading is not None
+    assert [i.text for i in added.reading.instructions] == [W1, W2]
+    assert twice.words == frozenset({W1})
+    assert [one_piece(readings, {read.key: other}).words for other in others] == [
+        frozenset({W1})
+    ] * len(others)
+
+
+def test_already_saved_sees_the_corrected_none() -> None:
+    """With "No assigned date was given", "Already saved" matches a saved assignment with no
+    assigned date and not one that has one, as for a reading that had none."""
+    readings = mon_wed_row(assigned_card(W1))
+    read = one_piece(readings)
+    none = one_piece(readings, {review.dates_key(read.name): {"assigned": None}})
+    plain = row("assignment-vocab-quiz-p1", read.due, sorted(read.words))
+    dated = row("assignment-vocab-quiz-d1", read.due, sorted(read.words), assigned=MON)
+
+    def chosen(p: Piece, saved: SavedRow) -> dict[str, dict[str, object]]:
+        rows = rows_of(saved)
+        return review.defaults([p], groups_of(p), rows, [], {}, nothing_writes)
+
+    assert chosen(none, plain) == {none.name: {"existing": plain.assignment_id}}
+    assert chosen(read, plain) == {}
+    assert chosen(none, dated) == {}
+    assert chosen(read, dated) == {read.name: {"existing": dated.assignment_id}}
+
+
+def test_a_date_answer_not_offered_is_named_still_to_answer() -> None:
+    """The probe of a stale date answer: one whose date the piece's corrected dates don't offer
+    leaves its unit open and is named among the questions still open."""
+    p = piece("a", WED, [W1])
+    saved = row("assignment-vocab-quiz-r1", THU, [W1])
+    dest = ("id", saved.assignment_id)
+    subject = review.subject_for(dest, ["a"])
+    offered = one_piece_preview(p, saved, {("due", subject): WED.isoformat()})
+    stale = one_piece_preview(p, saved, {("due", subject): FRI.isoformat()})
+    found = review.validate(
+        [p],
+        {"a": {"existing": saved.assignment_id}},
+        rows_of(saved),
+        [],
+        {},
+        {("due", subject): FRI.isoformat()},
+    )
+
+    assert offered.open_questions == ()
+    assert stale.open_questions == ("due",)
+    assert not found.units[0].ready
+
+
+def test_a_new_slot_s_answers_are_named_by_its_slot_and_old_subjects_read_alike() -> None:
+    """A new slot's date and kind answers are named by the slot and its pieces, never its class
+    and title, and one stored under its class and title reads as the same subject."""
+    names = ["b", "a"]
+    dest = ("new", C, Q, "1")
+    other = ("new", C, T, "1")
+    old = json.dumps([list(dest), sorted(names)], separators=(",", ":"))
+    saved = review.subject_for(("id", "assignment-x"), names)
+
+    assert review.subject_for(dest, names) == review.subject_for(other, names)
+    assert review.subject_for(dest, names) == '[["new","1"],["a","b"]]'
+    assert review.subject_now(old) == review.subject_for(dest, names)
+    assert review.subject_now(saved) == saved
+    assert review.subject_now("not json") == "not json"
