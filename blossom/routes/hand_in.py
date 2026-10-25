@@ -841,13 +841,16 @@ def card_press(
 ) -> CardPress:
     """Read a turn-in press. Its context is read by her update's own rule, so it comes back
     where her update would. Her update's note and the update it showed come together or not
-    at all, and her choice only with them."""
+    at all, and her choice only with them, and only as Done or Not yet, the two values her
+    update's form writes."""
     origin = origin_of(request, fields)
     kept = InPlace() if origin.detail else InPlace.read(fields.get(IN_PLACE))
     named = fields.get(button, "")
     paired = ("note" in fields) == ("expected_report_id" in fields) and (
         "status" not in fields or "note" in fields
     )
+    chosen = fields.get("status")
+    paired = paired and (chosen is None or chosen in (DONE, NOT_YET))
     problem: str | None = None
     if not whole or not paired or named != named.strip() or (button == TURN_IN_UNDO and not named):
         problem = TURN_IN_BAD_FORM
