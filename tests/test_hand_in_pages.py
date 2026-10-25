@@ -2138,13 +2138,14 @@ def test_the_fold_says_turn_in_updates_are_there_only_while_a_card_in_it_can_off
 
 
 def test_the_work_token_kept_with_her_words_still_meets_a_change_made_elsewhere() -> None:
-    """Her words come back with the update her page had shown. A save from that form after
-    another device saved an update meets the change, and nothing of hers overwrites it."""
+    """Another device saves an update after her page was drawn and before she presses. Her
+    words come back with the update her page had shown, not the newer one, so a save from that
+    form meets the change and nothing of hers overwrites it."""
     with browser() as client:
         report(client, ESSAY_ID, "not_yet")
         _, card = week_card(client, change=ESSAY_ID)
-        kept = card_for(turn_in_press(client, card, status="done", note=WORDS).text, ESSAY_ID)
         report(client, ESSAY_ID, "done", note="from another device")
+        kept = card_for(turn_in_press(client, card, status="done", note=WORDS).text, ESSAY_ID)
         fields = form_fields(kept, f"{ACTIONS}/report")
         answer = client.post(
             f"{ACTIONS}/report",
