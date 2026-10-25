@@ -11,6 +11,7 @@ import asyncio
 import pathlib
 import re
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,7 @@ from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.noticing import planning_digest, read_everything, week_from
 from blossom.plans import DailyPlan
 from blossom.routes import hand_in as hand_in_routes
+from blossom.routes import student as student_routes
 from blossom.routes.hand_in import (
     CHANGED_WITHOUT_THE_PAGE,
     CHOOSE_A_STATE,
@@ -50,7 +52,8 @@ from blossom.routes.student import (
     STEP_NOT_SAVED,
     TURN_IN_MEANS,
 )
-from blossom.stores.project_state import ProjectStateStore
+from blossom.stores.project_state import CouldNotSave, ProjectStateStore
+from blossom.to_turn_in import TURNED_IN_EARLIER
 from tests.support import (
     DETAILS,
     ESSAY_ID,
@@ -1520,32 +1523,182 @@ def test_a_saved_press_whose_page_cannot_be_read_says_what_was_saved(
     assert len(events) == 1
 
 
-def test_the_turn_in_routes_build_their_pages_off_the_event_loop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Every page the two routes answer with is made where no event loop runs: a worker
-    thread, not the loop that serves every request."""
-    on_the_loop: list[bool] = []
-    made = hand_in_routes.card_page
+def on_the_loop_while(made: Callable[..., object], seen: list[str], name: str) -> object:
+    """``made``, noting under ``name`` whether an event loop runs where it is called."""
 
     def watched(*args: object, **kwargs: object) -> object:
         try:
             asyncio.get_running_loop()
-            on_the_loop.append(True)
+            seen.append(f"{name} on the loop")
         except RuntimeError:
-            on_the_loop.append(False)
-        return made(*args, **kwargs)  # type: ignore[arg-type]
+            seen.append(f"{name} off the loop")
+        return made(*args, **kwargs)
+
+    return watched
+
+
+def test_the_turn_in_routes_build_their_pages_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every page the two routes answer her with is made where no event loop runs, a worker
+    thread, and not on the loop that serves every request: a saved press with her words, a
+    press made twice, a press refused, a write the file refuses, and homework gone."""
+    seen: list[str] = []
+
+    def refuses(assignment_id: str, *_: object, **__: object) -> object:
+        raise CouldNotSave(assignment_id, sqlite3.OperationalError("disk I/O error"))
 
     with browser() as client:
         _, card = week_card(client)
-        monkeypatch.setattr(hand_in_routes, "card_page", watched)
+        monkeypatch.setattr(
+            hand_in_routes, "card_page", on_the_loop_while(hand_in_routes.card_page, seen, "page")
+        )
+        monkeypatch.setattr(
+            hand_in_routes, "gone_page", on_the_loop_while(student_routes.gone_page, seen, "gone")
+        )
         saved = turn_in_press(client, card, note=WORDS)
-        refused = turn_in_press(client, card, note=WORDS)
+        again = turn_in_press(client, card, note=WORDS)
         landed(client, save(client, opened(client), NEEDS_HAND_IN))
         changed = turn_in_press(client, card, note=WORDS)
+        store = state_of(client).project_state
+        with monkeypatch.context() as failing:
+            failing.setattr(store, "record_hand_in", refuses)
+            failed = turn_in_press(client, card, note=WORDS)
+        store._connection.execute("DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,))
+        store._connection.commit()
+        gone = turn_in_press(client, card, note=WORDS)
 
-    assert (saved.status_code, refused.status_code, changed.status_code) == (200, 200, 409)
-    assert on_the_loop == [False, False, False]
+    assert [saved.status_code, again.status_code, changed.status_code] == [200, 200, 409]
+    assert [failed.status_code, gone.status_code] == [500, 404]
+    assert seen == [
+        "page off the loop",
+        "page off the loop",
+        "page off the loop",
+        "page off the loop",
+        "gone off the loop",
+    ]
+
+
+def test_a_parents_refused_turn_in_page_is_built_off_the_event_loop(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[str] = []
+    page = student_routes.templates.TemplateResponse
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        monkeypatch.setattr(
+            student_routes.templates, "TemplateResponse", on_the_loop_while(page, seen, "page")
+        )
+        answers = [
+            client.post(
+                f"{ACTIONS}/{press}",
+                data={button: "", "note": WORDS, "expected_report_id": "", "week": FIXTURE_WEEK},
+                headers=PAGE_HEADERS,
+            )
+            for press, button in (("turned-in", "hand_in_head"), ("undo-turned-in", "undo_hand_in"))
+        ]
+
+    assert [answer.status_code for answer in answers] == [403, 403]
+    assert seen == ["page off the loop", "page off the loop"]
+
+
+def test_a_result_read_after_the_record_moved_on_is_said_as_earlier_with_no_undo() -> None:
+    """The address names the report the press made. Once a newer report follows it, the
+    card says it was done earlier, offers no Undo, and an Undo of that report from the page
+    shown before is refused and writes nothing."""
+    with browser() as client:
+        _, card = week_card(client)
+        where = turn_in_press(client, card).headers["location"]
+        shown = card_for(client.get(where).text, ESSAY_ID)
+        landed(client, save(client, opened(client), TURNED_IN, note="in the tray"))
+        later = card_for(client.get(where).text, ESSAY_ID)
+        before = chain(client)
+        undo = turn_in_press(client, shown, "undo_hand_in")
+        after = chain(client)
+
+    assert "You reported this turned in." in shown
+    assert TURNED_IN_EARLIER in later
+    assert "You reported this turned in." not in later
+    assert 'name="undo_hand_in"' not in later
+    assert ">Change</a>" in later
+    assert undo.status_code == 409
+    assert escape(HAND_IN_CANNOT_UNDO) in undo.text
+    assert after == before
+
+
+def test_a_later_visit_to_a_turned_in_card_offers_change_and_no_undo() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        landed(client, turn_in_press(client, card))
+        _, later = week_card(client)
+
+    assert "You reported it turned in on August 19." in later
+    assert ">Change</a>" in later
+    assert 'name="undo_hand_in"' not in later
+    assert ">I turned it in</button>" not in later
+
+
+def test_a_card_form_sent_to_the_hand_in_route_writes_nothing_and_keeps_no_note_of_hers() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        _, sent = pressed_form(card, "hand_in_head")
+        answer = client.post(
+            f"{ACTIONS}/hand-in", data={**sent, "note": WORDS}, headers=PAGE_HEADERS
+        )
+        events = chain(client)
+
+    assert answer.status_code == 422
+    assert escape(BAD_FORM) in answer.text
+    assert f">{escape(WORDS)}</textarea>" not in section(answer.text)
+    assert events == []
+
+
+def test_a_hand_in_form_sent_to_the_turn_in_route_writes_nothing() -> None:
+    with browser() as client:
+        page = opened(client, return_to="week", week=FIXTURE_WEEK)
+        fields = form_fields(page, f"{ACTIONS}/hand-in")
+        answer = client.post(
+            f"{ACTIONS}/turned-in",
+            data={**fields, "state": TURNED_IN, "next_action": "", "note": "in the blue tray"},
+            headers=PAGE_HEADERS,
+        )
+        events = chain(client)
+
+    assert answer.status_code == 422
+    assert escape(TURN_IN_BAD_FORM) in answer.text
+    assert "in the blue tray" not in answer.text
+    assert events == []
+
+
+@pytest.mark.parametrize("result", ["same", "undone"])
+def test_a_saved_press_whose_page_cannot_be_read_says_what_it_was(
+    result: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Already saved and undone are said as they are, beside the page that can't be shown;
+    neither says nothing was saved."""
+
+    def unreadable(*_: object, **__: object) -> None:
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    with browser() as client:
+        _, card = week_card(client)
+        shown = card_for(landed(client, turn_in_press(client, card)), ESSAY_ID)
+        monkeypatch.setattr(hand_in_routes, "card_page", unreadable)
+        if result == "same":
+            answer = turn_in_press(client, card, note=WORDS)
+        else:
+            answer = turn_in_press(client, shown, "undo_hand_in", note=WORDS)
+        events = chain(client)
+
+    said = HAND_IN_ALREADY_SAVED if result == "same" else HAND_IN_UNDONE
+    assert answer.status_code == 503
+    assert "<h1>Turning it in</h1>" in answer.text
+    assert escape(f"{said} Your week can't be shown right now.") in answer.text
+    assert f"readonly>{escape(WORDS)}</textarea>" in answer.text
+    assert "Nothing was saved" not in answer.text
+    assert len(events) == (1 if result == "same" else 2)
 
 
 def test_words_sent_with_undo_come_back_unsaved_and_undo_writes_once() -> None:
@@ -1705,3 +1858,30 @@ def test_each_hand_in_state_shows_its_controls_beside_any_work_state(kind: str, 
         assert pressed.status_code == 303
         assert "turn_in_said=turned_in" in pressed.headers["location"]
         assert len(events) == (1 if state is None else 2)
+
+
+@pytest.mark.parametrize("reader", ["a parent", "a record that cannot be read"])
+def test_a_card_with_nothing_to_press_keeps_the_way_to_turning_it_in(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Where the group offers no control, its line still ends in the link to the section on
+    the details, as it always has."""
+    link = (
+        f'<a class="assignment-link" href="{DETAILS}?return_to=week&amp;week={FIXTURE_WEEK}'
+        f'#turning-it-in" aria-label="Turning it in: {ESSAY_TITLE}, World History">'
+        "Turning it in</a>"
+    )
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        if reader == "a parent":
+            client.post("/sign-out")
+            client.post("/sign-in", data={"passphrase": THEIRS})
+        else:
+            landed(client, save(client, opened(client), TURNED_IN))
+            spoil(state_of(client).project_state, "hand_in_events", "state", "invalid-state")
+        _, card = week_card(client)
+
+    assert link in card
+    assert ">I turned it in</button>" not in card
+    assert ">Other turn-in options</a>" not in card
