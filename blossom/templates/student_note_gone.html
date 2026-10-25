@@ -14,6 +14,6 @@
   {% for link in ways_back %}
     <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
   {% endfor %}
-  <h1>Homework note</h1>
+  <h1>Home&shy;work note</h1>
   <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}{% if again is defined and again %} <a href="{{ again }}">Try again</a>{% endif %}</p>
 {% endblock %}

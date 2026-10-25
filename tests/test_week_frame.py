@@ -33,6 +33,7 @@ from tests.support import (
     fresh_signal_fields,
     outside_earlier_work,
     report,
+    shown_heading,
 )
 
 PINNED_TODAY = "2026-08-19"
@@ -103,7 +104,7 @@ def test_a_week_across_the_new_year_gives_both_years() -> None:
     _, shown = page(week="2026-12-30")
     line = " ".join(shown.split())
 
-    assert "<h1>Week of December 28</h1>" in shown
+    assert "<h1>Week of Decem\u00adber 28</h1>" in shown
     assert "December 28, 2026 to January 3, 2027" in line
 
 
@@ -156,7 +157,7 @@ def test_the_weeks_just_inside_the_edges_are_shown(given: str, heading: str) -> 
     status, shown = page(week=given)
 
     assert status == 200
-    assert f"<h1>{heading}</h1>" in shown
+    assert f"<h1>{shown_heading(heading)}</h1>" in shown
 
 
 def test_work_assigned_this_week_is_due_later_only_when_it_is(tmp_path: pathlib.Path) -> None:

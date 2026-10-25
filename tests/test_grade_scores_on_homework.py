@@ -6559,7 +6559,7 @@ def test_a_matched_result_s_page_draws_its_card_and_a_form_for_each_decision_on_
     assert card_of(page, log).replace("h2 ", "h3 ").replace("</h2>", "</h3>") == card_of(
         details, log
     ).replace(ask, "")
-    assert '<h1 id="homework" tabindex="-1">Homework for this result</h1>' in page
+    assert '<h1 id="homework" tabindex="-1">Home&shy;work for this result</h1>' in page
     assert re.search(
         r'<p class="course">School result</p>\s*<section class="panel grade-card">', page
     )
@@ -7757,7 +7757,7 @@ def test_each_decision_from_each_prior_state_writes_its_row_and_lands_on_the_hea
         (303, at, [(LOG_ID, "rejected")]),
     ]
     assert unchanged == others
-    assert '<h1 id="homework" tabindex="-1">Homework for this result</h1>' in landed.text
+    assert '<h1 id="homework" tabindex="-1">Home&shy;work for this result</h1>' in landed.text
     assert "autofocus" not in landed.text
 
 
