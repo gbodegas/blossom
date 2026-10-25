@@ -59,7 +59,7 @@ from blossom.screenshot_posts import (
     shape_four,
     typed_back,
 )
-from blossom.screenshot_reading import read_screenshots
+from blossom.screenshot_reading import ReadOutcome, read_screenshots
 from blossom.screenshot_review import Corrections, change_told, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
@@ -432,8 +432,17 @@ def issued_in_time(state: ApplicationState, issued: str | None) -> bool | None:
     return made <= now and now - made < DRAFT_LIFETIME
 
 
+def upload_refusal(request: Request, state: ApplicationState, error: Exception) -> Response:
+    """A store's refusal of an upload: a busy store began nothing, so the screenshots weren't
+    added and sending them again is what works; any other refusal as a press's."""
+    if isinstance(error, StoreBusy | WriterBusy):
+        return said_page(request, marks_of(state), SAID["busy"], 503)
+    return store_refusal(request, state, error)
+
+
 def store_refusal(request: Request, state: ApplicationState, error: Exception) -> Response:
-    """A store's refusal of an upload or a press, as its page says it."""
+    """A store's refusal of a press on a review, as its page says it. A busy store began
+    nothing, so the press changed nothing."""
     marks = marks_of(state)
     if isinstance(error, TooManyImages):
         return said_page(request, marks, too_many(error.free), 409)
@@ -444,7 +453,7 @@ def store_refusal(request: Request, state: ApplicationState, error: Exception) -
     if isinstance(error, DraftFrozen):
         return said_page(request, marks, SAID["frozen"], 409)
     if isinstance(error, StoreBusy | WriterBusy):
-        return said_page(request, marks, SAID["busy"], 503)
+        return said_page(request, marks, AFTER_SAID["busy"], 503)
     return said_page(request, marks, SAID["absent"], 404)
 
 
@@ -462,6 +471,14 @@ TYPED_SAID: Final = (
     "What you typed, as you sent it. This review can't keep it; copy anything you still need."
 )
 """What the boxes of typing given back say first."""
+UNSHOWN_TYPED: Final = (
+    "What you typed, as you sent it. Copy anything you still need before leaving this page."
+)
+"""What the boxes of typing given back say first where the review is open but can't be read."""
+REVIEW_NOT_SHOWN: Final = "This review can't be shown right now."
+"""What a press's page says after its own lines when the store refuses to read the review."""
+REVIEW_UNAVAILABLE: Final = "This review can't be shown right now. Try again in a moment."
+"""What the review's address says while the store refuses to read it."""
 
 
 async def gone_with_typing(
@@ -494,6 +511,32 @@ async def typing_of(request: Request) -> list[tuple[str, str]]:
         return []
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     return [(TYPED_LABELS[field.partition(":")[0]], text) for field, text in typed_back(items)]
+
+
+async def unshown_with_typing(
+    request: Request,
+    state: ApplicationState,
+    draft_id: str,
+    said: Sequence[str],
+    status: int,
+) -> Response:
+    """A press whose review the store refuses to read: the press's own lines, which say what it
+    kept or failed to keep, then that the review can't be shown, every correction it typed
+    given back to copy, and the way back to the review. It reads no store and offers nothing
+    that repeats the press; its status is the press's own."""
+    return templates.TemplateResponse(
+        request,
+        "import_said.html",
+        {
+            "said": [*(UNSHOWN_SAID.get(line, line) for line in said), REVIEW_NOT_SHOWN],
+            "typed": await typing_of(request),
+            "typed_said": UNSHOWN_TYPED,
+            "review": f"{PREFIX}/{draft_id}",
+            "marks": marks_of(state),
+            "page": "parent",
+        },
+        status_code=status,
+    )
 
 
 def gone_by(error: Exception) -> str:
@@ -560,7 +603,9 @@ async def snapshot_keeping_typing(
     shown: for a review that expired or is gone, what the press did and its typing. After a
     save that committed (``done``, what it saved), a review the store refuses to read answers
     with what it saved and the press's typing (``saved_unread``), never that nothing was
-    saved; one known to have expired, or to be gone, says so beneath what it saved."""
+    saved; one known to have expired, or to be gone, says so beneath what it saved. Any other
+    press the store refuses to read for answers with its own lines and status
+    (``unshown_with_typing``)."""
     student = state.project_state.student_id()
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
@@ -568,9 +613,11 @@ async def snapshot_keeping_typing(
         if done:
             return await saved_unread(request, state, done, [*said, SAID[gone_by(error)]])
         return await refused_keeping_typing(request, state, error, said, status)
-    except STORE_REFUSALS as error:
+    except (StoreBusy, WriterBusy):
         if done:
             return await saved_unread(request, state, done, said)
+        return await unshown_with_typing(request, state, draft_id, said, status or 503)
+    except STORE_REFUSALS as error:
         return await refused_keeping_typing(request, state, error, said, status)
     if snapshot.closed_at is not None:
         return said_page(request, marks_of(state), SAID["closed"], 200)
@@ -614,7 +661,7 @@ async def first_upload(request: Request, state: State) -> Response:
             images=[image for _, image in prepared.images],
         )
     except STORE_REFUSALS as error:
-        return store_refusal(request, state, error)
+        return upload_refusal(request, state, error)
     if added is None:
         lines = [image_refusal(place + 1, kind) for place, kind in prepared.refused]
         return said_page(request, marks_of(state), "Nothing was added.", 422, *lines)
@@ -651,7 +698,7 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
         if snapshot.frozen:
             raise DraftFrozen
     except STORE_REFUSALS as error:
-        return store_refusal(request, state, error)
+        return upload_refusal(request, state, error)
     try:
         upload = await body_of(request, {})
     except UploadRefused as refusal:
@@ -665,7 +712,7 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
             [image for _, image in prepared.images],
         )
     except STORE_REFUSALS as error:
-        return store_refusal(request, state, error)
+        return upload_refusal(request, state, error)
     places = [place for place, _ in prepared.images]
     told = await upload_told(state, added)
     return to_review(state, draft_id, upload_said(added, places, prepared.refused), told)
@@ -948,14 +995,20 @@ def review_page(
 
 
 async def snapshot_or_page(
-    request: Request, state: ApplicationState, draft_id: str
+    request: Request, state: ApplicationState, draft_id: str, *, address: bool = False
 ) -> DraftSnapshot | Response:
-    """The review as one read sees it, or the page that says why it can't be shown."""
+    """The review as one read sees it, or the page that says why it can't be shown. A busy
+    store refuses the review's own address (``address``) with a page saying so, 503, and a
+    press with the page saying it changed nothing."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     student = state.project_state.student_id()
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (StoreBusy, WriterBusy) as error:
+        if address:
+            return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
+        return store_refusal(request, state, error)
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
     if snapshot.closed_at is not None:
@@ -966,7 +1019,7 @@ async def snapshot_or_page(
 @router.get("/{draft_id}")
 async def review(request: Request, draft_id: str, state: State) -> Response:
     """The review: its images, how each stands, and the Read press for those not read."""
-    found = await snapshot_or_page(request, state, draft_id)
+    found = await snapshot_or_page(request, state, draft_id, address=True)
     if isinstance(found, Response):
         return found
     note = note_read(state.result_key, draft_id, request.cookies.get(NOTE_COOKIE))
@@ -1017,9 +1070,14 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         return review_page(request, state, found, [SAID["read_busy"]], 503)
     except (DraftClosed, DraftExpired, DraftFrozen, DraftNotFound) as error:
         return store_refusal(request, state, error)
-    after = await snapshot_or_page(request, state, draft_id)
-    if isinstance(after, Response):
-        return after
+    try:
+        after = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (StoreBusy, WriterBusy):
+        return to_review(state, draft_id, kept_unread(found, outcome))
+    except STORE_REFUSALS as error:
+        return store_refusal(request, state, error)
+    if after.closed_at is not None:
+        return said_page(request, marks_of(state), SAID["closed"], 200)
     said = await change_lines(state, draft_id, before)
     told: list[str] = []
     if outcome is not None:
@@ -1033,6 +1091,16 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         told = read_said(after, state.real_clock.now())
     rows = await rows_of(request, state, after, said)
     return review_page(request, state, after, said, rows=rows, told=told)
+
+
+def kept_unread(found: DraftSnapshot, outcome: ReadOutcome | None) -> list[str]:
+    """What a Read press whose readings are stored says when the review can't be read after
+    it, from what is already at hand: each reading the busy file couldn't keep, by the image's
+    place in the review as the press found it. The review shows the readings once read."""
+    if outcome is None:
+        return []
+    places = {image.image_id: index + 1 for index, image in enumerate(found.images)}
+    return [busy_reading(places[image_id]) for image_id in outcome.busy if image_id in places]
 
 
 def read_said(snapshot: DraftSnapshot, now: datetime) -> list[str]:
@@ -1065,12 +1133,14 @@ def not_a_list_line(count: int) -> str:
 # ------------------------------------------------------------------ the review's presses
 
 CHANGED_IN_ANOTHER_TAB: Final = "This review changed in another tab. Check the rows again."
+OUT_OF_DATE: Final = "This page is out of date. Check the review before trying again."
+"""What Keep these answers, Save selected homework and Save review for later say when the
+review moved on since the page; this press kept and saved nothing."""
 PRESS_SAID: Final = {
     "kept": (
         "Your answers are kept. Corrections you typed aren't; use Save review for later to "
         "keep those."
     ),
-    "keep_stale": "Your answers on that page weren't kept.",
     "keep_invalid": (
         "Some of these questions changed before you answered, so none of these answers was "
         "kept. Answer them again."
@@ -1081,7 +1151,6 @@ PRESS_SAID: Final = {
         "and press again."
     ),
     "nothing_kept": "Nothing was kept or saved.",
-    "save_stale": "Your answers on that page weren't kept, and nothing was saved.",
     "save_invalid": (
         "Some of these questions changed before you answered, so nothing was kept or saved. "
         "Answer them again."
@@ -1089,16 +1158,18 @@ PRESS_SAID: Final = {
     "save_failed": "Your answers couldn't be kept, and nothing was saved. Try again.",
     "later": "Your answers are kept, and your corrections are saved for later.",
     "later_behind": (
-        "Another tab saved this review for later since this page opened. Your typing is still "
-        "here; nothing was saved."
+        "This review was saved for later after this page opened, so your corrections weren't "
+        "saved for later by this attempt. Your typing is still here."
     ),
-    "later_stale": "Nothing was kept.",
     "later_invalid": (
         "Some of these questions changed before you answered, so nothing was kept or saved for "
         "later. Answer them again."
     ),
     "later_failed": "Your answers couldn't be kept, and nothing was saved for later. Try again.",
     "answers_kept": "Your answers are kept.",
+    "kept_then_ended": (
+        "Your answers were kept, but this review ended before the homework was saved."
+    ),
     "none_chosen": "Choose at least one assignment to save.",
     "left_open": "Your answers on the rows left open are kept.",
     "already": "Already saved from this review.",
@@ -1121,6 +1192,17 @@ PRESS_SAID: Final = {
     ),
 }
 """What the review's presses say, all in one place."""
+UNSHOWN_SAID: Final = {
+    PRESS_SAID["changed"]: (
+        "Saving an assignment you ticked would now do something different. Check it in the "
+        "review and save again."
+    ),
+    PRESS_SAID["changed_by_answers"]: (
+        "Your answers are kept. They change what saving does, so nothing was saved yet. Check "
+        "the effects in the review, then save."
+    ),
+}
+"""The press lines that point at the review's rows, as a page that can't show them says them."""
 NOT_SAVED_BECAUSE: Final = {
     "gate": "a screenshot isn't read yet",
     "open": "an assignment you ticked still has a question to answer",
@@ -1210,6 +1292,10 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     student = state.project_state.student_id()
     try:
         found = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (StoreBusy, WriterBusy):
+        return await replayed(request, state, draft_id) or await unshown_with_typing(
+            request, state, draft_id, [AFTER_SAID["busy"]], 503
+        )
     except STORE_REFUSALS as error:
         return await replayed(request, state, draft_id) or await refused_keeping_typing(
             request, state, error
@@ -1238,8 +1324,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             withdrawn=list(post.withdrawn),
         )
     except ReviewChanged:
-        said = [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["keep_stale"]]
-        return await with_typing(request, state, draft_id, post, said, 409)
+        return await with_typing(request, state, draft_id, post, [OUT_OF_DATE], 409)
     except (StoreBusy, WriterBusy):
         return await with_typing(request, state, draft_id, post, [PRESS_SAID["keep_failed"]], 503)
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
@@ -1294,8 +1379,7 @@ async def later_press(
             withdrawn=list(post.withdrawn),
         )
     except ReviewChanged:
-        said = [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["later_stale"]]
-        return await with_typing(request, state, found.draft_id, post, said, 409)
+        return await with_typing(request, state, found.draft_id, post, [OUT_OF_DATE], 409)
     except (StoreBusy, WriterBusy):
         said = [PRESS_SAID["later_failed"]]
         return await with_typing(request, state, found.draft_id, post, said, 503)
@@ -1335,8 +1419,7 @@ async def save_press(
             withdrawn=list(post.withdrawn),
         )
     except ReviewChanged:
-        said = [CHANGED_IN_ANOTHER_TAB, PRESS_SAID["save_stale"]]
-        return await with_typing(request, state, draft_id, post, said, 409)
+        return await with_typing(request, state, draft_id, post, [OUT_OF_DATE], 409)
     except (StoreBusy, WriterBusy):
         return await with_typing(request, state, draft_id, post, [PRESS_SAID["save_failed"]], 503)
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
@@ -1393,7 +1476,8 @@ async def outcome_page(
     committed."""
     if isinstance(outcome, NotSaved):
         if outcome.reason in ("absent", "expired"):
-            return await gone_with_typing(request, state, outcome.reason, [], 409)
+            ended = [PRESS_SAID["kept_then_ended"]] if answered else []
+            return await gone_with_typing(request, state, outcome.reason, ended, 409)
         if outcome.reason == "closed":
             return said_page(request, marks_of(state), SAID[outcome.reason], 409)
         status = 503 if outcome.reason in ("busy", "failed") else 409
@@ -1401,7 +1485,8 @@ async def outcome_page(
             request, state, draft_id, post, not_saved(outcome, answered), status
         )
     if isinstance(outcome, AlreadySaved):
-        return await with_typing(request, state, draft_id, post, [PRESS_SAID["already"]], 200)
+        said = [*([PRESS_SAID["answers_kept"]] if answered else []), PRESS_SAID["already"]]
+        return await with_typing(request, state, draft_id, post, said, 200)
     if isinstance(outcome, Replayed):
         return await saved_page(request, state, draft_id, outcome.acceptance_id, [], post)
     done = [counted(*outcome.counts)]
