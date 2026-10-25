@@ -1,17 +1,30 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""Her hand-in update, from an assignment's details: two routes beside her work update's.
+"""Her account of turning work in: the routes that save it, take it back, and list it.
 
 Done means she finished her part and turns nothing in, so what she says about
-delivery has forms of its own. They are on the assignment's details and
-nowhere else, so every result is shown there, at the section the forms sit
-in, with the way back the details carried. The routes follow her work
-update's: who may save is decided first, from the sign-in and never from the
-form, and a parent's press is answered on her current week before the form
-is read; for anyone else the form is read whole, the save is one operation
-under the decision lock, a success is a redirect to a page that says what
-stands, and a refusal is the same section with what she chose and wrote
-still in it. A parent reads the section and is told the update is hers to
+delivery has routes of its own, apart from her work update's:
+
+- ``/hand-in`` and ``/undo-hand-in`` take the form in Turning it in on an
+  assignment's details, whose results are shown in that section with the way
+  back the details carried, and the one press and its Undo on her To turn in
+  list, on its own page or her week, whose results are shown on the list where
+  she pressed;
+- ``/turned-in`` and ``/undo-turned-in`` take I turned it in and its Undo from
+  a card or a row of her week or from the details' Turning it in, whose
+  results are shown beside that assignment where she pressed, with her
+  update's words kept unsaved when the press sent them;
+- ``/to-turn-in`` is her To turn in list on a page of its own.
+
+Who may save is decided first, from the sign-in and never from the form. A
+parent's press of ``/hand-in`` or ``/undo-hand-in`` is answered on her current
+week before the form is read; a parent's press of ``/turned-in`` or
+``/undo-turned-in`` is answered on the page that reads no store, with a copy of
+her note from that request and nothing else. For her the form is read whole,
+the save is one operation under the decision lock, a success is a redirect to
+a page that says what stands, or that page itself when her words come back
+with it, and a refusal is said where she pressed with what she chose and wrote
+still there. A parent reads every section and is told the update is hers to
 make. Nothing here asks a model, sends a reminder, or tells the school
 anything, and a plan never reads what is saved here.
 """
