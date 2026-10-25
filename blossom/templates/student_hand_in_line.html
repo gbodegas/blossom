@@ -9,7 +9,9 @@
   the result of a press made here, for the very report that press made, while
   it stands. Having said nothing, saying she is not sure, and a record that
   cannot be read are three different lines, and an unreadable record offers
-  nothing to press. A parent reads the lines and meets no control.
+  nothing to press. A parent reads the lines and meets no control. Where the
+  group offers nothing to press, its line ends in the way to the section on
+  the details, Turning it in.
 
   The group's lines sit under the same rule and in the same block as her
   work's, so the two groups under their headings look alike.
@@ -36,7 +38,7 @@
   {% if shown and shown.problem %}
     <p class="problem" role="alert" id="hand-in-problem-{{ key }}" tabindex="-1" autofocus>{{ shown.problem }}</p>
   {% endif %}
-  <p class="note">{% if hi.unavailable %}The hand-in record cannot be read right now.{% elif hi.state is none %}Hand-in status not recorded.{% elif hi.state == "unknown" %}Hand-in status: Not sure. {{ who }} reported this on {{ day(hi.reported_on) }}.{% elif hi.state == "needs_hand_in" %}{{ who }} reported Still to turn in on {{ day(hi.reported_on) }}. Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}{% elif hi.state == "turned_in" %}{{ who }} reported it turned in on {{ day(hi.reported_on) }}.{% else %}{{ who }} reported nothing to turn in on {{ day(hi.reported_on) }}.{% endif %}</p>
+  <p class="note">{% if hi.unavailable %}The hand-in record cannot be read right now.{% elif hi.state is none %}Hand-in status not recorded.{% elif hi.state == "unknown" %}Hand-in status: Not sure. {{ who }} reported this on {{ day(hi.reported_on) }}.{% elif hi.state == "needs_hand_in" %}{{ who }} reported Still to turn in on {{ day(hi.reported_on) }}. Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}{% elif hi.state == "turned_in" %}{{ who }} reported it turned in on {{ day(hi.reported_on) }}.{% else %}{{ who }} reported nothing to turn in on {{ day(hi.reported_on) }}.{% endif %}{% if not (ctx.can_update and not hi.unavailable) %} <a class="assignment-link" href="{{ details_href(assignment.assignment_id, fragment="turning-it-in", return_to="week", week=view.week.start.isoformat()) }}" aria-label="Turning it in: {{ assignment.title }}, {{ assignment.course }}">Turning it in</a>{% endif %}</p>
   {% if ctx.can_update and not hi.unavailable %}
     {% if hi.state in (none, "unknown", "needs_hand_in") %}
       <div class="actions">
