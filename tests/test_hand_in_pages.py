@@ -1621,3 +1621,27 @@ def test_a_parent_at_a_result_address_reads_what_stands_and_no_result(
     assert "You reported this turned in." not in details
     assert "<button" not in section(details)
     assert 'name="undo_hand_in"' not in read
+
+
+@pytest.mark.parametrize("token", [" report-padded ", "r" * 201])
+def test_a_work_token_no_page_writes_comes_back_blank_and_meets_a_standing_update(
+    token: str,
+) -> None:
+    """A blank token is safe: the next save meets any update that stands as made elsewhere."""
+    with browser() as client:
+        report(client, ESSAY_ID, "done")
+        _, card = week_card(client, change=ESSAY_ID)
+        answer = turn_in_press(client, card, note=WORDS, expected_report_id=token)
+        shown = card_for(answer.text, ESSAY_ID)
+        fields = dict(form_fields(shown, f"{ACTIONS}/report"))
+        save_again = client.post(
+            f"{ACTIONS}/report",
+            data={**fields, "status": "not_yet", "note": WORDS},
+            headers=PAGE_HEADERS,
+        )
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+
+    assert answer.status_code == 200
+    assert fields["expected_report_id"] == ""
+    assert save_again.status_code == 409
+    assert [report.status for report in reports] == ["done"]
