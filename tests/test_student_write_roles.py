@@ -2,9 +2,10 @@
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her writes are hers: a parent's press on any of them is refused before anything is read.
 
-Thirteen presses under her tree change her record: her update and its Undo, her hand-in
-update and its Undo, a new note, a note's edit, archive, restore and delete, and a note's
-details, adding it to homework, linking it to homework found and unlinking it. A parent
+Fifteen presses under her tree change her record: her update and its Undo, her hand-in
+update and its Undo, I turned it in and its Undo, a new note, a note's edit, archive,
+restore and delete, and a note's details, adding it to homework, linking it to homework
+found and unlinking it. A parent
 signed in is answered 403 from the sign-in and the route alone: no form is read, no id the
 press names is looked up, the decision lock is not taken, and nothing is written. A
 parent's update, hand-in or Undo lands on her current week, whatever page the form came
@@ -100,6 +101,7 @@ WEEK_TOP: Final = (
 """A parent's refused update, hand-in or Undo on her week: no card holds it, so it is the
 top line's, the one alert and the one focus."""
 UNSAVED: Final = '<h2 class="update-heading">Your unsaved details</h2>'
+UNSAVED_UPDATE: Final = '<h2 class="update-heading">Your unsaved update</h2>'
 NOT_SAVED_SENTENCE: Final = "These details were not saved. Everything typed is here to copy."
 NOWHERE: Final = "assignment-nowhere"
 NOT_A_NOTE: Final = "not-a-note"
@@ -110,7 +112,13 @@ BROKEN_MULTIPART: Final = (
 )
 LIMIT: Final = 16 * 1024
 
-ASSIGNMENT_PRESSES: Final = ("report", "undo-report", "hand-in", "undo-hand-in")
+TURN_IN_PRESSES: Final = ("turned-in", "undo-turned-in")
+"""Her I turned it in and its Undo, from a card or the details. A parent's press of either
+keeps a bounded copy of her update's note and choice, as the four note presses keep theirs."""
+ASSIGNMENT_PRESSES: Final = ("report", "undo-report", "hand-in", "undo-hand-in", *TURN_IN_PRESSES)
+WEEK_LANDINGS: Final = ASSIGNMENT_PRESSES[:4]
+"""The presses a parent's refusal answers on her current week. The two turn-in presses answer
+on the page that reads no store, with the copy."""
 NOTE_CHANGES: Final = ("edit", "archive", "restore", "delete")
 NOTE_PRESSES: Final = ("details", "add", "link", "unlink")
 """The four presses that keep a bounded copy of what the refused request typed."""
@@ -120,12 +128,16 @@ ORIGINS: Final[dict[str, tuple[str, ...]]] = {
     "undo-report": ("week", "details"),
     "hand-in": ("details", "list", "week list"),
     "undo-hand-in": ("details", "list", "week list"),
+    "turned-in": ("week", "details"),
+    "undo-turned-in": ("week", "details"),
 }
 SHOWN: Final[dict[str, str]] = {
     "report": "note",
     "undo-report": "report_id",
     "hand-in": "note",
     "undo-hand-in": "hand_in_id",
+    "turned-in": "note",
+    "undo-turned-in": "note",
     "create": "text",
     "edit": "text",
     "archive": "revision",
@@ -309,7 +321,7 @@ def watched(client: TestClient) -> Iterator[Watch]:
             patch.setattr(
                 module, "fields_of", recorded(module.fields_of, f"{name}.fields_of", watch)
             )
-        for module in (note_details, note_links):
+        for module in (note_details, note_links, hand_in_routes):
             kept = getattr(module, "kept_fields_of", None)
             if kept is not None:
                 patch.setattr(module, "kept_fields_of", recorded(kept, "kept_fields_of", watch))
@@ -426,6 +438,16 @@ def valid_form(press: str, origin: str, seeded: Seeded) -> list[tuple[str, str]]
             ]
         case "undo-hand-in", _:
             fields = [("hand_in_id", seeded.hand_in)]
+        case "turned-in" | "undo-turned-in", _:
+            button = "hand_in_head" if press == "turned-in" else "undo_hand_in"
+            words = [
+                (button, seeded.hand_in),
+                ("note", "Wren's <b>update</b>"),
+                ("expected_report_id", seeded.report),
+            ]
+            if origin == "week":
+                return [*words, ("week", FIXTURE_WEEK), ("in_place", "")]
+            return [*words, ("report_view", "detail"), *week_return]
         case "create", _:
             return [
                 ("capture_id", new_capture_id()),
@@ -492,7 +514,10 @@ def sent(client: TestClient, path: str, body: bytes, kind: str) -> Answer:
 
 def copy_made(press: str, body: str) -> bool:
     """Whether a refused note press is to show a copy: only a readable form within 16 KiB."""
-    return press in NOTE_PRESSES and body in ("her stale form", "a field twice")
+    return press in (*NOTE_PRESSES, *TURN_IN_PRESSES) and body in (
+        "her stale form",
+        "a field twice",
+    )
 
 
 def check_refused(
@@ -504,6 +529,18 @@ def check_refused(
     page = main_of(answer.text)
     refusal = NOT_A_PARENTS if family else NOT_HERS
     assert str(escape(refusal)) in page
+    if press in TURN_IN_PRESSES:
+        assert "<h1>Update not saved</h1>" in page
+        assert page.count(" autofocus") == 1
+        assert "<form" not in page
+        assert "<button" not in page
+        assert "Back to her week" in page
+        assert (UNSAVED_UPDATE in page) is (typed is not None)
+        if typed is not None:
+            assert str(escape(typed)) in page
+            assert UNSAVED not in page
+        assert "second" not in page
+        return
     if press in ASSIGNMENT_PRESSES:
         assert "<h1>Student week</h1>" in page
         assert WEEK_TOP in page
@@ -547,11 +584,12 @@ def check_refused(
 def check_untouched(watch: Watch, press: str, subject: str) -> None:
     """No form parsed, no body buffered, no id looked up, no lock taken; the four note presses
     read at most the bounded copy, and the note presses run no statement at all."""
-    assert watch.read == (["kept_fields_of"] if press in NOTE_PRESSES else []), watch.read
+    copying = press in (*NOTE_PRESSES, *TURN_IN_PRESSES)
+    assert watch.read == (["kept_fields_of"] if copying else []), watch.read
     assert watch.looked_up == []
     assert watch.locked == 0
     assert all(length <= LIMIT for length in watch.copied), watch.copied
-    if press in ASSIGNMENT_PRESSES:
+    if press in ASSIGNMENT_PRESSES and press not in TURN_IN_PRESSES:
         assert [line for line in watch.statements if f"= '{subject}'" in line] == []
         if subject == NOWHERE:
             assert [line for line in watch.statements if subject in line] == []
@@ -618,7 +656,7 @@ def test_a_parent_is_answered_at_once_while_a_decision_holds_the_lock(
     tmp_path: pathlib.Path,
 ) -> None:
     """Her presses wait for a decision to land; a parent's refusal waits for nothing and
-    never takes the lock, on all thirteen presses."""
+    never takes the lock, on all fifteen presses."""
     with household(tmp_path, "parent") as client, ThreadPoolExecutor(max_workers=13) as pool:
         seeded = seed(client)
         state = state_of(client)
@@ -1536,7 +1574,10 @@ ELSEWHERE_RETURNS: Final[dict[str, list[tuple[str, str]]]] = {
 }
 
 
-@pytest.mark.parametrize("press", ASSIGNMENT_PRESSES)
+# The two turn-in presses answer a parent on the page that reads no store, with the copy of
+# her update's words, and never on her week: that same refusal is checked for them in the
+# matrix above and in test_a_parents_turn_in_press_shows_her_words_read_only_and_reads_no_store.
+@pytest.mark.parametrize("press", WEEK_LANDINGS)
 @pytest.mark.parametrize("kind", ["known", "unknown", "gone"])
 @pytest.mark.parametrize("pointing", list(ELSEWHERE_RETURNS))
 def test_a_parents_update_hand_in_or_undo_lands_on_her_current_week(
@@ -1814,7 +1855,7 @@ def test_a_press_canceled_while_its_copy_is_read_stays_canceled(
 
 # ------------------------------------------- a parent's press of I turned it in or its Undo
 
-TURN_IN_PRESSES: Final = {"turned-in": "hand_in_head", "undo-turned-in": "undo_hand_in"}
+TURN_IN_BUTTONS: Final = {"turned-in": "hand_in_head", "undo-turned-in": "undo_hand_in"}
 """The two presses about turning it in from a card, and the field each one's button sends."""
 HER_WORDS: Final = "Wren's <b>reading</b> notes"
 
@@ -1823,7 +1864,7 @@ def turn_in_body(press: str, note: str = HER_WORDS) -> bytes:
     """A turn-in press as a card's form sends it when its button joins her update's form."""
     return urlencode(
         {
-            TURN_IN_PRESSES[press]: "",
+            TURN_IN_BUTTONS[press]: "",
             "note": note,
             "expected_report_id": "",
             "status": "done",
@@ -1859,8 +1900,9 @@ def test_a_parents_turn_in_press_shows_her_words_read_only_and_reads_no_store(
     assert answer.status_code == 403
     assert str(escape(NOT_HERS)) in page
     assert page.count(" autofocus") == 1
-    assert UNSAVED in page
-    assert NOT_SAVED_SENTENCE in page
+    assert UNSAVED_UPDATE in page
+    assert UNSAVED not in page
+    assert NOT_SAVED_SENTENCE not in page
     assert f"readonly>{escape(HER_WORDS)}</textarea>" in page
     assert "<b>reading</b>" not in page
     assert "Your choice: Done." in page
@@ -1898,7 +1940,7 @@ def test_a_parents_turn_in_press_shows_nothing_of_a_body_the_copy_refuses(
 
     assert answer.status_code == 403
     assert str(escape(NOT_HERS)) in page
-    assert UNSAVED not in page
+    assert UNSAVED_UPDATE not in page
     assert "Wren" not in page
     assert "<form" not in page
     assert watch.statements == []

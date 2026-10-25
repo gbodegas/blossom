@@ -1645,3 +1645,63 @@ def test_a_work_token_no_page_writes_comes_back_blank_and_meets_a_standing_updat
     assert fields["expected_report_id"] == ""
     assert save_again.status_code == 409
     assert [report.status for report in reports] == ["done"]
+
+
+HAND_IN_KINDS: dict[str, HandInState | None] = {
+    "no report": None,
+    "not sure": "unknown",
+    "still to turn in": NEEDS_HAND_IN,
+    "turned in with a note": TURNED_IN,
+    "nothing to turn in": "not_required",
+    "a hand-in record that cannot be read": TURNED_IN,
+}
+
+
+@pytest.mark.parametrize("work", ["none", "done", "not_yet", "unreadable"])
+@pytest.mark.parametrize("kind", HAND_IN_KINDS)
+def test_each_hand_in_state_shows_its_controls_beside_any_work_state(kind: str, work: str) -> None:
+    """The press is offered over no report, Not sure and Still to turn in, whatever her work
+    says, an unreadable work record included; Change otherwise; nothing to press over a
+    hand-in record that cannot be read. With no work form to join, beside a work record that
+    cannot be read, the press is a form of its own and there is nothing typed to send."""
+    state = HAND_IN_KINDS[kind]
+    with browser() as client:
+        store = state_of(client).project_state
+        if work != "none":
+            report(client, ESSAY_ID, "done" if work == "unreadable" else work)
+        if work == "unreadable":
+            spoil(store, "student_reports", "status", "invalid-status")
+        if state is not None:
+            note = "in the tray" if kind == "turned in with a note" else None
+            store.record_hand_in(
+                ESSAY_ID,
+                state,
+                None,
+                note,
+                expected_head=None,
+                now=datetime(2026, 8, 19, 21, 0, tzinfo=UTC),
+                today=PLAN_DATE,
+            )
+        if kind == "a hand-in record that cannot be read":
+            spoil(store, "hand_in_events", "state", "invalid-state")
+        _, card = week_card(client)
+        offered = ">I turned it in</button>" in card
+        pressed = turn_in_press(client, card) if offered else None
+        events = [] if pressed is None else chain(client)
+
+    assert offered is (kind in ("no report", "not sure", "still to turn in"))
+    assert (f'aria-label="Change your hand-in update for {ESSAY_TITLE}' in card) is (
+        kind in ("turned in with a note", "nothing to turn in")
+    )
+    if kind == "a hand-in record that cannot be read":
+        assert "The hand-in record cannot be read right now." in card
+        assert NOT_RECORDED not in card
+    if work == "unreadable":
+        assert f'id="update-form-{ESSAY_ID}"' not in card
+        assert "<textarea" not in card
+        if offered:
+            assert f'<form method="post" action="{ACTIONS}/turned-in"' in card
+    if pressed is not None:
+        assert pressed.status_code == 303
+        assert "turn_in_said=turned_in" in pressed.headers["location"]
+        assert len(events) == (1 if state is None else 2)

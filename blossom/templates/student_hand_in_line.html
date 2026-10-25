@@ -11,6 +11,9 @@
   cannot be read are three different lines, and an unreadable record offers
   nothing to press. A parent reads the lines and meets no control.
 
+  The group's lines sit under the same rule and in the same block as her
+  work's, so the two groups under their headings look alike.
+
   ``ctx`` is the card's own update context, and ``row`` says the group is on a
   row of the work given out for later, whose title is no heading: there each
   group heading is named by its own words and the row's title.
@@ -26,6 +29,7 @@
 {% set links = {"return_to": "week", "week": view.week.start.isoformat()} %}
 <div class="hand-in-line">
   <h3 class="update-heading"{% if row is defined and row %} id="{{ turn_in_group_anchor(key) }}" aria-labelledby="{{ turn_in_group_anchor(key) }} {{ title_anchor(key) }}"{% endif %}>Turning it in</h3>
+  <div class="update">
   {% if shown and shown.said %}
     <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1"{% if turn_in_direct %} autofocus{% endif %}>{{ shown.said }}</p>
   {% endif %}
@@ -51,4 +55,5 @@
       <p class="note"><a class="assignment-link" href="{{ details_href(key, fragment="turning-it-in", hand_in="change", **links) }}" aria-label="Change your hand-in update for {{ assignment.title }}, {{ assignment.course }}">Change</a></p>
     {% endif %}
   {% endif %}
+  </div>
 </div>

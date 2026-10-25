@@ -17,8 +17,8 @@
   press's answer gives the focus to its first sentence instead, as the answer
   built it, so a long answer arrives with its opening on the screen. A press
   about turning it in sends her update's choice and words, headed here as her
-  unsaved update (``unsaved_update``); a parent's such press shows them only as
-  a copy of that request, under the copy's own heading. The page also answers
+  unsaved update (``unsaved_update``), and a parent's such press shows them the
+  same way, only as a copy of that same request. The page also answers
   a turn-in press that was saved when its own page can't be read: its heading
   and sentence then say what was saved, and which page can't be shown.
 #}
@@ -68,7 +68,6 @@
     and only when the copy holds something to show.
   #}
   {% set copied %}
-    {%- if copying and card %}{{ work_words(card) }}{% endif -%}
     {%- if details_form is defined and details_form %}{% with kept = details_form %}{% include "student_note_details_kept.html" %}{% endwith %}{% endif -%}
     {%- if search_form is defined and search_form %}{% with kept = search_form %}{% include "student_note_search_kept.html" %}{% endwith %}{% endif -%}
   {% endset %}

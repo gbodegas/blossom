@@ -851,8 +851,9 @@ async def parent_refused(request: Request, state: ApplicationState) -> HTMLRespo
     """A parent's turn-in press: 403, fixed from the sign-in and the route before the form is
     read, the assignment looked up, or the decision lock taken, and nothing written. Her note
     and choice are shown again only as far as ``kept_fields_of`` reads them, within its
-    bound, once the refusal is fixed, read-only, on a page that reads no store and logs none
-    of them; whatever it finds, the answer is the same 403."""
+    bound, once the refusal is fixed, read-only under the heading of her unsaved update, on a
+    page that reads no store and logs none of them; whatever it finds, the answer is the
+    same 403."""
     copy = await kept_fields_of(request, TURN_IN_COPY) or {}
     note = copy.get("note", "")
     chosen = copy.get("status")
@@ -871,7 +872,7 @@ async def parent_refused(request: Request, state: ApplicationState) -> HTMLRespo
             "card": shown,
             "hand_in_card": None,
             "note_problem": NOT_HERS_TO_UPDATE,
-            "unsaved_copy": True,
+            "unsaved_update": True,
             "ways_back": [ReturnLink(PAGE, "Back to her week")],
             "marks": state.settings.page_marks,
         },
