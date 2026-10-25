@@ -214,9 +214,9 @@ h1 {
    short for some of its words. Its side margin gives way before any word breaks: a page's
    heading reaches into the page's 1.25rem side margin, as class details' headings do, until
    it is 0.3rem from the screen's edge. A heading in a card keeps to the card. A word still
-   too wide breaks at the soft hyphen the app writes into its long heading words, or else
-   where it must, by the headings' rule below. Every screen 277 pixels or wider with ordinary
-   text, and 554 pixels or wider with text at 200%, keeps the heading's ordinary margin. */
+   too wide breaks at its soft hyphen or, failing that, where it must, by the rules below.
+   Every screen 277 pixels or wider with ordinary text, and 554 pixels or wider with text at
+   200%, keeps the heading's ordinary margin. */
 main > h1 {
   margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);
 }
@@ -258,6 +258,27 @@ h1,
 h2,
 h3 {
   overflow-wrap: anywhere;
+}
+
+/* The app writes a soft hyphen into each of its page headings' long words, at the word's
+   natural break, such as "Home-work" and "assign-ments". On a screen narrower than about
+   13.6 times the browser's text size, the widest of them, "assignments", is wider than the
+   heading's whole line even with its margin given way, and on a screen no wider than 13.75
+   times that size such a word may break at its soft hyphen, with a hyphen, at the end of a
+   line. On every wider screen, ordinary phones and desktops among them, the soft hyphens are
+   set aside, so a heading lays out as it does without them. With ordinary text no phone is
+   that narrow; with text at 150% a screen 330 pixels wide or narrower is, and with text at
+   200% one 440 pixels wide or narrower. Nothing hyphenates by itself. */
+main > h1 {
+  -webkit-hyphens: none;
+  hyphens: none;
+}
+
+@media (max-width: 13.75rem) {
+  main > h1 {
+    -webkit-hyphens: manual;
+    hyphens: manual;
+  }
 }
 
 section {

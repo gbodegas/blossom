@@ -3930,7 +3930,7 @@ PAGE_HEADING = (
 )
 """A page's heading at its one size, 2.1 times the text's, on every screen, pinned whole."""
 PAGE_HEADING_REACHES = (
-    "   text, and 554 pixels or wider with text at 200%, keeps the heading's ordinary margin. */\n"
+    "   200%, keeps the heading's ordinary margin. */\n"
     "main > h1 {\n"
     "  margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);\n"
     "}\n"
@@ -3948,6 +3948,23 @@ PAGE_HEADING_CUE_STAYS_ON_SCREEN = (
 )
 """The arrival cue of a page's heading a link lands on, its spread narrowed to the margin left
 beside the reaching heading, pinned from the last line of its comment."""
+PAGE_HEADING_SOFT_HYPHENS = (
+    "   200% one 440 pixels wide or narrower. Nothing hyphenates by itself. */\n"
+    "main > h1 {\n"
+    "  -webkit-hyphens: none;\n"
+    "  hyphens: none;\n"
+    "}\n\n"
+    "@media (max-width: 13.75rem) {\n"
+    "  main > h1 {\n"
+    "    -webkit-hyphens: manual;\n"
+    "    hyphens: manual;\n"
+    "  }\n"
+    "}\n"
+)
+"""A page's heading sets its soft hyphens aside, and takes them only on a screen too narrow
+for its widest word at the browser's text size, pinned from the last line of its comment.
+Check it in Edge and WebKit with the browser's own text size and page zoom, at ordinary sizes
+too, before changing it."""
 PAGE_MARGIN = "main {\n  max-width: 46rem;\n  margin: 0 auto;\n  padding: 0.5rem 1.25rem 3rem;\n}\n"
 """The page's side margin the heading's numbers are worked out from, pinned as it stands."""
 CLASS_HEADINGS_REACH = (
@@ -3960,12 +3977,15 @@ RULES_NAMING_H1 = [
     "main > h1 {",
     "main > h1#homework:focus {",
     "h1,",
+    "main > h1 {",
+    "  main > h1 {",
     "h1#homework:focus,",
     ".assignment.detail h1 {",
 ]
 """Every line of the stylesheet that names an h1, in order: the headings' typeface, the page
-heading's size, its reach and its cue, the headings' word breaking, the shared arrival cue,
-and the heading inside an assignment's details card, which keeps to its card."""
+heading's size, its reach and its cue, the headings' word breaking, the page heading's soft
+hyphens set aside and taken, the shared arrival cue, and the heading inside an assignment's
+details card, which keeps to its card."""
 VIEWPORT_TEXT = re.compile(r"\d(?:[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max))\b")
 """A length measured against the screen, in any of its sizes, or against a container, which
 would size text by the width rather than by the reader's text size."""
@@ -3975,7 +3995,8 @@ def test_a_page_s_heading_rules_are_pinned_and_every_line_naming_an_h1_is_listed
     """Each pinned text occurs once, and every line of the stylesheet that names an h1 is
     listed, so a new rule naming one fails here. No text is sized by the screen's width in a
     font or font-size line, so the heading's size is its pinned 2.1rem with any text size,
-    and nothing hyphenates by itself. The pages write an h1 bare, as class details' heading,
+    and nothing hyphenates by itself: a page heading takes its soft hyphens only where its
+    pinned rule allows them. The pages write an h1 bare, as class details' heading,
     whose own rule reaches by the same amount, or as a result's homework heading, whose id
     only its cues name, each on a page of the shared layout, which names its language."""
     styles = stylesheet()
@@ -3988,7 +4009,14 @@ def test_a_page_s_heading_rules_are_pinned_and_every_line_naming_an_h1_is_listed
     assert styles.count(PAGE_MARGIN) == 1
     assert styles.count(CLASS_HEADINGS_REACH) == 1
     assert styles.count("clamp(0px, 26vw - 3.5rem, 0.375rem)") == 2
-    assert styles.count("hyphens") == styles.count("hyphenate") == 0
+    assert styles.count(PAGE_HEADING_SOFT_HYPHENS) == 1
+    assert [line.strip() for line in styles.splitlines() if re.search(r"hyphen\w*\s*:", line)] == [
+        "-webkit-hyphens: none;",
+        "hyphens: none;",
+        "-webkit-hyphens: manual;",
+        "hyphens: manual;",
+    ]
+    assert "hyphens: auto" not in styles
     assert [line for line in styles.splitlines() if re.search(r"\bh1\b", line)] == RULES_NAMING_H1
     assert [
         line
