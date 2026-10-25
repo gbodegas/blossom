@@ -3526,6 +3526,10 @@ class WorkForm:
     quick: bool
     form_open: bool
     form_id: str | None
+    as_it_stands: bool = False
+    """Whether the choice and words sent with a press read as the update that stands: the
+    same choice, the same note once kept as the store keeps it, and the update the page had
+    shown. They are then not headed as unsaved."""
 
 
 def work_form(
@@ -3546,11 +3550,19 @@ def work_form(
     quick = ctx.place == "week" and ctx.can_update and not unreadable and not editing
     form_open = ctx.can_update and not unreadable and (editing or not (standing or quick))
     typed = form_open or (quick and not standing)
+    as_it_stands = (
+        standing
+        and card is not None
+        and card.status == assignment.update_status
+        and normalize_note(card.note) == normalize_note(assignment.update_note)
+        and card.token == (assignment.update_head_id or "")
+    )
     return WorkForm(
         editing=editing,
         quick=quick,
         form_open=form_open,
         form_id=update_form_anchor(assignment.assignment_id) if typed else None,
+        as_it_stands=as_it_stands,
     )
 
 

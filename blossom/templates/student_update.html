@@ -59,7 +59,7 @@
 {% set form_open = wf.form_open %}
 {% set kept = here and card.kept %}
 {% set head_token = card.token if kept else (assignment.update_head_id or '') %}
-{% set as_it_stands = standing and card and card.status == assignment.update_status and (card.note or "") == (assignment.update_note or "") and card.token == (assignment.update_head_id or "") %}
+{% set as_it_stands = wf.as_it_stands %}
 {% set sub = "h4" if ctx.place == "week" else "h3" %}
 {% set chosen = card.status if (here and card.status) else (assignment.update_status if (standing and here and card.change and not card.problem) else none) %}
 {% set typed = card.note if (here and card.note is not none) else ((assignment.update_note or "") if (standing and here and card.change) else "") %}

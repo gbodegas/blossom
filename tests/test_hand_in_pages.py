@@ -1452,6 +1452,43 @@ def test_a_cleared_note_on_an_open_form_comes_back_cleared_with_its_choice() -> 
     assert "old words</textarea>" not in shown
 
 
+SAVED_LINES: Final = "First line\r\nsecond line"
+"""A note of two lines as a browser sends it, with CRLF; the store keeps it with LF."""
+
+
+@pytest.mark.parametrize("where", ["week", "details"])
+@pytest.mark.parametrize(
+    ("sent", "unsaved"),
+    [(SAVED_LINES, False), ("First line\r\nanother line", True)],
+    ids=["the saved note sent back as a browser sends it", "a different note"],
+)
+def test_the_open_form_sent_with_a_turn_in_press_is_unsaved_only_when_it_differs(
+    where: str, sent: str, unsaved: bool
+) -> None:
+    """I turned it in, then its Undo, pressed from the open form over a saved note of two
+    lines. A browser sends the textarea's line breaks as CRLF; the note is what stands when
+    it reads the same once kept, so only a different note is headed as not saved. Either
+    way the words come back exactly as sent."""
+    with browser() as client:
+        report(client, ESSAY_ID, "not_yet", note=SAVED_LINES)
+        if where == "week":
+            _, page = week_card(client, change=ESSAY_ID)
+        else:
+            page = client.get(DETAILS, params={"change": "1"}).text
+        pressed = turn_in_press(client, page, note=sent)
+        shown = card_for(pressed.text, ESSAY_ID) if where == "week" else pressed.text
+        undone = turn_in_press(client, shown, "undo_hand_in", note=sent)
+        back = card_for(undone.text, ESSAY_ID) if where == "week" else undone.text
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+
+    assert [report.note for report in reports] == ["First line\nsecond line"]
+    assert pressed.status_code == undone.status_code == 200
+    for answer in (shown, back):
+        assert ("Your unsaved update</h" in answer) is unsaved
+        assert f"{escape(sent)}</textarea>" in answer
+        assert 'value="not_yet" checked' in answer
+
+
 def test_words_in_the_open_form_on_the_details_come_back_unsaved() -> None:
     with browser() as client:
         page = client.get(DETAILS, params={"return_to": "week", "week": FIXTURE_WEEK}).text
