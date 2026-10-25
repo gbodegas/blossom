@@ -24,9 +24,10 @@ her note from that request and nothing else. For her the form is read whole,
 the save is one operation under the decision lock, a success is a redirect to
 a page that says what stands, or that page itself when her words come back
 with it, and a refusal is said where she pressed with what she chose and wrote
-still there. A parent reads every section and is told the update is hers to
-make. Nothing here asks a model, sends a reminder, or tells the school
-anything, and a plan never reads what is saved here.
+still there. A parent reads what stands, and the details' section and the list
+tell a parent the update is hers to make. Nothing here asks a model, sends a
+reminder, or tells the school anything, and a plan never reads what is saved
+here.
 """
 
 import asyncio
