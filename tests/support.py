@@ -2557,7 +2557,7 @@ class HeldByAnother:
 
 class WaitBeside:
     """Another connection running ``statement`` on the held file under a busy timeout of
-    ``seconds``, on a thread beside a press, so a slowed or paused process stretches both
+    ``seconds``, on a thread beside a press, so a slowdown of the process reaches both
     waits: ``took`` is how long it lasted, ``refused`` whether it ended as locked."""
 
     def __init__(self, path: pathlib.Path, seconds: float, statement: str) -> None:
