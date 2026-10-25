@@ -28,7 +28,8 @@
   {% endif %}
   {% if kept.note %}
     <label for="kept-note">Your note, as typed</label>
-    <textarea id="kept-note" rows="4" readonly>{{ kept.note }}</textarea>
+    <textarea id="kept-note" rows="4" readonly>
+{{ kept.note }}</textarea>
   {% endif %}
 {% endmacro %}
 {% block content %}

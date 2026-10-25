@@ -1907,7 +1907,7 @@ def test_a_parents_turn_in_press_shows_her_words_read_only_and_reads_no_store(
     assert UNSAVED_UPDATE in page
     assert UNSAVED not in page
     assert NOT_SAVED_SENTENCE not in page
-    assert f"readonly>{escape(HER_WORDS)}</textarea>" in page
+    assert f"readonly>\n{escape(HER_WORDS)}</textarea>" in page
     assert "<b>reading</b>" not in page
     assert "Your choice" not in page
     assert "<form" not in page
@@ -2009,7 +2009,7 @@ def test_a_parents_turn_in_press_is_answered_while_a_decision_holds_the_lock(
             client.portal.call(state.decision_lock.release)  # type: ignore[union-attr]
 
     assert answer.status_code == 403
-    assert f"readonly>{escape(HER_WORDS)}</textarea>" in answer.text
+    assert f"readonly>\n{escape(HER_WORDS)}</textarea>" in answer.text
 
 
 @pytest.mark.parametrize("press", TURN_IN_PRESSES)
@@ -2050,7 +2050,7 @@ def test_a_parents_turn_in_press_goes_back_to_her_week_whatever_the_form_names(
     assert ways_back_of(page) == [("/student/due-this-week", "Back to her week")]
     assert "Week of September 14" not in page
     assert "example.test" not in page
-    assert f"readonly>{escape(HER_WORDS)}</textarea>" in page
+    assert f"readonly>\n{escape(HER_WORDS)}</textarea>" in page
     assert watch.statements == []
     assert watch.looked_up == []
 
@@ -2086,7 +2086,7 @@ def test_a_parents_press_from_an_open_form_shows_her_note_and_not_her_choice(
 
     assert answer.status_code == 403
     assert UNSAVED_UPDATE in page
-    assert f"readonly>{escape(HER_WORDS)}</textarea>" in page
+    assert f"readonly>\n{escape(HER_WORDS)}</textarea>" in page
     assert "Your choice" not in page
     assert "Done" not in words(page)
     assert watch.statements == []

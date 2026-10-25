@@ -398,11 +398,11 @@ def test_a_refused_form_opens_with_what_she_chose_and_typed(
     (form,) = forms_of(unchosen, WHOLE_FORM)
     assert form.owner == assignment_anchor(ESSAY_ID)
     assert radio in form.html
-    assert ">kept</textarea>" in form.html
+    assert ">\nkept</textarea>" in form.html
     assert autofocused(unchosen) == [radio]
     (form,) = forms_of(general, WHOLE_FORM)
     assert 'value="not_yet" checked>' in form.html
-    assert ">kept</textarea>" in form.html
+    assert ">\nkept</textarea>" in form.html
     assert autofocused(general) == [line]
     assert line in without_the_form(card_for(general, ESSAY_ID))
     assert "update-result" not in card_for(general, ESSAY_ID)
@@ -421,7 +421,7 @@ def test_a_save_refused_after_an_undo_elsewhere_shows_the_form_under_her_unsaved
         r'<h4 class="update-heading">Your unsaved update</h4>\s*<form method="post"', card
     )
     assert 'value="done" checked>' in form.html
-    assert ">Mine.</textarea>" in form.html
+    assert ">\nMine.</textarea>" in form.html
     assert quick_forms(card) == []
     assert '<p class="update-summary">' not in card
     assert f'id="update-problem-{ESSAY_ID}"' in without_the_form(card)
@@ -788,7 +788,7 @@ def test_a_press_the_file_refuses_never_reads_as_saved(reader: str, tmp_path: pa
     assert f'<p class="problem" role="alert" id="update-problem-{ESSAY_ID}"' in shown
     (form,) = forms_of(shown, WHOLE_FORM)
     assert 'value="done" checked>' in form.html
-    assert ">kept</textarea>" in form.html
+    assert ">\nkept</textarea>" in form.html
 
 
 def test_a_card_reported_done_offers_change_and_undo_and_no_button() -> None:

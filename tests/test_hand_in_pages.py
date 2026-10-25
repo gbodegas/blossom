@@ -13,6 +13,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from html import unescape
 from typing import Final
 from zoneinfo import ZoneInfo
 
@@ -1426,7 +1427,7 @@ def test_words_in_a_folded_note_come_back_unsaved_after_i_turned_it_in(outcome: 
     assert answer.status_code == (200 if outcome == "saved" else 409)
     assert reports == []
     assert [event.note for event in events] == [None]
-    assert f">{escape(WORDS)}</textarea>" in shown
+    assert f">\n{escape(WORDS)}</textarea>" in shown
     assert '<details class="steps note-fold" open>' in shown
     assert '<h4 class="update-heading">Your unsaved update</h4>' in shown
     assert f'name="expected_report_id" value="{token.group(1)}"' in shown
@@ -1448,7 +1449,7 @@ def test_a_cleared_note_on_an_open_form_comes_back_cleared_with_its_choice() -> 
     assert answer.status_code == 200
     assert [(report.status, report.note) for report in reports] == [("not_yet", "old words")]
     assert 'value="not_yet" checked' in shown
-    assert "></textarea>" in shown
+    assert ">\n</textarea>" in shown
     assert "old words</textarea>" not in shown
 
 
@@ -1489,6 +1490,127 @@ def test_the_open_form_sent_with_a_turn_in_press_is_unsaved_only_when_it_differs
         assert 'value="not_yet" checked' in answer
 
 
+AFTER_A_BLANK_LINE: Final = "\nWords after a blank line"
+
+
+def box_text(page: str, box_id: str) -> str:
+    """The text a browser shows in the text area with this id: one line break that opens
+    a text area's text is dropped."""
+    found = re.search(rf'<textarea id="{re.escape(box_id)}"[^>]*>(.*?)</textarea>', page, re.S)
+    assert found is not None, box_id
+    text = unescape(found.group(1))
+    return text[1:] if text.startswith("\n") else text
+
+
+@pytest.mark.parametrize("outcome", ["saved", "changed elsewhere"])
+@pytest.mark.parametrize(
+    "form", ["the folded form on a card", "the open form on a card", "the open form on the details"]
+)
+def test_a_note_that_opens_with_a_blank_line_comes_back_as_sent_after_a_turn_in_press(
+    form: str, outcome: str
+) -> None:
+    """A browser drops one line break that opens a text area's text. Her words sent with
+    I turned it in come back so that the form sends them again exactly as she sent them,
+    whether the press was saved or refused."""
+    with browser() as client:
+        if form == "the open form on the details":
+            page = client.get(DETAILS).text
+        elif form == "the open form on a card":
+            report(client, ESSAY_ID, "not_yet")
+            _, page = week_card(client, change=ESSAY_ID)
+        else:
+            _, page = week_card(client)
+        if outcome == "changed elsewhere":
+            landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        answer = turn_in_press(client, page, note=AFTER_A_BLANK_LINE)
+    shown = answer.text if "details" in form else card_for(answer.text, ESSAY_ID)
+    again = "undo_hand_in" if outcome == "saved" else "hand_in_head"
+
+    assert answer.status_code == (200 if outcome == "saved" else 409)
+    assert ('class="quick"' in shown) is (form == "the folded form on a card")
+    assert pressed_form(shown, again)[1]["note"] == AFTER_A_BLANK_LINE
+
+
+BOXES: Final = [
+    "a work record that cannot be read",
+    "homework gone",
+    "a parent's copy",
+    "a saved press whose page cannot be read",
+    "the work route's own page for homework gone",
+]
+
+
+@pytest.mark.parametrize("path", BOXES)
+def test_a_note_that_opens_with_a_blank_line_shows_as_sent_in_the_box_that_keeps_it(
+    path: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where her words come back read-only, to copy, the box shows them as she sent them."""
+
+    def unreadable(*_: object, **__: object) -> None:
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    box = "kept-note"
+    code = {"a parent's copy": 403, "a saved press whose page cannot be read": 503}
+    answer: Answer
+    if path == "a parent's copy":
+        app = create_app(signed_in_household(tmp_path))
+        with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+            client.post("/sign-in", data={"passphrase": THEIRS})
+            answer = client.post(
+                f"{ACTIONS}/turned-in",
+                data={"hand_in_head": "", "note": AFTER_A_BLANK_LINE, "week": FIXTURE_WEEK},
+                headers=PAGE_HEADERS,
+            )
+    else:
+        with browser() as client:
+            store = state_of(client).project_state
+            if path == "a work record that cannot be read":
+                report(client, ESSAY_ID, "not_yet")
+                _, card = week_card(client, change=ESSAY_ID)
+                spoil(store, "student_reports", "status", "invalid-status")
+                box = f"kept-note-{ESSAY_ID}"
+            else:
+                _, card = week_card(client)
+            if "gone" in path:
+                store._connection.execute(
+                    "DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,)
+                )
+                store._connection.commit()
+            if path == "a saved press whose page cannot be read":
+                monkeypatch.setattr(hand_in_routes, "card_page", unreadable)
+            if path == "the work route's own page for homework gone":
+                fields = whole_form(card, f"{ACTIONS}/report")
+                answer = client.post(
+                    f"{ACTIONS}/report",
+                    data={**fields, "status": "done", "note": AFTER_A_BLANK_LINE},
+                    headers=PAGE_HEADERS,
+                )
+            else:
+                answer = turn_in_press(client, card, note=AFTER_A_BLANK_LINE)
+
+    assert answer.status_code == code.get(path, 404 if "gone" in path else 200)
+    assert box_text(answer.text, box) == AFTER_A_BLANK_LINE
+
+
+def test_a_note_that_opens_with_a_blank_line_comes_back_as_sent_after_a_refused_save() -> None:
+    """The work route's own refusal answers with the open form too: her words there send
+    again exactly as she sent them."""
+    with browser() as client:
+        _, card = week_card(client, change=ESSAY_ID)
+        fields = whole_form(card, f"{ACTIONS}/report")
+        fields.pop("status", None)
+        refused = client.post(
+            f"{ACTIONS}/report",
+            data={**fields, "note": AFTER_A_BLANK_LINE},
+            headers=PAGE_HEADERS,
+        )
+    shown = card_for(refused.text, ESSAY_ID)
+
+    assert refused.status_code == 422
+    assert pressed_form(shown, "hand_in_head")[1]["note"] == AFTER_A_BLANK_LINE
+
+
 def test_words_in_the_open_form_on_the_details_come_back_unsaved() -> None:
     with browser() as client:
         page = client.get(DETAILS, params={"return_to": "week", "week": FIXTURE_WEEK}).text
@@ -1500,7 +1622,7 @@ def test_words_in_the_open_form_on_the_details_come_back_unsaved() -> None:
     assert sent["report_view"] == "detail"
     assert answer.status_code == 200
     assert reports == []
-    assert f">{escape(WORDS)}</textarea>" in answer.text
+    assert f">\n{escape(WORDS)}</textarea>" in answer.text
     assert "You reported this turned in." in section(answer.text)
     assert "Back to the week" in section(answer.text)
 
@@ -1559,7 +1681,7 @@ def test_a_saved_press_whose_page_cannot_be_read_says_what_was_saved(
         answer.text
     )
     assert '<h2 class="update-heading">Your unsaved update</h2>' in answer.text
-    assert f"readonly>{escape(WORDS)}</textarea>" in answer.text
+    assert f"readonly>\n{escape(WORDS)}</textarea>" in answer.text
     assert "<form" not in answer.text.split("<main", 1)[1]
     assert "Nothing was saved" not in answer.text
     assert len(events) == 1
@@ -1739,7 +1861,7 @@ def test_a_saved_press_whose_page_cannot_be_read_says_what_it_was(
     assert answer.status_code == 503
     assert "<h1>Turning it in</h1>" in answer.text
     assert escape(f"{said} Your week can't be shown right now.") in answer.text
-    assert f"readonly>{escape(WORDS)}</textarea>" in answer.text
+    assert f"readonly>\n{escape(WORDS)}</textarea>" in answer.text
     assert "Nothing was saved" not in answer.text
     assert len(events) == (1 if result == "same" else 2)
 
@@ -1755,9 +1877,9 @@ def test_words_sent_with_undo_come_back_unsaved_and_undo_writes_once() -> None:
 
     assert undone.status_code == 200
     assert HAND_IN_UNDONE in card_for(undone.text, ESSAY_ID)
-    assert f">{escape(WORDS)}</textarea>" in card_for(undone.text, ESSAY_ID)
+    assert f">\n{escape(WORDS)}</textarea>" in card_for(undone.text, ESSAY_ID)
     assert again.status_code == 409
-    assert f">{escape(WORDS)}</textarea>" in card_for(again.text, ESSAY_ID)
+    assert f">\n{escape(WORDS)}</textarea>" in card_for(again.text, ESSAY_ID)
     assert len(events) == 2
     assert reports == []
 
@@ -1772,7 +1894,7 @@ def test_a_press_for_homework_taken_off_the_record_keeps_her_words_to_copy() -> 
 
     assert answer.status_code == 404
     assert '<h2 class="update-heading">Your unsaved update</h2>' in answer.text
-    assert f"readonly>{escape(WORDS)}</textarea>" in answer.text
+    assert f"readonly>\n{escape(WORDS)}</textarea>" in answer.text
 
 
 def test_a_refused_press_whose_page_cannot_be_read_keeps_her_words_as_her_update(
@@ -1792,7 +1914,7 @@ def test_a_refused_press_whose_page_cannot_be_read_keeps_her_words_as_her_update
     assert "<h1>Update not saved</h1>" in answer.text
     assert escape("That changed while you were away, so nothing was saved.") in answer.text
     assert '<h2 class="update-heading">Your unsaved update</h2>' in answer.text
-    assert f"readonly>{escape(WORDS)}</textarea>" in answer.text
+    assert f"readonly>\n{escape(WORDS)}</textarea>" in answer.text
     assert "hand-in update" not in answer.text.split("<main", 1)[1].lower()
 
 
@@ -1952,7 +2074,7 @@ def test_a_changed_choice_and_a_typed_note_both_come_back_after_a_refused_press(
 
     assert answer.status_code == (409 if refusal == "changed elsewhere" else 422)
     assert 'value="not_yet" checked' in shown
-    assert f">{escape(WORDS)}</textarea>" in shown
+    assert f">\n{escape(WORDS)}</textarea>" in shown
     assert [report.status for report in reports] == ["done"]
 
 
@@ -1976,7 +2098,7 @@ def test_a_choice_no_page_writes_is_refused_before_anything_is_saved(
 
     assert answer.status_code == 422
     assert escape(TURN_IN_BAD_FORM) in shown
-    assert f">{escape(WORDS)}</textarea>" in shown
+    assert f">\n{escape(WORDS)}</textarea>" in shown
     assert after == before
     assert reports == []
 
@@ -2081,7 +2203,7 @@ def test_a_turn_in_the_file_refuses_keeps_her_work_words_and_says_nothing_was_ch
 
     assert answer.status_code == 500
     assert escape("That could not be saved, and nothing was changed. Try again.") in shown
-    assert f">{escape(WORDS)}</textarea>" in shown
+    assert f">\n{escape(WORDS)}</textarea>" in shown
     assert '<h4 class="update-heading">Your unsaved update</h4>' in shown
     assert events == []
 
@@ -2301,7 +2423,7 @@ def test_a_press_on_a_chain_that_does_not_hold_is_said_as_unsaved_and_writes_not
 
     assert answer.status_code == 500
     assert escape("That could not be saved, and nothing was changed. Try again.") in answer.text
-    assert f">{escape(WORDS)}</textarea>" in answer.text
+    assert f">\n{escape(WORDS)}</textarea>" in answer.text
     assert rows == 1
 
 

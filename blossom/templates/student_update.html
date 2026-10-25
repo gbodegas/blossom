@@ -95,7 +95,8 @@
       {% endif %}
       {% if card.note %}
         <label for="kept-note-{{ key }}">Your note, as typed<span class="visually-hidden"> on {{ assignment.title }}, {{ assignment.course }}</span></label>
-        <textarea id="kept-note-{{ key }}" rows="3" readonly>{{ card.note }}</textarea>
+        <textarea id="kept-note-{{ key }}" rows="3" readonly>
+{{ card.note }}</textarea>
       {% endif %}
     {% endif %}
   {% elif standing %}
@@ -194,7 +195,8 @@
         <details class="steps note-fold"{% if kept %} open{% endif %}>
           <summary>Add a note (optional)<span class="visually-hidden"> on {{ assignment.title }}, {{ assignment.course }}</span></summary>
           <label for="update-note-{{ key }}">Your note<span class="visually-hidden"> on {{ assignment.title }}, {{ assignment.course }}</span></label>
-          <textarea id="update-note-{{ key }}" name="note" rows="2" aria-describedby="update-hint-{{ key }}">{% if kept %}{{ card.note or "" }}{% endif %}</textarea>
+          <textarea id="update-note-{{ key }}" name="note" rows="2" aria-describedby="update-hint-{{ key }}">
+{% if kept %}{{ card.note or "" }}{% endif %}</textarea>
           <p class="note" id="update-hint-{{ key }}">Up to {{ update_note_max_length }} characters. Your parents can read this. Notes on work being planned are shared with the planning model.</p>
         </details>
         <input type="hidden" name="expected_report_id" value="{{ head_token }}">
@@ -224,7 +226,8 @@
       <details class="steps note-fold"{% if typed or at_note %} open{% endif %}>
         <summary>Add a note (optional)<span class="visually-hidden"> on {{ assignment.title }}, {{ assignment.course }}</span></summary>
         <label for="update-note-{{ key }}">Your note<span class="visually-hidden"> on {{ assignment.title }}, {{ assignment.course }}</span></label>
-        <textarea id="update-note-{{ key }}" name="note" rows="2" aria-describedby="{% if at_note %}update-problem-{{ key }} {% endif %}update-hint-{{ key }}"{% if at_note %} aria-invalid="true" autofocus{% endif %}>{{ typed }}</textarea>
+        <textarea id="update-note-{{ key }}" name="note" rows="2" aria-describedby="{% if at_note %}update-problem-{{ key }} {% endif %}update-hint-{{ key }}"{% if at_note %} aria-invalid="true" autofocus{% endif %}>
+{{ typed }}</textarea>
         <p class="note" id="update-hint-{{ key }}">Up to {{ update_note_max_length }} characters. Your parents can read this. Notes on work being planned are shared with the planning model.</p>
       </details>
       <input type="hidden" name="expected_report_id" value="{{ head_token }}">

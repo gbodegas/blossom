@@ -264,7 +264,7 @@ def test_a_refusal_on_her_week_is_said_without_the_week_when_the_week_cannot_be_
     if press.note is None:
         assert "<textarea" not in main
     else:
-        assert f"readonly>{escape(press.note)}</textarea>" in main
+        assert f"readonly>\n{escape(press.note)}</textarea>" in main
     back = week_href(
         None if press.week is None else date.fromisoformat(press.week),
         press.about,
@@ -587,9 +587,8 @@ def test_a_refusal_on_the_details_is_said_without_them_when_they_cannot_be_read(
         answer, status=status, heading="Update not saved", alert=f"{said} {THIS_ASSIGNMENT}"
     )
     if "note" in kept:
-        assert (
-            f'<textarea id="kept-note" rows="4" readonly>{escape(kept["note"])}</textarea>' in main
-        )
+        typed = escape(kept["note"])
+        assert f'<textarea id="kept-note" rows="4" readonly>\n{typed}</textarea>' in main
     if "choice" in kept:
         assert f"<p>Your choice: {kept['choice']}.</p>" in main
     if "state" in kept:
@@ -1916,7 +1915,7 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
         heading="Update not saved",
         alert=f"Nothing was saved, because neither Done nor Not yet was chosen. {YOUR_WEEK}",
     )
-    assert f"readonly>{escape(TYPED)}</textarea>" in main
+    assert f"readonly>\n{escape(TYPED)}</textarea>" in main
     assert took < 9
     ran = [
         line
