@@ -814,6 +814,58 @@ def test_a_stale_page_a_closed_gate_and_a_changed_effect_save_nothing(house: Hou
     assert world(house) == gated
 
 
+STAYS: Final = "Updates Word Study. Stays homework, as saved."
+
+
+def heads_of(shown: screenshot_page.RowsShown) -> list[tuple[str, str, tuple[str, ...]]]:
+    """Each chosen destination's class, title and quiet lines, as her week's card shows them."""
+    return [
+        (block.head.course, block.head.title, block.head.quiet)
+        for unit in shown.units
+        for block in unit.blocks
+        if block.chosen
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "update"),
+    [
+        ("kind", {"kind": AssignmentKind.TASK}),
+        ("title", {"title": "Word Study Guide"}),
+        ("class", {"course": "English 7 Honors"}),
+    ],
+    ids=["kind", "title", "class"],
+)
+def test_a_saved_assignment_changed_elsewhere_after_the_preview_saves_nothing(
+    house: House, change: str, update: Mapping[str, object]
+) -> None:
+    """The Reading Log card goes to the saved Word Study row found for it, its kind left to the
+    saved row's. Another tab changes that row's kind, title or class after the page showed its
+    lines: the press is refused as changed and writes nothing, the page's lines say the change,
+    and a press from that page saves."""
+    draft_id = two_row_review(house)
+    log = next(p for p in state_of(house, draft_id).pieces if p.title == "Reading Log")
+    units = [u for u in unit_digests(state_of(house, draft_id)) if log.name in u.split("+")]
+    press = press_of(house, draft_id, units=units)
+    lines = heads_of(page_of(house, draft_id))
+    [saved] = [
+        a for a in house.record.all_assignments() if a.assignment_id == "assignment-word-study-x1"
+    ]
+    house.record.upsert_assignments([saved.model_copy(update=dict(update))])
+    before = world(house)
+    outcome = save(house, press)
+    after = world(house)
+    shown = page_of(house, draft_id)
+    again = save(house, press_of(house, draft_id, "9" * 32, units=units))
+
+    assert ("English 7", "Word Study", ("No assigned date.", STAYS)) in lines
+    assert isinstance(outcome, NotSaved)
+    assert outcome.reason == "changed"
+    assert after == before
+    assert heads_of(shown) != lines
+    assert isinstance(again, Saved)
+
+
 def test_a_press_with_a_unit_saved_elsewhere_and_a_changed_one_is_not_already_saved(
     house: House,
 ) -> None:

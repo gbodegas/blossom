@@ -550,6 +550,42 @@ def one_piece_preview(
     return entry
 
 
+def test_the_preview_digest_holds_what_its_lines_read_of_the_saved_row() -> None:
+    """A preview's digest changes with each thing its lines read of the saved row a card goes
+    to: its kind, class and title, and whether saving writes nothing there; the same inputs give
+    the same digest. The row is one found under another name, so a new name keeps it offered."""
+
+    def found(saved: SavedRow, words: Sequence[str], writes: bool) -> review.PreviewEntry:
+        p = piece("a", WED, words)
+        rows = rows_of(saved)
+        mapping = {"a": {"found": saved.assignment_id, "offer": "basis"}}
+        [entry] = review.preview(
+            review.validate([p], mapping, rows, [], {}, {}),
+            [p],
+            mapping,
+            rows,
+            {},
+            (),
+            {},
+            writes_nothing=lambda piece, target: writes,
+        )
+        return entry
+
+    saved = row("assignment-word-study-r1", WED, [W1], title="Word Study", kind="HOMEWORK")
+    plain = found(saved, [W1, W2], True).digest
+    changed = [
+        dataclasses.replace(saved, kind="TASK"),
+        dataclasses.replace(saved, title="Word Study Guide"),
+        dataclasses.replace(saved, course="English 9"),
+    ]
+    same, other = found(saved, [W1], True), found(saved, [W1], False)
+
+    assert found(saved, [W1, W2], True).digest == plain
+    assert [found(c, [W1, W2], True).digest != plain for c in changed] == [True] * 3
+    assert (same.nothing_new, other.nothing_new) == (True, False)
+    assert same.digest != other.digest
+
+
 def test_a_filled_assigned_date_is_not_nothing_new() -> None:
     entry = one_piece_preview(
         piece("a", WED, [W1], assigned=MON), row("assignment-vocab-quiz-r1", WED, [W1])

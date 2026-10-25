@@ -995,7 +995,10 @@ def preview(
     writes_nothing: Callable[[Piece, str], bool] = lambda p, t: True,
 ) -> list[PreviewEntry]:
     """One entry per chosen destination. "Nothing new" holds only when saving writes nothing at
-    all there: no words, no date moved or filled, no kind, no open question."""
+    all there: no words, no date moved or filled, no kind, no open question. Its digest holds
+    everything its lines read: the dates, words and kind it writes, and of the saved row it
+    lands on, the dates, words, kind, class and title its lines name, and whether saving writes
+    nothing there, so a saved row changed elsewhere since the page makes the save ask again."""
     picks = list(picks)
     kinds = dict(kinds or {})
     by_name = {p.name: p for p in pieces}
@@ -1047,7 +1050,10 @@ def preview(
             "due": due,
             "assigned": assigned,
             "adds": list(adds),
-            "row": None if row is None else [row.due, row.assigned, sorted(row.words)],
+            "row": None
+            if row is None
+            else [row.due, row.assigned, sorted(row.words), row.kind, row.course, row.title],
+            "nothing_new": nothing_new,
             "revision": revision,
             "choice": None if choice is None else sorted(choice),
             "defaulted": [[n, list(ids)] for n, ids in defaults_here],
