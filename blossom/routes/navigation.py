@@ -248,6 +248,22 @@ def hand_in_result_anchor(assignment_id: str) -> str:
     return f"hand-in-result-{segment(assignment_id)}"
 
 
+def update_form_anchor(assignment_id: str) -> str:
+    """The id of her update's form on a card or the details while it has a note she can type
+    in, which the buttons about turning it in join, so a press of one sends her words too."""
+    return f"update-form-{segment(assignment_id)}"
+
+
+def work_group_anchor(assignment_id: str) -> str:
+    """The id of the heading over her work on a row of her week."""
+    return f"work-group-{segment(assignment_id)}"
+
+
+def turn_in_group_anchor(assignment_id: str) -> str:
+    """The id of the heading over Turning it in on a row of her week."""
+    return f"turn-in-group-{segment(assignment_id)}"
+
+
 def update_choice_anchor(assignment_id: str) -> str:
     """The id of the group of choices in her update's form for one assignment, where Change
     on a card of her week and an address that asks to change the card land. The page writes

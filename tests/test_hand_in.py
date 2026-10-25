@@ -867,3 +867,64 @@ def test_an_undo_offered_only_over_one_state_takes_back_that_state_alone(
     assert isinstance(undone, HandInUndone)
     assert standing(store).state == NEEDS_HAND_IN
     assert standing(store).note == "mine"
+
+
+def test_a_card_press_is_written_over_nothing_not_sure_or_still_to_turn_in_alone(
+    store: ProjectStateStore,
+) -> None:
+    """A card offers I turned it in while she has said nothing, is not sure, or has it still
+    to turn in, an undo back to nothing included. The store holds the press to those inside
+    the transaction that would write it, after the same report already standing and a head
+    that moved on are answered as they always are."""
+    offered: frozenset[HandInState | None] = frozenset({None, UNKNOWN, NEEDS_HAND_IN})
+
+    def press(head: str | None) -> object:
+        return store.record_hand_in(
+            PRACTICE,
+            TURNED_IN,
+            "",
+            "",
+            expected_head=head,
+            offered_over=offered,
+            now=AT,
+            today=MONDAY,
+        )
+
+    first = press(None)
+    assert isinstance(first, HandInSaved)
+    again = press(None)
+    assert isinstance(again, HandInAlreadySaved)
+    assert again.head.event_id == first.event.event_id
+    undone = store.undo_hand_in(PRACTICE, first.event.event_id, now=AT, today=MONDAY)
+    assert isinstance(undone, HandInUndone)
+    over_nothing = press(undone.event.event_id)
+    assert isinstance(over_nothing, HandInSaved)
+    over: list[tuple[HandInState, str | None]] = [(NOT_REQUIRED, None), (TURNED_IN, "with a note")]
+    for state, note in over:
+        stands = saved(said(store, state, head=standing(store).head_id, note=note))
+        before = kept_rows(store)
+        assert isinstance(press(stands.event_id), HandInNotOffered)
+        assert kept_rows(store) == before
+    still: list[HandInState] = [UNKNOWN, NEEDS_HAND_IN]
+    for kept_state in still:
+        stands = saved(said(store, kept_state, head=standing(store).head_id))
+        assert isinstance(press(stands.event_id), HandInSaved)
+
+
+def test_a_save_is_offered_over_one_state_or_a_set_of_them_never_both(
+    store: ProjectStateStore,
+) -> None:
+    before = kept_rows(store)
+    with pytest.raises(TypeError):
+        store.record_hand_in(
+            PRACTICE,
+            TURNED_IN,
+            "",
+            "",
+            expected_head=None,
+            only_over=NEEDS_HAND_IN,
+            offered_over=frozenset({None}),
+            now=AT,
+            today=MONDAY,
+        )
+    assert kept_rows(store) == before

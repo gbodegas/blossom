@@ -377,8 +377,14 @@
   #}
   {% set done_means = viewer != "parent" and ((view.assignments + view.assigned_this_week + ([view.apart] if view.apart else []))|rejectattr("update_status", "equalto", "done")|list) %}
   {% set done_means_line %}<p class="note" id="done-means">Done means you have finished your part. It does not turn work in.</p>{% endset %}
-  {% if done_means and view.apart %}
-    {{ done_means_line }}
+  {#
+    What turning it in means is said once too, beside it, while any card on the
+    page offers I turned it in, and each of those buttons is described by it.
+  #}
+  {% set turn_in_line %}<p class="note" id="turn-in-means">{{ turn_in_means_line }}</p>{% endset %}
+  {% if view.apart %}
+    {% if done_means %}{{ done_means_line }}{% endif %}
+    {% if turn_in_means %}{{ turn_in_line }}{% endif %}
   {% endif %}
 
   {#
@@ -425,8 +431,9 @@
   {% if not view.assignments %}
     <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.{% if viewer != "parent" %} Heard about something? <a href="{{ new_note_page }}">Write down homework</a>{% endif %}</p>
   {% endif %}
-  {% if done_means and not view.apart %}
-    {{ done_means_line }}
+  {% if not view.apart %}
+    {% if done_means %}{{ done_means_line }}{% endif %}
+    {% if turn_in_means %}{{ turn_in_line }}{% endif %}
   {% endif %}
 
   {#
@@ -442,8 +449,8 @@
     card the address names is inside it, so a save on such a card lands in view.
     The same card template renders both groups.
   #}
-  {% macro finished_summary(count, held_here) -%}
-    <summary>{% if held_here %}Finished homework and recent updates{% else %}Finished homework ({{ count }}){% endif %} <span class="fold-state"><span class="fold-show">Show</span><span class="fold-hide">Hide</span></span><span class="fold-says">{% if parent %}Her{% else %}Your{% endif %} Done updates{% if held_here %} and recent changes{% endif %}, not what the school has received</span></summary>
+  {% macro finished_summary(count, held_here, cards) -%}
+    <summary>{% if held_here %}Finished homework and recent updates{% else %}Finished homework ({{ count }}){% endif %} <span class="fold-state"><span class="fold-show">Show</span><span class="fold-hide">Hide</span></span><span class="fold-says">{% if parent %}Her{% else %}Your{% endif %} Done updates{% if held_here %} and recent changes{% endif %}, not what the school has received</span>{% if not parent and viewer != "parent" and cards|rejectattr("hand_in.unavailable")|list %}<span class="fold-says">Turn-in updates are here too.</span>{% endif %}</summary>
   {%- endmacro %}
   {% set active_cards = view.assignments|rejectattr("assignment_id", "in", shown_done)|list %}
   {% set done_cards = view.assignments|selectattr("assignment_id", "in", shown_done)|list %}
@@ -471,7 +478,7 @@
   {% if done_cards %}
     {% set done_open = card and (card.assignment_id in done_cards|map(attribute="assignment_id")|list) %}
     <details class="steps reported-done"{% if done_open %} open{% endif %}>
-      {{ finished_summary(done_cards|selectattr("update_status", "equalto", "done")|list|length, held is defined and held.week) }}
+      {{ finished_summary(done_cards|selectattr("update_status", "equalto", "done")|list|length, held is defined and held.week, done_cards) }}
       {% for assignment in done_cards %}
         {% include "student_card.html" %}
       {% endfor %}
@@ -493,15 +500,18 @@
             <p class="effect">{{ score.line }}</p>
             <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ assignment.title }}, {{ assignment.course }}">Grade details</a></p>{% endwith %}{% elif scores %}{% with about = assignment %}{% include "student_school_results.html" %}{% endwith %}{% endif %}{% endwith %}{% with checks = gradebook.get(assignment.assignment_id, ())|selectattr("check")|list %}{% if checks %}{% with about = assignment %}{% include "student_to_check.html" %}{% endwith %}{% endif %}{% endwith %}
             <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>{% if assignment.words.to_read %} <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, fragment=instructions_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Read instructions: {{ assignment.title }}, {{ assignment.course }}">Read instructions</a>{% endif %}
+            {% with ctx = report_contexts[assignment.assignment_id], row = true %}
+            <h3 class="update-heading" id="{{ work_group_anchor(assignment.assignment_id) }}" aria-labelledby="{{ work_group_anchor(assignment.assignment_id) }} {{ title_anchor(assignment.assignment_id) }}">{% if ctx.viewer == "parent" %}Her work{% else %}Your work{% endif %}</h3>
+            {% include "student_update.html" %}
             {% include "student_hand_in_line.html" %}
-            {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
+            {% endwith %}
           </li>
         {% endfor %}
       </ul>
       {% if later_done %}
         {% set later_done_open = card and (card.assignment_id in later_done|map(attribute="assignment_id")|list) %}
         <details class="steps reported-done"{% if later_done_open %} open{% endif %}>
-          {{ finished_summary(later_done|selectattr("update_status", "equalto", "done")|list|length, held is defined and held.later) }}
+          {{ finished_summary(later_done|selectattr("update_status", "equalto", "done")|list|length, held is defined and held.later, later_done) }}
           <ul>
             {% for assignment in later_done %}
               <li id="{{ assignment_anchor(assignment.assignment_id) }}">
@@ -512,8 +522,11 @@
                 <p class="effect">{{ score.line }}</p>
                 <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ assignment.title }}, {{ assignment.course }}">Grade details</a></p>{% endwith %}{% elif scores %}{% with about = assignment %}{% include "student_school_results.html" %}{% endwith %}{% endif %}{% endwith %}{% with checks = gradebook.get(assignment.assignment_id, ())|selectattr("check")|list %}{% if checks %}{% with about = assignment %}{% include "student_to_check.html" %}{% endwith %}{% endif %}{% endwith %}
                 <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>{% if assignment.words.to_read %} <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, fragment=instructions_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Read instructions: {{ assignment.title }}, {{ assignment.course }}">Read instructions</a>{% endif %}
+                {% with ctx = report_contexts[assignment.assignment_id], row = true %}
+                <h3 class="update-heading" id="{{ work_group_anchor(assignment.assignment_id) }}" aria-labelledby="{{ work_group_anchor(assignment.assignment_id) }} {{ title_anchor(assignment.assignment_id) }}">{% if ctx.viewer == "parent" %}Her work{% else %}Your work{% endif %}</h3>
+                {% include "student_update.html" %}
                 {% include "student_hand_in_line.html" %}
-                {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
+                {% endwith %}
               </li>
             {% endfor %}
           </ul>

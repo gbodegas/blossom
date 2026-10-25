@@ -15,8 +15,22 @@
   of the record is read. When the page a press is shown on can't be read,
   ``page_line`` says which page that is, after the press's own words. A plan
   press's answer gives the focus to its first sentence instead, as the answer
-  built it, so a long answer arrives with its opening on the screen.
+  built it, so a long answer arrives with its opening on the screen. A press
+  about turning it in sends her update's choice and words, headed here as her
+  unsaved update (``unsaved_update``); a parent's such press shows them only as
+  a copy of that request, under the copy's own heading. The page also answers
+  a turn-in press that was saved when its own page can't be read: its heading
+  and sentence then say what was saved, and which page can't be shown.
 #}
+{% macro work_words(kept) %}
+  {% if kept.status %}
+    <p>Your choice: {% if kept.status == "done" %}Done{% else %}Not yet{% endif %}.</p>
+  {% endif %}
+  {% if kept.note %}
+    <label for="kept-note">Your note, as typed</label>
+    <textarea id="kept-note" rows="4" readonly>{{ kept.note }}</textarea>
+  {% endif %}
+{% endmacro %}
 {% block content %}
   <h1>{{ heading if heading is defined and heading else "Update not saved" }}</h1>
   {% set said = card.problem if card else (hand_in_card.problem if hand_in_card else note_problem) %}
@@ -26,12 +40,12 @@
   {% else %}
     <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{% if page_line is defined and page_line %}{{ said|ended }} {{ page_line }}{% else %}{{ said }}{% endif %}</p>
   {% endif %}
-  {% if card and card.status %}
-    <p>Your choice: {% if card.status == "done" %}Done{% else %}Not yet{% endif %}.</p>
-  {% endif %}
-  {% if card and card.note %}
-    <label for="kept-note">Your note, as typed</label>
-    <textarea id="kept-note" rows="4" readonly>{{ card.note }}</textarea>
+  {% set copying = unsaved_copy is defined and unsaved_copy %}
+  {% if card and not copying %}
+    {% if unsaved_update is defined and unsaved_update and (card.status or card.note) %}
+      <h2 class="update-heading">Your unsaved update</h2>
+    {% endif %}
+    {{ work_words(card) }}
   {% endif %}
   {% if hand_in_card %}
     {% with kept = hand_in_card %}{% include "student_hand_in_kept.html" %}{% endwith %}
@@ -54,6 +68,7 @@
     and only when the copy holds something to show.
   #}
   {% set copied %}
+    {%- if copying and card %}{{ work_words(card) }}{% endif -%}
     {%- if details_form is defined and details_form %}{% with kept = details_form %}{% include "student_note_details_kept.html" %}{% endwith %}{% endif -%}
     {%- if search_form is defined and search_form %}{% with kept = search_form %}{% include "student_note_search_kept.html" %}{% endwith %}{% endif -%}
   {% endset %}

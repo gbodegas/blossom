@@ -1806,3 +1806,157 @@ def test_a_press_canceled_while_its_copy_is_read_stays_canceled(
     assert isinstance(ended, BaseException)
     assert not isinstance(ended, Exception)
     assert sent == []
+
+
+# ------------------------------------------- a parent's press of I turned it in or its Undo
+
+TURN_IN_PRESSES: Final = {"turned-in": "hand_in_head", "undo-turned-in": "undo_hand_in"}
+"""The two presses about turning it in from a card, and the field each one's button sends."""
+HER_WORDS: Final = "Wren's <b>reading</b> notes"
+
+
+def turn_in_body(press: str, note: str = HER_WORDS) -> bytes:
+    """A turn-in press as a card's form sends it when its button joins her update's form."""
+    return urlencode(
+        {
+            TURN_IN_PRESSES[press]: "",
+            "note": note,
+            "expected_report_id": "",
+            "status": "done",
+            "week": FIXTURE_WEEK,
+            "in_place": "",
+        }
+    ).encode()
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+def test_a_parents_turn_in_press_shows_her_words_read_only_and_reads_no_store(
+    press: str, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """403, fixed before the form is read; then her note and choice as that same request
+    typed them, escaped and read-only, under the copy's heading, on a page with no form and
+    no button. No statement runs on any connection, no id is looked up, the lock is not
+    taken, nothing is written, and nothing she typed is logged."""
+    caplog.set_level(logging.DEBUG)
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    body = turn_in_body(press)
+    with household(tmp_path, "parent") as client:
+        before = everything_kept(client)
+        with watched(client) as watch:
+            answer = streamed(
+                client,
+                path,
+                [body],
+                [("content-type", URL_ENCODED), ("content-length", str(len(body)))],
+            )
+        after = everything_kept(client)
+    page = main_of(answer.text)
+
+    assert answer.status_code == 403
+    assert str(escape(NOT_HERS)) in page
+    assert page.count(" autofocus") == 1
+    assert UNSAVED in page
+    assert NOT_SAVED_SENTENCE in page
+    assert f"readonly>{escape(HER_WORDS)}</textarea>" in page
+    assert "<b>reading</b>" not in page
+    assert "Your choice: Done." in page
+    assert "<form" not in page
+    assert "<button" not in page
+    assert "Back to her week" in page
+    assert watch.statements == []
+    assert watch.looked_up == []
+    assert watch.locked == 0
+    assert watch.copied == [len(body)]
+    assert after == before
+    assert [record for record in caplog.records if "Wren" in record.getMessage()] == []
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+@pytest.mark.parametrize("case", ["oversized", "multipart", "incomplete"])
+def test_a_parents_turn_in_press_shows_nothing_of_a_body_the_copy_refuses(
+    case: str, press: str, tmp_path: pathlib.Path
+) -> None:
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    body = turn_in_body(press, "Wren " + "x" * LIMIT if case == "oversized" else HER_WORDS)
+    kind = "multipart/form-data; boundary=synthetic" if case == "multipart" else URL_ENCODED
+    declared = len(body) + 10 if case == "incomplete" else len(body)
+    with household(tmp_path, "parent") as client:
+        before = everything_kept(client)
+        with watched(client) as watch:
+            answer = streamed(
+                client,
+                path,
+                [body],
+                [("content-type", kind), ("content-length", str(declared))],
+            )
+        after = everything_kept(client)
+    page = main_of(answer.text)
+
+    assert answer.status_code == 403
+    assert str(escape(NOT_HERS)) in page
+    assert UNSAVED not in page
+    assert "Wren" not in page
+    assert "<form" not in page
+    assert watch.statements == []
+    assert after == before
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+@pytest.mark.parametrize("sign_in", ["none", "aged out", "another origin"])
+def test_a_turn_in_press_from_elsewhere_or_with_no_sign_in_keeps_nothing(
+    sign_in: str, press: str, tmp_path: pathlib.Path
+) -> None:
+    """The gate answers first and the route never runs: no copy is made of anything."""
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    with household(tmp_path, "parent") as client:
+        headers = {"Content-Type": URL_ENCODED}
+        if sign_in != "another origin":
+            client.cookies.clear()
+        if sign_in == "aged out":
+            keys = client.app.state.household_keys  # type: ignore[attr-defined]
+            then = datetime.now(UTC) - timedelta(seconds=SESSION_SECONDS + 60)
+            headers["Cookie"] = f"{COOKIE}={issue(Principal.PARENT, keys[Principal.PARENT], then)}"
+        if sign_in == "another origin":
+            headers["Origin"] = "http://elsewhere.example"
+        with watched(client) as watch:
+            answer = client.post(
+                path, content=turn_in_body(press), headers={**PAGE_HEADERS, **headers}
+            )
+
+    assert watch.read == []
+    assert watch.statements == []
+    assert "Wren" not in answer.text
+    if sign_in == "another origin":
+        assert answer.status_code == 403
+        assert answer.text == "This request must come from the same origin."
+    else:
+        assert answer.status_code == 303
+        assert answer.headers["location"] == "/sign-in"
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+def test_a_parents_turn_in_press_is_answered_while_a_decision_holds_the_lock(
+    press: str, tmp_path: pathlib.Path
+) -> None:
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    with household(tmp_path, "parent") as client:
+        state = state_of(client)
+
+        async def held() -> None:
+            await state.decision_lock.acquire()
+
+        client.portal.call(held)  # type: ignore[union-attr]
+        try:
+            answer = client.post(
+                path,
+                content=turn_in_body(press),
+                headers={
+                    **PAGE_HEADERS,
+                    "Content-Type": URL_ENCODED,
+                },
+            )
+        finally:
+            client.portal.call(state.decision_lock.release)  # type: ignore[union-attr]
+
+    assert answer.status_code == 403
+    assert f"readonly>{escape(HER_WORDS)}</textarea>" in answer.text

@@ -518,15 +518,19 @@ def test_a_parent_reads_the_list_and_cannot_press(tmp_path: pathlib.Path) -> Non
 # ------------------------------------------- the hand-in update after Done, and the way back
 
 
-def test_the_hand_in_update_is_offered_once_after_done_and_opening_it_writes_nothing() -> None:
+def test_done_offers_nothing_more_and_opening_the_form_writes_nothing() -> None:
+    """Done writes no hand-in report and adds no offer beside its result: the card keeps its
+    one press and the way to the other choices. Opening the form writes nothing and checks no
+    answer for a first report, Not sure and Still to turn in each keep a way into the form,
+    and no Help me remember is offered."""
     details = f"/student/assignments/{ESSAY_ID}"
-    offer = "Update hand-in status"
     with browser() as client:
         store = state_of(client).project_state
         where = report(client, ESSAY_ID, "done")
         card = card_for(client.get(where).text, ESSAY_ID)
-        assert "Want to keep track of turning it in?" in card
-        assert card.count(f">{offer}<") == 1
+        assert "Want to keep track of turning it in?" not in card
+        assert card.count(">I turned it in</button>") == 1
+        assert card.count(">Other turn-in options</a>") == 1
         assert "hand_in=change" in card
         assert "remember" not in card
 
@@ -544,7 +548,8 @@ def test_the_hand_in_update_is_offered_once_after_done_and_opening_it_writes_not
 
     for page in (unsure, waiting):
         assert "Help me remember" not in page
-        assert ">Change</button>" in page
+        assert ">Other turn-in options</a>" in page
+        assert "hand_in=change" in page
     assert kept == 2
 
 

@@ -570,8 +570,9 @@ def test_finished_homework_is_a_row_to_open_said_in_the_readers_words(
     """With every assignment Done, the fold of this week's cards and the fold of the work
     given out for later are each a closed row with the number of cards Done, Show and Hide,
     and a line saying these are her Done updates and not what the school has received, in
-    the words of whoever reads. How Blossom uses her information and what Blossom keeps
-    take the quieter class, their summaries as they are."""
+    the words of whoever reads, and to her that turn-in updates are there too. How Blossom
+    uses her information and what Blossom keeps take the quieter class, their summaries as
+    they are."""
     with reading(reader, tmp_path) as client:
         everything_done(store_of(client))
         state_of(client).workload_signals.record(PLAN_DATE, None)
@@ -579,6 +580,10 @@ def test_finished_homework_is_a_row_to_open_said_in_the_readers_words(
 
     whose = "Her" if reader == "a parent" else "Your"
     says = f'<span class="fold-says">{whose} Done updates, not what the school has received</span>'
+    if reader != "a parent":
+        # Every card in the fold has a record that can be read, so each offers a turn-in
+        # control to her, which the summary says, and to no parent.
+        says += '<span class="fold-says">Turn-in updates are here too.</span>'
     folds = re.findall(
         r'<details class="steps reported-done"( open)?>\s*<summary>(.*?)</summary>', page, re.S
     )

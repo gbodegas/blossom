@@ -1,13 +1,54 @@
 {# SPDX-License-Identifier: AGPL-3.0-or-later #}
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {#
-  One quiet line on what she has said about turning an assignment in, and the
-  way to the section on its details that holds the form. No form here: a row
-  has one already. Included by every kind of row on her week, a card and both
-  lists of work assigned this week and due later, so what she saved is on the
-  row she comes back to, whichever it is. Having said nothing, saying she is
-  not sure, and a record that cannot be read are three different lines. The
-  link carries the week shown, so the way back from the details is that week.
+  Turning it in on a card or a row of her week, after her work: what she has
+  said about turning the assignment in, with its day, and one press to say she
+  turned it in while she has said nothing, is not sure, or has it still to
+  turn in, beside the way to the other choices on its details. Over turned in
+  or nothing to turn in the way there is Change. Undo is offered only beside
+  the result of a press made here, for the very report that press made, while
+  it stands. Having said nothing, saying she is not sure, and a record that
+  cannot be read are three different lines, and an unreadable record offers
+  nothing to press. A parent reads the lines and meets no control.
+
+  ``ctx`` is the card's own update context, and ``row`` says the group is on a
+  row of the work given out for later, whose title is no heading: there each
+  group heading is named by its own words and the row's title.
 #}
+{% from "student_turn_in_buttons.html" import press, undo %}
+{% macro day(value) %}{{ value.strftime("%B") }} {{ value.day }}{% if ctx.with_year %}, {{ value.year }}{% endif %}{% endmacro %}
 {% set hi = assignment.hand_in %}
-<p class="note hand-in-line">{% if hi.unavailable %}The hand-in record cannot be read right now.{% elif hi.state is none %}Hand-in status not recorded.{% elif hi.state == "needs_hand_in" %}Still to turn in. Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}{% elif hi.state == "turned_in" %}Reported turned in.{% elif hi.state == "not_required" %}Reported nothing to turn in.{% else %}Hand-in status: Not sure.{% endif %} <a class="assignment-link" href="{{ details_href(assignment.assignment_id, fragment="turning-it-in", return_to="week", week=view.week.start.isoformat()) }}" aria-label="Turning it in: {{ assignment.title }}, {{ assignment.course }}">Turning it in</a></p>
+{% set key = assignment.assignment_id %}
+{% set mine = ctx.viewer != "parent" %}
+{% set who = "You" if mine else "She" %}
+{% set shown = turn_in if (turn_in is defined and turn_in and turn_in.assignment_id == key) else none %}
+{% set wf = work_form(assignment, card, ctx) %}
+{% set links = {"return_to": "week", "week": view.week.start.isoformat()} %}
+<div class="hand-in-line">
+  <h3 class="update-heading"{% if row is defined and row %} id="{{ turn_in_group_anchor(key) }}" aria-labelledby="{{ turn_in_group_anchor(key) }} {{ title_anchor(key) }}"{% endif %}>Turning it in</h3>
+  {% if shown and shown.said %}
+    <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1"{% if turn_in_direct %} autofocus{% endif %}>{{ shown.said }}</p>
+  {% endif %}
+  {% if shown and shown.problem %}
+    <p class="problem" role="alert" id="hand-in-problem-{{ key }}" tabindex="-1" autofocus>{{ shown.problem }}</p>
+  {% endif %}
+  <p class="note">{% if hi.unavailable %}The hand-in record cannot be read right now.{% elif hi.state is none %}Hand-in status not recorded.{% elif hi.state == "unknown" %}Hand-in status: Not sure. {{ who }} reported this on {{ day(hi.reported_on) }}.{% elif hi.state == "needs_hand_in" %}{{ who }} reported Still to turn in on {{ day(hi.reported_on) }}. Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}{% elif hi.state == "turned_in" %}{{ who }} reported it turned in on {{ day(hi.reported_on) }}.{% else %}{{ who }} reported nothing to turn in on {{ day(hi.reported_on) }}.{% endif %}</p>
+  {% if ctx.can_update and not hi.unavailable %}
+    {% if hi.state in (none, "unknown", "needs_hand_in") %}
+      <div class="actions">
+        {{ press(assignment, ctx, wf.form_id, true) }}
+      </div>
+      <p class="note"><a class="assignment-link" href="{{ details_href(key, fragment="turning-it-in", hand_in="change", **links) }}" aria-label="Other turn-in options: {{ assignment.title }}, {{ assignment.course }}">Other turn-in options</a></p>
+      {% if hi.note %}
+        <p class="note">Your earlier note stays in history.</p>
+      {% endif %}
+    {% else %}
+      {% if shown and shown.undo_event_id %}
+        <div class="actions">
+          {{ undo(assignment, ctx, wf.form_id, shown.undo_event_id) }}
+        </div>
+      {% endif %}
+      <p class="note"><a class="assignment-link" href="{{ details_href(key, fragment="turning-it-in", hand_in="change", **links) }}" aria-label="Change your hand-in update for {{ assignment.title }}, {{ assignment.course }}">Change</a></p>
+    {% endif %}
+  {% endif %}
+</div>

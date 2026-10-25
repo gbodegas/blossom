@@ -11,7 +11,8 @@
   school's words apply or wait for a parent's review, with the same way back.
   A link to the card lands on its title, which takes the focus, so the outline
   marks the title and not the whole card; an address naming the card itself
-  still brings it into view.
+  still brings it into view. Her work comes first and Turning it in after it,
+  two groups under headings of their own, so the two reports never read as one.
 #}
     <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}" id="{{ assignment_anchor(assignment.assignment_id) }}">
       <p class="course">{{ assignment.course }}</p>
@@ -26,6 +27,9 @@
       <p class="details-link"><a class="assignment-link" href="{{ score.details }}" aria-label="Grade details: {{ assignment.title }}, {{ assignment.course }}">Grade details</a></p>{% endwith %}{% elif scores %}{% with about = assignment %}{% include "student_school_results.html" %}{% endwith %}{% endif %}{% endwith %}{% with checks = gradebook.get(assignment.assignment_id, ())|selectattr("check")|list %}{% if checks %}{% with about = assignment %}{% include "student_to_check.html" %}{% endwith %}{% endif %}{% endwith %}
       <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a></p>{% if assignment.words.to_read %}
       <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, fragment=instructions_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Read instructions: {{ assignment.title }}, {{ assignment.course }}">Read instructions</a></p>{% endif %}
+      {% with ctx = report_contexts[assignment.assignment_id] %}
+      <h3 class="update-heading">{% if ctx.viewer == "parent" %}Her work{% else %}Your work{% endif %}</h3>
+      {% include "student_update.html" %}
       {% include "student_hand_in_line.html" %}
-      {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
+      {% endwith %}
     </article>

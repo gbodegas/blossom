@@ -324,7 +324,9 @@ def quick_press(client: TestClient, page: str, name: str, status: str) -> Answer
     """A press of a card's own Done or Not yet button, sending the card's quick form as a
     browser does: its hidden fields, the button's status, and the note as it stands."""
     action = f"/student/actions/assignments/{name}/report"
-    start = page.index(f'<form method="post" action="{action}" class="quick">')
+    found = re.search(f'<form method="post" action="{re.escape(action)}" class="quick"[ >]', page)
+    assert found is not None
+    start = found.start()
     fields = form_fields(page[start:], action)
     typed = {} if "note" in fields else {"note": ""}
     return client.post(action, data={**fields, **typed, "status": status}, headers=PAGE_HEADERS)
@@ -3135,6 +3137,15 @@ def test_two_assignments_with_one_title_are_told_apart_in_the_notice_by_their_id
 
 
 UNSAVED_HEADING = '<h3 class="update-heading">Your unsaved update</h3>'
+UNSAVED_ON_A_CARD = '<h4 class="update-heading">Your unsaved update</h4>'
+"""On a card the heading sits under the card's "Your work", a level below it."""
+
+
+def unsaved_heading(where: str) -> str:
+    """The heading over her unsaved update where the form was: the details or a card."""
+    return UNSAVED_HEADING if where == "details" else UNSAVED_ON_A_CARD
+
+
 REPORT = "/student/actions/assignments/{}/report"
 
 
@@ -3194,15 +3205,16 @@ def test_a_save_refused_for_a_newer_update_heads_her_words_as_unsaved(where: str
         )
     shown = refused.text if where == "details" else card_for(refused.text, name)
 
+    heading = unsaved_heading(where)
     assert refused.status_code == 409
     assert SAVED_ELSEWHERE in shown
-    assert shown.count(UNSAVED_HEADING) == 1
+    assert shown.count(heading) == 1
     saved = shown.index('<span class="pill">Your update: Done</span>')
-    assert saved < shown.index(UNSAVED_HEADING) < shown.index('value="not_yet" checked')
+    assert saved < shown.index(heading) < shown.index('value="not_yet" checked')
     assert ">still the last page</textarea>" in shown
     assert too_long.status_code == 422
-    assert UNSAVED_HEADING not in too_long.text
-    assert UNSAVED_HEADING not in changing
+    assert heading not in too_long.text
+    assert heading not in changing
 
 
 UNDO = "/student/actions/assignments/{}/undo-report"
@@ -3266,6 +3278,7 @@ def test_a_stale_undo_heads_nothing_as_her_unsaved_update(where: str, meanwhile:
     assert stale.status_code == 409
     assert (ALREADY_UNDONE if meanwhile == "undone" else CANNOT_UNDO) in stale.text
     assert UNSAVED_HEADING not in stale.text
+    assert UNSAVED_ON_A_CARD not in stale.text
     # With no update standing she is offered one; a card on her week left Not yet offers Done.
     assert (OFFERED in shown) is (meanwhile == "undone" or where == "week")
 
@@ -3287,10 +3300,11 @@ def test_a_save_refused_after_an_undo_elsewhere_heads_her_words_as_unsaved(where
         )
     shown = refused.text if where == "details" else card_for(refused.text, ESSAY)
 
+    heading = unsaved_heading(where)
     assert refused.status_code == 409
     assert SAVED_ELSEWHERE in shown
-    assert shown.count(UNSAVED_HEADING) == 1
-    assert shown.index(UNSAVED_HEADING) < shown.index('value="not_yet" checked')
+    assert shown.count(heading) == 1
+    assert shown.index(heading) < shown.index('value="not_yet" checked')
     assert ">kept from the old page</textarea>" in shown
 
 

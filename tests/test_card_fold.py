@@ -129,8 +129,15 @@ class Form:
     html: str
 
 
-WHOLE_FORM: Final = re.compile(r'<form method="post" action="[^"]*/report" class="report">')
-QUICK_FORM: Final = re.compile(r'<form method="post" action="[^"]*/report" class="quick">')
+FORM_ID: Final = r'(?: id="update-form-[^"]*")?'
+"""The id an update form with a note she can type in carries, which the buttons about turning
+it in join."""
+WHOLE_FORM: Final = re.compile(
+    r'<form method="post" action="[^"]*/report" class="report"' + FORM_ID + ">"
+)
+QUICK_FORM: Final = re.compile(
+    r'<form method="post" action="[^"]*/report" class="quick"' + FORM_ID + ">"
+)
 ITEM: Final = re.compile(r'<(?:article|li)\b[^>]*\sid="(assignment-[^"]*)"')
 OWNER: Final = re.compile(r'(?<![\w-])id="(assignment-[^"]*)"')
 QUICK_BUTTON: Final = re.compile(
@@ -140,7 +147,7 @@ QUICK_BUTTON: Final = re.compile(
 """A button that saves one report on its own. Done is described by the page's one line that
 says what Done means."""
 QUICK_ONLY: Final = re.compile(
-    r'<form method="post" action="[^"]*/report" class="quick">\s*'
+    r'<form method="post" action="[^"]*/report" class="quick"' + FORM_ID + r">\s*"
     r'(?:<details class="steps note-fold">.*</details>\s*)?'
     r'(?:<input type="hidden" name="[^"]+" value="[^"]*">\s*)+'
     r'(?:<div class="actions">\s*(?:<button [^>]*>[^<]*</button>\s*){2}</div>'
@@ -411,7 +418,7 @@ def test_a_save_refused_after_an_undo_elsewhere_shows_the_form_under_her_unsaved
 
     (form,) = forms_of(card, WHOLE_FORM)
     assert re.search(
-        r'<h3 class="update-heading">Your unsaved update</h3>\s*<form method="post"', card
+        r'<h4 class="update-heading">Your unsaved update</h4>\s*<form method="post"', card
     )
     assert 'value="done" checked>' in form.html
     assert ">Mine.</textarea>" in form.html
@@ -538,7 +545,7 @@ def test_a_cards_facts_links_and_lines_stay_outside_its_buttons(
         assert record.course in outside
         assert re.search(r'<p class="due">|<span class="due">Due \w+day, ', outside), name
         assert 'aria-label="Details: ' in outside
-        assert '<p class="note hand-in-line">' in outside
+        assert '<div class="hand-in-line">' in outside
     if week.startswith("long"):
         essay = without_the_form(items(page)[assignment_anchor(ESSAY_ID)])
         assert 'aria-label="Read instructions: ' in essay
@@ -758,7 +765,7 @@ def test_a_press_on_a_card_another_device_has_updated_is_refused_with_her_choice
 
     assert answer.status_code == 409, answer.text[:300]
     assert [event.status for event in events] == ["not_yet"]
-    assert '<h3 class="update-heading">Your unsaved update</h3>' in shown
+    assert '<h4 class="update-heading">Your unsaved update</h4>' in shown
     (form,) = forms_of(shown, WHOLE_FORM)
     assert 'value="done" checked>' in form.html
     assert "update-result" not in shown

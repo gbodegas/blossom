@@ -16,8 +16,10 @@ make. Nothing here asks a model, sends a reminder, or tells the school
 anything, and a plan never reads what is saved here.
 """
 
+import asyncio
 import logging
 import sqlite3
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Final, cast
 
@@ -42,7 +44,7 @@ from blossom.hand_in import (
     already_undone,
 )
 from blossom.noticing import read_everything
-from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
+from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of, kept_fields_of
 from blossom.routes.navigation import (
     RETURN_FIELDS,
     TO_TURN_IN,
@@ -60,26 +62,36 @@ from blossom.routes.student import (
     ASSIGNMENT_NOT_SHOWN,
     BAD_FORM,
     BAD_RETURN,
+    FROM_A_CARD,
+    FROM_DETAILS,
     HER_WEEK_NOT_SHOWN,
+    IN_PLACE,
     NOT_HERS_TO_UPDATE,
+    PAGE,
+    TURN_IN_OVER,
     TURNING_IT_IN,
     UPDATE_NOT_SAVED,
     WITHOUT_THE_PAGE,
     YOUR_WEEK_NOT_SHOWN,
+    CardState,
     HandInCard,
+    InPlace,
     ListCard,
     NotShown,
     Origin,
     ReturnLink,
     State,
+    TurnIn,
     detail_page,
     gone_page,
     hand_in_actions,
     list_card_shown,
     not_hers,
+    origin_of,
     parent_reads,
     plain_ways_back,
     receipt_asked,
+    sent_in_place,
     showable,
     shown_once,
     student_page,
@@ -87,8 +99,14 @@ from blossom.routes.student import (
     unavailable_page,
     viewer_of,
 )
-from blossom.stores.project_state import CouldNotSave, UnknownAssignment, UnknownHandIn
-from blossom.to_turn_in import Attempt, to_turn_in
+from blossom.stores.project_state import (
+    DONE,
+    NOT_YET,
+    CouldNotSave,
+    UnknownAssignment,
+    UnknownHandIn,
+)
+from blossom.to_turn_in import ON_THE_CARD, Attempt, to_turn_in
 
 logger = logging.getLogger(__name__)
 
@@ -745,3 +763,419 @@ async def undo_hand_in_from_the_page(
             )
         case HandInNotOffered():
             return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+
+# ------------------------------------------------------------- I turned it in, from a card
+
+TURN_IN_HEAD: Final = "hand_in_head"
+"""The field I turned it in sends, as the button's own value: the head of her hand-in record
+the card showed, blank when it showed none. No other form sends it."""
+TURN_IN_UNDO: Final = "undo_hand_in"
+"""The field Undo beside a turn-in result sends, as the button's own value: the event that
+result named. No other form sends it."""
+WORK_WORDS: Final = frozenset({"note", "expected_report_id", "status"})
+"""Her update's fields, sent beside a turn-in press when its button joins her update's form:
+her note, the update her page showed, and her choice when the whole form is open. They are
+shown again unsaved and never saved here; there is no note about turning it in."""
+TURN_IN_FIELDS: Final = frozenset({TURN_IN_HEAD, "week", IN_PLACE}) | FROM_DETAILS | WORK_WORDS
+TURN_IN_UNDO_FIELDS: Final = frozenset({TURN_IN_UNDO, "week", IN_PLACE}) | FROM_DETAILS | WORK_WORDS
+"""The fields each press sends, each once: its button's value, where it came from as her
+update's form says it, and her update's fields when its button joins that form."""
+TURN_IN_ABSENT: Final = WORK_WORDS | FROM_A_CARD
+"""What a turn-in press may leave out: her update's fields, when the button has a form of its
+own, and the context of the other page."""
+TURN_IN_COPY: Final = frozenset({"note", "status"})
+"""What a parent's refused turn-in press may show again of her update: her note and her
+choice, as that same request typed them."""
+TURN_IN_OFFERED: Final[frozenset[HandInState | None]] = frozenset(TURN_IN_OVER)
+TURN_IN_BAD_FORM: Final = WITHOUT_THE_PAGE[BAD_FORM]
+"""A turn-in press that is not the form a page made: a field twice, one these pages do not
+send, or a value they never write. Nothing was saved."""
+TURN_IN_FAILED_HEADING: Final = "Turning it in"
+
+
+@dataclass(frozen=True)
+class CardPress:
+    """A turn-in press as its form says it: where it came from, the cards her visit keeps in
+    place, its button's value, her update's choice and words to show again, and what makes
+    it a form these pages did not make, before anything is looked up."""
+
+    assignment_id: str
+    origin: Origin
+    kept: InPlace
+    named: str
+    work: CardState | None
+    problem: str | None
+
+
+def work_kept(assignment_id: str, fields: dict[str, str]) -> CardState | None:
+    """Her update's choice and words as a turn-in press sent them, to show again unsaved, or
+    ``None`` when it sent none or only an empty note. The update her page showed rides along
+    as sent, or blank when it is no id these pages write; a blank one meets any update that
+    stands as a change made elsewhere when she saves."""
+    if "note" not in fields or "expected_report_id" not in fields:
+        return None
+    note = fields["note"]
+    chosen = fields.get("status")
+    status_kept = chosen if chosen in (DONE, NOT_YET) else None
+    if status_kept is None and not note.strip():
+        return None
+    token = fields["expected_report_id"]
+    carried = token if len(token) <= TOKEN_MAX_LENGTH and token == token.strip() else ""
+    return CardState(assignment_id, kept=True, status=status_kept, note=note, token=carried)
+
+
+def card_press(
+    request: Request, assignment_id: str, fields: dict[str, str], whole: bool, button: str
+) -> CardPress:
+    """Read a turn-in press. Its context is read by her update's own rule, so it comes back
+    where her update would. Her update's note and the update it showed come together or not
+    at all, and her choice only with them."""
+    origin = origin_of(request, fields)
+    kept = InPlace() if origin.detail else InPlace.read(fields.get(IN_PLACE))
+    named = fields.get(button, "")
+    paired = ("note" in fields) == ("expected_report_id" in fields) and (
+        "status" not in fields or "note" in fields
+    )
+    problem: str | None = None
+    if not whole or not paired or named != named.strip() or (button == TURN_IN_UNDO and not named):
+        problem = TURN_IN_BAD_FORM
+    elif not origin.valid:
+        problem = BAD_RETURN
+    elif len(named) > TOKEN_MAX_LENGTH:
+        problem = NOT_A_HAND_IN_OF_THIS
+    return CardPress(assignment_id, origin, kept, named, work_kept(assignment_id, fields), problem)
+
+
+async def parent_refused(request: Request, state: ApplicationState) -> HTMLResponse:
+    """A parent's turn-in press: 403, fixed from the sign-in and the route before the form is
+    read, the assignment looked up, or the decision lock taken, and nothing written. Her note
+    and choice are shown again only as far as ``kept_fields_of`` reads them, within its
+    bound, once the refusal is fixed, read-only, on a page that reads no store and logs none
+    of them; whatever it finds, the answer is the same 403."""
+    copy = await kept_fields_of(request, TURN_IN_COPY) or {}
+    note = copy.get("note", "")
+    chosen = copy.get("status")
+    typed = CardState(
+        "",
+        status=chosen if chosen in (DONE, NOT_YET) else None,
+        note=note if note.strip() else None,
+        problem=NOT_HERS_TO_UPDATE,
+    )
+    shown = typed if typed.status or typed.note else None
+    return await asyncio.to_thread(
+        templates.TemplateResponse,
+        request,
+        "student_update_recovery.html",
+        {
+            "card": shown,
+            "hand_in_card": None,
+            "note_problem": NOT_HERS_TO_UPDATE,
+            "unsaved_copy": True,
+            "ways_back": [ReturnLink(PAGE, "Back to her week")],
+            "marks": state.settings.page_marks,
+        },
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def card_page(
+    request: Request,
+    state: ApplicationState,
+    press: CardPress,
+    turn_in: TurnIn,
+    status_code: int,
+) -> HTMLResponse:
+    """The page a turn-in press is answered on, made from one reading: the details it came
+    from, or her week with the cards her visit keeps in place, her update's choice and words
+    in its form, and what the press did or could not do on its card. A refusal on the
+    details is said in Turning it in and at the top."""
+    if press.origin.detail:
+        return detail_page(
+            request,
+            state,
+            press.assignment_id,
+            press.origin.back,
+            card=press.work,
+            hand_in=None if turn_in.problem is None else HandInCard(problem=turn_in.problem),
+            status_code=status_code,
+            turn_in=turn_in if turn_in.problem is None else None,
+        )
+    return student_page(
+        request,
+        state,
+        week=press.origin.week,
+        card=press.work,
+        in_place=press.kept,
+        pressed=turn_in.problem is not None,
+        status_code=status_code,
+        turn_in=turn_in,
+    )
+
+
+def page_line(request: Request, press: CardPress) -> str:
+    """Which page can't be shown, in the reader's words."""
+    if press.origin.detail:
+        return ASSIGNMENT_NOT_SHOWN
+    return HER_WEEK_NOT_SHOWN if parent_reads(request) else YOUR_WEEK_NOT_SHOWN
+
+
+async def refused_on_the_card(
+    request: Request, state: ApplicationState, press: CardPress, problem: str, status_code: int
+) -> HTMLResponse:
+    """A turn-in press refused, shown where it was made with her update's choice and words
+    still in its form, tried once, built off the event loop. When that page can't be read,
+    the page that reads no store, with the refusal's status, its words as they read without
+    the page, and her choice and words headed as her unsaved update."""
+    turn_in = TurnIn(press.assignment_id, problem=problem)
+    said = HAND_IN_WITHOUT_THE_PAGE.get(problem, problem)
+    return await asyncio.to_thread(
+        shown_once,
+        request,
+        state,
+        lambda: card_page(request, state, press, turn_in, status_code),
+        NotShown(
+            UPDATE_NOT_SAVED,
+            said,
+            page_line(request, press),
+            plain_ways_back(press.origin, press.assignment_id, press.kept),
+            card=press.work,
+            unsaved_update=True,
+        ),
+        status_code,
+    )
+
+
+def committed_not_shown(
+    request: Request, state: ApplicationState, press: CardPress, said: str
+) -> HTMLResponse:
+    """The page after a turn-in press that was saved when its own page can't be read: what
+    was saved, which page can't be shown, her choice and words headed as her unsaved update,
+    and the ways back. It reads no store and offers nothing that saves again."""
+    work = press.work or CardState(press.assignment_id)
+    return templates.TemplateResponse(
+        request,
+        "student_update_recovery.html",
+        {
+            "heading": TURN_IN_FAILED_HEADING,
+            "card": replace(work, problem=ON_THE_CARD[said]),
+            "hand_in_card": None,
+            "page_line": page_line(request, press),
+            "unsaved_update": True,
+            "ways_back": plain_ways_back(press.origin, press.assignment_id, press.kept),
+            "marks": state.settings.page_marks,
+        },
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
+def answered_with_words(
+    request: Request, state: ApplicationState, press: CardPress, said: str, event_id: str
+) -> HTMLResponse:
+    """A saved turn-in press that sent her update's words, answered with the page itself so
+    her words come back unsaved in its form. The result is said from a reading made after
+    the save, which bears it out. When that reading fails, the page that says what was
+    saved and which page can't be shown."""
+    try:
+        return card_page(
+            request,
+            state,
+            press,
+            TurnIn(press.assignment_id, said=said, event_id=event_id, direct=True),
+            status.HTTP_200_OK,
+        )
+    except sqlite3.Error as error:
+        logger.warning("the page for a turn-in press could not be read: %s", type(error).__name__)
+        return committed_not_shown(request, state, press, said)
+
+
+async def answered_on_the_card(
+    request: Request, state: ApplicationState, press: CardPress, said: str, event_id: str
+) -> Response:
+    """Where a saved turn-in press or its Undo is answered: with her update's words, the page
+    itself, built off the event loop; without them, a redirect to where she pressed, at the
+    line that says what happened, which names the event the save returned."""
+    if press.work is not None:
+        return await asyncio.to_thread(answered_with_words, request, state, press, said, event_id)
+    name = press.assignment_id
+    if press.origin.detail:
+        location = details_href(
+            name,
+            fragment=hand_in_result_anchor(name),
+            turn_in_said=said,
+            turn_in_event=event_id,
+            **press.origin.back.fields(),
+        )
+        return RedirectResponse(location, status_code=status.HTTP_303_SEE_OTHER)
+    location = address(
+        PAGE,
+        fragment=hand_in_result_anchor(name),
+        week=None if press.origin.week is None else press.origin.week.isoformat(),
+        turn_in_said=said,
+        turn_in_about=name,
+        turn_in_event=event_id,
+    )
+    return sent_in_place(location, press.kept)
+
+
+async def gone_from_the_card(
+    request: Request, state: ApplicationState, press: CardPress
+) -> HTMLResponse:
+    """A turn-in press on an assignment no longer on record: the small page, 404, with her
+    update's choice and words to copy, headed as unsaved, built off the event loop."""
+    origin = press.origin
+    return await asyncio.to_thread(
+        gone_page,
+        request,
+        state,
+        origin.back if origin.detail else ReturnTo("week", origin.week),
+        press.assignment_id,
+        card=press.work,
+        in_place=press.kept,
+        unsaved_update=True,
+    )
+
+
+async def failed_on_the_card(
+    request: Request, state: ApplicationState, press: CardPress, problem: str, plain: str
+) -> HTMLResponse:
+    """A turn-in write the file refused and rolled back: the page with the refusal and her
+    words, tried once, built off the event loop; when it can't be read either, the page that
+    reads no store names the press and says nothing changed."""
+    turn_in = TurnIn(press.assignment_id, problem=problem)
+    return await asyncio.to_thread(
+        shown_once,
+        request,
+        state,
+        lambda: card_page(request, state, press, turn_in, status.HTTP_500_INTERNAL_SERVER_ERROR),
+        NotShown(
+            UPDATE_NOT_SAVED,
+            plain,
+            page_line(request, press),
+            plain_ways_back(press.origin, press.assignment_id, press.kept),
+            card=press.work,
+            unsaved_update=True,
+        ),
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
+@router.post(
+    "/actions/assignments/{assignment_id:path}/turned-in",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def turned_in_from_the_card(request: Request, assignment_id: str, state: State) -> Response:
+    """I turned it in, pressed on a card of her week or on an assignment's details: turned in,
+    with no next step, no note, and no cue, as her To turn in list's press says it.
+
+    A parent is answered 403 before the form is read (``parent_refused``). For anyone else
+    the form is read whole. The save is one operation under the decision lock, over what
+    she has said only while that is nothing, not sure, or still to turn in, decided where
+    the write is decided: the same report as what stands is already saved, whatever head
+    the card held; a head that moved on is a change made elsewhere; any other state is no
+    form a card made. Her update is not read and not changed; its choice and words, when
+    the button sent them, come back unsaved in its form. Every page this answers with is
+    built off the event loop after the decision lock is released, so no page adds a wait
+    on the loop; the write itself waits on the loop as every press's does.
+    """
+    if viewer_of(request) == "parent":
+        return await parent_refused(request, state)
+    fields, whole = await fields_of(request, TURN_IN_FIELDS, may_be_absent=TURN_IN_ABSENT)
+    press = card_press(request, assignment_id, fields, whole, TURN_IN_HEAD)
+    if press.problem is not None:
+        return await refused_on_the_card(
+            request, state, press, press.problem, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    try:
+        async with state.decision_lock:
+            now, today = accepted_at(state)
+            result = state.project_state.record_hand_in(
+                assignment_id,
+                TURNED_IN,
+                "",
+                "",
+                expected_head=press.named or None,
+                now=now,
+                today=today,
+                offered_over=TURN_IN_OFFERED,
+            )
+    except UnknownAssignment:
+        return await gone_from_the_card(request, state, press)
+    except UnknownHandIn:
+        return await refused_on_the_card(
+            request, state, press, NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    except CouldNotSave:
+        logger.exception("her turn-in press on %s could not be saved", assignment_id)
+        return await failed_on_the_card(request, state, press, LIST_NOT_SAVED, LIST_TURN_IN_FAILED)
+    match result:
+        case HandInSaved(event=made):
+            return await answered_on_the_card(request, state, press, "turned_in", made.event_id)
+        case HandInAlreadySaved(head=stands):
+            return await answered_on_the_card(request, state, press, "same", stands.event_id)
+        case HandInConflict():
+            return await refused_on_the_card(
+                request, state, press, CHANGED_WITHOUT_THE_PAGE, status.HTTP_409_CONFLICT
+            )
+        case HandInNotOffered():
+            return await refused_on_the_card(
+                request, state, press, TURN_IN_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
+            )
+
+
+@router.post(
+    "/actions/assignments/{assignment_id:path}/undo-turned-in",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def undo_turned_in_from_the_card(
+    request: Request, assignment_id: str, state: State
+) -> Response:
+    """Undo beside a turn-in result: take back the very report that result named, restoring
+    what stood before it, while it is her report that it was turned in and the latest event.
+
+    Anything else is 409 and writes nothing: the page says it was already undone only when
+    the latest event is the undo of that very report, and that it changed otherwise. It is
+    never aimed at a newer event. A parent is answered as for the press. Her update's choice
+    and words come back unsaved as they do for the press, and every page is built off the
+    event loop.
+    """
+    if viewer_of(request) == "parent":
+        return await parent_refused(request, state)
+    fields, whole = await fields_of(request, TURN_IN_UNDO_FIELDS, may_be_absent=TURN_IN_ABSENT)
+    press = card_press(request, assignment_id, fields, whole, TURN_IN_UNDO)
+    if press.problem is not None:
+        return await refused_on_the_card(
+            request, state, press, press.problem, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    try:
+        async with state.decision_lock:
+            now, today = accepted_at(state)
+            result = state.project_state.undo_hand_in(
+                assignment_id, press.named, now=now, today=today, only_over=TURNED_IN
+            )
+    except UnknownAssignment:
+        return await gone_from_the_card(request, state, press)
+    except UnknownHandIn:
+        return await refused_on_the_card(
+            request, state, press, NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    except CouldNotSave:
+        logger.exception("her turn-in press on %s could not be undone", assignment_id)
+        return await failed_on_the_card(request, state, press, HAND_IN_NOT_UNDONE, LIST_UNDO_FAILED)
+    match result:
+        case HandInUndone(event=made):
+            return await answered_on_the_card(request, state, press, "undone", made.event_id)
+        case HandInConflict() as conflict:
+            return await refused_on_the_card(
+                request,
+                state,
+                press,
+                ALREADY_UNDONE if already_undone(conflict, press.named) else HAND_IN_CANNOT_UNDO,
+                status.HTTP_409_CONFLICT,
+            )
+        case HandInNotOffered():
+            return await refused_on_the_card(
+                request, state, press, TURN_IN_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
+            )
