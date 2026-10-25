@@ -1486,7 +1486,7 @@ def test_the_open_form_sent_with_a_turn_in_press_is_unsaved_only_when_it_differs
     assert pressed.status_code == undone.status_code == 200
     for answer in (shown, back):
         assert ("Your unsaved update</h" in answer) is unsaved
-        assert f"{escape(sent)}</textarea>" in answer
+        assert f">\n{escape(sent)}</textarea>" in answer
         assert 'value="not_yet" checked' in answer
 
 
