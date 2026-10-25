@@ -1701,46 +1701,79 @@ def on_the_loop_while(made: Callable[..., object], seen: list[str], name: str) -
     return watched
 
 
+@pytest.mark.parametrize("where", ["week", "details"])
 def test_the_turn_in_routes_build_their_pages_off_the_event_loop(
-    monkeypatch: pytest.MonkeyPatch,
+    where: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every page the two routes answer her with is made where no event loop runs, a worker
-    thread, and not on the loop that serves every request: a saved press with her words, a
-    press made twice, a press refused, a write the file refuses, and homework gone."""
+    """Every page the two routes answer her with, from her week or the details, is made where
+    no event loop runs, a worker thread, and not on the loop that serves every request. For
+    I turned it in: a saved press with her words, a press made twice, a press refused, a
+    write the file refuses, and homework gone. For its Undo: an undo saved, an undo refused
+    for a newer update, an undo the file refuses, and homework gone."""
     seen: list[str] = []
+    steps: dict[str, tuple[int, list[str]]] = {}
 
     def refuses(assignment_id: str, *_: object, **__: object) -> object:
         raise CouldNotSave(assignment_id, sqlite3.OperationalError("disk I/O error"))
 
+    def fresh(client: TestClient) -> str:
+        return week_card(client)[1] if where == "week" else client.get(DETAILS).text
+
+    def shown(answer: Answer) -> str:
+        return card_for(answer.text, ESSAY_ID) if where == "week" else answer.text
+
+    def step(name: str, answer: Answer) -> Answer:
+        steps[name] = (answer.status_code, list(seen))
+        seen.clear()
+        return answer
+
     with browser() as client:
-        _, card = week_card(client)
         monkeypatch.setattr(
             hand_in_routes, "card_page", on_the_loop_while(hand_in_routes.card_page, seen, "page")
         )
         monkeypatch.setattr(
             hand_in_routes, "gone_page", on_the_loop_while(student_routes.gone_page, seen, "gone")
         )
-        saved = turn_in_press(client, card, note=WORDS)
-        again = turn_in_press(client, card, note=WORDS)
-        landed(client, save(client, opened(client), NEEDS_HAND_IN))
-        changed = turn_in_press(client, card, note=WORDS)
         store = state_of(client).project_state
+        first = fresh(client)
+        saved = step("press saved", turn_in_press(client, first, note=WORDS))
+        step("press made twice", turn_in_press(client, first, note=WORDS))
+        step("undo saved", turn_in_press(client, shown(saved), "undo_hand_in", note=WORDS))
+        second = fresh(client)
+        pressed = step("press saved again", turn_in_press(client, second, note=WORDS))
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        step("undo refused", turn_in_press(client, shown(pressed), "undo_hand_in", note=WORDS))
+        step("press refused", turn_in_press(client, second, note=WORDS))
+        third = fresh(client)
+        kept = step("press saved a third time", turn_in_press(client, third, note=WORDS))
         with monkeypatch.context() as failing:
             failing.setattr(store, "record_hand_in", refuses)
-            failed = turn_in_press(client, card, note=WORDS)
+            failing.setattr(store, "undo_hand_in", refuses)
+            step("press the file refuses", turn_in_press(client, third, note=WORDS))
+            step(
+                "undo the file refuses",
+                turn_in_press(client, shown(kept), "undo_hand_in", note=WORDS),
+            )
         store._connection.execute("DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,))
         store._connection.commit()
-        gone = turn_in_press(client, card, note=WORDS)
+        step("press for homework gone", turn_in_press(client, third, note=WORDS))
+        undo_kept = turn_in_press(client, shown(kept), "undo_hand_in", note=WORDS)
+        step("undo for homework gone", undo_kept)
 
-    assert [saved.status_code, again.status_code, changed.status_code] == [200, 200, 409]
-    assert [failed.status_code, gone.status_code] == [500, 404]
-    assert seen == [
-        "page off the loop",
-        "page off the loop",
-        "page off the loop",
-        "page off the loop",
-        "gone off the loop",
-    ]
+    page, gone = ["page off the loop"], ["gone off the loop"]
+    assert steps == {
+        "press saved": (200, page),
+        "press made twice": (200, page),
+        "undo saved": (200, page),
+        "press saved again": (200, page),
+        "undo refused": (409, page),
+        "press refused": (409, page),
+        "press saved a third time": (200, page),
+        "press the file refuses": (500, page),
+        "undo the file refuses": (500, page),
+        "press for homework gone": (404, gone),
+        "undo for homework gone": (404, gone),
+    }
 
 
 def test_a_parents_refused_turn_in_page_is_built_off_the_event_loop(
