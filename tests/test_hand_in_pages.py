@@ -56,7 +56,7 @@ from blossom.routes.student import (
     TURN_IN_MEANS,
 )
 from blossom.stores.project_state import CouldNotSave, ProjectStateStore
-from blossom.to_turn_in import RESULT_UNREADABLE, TURNED_IN_EARLIER
+from blossom.to_turn_in import RESULT_UNREADABLE, TURNED_IN_EARLIER, UNDONE_EARLIER
 from tests.support import (
     DETAILS,
     ESSAY_ID,
@@ -2327,6 +2327,25 @@ def test_an_earlier_result_on_the_details_offers_no_undo_of_what_stands(kind: st
     assert 'name="hand_in_id"' not in shown
     assert 'name="undo_hand_in"' not in shown
     assert ('name="hand_in_id"' in plain) is (kind != "no report after an Undo")
+
+
+@pytest.mark.parametrize("kind", [kind for kind, report in NEWER.items() if report is not None])
+def test_an_earlier_undone_result_on_the_details_offers_no_undo_of_what_stands(kind: str) -> None:
+    """Undo pressed beside a result, then a newer report: the Undo's own result address,
+    said as earlier, offers no Undo, while the same details without it offer the usual one."""
+    with browser() as client:
+        where, _ = pressed_on_the_details(client)
+        action, sent = pressed_form(client.get(where).text, "undo_hand_in")
+        undone = client.post(action, data=sent, headers=PAGE_HEADERS)
+        assert undone.status_code == 303, undone.text[:300]
+        newer_than(client, kind, chain(client)[-1])
+        shown = section(client.get(undone.headers["location"]).text)
+        plain = section(client.get(DETAILS).text)
+
+    assert UNDONE_EARLIER in shown
+    assert 'name="hand_in_id"' not in shown
+    assert 'name="undo_hand_in"' not in shown
+    assert 'name="hand_in_id"' in plain
 
 
 def test_a_fresh_result_on_the_details_offers_its_own_undo_and_no_other() -> None:
