@@ -610,12 +610,25 @@ class ReviewState:
         return [p for p in self.pieces if p.name not in self.saved]
 
 
-def old_first(
+def answer_values(
     answers: Mapping[tuple[str, str], tuple[str, str]],
-) -> list[tuple[tuple[str, str], tuple[str, str]]]:
-    """A draft's stored answers, those naming a new slot by its class and title first, so an
-    answer whose subject is in the form ``subject_for`` gives wins where both read alike."""
-    return sorted(answers.items(), key=lambda item: subject_now(item[0][1]) == item[0][1])
+) -> dict[tuple[str, str], str]:
+    """A draft's stored answers by kind and subject in the form ``subject_for`` gives. An answer
+    stored in that form wins over any naming the same new slot by its class and title. Answers
+    naming it by class and title answer where they agree; where two of them disagree, as a
+    review kept before its title was corrected can hold, which one is hers can't be told, so
+    the question is asked again."""
+    named: dict[tuple[str, str], str] = {}
+    by_name: dict[tuple[str, str], set[str]] = {}
+    for (kind, subject), (value, _) in answers.items():
+        slot_form = subject_now(subject)
+        if slot_form == subject:
+            named[(kind, subject)] = value
+        else:
+            by_name.setdefault((kind, slot_form), set()).add(value)
+    out = {key: next(iter(values)) for key, values in by_name.items() if len(values) == 1}
+    out.update(named)
+    return out
 
 
 def review_state(
@@ -630,10 +643,7 @@ def review_state(
     A default the press posted, and its answers kept, still counts as the default it was. A
     piece a change of screenshots marked, or whose answer depended on a correction that wasn't
     kept, is given no default: it waits for an answer."""
-    values = {
-        (kind, subject_now(subject)): value
-        for (kind, subject), (value, _) in old_first(tables.answers)
-    }
+    values = answer_values(tables.answers)
     split = {
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
     }

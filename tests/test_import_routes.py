@@ -7941,6 +7941,74 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
     assert not says(healthy.text, imports.SAID["closed"])
 
 
+def failing_read(
+    real: Callable[..., object], at: int, error: type[Exception]
+) -> Callable[..., object]:
+    """The review's read as the store gives it, refusing with ``error`` at its ``at``-th call."""
+    calls: list[int] = []
+
+    def read(*args: object, **kwargs: object) -> object:
+        calls.append(1)
+        if len(calls) == at:
+            raise error
+        return real(*args, **kwargs)
+
+    return read
+
+
+@pytest.mark.parametrize("busy", [StoreBusy, WriterBusy], ids=["store busy", "writer busy"])
+@pytest.mark.parametrize("at", [3, 4], ids=["read after the save", "read for the page"])
+@pytest.mark.parametrize("path", ["save", "replay"])
+def test_a_read_refused_after_a_save_committed_says_what_it_saved_and_gives_the_typing_back(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    busy: type[Exception],
+    at: int,
+    path: str,
+) -> None:
+    """One of two groups saved, a title typed for the other. The review's third or fourth read
+    of the press refused, after the save committed (the save itself, or its resend): the press
+    answers with what it saved in the success panel, which takes the focus, never that nothing
+    was added nor that the review is finished, and gives the typed title back. Sent again once
+    the review can be read, it shows the review with the counts and the title in its box, and
+    nothing is written twice."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first_unit, open_unit = units_on(page)
+        titles = [f"correct:{box_subject(page, 'title', n)}" for n in range(2)]
+        [other] = [t for t in titles if json.loads(t.removeprefix("correct:"))[0] in open_unit]
+        posted = page_post(page, "save", tick=[first_unit], typed={other: "Chains Guide Six"})
+        drafts = state_of(browser).import_drafts
+        real = drafts.snapshot
+        if path == "replay":
+            assert send(browser, draft_id, posted).status_code == 200
+        before = assignment_count(browser)
+        monkeypatch.setattr(drafts, "snapshot", failing_read(real, at, busy))
+        answer = send(browser, draft_id, posted)
+        monkeypatch.setattr(drafts, "snapshot", real)
+        refused = assignment_count(browser)
+        again = send(browser, draft_id, posted)
+        after = assignment_count(browser)
+
+    counts = "Saved: 1 new assignment. 1 still needs checking."
+    shown = OUTCOME.search(answer.text)
+    assert answer.status_code == 200
+    assert shown is not None
+    assert re.search(
+        rf'<h2 id="outcome-heading" tabindex="-1" autofocus>{re.escape(counts)}</h2>',
+        shown.group(1),
+    )
+    assert not says(answer.text, imports.SAID["busy"])
+    assert not says(answer.text, imports.SAID["closed"])
+    assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    assert refused == before + (1 if path == "save" else 0)
+    assert again.status_code == 200
+    assert lines_in(DONE.search(again.text))[0] == counts
+    assert box_of(review_form(again.text), other)[1] == "Chains Guide Six"  # type: ignore[index]
+    assert after == refused
+
+
 def test_a_resent_save_that_finished_the_review_says_so_only_when_the_review_can_be_read(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

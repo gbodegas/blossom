@@ -496,6 +496,21 @@ async def typing_of(request: Request) -> list[tuple[str, str]]:
     return [(TYPED_LABELS[field.partition(":")[0]], text) for field, text in typed_back(items)]
 
 
+async def saved_unread(
+    request: Request,
+    state: ApplicationState,
+    done: Sequence[str],
+    said: Sequence[str] = (),
+    week: str | None = None,
+) -> Response:
+    """A save that committed whose review the store refuses to read: what it saved, in the
+    success panel whose heading takes the focus, with what else the press said beneath it and
+    no word that the review is finished, since that isn't known, and every correction the press
+    typed given back to copy."""
+    typed = await typing_of(request)
+    return saved_outcome(request, state, done, week, finished=False, typed=typed, notes=said)
+
+
 async def refused_keeping_typing(
     request: Request,
     state: ApplicationState,
@@ -534,13 +549,21 @@ async def snapshot_keeping_typing(
     draft_id: str,
     said: Sequence[str] = (),
     status: int | None = None,
+    done: Sequence[str] = (),
 ) -> DraftSnapshot | Response:
     """The review as one read sees it after a press, or the page that says why it can't be
-    shown: for a review that expired or is gone, what the press did and its typing."""
+    shown: for a review that expired or is gone, what the press did and its typing. After a
+    save that committed (``done``, what it saved), a review the store refuses to read answers
+    with what it saved and the press's typing (``saved_unread``), never that nothing was
+    saved."""
     student = state.project_state.student_id()
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (DraftExpired, DraftNotFound) as error:
+        return await refused_keeping_typing(request, state, error, [*done, *said], status)
     except STORE_REFUSALS as error:
+        if done:
+            return await saved_unread(request, state, done, said)
         return await refused_keeping_typing(request, state, error, said, status)
     if snapshot.closed_at is not None:
         return said_page(request, marks_of(state), SAID["closed"], 200)
@@ -1232,7 +1255,7 @@ async def with_typing(
     was given with. A press that posts no ticks, an offer or a found row, is ticked as a plain
     load would tick the page. A review that expired meanwhile answers with what the press did
     and its typing to copy."""
-    after = await snapshot_keeping_typing(request, state, draft_id, [*done, *said], status)
+    after = await snapshot_keeping_typing(request, state, draft_id, said, status, done)
     if isinstance(after, Response):
         return after
     lines = list(said)
@@ -1421,16 +1444,18 @@ def saved_outcome(
     *,
     finished: bool = True,
     typed: Sequence[tuple[str, str]] = (),
+    notes: Sequence[str] = (),
 ) -> Response:
     """A save that finished the review, as the grade save's outcome shows one: the steps line
     at Saved, the counts as the panel's heading, her week, and that the review is finished.
-    Where whether it finished isn't known (``finished`` false), it isn't said, and the
-    corrections the post typed (``typed``) are given back to copy."""
+    Where whether it finished isn't known (``finished`` false), it isn't said, what else the
+    press said (``notes``) is, and the corrections the post typed (``typed``) are given back to
+    copy."""
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
-            "said": [SAID["closed"]] if finished else [],
+            "said": [SAID["closed"], *notes] if finished else list(notes),
             "outcome": list(lines),
             "week": week,
             "typed": list(typed),
@@ -1454,7 +1479,7 @@ async def partly_saved(
     open with the corrections the press typed still in the form, marked as not saved, none of
     them stored. A review that expired since answers with the outcome and the typing to
     copy."""
-    after = await snapshot_keeping_typing(request, state, draft_id, [*done, *said], 200)
+    after = await snapshot_keeping_typing(request, state, draft_id, said, 200, done)
     if isinstance(after, Response):
         return after
     problems = list(said)
@@ -1530,8 +1555,7 @@ async def saved_page(
         pairs = await asyncio.to_thread(record.homework_acceptance, student, draft_id, acceptance)
         week = await week_of(state, pairs or ())
         if snapshot is None:
-            typed = await typing_of(request)
-            return saved_outcome(request, state, lines, week, finished=False, typed=typed)
+            return await saved_unread(request, state, lines, week=week)
         return saved_outcome(request, state, lines, week)
     if post is None:
         post, _ = await review_post(request, state, snapshot)

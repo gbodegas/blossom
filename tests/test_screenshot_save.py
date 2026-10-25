@@ -2207,6 +2207,43 @@ def test_a_new_slot_s_answers_stored_under_its_class_and_title_still_answer_it(
     assert (row.due_date, row.kind.value) == (FRIDAY, "TASK")
 
 
+def test_old_answers_of_one_new_slot_that_disagree_ask_again(house: House) -> None:
+    """Due answers of one new slot stored under its class and two titles, as a review kept
+    before its title was corrected can hold them: disagreeing, neither answers, so the due date
+    is asked again and the group isn't saved; agreeing, they answer; and an answer named by the
+    slot still wins over both."""
+    draft_id, a, b = joined_review(house)
+    [dest] = state_of(house, draft_id).validation.destinations
+    names = sorted([a.name, b.name])
+    slot = screenshot_review.subject_for(dest, names)
+    kept(house, draft_id, ("kind", slot, "TASK"))
+    corrected = json.dumps([list(dest), names], separators=(",", ":"))
+    as_read = json.dumps([[*dest[:2], "Reading Log Old", dest[3]], names], separators=(",", ":"))
+    kept(
+        house,
+        draft_id,
+        ("due", as_read, MONDAY.isoformat()),
+        ("due", corrected, FRIDAY.isoformat()),
+    )
+    [asked] = state_of(house, draft_id).preview
+    assert asked.open_questions == ("due",)
+    refused = save(house, press_of(house, draft_id))
+    written = assignments(house)
+    kept(house, draft_id, ("due", as_read, FRIDAY.isoformat()))
+    agree = state_of(house, draft_id)
+    kept(house, draft_id, ("due", slot, MONDAY.isoformat()))
+    named = state_of(house, draft_id)
+
+    assert dest[0] == "new"
+    assert isinstance(refused, NotSaved)
+    assert refused.reason == "open"
+    assert written == {}
+    [entry] = agree.preview
+    assert (entry.due, entry.open_questions) == (FRIDAY, ())
+    [entry] = named.preview
+    assert entry.due == MONDAY
+
+
 def test_a_card_s_source_line_says_the_title_as_read(house: House) -> None:
     """A card going to a saved assignment of another name says the title the screenshot read,
     never the one she typed, and a card going to its own name says nothing more."""
