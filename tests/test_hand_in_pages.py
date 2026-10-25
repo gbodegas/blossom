@@ -1546,3 +1546,78 @@ def test_the_turn_in_routes_build_their_pages_off_the_event_loop(
 
     assert (saved.status_code, refused.status_code, changed.status_code) == (200, 200, 409)
     assert on_the_loop == [False, False, False]
+
+
+def test_words_sent_with_undo_come_back_unsaved_and_undo_writes_once() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        shown = card_for(landed(client, turn_in_press(client, card)), ESSAY_ID)
+        undone = turn_in_press(client, shown, "undo_hand_in", note=WORDS)
+        again = turn_in_press(client, shown, "undo_hand_in", note=WORDS)
+        events = chain(client)
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+
+    assert undone.status_code == 200
+    assert HAND_IN_UNDONE in card_for(undone.text, ESSAY_ID)
+    assert f">{escape(WORDS)}</textarea>" in card_for(undone.text, ESSAY_ID)
+    assert again.status_code == 409
+    assert f">{escape(WORDS)}</textarea>" in card_for(again.text, ESSAY_ID)
+    assert len(events) == 2
+    assert reports == []
+
+
+def test_a_press_for_homework_taken_off_the_record_keeps_her_words_to_copy() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        store = state_of(client).project_state
+        store._connection.execute("DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,))
+        store._connection.commit()
+        answer = turn_in_press(client, card, note=WORDS)
+
+    assert answer.status_code == 404
+    assert '<h2 class="update-heading">Your unsaved update</h2>' in answer.text
+    assert f"readonly>{escape(WORDS)}</textarea>" in answer.text
+
+
+def test_a_refused_press_whose_page_cannot_be_read_keeps_her_words_as_her_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unreadable(*_: object, **__: object) -> None:
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    with browser() as client:
+        _, card = week_card(client)
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        monkeypatch.setattr(hand_in_routes, "card_page", unreadable)
+        answer = turn_in_press(client, card, note=WORDS)
+
+    assert answer.status_code == 409
+    assert "<h1>Update not saved</h1>" in answer.text
+    assert escape("That changed while you were away, so nothing was saved.") in answer.text
+    assert '<h2 class="update-heading">Your unsaved update</h2>' in answer.text
+    assert f"readonly>{escape(WORDS)}</textarea>" in answer.text
+    assert "hand-in update" not in answer.text.split("<main", 1)[1].lower()
+
+
+def test_a_parent_at_a_result_address_reads_what_stands_and_no_result(
+    tmp_path: pathlib.Path,
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        _, card = week_card(client)
+        where = turn_in_press(client, card).headers["location"]
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        read = client.get(where).text
+        details = client.get(
+            DETAILS, params={"turn_in_said": "turned_in", "turn_in_event": chain(client)[0]}
+        ).text
+
+    shown = card_for(read, ESSAY_ID)
+    assert "She reported it turned in on August 19." in shown
+    assert "You reported this turned in." not in read
+    assert "You reported this turned in." not in details
+    assert "<button" not in section(details)
+    assert 'name="undo_hand_in"' not in read

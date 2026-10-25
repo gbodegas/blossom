@@ -11,6 +11,10 @@ parent's update, hand-in or Undo lands on her current week, whatever page the fo
 from. The four note presses keep a bounded copy of what that same request typed, read only
 after the refusal is fixed and never past 16 KiB, on a page that reads no store.
 
+Her I turned it in and its Undo, from a card or the details, are refused the same way before
+anything is read; they then keep a bounded copy of her update's note and choice from that
+same request, on the same page that reads no store.
+
 The family's tree has the same four note presses. She may reach them only to be refused
 the same way; a parent pressing them is the family's own workflow and is answered as it
 was. Her own presses, and every press with the sign-in off, are answered as they were.
