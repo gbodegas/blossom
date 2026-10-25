@@ -2412,3 +2412,29 @@ def test_an_earlier_result_on_her_week_offers_no_undo_either(kind: str) -> None:
     assert TURNED_IN_EARLIER in shown
     assert 'name="undo_hand_in"' not in shown
     assert 'name="hand_in_id"' not in shown
+
+
+def test_a_result_address_for_homework_off_the_record_says_so_on_her_week_and_the_details() -> None:
+    """A turn-in result's address opened once its assignment is off the record: her week
+    answers 200 with the line that says so in place of the card, and the details answer 404
+    with the page that says so. Neither says what the press did."""
+    with browser() as client:
+        _, card = week_card(client)
+        on_her_week = turn_in_press(client, card).headers["location"]
+        shown = card_for(client.get(on_her_week).text, ESSAY_ID)
+        assert turn_in_press(client, shown, "undo_hand_in").status_code == 303
+        page = client.get(DETAILS, params={"return_to": "week", "week": FIXTURE_WEEK}).text
+        on_the_details = turn_in_press(client, page).headers["location"]
+        store = state_of(client).project_state
+        store._connection.execute("DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,))
+        store._connection.commit()
+        week = client.get(on_her_week)
+        details = client.get(on_the_details)
+
+    assert week.status_code == 200
+    assert "That assignment is not on record now. The week's homework is below." in week.text
+    assert f'id="assignment-{ESSAY_ID}"' not in week.text
+    assert "You reported this turned in." not in week.text
+    assert details.status_code == 404
+    assert "This assignment is not on record now." in details.text
+    assert "You reported this turned in." not in details.text
