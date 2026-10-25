@@ -36,6 +36,7 @@ from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
 from blossom.routes.navigation import details_href, week_href
 from blossom.routes.runs import Unconfirmed
+from blossom.stores.drafts import STORE_WAIT_SECONDS
 from tests.support import (
     DETAILS,
     ENDED_REASONS,
@@ -58,6 +59,7 @@ from tests.support import (
     UNDO,
     HeldByAnother,
     Statements,
+    WaitBeside,
     after_the_failure,
     browser,
     card_for,
@@ -1863,11 +1865,20 @@ def test_a_record_that_cannot_be_read_is_said_on_a_page_that_stands_with_no_word
 def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keeps_her_words(
     tmp_path: pathlib.Path,
 ) -> None:
+    """Her refused press reads the drafts store once, under a busy timeout of 4 to 5 seconds,
+    and lasts under 1.5 times another connection's read of the held file under
+    ``STORE_WAIT_SECONDS``, timed beside it so a slowed process stretches both waits."""
     with household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
         before = every_row(database_of(client))
-        with Statements(state_of(client)) as seen, HeldByAnother(database_of(client)):
+        with (
+            Statements(state_of(client)) as seen,
+            HeldByAnother(database_of(client)),
+            WaitBeside(
+                database_of(client), STORE_WAIT_SECONDS, "SELECT COUNT(*) FROM drafts"
+            ) as beside,
+        ):
             started = time.monotonic()
             answer = client.post(path, data=data, headers=PAGE_HEADERS)
             took = time.monotonic() - started
@@ -1880,7 +1891,6 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
         alert=f"Nothing was saved, because neither Done nor Not yet was chosen. {YOUR_WEEK}",
     )
     assert f"readonly>{escape(TYPED)}</textarea>" in main
-    assert took < 9
     ran = [
         line
         for line in seen
@@ -1890,29 +1900,46 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     assert len(ran) == 1
     assert "drafts" in ran[0]
     assert after == before
+    timeouts = [
+        int(line.split("=")[1])
+        for line in seen[: seen.index(ran[0])]
+        if line.strip().upper().startswith("PRAGMA BUSY_TIMEOUT=")
+    ]
+    assert timeouts
+    assert 4000 < timeouts[-1] <= 5000
+    assert beside.refused
+    # Midway between one store wait and two.
+    assert took < 1.5 * beside.took, (took, beside.took)
 
 
 def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     tmp_path: pathlib.Path,
 ) -> None:
+    """A parent's reply asks once for the file's writer, under the help-requests store's busy
+    timeout of 5 seconds, and lasts under 1.5 times another connection's BEGIN IMMEDIATE on
+    the held file under 5 seconds, timed beside it so a slowed process stretches both waits."""
     with household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
         state = state_of(client)
         asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
         path = f"/parent/actions/help/{asked}"
         before = every_row(database_of(client))
-        with Statements(state) as seen, HeldByAnother(database_of(client)):
+        with (
+            Statements(state) as seen,
+            HeldByAnother(database_of(client)),
+            WaitBeside(database_of(client), 5.0, "BEGIN IMMEDIATE") as beside,
+        ):
             started = time.monotonic()
             answer = client.post(path, data={"step": "accept", "response": TYPED})
             took = time.monotonic() - started
         idle = not state.help_requests._connection.in_transaction
+        (timeout,) = state.help_requests._connection.execute("PRAGMA busy_timeout").fetchone()
         after = every_row(database_of(client))
         again = client.post(path, data={"step": "accept", "response": TYPED})
         moved = state.help_requests.get(asked)
 
     main = store_free_page(answer, status=500, heading="Family review", alert=HELP_STEP_FAILED)
     assert f"readonly>{escape(TYPED)}</textarea>" in main
-    assert took < 9
     ran = [line for line in seen if line.strip().upper() != "ROLLBACK"]
     assert ran == ["BEGIN IMMEDIATE"]
     assert idle
@@ -1921,6 +1948,10 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     assert moved is not None
     assert (moved.state, moved.response) == ("accepted", TYPED)
     assert [update.body for update in moved.parent_updates] == [TYPED]
+    assert timeout == 5000
+    assert beside.refused
+    # Midway between one store wait and two.
+    assert took < 1.5 * beside.took, (took, beside.took)
 
 
 def test_her_notes_while_the_file_is_held_say_they_cannot_be_shown(

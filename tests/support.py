@@ -2555,6 +2555,36 @@ class HeldByAnother:
         self.connection.close()
 
 
+class WaitBeside:
+    """Another connection running ``statement`` on the held file under a busy timeout of
+    ``seconds``, on a thread beside a press, so a slowed or paused process stretches both
+    waits: ``took`` is how long it lasted, ``refused`` whether it ended as locked."""
+
+    def __init__(self, path: pathlib.Path, seconds: float, statement: str) -> None:
+        self.path, self.seconds, self.statement = path, seconds, statement
+        self.took = 0.0
+        self.refused = False
+        self.thread = threading.Thread(target=self.wait)
+
+    def wait(self) -> None:
+        connection = sqlite3.connect(self.path, timeout=self.seconds, isolation_level=None)
+        started = monotonic()
+        try:
+            connection.execute(self.statement).fetchall()
+        except sqlite3.OperationalError as error:
+            self.refused = "locked" in str(error)
+        finally:
+            self.took = monotonic() - started
+            connection.close()
+
+    def __enter__(self) -> "WaitBeside":
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.thread.join()
+
+
 def the_alert(page: str) -> str:
     """The words of the one focused explanation on a page that reads no store, links and
     all, or empty when there is none."""
