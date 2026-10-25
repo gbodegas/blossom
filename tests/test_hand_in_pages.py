@@ -1502,16 +1502,22 @@ def box_text(page: str, box_id: str) -> str:
     return text[1:] if text.startswith("\n") else text
 
 
+@pytest.mark.parametrize(
+    "note",
+    [AFTER_A_BLANK_LINE, "\n\nWords after two blank lines"],
+    ids=["one blank line", "two blank lines"],
+)
 @pytest.mark.parametrize("outcome", ["saved", "changed elsewhere"])
 @pytest.mark.parametrize(
     "form", ["the folded form on a card", "the open form on a card", "the open form on the details"]
 )
 def test_a_note_that_opens_with_a_blank_line_comes_back_as_sent_after_a_turn_in_press(
-    form: str, outcome: str
+    form: str, outcome: str, note: str
 ) -> None:
     """A browser drops one line break that opens a text area's text. Her words sent with
     I turned it in come back so that the form sends them again exactly as she sent them,
-    whether the press was saved or refused."""
+    whether the press was saved or refused; after a saved press, its Undo sends them as
+    the page holds them, and they come back from it as sent too."""
     with browser() as client:
         if form == "the open form on the details":
             page = client.get(DETAILS).text
@@ -1522,13 +1528,21 @@ def test_a_note_that_opens_with_a_blank_line_comes_back_as_sent_after_a_turn_in_
             _, page = week_card(client)
         if outcome == "changed elsewhere":
             landed(client, save(client, opened(client), NEEDS_HAND_IN))
-        answer = turn_in_press(client, page, note=AFTER_A_BLANK_LINE)
-    shown = answer.text if "details" in form else card_for(answer.text, ESSAY_ID)
-    again = "undo_hand_in" if outcome == "saved" else "hand_in_head"
+        answer = turn_in_press(client, page, note=note)
+        shown = answer.text if "details" in form else card_for(answer.text, ESSAY_ID)
+        if outcome == "saved":
+            action, sent = pressed_form(shown, "undo_hand_in")
+            undone = client.post(action, data=sent, headers=PAGE_HEADERS)
+            back = undone.text if "details" in form else card_for(undone.text, ESSAY_ID)
 
     assert answer.status_code == (200 if outcome == "saved" else 409)
     assert ('class="quick"' in shown) is (form == "the folded form on a card")
-    assert pressed_form(shown, again)[1]["note"] == AFTER_A_BLANK_LINE
+    if outcome == "saved":
+        assert sent["note"] == note
+        assert undone.status_code == 200
+        assert pressed_form(back, "hand_in_head")[1]["note"] == note
+    else:
+        assert pressed_form(shown, "hand_in_head")[1]["note"] == note
 
 
 BOXES: Final = [
