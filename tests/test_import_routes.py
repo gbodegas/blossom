@@ -56,6 +56,7 @@ from blossom.stores.import_drafts import (
     FAILURES,
     AnswerToKeep,
     DraftExpired,
+    DraftNotFound,
     new_creation_token,
 )
 from blossom.stores.project_state import Assignment, AssignmentKind
@@ -6378,9 +6379,13 @@ def test_a_save_that_passed_its_checks_before_expiry_completes_after_it(
     assert accepted == 1
 
 
+@pytest.mark.parametrize("gone", ["expired", "removed"])
 def test_a_save_recorded_before_expiry_replays_its_outcome_after_it_and_writes_nothing(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, gone: str
 ) -> None:
+    """A save recorded, then its review expires, or the sweep removes it: the resent press
+    answers with what was saved, in the success panel, and the sentence that says the review
+    expired or is gone, never that it finished, and writes nothing."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, kept = kept_two_groups(browser, monkeypatch)
         first, _ = units_on(kept)
@@ -6390,14 +6395,19 @@ def test_a_save_recorded_before_expiry_replays_its_outcome_after_it_and_writes_n
         posted = page_post(kept, "save", tick=[first])
         saved = followed(browser, send(browser, draft_id, posted))
         after_save = assignment_count(browser)
-        clock_moved_to(monkeypatch, browser, expires + timedelta(minutes=1))
+        clock_moved_to(monkeypatch, browser, expires + timedelta(hours=2))
+        if gone == "removed":
+            assert state.import_drafts.sweep().expired == 1
         replayed = followed(browser, send(browser, draft_id, posted))
         after_replay = assignment_count(browser)
         accepted = acceptances_of(browser, draft_id)
 
+    shown = OUTCOME.search(replayed)
     assert says(saved, "Saved: 1 new assignment.")
-    assert says(replayed, "Saved: 1 new assignment.")
-    assert not says(replayed, imports.SAID["expired"])
+    assert shown is not None
+    assert says(shown.group(1), "Saved: 1 new assignment.")
+    assert says(shown.group(1), imports.SAID["expired" if gone == "expired" else "absent"])
+    assert not says(replayed, imports.SAID["closed"])
     assert after_replay == after_save
     assert accepted == 1
 
@@ -7793,6 +7803,43 @@ def test_an_old_instruction_correction_reaches_a_split_piece_read_without_words_
     assert texts == [(words,), (words,)]
 
 
+@pytest.mark.parametrize(
+    ("heading", "read_a_date"),
+    [("Monday", False), ("Monday 10/5/2026", True)],
+    ids=["no date read", "a date read"],
+)
+def test_no_assigned_date_given_on_an_unsure_heading_confirms_only_where_no_date_was_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, heading: str, read_a_date: bool
+) -> None:
+    """ "No assigned date was given" ticked on an assigned card under a day heading the reader
+    wasn't sure of answers its question either way. Where no date was read it is that piece's
+    "Confirm as read", writing no correction; where a date was read it stays the correction to
+    none, with no confirmation kept."""
+    card = homework_card(footer="Due (10/8/2026)")
+    answer = homework_answer(
+        headings=[{"text": heading, "y": 150, "uncertain": "faint"}], cards=[card]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        [none] = fields_named(review_form(page), "none:")
+        [confirm] = fields_named(review_form(page), "answer:confirm:")
+        ticked = {f"none:{none}": "none"}
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep", choose=ticked)))
+        answers = stored_answers(browser, draft_id)
+        later(browser, draft_id, kept)
+        held = progress_after(browser, draft_id)
+
+    piece = json.loads(none)[0]
+    assert not says(kept, f"Still to answer: {screenshot_page.OPEN_NAMES['confirm']}.")
+    if read_a_date:
+        assert held == {piece: {"assigned": None}}
+        assert ("confirm", confirm) not in answers
+    else:
+        assert held == {}
+        assert answers[("confirm", confirm)] == "as_read"
+
+
 def test_no_assigned_date_given_answers_an_unsure_day_heading_that_read_no_date(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -8000,6 +8047,8 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
     assert re.search(r'<h2 id="outcome-heading" tabindex="-1" autofocus>', shown.group(1))
     assert [html.unescape(t) for t in re.findall(r">([^<>]+)</(?:h2|p)>", shown.group(1))] == counts
     assert not says(again.text, imports.SAID["closed"])
+    assert not says(again.text, imports.SAID["expired"])
+    assert not says(again.text, imports.SAID["absent"])
     assert TYPED_BACK.findall(again.text) == ["Chains Guide Six"]
     assert healthy.status_code == 200
     assert lines_in(DONE.search(healthy.text)) == counts
@@ -8022,7 +8071,11 @@ def failing_read(
     return read
 
 
-@pytest.mark.parametrize("busy", [StoreBusy, WriterBusy], ids=["store busy", "writer busy"])
+@pytest.mark.parametrize(
+    "busy",
+    [StoreBusy, WriterBusy, DraftExpired, DraftNotFound],
+    ids=["store busy", "writer busy", "expired", "removed"],
+)
 @pytest.mark.parametrize("at", [3, 4], ids=["read after the save", "read for the page"])
 @pytest.mark.parametrize("path", ["save", "replay"])
 def test_a_read_refused_after_a_save_committed_says_what_it_saved_and_gives_the_typing_back(
@@ -8035,9 +8088,10 @@ def test_a_read_refused_after_a_save_committed_says_what_it_saved_and_gives_the_
     """One of two groups saved, a title typed for the other. The review's third or fourth read
     of the press refused, after the save committed (the save itself, or its resend): the press
     answers with what it saved in the success panel, which takes the focus, never that nothing
-    was added nor that the review is finished, and gives the typed title back. Sent again once
-    the review can be read, it shows the review with the counts and the title in its box, and
-    nothing is written twice."""
+    was added nor that the review is finished, and gives the typed title back; a review found
+    expired or gone says so there, a busy one says neither. Sent again once the review can be
+    read, it shows the review with the counts and the title in its box, and nothing is written
+    twice."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
@@ -8067,6 +8121,9 @@ def test_a_read_refused_after_a_save_committed_says_what_it_saved_and_gives_the_
     )
     assert not says(answer.text, imports.SAID["busy"])
     assert not says(answer.text, imports.SAID["closed"])
+    endings = {DraftExpired: "expired", DraftNotFound: "absent"}
+    for error, ending in endings.items():
+        assert says(shown.group(1), imports.SAID[ending]) == (busy is error)
     assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
     assert refused == before + (1 if path == "save" else 0)
     assert again.status_code == 200
@@ -8710,6 +8767,41 @@ def test_the_status_line_and_the_asked_again_line_are_the_design_s(
             "Discard the review",
         )
     )
+
+
+def described(page: str, words: str) -> list[str]:
+    """The ids a button's description names, for the button whose words begin so."""
+    for button in re.findall(r"<button [^>]*>.*?</button>", page, re.S):
+        text = html.unescape(re.sub(r"<[^>]+>", "", button)).strip()
+        if text.startswith(words):
+            found = re.search(r'aria-describedby="([^"]+)"', button)
+            return [] if found is None else found.group(1).split()
+    message = f"no button {words!r}"
+    raise AssertionError(message)
+
+
+def test_read_and_upload_point_to_the_typing_note_while_rows_show(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read and Upload chosen screenshots are forms of their own, which carry none of the fold's
+    typing: with rows on the page, each points to the note that says so, Read beside its
+    disclosure; before any row shows, there is no such note, and they don't."""
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(homework_answer(), None, 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        plain = browser.get(f"/parent/imports/{draft_id}").text
+        pressed = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(plain))
+        assert pressed.status_code == 200, pressed.text
+        sent = upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
+        rows = browser.get(sent.headers["location"]).text
+
+    assert 'id="typing-lost"' not in plain
+    assert described(plain, "Read") == ["read-disclosed"]
+    assert described(plain, "Upload chosen screenshots") == []
+    assert rows.count('id="typing-lost"') == 1
+    assert described(rows, "Read") == ["read-disclosed", "typing-lost"]
+    assert described(rows, "Upload chosen screenshots") == ["typing-lost"]
 
 
 def test_each_separate_form_says_typing_isn_t_kept(

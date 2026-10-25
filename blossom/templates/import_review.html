@@ -98,7 +98,7 @@
         <input type="hidden" name="images" value="{{ read_ids }}">
         <input type="hidden" name="check" value="{{ read_check }}">
         <div class="actions">
-          <button type="submit" class="primary" aria-describedby="read-disclosed">{{ read_label }}</button>
+          <button type="submit" class="primary" aria-describedby="read-disclosed{% if rows %} typing-lost{% endif %}">{{ read_label }}</button>
           {% if not rows %}<button type="submit" class="secondary" form="{{ discard.id }}">Discard the review</button>{% endif %}
         </div>
       </form>
@@ -127,7 +127,7 @@
         </div>
         <p class="note" role="status" data-chosen></p>
         <div class="actions">
-          <button type="submit" class="primary">Upload chosen screenshots</button>
+          <button type="submit" class="primary"{% if rows %} aria-describedby="typing-lost"{% endif %}>Upload chosen screenshots</button>
         </div>
       </form>
     </section>

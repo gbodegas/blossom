@@ -496,6 +496,11 @@ async def typing_of(request: Request) -> list[tuple[str, str]]:
     return [(TYPED_LABELS[field.partition(":")[0]], text) for field, text in typed_back(items)]
 
 
+def gone_by(error: Exception) -> str:
+    """Which of the review's endings a store's refusal names: ``expired``, or ``absent``."""
+    return "expired" if isinstance(error, DraftExpired) else "absent"
+
+
 async def saved_unread(
     request: Request,
     state: ApplicationState,
@@ -555,12 +560,14 @@ async def snapshot_keeping_typing(
     shown: for a review that expired or is gone, what the press did and its typing. After a
     save that committed (``done``, what it saved), a review the store refuses to read answers
     with what it saved and the press's typing (``saved_unread``), never that nothing was
-    saved."""
+    saved; one known to have expired, or to be gone, says so beneath what it saved."""
     student = state.project_state.student_id()
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (DraftExpired, DraftNotFound) as error:
-        return await refused_keeping_typing(request, state, error, [*done, *said], status)
+        if done:
+            return await saved_unread(request, state, done, [*said, SAID[gone_by(error)]])
+        return await refused_keeping_typing(request, state, error, said, status)
     except STORE_REFUSALS as error:
         if done:
             return await saved_unread(request, state, done, said)
@@ -1540,13 +1547,17 @@ async def saved_page(
     typing back in the review, as the save it repeats did, its post read here when the
     caller had none. A review the store refuses to read (busy, or gone) can't say whether it
     finished: the counts show in the success panel with no word of that, and every
-    correction the post typed is given back to copy."""
+    correction the post typed is given back to copy. A review known to have expired, or to be
+    gone, says so beneath the counts as a refused press does."""
     record = state.project_state
     student = record.student_id()
     counts = await asyncio.to_thread(record.homework_counts, student, draft_id, acceptance)
     lines = [*said, counted(*counts)] if counts else said
+    gone: list[str] = []
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (DraftExpired, DraftNotFound) as error:
+        snapshot, gone = None, [SAID[gone_by(error)]]
     except STORE_REFUSALS:
         snapshot = None
     if snapshot is None or snapshot.closed_at is not None or snapshot.finished:
@@ -1555,7 +1566,7 @@ async def saved_page(
         pairs = await asyncio.to_thread(record.homework_acceptance, student, draft_id, acceptance)
         week = await week_of(state, pairs or ())
         if snapshot is None:
-            return await saved_unread(request, state, lines, week=week)
+            return await saved_unread(request, state, lines, gone, week)
         return saved_outcome(request, state, lines, week)
     if post is None:
         post, _ = await review_post(request, state, snapshot)
