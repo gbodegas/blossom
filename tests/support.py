@@ -2558,7 +2558,7 @@ class HeldByAnother:
 class WaitBeside:
     """Another connection running ``statement`` on the held file under a busy timeout of
     ``seconds``, on a thread beside a press, so a slowdown of the process reaches both
-    waits: ``took`` is how long it lasted, ``refused`` whether it ended as locked."""
+    waits: ``took`` is how long it lasted, ``refused`` whether it ended as ``SQLITE_BUSY``."""
 
     def __init__(self, path: pathlib.Path, seconds: float, statement: str) -> None:
         self.path, self.seconds, self.statement = path, seconds, statement
@@ -2572,7 +2572,7 @@ class WaitBeside:
         try:
             connection.execute(self.statement).fetchall()
         except sqlite3.OperationalError as error:
-            self.refused = "locked" in str(error)
+            self.refused = error.sqlite_errorname == "SQLITE_BUSY"
         finally:
             self.took = monotonic() - started
             connection.close()

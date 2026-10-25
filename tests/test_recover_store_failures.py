@@ -1866,8 +1866,8 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     tmp_path: pathlib.Path,
 ) -> None:
     """Her refused press reads the drafts store once, under a busy timeout above 4 seconds and
-    at most 5, and lasts under 1.5 times another connection's read of the held file under
-    ``STORE_WAIT_SECONDS``, timed beside it so a slowdown of the process reaches both waits."""
+    at most 5, and lasts less than 2.5 seconds longer than another connection's read of the
+    held file under ``STORE_WAIT_SECONDS``, timed beside it so a shared delay reaches both."""
     with household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
@@ -1908,16 +1908,16 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     assert timeouts
     assert 4000 < timeouts[-1] <= 5000
     assert beside.refused
-    # Midway between one store wait and two.
-    assert took < 1.5 * beside.took, (took, beside.took)
+    # Half the 5 second wait pinned above, past the one wait timed beside it.
+    assert took - beside.took < 2.5, (took, beside.took)
 
 
 def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     tmp_path: pathlib.Path,
 ) -> None:
     """A parent's reply asks once for the file's writer, under the help-requests store's busy
-    timeout of 5 seconds, and lasts under 1.5 times another connection's BEGIN IMMEDIATE on
-    the held file under 5 seconds, timed beside it so a slowdown of the process reaches both."""
+    timeout of 5 seconds, and lasts less than 2.5 seconds longer than another connection's BEGIN
+    IMMEDIATE on the held file under 5 seconds, timed beside it so a shared delay reaches both."""
     with household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
         state = state_of(client)
@@ -1950,8 +1950,8 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     assert [update.body for update in moved.parent_updates] == [TYPED]
     assert timeout == 5000
     assert beside.refused
-    # Midway between one store wait and two.
-    assert took < 1.5 * beside.took, (took, beside.took)
+    # Half the 5 second wait pinned above, past the one wait timed beside it.
+    assert took - beside.took < 2.5, (took, beside.took)
 
 
 def test_her_notes_while_the_file_is_held_say_they_cannot_be_shown(
