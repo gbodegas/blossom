@@ -157,7 +157,7 @@ def test_a_paste_is_reviewed_week_by_week_and_saved_only_when_asked(
         again = client.post("/parent/inbox/read", data={"text": SUMMARY}).text
 
     assert shown.status_code == 200
-    assert "<h1>Review assignments</h1>" in shown.text
+    assert "<h1>Review assign&shy;ments</h1>" in shown.text
     assert '<li aria-current="step"><strong>2. Review</strong></li>' in shown.text
     assert "3 assignments across 2 weeks:" in shown.text
     assert "3 new, 0 updates, 0 already saved." in shown.text

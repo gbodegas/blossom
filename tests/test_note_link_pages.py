@@ -174,7 +174,7 @@ def test_the_note_and_the_details_page_offer_the_search_and_a_search_joins_nothi
 
     assert f'<a href="{note_search_href(name)}">Link to homework already here</a>' in note_page
     assert f'<a href="{note_search_href(name)}">Search homework already here</a>' in details
-    assert "<h1>Find homework for this note</h1>" in page
+    assert "<h1>Find home&shy;work for this note</h1>" in page
     assert escape(WORDS) in page
     assert after == before
 
@@ -1228,7 +1228,7 @@ def test_the_other_persons_unlink_is_refused_on_the_page_that_reads_no_store(
         assert '<h2 class="update-heading">Your unsaved details</h2>' in answer.text
         assert shown in answer.text
         assert answer.text.count(" autofocus") == 1
-    assert "<h1>Add a note to homework</h1>" not in refused.text
+    assert "<h1>Add a note to home&shy;work</h1>" not in refused.text
     assert f'<a href="{note_href(name)}">Back to the note</a>' in refused.text
     assert "Back to the note" not in no_note.text
     assert after == before
@@ -1912,7 +1912,7 @@ def test_the_page_reads_note_link_search_results_then_the_longer_explanation(
     whose = "Her" if family else "Your"
     marks = [
         '<p class="return"><a href="' + note_href(name) + '">Back to the note</a></p>',
-        "<h1>Find homework for this note</h1>",
+        "<h1>Find home&shy;work for this note</h1>",
         f">{whose} note</h2>",
         'class="authored-text note-words"',
         'id="search-linked-now"',

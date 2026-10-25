@@ -3,6 +3,7 @@
 """The one place the pages' templates are built, with the filters both pages use."""
 
 import hashlib
+import re
 from typing import Final
 
 from fastapi import Request
@@ -74,6 +75,36 @@ def ended(words: str) -> str:
     return trimmed if trimmed.rstrip(CLOSING_MARKS).endswith(SENTENCE_ENDS) else f"{trimmed}."
 
 
+SOFT_HYPHEN: Final = chr(0xAD)
+"""A break a reader sees only where a word breaks there: a hyphen at the line's end."""
+HEADING_BREAKS: Final = {
+    word: word[:at] + SOFT_HYPHEN + word[at:]
+    for word, at in (
+        ("Homework", 4),
+        ("homework", 4),
+        ("Assignment", 6),
+        ("assignments", 6),
+        ("screenshots", 6),
+        ("instructions", 7),
+        ("February", 5),
+        ("September", 6),
+        ("November", 5),
+        ("December", 5),
+    )
+}
+"""Each word of a page heading the app writes that is wider than the heading's whole line on
+a 320 pixel screen with text at 200%, with a soft hyphen at its natural break: "Home-work",
+"assign-ments", "Septem-ber". The page headings written in the templates carry the same
+breaks."""
+HEADING_WORD: Final = re.compile(r"\b(?:" + "|".join(HEADING_BREAKS) + r")\b")
+
+
+def heading_breaks(heading: str) -> str:
+    """``heading``, a page heading the app writes, with a soft hyphen at the natural break of
+    each of its words too wide for a phone's screen with large text."""
+    return HEADING_WORD.sub(lambda word: HEADING_BREAKS[word[0]], heading)
+
+
 def answering(request: Request) -> None:
     """Mark a GET as the first showing of an answer: a press's one-time note read, or a
     check the address asks for."""
@@ -96,7 +127,8 @@ def page_templates() -> Jinja2Templates:
     """The packaged templates, with ``clock`` for times, ``long_date`` for a date with its
     year, ``spoken_day`` for a day with its weekday, and its year when it is not today's,
     ``present`` for a saved plan's text, ``ended`` for typed words that close a
-    sentence, ``details_href`` for the address of an
+    sentence, ``heading_breaks`` for a page heading the app writes with its long words'
+    soft hyphens, ``details_href`` for the address of an
     assignment's details, ``assignment_anchor`` for the id of an assignment's card or row,
     ``title_anchor`` for the id of its title on her week, where a link to it lands,
     ``week_href`` for her week with one card in view,
@@ -116,6 +148,7 @@ def page_templates() -> Jinja2Templates:
     templates.env.filters["clock"] = spoken_time
     templates.env.filters["spoken_day"] = spoken_day
     templates.env.filters["ended"] = ended
+    templates.env.filters["heading_breaks"] = heading_breaks
     templates.env.filters["step_sentence"] = step_sentence
     templates.env.globals["step_label"] = step_label
     templates.env.filters["long_date"] = long_date

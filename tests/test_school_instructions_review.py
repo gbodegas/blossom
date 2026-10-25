@@ -193,7 +193,7 @@ def test_the_review_lists_every_kept_instruction_and_opening_it_writes_nothing(
 
     assert page.status_code == 200
     assert after == before
-    assert "<h1>Review school instructions</h1>" in page.text
+    assert "<h1>Review school instruc&shy;tions</h1>" in page.text
     assert str(escape(ESSAY_TITLE)) in page.text
     shown = boxes(page.text)
     assert [text for text, _, _ in shown] == [A, B, C]
