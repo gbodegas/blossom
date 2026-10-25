@@ -2022,7 +2022,13 @@ def test_a_parents_turn_in_press_is_answered_while_a_decision_holds_the_lock(
         (ESSAY_ID, {"report_view": "detail", "return_to": "to_turn_in", "week": ""}),
         (ESSAY_ID, {"report_view": "detail", "return_to": "https://example.test/", "week": ""}),
     ],
-    ids=["homework gone", "the family page", "another week", "to turn in", "a foreign address"],
+    ids=[
+        "an id never on record",
+        "the family page",
+        "another week",
+        "to turn in",
+        "a foreign address",
+    ],
 )
 def test_a_parents_turn_in_press_goes_back_to_her_week_whatever_the_form_names(
     press: str, subject: str, returns: dict[str, str], tmp_path: pathlib.Path
@@ -2047,3 +2053,40 @@ def test_a_parents_turn_in_press_goes_back_to_her_week_whatever_the_form_names(
     assert f"readonly>{escape(HER_WORDS)}</textarea>" in page
     assert watch.statements == []
     assert watch.looked_up == []
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+def test_a_parents_press_from_an_open_form_shows_her_note_and_not_her_choice(
+    press: str, tmp_path: pathlib.Path
+) -> None:
+    """The open work form on the details sends her checked choice beside her note. A parent's
+    press of it copies the words of her note alone: the choice may be the one already saved,
+    so it is never shown again as unsaved."""
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    body = urlencode(
+        [
+            ("status", "done"),
+            ("note", HER_WORDS),
+            ("expected_report_id", "report-synthetic"),
+            ("report_view", "detail"),
+            ("return_to", "week"),
+            ("week", FIXTURE_WEEK),
+            ("plan_id", ""),
+            (TURN_IN_BUTTONS[press], ""),
+        ]
+    ).encode()
+    with household(tmp_path, "parent") as client, watched(client) as watch:
+        answer = streamed(
+            client,
+            path,
+            [body],
+            [("content-type", URL_ENCODED), ("content-length", str(len(body)))],
+        )
+    page = main_of(answer.text)
+
+    assert answer.status_code == 403
+    assert UNSAVED_UPDATE in page
+    assert f"readonly>{escape(HER_WORDS)}</textarea>" in page
+    assert "Your choice" not in page
+    assert "Done" not in words(page)
+    assert watch.statements == []

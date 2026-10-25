@@ -1650,7 +1650,8 @@ def test_a_card_form_sent_to_the_hand_in_route_writes_nothing_and_keeps_no_note_
 
     assert answer.status_code == 422
     assert escape(BAD_FORM) in answer.text
-    assert f">{escape(WORDS)}</textarea>" not in section(answer.text)
+    assert str(escape(WORDS)) not in answer.text
+    assert WORDS not in answer.text
     assert events == []
 
 
