@@ -1026,7 +1026,7 @@ async def answered_on_the_card(
 async def gone_from_the_card(
     request: Request, state: ApplicationState, press: CardPress
 ) -> HTMLResponse:
-    """A turn-in press on an assignment no longer on record: the small page, 404, with her
+    """A turn-in press on an assignment not on record: the small page, 404, with her
     update's choice and words to copy, headed as unsaved, built off the event loop."""
     origin = press.origin
     return await asyncio.to_thread(

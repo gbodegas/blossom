@@ -1479,8 +1479,8 @@ def test_each_button_joins_the_form_it_belongs_to_and_enter_still_saves_the_upda
     assert f'<form method="post" action="/student/actions/assignments/{QUIZ_ID}/turned-in"' in quiz
 
 
-def test_the_older_explanation_goes_where_the_new_line_shows() -> None:
-    older = "own report, kept on the day Blossom took it."
+def test_one_explanation_of_turning_it_in_stands_where_the_button_shows() -> None:
+    report_line = "own report, kept on the day Blossom took it."
     with browser() as client:
         landed(client, save(client, opened(client), NEEDS_HAND_IN))
         waiting = section(client.get(DETAILS).text)
@@ -1489,9 +1489,9 @@ def test_the_older_explanation_goes_where_the_new_line_shows() -> None:
         turned = section(client.get(DETAILS).text)
 
     assert waiting.count(TURN_IN_MEANS) == 1
-    assert older not in waiting
+    assert report_line not in waiting
     assert TURN_IN_MEANS not in turned
-    assert older in turned
+    assert report_line in turned
     assert week.count(TURN_IN_MEANS) == 1
     assert week.count('aria-describedby="turn-in-means"') == week.count(
         ">I turned it in</button>"
