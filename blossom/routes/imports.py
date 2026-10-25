@@ -471,28 +471,29 @@ async def gone_with_typing(
     anything committed, then why the review can't take more, and every correction the post
     typed in a box to copy, read from the post alone. Nothing of the review is shown, nothing
     is stored, and nothing more can be saved from it."""
-    try:
-        form = await form_of(request)
-    except FormUnreadable:
-        form = None
-    items = (
-        []
-        if form is None
-        else [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
-    )
-    typed = [(TYPED_LABELS[field.partition(":")[0]], text) for field, text in typed_back(items)]
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
             "said": [*said, SAID[gone]],
-            "typed": typed,
+            "typed": await typing_of(request),
             "typed_said": TYPED_SAID,
             "marks": marks_of(state),
             "page": "parent",
         },
         status_code=status,
     )
+
+
+async def typing_of(request: Request) -> list[tuple[str, str]]:
+    """Every correction a press's post typed, labeled, read from the post alone (``typed_back``),
+    to give back in boxes to copy where the review can't keep it."""
+    try:
+        form = await form_of(request)
+    except FormUnreadable:
+        return []
+    items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
+    return [(TYPED_LABELS[field.partition(":")[0]], text) for field, text in typed_back(items)]
 
 
 async def refused_keeping_typing(
@@ -1372,7 +1373,7 @@ async def outcome_page(
     if isinstance(outcome, AlreadySaved):
         return await with_typing(request, state, draft_id, post, [PRESS_SAID["already"]], 200)
     if isinstance(outcome, Replayed):
-        return await saved_page(request, state, draft_id, outcome.acceptance_id, [])
+        return await saved_page(request, state, draft_id, outcome.acceptance_id, [], post)
     done = [counted(*outcome.counts)]
     if outcome.already_units:
         done.append(PRESS_SAID["already"])
@@ -1413,17 +1414,27 @@ async def week_of(state: ApplicationState, pairs: Iterable[tuple[str, str]]) -> 
 
 
 def saved_outcome(
-    request: Request, state: ApplicationState, lines: Sequence[str], week: str | None
+    request: Request,
+    state: ApplicationState,
+    lines: Sequence[str],
+    week: str | None,
+    *,
+    finished: bool = True,
+    typed: Sequence[tuple[str, str]] = (),
 ) -> Response:
     """A save that finished the review, as the grade save's outcome shows one: the steps line
-    at Saved, the counts as the panel's heading, her week, and that the review is finished."""
+    at Saved, the counts as the panel's heading, her week, and that the review is finished.
+    Where whether it finished isn't known (``finished`` false), it isn't said, and the
+    corrections the post typed (``typed``) are given back to copy."""
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
-            "said": [SAID["closed"]],
+            "said": [SAID["closed"]] if finished else [],
             "outcome": list(lines),
             "week": week,
+            "typed": list(typed),
+            "typed_said": TYPED_SAID,
             "marks": marks_of(state),
             "page": "parent",
         },
@@ -1500,8 +1511,11 @@ async def saved_page(
     post: ReviewPost | None = None,
 ) -> Response:
     """A resent press whose acceptance id is recorded: that save's counts, and nothing
-    written. With the review still open, a press that carries its typing gets it back, as
-    the save it repeats did."""
+    written. A review it finished says so. With the review still open, the press gets its
+    typing back in the review, as the save it repeats did, its post read here when the
+    caller had none. A review the store refuses to read (busy, or gone) can't say whether it
+    finished: the counts show in the success panel with no word of that, and every
+    correction the post typed is given back to copy."""
     record = state.project_state
     student = record.student_id()
     counts = await asyncio.to_thread(record.homework_counts, student, draft_id, acceptance)
@@ -1514,7 +1528,13 @@ async def saved_page(
         if not counts:
             return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
         pairs = await asyncio.to_thread(record.homework_acceptance, student, draft_id, acceptance)
-        return saved_outcome(request, state, lines, await week_of(state, pairs or ()))
+        week = await week_of(state, pairs or ())
+        if snapshot is None:
+            typed = await typing_of(request)
+            return saved_outcome(request, state, lines, week, finished=False, typed=typed)
+        return saved_outcome(request, state, lines, week)
+    if post is None:
+        post, _ = await review_post(request, state, snapshot)
     if post is not None:
         return await partly_saved(request, state, draft_id, post, lines)
     return to_review(state, draft_id, done=lines)

@@ -50,6 +50,7 @@ from blossom.screenshot_save import (
     correction_digest,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
+from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.import_drafts import (
     DRAFT_LIFETIME,
     FAILURES,
@@ -7886,6 +7887,85 @@ def test_a_kept_correction_for_an_instruction_box_the_row_lacks_answers_nothing(
     assert says(refused, REFUSED_OPEN)
     assert says(later_page, f"Still to answer: {unsure}.")
     assert held == {}
+
+
+OUTCOME: Final = re.compile(
+    r'<section class="panel grade-outcome" aria-labelledby="outcome-heading">(.*?)</section>', re.S
+)
+TYPED_BACK: Final = re.compile(r"<textarea rows=\"2\" readonly>\n(.*?)</textarea>", re.S)
+
+
+def busy_store(error: type[Exception]) -> Callable[..., object]:
+    def refuse(*_: object, **__: object) -> object:
+        raise error
+
+    return refuse
+
+
+@pytest.mark.parametrize("busy", [StoreBusy, WriterBusy], ids=["store busy", "writer busy"])
+def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_the_typing_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, busy: type[Exception]
+) -> None:
+    """One of two groups saved, a title typed for the other: the same press resent while the
+    review can't be read answers with the counts it recorded in the success panel, which takes
+    the focus, never that the review is finished, and gives the typed title back to copy. Sent
+    again once the review can be read, it shows the review with those counts and the title
+    still in its box."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first_unit, open_unit = units_on(page)
+        titles = [f"correct:{box_subject(page, 'title', n)}" for n in range(2)]
+        [other] = [t for t in titles if json.loads(t.removeprefix("correct:"))[0] in open_unit]
+        posted = page_post(page, "save", tick=[first_unit], typed={other: "Chains Guide Six"})
+        first = followed(browser, send(browser, draft_id, posted))
+        drafts = state_of(browser).import_drafts
+        real = drafts.snapshot
+        monkeypatch.setattr(drafts, "snapshot", busy_store(busy))
+        again = send(browser, draft_id, posted)
+        monkeypatch.setattr(drafts, "snapshot", real)
+        healthy = send(browser, draft_id, posted)
+
+    counts = ["Saved: 1 new assignment. 1 still needs checking."]
+    shown = OUTCOME.search(again.text)
+    assert lines_in(DONE.search(first))[0] == counts[0]
+    assert again.status_code == 200
+    assert shown is not None
+    assert re.search(r'<h2 id="outcome-heading" tabindex="-1" autofocus>', shown.group(1))
+    assert [html.unescape(t) for t in re.findall(r">([^<>]+)</(?:h2|p)>", shown.group(1))] == counts
+    assert not says(again.text, imports.SAID["closed"])
+    assert TYPED_BACK.findall(again.text) == ["Chains Guide Six"]
+    assert healthy.status_code == 200
+    assert lines_in(DONE.search(healthy.text)) == counts
+    assert box_of(review_form(healthy.text), other)[1] == "Chains Guide Six"  # type: ignore[index]
+    assert not says(healthy.text, imports.SAID["closed"])
+
+
+def test_a_resent_save_that_finished_the_review_says_so_only_when_the_review_can_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save that finished the review, resent: read, it answers with the counts and that the
+    review is finished; while the review can't be read, with the counts alone."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        page = her_name_answered(browser, draft_id, page)
+        posted = page_post(page, "save", tick=units_on(page))
+        first = send(browser, draft_id, posted)
+        healthy = send(browser, draft_id, posted)
+        drafts = state_of(browser).import_drafts
+        real = drafts.snapshot
+        monkeypatch.setattr(drafts, "snapshot", busy_store(StoreBusy))
+        busy = send(browser, draft_id, posted)
+        monkeypatch.setattr(drafts, "snapshot", real)
+
+    for answer in (first, healthy, busy):
+        assert answer.status_code == 200
+        assert says(answer.text, "Saved: 1 new assignment.")
+    assert says(first.text, imports.SAID["closed"])
+    assert says(healthy.text, imports.SAID["closed"])
+    assert not says(busy.text, imports.SAID["closed"])
 
 
 def test_a_save_that_closed_the_review_says_so_when_her_week_can_t_be_read(
