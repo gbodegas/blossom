@@ -1919,16 +1919,20 @@ def test_a_changed_choice_and_a_typed_note_both_come_back_after_a_refused_press(
     assert [report.status for report in reports] == ["done"]
 
 
+@pytest.mark.parametrize("choice", ["bogus", "", "future", " done "])
 @pytest.mark.parametrize("button", ["hand_in_head", "undo_hand_in"])
-def test_a_choice_no_page_writes_is_refused_before_anything_is_saved(button: str) -> None:
+def test_a_choice_no_page_writes_is_refused_before_anything_is_saved(
+    button: str, choice: str
+) -> None:
     """Her update's form writes Done or Not yet and nothing else. A press that carries any
-    other choice is no form a page made: 422, nothing written, her note kept as typed."""
+    other choice, blank or padded included, is no form a page made: 422, nothing written,
+    her note kept as typed."""
     with browser() as client:
         _, card = week_card(client)
         if button == "undo_hand_in":
             card = card_for(landed(client, turn_in_press(client, card)), ESSAY_ID)
         before = chain(client)
-        answer = turn_in_press(client, card, button, status="bogus", note=WORDS)
+        answer = turn_in_press(client, card, button, status=choice, note=WORDS)
         after = chain(client)
         reports = state_of(client).project_state.student_reports(ESSAY_ID)
     shown = card_for(answer.text, ESSAY_ID)
