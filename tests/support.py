@@ -1100,6 +1100,10 @@ class _FormReader(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "textarea":
+            if self._area is not None and self._fields is not None:
+                # A browser drops one line break that opens a textarea's text.
+                text = self._fields[self._area]
+                self._fields[self._area] = text[1:] if text.startswith("\n") else text
             self._area = None
         elif tag == "select":
             self._list = None
