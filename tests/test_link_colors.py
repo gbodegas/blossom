@@ -936,10 +936,10 @@ BOXED = frozenset({"block", "inline-block", "flex", "inline-flex", "grid", "inli
 """The layouts that give a link a box of its own, which a minimum height applies to."""
 IN_THE_LINE = frozenset({"inline-block", "inline-flex", "inline-grid"})
 """The boxed layouts that keep a link in the line of words around it."""
-TO_THE_DETAILS = {"Details": BOXED, "Turning it in": IN_THE_LINE}
+TO_THE_DETAILS = {"Details": BOXED, "Other turn-in options": IN_THE_LINE}
 """Each link on her week to an assignment's details, by its words, with the layouts it may take:
-any box of its own for Details, and for Turning it in, at the end of the hand-in line, a box
-that keeps it in the sentence."""
+any box of its own for Details, and for Other turn-in options, in the Turning it in group, a
+box that keeps it in its line."""
 PLACES = frozenset(
     {
         "a card",
@@ -1089,11 +1089,12 @@ def test_the_height_check_fails_when_the_details_rule_stops_doing_its_work(
 def test_the_height_check_fails_when_the_hand_in_rule_stops_doing_its_work(
     her_weeks: dict[str, str], becomes: str, fine_up_to: int
 ) -> None:
-    """Every Turning it in link is short of a control on each screen the broken rule leaves it."""
+    """Every Other turn-in options link is short of a control on each screen the broken rule
+    leaves it."""
     css = stylesheet()
     assert css.count(HAND_IN_RULE) == 1
     sheet = read_sheet(css.replace(HAND_IN_RULE, becomes))
-    found = links_named(her_weeks, "Turning it in")
+    found = links_named(her_weeks, "Other turn-in options")
 
     assert {place_of(link) for link in found} == PLACES
     for link in found:

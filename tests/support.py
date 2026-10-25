@@ -1100,6 +1100,10 @@ class _FormReader(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "textarea":
+            if self._area is not None and self._fields is not None:
+                # A browser drops one line break that opens a textarea's text.
+                text = self._fields[self._area]
+                self._fields[self._area] = text[1:] if text.startswith("\n") else text
             self._area = None
         elif tag == "select":
             self._list = None
@@ -1187,6 +1191,124 @@ def names_not_led_by_their_words(page: str) -> list[tuple[str, str]]:
         for words, name in _Names(page).controls
         if not name.casefold().startswith(words.casefold())
     ]
+
+
+@dataclasses.dataclass
+class _Owned:
+    """One form of a page by the form-owner rule: its id and action, and the controls it
+    owns, nested in its markup with no ``form`` attribute, or anywhere naming its id."""
+
+    form_id: str | None
+    action: str
+    controls: list[tuple[str, str]] = dataclasses.field(default_factory=list)
+    buttons: list[tuple[int, dict[str, str | None]]] = dataclasses.field(default_factory=list)
+
+
+class _OwnerReader(HTMLParser):
+    """Read a page's forms the way a browser assigns controls to them, refusing what these
+    pages never write rather than interpreting it: a form inside another, ``formmethod``,
+    ``formenctype``, and a ``form`` attribute naming no form or several. Only hidden and
+    text inputs, checked radio buttons, textareas and submit buttons are read."""
+
+    def __init__(self, page: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms: list[_Owned] = []
+        self._loose: list[tuple[str, str, str]] = []
+        self._loose_buttons: list[tuple[str, tuple[int, dict[str, str | None]]]] = []
+        self._at = 0
+        self._open: _Owned | None = None
+        self._area: tuple[str, str | None, list[str]] | None = None
+        self.feed(page)
+        for owner, name, value in self._loose:
+            self._owner(owner).controls.append((name, value))
+        for owner, button in self._loose_buttons:
+            self._owner(owner).buttons.append(button)
+        for form in self.forms:
+            form.buttons.sort(key=lambda placed: placed[0])
+
+    def _owner(self, form_id: str) -> _Owned:
+        named = [form for form in self.forms if form.form_id == form_id]
+        assert len(named) == 1, (form_id, len(named))
+        return named[0]
+
+    def _keep(self, owner: str | None, name: str, value: str) -> None:
+        if owner is not None:
+            self._loose.append((owner, name, value))
+        elif self._open is not None:
+            self._open.controls.append((name, value))
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        given = dict(attrs)
+        assert "formmethod" not in given, given
+        assert "formenctype" not in given, given
+        owner = given.get("form")
+        if tag == "form":
+            assert self._open is None, "a form inside another"
+            self._open = _Owned(given.get("id"), given.get("action") or "")
+            self.forms.append(self._open)
+        elif tag == "input":
+            kind = (given.get("type") or "text").lower()
+            name = given.get("name")
+            if name is None or kind not in ("hidden", "text", "radio"):
+                return
+            if kind == "radio" and "checked" not in given:
+                return
+            self._keep(owner, name, given.get("value") or "")
+        elif tag == "textarea" and given.get("name"):
+            self._area = (given["name"] or "", owner, [])
+        elif tag == "button" and (given.get("type") or "submit") == "submit":
+            self._at += 1
+            if owner is not None:
+                self._loose_buttons.append((owner, (self._at, given)))
+            elif self._open is not None:
+                self._open.buttons.append((self._at, given))
+
+    def handle_data(self, data: str) -> None:
+        if self._area is not None:
+            self._area[2].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "textarea" and self._area is not None:
+            name, owner, text = self._area
+            # A browser drops one line break that opens a textarea's text.
+            value = "".join(text)
+            self._keep(owner, name, value[1:] if value.startswith("\n") else value)
+            self._area = None
+        elif tag == "form":
+            self._open = None
+
+
+def owner_of(page: str, button: str) -> _Owned:
+    """The one form that owns the submit button named ``button`` on the page."""
+    found = [
+        form
+        for form in _OwnerReader(page).forms
+        if any(given.get("name") == button for _, given in form.buttons)
+    ]
+    assert len(found) == 1, (button, len(found))
+    return found[0]
+
+
+def pressed_form(page: str, button: str) -> tuple[str, dict[str, str]]:
+    """Where a press of the submit button named ``button`` goes and what it sends, as a
+    browser makes it: every control its form owns, by the form-owner rule, with the pressed
+    button's own name and value and no other button's, to its ``formaction`` when it has
+    one and to its form's action otherwise."""
+    form = owner_of(page, button)
+    (given,) = [given for _, given in form.buttons if given.get("name") == button]
+    sent: dict[str, str] = {}
+    for name, value in form.controls:
+        assert name not in sent, name
+        sent[name] = value
+    sent[button] = given.get("value") or ""
+    return unescape(given.get("formaction") or form.action), sent
+
+
+def first_button_of(page: str, form_id: str) -> dict[str, str | None]:
+    """The first submit button in tree order that the form with this id owns: the one a
+    browser presses for Enter in one of its fields."""
+    (form,) = [form for form in _OwnerReader(page).forms if form.form_id == form_id]
+    return form.buttons[0][1]
 
 
 def whole_form(html: str, action: str) -> dict[str, str]:

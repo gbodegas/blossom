@@ -29,7 +29,16 @@
   ``assignment.hand_in`` is what the record says, ``hand_in_card`` what this
   visit adds to it, and ``hand_in_links`` and ``hand_in_fields`` the ways on
   and back, made on the server from checked values.
+
+  While the form is closed and she has said nothing, is not sure, or has it
+  still to turn in, the section offers I turned it in, as her week's cards do,
+  beside Other turn-in options, the way into the form, and one line on what
+  turning it in means, which stands in for the longer one here. ``turn_in`` is
+  what such a press or its Undo did, said only when the reading bears it out,
+  with Undo for the very report the press made while it stands; the section's
+  own Undo is then not repeated.
 #}
+{% from "student_turn_in_buttons.html" import press, undo %}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% macro named(state) %}{% if state == "needs_hand_in" %}Still to turn in{% elif state == "turned_in" %}Turned in{% elif state == "not_required" %}Nothing to turn in{% elif state == "unknown" %}Not sure{% endif %}{% endmacro %}
 {% set hi = assignment.hand_in %}
@@ -45,17 +54,23 @@
 {% set at_action = hc and hc.field == "next_action" %}
 {% set at_note = hc and hc.field == "note" %}
 {% set keep_words = "Not now" if hi.state is none else "Keep it as it is" %}
+{% set offered = ctx.can_update and not form_open and not hi.unavailable and hi.state in (none, "unknown", "needs_hand_in") %}
+{% set shown = turn_in if (turn_in is defined and turn_in) else none %}
 {#
-  After a Done save on this page her update's result offers the hand-in update
-  once, beside what she just did. It stands in for this section's own opener
-  on that visit, so the page never offers the same thing twice.
+  A result the reading bore out, of a press something newer has followed, says
+  it was done earlier. While it is shown the section offers no Undo of what
+  stands, which that result's own words sit beside; an address the reading does
+  not bear out is no result, and the section is as on any visit.
 #}
-{% set offered_above = card and card.assignment_id == assignment.assignment_id and card.said and assignment.update_status == "done" and hi.state is none %}
+{% set superseded = shown and shown.said and not shown.stands %}
+{% set wf = work_form(assignment, card, ctx) %}
 {% set school_missing = assignment.school_statements|selectattr("status", "equalto", "missing")|list %}
 <section class="hand-in" aria-labelledby="turning-it-in">
   <h2 class="update-heading" id="turning-it-in" tabindex="-1">Turning it in</h2>
   <div class="update">
-    {% if hc and hc.said %}
+    {% if shown and shown.said %}
+      <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1"{% if turn_in_direct %} autofocus{% endif %}>{{ shown.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
+    {% elif hc and hc.said %}
       <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1">{{ hc.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
     {% endif %}
     {% if hc and hc.problem %}
@@ -91,10 +106,30 @@
       {% if hi.state == "turned_in" and school_missing %}
         <p class="confidence disagree">The school reports this missing, and {% if mine %}you{% else %}she{% endif %} reported it turned in. Blossom keeps both as they are, so the family can check.</p>
       {% endif %}
-      {% if hi.state is not none %}
+      {% if offered %}
+        <p class="note" id="turn-in-means">{{ turn_in_means_line }}</p>
+        <div class="actions">
+          {{ press(assignment, ctx, wf.form_id, true) }}
+        </div>
+        <p class="note"><a class="assignment-link" href="{{ hand_in_links.change }}" aria-label="Other turn-in options: {{ assignment.title }}, {{ assignment.course }}">Other turn-in options</a></p>
+        {% if hi.note %}
+          <p class="note">Your earlier note stays in history.</p>
+        {% endif %}
+        {% if hi.undo_event_id and not superseded %}
+          <div class="actions">
+            <form method="post" action="{{ hand_in_actions[1] }}" class="action">
+              <input type="hidden" name="hand_in_id" value="{{ hi.undo_event_id }}">
+              {% for name, value in hand_in_fields %}
+              <input type="hidden" name="{{ name }}" value="{{ value }}">
+              {% endfor %}
+              <button type="submit" class="secondary" aria-label="Undo your hand-in update for {{ assignment.title }}, {{ assignment.course }}">Undo</button>
+            </form>
+          </div>
+        {% endif %}
+      {% elif hi.state is not none %}
         <p class="effect">This is {% if mine %}your{% else %}her{% endif %} own report, kept on the day Blossom took it. It sends nothing to the school, and the school's record is separate.</p>
       {% endif %}
-      {% if ctx.can_update and not form_open and not offered_above %}
+      {% if ctx.can_update and not form_open and not offered %}
         <div class="actions">
           {# One way in. It opens the form and saves nothing: only the form's own button does. #}
           <form method="get" action="{{ hand_in_links.open }}" class="action">
@@ -103,7 +138,9 @@
             {% endfor %}
             <button type="submit" class="secondary" aria-label="{% if hi.state is none %}Update hand-in status{% else %}Change your hand-in update{% endif %} for {{ assignment.title }}, {{ assignment.course }}">{% if hi.state is none %}Update hand-in status{% else %}Change{% endif %}</button>
           </form>
-          {% if hi.undo_event_id %}
+          {% if shown and shown.undo_event_id %}
+            {{ undo(assignment, ctx, wf.form_id, shown.undo_event_id) }}
+          {% elif hi.undo_event_id and not superseded %}
             <form method="post" action="{{ hand_in_actions[1] }}" class="action">
               <input type="hidden" name="hand_in_id" value="{{ hi.undo_event_id }}">
               {% for name, value in hand_in_fields %}

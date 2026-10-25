@@ -1113,6 +1113,13 @@ h1#homework:focus,
   font-size: 1.05rem;
 }
 
+/* Her unsaved update on a card sits under the card's "Your work" heading, a level below it,
+   and reads that way: a heading's face at the body's size, in a lighter weight. */
+h4.update-heading {
+  font-size: 1rem;
+  font-weight: 500;
+}
+
 /* A school result's title on an assignment's details is a heading under "From the school's
    gradebook". It keeps that level and reads below the section's heading: a heading's face
    at the body's size, in a lighter weight and the soft text color. */

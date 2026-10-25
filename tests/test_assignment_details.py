@@ -478,7 +478,7 @@ def test_a_refused_save_is_shown_on_the_details_with_what_she_typed() -> None:
     assert f"<h1>{ESSAY_TITLE}</h1>" in no_choice.text
     assert too_long.status_code == 422
     assert NOTE_TOO_LONG in too_long.text
-    assert 'aria-invalid="true" autofocus>' + "x" * 501 in too_long.text
+    assert 'aria-invalid="true" autofocus>\n' + "x" * 501 in too_long.text
     assert (twice.status_code, stranger.status_code) == (422, 422)
     assert all(BAD_FORM in answer.text for answer in (twice, stranger))
     store_free_page(uploaded, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
@@ -530,7 +530,7 @@ def test_a_stale_undo_a_crossed_update_and_an_assignment_taken_off_are_said_on_t
     assert removed.status_code == 404
     assert GONE in removed.text
     assert "Your choice: Done. It was not saved." in removed.text
-    assert "readonly>Typed before it went.</textarea>" in removed.text
+    assert "readonly>\nTyped before it went.</textarea>" in removed.text
     assert 'href="/student/due-this-week' in removed.text
     assert still_gone is None
 
@@ -564,7 +564,7 @@ def test_a_save_the_file_refuses_keeps_her_words_on_the_details_and_on_a_plain_p
     assert UPDATE_SAVED not in refused.text
     assert unread.status_code == 500
     assert NOT_SAVED in unread.text
-    assert "readonly>kept &lt;words&gt;</textarea>" in unread.text
+    assert "readonly>\nkept &lt;words&gt;</textarea>" in unread.text
     assert nothing == []
 
 

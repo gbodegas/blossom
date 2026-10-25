@@ -29,7 +29,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final, Literal
 
-from blossom.hand_in import NEEDS_HAND_IN, REPORT, TURNED_IN, UNDO, HandInEvent
+from blossom.hand_in import (
+    NEEDS_HAND_IN,
+    REPORT,
+    TURNED_IN,
+    UNDO,
+    HandInEvent,
+    HandInProjection,
+)
 from blossom.noticing import Everything
 from blossom.views import HandInEventView, HandInView, SchoolStatementView, ToTurnInRowView
 
@@ -65,6 +72,14 @@ RESULT_UNREADABLE: Final = (
     "read right now."
 )
 RESULT_GONE: Final = "That assignment is not on record now, so what was done here cannot be shown."
+TURNED_IN_ON_THE_CARD: Final = "You reported this turned in."
+ON_THE_CARD: Final[dict[str, str]] = {
+    "turned_in": TURNED_IN_ON_THE_CARD,
+    "same": ALREADY_TURNED_IN,
+    "undone": BACK_ON_THE_LIST,
+}
+"""What a press of I turned it in or its Undo on a card or an assignment's details did, said
+beside that assignment. The server chooses which; the address only carries the choice."""
 COMPACT_ROWS: Final = 3
 """How many rows her week shows before it points at the whole list."""
 NO_CUE: Final = datetime.max.replace(tzinfo=UTC)
@@ -245,6 +260,52 @@ def result_for(everything: Everything, receipt: Receipt | None) -> ListResult | 
         stands=True,
         undo_event_id=None if receipt.said == "undone" else reading.undo_event_id,
     )
+
+
+@dataclass(frozen=True)
+class TurnInShown:
+    """What a press of I turned it in or its Undo did on a card or the details, as the
+    reading bears it out, or what it could not do. ``undo_event_id`` is the very event the
+    press made, while it is her report that it was turned in and the latest event; an undo
+    offers none."""
+
+    assignment_id: str
+    said: str | None = None
+    stands: bool = False
+    undo_event_id: str | None = None
+    problem: str | None = None
+
+
+def card_result_for(
+    assignment_id: str,
+    reading: HandInProjection | None,
+    *,
+    unavailable: bool,
+    said: str,
+    event_id: str,
+) -> TurnInShown | None:
+    """The result a turn-in press or its Undo names, held to the same proof as the list's:
+    the event must be in this assignment's history and of the kind the word says, or
+    nothing is said. While it is the latest the result is what stands; once something
+    newer follows, it is something done earlier, with no Undo."""
+    if said not in ON_THE_CARD or not event_id:
+        return None
+    if unavailable:
+        return TurnInShown(assignment_id, said=RESULT_UNREADABLE)
+    if reading is None or reading.head is None:
+        return None
+    event = next((row.event for row in reading.history if row.event.event_id == event_id), None)
+    if event is None or not _is_what_was_said(event, said):
+        return None
+    head = reading.head
+    if head.event_id != event_id:
+        return TurnInShown(assignment_id, said=EARLIER[said])
+    undo = (
+        head.event_id
+        if said != "undone" and head.operation == REPORT and head.state == TURNED_IN
+        else None
+    )
+    return TurnInShown(assignment_id, said=ON_THE_CARD[said], stands=True, undo_event_id=undo)
 
 
 def refusal_for(everything: Everything, attempt: Attempt | None) -> ListRefusal | None:

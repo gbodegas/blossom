@@ -123,6 +123,7 @@ from tests.support import (
     main_of,
     ok,
     plan_form,
+    pressed_form,
     reading,
     refusing,
     report,
@@ -324,7 +325,9 @@ def quick_press(client: TestClient, page: str, name: str, status: str) -> Answer
     """A press of a card's own Done or Not yet button, sending the card's quick form as a
     browser does: its hidden fields, the button's status, and the note as it stands."""
     action = f"/student/actions/assignments/{name}/report"
-    start = page.index(f'<form method="post" action="{action}" class="quick">')
+    found = re.search(f'<form method="post" action="{re.escape(action)}" class="quick"[ >]', page)
+    assert found is not None
+    start = found.start()
     fields = form_fields(page[start:], action)
     typed = {} if "note" in fields else {"note": ""}
     return client.post(action, data={**fields, **typed, "status": status}, headers=PAGE_HEADERS)
@@ -1694,13 +1697,13 @@ def test_a_missing_choice_or_a_long_note_returns_the_card_with_her_words_kept() 
     card = card_for(unchosen.text, ESSAY)
     assert CHOOSE_ONE in card
     assert "checked" not in card
-    assert ">kept words</textarea>" in card
+    assert ">\nkept words</textarea>" in card
     assert '<details class="steps note-fold" open>' in card
     assert too_long.status_code == 422
     card = card_for(too_long.text, ESSAY)
     assert NOTE_TOO_LONG in card
     assert 'value="done" checked>' in card
-    assert ">" + "x" * 501 + "</textarea>" in card
+    assert ">\n" + "x" * 501 + "</textarea>" in card
     assert nothing == []
 
 
@@ -1746,7 +1749,7 @@ def test_a_save_from_a_page_that_has_moved_on_is_refused_with_the_newer_update_s
     assert SAVED_ELSEWHERE in card
     assert '<span class="pill">Your update: Done</span>' in card
     assert 'value="not_yet" checked>' in card
-    assert ">still the last page</textarea>" in card
+    assert ">\nstill the last page</textarea>" in card
     assert hidden(card, "expected_report_id") == history[0].report_id
     assert again.status_code == 303
     assert again.headers["location"].endswith(f"&saved={ESSAY}#update-result-{ESSAY}")
@@ -1812,7 +1815,7 @@ def test_the_change_button_opens_the_form_with_the_update_as_it_stands() -> None
         card = card_for(opened, ESSAY)
 
     assert 'value="not_yet" checked>' in card
-    assert ">Half left.</textarea>" in card
+    assert ">\nHalf left.</textarea>" in card
     assert '<span class="pill">Your update: Not yet</span>' in card
     assert (
         'aria-label="Keep it as it is: your update on Canal Era comparison essay, World '
@@ -2392,7 +2395,7 @@ def test_a_save_the_file_refuses_keeps_her_words_and_says_nothing_of_a_save(
         assert NOT_SAVED in body
         assert UPDATE_SAVED not in answer.text
         assert 'value="done" checked' in body
-        assert ">kept &lt;words&gt;</textarea>" in body
+        assert ">\nkept &lt;words&gt;</textarea>" in body
     assert after_refusal == []
     assert after_late_failure == []
     assert retried.status_code == 303
@@ -2427,7 +2430,7 @@ def test_when_her_week_cannot_be_read_back_either_her_words_still_come_back(
     text = answer.text
     assert NOT_SAVED in text
     assert "Your choice: Not yet." in text
-    assert "readonly>kept &lt;words&gt;</textarea>" in text
+    assert "readonly>\nkept &lt;words&gt;</textarea>" in text
 
 
 # ------------------------------------------------------------- a card whose dates moved
@@ -2491,7 +2494,7 @@ def test_a_card_whose_dates_took_it_out_of_the_week_is_still_shown_with_the_resu
     assert SAVED_ELSEWHERE in apart
     assert '<span class="pill">Your update: Done</span>' in apart
     assert 'value="not_yet" checked' in apart
-    assert ">still the last corner</textarea>" in apart
+    assert ">\nstill the last corner</textarea>" in apart
     assert "Due Thursday, October 8" in apart
     assert too_long.status_code == 422
     assert NOTE_TOO_LONG in card_for(too_long.text, poster)
@@ -3135,6 +3138,15 @@ def test_two_assignments_with_one_title_are_told_apart_in_the_notice_by_their_id
 
 
 UNSAVED_HEADING = '<h3 class="update-heading">Your unsaved update</h3>'
+UNSAVED_ON_A_CARD = '<h4 class="update-heading">Your unsaved update</h4>'
+"""On a card the heading sits under the card's "Your work", a level below it."""
+
+
+def unsaved_heading(where: str) -> str:
+    """The heading over her unsaved update where the form was: the details or a card."""
+    return UNSAVED_HEADING if where == "details" else UNSAVED_ON_A_CARD
+
+
 REPORT = "/student/actions/assignments/{}/report"
 
 
@@ -3166,7 +3178,7 @@ def test_a_save_from_the_week_for_homework_no_longer_on_record_keeps_her_choice_
     assert answer.status_code == 404
     assert GONE in answer.text
     assert "Your choice: Done. It was not saved." in answer.text
-    assert "readonly>Typed before it went.</textarea>" in answer.text
+    assert "readonly>\nTyped before it went.</textarea>" in answer.text
     assert 'href="/student/due-this-week' in answer.text
     assert reports == []
 
@@ -3194,15 +3206,16 @@ def test_a_save_refused_for_a_newer_update_heads_her_words_as_unsaved(where: str
         )
     shown = refused.text if where == "details" else card_for(refused.text, name)
 
+    heading = unsaved_heading(where)
     assert refused.status_code == 409
     assert SAVED_ELSEWHERE in shown
-    assert shown.count(UNSAVED_HEADING) == 1
+    assert shown.count(heading) == 1
     saved = shown.index('<span class="pill">Your update: Done</span>')
-    assert saved < shown.index(UNSAVED_HEADING) < shown.index('value="not_yet" checked')
-    assert ">still the last page</textarea>" in shown
+    assert saved < shown.index(heading) < shown.index('value="not_yet" checked')
+    assert ">\nstill the last page</textarea>" in shown
     assert too_long.status_code == 422
-    assert UNSAVED_HEADING not in too_long.text
-    assert UNSAVED_HEADING not in changing
+    assert heading not in too_long.text
+    assert heading not in changing
 
 
 UNDO = "/student/actions/assignments/{}/undo-report"
@@ -3266,6 +3279,7 @@ def test_a_stale_undo_heads_nothing_as_her_unsaved_update(where: str, meanwhile:
     assert stale.status_code == 409
     assert (ALREADY_UNDONE if meanwhile == "undone" else CANNOT_UNDO) in stale.text
     assert UNSAVED_HEADING not in stale.text
+    assert UNSAVED_ON_A_CARD not in stale.text
     # With no update standing she is offered one; a card on her week left Not yet offers Done.
     assert (OFFERED in shown) is (meanwhile == "undone" or where == "week")
 
@@ -3287,11 +3301,12 @@ def test_a_save_refused_after_an_undo_elsewhere_heads_her_words_as_unsaved(where
         )
     shown = refused.text if where == "details" else card_for(refused.text, ESSAY)
 
+    heading = unsaved_heading(where)
     assert refused.status_code == 409
     assert SAVED_ELSEWHERE in shown
-    assert shown.count(UNSAVED_HEADING) == 1
-    assert shown.index(UNSAVED_HEADING) < shown.index('value="not_yet" checked')
-    assert ">kept from the old page</textarea>" in shown
+    assert shown.count(heading) == 1
+    assert shown.index(heading) < shown.index('value="not_yet" checked')
+    assert ">\nkept from the old page</textarea>" in shown
 
 
 def test_a_plan_press_stays_in_the_visit_and_keeps_its_cards_in_place() -> None:
@@ -3335,3 +3350,29 @@ def plan_button_form(page: str) -> str:
     """The plan button's form, whole."""
     start = page.index('action="/student/actions/plan"')
     return page[start : page.index("</form>", start)]
+
+
+def test_a_turn_in_press_and_its_undo_keep_the_cards_in_place_for_the_visit() -> None:
+    """Done keeps the essay among the active cards for the visit. I turned it in and its Undo
+    carry the cards the visit keeps, as her update's buttons do, so the essay stays where it
+    is, Done unchanged, until a return groups the week by its updates."""
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        done = redirected(client, quick_press(client, before, ESSAY, "done")).text
+        action, sent = pressed_form(card_for(done, ESSAY), "hand_in_head")
+        turned = redirected(client, client.post(action, data=sent, headers=PAGE_HEADERS)).text
+        action, sent = pressed_form(card_for(turned, ESSAY), "undo_hand_in")
+        undone = redirected(client, client.post(action, data=sent, headers=PAGE_HEADERS)).text
+        returned = client.get(PAGE, headers=PAGE_HEADERS).text
+        reports = state_of(client).project_state.student_reports(ESSAY)
+
+    assert sent["in_place"] == f"a:{place_key(ESSAY)}"
+    for page in (done, turned, undone):
+        assert placed(page) == placed(before)
+        assert FOLD not in main_of(page)
+    assert "You reported this turned in." in card_for(turned, ESSAY)
+    assert "Your hand-in update is undone." in card_for(undone, ESSAY)
+    for page in (turned, undone):
+        assert '<span class="pill">Your update: Done</span>' in card_for(page, ESSAY)
+    assert [report.status for report in reports] == ["done"]
+    assert placed(returned)[1] == [ESSAY]

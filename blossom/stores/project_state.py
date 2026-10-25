@@ -1780,6 +1780,7 @@ class ProjectStateStore(
         now: datetime,
         today: date,
         only_over: HandInState | None = None,
+        offered_over: frozenset[HandInState | None] | None = None,
     ) -> HandInSaved | HandInAlreadySaved | HandInConflict | HandInNotOffered:
         """Keep what she says about turning an assignment in, once, as of now.
 
@@ -1804,7 +1805,10 @@ class ProjectStateStore(
         otherwise be written: the head is the one the form named, and unless
         that state stands, a blank head included, no such page made the form
         and nothing is written. A save already standing and a head that moved
-        on are answered as they always are, before it.
+        on are answered as they always are, before it. ``offered_over`` is the same
+        check over a set of states, ``None`` among them for no report standing, as the
+        card's I turned it in is offered while she has said nothing, is not sure, or has
+        something still to turn in. A page passes one of the two, never both.
 
         A chain that does not hold is ``BrokenChain``, raised as
         ``CouldNotSave`` like any other refused write: nothing is called
@@ -1816,6 +1820,9 @@ class ProjectStateStore(
         that stays in still to turn in carries the standing cue along, and
         any other state keeps none, as that state never does.
         """
+        if only_over is not None and offered_over is not None:
+            msg = "a save is offered over one state or over a set of them, never both"
+            raise TypeError(msg)
         next_action = (
             single_line(next_action, NEXT_ACTION_MAX_LENGTH) if state == NEEDS_HAND_IN else None
         )
@@ -1833,6 +1840,8 @@ class ProjectStateStore(
                 if reading.head_id != expected_head:
                     return HandInConflict(head)
                 if only_over is not None and (head is None or reading.state != only_over):
+                    return HandInNotOffered(head)
+                if offered_over is not None and reading.state not in offered_over:
                     return HandInNotOffered(head)
                 stays = reading.source is not None and reading.state == state == NEEDS_HAND_IN
                 report = HandInEvent(

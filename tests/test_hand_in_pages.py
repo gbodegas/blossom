@@ -7,9 +7,14 @@ page's own HTML, so a hidden field the page does not write is never sent.
 Nothing here needs a script in the browser, and no model is asked.
 """
 
+import asyncio
 import pathlib
 import re
+import sqlite3
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from html import unescape
+from typing import Final
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -17,10 +22,13 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import NOTHING_SAVED, create_app
-from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
+from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState, HandInUndone
 from blossom.noticing import planning_digest, read_everything, week_from
 from blossom.plans import DailyPlan
+from blossom.routes import hand_in as hand_in_routes
+from blossom.routes import student as student_routes
 from blossom.routes.hand_in import (
+    CHANGED_WITHOUT_THE_PAGE,
     CHOOSE_A_STATE,
     HAND_IN_CANNOT_UNDO,
     HAND_IN_CHANGED,
@@ -28,8 +36,10 @@ from blossom.routes.hand_in import (
     NEXT_ACTION_ONE_LINE,
     NEXT_ACTION_TOO_LONG,
     NOT_A_HAND_IN_OF_THIS,
+    TURN_IN_BAD_FORM,
     UNKEPT_CHARACTER,
 )
+from blossom.routes.navigation import assignment_anchor
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import (
@@ -42,9 +52,12 @@ from blossom.routes.student import (
     HAND_IN_SAVED,
     HAND_IN_UNDONE,
     NOT_HERS_TO_UPDATE,
+    SAVED_ELSEWHERE,
     STEP_NOT_SAVED,
+    TURN_IN_MEANS,
 )
-from blossom.stores.project_state import ProjectStateStore
+from blossom.stores.project_state import CouldNotSave, ProjectStateStore
+from blossom.to_turn_in import RESULT_UNREADABLE, TURNED_IN_EARLIER, UNDONE_EARLIER
 from tests.support import (
     DETAILS,
     ESSAY_ID,
@@ -65,11 +78,14 @@ from tests.support import (
     as_stored,
     browser,
     card_for,
+    first_button_of,
     fixture_week_plan,
     form_fields,
     human_text,
     lands_on,
+    main_of,
     plan_form,
+    pressed_form,
     report,
     school_missing,
     scripted_graphs,
@@ -77,6 +93,7 @@ from tests.support import (
     spoil,
     state_of,
     store_free_page,
+    whole_form,
     with_clock,
     words,
 )
@@ -146,7 +163,9 @@ def test_details_say_nothing_is_recorded_until_she_says_something_and_offer_the_
         assert NOT_RECORDED in turning
         assert "Not sure" not in turning
         assert 'action="' + f"{ACTIONS}/hand-in" + '"' not in turning
-        assert "Update hand-in status" in turning
+        assert turning.count(">I turned it in</button>") == 1
+        assert ">Other turn-in options</a>" in turning
+        assert turning.count(TURN_IN_MEANS) == 1
         assert (
             page.index("Your update")
             < page.index('id="turning-it-in"')
@@ -186,7 +205,7 @@ def test_a_first_save_lands_on_its_result_with_the_statement_the_action_and_the_
         assert "Put the essay in my return folder" in shown
         assert "by Friday" in shown
         assert "Shown in Blossom" in shown
-        assert "Change" in shown
+        assert "Other turn-in options" in shown
         assert "Undo" in shown
         assert len(chain(client)) == 1
 
@@ -320,15 +339,16 @@ def test_one_button_opens_the_form_and_opening_or_keeping_it_writes_nothing() ->
         assert lands_on(page, "#turning-it-in") == (
             '<h2 class="update-heading" id="turning-it-in" tabindex="-1">'
         )
-        assert len(openers) == 1
-        assert ">Update hand-in status</button>" in openers[0]
-        assert 'name="hand_in" value="change"' in openers[0]
+        assert openers == []
+        assert ">Other turn-in options</a>" in page
+        assert "hand_in=change" in page
         assert "remember" not in page
         for shown in (form, from_a_saved_address):
             assert QUESTION in shown
             assert " checked" not in shown
+            assert ">I turned it in</button>" not in shown
         assert QUESTION not in kept
-        assert ">Update hand-in status</button>" in kept
+        assert ">Other turn-in options</a>" in kept
         assert chain(client) == []
 
 
@@ -624,24 +644,68 @@ def test_a_device_with_no_sign_in_and_a_request_from_elsewhere_write_nothing(
 # --------------------------------------------------- her week, the family page, the plan
 
 
-def test_her_card_shows_one_quiet_line_and_a_done_save_offers_the_hand_in_update() -> None:
+def test_her_card_offers_i_turned_it_in_and_one_press_records_it() -> None:
+    """The card says nothing is recorded and offers one press beside the way to the other
+    choices. Done writes no hand-in report; the press writes one, turned in with no step and
+    no note, and lands on the card's line that says so, with Undo for that report."""
     with browser() as client:
-        before = card_for(client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text, ESSAY_ID)
-        assert NOT_RECORDED in before
-        assert f"{ACTIONS}/hand-in" not in before
-
+        page = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        before = card_for(page, ESSAY_ID)
         where = report(client, ESSAY_ID, "done")
         after_done = card_for(client.get(where).text, ESSAY_ID)
-        assert "Your update is saved." in after_done
-        assert "Update hand-in status" in after_done
-        assert "hand_in=change" in after_done
-        assert chain(client) == []
+        done_chain = chain(client)
+        week = client.get(where).text
+        action, sent = pressed_form(card_for(week, ESSAY_ID), "hand_in_head")
+        answer = client.post(action, data=sent, headers=PAGE_HEADERS)
+        result = landed(client, answer)
+        store = state_of(client).project_state
+        events = store.hand_in_chains([ESSAY_ID])[ESSAY_ID]
+        reports = store.student_reports(ESSAY_ID)
 
-        landed(client, save(client, opened(client), NEEDS_HAND_IN, action="Put it in my folder"))
-        card = card_for(client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text, ESSAY_ID)
-        assert "Still to turn in" in card
-        assert "Put it in my folder" in card
-        assert "#turning-it-in" in card
+    assert NOT_RECORDED in before
+    assert ">I turned it in</button>" in before
+    assert ">Other turn-in options</a>" in before
+    assert before.index(">Your work<") < before.index(">Turning it in<")
+    assert f'action="{ACTIONS}/hand-in"' not in before
+    assert "Want to keep track of turning it in?" not in after_done
+    assert "Your update is saved." in after_done
+    assert ">I turned it in</button>" in after_done
+    assert done_chain == []
+    assert action == f"{ACTIONS}/turned-in"
+    assert answer.headers["location"].endswith(f"#hand-in-result-{ESSAY_ID}")
+    assert "turn_in_said=turned_in" in answer.headers["location"]
+    assert [(event.state, event.next_action, event.note) for event in events] == [
+        (TURNED_IN, None, None)
+    ]
+    assert f"turn_in_event={events[0].event_id}" in answer.headers["location"]
+    assert [report.status for report in reports] == ["done"]
+    card = card_for(result, ESSAY_ID)
+    assert "You reported this turned in." in card
+    assert "You reported it turned in on August 19." in card
+    assert f'name="undo_hand_in" value="{events[0].event_id}"' in card
+    assert ">I turned it in</button>" not in card
+    assert ">Change</a>" in card
+
+
+def test_after_done_the_section_asks_nothing_and_done_writes_no_delivery() -> None:
+    """Done on the details is saved and that is all: no offer beside the result, and the
+    section offers its one press and the way to the other choices, as before Done."""
+    with browser() as client:
+        page = client.get(DETAILS, params={"return_to": "week", "week": FIXTURE_WEEK}).text
+        fields = form_fields(page, f"{ACTIONS}/report")
+        answer = client.post(
+            f"{ACTIONS}/report", data={**fields, "status": "done", "note": ""}, headers=PAGE_HEADERS
+        )
+        result = landed(client, answer)
+        events = chain(client)
+
+    assert events == []
+    assert "Your update is saved." in result
+    assert "Want to keep track of turning it in?" not in result
+    assert NOT_RECORDED in section(result)
+    assert section(result).count(">I turned it in</button>") == 1
+    assert result.count(">Other turn-in options</a>") == 1
+    assert "hand_in=change" not in result[: result.index('id="turning-it-in"')]
 
 
 def test_the_family_page_lists_what_she_said_and_offers_no_way_to_say_it_for_her() -> None:
@@ -1128,27 +1192,6 @@ def test_a_row_in_both_sections_keeps_one_of_each_id_and_an_absent_one_keeps_its
 ALGEBRA_ID = "assignment-algebra-set"
 ALGEBRA = f"/student/assignments/{ALGEBRA_ID}"
 ALGEBRA_ACTIONS = f"/student/actions/assignments/{ALGEBRA_ID}"
-OFFER = ">Update hand-in status<"
-
-
-def test_after_a_done_save_on_the_details_the_hand_in_update_is_offered_once() -> None:
-    """The offer beside the result stands in for the section's own opener, never beside it."""
-    with browser() as client:
-        page = client.get(DETAILS, params={"return_to": "week", "week": FIXTURE_WEEK}).text
-        fields = form_fields(page, f"{ACTIONS}/report")
-        answer = client.post(
-            f"{ACTIONS}/report", data={**fields, "status": "done", "note": ""}, headers=PAGE_HEADERS
-        )
-        result = landed(client, answer)
-        later = client.get(DETAILS).text
-
-    assert "Your update is saved." in result
-    assert result.count(OFFER) == 1
-    assert OFFER not in section(result)
-    assert NOT_RECORDED in section(result)
-    assert "hand_in=change" in result[: result.index('id="turning-it-in"')]
-    assert later.count(OFFER) == 1
-    assert OFFER in section(later)
 
 
 def back_to_the_week(client: TestClient, result: str) -> str:
@@ -1160,10 +1203,10 @@ def back_to_the_week(client: TestClient, result: str) -> str:
 
 
 SAID = {
-    "still to turn in": (NEEDS_HAND_IN, "Still to turn in. Next:"),
-    "turned in": (TURNED_IN, "Reported turned in."),
-    "nothing to turn in": ("not_required", "Reported nothing to turn in."),
-    "not sure": ("unknown", "Hand-in status: Not sure."),
+    "still to turn in": (NEEDS_HAND_IN, "You reported Still to turn in on August 19. Next:"),
+    "turned in": (TURNED_IN, "You reported it turned in on August 19."),
+    "nothing to turn in": ("not_required", "You reported nothing to turn in on August 19."),
+    "not sure": ("unknown", "Hand-in status: Not sure. You reported this on August 19."),
     "a record that cannot be read": (TURNED_IN, "cannot be read"),
 }
 
@@ -1206,7 +1249,11 @@ def test_a_row_that_is_due_later_shows_what_she_said_about_turning_it_in(
     assert NOT_RECORDED not in row
     if kind == "still to turn in":
         assert ("Put it in the return folder" if work == "not_yet" else "Turn it in.") in row
-    assert 'href="' + ALGEBRA + "?return_to=week&amp;week=2026-08-17#turning-it-in" + '"' in row
+    if kind != "a record that cannot be read":
+        assert (
+            'href="' + ALGEBRA + "?hand_in=change&amp;return_to=week&amp;week=2026-08-17"
+            "#turning-it-in" + '"'
+        ) in row
     assert f"{ALGEBRA_ACTIONS}/hand-in" not in row
     if work == "done":
         fold = returned[: returned.index(f'id="assignment-{ALGEBRA_ID}"')]
@@ -1220,7 +1267,7 @@ def test_an_earlier_week_shows_what_stands_now_on_its_due_later_row() -> None:
 
     assert "Assigned this week, due later" in earlier
     row = card_for(earlier, ESSAY_ID)
-    assert "Still to turn in. Next:" in row
+    assert "You reported Still to turn in on August 19. Next:" in row
     assert "Put it in my folder" in row
     assert "week=2026-08-10#turning-it-in" in row
 
@@ -1266,3 +1313,1357 @@ def test_a_field_refused_on_an_unreadable_record_points_at_what_is_on_the_page(
         assert f"{ACTIONS}/hand-in" not in turning
         assert "undo-hand-in" not in turning
         assert rows(client) == before
+
+
+# ------------------------------------------------ I turned it in, from a card and the details
+
+WORDS = "Wren's <b>reading</b> notes"
+
+
+def week_card(client: TestClient, **query: str) -> tuple[str, str]:
+    """Her week and the essay's card on it."""
+    page = client.get(HER_PAGE, params={"week": FIXTURE_WEEK, **query}).text
+    return page, card_for(page, ESSAY_ID)
+
+
+def turn_in_press(
+    client: TestClient, html: str, button: str = "hand_in_head", **typed: str
+) -> Answer:
+    """A press of one of the buttons about turning it in, sent as a browser sends it from
+    the page: every field its form owns, the button's own value, and what she typed."""
+    action, sent = pressed_form(html, button)
+    return client.post(action, data={**sent, **typed}, headers=PAGE_HEADERS)
+
+
+def test_a_second_press_is_already_saved_and_undo_takes_back_only_that_report() -> None:
+    """Two presses of one card make one report: the second is already saved and names the
+    report that stands. Undo beside it takes that report back, and pressed again it is
+    refused as already undone, writing nothing."""
+    with browser() as client:
+        _, card = week_card(client)
+        first = turn_in_press(client, card)
+        second = turn_in_press(client, card)
+        events = chain(client)
+        shown = card_for(landed(client, second), ESSAY_ID)
+        undo = turn_in_press(client, shown, "undo_hand_in")
+        undone = card_for(landed(client, undo), ESSAY_ID)
+        again = turn_in_press(client, shown, "undo_hand_in")
+        after = chain(client)
+
+    assert first.status_code == second.status_code == 303
+    assert len(events) == 1
+    assert (
+        f"turn_in_said=same&turn_in_about={ESSAY_ID}&turn_in_event={events[0]}"
+        in (second.headers["location"])
+    )
+    assert HAND_IN_ALREADY_SAVED in shown
+    assert f'name="undo_hand_in" value="{events[0]}"' in shown
+    assert HAND_IN_UNDONE in undone
+    assert NOT_RECORDED in undone
+    assert 'name="undo_hand_in"' not in undone
+    assert ">I turned it in</button>" in undone
+    assert again.status_code == 409
+    assert escape(ALREADY_UNDONE) in card_for(again.text, ESSAY_ID)
+    assert len(after) == 2
+
+
+@pytest.mark.parametrize("state", [TURNED_IN, "not_required"])
+def test_a_press_over_turned_in_with_a_note_or_nothing_to_turn_in_writes_nothing(
+    state: HandInState,
+) -> None:
+    """The card offers no press there, and a form made by hand over that head is no form a
+    card made: refused whole, the note and the state kept as they stand."""
+    with browser() as client:
+        landed(client, save(client, opened(client), state, note="in the blue tray"))
+        _, card = week_card(client)
+        head = chain(client)[-1]
+        answer = client.post(
+            f"{ACTIONS}/turned-in",
+            data={"hand_in_head": head, "week": FIXTURE_WEEK, "in_place": ""},
+            headers=PAGE_HEADERS,
+        )
+        after = chain(client)
+
+    assert ">I turned it in</button>" not in card
+    assert ">Change</a>" in card
+    assert answer.status_code == 422
+    assert escape(TURN_IN_BAD_FORM) in answer.text
+    assert after == [head]
+
+
+def test_a_press_from_a_card_that_fell_behind_is_refused_with_what_stands() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        answer = turn_in_press(client, card)
+        events = chain(client)
+        shown = card_for(answer.text, ESSAY_ID)
+
+    assert answer.status_code == 409
+    assert escape(CHANGED_WITHOUT_THE_PAGE) in shown
+    assert HAND_IN_CHANGED not in answer.text
+    assert "You reported Still to turn in on August 19." in shown
+    assert ">I turned it in</button>" in shown
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize("outcome", ["saved", "changed elsewhere"])
+def test_words_in_a_folded_note_come_back_unsaved_after_i_turned_it_in(outcome: str) -> None:
+    """She types a note in the folded one-press form and presses I turned it in. The words
+    are sent, saved nowhere, and come back in the same form, opened, under the heading that
+    says they are not saved, with the update the page had shown."""
+    with browser() as client:
+        _, card = week_card(client)
+        token = re.search(r'name="expected_report_id" value="([^"]*)"', card)
+        assert token is not None
+        if outcome == "changed elsewhere":
+            landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        answer = turn_in_press(client, card, note=WORDS)
+        store = state_of(client).project_state
+        reports = store.student_reports(ESSAY_ID)
+        events = store.hand_in_chains([ESSAY_ID])[ESSAY_ID]
+    shown = card_for(answer.text, ESSAY_ID)
+
+    assert answer.status_code == (200 if outcome == "saved" else 409)
+    assert reports == []
+    assert [event.note for event in events] == [None]
+    assert f">\n{escape(WORDS)}</textarea>" in shown
+    assert '<details class="steps note-fold" open>' in shown
+    assert '<h4 class="update-heading">Your unsaved update</h4>' in shown
+    assert f'name="expected_report_id" value="{token.group(1)}"' in shown
+    if outcome == "saved":
+        assert "You reported this turned in." in shown
+        assert f'id="hand-in-result-{ESSAY_ID}" tabindex="-1" autofocus' in shown
+    else:
+        assert escape(CHANGED_WITHOUT_THE_PAGE) in shown
+
+
+def test_a_cleared_note_on_an_open_form_comes_back_cleared_with_its_choice() -> None:
+    with browser() as client:
+        report(client, ESSAY_ID, "not_yet", note="old words")
+        _, card = week_card(client, change=ESSAY_ID)
+        answer = turn_in_press(client, card, note="")
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+    shown = card_for(answer.text, ESSAY_ID)
+
+    assert answer.status_code == 200
+    assert [(report.status, report.note) for report in reports] == [("not_yet", "old words")]
+    assert 'value="not_yet" checked' in shown
+    assert ">\n</textarea>" in shown
+    assert "old words</textarea>" not in shown
+
+
+SAVED_LINES: Final = "First line\r\nsecond line"
+"""A note of two lines as a browser sends it, with CRLF; the store keeps it with LF."""
+
+
+@pytest.mark.parametrize("where", ["week", "details"])
+@pytest.mark.parametrize(
+    ("sent", "unsaved"),
+    [(SAVED_LINES, False), ("First line\r\nanother line", True)],
+    ids=["the saved note sent back as a browser sends it", "a different note"],
+)
+def test_the_open_form_sent_with_a_turn_in_press_is_unsaved_only_when_it_differs(
+    where: str, sent: str, unsaved: bool
+) -> None:
+    """I turned it in, then its Undo, pressed from the open form over a saved note of two
+    lines. A browser sends the textarea's line breaks as CRLF; the note is what stands when
+    it reads the same once kept, so only a different note is headed as not saved. Either
+    way the words come back exactly as sent."""
+    with browser() as client:
+        report(client, ESSAY_ID, "not_yet", note=SAVED_LINES)
+        if where == "week":
+            _, page = week_card(client, change=ESSAY_ID)
+        else:
+            page = client.get(DETAILS, params={"change": "1"}).text
+        pressed = turn_in_press(client, page, note=sent)
+        shown = card_for(pressed.text, ESSAY_ID) if where == "week" else pressed.text
+        undone = turn_in_press(client, shown, "undo_hand_in", note=sent)
+        back = card_for(undone.text, ESSAY_ID) if where == "week" else undone.text
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+
+    assert [report.note for report in reports] == ["First line\nsecond line"]
+    assert pressed.status_code == undone.status_code == 200
+    for answer in (shown, back):
+        assert ("Your unsaved update</h" in answer) is unsaved
+        assert f">\n{escape(sent)}</textarea>" in answer
+        assert 'value="not_yet" checked' in answer
+
+
+AFTER_A_BLANK_LINE: Final = "\nWords after a blank line"
+
+
+def box_text(page: str, box_id: str) -> str:
+    """The text a browser shows in the text area with this id: one line break that opens
+    a text area's text is dropped."""
+    found = re.search(rf'<textarea id="{re.escape(box_id)}"[^>]*>(.*?)</textarea>', page, re.S)
+    assert found is not None, box_id
+    text = unescape(found.group(1))
+    return text[1:] if text.startswith("\n") else text
+
+
+@pytest.mark.parametrize(
+    "note",
+    [AFTER_A_BLANK_LINE, "\n\nWords after two blank lines"],
+    ids=["one blank line", "two blank lines"],
+)
+@pytest.mark.parametrize("outcome", ["saved", "changed elsewhere"])
+@pytest.mark.parametrize(
+    "form", ["the folded form on a card", "the open form on a card", "the open form on the details"]
+)
+def test_a_note_that_opens_with_a_blank_line_comes_back_as_sent_after_a_turn_in_press(
+    form: str, outcome: str, note: str
+) -> None:
+    """A browser drops one line break that opens a text area's text. Her words sent with
+    I turned it in come back so that the form sends them again exactly as she sent them,
+    whether the press was saved or refused; after a saved press, its Undo sends them as
+    the page holds them, and they come back from it as sent too."""
+    with browser() as client:
+        if form == "the open form on the details":
+            page = client.get(DETAILS).text
+        elif form == "the open form on a card":
+            report(client, ESSAY_ID, "not_yet")
+            _, page = week_card(client, change=ESSAY_ID)
+        else:
+            _, page = week_card(client)
+        if outcome == "changed elsewhere":
+            landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        answer = turn_in_press(client, page, note=note)
+        shown = answer.text if "details" in form else card_for(answer.text, ESSAY_ID)
+        if outcome == "saved":
+            action, sent = pressed_form(shown, "undo_hand_in")
+            undone = client.post(action, data=sent, headers=PAGE_HEADERS)
+            back = undone.text if "details" in form else card_for(undone.text, ESSAY_ID)
+
+    assert answer.status_code == (200 if outcome == "saved" else 409)
+    assert ('class="quick"' in shown) is (form == "the folded form on a card")
+    if outcome == "saved":
+        assert sent["note"] == note
+        assert undone.status_code == 200
+        assert pressed_form(back, "hand_in_head")[1]["note"] == note
+    else:
+        assert pressed_form(shown, "hand_in_head")[1]["note"] == note
+
+
+BOXES: Final = [
+    "a work record that cannot be read",
+    "homework gone",
+    "a parent's copy",
+    "a saved press whose page cannot be read",
+    "the work route's own page for homework gone",
+]
+
+
+@pytest.mark.parametrize("path", BOXES)
+def test_a_note_that_opens_with_a_blank_line_shows_as_sent_in_the_box_that_keeps_it(
+    path: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where her words come back read-only, to copy, the box shows them as she sent them."""
+
+    def unreadable(*_: object, **__: object) -> None:
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    box = "kept-note"
+    code = {"a parent's copy": 403, "a saved press whose page cannot be read": 503}
+    answer: Answer
+    if path == "a parent's copy":
+        app = create_app(signed_in_household(tmp_path))
+        with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+            client.post("/sign-in", data={"passphrase": THEIRS})
+            answer = client.post(
+                f"{ACTIONS}/turned-in",
+                data={"hand_in_head": "", "note": AFTER_A_BLANK_LINE, "week": FIXTURE_WEEK},
+                headers=PAGE_HEADERS,
+            )
+    else:
+        with browser() as client:
+            store = state_of(client).project_state
+            if path == "a work record that cannot be read":
+                report(client, ESSAY_ID, "not_yet")
+                _, card = week_card(client, change=ESSAY_ID)
+                spoil(store, "student_reports", "status", "invalid-status")
+                box = f"kept-note-{ESSAY_ID}"
+            else:
+                _, card = week_card(client)
+            if "gone" in path:
+                store._connection.execute(
+                    "DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,)
+                )
+                store._connection.commit()
+            if path == "a saved press whose page cannot be read":
+                monkeypatch.setattr(hand_in_routes, "card_page", unreadable)
+            if path == "the work route's own page for homework gone":
+                fields = whole_form(card, f"{ACTIONS}/report")
+                answer = client.post(
+                    f"{ACTIONS}/report",
+                    data={**fields, "status": "done", "note": AFTER_A_BLANK_LINE},
+                    headers=PAGE_HEADERS,
+                )
+            else:
+                answer = turn_in_press(client, card, note=AFTER_A_BLANK_LINE)
+
+    assert answer.status_code == code.get(path, 404 if "gone" in path else 200)
+    assert box_text(answer.text, box) == AFTER_A_BLANK_LINE
+
+
+def test_a_note_that_opens_with_a_blank_line_comes_back_as_sent_after_a_refused_save() -> None:
+    """The work route's own refusal answers with the open form too: her words there send
+    again exactly as she sent them."""
+    with browser() as client:
+        _, card = week_card(client, change=ESSAY_ID)
+        fields = whole_form(card, f"{ACTIONS}/report")
+        fields.pop("status", None)
+        refused = client.post(
+            f"{ACTIONS}/report",
+            data={**fields, "note": AFTER_A_BLANK_LINE},
+            headers=PAGE_HEADERS,
+        )
+    shown = card_for(refused.text, ESSAY_ID)
+
+    assert refused.status_code == 422
+    assert pressed_form(shown, "hand_in_head")[1]["note"] == AFTER_A_BLANK_LINE
+
+
+def test_words_in_the_open_form_on_the_details_come_back_unsaved() -> None:
+    with browser() as client:
+        page = client.get(DETAILS, params={"return_to": "week", "week": FIXTURE_WEEK}).text
+        action, sent = pressed_form(page, "hand_in_head")
+        answer = client.post(action, data={**sent, "note": WORDS}, headers=PAGE_HEADERS)
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+
+    assert action == f"{ACTIONS}/turned-in"
+    assert sent["report_view"] == "detail"
+    assert answer.status_code == 200
+    assert reports == []
+    assert f">\n{escape(WORDS)}</textarea>" in answer.text
+    assert "You reported this turned in." in section(answer.text)
+    assert "Back to the week" in section(answer.text)
+
+
+def test_each_button_joins_the_form_it_belongs_to_and_enter_still_saves_the_update() -> None:
+    with browser() as client:
+        page, card = week_card(client)
+        not_yet_page = client.get(report(client, QUIZ_ID, "not_yet")).text
+
+    form_id = f"update-form-{ESSAY_ID}"
+    action, sent = pressed_form(card, "hand_in_head")
+    assert action == f"{ACTIONS}/turned-in"
+    assert f'form="{form_id}"' in card
+    assert set(sent) == {"hand_in_head", "note", "expected_report_id", "week", "in_place"}
+    assert first_button_of(page, form_id).get("name") == "status"
+    quiz = card_for(not_yet_page, QUIZ_ID)
+    assert f'id="update-form-{QUIZ_ID}"' not in quiz
+    assert f'<form method="post" action="/student/actions/assignments/{QUIZ_ID}/turned-in"' in quiz
+
+
+def test_one_explanation_of_turning_it_in_stands_where_the_button_shows() -> None:
+    report_line = "own report, kept on the day Blossom took it."
+    with browser() as client:
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        waiting = section(client.get(DETAILS).text)
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        landed(client, save(client, opened(client), TURNED_IN))
+        turned = section(client.get(DETAILS).text)
+
+    assert waiting.count(TURN_IN_MEANS) == 1
+    assert report_line not in waiting
+    assert TURN_IN_MEANS not in turned
+    assert report_line in turned
+    assert week.count(TURN_IN_MEANS) == 1
+    assert week.count('aria-describedby="turn-in-means"') == week.count(
+        ">I turned it in</button>"
+    ) - week.count('name="state" value="turned_in"')
+
+
+def test_a_saved_press_whose_page_cannot_be_read_says_what_was_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unreadable(*_: object, **__: object) -> None:
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    with browser() as client:
+        _, card = week_card(client)
+        monkeypatch.setattr(hand_in_routes, "card_page", unreadable)
+        answer = turn_in_press(client, card, note=WORDS)
+        events = chain(client)
+
+    assert answer.status_code == 503
+    assert "<h1>Turning it in</h1>" in answer.text
+    assert escape("You reported this turned in. Your week can't be shown right now.") in (
+        answer.text
+    )
+    assert '<h2 class="update-heading">Your unsaved update</h2>' in answer.text
+    assert f"readonly>\n{escape(WORDS)}</textarea>" in answer.text
+    assert "<form" not in answer.text.split("<main", 1)[1]
+    assert "Nothing was saved" not in answer.text
+    assert len(events) == 1
+
+
+def on_the_loop_while(made: Callable[..., object], seen: list[str], name: str) -> object:
+    """``made``, noting under ``name`` whether an event loop runs where it is called."""
+
+    def watched(*args: object, **kwargs: object) -> object:
+        try:
+            asyncio.get_running_loop()
+            seen.append(f"{name} on the loop")
+        except RuntimeError:
+            seen.append(f"{name} off the loop")
+        return made(*args, **kwargs)
+
+    return watched
+
+
+@pytest.mark.parametrize("where", ["week", "details"])
+def test_the_turn_in_routes_build_their_pages_off_the_event_loop(
+    where: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every page the two routes answer her with, from her week or the details, is made where
+    no event loop runs, a worker thread, and not on the loop that serves every request. For
+    I turned it in: a saved press with her words, a press made twice, a press refused, a
+    write the file refuses, and homework gone. For its Undo: an undo saved, an undo refused
+    for a newer update, an undo the file refuses, and homework gone."""
+    seen: list[str] = []
+    steps: dict[str, tuple[int, list[str]]] = {}
+
+    def refuses(assignment_id: str, *_: object, **__: object) -> object:
+        raise CouldNotSave(assignment_id, sqlite3.OperationalError("disk I/O error"))
+
+    def fresh(client: TestClient) -> str:
+        return week_card(client)[1] if where == "week" else client.get(DETAILS).text
+
+    def shown(answer: Answer) -> str:
+        return card_for(answer.text, ESSAY_ID) if where == "week" else answer.text
+
+    def step(name: str, answer: Answer) -> Answer:
+        steps[name] = (answer.status_code, list(seen))
+        seen.clear()
+        return answer
+
+    with browser() as client:
+        monkeypatch.setattr(
+            hand_in_routes, "card_page", on_the_loop_while(hand_in_routes.card_page, seen, "page")
+        )
+        monkeypatch.setattr(
+            hand_in_routes, "gone_page", on_the_loop_while(student_routes.gone_page, seen, "gone")
+        )
+        store = state_of(client).project_state
+        first = fresh(client)
+        saved = step("press saved", turn_in_press(client, first, note=WORDS))
+        step("press made twice", turn_in_press(client, first, note=WORDS))
+        step("undo saved", turn_in_press(client, shown(saved), "undo_hand_in", note=WORDS))
+        second = fresh(client)
+        pressed = step("press saved again", turn_in_press(client, second, note=WORDS))
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        step("undo refused", turn_in_press(client, shown(pressed), "undo_hand_in", note=WORDS))
+        step("press refused", turn_in_press(client, second, note=WORDS))
+        third = fresh(client)
+        kept = step("press saved a third time", turn_in_press(client, third, note=WORDS))
+        with monkeypatch.context() as failing:
+            failing.setattr(store, "record_hand_in", refuses)
+            failing.setattr(store, "undo_hand_in", refuses)
+            step("press the file refuses", turn_in_press(client, third, note=WORDS))
+            step(
+                "undo the file refuses",
+                turn_in_press(client, shown(kept), "undo_hand_in", note=WORDS),
+            )
+        store._connection.execute("DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,))
+        store._connection.commit()
+        step("press for homework gone", turn_in_press(client, third, note=WORDS))
+        undo_kept = turn_in_press(client, shown(kept), "undo_hand_in", note=WORDS)
+        step("undo for homework gone", undo_kept)
+
+    page, gone = ["page off the loop"], ["gone off the loop"]
+    assert steps == {
+        "press saved": (200, page),
+        "press made twice": (200, page),
+        "undo saved": (200, page),
+        "press saved again": (200, page),
+        "undo refused": (409, page),
+        "press refused": (409, page),
+        "press saved a third time": (200, page),
+        "press the file refuses": (500, page),
+        "undo the file refuses": (500, page),
+        "press for homework gone": (404, gone),
+        "undo for homework gone": (404, gone),
+    }
+
+
+def test_a_parents_refused_turn_in_page_is_built_off_the_event_loop(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[str] = []
+    page = student_routes.templates.TemplateResponse
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        monkeypatch.setattr(
+            student_routes.templates, "TemplateResponse", on_the_loop_while(page, seen, "page")
+        )
+        answers = [
+            client.post(
+                f"{ACTIONS}/{press}",
+                data={button: "", "note": WORDS, "expected_report_id": "", "week": FIXTURE_WEEK},
+                headers=PAGE_HEADERS,
+            )
+            for press, button in (("turned-in", "hand_in_head"), ("undo-turned-in", "undo_hand_in"))
+        ]
+
+    assert [answer.status_code for answer in answers] == [403, 403]
+    assert seen == ["page off the loop", "page off the loop"]
+
+
+def test_a_result_read_after_the_record_moved_on_is_said_as_earlier_with_no_undo() -> None:
+    """The address names the report the press made. Once a newer report follows it, the
+    card says it was done earlier, offers no Undo, and an Undo of that report from the page
+    shown before is refused and writes nothing."""
+    with browser() as client:
+        _, card = week_card(client)
+        where = turn_in_press(client, card).headers["location"]
+        shown = card_for(client.get(where).text, ESSAY_ID)
+        landed(client, save(client, opened(client), TURNED_IN, note="in the tray"))
+        later = card_for(client.get(where).text, ESSAY_ID)
+        before = chain(client)
+        undo = turn_in_press(client, shown, "undo_hand_in")
+        after = chain(client)
+
+    assert "You reported this turned in." in shown
+    assert TURNED_IN_EARLIER in later
+    assert "You reported this turned in." not in later
+    assert 'name="undo_hand_in"' not in later
+    assert ">Change</a>" in later
+    assert undo.status_code == 409
+    assert escape(HAND_IN_CANNOT_UNDO) in undo.text
+    assert after == before
+
+
+def test_a_later_visit_to_a_turned_in_card_offers_change_and_no_undo() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        landed(client, turn_in_press(client, card))
+        _, later = week_card(client)
+
+    assert "You reported it turned in on August 19." in later
+    assert ">Change</a>" in later
+    assert 'name="undo_hand_in"' not in later
+    assert ">I turned it in</button>" not in later
+
+
+def test_a_card_form_sent_to_the_hand_in_route_writes_nothing_and_keeps_no_note_of_hers() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        _, sent = pressed_form(card, "hand_in_head")
+        answer = client.post(
+            f"{ACTIONS}/hand-in", data={**sent, "note": WORDS}, headers=PAGE_HEADERS
+        )
+        events = chain(client)
+
+    assert answer.status_code == 422
+    assert escape(BAD_FORM) in answer.text
+    assert str(escape(WORDS)) not in answer.text
+    assert WORDS not in answer.text
+    assert events == []
+
+
+def test_a_hand_in_form_sent_to_the_turn_in_route_writes_nothing() -> None:
+    with browser() as client:
+        page = opened(client, return_to="week", week=FIXTURE_WEEK)
+        fields = form_fields(page, f"{ACTIONS}/hand-in")
+        answer = client.post(
+            f"{ACTIONS}/turned-in",
+            data={**fields, "state": TURNED_IN, "next_action": "", "note": "in the blue tray"},
+            headers=PAGE_HEADERS,
+        )
+        events = chain(client)
+
+    assert answer.status_code == 422
+    assert escape(TURN_IN_BAD_FORM) in answer.text
+    assert "in the blue tray" not in answer.text
+    assert events == []
+
+
+@pytest.mark.parametrize("result", ["same", "undone"])
+def test_a_saved_press_whose_page_cannot_be_read_says_what_it_was(
+    result: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Already saved and undone are said as they are, beside the page that can't be shown;
+    neither says nothing was saved."""
+
+    def unreadable(*_: object, **__: object) -> None:
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    with browser() as client:
+        _, card = week_card(client)
+        shown = card_for(landed(client, turn_in_press(client, card)), ESSAY_ID)
+        monkeypatch.setattr(hand_in_routes, "card_page", unreadable)
+        if result == "same":
+            answer = turn_in_press(client, card, note=WORDS)
+        else:
+            answer = turn_in_press(client, shown, "undo_hand_in", note=WORDS)
+        events = chain(client)
+
+    said = HAND_IN_ALREADY_SAVED if result == "same" else HAND_IN_UNDONE
+    assert answer.status_code == 503
+    assert "<h1>Turning it in</h1>" in answer.text
+    assert escape(f"{said} Your week can't be shown right now.") in answer.text
+    assert f"readonly>\n{escape(WORDS)}</textarea>" in answer.text
+    assert "Nothing was saved" not in answer.text
+    assert len(events) == (1 if result == "same" else 2)
+
+
+def test_words_sent_with_undo_come_back_unsaved_and_undo_writes_once() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        shown = card_for(landed(client, turn_in_press(client, card)), ESSAY_ID)
+        undone = turn_in_press(client, shown, "undo_hand_in", note=WORDS)
+        again = turn_in_press(client, shown, "undo_hand_in", note=WORDS)
+        events = chain(client)
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+
+    assert undone.status_code == 200
+    assert HAND_IN_UNDONE in card_for(undone.text, ESSAY_ID)
+    assert f">\n{escape(WORDS)}</textarea>" in card_for(undone.text, ESSAY_ID)
+    assert again.status_code == 409
+    assert f">\n{escape(WORDS)}</textarea>" in card_for(again.text, ESSAY_ID)
+    assert len(events) == 2
+    assert reports == []
+
+
+def test_a_press_for_homework_taken_off_the_record_keeps_her_words_to_copy() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        store = state_of(client).project_state
+        store._connection.execute("DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,))
+        store._connection.commit()
+        answer = turn_in_press(client, card, note=WORDS)
+
+    assert answer.status_code == 404
+    assert '<h2 class="update-heading">Your unsaved update</h2>' in answer.text
+    assert f"readonly>\n{escape(WORDS)}</textarea>" in answer.text
+
+
+def test_a_refused_press_whose_page_cannot_be_read_keeps_her_words_as_her_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unreadable(*_: object, **__: object) -> None:
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    with browser() as client:
+        _, card = week_card(client)
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        monkeypatch.setattr(hand_in_routes, "card_page", unreadable)
+        answer = turn_in_press(client, card, note=WORDS)
+
+    assert answer.status_code == 409
+    assert "<h1>Update not saved</h1>" in answer.text
+    assert escape("That changed while you were away, so nothing was saved.") in answer.text
+    assert '<h2 class="update-heading">Your unsaved update</h2>' in answer.text
+    assert f"readonly>\n{escape(WORDS)}</textarea>" in answer.text
+    assert "hand-in update" not in answer.text.split("<main", 1)[1].lower()
+
+
+def test_a_parent_at_a_result_address_reads_what_stands_and_no_result(
+    tmp_path: pathlib.Path,
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        _, card = week_card(client)
+        where = turn_in_press(client, card).headers["location"]
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        read = client.get(where).text
+        details = client.get(
+            DETAILS, params={"turn_in_said": "turned_in", "turn_in_event": chain(client)[0]}
+        ).text
+
+    shown = card_for(read, ESSAY_ID)
+    assert "She reported it turned in on August 19." in shown
+    assert "You reported this turned in." not in read
+    assert "You reported this turned in." not in details
+    assert "<button" not in section(details)
+    assert 'name="undo_hand_in"' not in read
+
+
+@pytest.mark.parametrize("token", [" report-padded ", "r" * 201])
+def test_a_work_token_no_page_writes_comes_back_blank_and_meets_a_standing_update(
+    token: str,
+) -> None:
+    """A blank token is safe: the next save meets any update that stands as made elsewhere."""
+    with browser() as client:
+        report(client, ESSAY_ID, "done")
+        _, card = week_card(client, change=ESSAY_ID)
+        answer = turn_in_press(client, card, note=WORDS, expected_report_id=token)
+        shown = card_for(answer.text, ESSAY_ID)
+        fields = dict(form_fields(shown, f"{ACTIONS}/report"))
+        save_again = client.post(
+            f"{ACTIONS}/report",
+            data={**fields, "status": "not_yet", "note": WORDS},
+            headers=PAGE_HEADERS,
+        )
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+
+    assert answer.status_code == 200
+    assert fields["expected_report_id"] == ""
+    assert save_again.status_code == 409
+    assert [report.status for report in reports] == ["done"]
+
+
+HAND_IN_KINDS: dict[str, HandInState | None] = {
+    "no report": None,
+    "not sure": "unknown",
+    "still to turn in": NEEDS_HAND_IN,
+    "turned in with a note": TURNED_IN,
+    "nothing to turn in": "not_required",
+    "a hand-in record that cannot be read": TURNED_IN,
+}
+
+
+@pytest.mark.parametrize("work", ["none", "done", "not_yet", "unreadable"])
+@pytest.mark.parametrize("kind", HAND_IN_KINDS)
+def test_each_hand_in_state_shows_its_controls_beside_any_work_state(kind: str, work: str) -> None:
+    """The press is offered over no report, Not sure and Still to turn in, whatever her work
+    says, an unreadable work record included; Change otherwise; nothing to press over a
+    hand-in record that cannot be read. With no work form to join, beside a work record that
+    cannot be read, the press is a form of its own and there is nothing typed to send."""
+    state = HAND_IN_KINDS[kind]
+    with browser() as client:
+        store = state_of(client).project_state
+        if work != "none":
+            report(client, ESSAY_ID, "done" if work == "unreadable" else work)
+        if work == "unreadable":
+            spoil(store, "student_reports", "status", "invalid-status")
+        if state is not None:
+            note = "in the tray" if kind == "turned in with a note" else None
+            store.record_hand_in(
+                ESSAY_ID,
+                state,
+                None,
+                note,
+                expected_head=None,
+                now=datetime(2026, 8, 19, 21, 0, tzinfo=UTC),
+                today=PLAN_DATE,
+            )
+        if kind == "a hand-in record that cannot be read":
+            spoil(store, "hand_in_events", "state", "invalid-state")
+        _, card = week_card(client)
+        offered = ">I turned it in</button>" in card
+        pressed = turn_in_press(client, card) if offered else None
+        events = [] if pressed is None else chain(client)
+
+    assert offered is (kind in ("no report", "not sure", "still to turn in"))
+    # No address names a result here, so no state, Nothing to turn in included, offers Undo.
+    assert 'name="undo_hand_in"' not in card
+    assert (f'aria-label="Change your hand-in update for {ESSAY_TITLE}' in card) is (
+        kind in ("turned in with a note", "nothing to turn in")
+    )
+    if kind == "a hand-in record that cannot be read":
+        assert "The hand-in record cannot be read right now." in card
+        assert NOT_RECORDED not in card
+    if work == "unreadable":
+        assert f'id="update-form-{ESSAY_ID}"' not in card
+        assert "<textarea" not in card
+        if offered:
+            assert f'<form method="post" action="{ACTIONS}/turned-in"' in card
+    if pressed is not None:
+        assert pressed.status_code == 303
+        assert "turn_in_said=turned_in" in pressed.headers["location"]
+        assert len(events) == (1 if state is None else 2)
+
+
+@pytest.mark.parametrize("reader", ["a parent", "a record that cannot be read"])
+def test_a_card_with_nothing_to_press_keeps_the_way_to_turning_it_in(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Where the group offers no control, its line still ends in the link to the section on
+    the details, as it always has."""
+    link = (
+        f'<a class="assignment-link" href="{DETAILS}?return_to=week&amp;week={FIXTURE_WEEK}'
+        f'#turning-it-in" aria-label="Turning it in: {ESSAY_TITLE}, World History">'
+        "Turning it in</a>"
+    )
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        if reader == "a parent":
+            client.post("/sign-out")
+            client.post("/sign-in", data={"passphrase": THEIRS})
+        else:
+            landed(client, save(client, opened(client), TURNED_IN))
+            spoil(state_of(client).project_state, "hand_in_events", "state", "invalid-state")
+        _, card = week_card(client)
+
+    assert link in card
+    assert ">I turned it in</button>" not in card
+    assert ">Other turn-in options</a>" not in card
+
+
+@pytest.mark.parametrize("refusal", ["changed elsewhere", "a way back no page makes"])
+def test_a_changed_choice_and_a_typed_note_both_come_back_after_a_refused_press(
+    refusal: str,
+) -> None:
+    """Her own press from the open form keeps her changed choice and her note through a
+    refusal, 409 or 422: only a parent's refused press leaves the choice behind."""
+    with browser() as client:
+        report(client, ESSAY_ID, "done")
+        _, card = week_card(client, change=ESSAY_ID)
+        typed: dict[str, str] = {"status": "not_yet", "note": WORDS}
+        if refusal == "changed elsewhere":
+            landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        else:
+            typed["week"] = "someday"
+        answer = turn_in_press(client, card, **typed)
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+    shown = card_for(answer.text, ESSAY_ID)
+
+    assert answer.status_code == (409 if refusal == "changed elsewhere" else 422)
+    assert 'value="not_yet" checked' in shown
+    assert f">\n{escape(WORDS)}</textarea>" in shown
+    assert [report.status for report in reports] == ["done"]
+
+
+@pytest.mark.parametrize("choice", ["bogus", "", "future", " done "])
+@pytest.mark.parametrize("button", ["hand_in_head", "undo_hand_in"])
+def test_a_choice_no_page_writes_is_refused_before_anything_is_saved(
+    button: str, choice: str
+) -> None:
+    """Her update's form writes Done or Not yet and nothing else. A press that carries any
+    other choice, blank or padded included, is no form a page made: 422, nothing written,
+    her note kept as typed."""
+    with browser() as client:
+        _, card = week_card(client)
+        if button == "undo_hand_in":
+            card = card_for(landed(client, turn_in_press(client, card)), ESSAY_ID)
+        before = chain(client)
+        answer = turn_in_press(client, card, button, status=choice, note=WORDS)
+        after = chain(client)
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+    shown = card_for(answer.text, ESSAY_ID)
+
+    assert answer.status_code == 422
+    assert escape(TURN_IN_BAD_FORM) in shown
+    assert f">\n{escape(WORDS)}</textarea>" in shown
+    assert after == before
+    assert reports == []
+
+
+def fold_around(page: str, anchor: str) -> str:
+    """The opening tag of the Reported done fold that holds the element with this id."""
+    at = page.index(f'id="{anchor}"')
+    start = page.rindex('<details class="steps reported-done"', 0, at)
+    assert page.find("</details>", start) > at
+    return page[start : page.index(">", start) + 1]
+
+
+@pytest.mark.parametrize("words", [False, True], ids=["no work fields", "with work fields"])
+@pytest.mark.parametrize("name", [ESSAY_ID, ALGEBRA_ID], ids=["this week's fold", "due later"])
+def test_a_press_on_a_card_in_reported_done_lands_with_its_fold_open(
+    name: str, words: bool
+) -> None:
+    """On a later visit a Done card sits in its Reported done fold. A press of I turned it in
+    there lands with that fold open and the result in it: the redirect's address names the
+    card, and a page answered with her words names it through them."""
+    with browser() as client:
+        report(client, name, "done")
+        page = client.get(
+            HER_PAGE, params={"week": FIXTURE_WEEK, **({"change": name} if words else {})}
+        ).text
+        before = fold_around(page, assignment_anchor(name))
+        typed = {"note": WORDS} if words else {}
+        answer = turn_in_press(client, card_for(page, name), **typed)
+        landing = answer.text if words else landed(client, answer)
+
+    assert before == (
+        '<details class="steps reported-done" open>'
+        if words
+        else '<details class="steps reported-done">'
+    )
+    assert fold_around(landing, assignment_anchor(name)) == (
+        '<details class="steps reported-done" open>'
+    )
+    assert "You reported this turned in." in card_for(landing, name)
+
+
+def test_a_result_on_a_record_that_cannot_be_read_says_so_on_the_card() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        where = turn_in_press(client, card).headers["location"]
+        spoil(state_of(client).project_state, "hand_in_events", "state", "invalid-state")
+        shown = card_for(client.get(where).text, ESSAY_ID)
+
+    assert escape(RESULT_UNREADABLE) in shown
+    assert "You reported this turned in." not in shown
+    assert 'name="undo_hand_in"' not in shown
+    assert "The hand-in record cannot be read right now." in shown
+
+
+@pytest.mark.parametrize("button", ["hand_in_head", "undo_hand_in"])
+def test_a_foreign_head_is_refused_before_any_comparison(button: str) -> None:
+    """The essay already stands turned in, so the same press would be already saved. A head
+    from another assignment is refused first, 422, and nothing is written."""
+    with browser() as client:
+        store = state_of(client).project_state
+        _, card = week_card(client)
+        landed(client, turn_in_press(client, card))
+        if button == "undo_hand_in":
+            _, card = week_card(
+                client,
+                turn_in_said="turned_in",
+                turn_in_about=ESSAY_ID,
+                turn_in_event=chain(client)[0],
+            )
+        kept = store.record_hand_in(
+            QUIZ_ID,
+            TURNED_IN,
+            None,
+            None,
+            expected_head=None,
+            now=datetime(2026, 8, 19, 21, 0, tzinfo=UTC),
+            today=PLAN_DATE,
+        )
+        assert isinstance(kept, HandInSaved)
+        before = chain(client)
+        answer = turn_in_press(client, card, button, **{button: kept.event.event_id})
+        after = chain(client)
+
+    assert answer.status_code == 422
+    assert escape(NOT_A_HAND_IN_OF_THIS) in answer.text
+    assert after == before
+
+
+def test_a_turn_in_the_file_refuses_keeps_her_work_words_and_says_nothing_was_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuses(assignment_id: str, *_: object, **__: object) -> object:
+        raise CouldNotSave(assignment_id, sqlite3.OperationalError("disk I/O error"))
+
+    with browser() as client:
+        _, card = week_card(client)
+        monkeypatch.setattr(state_of(client).project_state, "record_hand_in", refuses)
+        answer = turn_in_press(client, card, note=WORDS)
+        monkeypatch.undo()
+        events = chain(client)
+    shown = card_for(answer.text, ESSAY_ID)
+
+    assert answer.status_code == 500
+    assert escape("That could not be saved, and nothing was changed. Try again.") in shown
+    assert f">\n{escape(WORDS)}</textarea>" in shown
+    assert '<h4 class="update-heading">Your unsaved update</h4>' in shown
+    assert events == []
+
+
+def test_a_card_press_that_empties_the_list_shows_its_result_on_the_card_with_undo() -> None:
+    with browser() as client:
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        page, card = week_card(client)
+        result = landed(client, turn_in_press(client, card))
+        events = chain(client)
+
+    assert 'id="to-turn-in"' in page
+    shown = card_for(result, ESSAY_ID)
+    assert "You reported this turned in." in shown
+    assert f'name="undo_hand_in" value="{events[-1]}"' in shown
+    assert 'id="to-turn-in-result"' not in result
+    assert ">To turn in</a>" in result
+
+
+ID = re.compile(r'\sid="([^"]+)"')
+
+
+def test_every_id_the_groups_write_is_unique_on_the_page() -> None:
+    """Every page state the groups write keeps each id once: the update forms they join, the
+    group headings on rows, the result and refusal lines, and the one explanation."""
+    with browser() as client:
+        _, card = week_card(client)
+        pages = {"arrival": client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text}
+        pages["change"] = client.get(
+            HER_PAGE, params={"week": FIXTURE_WEEK, "change": ESSAY_ID}
+        ).text
+        pages["words"] = turn_in_press(client, card, note=WORDS).text
+        pages["result"] = landed(client, turn_in_press(client, card))
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        pages["refused"] = turn_in_press(client, card, note=WORDS).text
+        pages["details"] = client.get(DETAILS).text
+
+    for state, page in pages.items():
+        ids = ID.findall(page)
+        assert len(ids) == len(set(ids)), (state, [i for i in ids if ids.count(i) > 1])
+    assert f'id="update-form-{ESSAY_ID}"' in pages["arrival"]
+    assert f'id="turn-in-group-{ALGEBRA_ID}"' in pages["arrival"]
+    assert f'id="work-group-{ALGEBRA_ID}"' in pages["arrival"]
+    assert 'id="turn-in-means"' in pages["arrival"]
+    assert f'id="hand-in-result-{ESSAY_ID}"' in pages["result"]
+    assert f'id="hand-in-problem-{ESSAY_ID}"' in pages["refused"]
+
+
+ROW = re.compile(r'<li class="to-turn-in-row" id="to-turn-in-([^"]+)"')
+
+
+def test_details_offer_i_turned_it_in_while_the_editor_is_closed_and_not_while_it_is_open() -> None:
+    with browser() as client:
+        closed = section(client.get(DETAILS).text)
+        opened_page = section(opened(client))
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        waiting = section(client.get(DETAILS).text)
+        waiting_open = section(opened(client))
+
+    for shown in (closed, waiting):
+        assert shown.count(">I turned it in</button>") == 1
+        assert shown.count(">Other turn-in options</a>") == 1
+    for shown in (opened_page, waiting_open):
+        assert ">I turned it in</button>" not in shown
+        assert TURN_IN_MEANS not in shown
+
+
+def test_each_due_later_row_offers_the_press_and_records_it_from_the_row() -> None:
+    with browser() as client:
+        page, _ = week_card(client)
+        row = card_for(page, ALGEBRA_ID)
+        result = card_for(landed(client, turn_in_press(client, row)), ALGEBRA_ID)
+        events = state_of(client).project_state.hand_in_chains([ALGEBRA_ID])[ALGEBRA_ID]
+
+    assert row.count(">I turned it in</button>") == 1
+    assert ">Other turn-in options</a>" in row
+    assert "You reported this turned in." in result
+    assert [(event.state, event.note) for event in events] == [(TURNED_IN, None)]
+
+
+@pytest.mark.parametrize("readable", [True, False])
+def test_the_fold_says_turn_in_updates_are_there_only_while_a_card_in_it_can_offer_them(
+    readable: bool,
+) -> None:
+    cue = '<span class="fold-says">Turn-in updates are here too.</span>'
+    with browser() as client:
+        report(client, ESSAY_ID, "done")
+        if not readable:
+            landed(client, save(client, opened(client), TURNED_IN))
+            spoil(state_of(client).project_state, "hand_in_events", "state", "invalid-state")
+        page = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+
+    fold = page[page.index('<details class="steps reported-done"') :]
+    summary = fold[: fold.index("</summary>")]
+    assert (cue in summary) is readable
+
+
+def test_the_work_token_kept_with_her_words_still_meets_a_change_made_elsewhere() -> None:
+    """Another device saves an update after her page was drawn and before she presses. Her
+    words come back with the update her page had shown, not the newer one, so a save from that
+    form meets the change and nothing of hers overwrites it."""
+    with browser() as client:
+        report(client, ESSAY_ID, "not_yet")
+        _, card = week_card(client, change=ESSAY_ID)
+        report(client, ESSAY_ID, "done", note="from another device")
+        kept = card_for(turn_in_press(client, card, status="done", note=WORDS).text, ESSAY_ID)
+        fields = form_fields(kept, f"{ACTIONS}/report")
+        answer = client.post(
+            f"{ACTIONS}/report",
+            data={**fields, "status": "done", "note": WORDS},
+            headers=PAGE_HEADERS,
+        )
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+
+    assert answer.status_code == 409
+    assert escape(SAVED_ELSEWHERE) in answer.text
+    assert [(report.status, report.note) for report in reports][-1] == (
+        "done",
+        "from another device",
+    )
+
+
+def test_undo_beside_the_card_result_restores_what_stood_and_its_queue_place() -> None:
+    """Still to turn in with a step and a note, first in her list: I turned it in takes it off
+    the list, and its Undo puts back the step, the note, the day and the place."""
+    with browser() as client:
+        landed(
+            client,
+            save(client, opened(client), NEEDS_HAND_IN, action="Blue folder", note="the lab copy"),
+        )
+        quiz = f"/student/assignments/{QUIZ_ID}"
+        page = client.get(quiz, params={"hand_in": "change"}).text
+        fields = form_fields(page, f"/student/actions/assignments/{QUIZ_ID}/hand-in")
+        client.post(
+            f"/student/actions/assignments/{QUIZ_ID}/hand-in",
+            data={**fields, "state": NEEDS_HAND_IN, "next_action": "", "note": ""},
+            headers=PAGE_HEADERS,
+        )
+        before = ROW.findall(client.get("/student/to-turn-in").text)
+        _, card = week_card(client)
+        shown = card_for(landed(client, turn_in_press(client, card)), ESSAY_ID)
+        during = ROW.findall(client.get("/student/to-turn-in").text)
+        undone = card_for(landed(client, turn_in_press(client, shown, "undo_hand_in")), ESSAY_ID)
+        after = ROW.findall(client.get("/student/to-turn-in").text)
+
+    assert before == [ESSAY_ID, QUIZ_ID]
+    assert during == [QUIZ_ID]
+    assert after == before
+    assert "You reported Still to turn in on August 19. Next:" in undone
+    assert "Blue folder" in undone
+    assert "Your earlier note stays in history." in undone
+
+
+def test_no_undo_is_offered_for_an_already_saved_result_that_names_an_undo() -> None:
+    """Turned in, then Still to turn in, then that taken back on the details: Turned in stands
+    again, through an undo. A card drawn before the undo, pressed, is already saved, names
+    that undo, and offers no Undo of it."""
+    with browser() as client:
+        landed(client, save(client, opened(client), TURNED_IN))
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        _, card = week_card(client)
+        undo = whole_form(client.get(DETAILS).text, f"{ACTIONS}/undo-hand-in")
+        assert client.post(f"{ACTIONS}/undo-hand-in", data=undo).status_code == 303
+        before = chain(client)
+        answer = turn_in_press(client, card)
+        shown = card_for(landed(client, answer), ESSAY_ID)
+        after = chain(client)
+
+    assert f"turn_in_event={before[-1]}" in answer.headers["location"]
+    assert HAND_IN_ALREADY_SAVED in shown
+    assert 'name="undo_hand_in"' not in shown
+    assert after == before
+
+
+def test_a_list_press_sent_to_the_turn_in_route_writes_nothing() -> None:
+    """Her To turn in list's press, and the Undo beside its result, each sent to the card's
+    route: neither is a form a card makes, so each is refused whole and writes nothing."""
+    with browser() as client:
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        page = client.get("/student/to-turn-in").text
+        row = page[page.index(f'id="to-turn-in-{ESSAY_ID}"') :]
+        fields = form_fields(row, f"{ACTIONS}/hand-in")
+        before = chain(client)
+        answer = client.post(f"{ACTIONS}/turned-in", data=fields, headers=PAGE_HEADERS)
+        after = chain(client)
+        listed = client.post(f"{ACTIONS}/hand-in", data=fields, headers=PAGE_HEADERS)
+        result = client.get(listed.headers["location"]).text
+        undo = form_fields(result, f"{ACTIONS}/undo-hand-in")
+        pressed = chain(client)
+        crossed = client.post(f"{ACTIONS}/turned-in", data=undo, headers=PAGE_HEADERS)
+        after_undo = chain(client)
+
+    assert fields["hand_in_view"] == "list"
+    assert answer.status_code == 422
+    assert escape(TURN_IN_BAD_FORM) in answer.text
+    assert after == before
+    assert set(undo) == {"hand_in_id", "hand_in_view"}
+    assert crossed.status_code == 422
+    assert escape(TURN_IN_BAD_FORM) in crossed.text
+    assert after_undo == pressed
+
+
+def test_a_press_on_a_chain_that_does_not_hold_is_said_as_unsaved_and_writes_nothing() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        page, fresh = week_card(client)
+        spoil(state_of(client).project_state, "hand_in_events", "state", "invalid-state")
+        answer = turn_in_press(client, fresh, note=WORDS)
+        rows = (
+            state_of(client)
+            .project_state._connection.execute(
+                "SELECT COUNT(*) FROM hand_in_events WHERE assignment_id = ?", (ESSAY_ID,)
+            )
+            .fetchone()[0]
+        )
+
+    assert answer.status_code == 500
+    assert escape("That could not be saved, and nothing was changed. Try again.") in answer.text
+    assert f">\n{escape(WORDS)}</textarea>" in answer.text
+    assert rows == 1
+
+
+def test_a_turn_in_result_is_the_one_focus_target_and_an_arrival_focuses_nothing() -> None:
+    """The line that says what turning it in means stands above every press it describes. An
+    ordinary arrival focuses nothing; a press answered with the page focuses its result, and
+    that alone."""
+    with browser() as client:
+        page, card = week_card(client)
+        answered = turn_in_press(client, card, note=WORDS).text
+        later = landed(client, turn_in_press(client, card))
+
+    first = page.index(">I turned it in</button>")
+    assert page.index('id="turn-in-means"') < first
+    assert " autofocus" not in main_of(page)
+    assert main_of(answered).count(" autofocus") == 1
+    assert f'id="hand-in-result-{ESSAY_ID}" tabindex="-1" autofocus' in answered
+    assert " autofocus" not in main_of(later)
+
+
+AT_NINE: Final = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
+NEWER: dict[str, tuple[HandInState, str | None] | None] = {
+    "turned in with a note": (TURNED_IN, "in the tray"),
+    "nothing to turn in": ("not_required", None),
+    "not sure": ("unknown", None),
+    "still to turn in": (NEEDS_HAND_IN, None),
+    "no report after an Undo": None,
+}
+
+
+def pressed_on_the_details(client: TestClient) -> tuple[str, str]:
+    """I turned it in pressed on the details: the address it answers with, and its event."""
+    action, sent = pressed_form(client.get(DETAILS).text, "hand_in_head")
+    answer = client.post(action, data=sent, headers=PAGE_HEADERS)
+    assert answer.status_code == 303, answer.text[:300]
+    return answer.headers["location"], chain(client)[-1]
+
+
+def newer_than(client: TestClient, kind: str, pressed: str) -> None:
+    """Something newer than the press: another report from the details, or its Undo."""
+    store = state_of(client).project_state
+    if NEWER[kind] is None:
+        undone = store.undo_hand_in(ESSAY_ID, pressed, now=AT_NINE, today=PLAN_DATE)
+        assert isinstance(undone, HandInUndone)
+        return
+    state, note = NEWER[kind]  # type: ignore[misc]
+    kept = store.record_hand_in(
+        ESSAY_ID, state, None, note, expected_head=pressed, now=AT_NINE, today=PLAN_DATE
+    )
+    assert isinstance(kept, HandInSaved)
+
+
+@pytest.mark.parametrize("kind", NEWER)
+def test_an_earlier_result_on_the_details_offers_no_undo_of_what_stands(kind: str) -> None:
+    """With a result said as earlier on the details, neither it nor the section offers Undo:
+    an Undo there would take back a newer update than the one the result is about."""
+    with browser() as client:
+        where, _ = pressed_on_the_details(client)
+        newer_than(client, kind, chain(client)[-1])
+        shown = section(client.get(where).text)
+        plain = section(client.get(DETAILS).text)
+
+    assert TURNED_IN_EARLIER in shown
+    assert 'name="hand_in_id"' not in shown
+    assert 'name="undo_hand_in"' not in shown
+    assert ('name="hand_in_id"' in plain) is (kind != "no report after an Undo")
+
+
+@pytest.mark.parametrize("kind", [kind for kind, report in NEWER.items() if report is not None])
+def test_an_earlier_undone_result_on_the_details_offers_no_undo_of_what_stands(kind: str) -> None:
+    """Undo pressed beside a result, then a newer report: the Undo's own result address,
+    said as earlier, offers no Undo, while the same details without it offer the usual one."""
+    with browser() as client:
+        where, _ = pressed_on_the_details(client)
+        action, sent = pressed_form(client.get(where).text, "undo_hand_in")
+        undone = client.post(action, data=sent, headers=PAGE_HEADERS)
+        assert undone.status_code == 303, undone.text[:300]
+        newer_than(client, kind, chain(client)[-1])
+        shown = section(client.get(undone.headers["location"]).text)
+        plain = section(client.get(DETAILS).text)
+
+    assert UNDONE_EARLIER in shown
+    assert 'name="hand_in_id"' not in shown
+    assert 'name="undo_hand_in"' not in shown
+    assert 'name="hand_in_id"' in plain
+
+
+def test_a_fresh_result_on_the_details_offers_its_own_undo_and_no_other() -> None:
+    with browser() as client:
+        where, pressed = pressed_on_the_details(client)
+        shown = section(client.get(where).text)
+
+    assert "You reported this turned in." in shown
+    assert shown.count(">Undo</button>") == 1
+    assert f'name="undo_hand_in" value="{pressed}"' in shown
+    assert 'name="hand_in_id"' not in shown
+
+
+@pytest.mark.parametrize(
+    "asked",
+    [
+        {"turn_in_said": "turned_in", "turn_in_event": "hand-in-made-up"},
+        {"turn_in_said": "turned_in", "turn_in_event": "QUIZ"},
+        {"turn_in_said": "made_up", "turn_in_event": "HEAD"},
+        {"turn_in_said": "turned_in", "turn_in_event": "HEAD"},
+        {"turn_in_said": "turned_in", "turn_in_event": "x" * 201},
+    ],
+    ids=[
+        "an event no record holds",
+        "another assignment's",
+        "a word no press says",
+        "a report named as one it is not",
+        "an id longer than any",
+    ],
+)
+def test_an_address_the_reading_does_not_bear_out_leaves_the_details_as_on_any_visit(
+    asked: dict[str, str],
+) -> None:
+    """Still to turn in stands, a report of hers the section offers to Undo. An address
+    whose result the reading does not bear out shows no result and the usual Undo."""
+    with browser() as client:
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        head = chain(client)[-1]
+        store = state_of(client).project_state
+        other = store.record_hand_in(
+            QUIZ_ID, TURNED_IN, None, None, expected_head=None, now=AT_NINE, today=PLAN_DATE
+        )
+        assert isinstance(other, HandInSaved)
+        named = {"HEAD": head, "QUIZ": other.event.event_id}
+        query = {key: named.get(value, value) for key, value in asked.items()}
+        plain = section(client.get(DETAILS).text)
+        shown = section(client.get(DETAILS, params=query).text)
+
+    assert f'name="hand_in_id" value="{head}"' in plain
+    assert shown == plain
+
+
+@pytest.mark.parametrize("kind", ["still to turn in", "turned in with a note"])
+def test_an_undo_drawn_before_a_newer_update_is_refused_and_writes_nothing(kind: str) -> None:
+    """The result's Undo, and the details' own Undo, each drawn before something newer was
+    saved and pressed after it: each is refused, 409, and nothing is written."""
+    with browser() as client:
+        where, pressed = pressed_on_the_details(client)
+        fresh = client.get(where).text
+        action, bound = pressed_form(fresh, "undo_hand_in")
+        plain = whole_form(client.get(DETAILS).text, f"{ACTIONS}/undo-hand-in")
+        newer_than(client, kind, pressed)
+        before = chain(client)
+        refused = client.post(action, data=bound, headers=PAGE_HEADERS)
+        refused_plain = client.post(f"{ACTIONS}/undo-hand-in", data=plain, headers=PAGE_HEADERS)
+        after = chain(client)
+
+    assert plain["hand_in_id"] == pressed
+    assert refused.status_code == refused_plain.status_code == 409
+    assert escape(HAND_IN_CANNOT_UNDO) in refused.text
+    assert escape(HAND_IN_CANNOT_UNDO) in refused_plain.text
+    assert after == before
+
+
+@pytest.mark.parametrize("kind", NEWER)
+def test_an_earlier_result_on_her_week_offers_no_undo_either(kind: str) -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        where = turn_in_press(client, card).headers["location"]
+        newer_than(client, kind, chain(client)[-1])
+        shown = card_for(client.get(where).text, ESSAY_ID)
+
+    assert TURNED_IN_EARLIER in shown
+    assert 'name="undo_hand_in"' not in shown
+    assert 'name="hand_in_id"' not in shown
+
+
+def test_a_result_address_for_homework_off_the_record_says_so_on_her_week_and_the_details() -> None:
+    """A turn-in result's address opened once its assignment is off the record: her week
+    answers 200 with the line that says so in place of the card, and the details answer 404
+    with the page that says so. Neither says what the press did."""
+    with browser() as client:
+        _, card = week_card(client)
+        on_her_week = turn_in_press(client, card).headers["location"]
+        shown = card_for(client.get(on_her_week).text, ESSAY_ID)
+        assert turn_in_press(client, shown, "undo_hand_in").status_code == 303
+        page = client.get(DETAILS, params={"return_to": "week", "week": FIXTURE_WEEK}).text
+        on_the_details = turn_in_press(client, page).headers["location"]
+        store = state_of(client).project_state
+        store._connection.execute("DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,))
+        store._connection.commit()
+        week = client.get(on_her_week)
+        details = client.get(on_the_details)
+
+    assert week.status_code == 200
+    assert "That assignment is not on record now. The week's homework is below." in week.text
+    assert f'id="assignment-{ESSAY_ID}"' not in week.text
+    assert "You reported this turned in." not in week.text
+    assert details.status_code == 404
+    assert "This assignment is not on record now." in details.text
+    assert "You reported this turned in." not in details.text

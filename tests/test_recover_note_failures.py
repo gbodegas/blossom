@@ -1354,7 +1354,7 @@ def test_a_save_on_homework_gone_from_the_record_keeps_her_words_when_today_cann
     assert answer.status_code == 404
     main = main_of(answer.text)
     assert "This assignment is not on record now." in main
-    assert f"readonly>{escape(TYPED)}</textarea>" in main
+    assert f"readonly>\n{escape(TYPED)}</textarea>" in main
     assert ways_back_of(main) == [("/student/due-this-week#today", "Back to Today")]
     assert after_the_failure(seen) == []
 

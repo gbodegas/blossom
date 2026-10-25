@@ -269,11 +269,9 @@ ALLOWED = {
 
 
 def sent_from(page: str) -> dict[str, str]:
-    """What the review's form sends with nothing changed, its text as a browser reads the
-    textarea: the one line break after the opening tag dropped."""
-    fields = whole_form(page, SAVE)
-    fields["report_text"] = fields["report_text"].removeprefix("\n")
-    return fields
+    """What the review's form sends with nothing changed. ``whole_form`` reads its text as a
+    browser reads the textarea, with the one line break after the opening tag dropped."""
+    return whole_form(page, SAVE)
 
 
 # ------------------------------------------------------------- who may use what

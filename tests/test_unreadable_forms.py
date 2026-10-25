@@ -168,6 +168,8 @@ HERS_TREE: Final = (
     f"/student/actions/assignments/{ESSAY_ID}/undo-report",
     f"/student/actions/assignments/{ESSAY_ID}/hand-in",
     f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in",
+    f"/student/actions/assignments/{ESSAY_ID}/turned-in",
+    f"/student/actions/assignments/{ESSAY_ID}/undo-turned-in",
     ASK,
     "/student/actions/homework-notes",
     *[f"/student/actions/homework-notes/{NOTE}/{press}" for press in HER_NOTE_PRESSES],

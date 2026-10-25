@@ -1,0 +1,41 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#
+  The two buttons about turning an assignment in that a card and the details
+  share: I turned it in, and Undo beside its result. Each sends its own value
+  under a name no other form sends. When her update's form on the same card
+  or page has a note she can type in, the button joins that form through its
+  form attribute and goes to its own route, so a press sends her words too and
+  they come back unsaved; the button sits outside that form's markup, and no
+  form is ever inside another. Otherwise each is a small form of its own with
+  the same context her update's form carries.
+#}
+{% macro press(assignment, ctx, form_id, described) -%}
+{%- set action = turn_in_actions(assignment.assignment_id)[0] -%}
+{%- set head = assignment.hand_in.head_id or "" -%}
+{%- set name = "I turned it in: " ~ assignment.title ~ ", " ~ assignment.course -%}
+{% if form_id %}
+  <button type="submit" form="{{ form_id }}" formaction="{{ action }}" name="hand_in_head" value="{{ head }}" class="secondary" aria-label="{{ name }}"{% if described %} aria-describedby="turn-in-means"{% endif %}>I turned it in</button>
+{% else %}
+  <form method="post" action="{{ action }}" class="action">
+    {% for field, value in ctx.post_fields %}
+    <input type="hidden" name="{{ field }}" value="{{ value }}">
+    {% endfor %}
+    <button type="submit" name="hand_in_head" value="{{ head }}" class="secondary" aria-label="{{ name }}"{% if described %} aria-describedby="turn-in-means"{% endif %}>I turned it in</button>
+  </form>
+{% endif %}
+{%- endmacro %}
+{% macro undo(assignment, ctx, form_id, event_id) -%}
+{%- set action = turn_in_actions(assignment.assignment_id)[1] -%}
+{%- set name = "Undo your hand-in update for " ~ assignment.title ~ ", " ~ assignment.course -%}
+{% if form_id %}
+  <button type="submit" form="{{ form_id }}" formaction="{{ action }}" name="undo_hand_in" value="{{ event_id }}" class="secondary" aria-label="{{ name }}">Undo</button>
+{% else %}
+  <form method="post" action="{{ action }}" class="action">
+    {% for field, value in ctx.post_fields %}
+    <input type="hidden" name="{{ field }}" value="{{ value }}">
+    {% endfor %}
+    <button type="submit" name="undo_hand_in" value="{{ event_id }}" class="secondary" aria-label="{{ name }}">Undo</button>
+  </form>
+{% endif %}
+{%- endmacro %}
