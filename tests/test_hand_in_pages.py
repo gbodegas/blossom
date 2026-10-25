@@ -2215,6 +2215,8 @@ def test_no_undo_is_offered_for_an_already_saved_result_that_names_an_undo() -> 
 
 
 def test_a_list_press_sent_to_the_turn_in_route_writes_nothing() -> None:
+    """Her To turn in list's press, and the Undo beside its result, each sent to the card's
+    route: neither is a form a card makes, so each is refused whole and writes nothing."""
     with browser() as client:
         landed(client, save(client, opened(client), NEEDS_HAND_IN))
         page = client.get("/student/to-turn-in").text
@@ -2223,11 +2225,21 @@ def test_a_list_press_sent_to_the_turn_in_route_writes_nothing() -> None:
         before = chain(client)
         answer = client.post(f"{ACTIONS}/turned-in", data=fields, headers=PAGE_HEADERS)
         after = chain(client)
+        listed = client.post(f"{ACTIONS}/hand-in", data=fields, headers=PAGE_HEADERS)
+        result = client.get(listed.headers["location"]).text
+        undo = form_fields(result, f"{ACTIONS}/undo-hand-in")
+        pressed = chain(client)
+        crossed = client.post(f"{ACTIONS}/turned-in", data=undo, headers=PAGE_HEADERS)
+        after_undo = chain(client)
 
     assert fields["hand_in_view"] == "list"
     assert answer.status_code == 422
     assert escape(TURN_IN_BAD_FORM) in answer.text
     assert after == before
+    assert set(undo) == {"hand_in_id", "hand_in_view"}
+    assert crossed.status_code == 422
+    assert escape(TURN_IN_BAD_FORM) in crossed.text
+    assert after_undo == pressed
 
 
 def test_a_press_on_a_chain_that_does_not_hold_is_said_as_unsaved_and_writes_nothing() -> None:
