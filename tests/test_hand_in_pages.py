@@ -13,6 +13,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from typing import Final
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -20,7 +21,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import NOTHING_SAVED, create_app
-from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
+from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState, HandInUndone
 from blossom.noticing import planning_digest, read_everything, week_from
 from blossom.plans import DailyPlan
 from blossom.routes import hand_in as hand_in_routes
@@ -2278,3 +2279,136 @@ def test_a_turn_in_result_is_the_one_focus_target_and_an_arrival_focuses_nothing
     assert main_of(answered).count(" autofocus") == 1
     assert f'id="hand-in-result-{ESSAY_ID}" tabindex="-1" autofocus' in answered
     assert " autofocus" not in main_of(later)
+
+
+AT_NINE: Final = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
+NEWER: dict[str, tuple[HandInState, str | None] | None] = {
+    "turned in with a note": (TURNED_IN, "in the tray"),
+    "nothing to turn in": ("not_required", None),
+    "not sure": ("unknown", None),
+    "still to turn in": (NEEDS_HAND_IN, None),
+    "no report after an Undo": None,
+}
+
+
+def pressed_on_the_details(client: TestClient) -> tuple[str, str]:
+    """I turned it in pressed on the details: the address it answers with, and its event."""
+    action, sent = pressed_form(client.get(DETAILS).text, "hand_in_head")
+    answer = client.post(action, data=sent, headers=PAGE_HEADERS)
+    assert answer.status_code == 303, answer.text[:300]
+    return answer.headers["location"], chain(client)[-1]
+
+
+def newer_than(client: TestClient, kind: str, pressed: str) -> None:
+    """Something newer than the press: another report from the details, or its Undo."""
+    store = state_of(client).project_state
+    if NEWER[kind] is None:
+        undone = store.undo_hand_in(ESSAY_ID, pressed, now=AT_NINE, today=PLAN_DATE)
+        assert isinstance(undone, HandInUndone)
+        return
+    state, note = NEWER[kind]  # type: ignore[misc]
+    kept = store.record_hand_in(
+        ESSAY_ID, state, None, note, expected_head=pressed, now=AT_NINE, today=PLAN_DATE
+    )
+    assert isinstance(kept, HandInSaved)
+
+
+@pytest.mark.parametrize("kind", NEWER)
+def test_an_earlier_result_on_the_details_offers_no_undo_of_what_stands(kind: str) -> None:
+    """With a result said as earlier on the details, neither it nor the section offers Undo:
+    an Undo there would take back a newer update than the one the result is about."""
+    with browser() as client:
+        where, _ = pressed_on_the_details(client)
+        newer_than(client, kind, chain(client)[-1])
+        shown = section(client.get(where).text)
+        plain = section(client.get(DETAILS).text)
+
+    assert TURNED_IN_EARLIER in shown
+    assert 'name="hand_in_id"' not in shown
+    assert 'name="undo_hand_in"' not in shown
+    assert ('name="hand_in_id"' in plain) is (kind != "no report after an Undo")
+
+
+def test_a_fresh_result_on_the_details_offers_its_own_undo_and_no_other() -> None:
+    with browser() as client:
+        where, pressed = pressed_on_the_details(client)
+        shown = section(client.get(where).text)
+
+    assert "You reported this turned in." in shown
+    assert shown.count(">Undo</button>") == 1
+    assert f'name="undo_hand_in" value="{pressed}"' in shown
+    assert 'name="hand_in_id"' not in shown
+
+
+@pytest.mark.parametrize(
+    "asked",
+    [
+        {"turn_in_said": "turned_in", "turn_in_event": "hand-in-made-up"},
+        {"turn_in_said": "turned_in", "turn_in_event": "QUIZ"},
+        {"turn_in_said": "made_up", "turn_in_event": "HEAD"},
+        {"turn_in_said": "turned_in", "turn_in_event": "HEAD"},
+        {"turn_in_said": "turned_in", "turn_in_event": "x" * 201},
+    ],
+    ids=[
+        "an event no record holds",
+        "another assignment's",
+        "a word no press says",
+        "a report named as one it is not",
+        "an id longer than any",
+    ],
+)
+def test_an_address_the_reading_does_not_bear_out_leaves_the_details_as_on_any_visit(
+    asked: dict[str, str],
+) -> None:
+    """Still to turn in stands, a report of hers the section offers to Undo. An address
+    whose result the reading does not bear out shows no result and the usual Undo."""
+    with browser() as client:
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        head = chain(client)[-1]
+        store = state_of(client).project_state
+        other = store.record_hand_in(
+            QUIZ_ID, TURNED_IN, None, None, expected_head=None, now=AT_NINE, today=PLAN_DATE
+        )
+        assert isinstance(other, HandInSaved)
+        named = {"HEAD": head, "QUIZ": other.event.event_id}
+        query = {key: named.get(value, value) for key, value in asked.items()}
+        plain = section(client.get(DETAILS).text)
+        shown = section(client.get(DETAILS, params=query).text)
+
+    assert f'name="hand_in_id" value="{head}"' in plain
+    assert shown == plain
+
+
+@pytest.mark.parametrize("kind", ["still to turn in", "turned in with a note"])
+def test_an_undo_drawn_before_a_newer_update_is_refused_and_writes_nothing(kind: str) -> None:
+    """The result's Undo, and the details' own Undo, each drawn before something newer was
+    saved and pressed after it: each is refused, 409, and nothing is written."""
+    with browser() as client:
+        where, pressed = pressed_on_the_details(client)
+        fresh = client.get(where).text
+        action, bound = pressed_form(fresh, "undo_hand_in")
+        plain = whole_form(client.get(DETAILS).text, f"{ACTIONS}/undo-hand-in")
+        newer_than(client, kind, pressed)
+        before = chain(client)
+        refused = client.post(action, data=bound, headers=PAGE_HEADERS)
+        refused_plain = client.post(f"{ACTIONS}/undo-hand-in", data=plain, headers=PAGE_HEADERS)
+        after = chain(client)
+
+    assert plain["hand_in_id"] == pressed
+    assert refused.status_code == refused_plain.status_code == 409
+    assert escape(HAND_IN_CANNOT_UNDO) in refused.text
+    assert escape(HAND_IN_CANNOT_UNDO) in refused_plain.text
+    assert after == before
+
+
+@pytest.mark.parametrize("kind", NEWER)
+def test_an_earlier_result_on_her_week_offers_no_undo_either(kind: str) -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        where = turn_in_press(client, card).headers["location"]
+        newer_than(client, kind, chain(client)[-1])
+        shown = card_for(client.get(where).text, ESSAY_ID)
+
+    assert TURNED_IN_EARLIER in shown
+    assert 'name="undo_hand_in"' not in shown
+    assert 'name="hand_in_id"' not in shown

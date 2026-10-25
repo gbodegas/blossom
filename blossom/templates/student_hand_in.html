@@ -56,6 +56,13 @@
 {% set keep_words = "Not now" if hi.state is none else "Keep it as it is" %}
 {% set offered = ctx.can_update and not form_open and not hi.unavailable and hi.state in (none, "unknown", "needs_hand_in") %}
 {% set shown = turn_in if (turn_in is defined and turn_in) else none %}
+{#
+  A result the reading bore out, of a press something newer has followed, says
+  it was done earlier. While it is shown the section offers no Undo of what
+  stands, which that result's own words sit beside; an address the reading does
+  not bear out is no result, and the section is as on any visit.
+#}
+{% set superseded = shown and shown.said and not shown.stands %}
 {% set wf = work_form(assignment, card, ctx) %}
 {% set school_missing = assignment.school_statements|selectattr("status", "equalto", "missing")|list %}
 <section class="hand-in" aria-labelledby="turning-it-in">
@@ -108,7 +115,7 @@
         {% if hi.note %}
           <p class="note">Your earlier note stays in history.</p>
         {% endif %}
-        {% if hi.undo_event_id %}
+        {% if hi.undo_event_id and not superseded %}
           <div class="actions">
             <form method="post" action="{{ hand_in_actions[1] }}" class="action">
               <input type="hidden" name="hand_in_id" value="{{ hi.undo_event_id }}">
@@ -133,7 +140,7 @@
           </form>
           {% if shown and shown.undo_event_id %}
             {{ undo(assignment, ctx, wf.form_id, shown.undo_event_id) }}
-          {% elif hi.undo_event_id %}
+          {% elif hi.undo_event_id and not superseded %}
             <form method="post" action="{{ hand_in_actions[1] }}" class="action">
               <input type="hidden" name="hand_in_id" value="{{ hi.undo_event_id }}">
               {% for name, value in hand_in_fields %}
