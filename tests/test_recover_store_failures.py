@@ -75,6 +75,7 @@ from tests.support import (
     main_of,
     plan_form,
     planned,
+    pressed_form,
     quiet_client,
     refusing,
     report,
@@ -91,6 +92,7 @@ from tests.support import (
 
 HAND_IN = f"/student/actions/assignments/{ESSAY_ID}/hand-in"
 UNDO_HAND_IN = f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in"
+TURNED_IN_PRESS = f"/student/actions/assignments/{ESSAY_ID}/turned-in"
 TO_TURN_IN = "/student/to-turn-in"
 GONE_ID = "assignment-not-here"
 TYPED = "Kept <b>words</b>\nand a second line"
@@ -173,6 +175,10 @@ WEEK_PRESSES = {
     "undo of homework not on record": Press(
         404, "That assignment is not on record, so nothing was changed.", None, None, about=GONE_ID
     ),
+    "I turned it in from a card that fell behind": Press(
+        409, "That changed while you were away, so nothing was saved.", None, TYPED
+    ),
+    "Undo of a turn-in already undone": Press(409, "That update was already undone.", None, TYPED),
 }
 
 
@@ -205,6 +211,18 @@ def week_press(client: TestClient, case: str) -> tuple[str, dict[str, str]]:
             f"/student/actions/assignments/{GONE_ID}/undo-report",
             {"report_id": "any", "week": FIXTURE_WEEK},
         )
+    if case == "I turned it in from a card that fell behind":
+        action, sent = pressed_form(the_card(client), "hand_in_head")
+        hand_in_saved(client, NEEDS_HAND_IN, None)
+        return action, {**sent, "note": TYPED}
+    if case == "Undo of a turn-in already undone":
+        action, sent = pressed_form(the_card(client), "hand_in_head")
+        pressed = client.post(action, data=sent, headers=PAGE_HEADERS)
+        assert pressed.status_code == 303, pressed.text[:300]
+        page = client.get(pressed.headers["location"], headers=PAGE_HEADERS).text
+        action, sent = pressed_form(card_for(page, ESSAY_ID), "undo_hand_in")
+        assert client.post(action, data=sent, headers=PAGE_HEADERS).status_code == 303
+        return action, {**sent, "note": TYPED}
     report(client, ESSAY_ID, "done")
     first = form_fields(the_card(client, "show"), UNDO)
     if case == "undo of a changed update":
@@ -448,6 +466,11 @@ DETAILS_PRESSES = {
         "Your hand-in update has changed, so it cannot be undone from that page.",
     ),
     "an Undo of a hand-in already undone": (409, "That update was already undone."),
+    "I turned it in from details that fell behind": (
+        409,
+        "That changed while you were away, so nothing was saved.",
+    ),
+    "Undo of a turn-in from the details already undone": (409, "That update was already undone."),
 }
 
 
@@ -472,6 +495,20 @@ def details_press(client: TestClient, case: str) -> tuple[str, dict[str, str], d
         client.get(DETAILS, params={"hand_in": "change"}, headers=PAGE_HEADERS).text, HAND_IN
     )
     blank = {"next_action": "", "note": ""}
+    if case == "I turned it in from details that fell behind":
+        page = client.get(DETAILS, headers=PAGE_HEADERS).text
+        action, sent = pressed_form(page, "hand_in_head")
+        hand_in_saved(client, NEEDS_HAND_IN, None)
+        return action, {**sent, "note": TYPED}, {"note": TYPED}
+    if case == "Undo of a turn-in from the details already undone":
+        page = client.get(DETAILS, headers=PAGE_HEADERS).text
+        action, sent = pressed_form(page, "hand_in_head")
+        pressed = client.post(action, data=sent, headers=PAGE_HEADERS)
+        assert pressed.status_code == 303, pressed.text[:300]
+        page = client.get(pressed.headers["location"], headers=PAGE_HEADERS).text
+        action, sent = pressed_form(page, "undo_hand_in")
+        assert client.post(action, data=sent, headers=PAGE_HEADERS).status_code == 303
+        return action, {**sent, "note": TYPED}, {"note": TYPED}
     if case == "an update with nothing chosen":
         return REPORT, {**update, "note": TYPED}, {"note": TYPED}
     if case == "an update saved on another device":

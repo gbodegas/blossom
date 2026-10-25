@@ -37,6 +37,7 @@ from blossom.routes.hand_in import (
     TURN_IN_BAD_FORM,
     UNKEPT_CHARACTER,
 )
+from blossom.routes.navigation import assignment_anchor
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import (
@@ -53,7 +54,7 @@ from blossom.routes.student import (
     TURN_IN_MEANS,
 )
 from blossom.stores.project_state import CouldNotSave, ProjectStateStore
-from blossom.to_turn_in import TURNED_IN_EARLIER
+from blossom.to_turn_in import RESULT_UNREADABLE, TURNED_IN_EARLIER
 from tests.support import (
     DETAILS,
     ESSAY_ID,
@@ -1933,3 +1934,152 @@ def test_a_choice_no_page_writes_is_refused_before_anything_is_saved(button: str
     assert f">{escape(WORDS)}</textarea>" in shown
     assert after == before
     assert reports == []
+
+
+def fold_around(page: str, anchor: str) -> str:
+    """The opening tag of the Reported done fold that holds the element with this id."""
+    at = page.index(f'id="{anchor}"')
+    start = page.rindex('<details class="steps reported-done"', 0, at)
+    assert page.find("</details>", start) > at
+    return page[start : page.index(">", start) + 1]
+
+
+@pytest.mark.parametrize("words", [False, True], ids=["no work fields", "with work fields"])
+@pytest.mark.parametrize("name", [ESSAY_ID, ALGEBRA_ID], ids=["this week's fold", "due later"])
+def test_a_press_on_a_card_in_reported_done_lands_with_its_fold_open(
+    name: str, words: bool
+) -> None:
+    """On a later visit a Done card sits in its Reported done fold. A press of I turned it in
+    there lands with that fold open and the result in it: the redirect's address names the
+    card, and a page answered with her words names it through them."""
+    with browser() as client:
+        report(client, name, "done")
+        page = client.get(
+            HER_PAGE, params={"week": FIXTURE_WEEK, **({"change": name} if words else {})}
+        ).text
+        before = fold_around(page, assignment_anchor(name))
+        typed = {"note": WORDS} if words else {}
+        answer = turn_in_press(client, card_for(page, name), **typed)
+        landing = answer.text if words else landed(client, answer)
+
+    assert before == (
+        '<details class="steps reported-done" open>'
+        if words
+        else '<details class="steps reported-done">'
+    )
+    assert fold_around(landing, assignment_anchor(name)) == (
+        '<details class="steps reported-done" open>'
+    )
+    assert "You reported this turned in." in card_for(landing, name)
+
+
+def test_a_result_on_a_record_that_cannot_be_read_says_so_on_the_card() -> None:
+    with browser() as client:
+        _, card = week_card(client)
+        where = turn_in_press(client, card).headers["location"]
+        spoil(state_of(client).project_state, "hand_in_events", "state", "invalid-state")
+        shown = card_for(client.get(where).text, ESSAY_ID)
+
+    assert escape(RESULT_UNREADABLE) in shown
+    assert "You reported this turned in." not in shown
+    assert 'name="undo_hand_in"' not in shown
+    assert "The hand-in record cannot be read right now." in shown
+
+
+@pytest.mark.parametrize("button", ["hand_in_head", "undo_hand_in"])
+def test_a_foreign_head_is_refused_before_any_comparison(button: str) -> None:
+    """The essay already stands turned in, so the same press would be already saved. A head
+    from another assignment is refused first, 422, and nothing is written."""
+    with browser() as client:
+        store = state_of(client).project_state
+        _, card = week_card(client)
+        landed(client, turn_in_press(client, card))
+        if button == "undo_hand_in":
+            _, card = week_card(
+                client,
+                turn_in_said="turned_in",
+                turn_in_about=ESSAY_ID,
+                turn_in_event=chain(client)[0],
+            )
+        kept = store.record_hand_in(
+            QUIZ_ID,
+            TURNED_IN,
+            None,
+            None,
+            expected_head=None,
+            now=datetime(2026, 8, 19, 21, 0, tzinfo=UTC),
+            today=PLAN_DATE,
+        )
+        assert isinstance(kept, HandInSaved)
+        before = chain(client)
+        answer = turn_in_press(client, card, button, **{button: kept.event.event_id})
+        after = chain(client)
+
+    assert answer.status_code == 422
+    assert escape(NOT_A_HAND_IN_OF_THIS) in answer.text
+    assert after == before
+
+
+def test_a_turn_in_the_file_refuses_keeps_her_work_words_and_says_nothing_was_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuses(assignment_id: str, *_: object, **__: object) -> object:
+        raise CouldNotSave(assignment_id, sqlite3.OperationalError("disk I/O error"))
+
+    with browser() as client:
+        _, card = week_card(client)
+        monkeypatch.setattr(state_of(client).project_state, "record_hand_in", refuses)
+        answer = turn_in_press(client, card, note=WORDS)
+        monkeypatch.undo()
+        events = chain(client)
+    shown = card_for(answer.text, ESSAY_ID)
+
+    assert answer.status_code == 500
+    assert escape("That could not be saved, and nothing was changed. Try again.") in shown
+    assert f">{escape(WORDS)}</textarea>" in shown
+    assert '<h4 class="update-heading">Your unsaved update</h4>' in shown
+    assert events == []
+
+
+def test_a_card_press_that_empties_the_list_shows_its_result_on_the_card_with_undo() -> None:
+    with browser() as client:
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        page, card = week_card(client)
+        result = landed(client, turn_in_press(client, card))
+        events = chain(client)
+
+    assert 'id="to-turn-in"' in page
+    shown = card_for(result, ESSAY_ID)
+    assert "You reported this turned in." in shown
+    assert f'name="undo_hand_in" value="{events[-1]}"' in shown
+    assert 'id="to-turn-in-result"' not in result
+    assert ">To turn in</a>" in result
+
+
+ID = re.compile(r'\sid="([^"]+)"')
+
+
+def test_every_id_the_groups_write_is_unique_on_the_page() -> None:
+    """Every page state the groups write keeps each id once: the update forms they join, the
+    group headings on rows, the result and refusal lines, and the one explanation."""
+    with browser() as client:
+        _, card = week_card(client)
+        pages = {"arrival": client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text}
+        pages["change"] = client.get(
+            HER_PAGE, params={"week": FIXTURE_WEEK, "change": ESSAY_ID}
+        ).text
+        pages["words"] = turn_in_press(client, card, note=WORDS).text
+        pages["result"] = landed(client, turn_in_press(client, card))
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        pages["refused"] = turn_in_press(client, card, note=WORDS).text
+        pages["details"] = client.get(DETAILS).text
+
+    for state, page in pages.items():
+        ids = ID.findall(page)
+        assert len(ids) == len(set(ids)), (state, [i for i in ids if ids.count(i) > 1])
+    assert f'id="update-form-{ESSAY_ID}"' in pages["arrival"]
+    assert f'id="turn-in-group-{ALGEBRA_ID}"' in pages["arrival"]
+    assert f'id="work-group-{ALGEBRA_ID}"' in pages["arrival"]
+    assert 'id="turn-in-means"' in pages["arrival"]
+    assert f'id="hand-in-result-{ESSAY_ID}"' in pages["result"]
+    assert f'id="hand-in-problem-{ESSAY_ID}"' in pages["refused"]

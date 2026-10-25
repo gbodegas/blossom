@@ -123,6 +123,7 @@ from tests.support import (
     main_of,
     ok,
     plan_form,
+    pressed_form,
     reading,
     refusing,
     report,
@@ -3349,3 +3350,29 @@ def plan_button_form(page: str) -> str:
     """The plan button's form, whole."""
     start = page.index('action="/student/actions/plan"')
     return page[start : page.index("</form>", start)]
+
+
+def test_a_turn_in_press_and_its_undo_keep_the_cards_in_place_for_the_visit() -> None:
+    """Done keeps the essay among the active cards for the visit. I turned it in and its Undo
+    carry the cards the visit keeps, as her update's buttons do, so the essay stays where it
+    is, Done unchanged, until a return groups the week by its updates."""
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        done = redirected(client, quick_press(client, before, ESSAY, "done")).text
+        action, sent = pressed_form(card_for(done, ESSAY), "hand_in_head")
+        turned = redirected(client, client.post(action, data=sent, headers=PAGE_HEADERS)).text
+        action, sent = pressed_form(card_for(turned, ESSAY), "undo_hand_in")
+        undone = redirected(client, client.post(action, data=sent, headers=PAGE_HEADERS)).text
+        returned = client.get(PAGE, headers=PAGE_HEADERS).text
+        reports = state_of(client).project_state.student_reports(ESSAY)
+
+    assert sent["in_place"] == f"a:{place_key(ESSAY)}"
+    for page in (done, turned, undone):
+        assert placed(page) == placed(before)
+        assert FOLD not in main_of(page)
+    assert "You reported this turned in." in card_for(turned, ESSAY)
+    assert "Your hand-in update is undone." in card_for(undone, ESSAY)
+    for page in (turned, undone):
+        assert '<span class="pill">Your update: Done</span>' in card_for(page, ESSAY)
+    assert [report.status for report in reports] == ["done"]
+    assert placed(returned)[1] == [ESSAY]
