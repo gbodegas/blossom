@@ -8810,10 +8810,14 @@ def test_each_separate_form_says_typing_isn_t_kept(
     """The note that typing in the fold isn't kept by a form of its own is said once, beside the
     status line, and every button of such a form, which reads saved progress, points to it:
     Find under another name, Leave this group unsaved, Use this change, Set aside, Finish
-    without the rest, Remove and Remove only this screenshot."""
+    without the rest, Remove, Remove only this screenshot, Read and Upload chosen
+    screenshots."""
     with here(open_settings(tmp_path)) as browser:
+        draft_id, first = read_review(browser, monkeypatch, (RED, homework_answer()))
+        sent = upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
         pages = [
-            read_review(browser, monkeypatch, (RED, homework_answer()))[1],
+            first,
+            browser.get(sent.headers["location"]).text,
             a_refused_group(browser, monkeypatch),
             cards_unread(browser, monkeypatch),
         ]
@@ -8835,7 +8839,8 @@ def test_each_separate_form_says_typing_isn_t_kept(
                 continue
             described = re.search(r'aria-describedby="([^"]+)"', button)
             assert described is not None, button
-            assert notes[described.group(1)] == said
+            assert "typing-lost" in described.group(1).split(), button
+            assert notes["typing-lost"] == said
             seen.add(words)
     assert seen == set(SEPARATE_FORMS)
 
@@ -8848,6 +8853,8 @@ SEPARATE_FORMS: Final = (
     "Finish without the rest",
     "Remove",
     "Remove only this screenshot",
+    "Read 1 screenshot",
+    "Upload chosen screenshots",
 )
 """The buttons whose forms read saved progress, not the review form's typing."""
 
