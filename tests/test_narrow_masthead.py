@@ -4072,7 +4072,7 @@ def test_the_app_s_long_heading_words_carry_soft_hyphens_in_page_headings_alone(
     """The soft hyphens and the filter sit only in the listed page heading lines, and each
     soft hyphen in a template is at the break the filter gives the same word, so a word
     breaks alike wherever the app writes it. No other line of a template, its title, a
-    label or a link included, carries either, and nothing else writes a soft hyphen."""
+    label or a link included, carries either."""
     templates = sorted((REPOSITORY_ROOT / "blossom" / "templates").glob("*.html"))
     pages = {page.name: page.read_text(encoding="utf-8") for page in templates}
     carrying = {
