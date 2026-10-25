@@ -86,6 +86,7 @@ from tests.support import (
     signed_in_household,
     state_of,
     store_of,
+    ways_back_of,
     whole_form,
     words,
 )
@@ -534,7 +535,8 @@ def check_refused(
         assert page.count(" autofocus") == 1
         assert "<form" not in page
         assert "<button" not in page
-        assert "Back to her week" in page
+        assert ways_back_of(page) == [("/student/due-this-week", "Back to her week")]
+        assert "Your choice" not in page
         assert (UNSAVED_UPDATE in page) is (typed is not None)
         if typed is not None:
             assert str(escape(typed)) in page
@@ -1860,16 +1862,18 @@ TURN_IN_BUTTONS: Final = {"turned-in": "hand_in_head", "undo-turned-in": "undo_h
 HER_WORDS: Final = "Wren's <b>reading</b> notes"
 
 
-def turn_in_body(press: str, note: str = HER_WORDS) -> bytes:
-    """A turn-in press as a card's form sends it when its button joins her update's form."""
+def turn_in_body(press: str, note: str = HER_WORDS, **more: str) -> bytes:
+    """A turn-in press as a card's folded one-press form sends it when its button joins that
+    form: the button's own value, her note, the update the page showed, the week, and the
+    cards kept in place. That form has no choice to send; its Done and Not yet are buttons."""
     return urlencode(
         {
             TURN_IN_BUTTONS[press]: "",
             "note": note,
             "expected_report_id": "",
-            "status": "done",
             "week": FIXTURE_WEEK,
             "in_place": "",
+            **more,
         }
     ).encode()
 
@@ -1905,7 +1909,7 @@ def test_a_parents_turn_in_press_shows_her_words_read_only_and_reads_no_store(
     assert NOT_SAVED_SENTENCE not in page
     assert f"readonly>{escape(HER_WORDS)}</textarea>" in page
     assert "<b>reading</b>" not in page
-    assert "Your choice: Done." in page
+    assert "Your choice" not in page
     assert "<form" not in page
     assert "<button" not in page
     assert "Back to her week" in page
@@ -2006,3 +2010,40 @@ def test_a_parents_turn_in_press_is_answered_while_a_decision_holds_the_lock(
 
     assert answer.status_code == 403
     assert f"readonly>{escape(HER_WORDS)}</textarea>" in answer.text
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+@pytest.mark.parametrize(
+    ("subject", "returns"),
+    [
+        (NOWHERE, {}),
+        (ESSAY_ID, {"report_view": "detail", "return_to": "family", "week": "", "plan_id": ""}),
+        (ESSAY_ID, {"week": "2026-09-14"}),
+        (ESSAY_ID, {"report_view": "detail", "return_to": "to_turn_in", "week": ""}),
+        (ESSAY_ID, {"report_view": "detail", "return_to": "https://example.test/", "week": ""}),
+    ],
+    ids=["homework gone", "the family page", "another week", "to turn in", "a foreign address"],
+)
+def test_a_parents_turn_in_press_goes_back_to_her_week_whatever_the_form_names(
+    press: str, subject: str, returns: dict[str, str], tmp_path: pathlib.Path
+) -> None:
+    """The one way back is her current week, from the sign-in alone: nothing the form names,
+    neither the assignment nor a page to go back to, is looked up or followed."""
+    path = f"/student/actions/assignments/{subject}/{press}"
+    body = turn_in_body(press, **returns)
+    with household(tmp_path, "parent") as client, watched(client) as watch:
+        answer = streamed(
+            client,
+            path,
+            [body],
+            [("content-type", URL_ENCODED), ("content-length", str(len(body)))],
+        )
+    page = main_of(answer.text)
+
+    assert answer.status_code == 403
+    assert ways_back_of(page) == [("/student/due-this-week", "Back to her week")]
+    assert "Week of September 14" not in page
+    assert "example.test" not in page
+    assert f"readonly>{escape(HER_WORDS)}</textarea>" in page
+    assert watch.statements == []
+    assert watch.looked_up == []

@@ -535,12 +535,18 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     beside another state is not kept, and the result says so.
     Words the record will not keep are said beside the field they are in,
     422, with everything else as she left it. Her work update is not read
-    and not changed.
+    and not changed. A form from a card's turn-in press is no form of these:
+    it is refused whole, and its note, which is her update's, is never kept
+    as a note about turning it in.
     """
     viewer = viewer_of(request)
     if viewer == "parent":
         return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
-    fields, whole = await fields_of(request, HAND_IN_FIELDS, may_be_absent=NOTHING_CHOSEN)
+    fields, whole = await fields_of(
+        request, HAND_IN_FIELDS | CARD_ONLY, may_be_absent=NOTHING_CHOSEN | CARD_ONLY
+    )
+    from_a_card = bool(fields.keys() & CARD_ONLY)
+    whole = whole and not from_a_card
     back, valid = read_return(fields, viewer=viewer, showable=showable)
     view, view_known = shown_on(fields)
     valid = valid and view_known
@@ -548,7 +554,7 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     pressed = Attempt("turn_in", assignment_id)
     said = fields.get("state", "").strip()
     action = fields.get("next_action", "")
-    note = fields.get("note", "")
+    note = "" if from_a_card else fields.get("note", "")
     token = fields.get("expected_hand_in_id", "").strip()
     # A recoverable choice is not permission to accept the malformed form.
     chosen = said if said in STATES else None
@@ -784,9 +790,14 @@ update's form says it, and her update's fields when its button joins that form."
 TURN_IN_ABSENT: Final = WORK_WORDS | FROM_A_CARD
 """What a turn-in press may leave out: her update's fields, when the button has a form of its
 own, and the context of the other page."""
-TURN_IN_COPY: Final = frozenset({"note", "status"})
-"""What a parent's refused turn-in press may show again of her update: her note and her
-choice, as that same request typed them."""
+CARD_ONLY: Final = frozenset(
+    {TURN_IN_HEAD, TURN_IN_UNDO, "expected_report_id", "status", "report_view", IN_PLACE}
+)
+"""Fields only a card's or the details' turn-in press sends beside her update's note. A form
+here that carries any is refused whole, and its note is not taken for one of these."""
+TURN_IN_COPY: Final = frozenset({"note"})
+"""What a parent's refused turn-in press may show again of her update: the words of her note,
+as that same request typed them."""
 TURN_IN_OFFERED: Final[frozenset[HandInState | None]] = frozenset(TURN_IN_OVER)
 TURN_IN_BAD_FORM: Final = WITHOUT_THE_PAGE[BAD_FORM]
 """A turn-in press that is not the form a page made: a field twice, one these pages do not
@@ -849,21 +860,14 @@ def card_press(
 
 async def parent_refused(request: Request, state: ApplicationState) -> HTMLResponse:
     """A parent's turn-in press: 403, fixed from the sign-in and the route before the form is
-    read, the assignment looked up, or the decision lock taken, and nothing written. Her note
-    and choice are shown again only as far as ``kept_fields_of`` reads them, within its
+    read, the assignment looked up, or the decision lock taken, and nothing written. The words
+    of her note are shown again only as far as ``kept_fields_of`` reads them, within its
     bound, once the refusal is fixed, read-only under the heading of her unsaved update, on a
     page that reads no store and logs none of them; whatever it finds, the answer is the
     same 403."""
     copy = await kept_fields_of(request, TURN_IN_COPY) or {}
     note = copy.get("note", "")
-    chosen = copy.get("status")
-    typed = CardState(
-        "",
-        status=chosen if chosen in (DONE, NOT_YET) else None,
-        note=note if note.strip() else None,
-        problem=NOT_HERS_TO_UPDATE,
-    )
-    shown = typed if typed.status or typed.note else None
+    shown = CardState("", note=note, problem=NOT_HERS_TO_UPDATE) if note.strip() else None
     return await asyncio.to_thread(
         templates.TemplateResponse,
         request,
