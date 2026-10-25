@@ -9,7 +9,7 @@
   {% if view.week.current %}
     <h1>{{ week_name }}</h1>
   {% else %}
-    <h1>Week of {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}</h1>
+    <h1>Week of {{ view.week.start.strftime("%B")|heading_breaks }} {{ view.week.start.day }}</h1>
   {% endif %}
   <div class="week-frame">
     <p class="range">

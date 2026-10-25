@@ -1773,7 +1773,7 @@ def test_a_note_in_homework_whose_flag_is_damaged_is_listed_as_one_that_cannot_b
     assert (archived.notes, archived.unreadable) == ([], [])
     warned = [which for which, page in pages.items() if "cannot be read right now" in page]
     assert warned == ["added"]
-    assert "Homework notes added to homework (2)" in pages["added"]
+    assert "Home\u00adwork notes added to home\u00adwork (2)" in pages["added"]
     assert f'href="{note_href(sound)}"' in pages["added"]
     assert "No homework notes have been added to homework." not in pages["added"]
 

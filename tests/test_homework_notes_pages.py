@@ -689,7 +689,7 @@ def test_a_note_that_cannot_be_read_is_counted_wherever_her_notes_are_counted(
     assert "1 homework note cannot be read right now." in notes_section(week)
     assert (f"View all {total} homework notes" in week) is (total > 3)
     assert ("View all" in notes_section(week)) is (total > 3)
-    assert f"<h1>Homework notes ({total})</h1>" in listed
+    assert f"<h1>Home\u00adwork notes ({total})</h1>" in listed
     assert "1 homework note cannot be read right now." in listed
 
 

@@ -48,6 +48,7 @@ from html import escape
 
 import pytest
 
+from blossom import templating
 from blossom.heuristic_relevance import CriticVerdict, Judgment
 from blossom.plans import DailyPlan, Deferral
 from blossom.routes.navigation import note_help_href
@@ -56,6 +57,7 @@ from blossom.settings import REPOSITORY_ROOT
 from tests.support import (
     ESSAY_ID,
     FIXTURE_WEEK,
+    HEADING_SOFT_HYPHENS,
     HER_PAGE,
     KEYWORDS,
     PAGE_HEADERS,
@@ -3928,7 +3930,7 @@ PAGE_HEADING = (
 )
 """A page's heading at its one size, 2.1 times the text's, on every screen, pinned whole."""
 PAGE_HEADING_REACHES = (
-    "   the heading's ordinary margin. */\n"
+    "   text, and 554 pixels or wider with text at 200%, keeps the heading's ordinary margin. */\n"
     "main > h1 {\n"
     "  margin-inline: clamp(-0.95rem, 26vw - 4.5rem, 0px);\n"
     "}\n"
@@ -3946,22 +3948,6 @@ PAGE_HEADING_CUE_STAYS_ON_SCREEN = (
 )
 """The arrival cue of a page's heading a link lands on, its spread narrowed to the margin left
 beside the reaching heading, pinned from the last line of its comment."""
-PAGE_HEADING_HYPHENATES = (
-    "   narrower. */\n"
-    "@media (max-width: 13.75rem) {\n"
-    "  main > h1 {\n"
-    "    -webkit-hyphens: auto;\n"
-    "    hyphens: auto;\n"
-    "    -webkit-hyphenate-limit-before: 3;\n"
-    "    -webkit-hyphenate-limit-after: 3;\n"
-    "    hyphenate-limit-chars: auto 3 3;\n"
-    "  }\n"
-    "}\n"
-)
-"""A page's heading on a screen too narrow for its widest word at the browser's text size,
-allowed to break a word between syllables with a hyphen and three letters each side, pinned
-from the last line of its comment. Check it in Edge with the browser's own text size and page
-zoom before changing it."""
 PAGE_MARGIN = "main {\n  max-width: 46rem;\n  margin: 0 auto;\n  padding: 0.5rem 1.25rem 3rem;\n}\n"
 """The page's side margin the heading's numbers are worked out from, pinned as it stands."""
 CLASS_HEADINGS_REACH = (
@@ -3974,26 +3960,24 @@ RULES_NAMING_H1 = [
     "main > h1 {",
     "main > h1#homework:focus {",
     "h1,",
-    "  main > h1 {",
     "h1#homework:focus,",
     ".assignment.detail h1 {",
 ]
 """Every line of the stylesheet that names an h1, in order: the headings' typeface, the page
-heading's size, its reach and its cue, the headings' word breaking, the page heading's
-hyphens, the shared arrival cue, and the heading inside an assignment's details card, which
-keeps to its card."""
-VIEWPORT_TEXT = re.compile(r"\d(vw|vh|vi|vb|vmin|vmax|cqw|cqh|cqi|cqb|cqmin|cqmax)\b")
-"""A length measured against the screen or a container, which would size text by the width
-rather than by the reader's text size."""
+heading's size, its reach and its cue, the headings' word breaking, the shared arrival cue,
+and the heading inside an assignment's details card, which keeps to its card."""
+VIEWPORT_TEXT = re.compile(r"\d(?:[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max))\b")
+"""A length measured against the screen, in any of its sizes, or against a container, which
+would size text by the width rather than by the reader's text size."""
 
 
 def test_a_page_s_heading_rules_are_pinned_and_every_line_naming_an_h1_is_listed() -> None:
     """Each pinned text occurs once, and every line of the stylesheet that names an h1 is
-    listed, so a new rule naming one fails here. No text anywhere is sized by the screen's
-    width, so the heading's size is its pinned 2.1rem with any text size, and only the page
-    heading hyphenates. The pages write an h1 bare, as class details' heading, whose own rule
-    reaches by the same amount, or as a result's homework heading, whose id only its cues
-    name, each on a page of the shared layout, which names its language."""
+    listed, so a new rule naming one fails here. No text is sized by the screen's width in a
+    font or font-size line, so the heading's size is its pinned 2.1rem with any text size,
+    and nothing hyphenates by itself. The pages write an h1 bare, as class details' heading,
+    whose own rule reaches by the same amount, or as a result's homework heading, whose id
+    only its cues name, each on a page of the shared layout, which names its language."""
     styles = stylesheet()
     templates = sorted((REPOSITORY_ROOT / "blossom" / "templates").glob("*.html"))
     pages = {page.name: page.read_text(encoding="utf-8") for page in templates}
@@ -4001,15 +3985,15 @@ def test_a_page_s_heading_rules_are_pinned_and_every_line_naming_an_h1_is_listed
     assert styles.count(PAGE_HEADING) == 1
     assert styles.count(PAGE_HEADING_REACHES) == 1
     assert styles.count(PAGE_HEADING_CUE_STAYS_ON_SCREEN) == 1
-    assert styles.count(PAGE_HEADING_HYPHENATES) == 1
     assert styles.count(PAGE_MARGIN) == 1
     assert styles.count(CLASS_HEADINGS_REACH) == 1
     assert styles.count("clamp(0px, 26vw - 3.5rem, 0.375rem)") == 2
-    assert styles.count("hyphens") == 2
-    assert styles.count("hyphenate") == 3
+    assert styles.count("hyphens") == styles.count("hyphenate") == 0
     assert [line for line in styles.splitlines() if re.search(r"\bh1\b", line)] == RULES_NAMING_H1
     assert [
-        line for line in styles.splitlines() if "font-size" in line and VIEWPORT_TEXT.search(line)
+        line
+        for line in styles.splitlines()
+        if re.search(r"\bfont(?:-size)?\s*:", line) and VIEWPORT_TEXT.search(line)
     ] == []
     assert sorted({tag for text in pages.values() for tag in re.findall(r"<h1\b[^>]*>", text)}) == [
         '<h1 class="grade-heading">',
@@ -4022,6 +4006,69 @@ def test_a_page_s_heading_rules_are_pinned_and_every_line_naming_an_h1_is_listed
         if "<h1" in text and '{% extends "base.html" %}' not in text
     ] == []
     assert pages["base.html"].count('<html lang="en">') == 1
+
+
+SOFT_HYPHENED_HEADINGS = {
+    "grade_homework_classes.html": ["  <h1>Home&shy;work class names</h1>"],
+    "grade_result_homework.html": [
+        "    <h1>Home&shy;work for this result</h1>",
+        '    <h1 id="homework" tabindex="-1">Home&shy;work for this result</h1>',
+    ],
+    "import_find.html": ["  <h1>Home&shy;work screen&shy;shots</h1>"],
+    "import_review.html": ["  <h1>Home&shy;work screen&shy;shots</h1>"],
+    "import_said.html": ["  <h1>Home&shy;work screen&shy;shots</h1>"],
+    "inbox_preview.html": ["  <h1>Review assign&shy;ments</h1>"],
+    "page_unavailable.html": ["  <h1>{{ heading|heading_breaks }}</h1>"],
+    "school_instructions_review.html": ["  <h1>Review school instruc&shy;tions</h1>"],
+    "student_assignment_gone.html": ["  <h1>Assign&shy;ment</h1>"],
+    "student_due_this_week.html": [
+        '    <h1>Week of {{ view.week.start.strftime("%B")|heading_breaks }}'
+        " {{ view.week.start.day }}</h1>"
+    ],
+    "student_note.html": ["  <h1>Home&shy;work note</h1>"],
+    "student_note_details.html": ["  <h1>Add a note to home&shy;work</h1>"],
+    "student_note_gone.html": ["  <h1>Home&shy;work note</h1>"],
+    "student_note_new.html": ["  <h1>Write down home&shy;work</h1>"],
+    "student_note_search.html": ["  <h1>Find home&shy;work for this note</h1>"],
+    "student_notes.html": [
+        "  <h1>{{ heading|heading_breaks }}{% if notes or unreadable %}"
+        " ({{ notes|length + unreadable|length }}){% endif %}</h1>"
+    ],
+}
+"""Every template line that carries a soft hyphen or the headings' filter, each a page
+heading's whole line: the app's own wording, never a title, a label, a link, or anything
+typed or sent by the school."""
+
+
+def test_the_app_s_long_heading_words_carry_soft_hyphens_in_page_headings_alone() -> None:
+    """The soft hyphens and the filter sit only in the listed page heading lines, and each
+    soft hyphen in a template is at the break the filter gives the same word, so a word
+    breaks alike wherever the app writes it. No other line of a template, its title, a
+    label or a link included, carries either, and nothing else writes a soft hyphen."""
+    templates = sorted((REPOSITORY_ROOT / "blossom" / "templates").glob("*.html"))
+    pages = {page.name: page.read_text(encoding="utf-8") for page in templates}
+    carrying = {
+        name: [line for line in text.splitlines() if "&shy;" in line or "heading_breaks" in line]
+        for name, text in pages.items()
+    }
+
+    assert {name: lines for name, lines in carrying.items() if lines} == SOFT_HYPHENED_HEADINGS
+    assert dict(templating.HEADING_BREAKS) == HEADING_SOFT_HYPHENS
+    written = {
+        word.replace("&shy;", "\u00ad")
+        for lines in SOFT_HYPHENED_HEADINGS.values()
+        for line in lines
+        for word in re.findall(r"[A-Za-z]+(?:&shy;[A-Za-z]+)+", line)
+    }
+    assert written <= set(HEADING_SOFT_HYPHENS.values())
+    assert not any("\u00ad" in text for text in pages.values())
+    assert templating.heading_breaks("Homework notes added to homework") == (
+        "Home\u00adwork notes added to home\u00adwork"
+    )
+    assert templating.heading_breaks("Archived homework notes (2)") == (
+        "Archived home\u00adwork notes (2)"
+    )
+    assert templating.heading_breaks("Week of Septembers") == "Week of Septembers"
 
 
 @pytest.mark.parametrize("view", VIEWS, ids=str)

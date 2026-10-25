@@ -23,7 +23,7 @@
 #}
 {% block content %}
   <p class="return"><a href="{{ back }}">{% if item or plain %}Back to the assignment{% else %}Return to Family review{% endif %}</a></p>
-  <h1>Review school instructions</h1>
+  <h1>Review school instruc&shy;tions</h1>
   {% if item %}
     <p class="course authored-text">{{ item.course }}</p>
     <p><strong class="authored-text">{{ item.title }}</strong>{% if item.due_date %}, due {{ item.due_date|long_date }}{% endif %}</p>

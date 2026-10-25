@@ -22,7 +22,7 @@
 #}
 {% block content %}
   <p class="return"><a href="/student/due-this-week">{% if parent %}Back to her week{% else %}Back to my week{% endif %}</a></p>
-  <h1>Write down homework</h1>
+  <h1>Write down home&shy;work</h1>
   {% if form.problem %}
     <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ form.problem }}{% if viewer != "parent" and not deleted %}{% with field = form.field %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
   {% endif %}

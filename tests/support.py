@@ -2637,6 +2637,28 @@ STORE_FREE_NEVER = (
 """What no page that reads no store says: a save, or a pointer to a page it does not show."""
 
 
+HEADING_SOFT_HYPHENS = {
+    "Homework": "Home\u00adwork",
+    "homework": "home\u00adwork",
+    "Assignment": "Assign\u00adment",
+    "assignments": "assign\u00adments",
+    "screenshots": "screen\u00adshots",
+    "instructions": "instruc\u00adtions",
+    "February": "Febru\u00adary",
+    "September": "Septem\u00adber",
+    "November": "Novem\u00adber",
+    "December": "Decem\u00adber",
+}
+"""The long words of the app's page headings, each with the soft hyphen the app writes at its
+natural break."""
+
+
+def shown_heading(heading: str) -> str:
+    """``heading`` as a page heading the app writes it: each of its long words with its soft
+    hyphen."""
+    return re.sub(r"\b\w+\b", lambda word: HEADING_SOFT_HYPHENS.get(word[0], word[0]), heading)
+
+
 def store_free_page(
     answer: Answer,
     *,
@@ -2646,13 +2668,15 @@ def store_free_page(
     alert_id: str = "problem-summary",
     opening: bool = False,
 ) -> str:
-    """What every page that reads no store holds and never holds: its status, its heading,
-    one focused explanation with these words, no control, and no pointer to a page it does
-    not show. Its main part. With ``opening``, a plan answer's, the explanation gives the
-    focus to its first sentence."""
+    """What every page that reads no store holds and never holds: its status, its heading, with
+    the soft hyphens the app writes in its long words, as the character or the entity, one
+    focused explanation with these words, no control, and no pointer to a page it does not
+    show. Its main part. With ``opening``, a plan answer's, the explanation gives the focus to
+    its first sentence."""
     assert answer.status_code == status, (answer.status_code, answer.text[:600])
     main = main_of(answer.text)
-    assert f"<h1>{heading}</h1>" in main, main[:600]
+    written = main.replace("&shy;", "\u00ad")
+    assert f"<h1>{shown_heading(heading)}</h1>" in written, main[:600]
     focus = "" if opening else ' tabindex="-1" autofocus'
     found = re.search(
         rf'<p class="problem" role="alert" id="{alert_id}"{focus}>(.*?)</p>', main, re.S

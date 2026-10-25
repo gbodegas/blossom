@@ -514,7 +514,7 @@ def check_refused(
     if press == "create" or press in NOTE_CHANGES:
         assert "Wren" not in page
     if press == "create":
-        assert "<h1>Write down homework</h1>" in page
+        assert "<h1>Write down home&shy;work</h1>" in page
         assert "A homework note is hers to write." in page
         return
     back = f'<a href="{note_href(subject)}">Back to the note</a>'
