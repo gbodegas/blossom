@@ -7864,6 +7864,72 @@ def test_old_date_text_blossom_can_t_read_is_kept_as_typed_in_its_box(
     assert held == {f"date:{key}": {box: "next Tuesday"}}
 
 
+@pytest.mark.parametrize("press", ["tick", "tick beside a date", "untick"])
+def test_no_assigned_date_given_wins_over_an_unreadable_date_kept_for_later(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """An assigned date kept for later as text Blossom can't read reopens with its box empty and
+    the text carried beside it. "No assigned date was given" ticked with the box empty wins:
+    no assigned date, the text dropped from progress for good, the card answered and saved
+    with none. Ticked beside a date typed in the box, it is refused as both. Unticked, the
+    text stays as it was: still to answer, not tickable, kept for later."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+        )
+        page = her_name_answered(browser, draft_id, page)
+        piece = json.loads(box_subject(page, "assigned"))[0]
+        kept = {"v": 4, "corrected": {piece: {"assigned": "next Tuesday"}}, "selected": []}
+        saved_progress(browser, draft_id, kept)
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+        box = f"correct:{box_subject(reopened, 'assigned')}"
+        [none] = fields_named(review_form(reopened), "none:")
+        choose = {} if press == "untick" else {f"none:{none}": "none"}
+        typed = {box: "2026-10-03"} if press == "tick beside a date" else {}
+        answer = send(browser, draft_id, page_post(reopened, "keep", choose=choose, typed=typed))
+        after = followed(browser, answer)
+        if answer.status_code == 200:
+            later_page = later(browser, draft_id, after)
+            held = progress_after(browser, draft_id)
+            again = browser.get(f"/parent/imports/{draft_id}").text
+            unsure, tickable, saved = still_open_tick_and_save(browser, draft_id, again)
+        made = [
+            a
+            for a in state_of(browser).project_state.all_assignments()
+            if a.title == "Sentence Composing"
+        ]
+
+    unreadable = screenshot_page.SAID["unreadable"].format(value="next Tuesday")
+    still = f"Still to answer: {screenshot_page.OPEN_NAMES['assigned']}."
+    checked = f'name="{escape("none:" + none)}" value="none" checked'
+    assert says(reopened, unreadable)
+    assert box_of(review_form(reopened), box)[1] == ""  # type: ignore[index]
+    if press == "tick beside a date":
+        assert answer.status_code == 422
+        assert says(answer.text, screenshot_page.SAID["both"])
+        assert made == []
+        return
+    assert answer.status_code == 200
+    if press == "tick":
+        assert held == {piece: {"assigned": None}}
+        for shown in (after, later_page, again):
+            assert checked in review_form(shown)
+            assert not says(shown, unreadable)
+            assert not says(shown, "next Tuesday")
+        assert (unsure, tickable) == (False, True)
+        assert says(saved, imports.counted(1, 0, 0, 0))
+        assert [row.assigned_on for row in made] == [None]
+    else:
+        assert held == {piece: {"assigned": "next Tuesday"}}
+        for shown in (after, later_page, again):
+            assert checked not in review_form(shown)
+            assert says(shown, unreadable)
+            assert says(shown, still)
+        assert tickable is False
+        assert says(saved, REFUSED_OPEN)
+        assert made == []
+
+
 def test_a_kept_correction_for_an_instruction_box_the_row_lacks_answers_nothing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -364,7 +364,9 @@ def box_corrections(
     length check runs on corrections only. A cleared class, title or settled due date is
     refused; a cleared instruction text is its removal (``None``); a cleared assigned date is
     the date as read. "No assigned date was given" is none (``None``) where one was read, its
-    box left empty or holding the date as read; beside any other date it is refused. A box the
+    box left empty or holding the date as read; beside any other date typed in the box it is
+    refused. Ticked, it wins over text Blossom couldn't read carried beside an empty box, which
+    is dropped; unticked, that text stays the box's correction until a date is chosen. A box the
     page signed for a card another press has since saved, or that a change of screenshots took
     away, is passed over, as the answers about it are."""
     reads = fold_reads(state)
@@ -383,16 +385,18 @@ def box_corrections(
             continue
         read = reads[(key, field)]
         if field in PIECE_DATES:
-            typed = value.strip() or carried.get((key, field), "").strip()
-            none = field == "assigned" and key in nones
-            day = typed_day(typed) if typed else None
-            if none and typed and (day is None or day.isoformat() != read):
-                both.add(key)
-                keep(key, field, typed)
-            elif none:
-                if read is not None:
+            if field == "assigned" and key in nones:
+                shown = value.strip()
+                day = typed_day(shown) if shown else None
+                if shown and (day is None or day.isoformat() != read):
+                    both.add(key)
+                    keep(key, field, shown)
+                elif read is not None:
                     keep(key, field, None)
-            elif not typed:
+                continue
+            typed = value.strip() or carried.get((key, field), "").strip()
+            day = typed_day(typed) if typed else None
+            if not typed:
                 if field == "due" and read is not None:
                     needed.add((key, field))
                     keep(key, field, "")
