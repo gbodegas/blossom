@@ -1843,6 +1843,8 @@ def test_each_hand_in_state_shows_its_controls_beside_any_work_state(kind: str, 
         events = [] if pressed is None else chain(client)
 
     assert offered is (kind in ("no report", "not sure", "still to turn in"))
+    # No address names a result here, so no state, Nothing to turn in included, offers Undo.
+    assert 'name="undo_hand_in"' not in card
     assert (f'aria-label="Change your hand-in update for {ESSAY_TITLE}' in card) is (
         kind in ("turned in with a note", "nothing to turn in")
     )
@@ -1885,3 +1887,27 @@ def test_a_card_with_nothing_to_press_keeps_the_way_to_turning_it_in(
     assert link in card
     assert ">I turned it in</button>" not in card
     assert ">Other turn-in options</a>" not in card
+
+
+@pytest.mark.parametrize("refusal", ["changed elsewhere", "a way back no page makes"])
+def test_a_changed_choice_and_a_typed_note_both_come_back_after_a_refused_press(
+    refusal: str,
+) -> None:
+    """Her own press from the open form keeps her changed choice and her note through a
+    refusal, 409 or 422: only a parent's refused press leaves the choice behind."""
+    with browser() as client:
+        report(client, ESSAY_ID, "done")
+        _, card = week_card(client, change=ESSAY_ID)
+        typed: dict[str, str] = {"status": "not_yet", "note": WORDS}
+        if refusal == "changed elsewhere":
+            landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        else:
+            typed["week"] = "someday"
+        answer = turn_in_press(client, card, **typed)
+        reports = state_of(client).project_state.student_reports(ESSAY_ID)
+    shown = card_for(answer.text, ESSAY_ID)
+
+    assert answer.status_code == (409 if refusal == "changed elsewhere" else 422)
+    assert 'value="not_yet" checked' in shown
+    assert f">{escape(WORDS)}</textarea>" in shown
+    assert [report.status for report in reports] == ["done"]
