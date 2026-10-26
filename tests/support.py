@@ -2807,19 +2807,27 @@ class HangWatch:
 
 
 class AskedWaits:
-    """What a store's calls are given and set, read beside the store: ``waits``, the timeout
-    each call asks the store's lock for, with ``began``, the instant it asked; and
-    ``deadlines``, each deadline its busy timeout is set to, with the instant it was set. Its
-    ``_lock`` and ``_wait_until`` stand in while inside, so time the process is held up changes
-    none of these relations."""
+    """What a store's calls are given and set, each beside the store's own clock reading:
+    ``called``, the instant ``_session`` is called, before the store reads its clock for the
+    call's deadline; ``waits``, the timeout the call then asks the store's lock for, with
+    ``began``, the instant it asked, after that reading; and ``deadlines``, each deadline
+    ``_wait_until`` is given, with the instants just before and just after it, around the
+    store's reading of the time left. A pause anywhere moves a reading and the instants around
+    it together, so no relation between them depends on how long anything took."""
 
     def __init__(self, store: Any) -> None:  # noqa: ANN401
         self.store = store
         self.lock = store._lock
+        self.session = store._session
         self.wait_until = store._wait_until
+        self.called: list[float] = []
         self.waits: list[float] = []
         self.began: list[float] = []
-        self.deadlines: list[tuple[float, float]] = []
+        self.deadlines: list[tuple[float, float, float]] = []
+
+    def start(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        self.called.append(monotonic())
+        return self.session(*args, **kwargs)
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         self.began.append(monotonic())
@@ -2830,16 +2838,19 @@ class AskedWaits:
         self.lock.release()
 
     def set_deadline(self, ends: float) -> None:
-        self.deadlines.append((ends, monotonic()))
+        before = monotonic()
         self.wait_until(ends)
+        self.deadlines.append((ends, before, monotonic()))
 
     def __enter__(self) -> "AskedWaits":
         self.store._lock = self
+        self.store._session = self.start
         self.store._wait_until = self.set_deadline
         return self
 
     def __exit__(self, *_: object) -> None:
         self.store._lock = self.lock
+        del self.store._session
         del self.store._wait_until
 
 

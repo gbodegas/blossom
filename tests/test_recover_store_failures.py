@@ -1946,13 +1946,17 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
         if line.strip().upper().startswith("PRAGMA BUSY_TIMEOUT=")
     ]
     assert asked.waits == [5.0]
+    assert len(asked.called) == 1
     assert len(asked.deadlines) == 1
-    ends, setting = asked.deadlines[0]
-    # The deadline is the call's start plus its 5 seconds, and the busy timeout is the time left
-    # to it when set: a pause before either changes neither.
-    assert 4.5 < ends - asked.began[0] <= 5.0
+    ends, set_from, set_by = asked.deadlines[0]
+    # The store read its clock for the deadline between ``called`` and ``began``, and for the
+    # time left between ``set_from`` and ``set_by``, so these hold wherever a pause falls: the
+    # deadline is 5 seconds from the call's start, and the busy timeout the time left to it.
+    assert ends - asked.began[0] <= 5.0 + 1e-6
+    assert ends - asked.called[0] >= 5.0 - 1e-6
     assert timeouts
-    assert (ends - setting) * 1000 - 500 < timeouts[-1] <= 5000
+    assert (ends - set_by) * 1000 - 1 < timeouts[-1] <= max(0.0, (ends - set_from) * 1000)
+    assert timeouts[-1] <= 5000
     assert beside.refused, (took, beside.took)
     # Its time against the wait beside it: within half the 5 second wait pinned above.
     assert -2.5 < took - beside.took < 2.5, (took, beside.took)
