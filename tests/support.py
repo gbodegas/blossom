@@ -2689,7 +2689,8 @@ class WaitBeside:
     ``seconds``, on a daemon thread beside a press, so a delay to the process while both wait
     reaches both: ``took`` is how long it lasted, ``refused`` whether it ended as
     ``SQLITE_BUSY``. Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the thread; a wait
-    still running then is interrupted and fails the test as hung, before either is read."""
+    still running then is interrupted, given at most 5 seconds more to end, and fails the test
+    as hung, before either is read."""
 
     def __init__(self, path: pathlib.Path, seconds: float, statement: str) -> None:
         self.path, self.seconds, self.statement = path, seconds, statement
@@ -2723,6 +2724,8 @@ class WaitBeside:
                 self.connection.interrupt()
         except sqlite3.ProgrammingError:
             pass
+        # Bounded too: the interrupted statement ends and its thread closes the connection.
+        self.thread.join(5.0)
         if kind is None:
             hung = f"the wait beside the press still ran after {HANG_LIMIT_SECONDS:g} s: hung"
             raise AssertionError(hung)
