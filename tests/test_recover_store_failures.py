@@ -15,7 +15,6 @@ import asyncio
 import pathlib
 import re
 import sqlite3
-import time
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -36,6 +35,7 @@ from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
 from blossom.routes.navigation import details_href, week_href
 from blossom.routes.runs import Unconfirmed
+from blossom.stores.drafts import STORE_WAIT_SECONDS
 from tests.support import (
     DETAILS,
     ENDED_REASONS,
@@ -56,8 +56,11 @@ from tests.support import (
     PLAN_DATE,
     REPORT,
     UNDO,
+    AskedWaits,
+    HangWatch,
     HeldByAnother,
     Statements,
+    WaitBeside,
     after_the_failure,
     browser,
     card_for,
@@ -1897,16 +1900,27 @@ def test_a_record_that_cannot_be_read_is_said_on_a_page_that_stands_with_no_word
 
 
 def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keeps_her_words(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    with household_client("her", tmp_path) as client:
+    """While another connection holds the file, her press with neither Done nor Not yet chosen
+    is refused on the page that reads no store, with her words and nothing written. It reads the
+    drafts store with a single statement, in a call given 5 seconds, under a busy timeout of at
+    most 5000 ms set to the time left in them, and lasts within 2.5 seconds of another
+    connection's read of the held file under ``STORE_WAIT_SECONDS``, timed beside the press so
+    a delay to the process while both wait reaches both. The press and the wait beside it each
+    have ``HANG_LIMIT_SECONDS`` before they count as hung."""
+    with HangWatch(capsys) as watch, household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
         before = every_row(database_of(client))
-        with Statements(state_of(client)) as seen, HeldByAnother(database_of(client)):
-            started = time.monotonic()
-            answer = client.post(path, data=data, headers=PAGE_HEADERS)
-            took = time.monotonic() - started
+        held = HeldByAnother(database_of(client))
+        with (
+            Statements(state_of(client)) as seen,
+            AskedWaits(state_of(client).drafts) as asked,
+            held,
+            WaitBeside(held, STORE_WAIT_SECONDS, "SELECT COUNT(*) FROM drafts", watch) as beside,
+        ):
+            answer, took = watch.press(lambda: client.post(path, data=data, headers=PAGE_HEADERS))
         after = every_row(database_of(client))
 
     main = store_free_page(
@@ -1916,7 +1930,6 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
         alert=f"Nothing was saved, because neither Done nor Not yet was chosen. {YOUR_WEEK}",
     )
     assert f"readonly>\n{escape(TYPED)}</textarea>" in main
-    assert took < 9
     ran = [
         line
         for line in seen
@@ -1926,29 +1939,63 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     assert len(ran) == 1
     assert "drafts" in ran[0]
     assert after == before
+    timeouts = [
+        int(line.split("=")[1])
+        for line in seen[: seen.index(ran[0])]
+        if line.strip().upper().startswith("PRAGMA BUSY_TIMEOUT=")
+    ]
+    assert asked.waits == [5.0]
+    assert len(asked.called) == 1
+    assert len(asked.deadlines) == 1
+    ends, set_from, set_by = asked.deadlines[0]
+    # The store read its clock for the deadline between ``called`` and ``began``, and for the
+    # time left between ``set_from`` and ``set_by``, so these hold wherever a pause falls: the
+    # deadline is 5 seconds from the call's start, and the busy timeout the time left to it.
+    assert ends - asked.began[0] <= 5.0 + 1e-6
+    assert ends - asked.called[0] >= 5.0 - 1e-6
+    assert timeouts
+    assert (ends - set_by) * 1000 - 1 < timeouts[-1] <= max(0.0, (ends - set_from) * 1000)
+    assert timeouts[-1] <= 5000
+    assert beside.refused, (took, beside.took)
+    # Its time against the wait beside it: within half the 5 second wait pinned above.
+    assert -2.5 < took - beside.took < 2.5, (took, beside.took)
 
 
 def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    with household_client("parent", tmp_path) as client:
+    """While another connection holds the file, a parent's reply is refused on the page that
+    reads no store, with the words, nothing written and no transaction left open, and the same
+    press lands once after. It asks once for the file's writer, under the help-requests store's
+    busy timeout of 5000 ms, and lasts within 2.5 seconds of another connection's
+    ``BEGIN IMMEDIATE`` on the held file under 5 seconds, timed beside the press so a delay to
+    the process while both wait reaches both. Each press, and the wait beside the first, has
+    ``HANG_LIMIT_SECONDS`` before it counts as hung."""
+    with HangWatch(capsys) as watch, household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
         state = state_of(client)
         asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
         path = f"/parent/actions/help/{asked}"
         before = every_row(database_of(client))
-        with Statements(state) as seen, HeldByAnother(database_of(client)):
-            started = time.monotonic()
-            answer = client.post(path, data={"step": "accept", "response": TYPED})
-            took = time.monotonic() - started
+        held = HeldByAnother(database_of(client))
+        with (
+            Statements(state) as seen,
+            held,
+            WaitBeside(held, 5.0, "BEGIN IMMEDIATE", watch) as beside,
+        ):
+            answer, took = watch.press(
+                lambda: client.post(path, data={"step": "accept", "response": TYPED})
+            )
         idle = not state.help_requests._connection.in_transaction
+        (timeout,) = state.help_requests._connection.execute("PRAGMA busy_timeout").fetchone()
         after = every_row(database_of(client))
-        again = client.post(path, data={"step": "accept", "response": TYPED})
+        again, _ = watch.press(
+            lambda: client.post(path, data={"step": "accept", "response": TYPED})
+        )
         moved = state.help_requests.get(asked)
 
     main = store_free_page(answer, status=500, heading="Family review", alert=HELP_STEP_FAILED)
     assert f"readonly>{escape(TYPED)}</textarea>" in main
-    assert took < 9
     ran = [line for line in seen if line.strip().upper() != "ROLLBACK"]
     assert ran == ["BEGIN IMMEDIATE"]
     assert idle
@@ -1957,6 +2004,10 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     assert moved is not None
     assert (moved.state, moved.response) == ("accepted", TYPED)
     assert [update.body for update in moved.parent_updates] == [TYPED]
+    assert timeout == 5000
+    assert beside.refused, (took, beside.took)
+    # Its time against the wait beside it: within half the 5 second wait pinned above.
+    assert -2.5 < took - beside.took < 2.5, (took, beside.took)
 
 
 def test_her_notes_while_the_file_is_held_say_they_cannot_be_shown(

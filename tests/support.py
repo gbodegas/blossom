@@ -18,8 +18,10 @@ makes the same file reachable under two module names, which mypy rejects.
 
 import asyncio
 import dataclasses
+import faulthandler
 import hashlib
 import json
+import os
 import pathlib
 import re
 import sqlite3
@@ -33,7 +35,7 @@ from functools import partial
 from html import unescape
 from html.parser import HTMLParser
 from time import monotonic, sleep
-from typing import Annotated, Any, Protocol, cast
+from typing import Annotated, Any, NoReturn, Protocol, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -2662,8 +2664,10 @@ class HeldByAnother:
     refuses a commit."""
 
     def __init__(self, path: pathlib.Path, *, reading: bool = False) -> None:
+        self.path = path
         self.connection = sqlite3.connect(path, isolation_level=None)
         self.reading = reading
+        self.released = False
 
     def __enter__(self) -> None:
         if self.reading:
@@ -2672,9 +2676,209 @@ class HeldByAnother:
         else:
             self.connection.execute("BEGIN EXCLUSIVE")
 
-    def __exit__(self, *_: object) -> None:
+    def release(self) -> None:
+        """Let the file go, once: leaving does the same, and nothing more after this."""
+        if self.released:
+            return
+        self.released = True
         self.connection.execute("ROLLBACK")
         self.connection.close()
+
+    def __exit__(self, *_: object) -> None:
+        self.release()
+
+
+HANG_LIMIT_SECONDS = 60.0
+"""How long a held-file test waits for a press, or for the wait beside it, before calling it
+hung: a hang detector, far above any run measured, slowed or not. It times nothing."""
+
+
+class WaitBeside:
+    """Another connection running ``statement`` on ``held``'s file under a busy timeout of
+    ``seconds``, on a daemon thread beside a press, so a delay to the process while both wait
+    reaches both: ``took`` is how long it lasted, ``refused`` whether its error's primary code
+    was ``SQLITE_BUSY``. Entering it returns once the thread is about to run its statement, so
+    a press made next starts with it; right after a connect that failed, which leaves
+    ``refused`` false; or after ``HANG_LIMIT_SECONDS``, if the thread never gets that far.
+    Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the thread. A wait still running then is
+    interrupted and the file let go, which ends a statement running or a busy wait, and is
+    given at most 5 seconds more: if it ends, the test fails as hung, before either is read;
+    if it still runs, ``watch`` ends the run, naming the test."""
+
+    def __init__(
+        self, held: HeldByAnother, seconds: float, statement: str, watch: "HangWatch"
+    ) -> None:
+        self.held, self.path, self.watch = held, held.path, watch
+        self.seconds, self.statement = seconds, statement
+        self.took = 0.0
+        self.refused = False
+        self.connection: sqlite3.Connection | None = None
+        self.ready = threading.Event()
+        self.thread = threading.Thread(target=self.wait, daemon=True)
+
+    def wait(self) -> None:
+        try:
+            connection = sqlite3.connect(self.path, timeout=self.seconds, isolation_level=None)
+            self.connection = connection
+        finally:
+            self.ready.set()
+        started = monotonic()
+        try:
+            connection.execute(self.statement).fetchall()
+        except sqlite3.OperationalError as error:
+            self.refused = (error.sqlite_errorcode & 0xFF) == sqlite3.SQLITE_BUSY
+        finally:
+            self.took = monotonic() - started
+            connection.close()
+
+    def __enter__(self) -> "WaitBeside":
+        self.thread.start()
+        self.ready.wait(HANG_LIMIT_SECONDS)
+        return self
+
+    def __exit__(self, kind: type[BaseException] | None, *_: object) -> None:
+        self.thread.join(HANG_LIMIT_SECONDS)
+        if not self.thread.is_alive():
+            return
+        hung = f"the wait beside the press still ran after {HANG_LIMIT_SECONDS:g} s: hung"
+        try:
+            if self.connection is not None:
+                self.connection.interrupt()
+        except sqlite3.ProgrammingError:
+            pass
+        self.held.release()
+        self.thread.join(5.0)
+        if self.thread.is_alive():
+            self.watch.end_run(f"{hung}, and still ran once interrupted and let go")
+        if kind is None:
+            raise AssertionError(hung)
+
+
+class HangWatch:
+    """Presses made on a daemon thread, each waited for at most ``HANG_LIMIT_SECONDS``: a hang
+    detector, not a timing check. A press still running then fails the test as hung. The run
+    then has ``HANG_LIMIT_SECONDS`` more to clean up, the held file released, the client closed
+    and the press's thread ended, before it ends itself with every thread's traceback on the
+    terminal's standard error. Leaving it after the client waits for that thread until then,
+    and calls the ending off only once the thread has ended, so enter it before the client."""
+
+    def __init__(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self.capsys = capsys
+        self.terminal: int | None = None
+        self.hung: threading.Thread | None = None
+        self.ends = 0.0
+
+    def __enter__(self) -> "HangWatch":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if self.terminal is None or self.hung is None:
+            return
+        self.hung.join(max(0.0, self.ends - monotonic()))
+        if self.hung.is_alive():
+            # The ending is due now; should it not come, end the run the same way.
+            self.hung.join(5.0)
+            faulthandler.dump_traceback(file=self.terminal)
+            os._exit(1)
+        faulthandler.cancel_dump_traceback_later()
+        os.close(self.terminal)
+        self.terminal = None
+
+    def say(self, line: str) -> int:
+        """The terminal's standard error, with what pytest has printed so far flushed to it and
+        ``line`` written there after the test's name."""
+        test = os.environ.get("PYTEST_CURRENT_TEST", "a held-file test")
+        with self.capsys.disabled():
+            sys.stdout.flush()
+            sys.stderr.flush()
+            terminal = os.dup(2)
+        os.write(terminal, f"\n{test}: {line}\n".encode())
+        return terminal
+
+    def end_run(self, hung: str) -> NoReturn:
+        """End the run now, naming the test, with every thread's traceback: for a thread that
+        nothing could stop, so it can't outlive the test."""
+        terminal = self.say(f"{hung}; the run ends now")
+        faulthandler.dump_traceback(file=terminal)
+        os._exit(1)
+
+    def press[T](self, call: Callable[[], T]) -> tuple[T, float]:
+        """What ``call`` returns, made on a daemon thread, and how long it took."""
+        returned: list[T] = []
+        raised: list[BaseException] = []
+        took = 0.0
+
+        def run() -> None:
+            nonlocal took
+            started = monotonic()
+            try:
+                returned.append(call())
+            except BaseException as error:
+                raised.append(error)
+            finally:
+                took = monotonic() - started
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(HANG_LIMIT_SECONDS)
+        if thread.is_alive():
+            hung = f"the press still ran after {HANG_LIMIT_SECONDS:g} s: hung"
+            ending = f"the run ends in {HANG_LIMIT_SECONDS:g} s unless it cleans up"
+            self.terminal = self.say(f"{hung}; {ending}")
+            self.hung, self.ends = thread, monotonic() + HANG_LIMIT_SECONDS
+            faulthandler.dump_traceback_later(HANG_LIMIT_SECONDS, exit=True, file=self.terminal)
+            raise AssertionError(hung)
+        if raised:
+            raise raised[0]
+        return returned[0], took
+
+
+class AskedWaits:
+    """What a store's calls are given and set, each beside the store's own clock reading:
+    ``called``, the instant ``_session`` is called, before the store reads its clock for the
+    call's deadline; ``waits``, the timeout the call then asks the store's lock for, with
+    ``began``, the instant it asked, after that reading; and ``deadlines``, each deadline
+    ``_wait_until`` is given, with the instants just before and just after it, around the
+    store's reading of the time left. A pause anywhere moves a reading and the instants around
+    it together, so no relation between them depends on how long anything took."""
+
+    def __init__(self, store: Any) -> None:  # noqa: ANN401
+        self.store = store
+        self.lock = store._lock
+        self.session = store._session
+        self.wait_until = store._wait_until
+        self.called: list[float] = []
+        self.waits: list[float] = []
+        self.began: list[float] = []
+        self.deadlines: list[tuple[float, float, float]] = []
+
+    def start(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        self.called.append(monotonic())
+        return self.session(*args, **kwargs)
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        self.began.append(monotonic())
+        self.waits.append(timeout)
+        return bool(self.lock.acquire(blocking, timeout))
+
+    def release(self) -> None:
+        self.lock.release()
+
+    def set_deadline(self, ends: float) -> None:
+        before = monotonic()
+        self.wait_until(ends)
+        self.deadlines.append((ends, before, monotonic()))
+
+    def __enter__(self) -> "AskedWaits":
+        self.store._lock = self
+        self.store._session = self.start
+        self.store._wait_until = self.set_deadline
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.store._lock = self.lock
+        del self.store._session
+        del self.store._wait_until
 
 
 def the_alert(page: str) -> str:
