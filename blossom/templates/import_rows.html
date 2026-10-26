@@ -55,8 +55,12 @@
 {% macro card_of(card) %}
   <p class="source">{% for where, href, shot in card.sources %}{% if not loop.first %}; {% endif %}{{ where }}{% if loop.last and card.read_as %}, {{ card.read_as }}{% endif %}{% if href %} · <a href="{{ href }}">{{ words.view }}<span class="visually-hidden"> {{ shot }} for {{ card.about }}</span></a>{% endif %}{% endfor %}</p>
   {% for question in card.checks %}{{ asked(question) }}{% endfor %}
-  <details class="steps" id="{{ card.fold }}" tabindex="-1"{% if card.fold_open %} open{% endif %}>
-    <summary>{{ words.fold }}<span class="visually-hidden"> for {{ card.about }}</span></summary>
+  {#
+    A question's link to the fold lands on its summary, which stays in the Tab order with the
+    fold's fields after it. Its tabindex makes it a place a page fetched again lands on.
+  #}
+  <details class="steps"{% if card.fold_open %} open{% endif %}>
+    <summary id="{{ card.fold }}" tabindex="0">{{ words.fold }}<span class="visually-hidden"> for {{ card.about }}</span></summary>
     {% for box in card.boxes %}{{ box_of(box, card.about) }}{% endfor %}
   </details>
   <details class="steps">
