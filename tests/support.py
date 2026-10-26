@@ -2686,10 +2686,10 @@ hung: a hang detector, far above any run measured, slowed or not. It times nothi
 
 class WaitBeside:
     """Another connection running ``statement`` on the held file under a busy timeout of
-    ``seconds``, on a daemon thread beside a press, so a delay to the process reaches both
-    waits: ``took`` is how long it lasted, ``refused`` whether it ended as ``SQLITE_BUSY``.
-    Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the thread; a wait still running then
-    is interrupted and fails the test as hung, before either is read."""
+    ``seconds``, on a daemon thread beside a press, so a delay to the process while both wait
+    reaches both: ``took`` is how long it lasted, ``refused`` whether it ended as
+    ``SQLITE_BUSY``. Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the thread; a wait
+    still running then is interrupted and fails the test as hung, before either is read."""
 
     def __init__(self, path: pathlib.Path, seconds: float, statement: str) -> None:
         self.path, self.seconds, self.statement = path, seconds, statement

@@ -1905,9 +1905,9 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     is refused on the page that reads no store, with her words and nothing written. It reads the
     drafts store with a single statement, under a busy timeout above 4000 ms and at most 5000 ms,
     and lasts less than 2.5 seconds longer than another connection's read of the held file
-    under ``STORE_WAIT_SECONDS``, timed beside the press so a delay to the process reaches both.
-    The press and the wait beside it each have ``HANG_LIMIT_SECONDS`` before they count as hung.
-    """
+    under ``STORE_WAIT_SECONDS``, timed beside the press so a delay to the process while both
+    wait reaches both. The press and the wait beside it each have ``HANG_LIMIT_SECONDS`` before
+    they count as hung."""
     with HangWatch(capsys) as watch, household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
@@ -1945,7 +1945,7 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     ]
     assert timeouts
     assert 4000 < timeouts[-1] <= 5000
-    assert beside.refused
+    assert beside.refused, (took, beside.took)
     # Its time past the wait beside it: under half the 5 second wait pinned above.
     assert took - beside.took < 2.5, (took, beside.took)
 
@@ -1958,7 +1958,7 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     press lands once after. It asks once for the file's writer, under the help-requests store's
     busy timeout of 5000 ms, and lasts less than 2.5 seconds longer than another connection's
     ``BEGIN IMMEDIATE`` on the held file under 5 seconds, timed beside the press so a delay to
-    the process reaches both. Each press, and the wait beside the first, has
+    the process while both wait reaches both. Each press, and the wait beside the first, has
     ``HANG_LIMIT_SECONDS`` before it counts as hung."""
     with HangWatch(capsys) as watch, household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
@@ -1993,7 +1993,7 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     assert (moved.state, moved.response) == ("accepted", TYPED)
     assert [update.body for update in moved.parent_updates] == [TYPED]
     assert timeout == 5000
-    assert beside.refused
+    assert beside.refused, (took, beside.took)
     # Its time past the wait beside it: under half the 5 second wait pinned above.
     assert took - beside.took < 2.5, (took, beside.took)
 
