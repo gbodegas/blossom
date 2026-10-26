@@ -49,6 +49,7 @@ from blossom.screenshot_save import (
     CONFIRMABLE,
     AlreadySaved,
     NotSaved,
+    Saved,
     correction_digest,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
@@ -8888,6 +8889,42 @@ def test_an_ended_review_s_page_says_each_press_line_as_listed() -> None:
         assert imports.ended_lines([line], saved=False) == ended, line
     assert imports.ended_lines([said["changed"]], saved=False) == [imports.NO_HOMEWORK]
     assert imports.ended_lines([said["changed"]], saved=True) == []
+
+
+@pytest.mark.parametrize("ending", [DraftExpired, DraftNotFound], ids=["expired", "removed"])
+@pytest.mark.parametrize("path", ["review left open", "close unconfirmed"])
+def test_a_committed_save_with_a_changed_group_never_says_no_homework_when_its_review_ends(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, path: str, ending: type[Exception]
+) -> None:
+    """A save that committed homework, one ticked group of it changed, then its review found
+    ended at the next read: its counts stand and it never says no homework was saved by this
+    attempt, nor the changed line that needs the review, whether the review was left open or
+    its close couldn't be confirmed."""
+    saved = Saved(
+        "a" * 32,
+        (),
+        ("first",),
+        changed_units=("second",),
+        incomplete=() if path == "review left open" else ("close",),
+        counts=(1, 0, 0, 1),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: saved)
+        drafts = state_of(browser).import_drafts
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, ending))
+        answer = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        put_back()
+
+    gone = imports.SAID["expired" if ending is DraftExpired else "absent"]
+    assert answer.status_code == 200
+    assert says(answer.text, "Saved: 1 new assignment. 1 still needs checking.")
+    assert not says(answer.text, imports.NO_HOMEWORK)
+    assert not says(answer.text, imports.PRESS_SAID["changed"])
+    assert says(answer.text, gone)
+    if path == "close unconfirmed":
+        assert says(answer.text, imports.PRESS_SAID["incomplete"])
 
 
 INSTRUCTION_CASES: Final = {
