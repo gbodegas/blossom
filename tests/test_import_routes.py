@@ -6543,10 +6543,17 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
         assert progress is not None
     else:
         assert progress == stored_before[1] is None
-    if press == "keep" and committed:
-        assert says(answer, imports.PRESS_SAID["kept"])
-    if press == "later" and committed:
-        assert says(answer, imports.PRESS_SAID["later"])
+    if press in ("keep", "later") and committed:
+        assert says(answer, imports.PRESS_SAID["kept_before_ended"])
+        assert focused(answer) == ALERT
+        assert answer.index('<p class="problem" role="alert"') < answer.index(
+            str(escape(imports.PRESS_SAID["kept_before_ended"]))
+        )
+    assert not says(answer, imports.PRESS_SAID["kept"])
+    assert not says(answer, imports.PRESS_SAID["later"])
+    assert not says(answer, imports.PRESS_SAID["left_open"])
+    assert "Saved for later at " not in answer
+    assert "Back to the review" not in answer
 
 
 @pytest.mark.parametrize("gone", ["expired", "removed"])
@@ -8205,6 +8212,11 @@ def test_a_save_that_closed_the_review_says_so_when_her_week_can_t_be_read(
 
 BACK_TO_REVIEW: Final = '<a href="/parent/imports/{}">Back to the review</a>'
 ALERT: Final = ['<p class="problem" role="alert" tabindex="-1" autofocus>']
+KEPT_STATUS: Final = ['<div role="status" id="kept" tabindex="-1" autofocus>']
+PROBLEM_BLOCK: Final = re.compile(
+    r'<div class="problem" role="alert" id="said" tabindex="-1"(?: autofocus)?>(.*?)</div>', re.S
+)
+KEPT_BLOCK: Final = re.compile(r'<div role="status" id="kept"[^>]*>(.*?)</div>', re.S)
 
 
 def restored(drafts: object, name: str, replacement: Callable[..., object]) -> Callable[[], None]:
@@ -8244,7 +8256,15 @@ def test_keep_these_answers_whose_review_can_t_be_read_says_they_are_kept_and_gi
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
-    assert focused(answer.text) == ALERT
+    assert focused(answer.text) == KEPT_STATUS
+    kept_block, problem = KEPT_BLOCK.search(answer.text), PROBLEM_BLOCK.search(answer.text)
+    assert kept_block is not None
+    assert problem is not None
+    assert lines_in(kept_block) == [imports.PRESS_SAID["kept"]]
+    assert '<p class="note">' in kept_block.group(1)
+    assert lines_in(problem) == [imports.REVIEW_NOT_SHOWN]
+    assert "steps-line" not in answer.text
+    assert "3. Saved" not in answer.text
     assert not says(answer.text, imports.SAID["busy"])
     assert not says(answer.text, imports.AFTER_SAID["busy"])
     assert 'action="/parent/imports' not in answer.text
@@ -8347,6 +8367,15 @@ def test_a_press_that_kept_answers_says_so_when_its_review_can_t_be_read(
     assert not says(answer.text, imports.SAID["busy"])
     assert not says(answer.text, imports.PRESS_SAID["changed_by_answers"])
     assert len(after) > len(before)
+    kept_block = KEPT_BLOCK.search(answer.text)
+    if "answers_kept" in keys:
+        assert lines_in(kept_block) == [imports.PRESS_SAID["answers_kept"]]
+        assert focused(answer.text) == KEPT_STATUS
+    else:
+        assert kept_block is None
+    shown = lines_in(PROBLEM_BLOCK.search(answer.text))
+    assert shown[-1] == imports.REVIEW_NOT_SHOWN
+    assert imports.PRESS_SAID["answers_kept"] not in shown
 
 
 FAILED_WRITES: Final = {"keep": "keep_answers", "later": "save_for_later", "save": "keep_answers"}
@@ -8378,6 +8407,10 @@ def test_answers_that_couldn_t_be_kept_are_said_unkept_when_the_review_can_t_be_
     assert not says(answer.text, imports.PRESS_SAID["answers_kept"])
     assert not says(answer.text, imports.SAID["busy"])
     assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    assert KEPT_BLOCK.search(answer.text) is None
+    assert focused(answer.text) == [
+        '<div class="problem" role="alert" id="said" tabindex="-1" autofocus>'
+    ]
     assert stored == {}
 
 
@@ -8630,12 +8663,13 @@ def test_a_read_whose_readings_were_kept_goes_to_the_review_when_it_can_t_be_sho
     assert "<h3>Sentence Composing</h3>" in review_form(shown.text)
 
 
-def test_a_reading_the_busy_file_couldn_t_keep_is_named_on_the_review_a_read_goes_back_to(
+def test_a_reading_the_busy_file_couldn_t_keep_is_left_to_its_label_when_a_read_goes_back(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A Read whose reading the busy file couldn't keep, then the read for its page refused:
-    the way back to the review carries that screenshot's line from what the press already
-    has, and the review says it once it can be read. The screenshot was read once."""
+    the way back to the review carries no line naming a screenshot by number, and the review's
+    own label says it needs reading once the review can be read. The screenshot was read once,
+    by one Read."""
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
         draft_id = made(browser, RED)
@@ -8643,7 +8677,10 @@ def test_a_reading_the_busy_file_couldn_t_keep_is_named_on_the_review_a_read_goe
         drafts = state_of(browser).import_drafts
         real_snapshot, real_read = drafts.snapshot, screenshot_reading.read_screenshots
 
+        runs: list[int] = []
+
         async def read_then_busy(*args: object, **kwargs: object) -> object:
+            runs.append(1)
             outcome = await real_read(*args, **kwargs)  # type: ignore[arg-type]
             monkeypatch.setattr(drafts, "snapshot", busy_store(StoreBusy))
             return outcome
@@ -8655,9 +8692,12 @@ def test_a_reading_the_busy_file_couldn_t_keep_is_named_on_the_review_a_read_goe
         shown = browser.get(answer.headers["location"])
 
     assert answer.status_code == 303
-    assert says(shown.text, imports.busy_reading(1))
+    assert imports.NOTE_COOKIE not in answer.headers.get("set-cookie", "")
+    assert not says(shown.text, imports.busy_reading(1))
+    assert "couldn&#39;t keep the reading" not in shown.text
     assert says(shown.text, imports.LABELS["ended"])
     assert reader.calls == [RED]
+    assert runs == [1]
 
 
 def test_a_read_whose_review_closed_meanwhile_says_it_is_finished(
@@ -8712,6 +8752,82 @@ def test_a_save_that_would_now_do_something_else_says_to_check_it_in_the_review(
     assert not says(answer.text, imports.PRESS_SAID["answers_kept"])
     assert says(answer.text, imports.REVIEW_NOT_SHOWN)
     assert after == before
+
+
+ENDED_CASES: Final = {
+    "keep": (200, 2, []),
+    "later saved": (200, 2, []),
+    "later behind": (409, 2, ["later_behind"]),
+    "nothing ticked": (200, 2, ["none_chosen"]),
+    "name check unreadable": (500, 2, ["no_name_check"]),
+    "not saved, busy": (503, 2, ["busy"]),
+    "changed by answers": (409, 2, []),
+    "already saved": (200, 2, ["already"]),
+    "partly saved": (200, 3, []),
+}
+
+
+@pytest.mark.parametrize("ending", [DraftExpired, DraftNotFound], ids=["expired", "removed"])
+@pytest.mark.parametrize("case", list(ENDED_CASES))
+def test_a_press_that_kept_answers_says_they_were_kept_before_the_review_ended(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str, ending: type[Exception]
+) -> None:
+    """A press that kept her answers and then found the review expired or removed says they
+    were kept before it ended, never that they are kept, saved for later or left open, then why
+    the review is gone, at the press's own status. The page keeps its styling: the first line
+    takes the focus in the problem style, or the save's outcome does."""
+    status, at, keys = ENDED_CASES[case]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        drafts = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        posted = page_post(page, "save", tick=units_on(page)[:1])
+        if case == "keep":
+            posted = page_post(page, "keep")
+        elif case in ("later saved", "later behind"):
+            if case == "later behind":
+                revision = drafts.snapshot(student, draft_id).progress_revision
+                drafts.save_progress(student, draft_id, revision=revision, progress="{}")
+            posted = page_post(page, "later")
+        elif case == "nothing ticked":
+            posted = page_post(page, "save")
+        elif case == "not saved, busy":
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("busy"))
+        elif case == "changed by answers":
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("changed"))
+        elif case == "already saved":
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: AlreadySaved(()))
+        elif case == "name check unreadable":
+
+            async def no_key(*_: object) -> bytes:
+                raise OSError
+
+            monkeypatch.setattr(imports, "grade_name_key", no_key)
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, at, ending))
+        answer = send(browser, draft_id, posted)
+        put_back()
+
+    gone = imports.SAID["expired" if ending is DraftExpired else "absent"]
+    lines = {**imports.PRESS_SAID, "no_name_check": imports.SAID["no_name_check"]}
+    assert answer.status_code == status
+    assert says(answer.text, imports.PRESS_SAID["kept_before_ended"])
+    for key in keys:
+        assert says(answer.text, lines[key]), key
+    assert says(answer.text, gone)
+    assert "Your answers are kept" not in answer.text
+    assert not says(answer.text, imports.PRESS_SAID["left_open"])
+    assert "Saved for later at " not in answer.text
+    assert "Back to the review" not in answer.text
+    if case == "partly saved":
+        shown = OUTCOME.search(answer.text)
+        assert shown is not None
+        assert imports.PRESS_SAID["kept_before_ended"] in lines_in(shown)
+    else:
+        assert focused(answer.text) == ALERT
+        assert answer.text.index(str(escape(imports.PRESS_SAID["kept_before_ended"]))) < (
+            answer.text.index(str(escape(gone)))
+        )
 
 
 @pytest.mark.parametrize("answered", [True, False], ids=["answers kept", "no answer changed"])

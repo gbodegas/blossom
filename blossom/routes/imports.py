@@ -59,7 +59,7 @@ from blossom.screenshot_posts import (
     shape_four,
     typed_back,
 )
-from blossom.screenshot_reading import ReadOutcome, read_screenshots
+from blossom.screenshot_reading import read_screenshots
 from blossom.screenshot_review import Corrections, change_told, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
@@ -486,14 +486,14 @@ async def gone_with_typing(
     request: Request, state: ApplicationState, gone: str, said: Sequence[str], status: int
 ) -> Response:
     """A press on a review that expired, or that the sweep took away: what the press did first, if
-    anything committed, then why the review can't take more, and every correction the post
-    typed in a box to copy, read from the post alone. Nothing of the review is shown, nothing
-    is stored, and nothing more can be saved from it."""
+    anything committed, kept answers said in the past (``GONE_SAID``), then why the review can't
+    take more, and every correction the post typed in a box to copy, read from the post alone.
+    Nothing of the review is shown, nothing is stored, and nothing more can be saved from it."""
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
-            "said": [*said, SAID[gone]],
+            "said": [*(GONE_SAID.get(line, line) for line in said), SAID[gone]],
             "typed": await typing_of(request),
             "typed_said": TYPED_SAID,
             "marks": marks_of(state),
@@ -522,14 +522,16 @@ async def unshown_with_typing(
     status: int,
 ) -> Response:
     """A press whose review the store refuses to read: the press's own lines, which say what it
-    kept or failed to keep, then that the review can't be shown, every correction it typed
-    given back to copy, and the way back to the review. It reads no store and offers nothing
-    that repeats the press; its status is the press's own."""
+    kept or failed to keep, its kept answers apart from the rest, then that the review can't be
+    shown, every correction it typed given back to copy, and the way back to the review. It
+    reads no store and offers nothing that repeats the press; its status is the press's own."""
+    lines = [UNSHOWN_SAID.get(line, line) for line in said]
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
-            "said": [*(UNSHOWN_SAID.get(line, line) for line in said), REVIEW_NOT_SHOWN],
+            "kept": [line for line in lines if line in KEPT_SAID],
+            "said": [*(line for line in lines if line not in KEPT_SAID), REVIEW_NOT_SHOWN],
             "typed": await typing_of(request),
             "typed_said": UNSHOWN_TYPED,
             "review": f"{PREFIX}/{draft_id}",
@@ -612,7 +614,8 @@ async def snapshot_keeping_typing(
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (DraftExpired, DraftNotFound) as error:
         if done:
-            return await saved_unread(request, state, done, [*said, SAID[gone_by(error)]])
+            ended = [GONE_SAID.get(line, line) for line in (*said, SAID[gone_by(error)])]
+            return await saved_unread(request, state, [GONE_SAID.get(d, d) for d in done], ended)
         return await refused_keeping_typing(request, state, error, said, status)
     except (StoreBusy, WriterBusy):
         if done:
@@ -1074,7 +1077,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
     try:
         after = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (StoreBusy, WriterBusy):
-        return to_review(state, draft_id, kept_unread(found, outcome))
+        return to_review(state, draft_id)
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
     if after.closed_at is not None:
@@ -1092,16 +1095,6 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         told = read_said(after, state.real_clock.now())
     rows = await rows_of(request, state, after, said)
     return review_page(request, state, after, said, rows=rows, told=told)
-
-
-def kept_unread(found: DraftSnapshot, outcome: ReadOutcome | None) -> list[str]:
-    """What a Read press whose readings are stored says when the review can't be read after
-    it, from what is already at hand: each reading the busy file couldn't keep, by the image's
-    place in the review as the press found it. The review shows the readings once read."""
-    if outcome is None:
-        return []
-    places = {image.image_id: index + 1 for index, image in enumerate(found.images)}
-    return [busy_reading(places[image_id]) for image_id in outcome.busy if image_id in places]
 
 
 def read_said(snapshot: DraftSnapshot, now: datetime) -> list[str]:
@@ -1171,6 +1164,7 @@ PRESS_SAID: Final = {
     "kept_then_ended": (
         "Your answers were kept, but this review ended before the homework was saved."
     ),
+    "kept_before_ended": "Your answers were kept before this review ended.",
     "none_chosen": "Choose at least one assignment to save.",
     "left_open": "Your answers on the rows left open are kept.",
     "already": "Already saved from this review.",
@@ -1178,8 +1172,8 @@ PRESS_SAID: Final = {
         "Saving an assignment you ticked would now do this instead. Check it and save again."
     ),
     "changed_by_answers": (
-        "Your answers are kept. They change what saving does, so nothing was saved yet. Check "
-        "the effects below, then save."
+        "Your answers are kept. They change what saving does, so no homework was saved by this "
+        "attempt. Check the effects below, then save."
     ),
     "busy": (
         "The homework wasn't saved because the household file was busy; nothing of it was "
@@ -1199,11 +1193,20 @@ UNSHOWN_SAID: Final = {
         "review and save again."
     ),
     PRESS_SAID["changed_by_answers"]: (
-        "Your answers are kept. They change what saving does, so nothing was saved yet. Check "
-        "the effects in the review, then save."
+        "Your answers are kept. They change what saving does, so no homework was saved by this "
+        "attempt. Check the effects in the review, then save."
     ),
 }
 """The press lines that point at the review's rows, as a page that can't show them says them."""
+GONE_SAID: Final = {
+    PRESS_SAID[key]: PRESS_SAID["kept_before_ended"]
+    for key in ("kept", "answers_kept", "later", "changed_by_answers", "left_open")
+}
+"""The lines that say a press kept answers, as the page for a review that expired, or that the
+sweep took away, says them: in the past, suggesting no answer or correction can be reached."""
+KEPT_SAID: Final = frozenset({PRESS_SAID["kept"], PRESS_SAID["answers_kept"]})
+"""The lines that only confirm a press kept answers, said apart from its problems where the
+review can't be shown."""
 NOT_SAVED_BECAUSE: Final = {
     "gate": "a screenshot isn't read yet",
     "open": "an assignment you ticked still has a question to answer",
@@ -1387,11 +1390,10 @@ async def later_press(
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return await refused_keeping_typing(request, state, error)
     if done.progress_saved:
-        later = [PRESS_SAID["later"], saved_for_later_at(state)]
         gone = await gone_now(state, found.draft_id)
         if gone is not None:
-            return await gone_with_typing(request, state, gone, later, 200)
-        return to_review(state, found.draft_id, later)
+            return await gone_with_typing(request, state, gone, [PRESS_SAID["later"]], 200)
+        return to_review(state, found.draft_id, [PRESS_SAID["later"], saved_for_later_at(state)])
     said = [PRESS_SAID["answers_kept"], PRESS_SAID["later_behind"]]
     return await with_typing(request, state, found.draft_id, post, said, 409)
 
