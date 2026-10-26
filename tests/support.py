@@ -2773,10 +2773,14 @@ class HangWatch:
         thread.join(HANG_LIMIT_SECONDS)
         if thread.is_alive():
             hung = f"the press still ran after {HANG_LIMIT_SECONDS:g} s: hung"
+            test = os.environ.get("PYTEST_CURRENT_TEST", "a held-file test")
             with self.capsys.disabled():
+                # What pytest has printed so far reaches the terminal even if the run ends.
+                sys.stdout.flush()
+                sys.stderr.flush()
                 self.terminal = os.dup(2)
-            ending = f"\n{hung}; the run ends in {HANG_LIMIT_SECONDS:g} s unless it cleans up\n"
-            os.write(self.terminal, ending.encode())
+            ending = f"\n{test}: {hung}; the run ends in {HANG_LIMIT_SECONDS:g} s"
+            os.write(self.terminal, f"{ending} unless it cleans up\n".encode())
             faulthandler.dump_traceback_later(HANG_LIMIT_SECONDS, exit=True, file=self.terminal)
             raise AssertionError(hung)
         if raised:
