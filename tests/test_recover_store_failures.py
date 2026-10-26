@@ -1901,9 +1901,11 @@ def test_a_record_that_cannot_be_read_is_said_on_a_page_that_stands_with_no_word
 def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keeps_her_words(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Her refused press reads the drafts store once, under a busy timeout above 4 seconds and
-    at most 5, and lasts less than 2.5 seconds longer than another connection's read of the
-    held file under ``STORE_WAIT_SECONDS``, timed beside it so a shared delay reaches both."""
+    """While another connection holds the file, her press with neither Done nor Not yet chosen
+    is refused on the page that reads no store, with her words and nothing written. It reads the
+    drafts store with a single statement, under a busy timeout above 4000 ms and at most 5000 ms,
+    and lasts less than 2.5 seconds longer than another connection's read of the held file
+    under ``STORE_WAIT_SECONDS``, timed beside the press so a delay to the process reaches both."""
     with household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
@@ -1944,16 +1946,19 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     assert timeouts
     assert 4000 < timeouts[-1] <= 5000
     assert beside.refused
-    # Half the 5 second wait pinned above, past the one wait timed beside it.
+    # Its time past the wait beside it: under half the 5 second wait pinned above.
     assert took - beside.took < 2.5, (took, beside.took)
 
 
 def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A parent's reply asks once for the file's writer, under the help-requests store's busy
-    timeout of 5 seconds, and lasts less than 2.5 seconds longer than another connection's BEGIN
-    IMMEDIATE on the held file under 5 seconds, timed beside it so a shared delay reaches both."""
+    """While another connection holds the file, a parent's reply is refused on the page that
+    reads no store, with the words, nothing written and no transaction left open, and the same
+    press lands once after. It asks once for the file's writer, under the help-requests store's
+    busy timeout of 5000 ms, and lasts less than 2.5 seconds longer than another connection's
+    ``BEGIN IMMEDIATE`` on the held file under 5 seconds, timed beside the press so a delay to
+    the process reaches both."""
     with household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
         state = state_of(client)
@@ -1986,7 +1991,7 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     assert [update.body for update in moved.parent_updates] == [TYPED]
     assert timeout == 5000
     assert beside.refused
-    # Half the 5 second wait pinned above, past the one wait timed beside it.
+    # Its time past the wait beside it: under half the 5 second wait pinned above.
     assert took - beside.took < 2.5, (took, beside.took)
 
 
