@@ -2687,32 +2687,38 @@ hung: a hang detector, far above any run measured, slowed or not. It times nothi
 class WaitBeside:
     """Another connection running ``statement`` on the held file under a busy timeout of
     ``seconds``, on a daemon thread beside a press, so a delay to the process while both wait
-    reaches both: ``took`` is how long it lasted, ``refused`` whether it ended as
-    ``SQLITE_BUSY``. Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the thread; a wait
-    still running then is interrupted, given at most 5 seconds more to end, and fails the test
-    as hung, before either is read."""
+    reaches both: ``took`` is how long it lasted, ``refused`` whether its error's primary code
+    was ``SQLITE_BUSY``. Entering it returns once the thread is about to run its statement, so
+    a press made next starts with it. Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the
+    thread; a wait still running then is interrupted, given at most 5 seconds more to end, and
+    fails the test as hung, before either is read."""
 
     def __init__(self, path: pathlib.Path, seconds: float, statement: str) -> None:
         self.path, self.seconds, self.statement = path, seconds, statement
         self.took = 0.0
         self.refused = False
         self.connection: sqlite3.Connection | None = None
+        self.ready = threading.Event()
         self.thread = threading.Thread(target=self.wait, daemon=True)
 
     def wait(self) -> None:
-        connection = sqlite3.connect(self.path, timeout=self.seconds, isolation_level=None)
-        self.connection = connection
+        try:
+            connection = sqlite3.connect(self.path, timeout=self.seconds, isolation_level=None)
+            self.connection = connection
+        finally:
+            self.ready.set()
         started = monotonic()
         try:
             connection.execute(self.statement).fetchall()
         except sqlite3.OperationalError as error:
-            self.refused = error.sqlite_errorname == "SQLITE_BUSY"
+            self.refused = (error.sqlite_errorcode & 0xFF) == sqlite3.SQLITE_BUSY
         finally:
             self.took = monotonic() - started
             connection.close()
 
     def __enter__(self) -> "WaitBeside":
         self.thread.start()
+        self.ready.wait(HANG_LIMIT_SECONDS)
         return self
 
     def __exit__(self, kind: type[BaseException] | None, *_: object) -> None:
