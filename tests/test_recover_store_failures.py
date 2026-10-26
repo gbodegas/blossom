@@ -1905,10 +1905,10 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     """While another connection holds the file, her press with neither Done nor Not yet chosen
     is refused on the page that reads no store, with her words and nothing written. It reads the
     drafts store with a single statement, in a call given 5 seconds, under a busy timeout of at
-    most 5000 ms, and lasts within 2.5 seconds of another connection's read of the held file
-    under ``STORE_WAIT_SECONDS``, timed beside the press so a delay to the process while both
-    wait reaches both. The press and the wait beside it each have ``HANG_LIMIT_SECONDS`` before
-    they count as hung."""
+    most 5000 ms set to the time left in them, and lasts within 2.5 seconds of another
+    connection's read of the held file under ``STORE_WAIT_SECONDS``, timed beside the press so
+    a delay to the process while both wait reaches both. The press and the wait beside it each
+    have ``HANG_LIMIT_SECONDS`` before they count as hung."""
     with HangWatch(capsys) as watch, household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
@@ -1946,8 +1946,13 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
         if line.strip().upper().startswith("PRAGMA BUSY_TIMEOUT=")
     ]
     assert asked.waits == [5.0]
+    assert len(asked.deadlines) == 1
+    ends, setting = asked.deadlines[0]
+    # The deadline is the call's start plus its 5 seconds, and the busy timeout is the time left
+    # to it when set: a pause before either changes neither.
+    assert 4.5 < ends - asked.began[0] <= 5.0
     assert timeouts
-    assert timeouts[-1] <= 5000
+    assert (ends - setting) * 1000 - 500 < timeouts[-1] <= 5000
     assert beside.refused, (took, beside.took)
     # Its time against the wait beside it: within half the 5 second wait pinned above.
     assert -2.5 < took - beside.took < 2.5, (took, beside.took)
