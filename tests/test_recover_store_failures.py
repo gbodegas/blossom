@@ -15,7 +15,6 @@ import asyncio
 import pathlib
 import re
 import sqlite3
-import time
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -57,6 +56,7 @@ from tests.support import (
     PLAN_DATE,
     REPORT,
     UNDO,
+    HangWatch,
     HeldByAnother,
     Statements,
     WaitBeside,
@@ -1899,14 +1899,16 @@ def test_a_record_that_cannot_be_read_is_said_on_a_page_that_stands_with_no_word
 
 
 def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keeps_her_words(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """While another connection holds the file, her press with neither Done nor Not yet chosen
     is refused on the page that reads no store, with her words and nothing written. It reads the
     drafts store with a single statement, under a busy timeout above 4000 ms and at most 5000 ms,
     and lasts less than 2.5 seconds longer than another connection's read of the held file
-    under ``STORE_WAIT_SECONDS``, timed beside the press so a delay to the process reaches both."""
-    with household_client("her", tmp_path) as client:
+    under ``STORE_WAIT_SECONDS``, timed beside the press so a delay to the process reaches both.
+    The press and the wait beside it each have ``HANG_LIMIT_SECONDS`` before they count as hung.
+    """
+    with HangWatch(capsys) as watch, household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
         before = every_row(database_of(client))
@@ -1917,9 +1919,7 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
                 database_of(client), STORE_WAIT_SECONDS, "SELECT COUNT(*) FROM drafts"
             ) as beside,
         ):
-            started = time.monotonic()
-            answer = client.post(path, data=data, headers=PAGE_HEADERS)
-            took = time.monotonic() - started
+            answer, took = watch.press(lambda: client.post(path, data=data, headers=PAGE_HEADERS))
         after = every_row(database_of(client))
 
     main = store_free_page(
@@ -1951,15 +1951,16 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
 
 
 def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """While another connection holds the file, a parent's reply is refused on the page that
     reads no store, with the words, nothing written and no transaction left open, and the same
     press lands once after. It asks once for the file's writer, under the help-requests store's
     busy timeout of 5000 ms, and lasts less than 2.5 seconds longer than another connection's
     ``BEGIN IMMEDIATE`` on the held file under 5 seconds, timed beside the press so a delay to
-    the process reaches both."""
-    with household_client("parent", tmp_path) as client:
+    the process reaches both. Each press, and the wait beside the first, has
+    ``HANG_LIMIT_SECONDS`` before it counts as hung."""
+    with HangWatch(capsys) as watch, household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
         state = state_of(client)
         asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
@@ -1970,13 +1971,15 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
             HeldByAnother(database_of(client)),
             WaitBeside(database_of(client), 5.0, "BEGIN IMMEDIATE") as beside,
         ):
-            started = time.monotonic()
-            answer = client.post(path, data={"step": "accept", "response": TYPED})
-            took = time.monotonic() - started
+            answer, took = watch.press(
+                lambda: client.post(path, data={"step": "accept", "response": TYPED})
+            )
         idle = not state.help_requests._connection.in_transaction
         (timeout,) = state.help_requests._connection.execute("PRAGMA busy_timeout").fetchone()
         after = every_row(database_of(client))
-        again = client.post(path, data={"step": "accept", "response": TYPED})
+        again, _ = watch.press(
+            lambda: client.post(path, data={"step": "accept", "response": TYPED})
+        )
         moved = state.help_requests.get(asked)
 
     main = store_free_page(answer, status=500, heading="Family review", alert=HELP_STEP_FAILED)
