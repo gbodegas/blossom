@@ -2734,23 +2734,32 @@ class WaitBeside:
 class HangWatch:
     """Presses made on a daemon thread, each waited for at most ``HANG_LIMIT_SECONDS``: a hang
     detector, not a timing check. A press still running then fails the test as hung. The run
-    then has ``HANG_LIMIT_SECONDS`` more to clean up, the held file released and the client
-    closed, before it ends itself with every thread's traceback on the terminal's standard
-    error, since a press that never returns would keep the client from closing. Leaving it
-    after the client calls that ending off, so enter it before the client."""
+    then has ``HANG_LIMIT_SECONDS`` more to clean up, the held file released, the client closed
+    and the press's thread ended, before it ends itself with every thread's traceback on the
+    terminal's standard error. Leaving it after the client waits for that thread until then,
+    and calls the ending off only once the thread has ended, so enter it before the client."""
 
     def __init__(self, capsys: pytest.CaptureFixture[str]) -> None:
         self.capsys = capsys
         self.terminal: int | None = None
+        self.hung: threading.Thread | None = None
+        self.ends = 0.0
 
     def __enter__(self) -> "HangWatch":
         return self
 
     def __exit__(self, *_: object) -> None:
-        if self.terminal is not None:
-            faulthandler.cancel_dump_traceback_later()
-            os.close(self.terminal)
-            self.terminal = None
+        if self.terminal is None or self.hung is None:
+            return
+        self.hung.join(max(0.0, self.ends - monotonic()))
+        if self.hung.is_alive():
+            # The ending is due now; should it not come, end the run the same way.
+            self.hung.join(5.0)
+            faulthandler.dump_traceback(file=self.terminal)
+            os._exit(1)
+        faulthandler.cancel_dump_traceback_later()
+        os.close(self.terminal)
+        self.terminal = None
 
     def press[T](self, call: Callable[[], T]) -> tuple[T, float]:
         """What ``call`` returns, made on a daemon thread, and how long it took."""
@@ -2781,6 +2790,7 @@ class HangWatch:
                 self.terminal = os.dup(2)
             ending = f"\n{test}: {hung}; the run ends in {HANG_LIMIT_SECONDS:g} s"
             os.write(self.terminal, f"{ending} unless it cleans up\n".encode())
+            self.hung, self.ends = thread, monotonic() + HANG_LIMIT_SECONDS
             faulthandler.dump_traceback_later(HANG_LIMIT_SECONDS, exit=True, file=self.terminal)
             raise AssertionError(hung)
         if raised:
