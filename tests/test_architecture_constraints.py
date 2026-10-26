@@ -463,7 +463,10 @@ LITERAL_AUTOFOCUS = {
     "student_due_this_week.html": 5,
     "student_earlier_item.html": 1,
     "student_earlier_work.html": 1,
-    "student_hand_in.html": 3,
+    # A turn-in press answered with the page itself lands on its result in the section.
+    "student_hand_in.html": 4,
+    # A card's turn-in result answered with the page itself, and a card's turn-in refusal.
+    "student_hand_in_line.html": 2,
     "student_note.html": 1,
     "student_note_details.html": 1,
     "student_note_gone.html": 1,
@@ -480,8 +483,8 @@ the screenshot review's, the grade check's or a run check's."""
 LANDS_SITES = {
     "grade_review.html": 1,
     "import_find.html": 2,
-    "import_review.html": 1,
-    "import_said.html": 1,
+    "import_review.html": 3,
+    "import_said.html": 2,
     "parent_review.html": 1,
     "plan_reading.html": 1,
     "student_due_this_week.html": 2,

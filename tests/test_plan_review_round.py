@@ -637,7 +637,7 @@ def test_when_the_write_and_the_reread_both_fail_the_plain_page_keeps_the_way_ba
     for href, label in links:
         assert f'<a href="{href}">{label}</a>' in text
     if action == "report":
-        assert f"readonly>{escape(words)}</textarea>" in text
+        assert f"readonly>\n{escape(words)}</textarea>" in text
         assert "Your choice: Done." in text
     assert "kept" not in "".join(re.findall(r'href="([^"]*)"', text))
     assert len(events) == 1

@@ -939,7 +939,8 @@ a.assignment-link:focus-visible {
    it in's among them. On class details, the title of a result a link lands on. On a
    result's homework page, its heading, where a press or the way in lands. On the
    screenshot review, a question or a card's choices, and a group of what saving
-   does, where their links land. Each
+   does, where their links land, and what an upload, a Read press or a save did, where
+   the press lands. Each
    takes the same calm cue, whether a click, a key or a
    redirect brought the focus: a pale wash around the place and a bar of the action
    color at its left, both drawn outside its box so nothing moves, and no outline
@@ -962,6 +963,9 @@ h1#homework:focus,
 #earlier-work:focus,
 .import-review .choice[tabindex="-1"]:focus,
 .import-review article[tabindex="-1"]:focus,
+#told:focus,
+#done:focus,
+#outcome-heading:focus,
 #too-much-state:focus {
   outline: 3px solid transparent;
   outline-offset: 4px;
@@ -1107,6 +1111,13 @@ h1#homework:focus,
 .update-heading {
   margin: 1.25rem 0 0;
   font-size: 1.05rem;
+}
+
+/* Her unsaved update on a card sits under the card's "Your work" heading, a level below it,
+   and reads that way: a heading's face at the body's size, in a lighter weight. */
+h4.update-heading {
+  font-size: 1rem;
+  font-weight: 500;
 }
 
 /* A school result's title on an assignment's details is a heading under "From the school's
@@ -2186,6 +2197,7 @@ pre.example {
 }
 
 .import-review legend,
+.import-review h3,
 .import-review .note,
 .import-review .source,
 .import-review .effect,
@@ -2208,6 +2220,55 @@ pre.example {
 
 .import-review textarea {
   min-height: 3.6rem;
+}
+
+/* A question's words sit inside its box, above its choices, and wrap there, never across its
+   border. */
+.import-review fieldset.choice > legend {
+  float: left;
+  width: 100%;
+  padding: 0;
+  margin-bottom: 0.5rem;
+}
+
+.import-review fieldset.choice > legend + * {
+  clear: both;
+}
+
+/* Each screenshot is one compact row: its thumbnail at a fixed width, then its place, how it
+   stands and its links, which go under the thumbnail where the line can't hold them. Each box
+   of a card's corrections stands apart from the one above. */
+.import-review .screenshot-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-start;
+  margin-block: 0.75rem;
+}
+
+.import-review .screenshot-list li > a {
+  flex: 0 0 4.5rem;
+}
+
+.import-review .screenshot-list li > div {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.import-review .screenshot-list img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-small);
+}
+
+.import-review .screenshot-list p {
+  margin: 0 0 0.35rem;
+}
+
+.import-review .steps > label {
+  margin-top: 0.75rem;
 }
 
 @media (max-width: 30rem) {

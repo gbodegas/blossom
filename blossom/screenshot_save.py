@@ -42,6 +42,8 @@ from blossom.school_instructions import InstructionChoice
 from blossom.screenshot_review import (
     DATE_FIELDS,
     KINDS,
+    PIECE_DATES,
+    Corrections,
     Destination,
     EarlierPick,
     ListEntry,
@@ -51,20 +53,26 @@ from blossom.screenshot_review import (
     Validation,
     answer_names,
     date_target,
+    dates_key,
     defaults,
     destination_kind,
     entries,
+    instruction_field,
+    instruction_index,
     pieces_from,
     preview,
     slot_id,
     slot_occurrence,
     subject_for,
+    subject_now,
     typed_day,
     unit_name,
     usable_correction,
     validate,
     value_json,
     value_of,
+    wordless_card,
+    wordless_field,
     written_dates,
 )
 from blossom.screenshots import (
@@ -127,7 +135,7 @@ class SavePress:
     units: tuple[str, ...]
     digests: Mapping[str, tuple[str, ...]]
     defaults_posted: Mapping[str, str]
-    corrections: Mapping[str, Mapping[str, str]]
+    corrections: Corrections
     names: Mapping[str, tuple[str, str | None]]
     """Each read image's student line, by its SHA-256: its status against her record
     (``matches``, ``first_use``, ``not_confirmed``, ``confirm_again`` or ``missing``) and its
@@ -339,38 +347,186 @@ UNCONFIRMED: Final = ("first_use", "not_confirmed", "confirm_again")
 """The statuses of a student line whose name question asks "Yes, this is her name"."""
 
 
-CORRECTABLE: Final = CONFIRMABLE - {"badge"}
-"""The fields a parent may type a correction for: class and title, dates, and an instruction.
-The due or assigned label is confirmed as read, never typed."""
+CORRECTABLE: Final = (CONFIRMABLE - {"badge"}) | frozenset(PIECE_DATES)
+"""The fields a parent may type a correction for: class and title, dates, and an instruction,
+besides each instruction text by its index (``correctable``). The due or assigned label is
+confirmed as read, never typed."""
 MANY_LINES: Final = frozenset({"instruction"})
-"""The fields whose correction is typed in a box of several lines."""
+"""The fields whose correction is typed in a box of several lines, each instruction text's
+among them."""
+
+
+def correctable(field: str) -> bool:
+    """Whether a field takes a typed correction."""
+    return field in CORRECTABLE or instruction_field(field)
 
 
 def correction_text(field: str, value: str) -> str:
     """A typed correction as it is kept: in a box of several lines, which a browser posts with
     a carriage return and a line feed, every line ending made one line feed, as a paste's are;
     otherwise as typed."""
-    if field not in MANY_LINES:
+    if field not in MANY_LINES and not instruction_field(field):
         return value
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
-"""The fields whose correction is a date."""
+def canonical(text: str) -> str:
+    """A text as a box and its value with no correction are compared: line endings made line
+    feeds, then stripped."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def read_digest(text: str) -> str:
+    """The digest a box carries beside it of its value with no correction, which a box posted
+    unchanged matches once canonical: read only to give typing back from a review that has
+    gone."""
+    return hashlib.sha256(canonical(text).encode()).hexdigest()[:16]
 
 
 def confirm_fields(piece: Piece) -> frozenset[str]:
-    """The fields of a piece the parent confirms or corrects. Where the day heading names the
-    due date, as on a due card's row, the due line and the heading both name it, so one
-    due-date field stands for both."""
+    """The fields of a piece the parent confirms or corrects. An unsure day heading names the
+    date of the card it is over: its due date over a due card, which the due line names too, so
+    one due-date field (``footer``) stands for both; its assigned date over an assigned card
+    (``heading``)."""
     fields = {f for f in piece.uncertain if f in CONFIRMABLE}
-    if "heading" in fields and date_target(piece.reading, "heading") == "due":
-        fields = (fields - {"heading"}) | {"footer"}
+    if "heading" not in fields:
+        return frozenset(fields)
+    unsure = [one for one in piece.seen if one.heading_unsure]
+    if not unsure:
+        if date_target(piece.reading, "heading") == "due":
+            fields = (fields - {"heading"}) | {"footer"}
+        return frozenset(fields)
+    fields.discard("heading")
+    if any(one.card == "due" for one in unsure):
+        fields.add("footer")
+    if any(one.card == "assigned" for one in unsure):
+        fields.add("heading")
     return frozenset(fields)
 
 
+def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
+    """Whether a correction Blossom can use answers an unsure field: the row's box for its
+    class, title or instructions, and the piece's own box for its due date (``footer``) or
+    assigned date (``heading``), an assigned date given as none among them. The instructions
+    are answered card by card: each of the piece's cards whose instructions the reader wasn't
+    sure of only by its own correction, a card that read words by a replacement or removal of
+    the text it read (one text read by two cards answers for both), a card read with none by
+    words typed in its own empty box; nothing typed for another card stands for it. Where no
+    card of the piece is marked so, an instruction correction answers where it takes effect:
+    for a text the row has, or for one of the row's cards read with no words. In saved
+    progress of shape 3, the field's own correction answers it."""
+    row = corrections.get(piece.key, {})
+    dates = corrections.get(dates_key(piece.name), {})
+    if usable_correction(field, row.get(field)):
+        return True
+    if field == "instruction":
+        own = own_wordless(piece)
+        read_words = own_unsure_texts(piece)
+        if own or read_words:
+            boxes = [f"instruction:{index}" for index in read_words]
+            return all(
+                name in row and (row[name] is None or usable_correction(name, row[name]))
+                for name in boxes
+            ) and all(usable_correction(f, row.get(f)) for f in map(wordless_field, own))
+        read = piece.as_read
+        texts = 0 if read is None else len(read.texts)
+        cards = () if read is None else read.wordless
+        for name, value in row.items():
+            index = instruction_index(name)
+            if index is not None and index < texts:
+                if value is None or usable_correction(name, value):
+                    return True
+            elif wordless_card(name) in cards and usable_correction(name, value):
+                return True
+        return False
+    if field == "footer":
+        return usable_correction("due", dates.get("due"))
+    if field == "heading":
+        given = dates.get("assigned")
+        return "assigned" in dates and (given is None or usable_correction("assigned", given))
+    return False
+
+
+def own_unsure_texts(piece: Piece) -> tuple[int, ...]:
+    """The indexes of the texts the piece's own cards read whose instructions the reader wasn't
+    sure of, each once."""
+    read = piece.as_read
+    if read is None:
+        return ()
+    return tuple(dict.fromkeys(index for card, index in read.unsure_texts if card in piece.cards))
+
+
+def own_carried(piece: Piece) -> tuple[CardPlace, ...]:
+    """The piece's own cards read with no words, the reader sure of them, whose own field
+    holds words converted from saved progress of shape 3: each offers its box, holding them."""
+    read = piece.as_read
+    return () if read is None else tuple(c for c in read.carried if c in piece.cards)
+
+
+def own_wordless(piece: Piece) -> tuple[CardPlace, ...]:
+    """The piece's own cards read with no instruction words whose instructions the reader
+    wasn't sure of: each offers one empty Instructions box, among its row's boxes, whose words
+    go to this piece."""
+    read = piece.as_read
+    return () if read is None else tuple(c for c in read.wordless if c in piece.cards)
+
+
+def fold_reads(state: "ReviewState") -> dict[tuple[str, str], str | None]:
+    """Each box the review's open cards offer, by key and field, with its value with no
+    correction as a box is compared with it: a row's class, title and each instruction text,
+    canonical, the empty box of each open card read with no words it wasn't sure of, and the
+    box of each open card read with no words that holds converted words (``own_carried``); a
+    piece's due date (none while which due date waits) and assigned date, as ISO dates or
+    None."""
+    out: dict[tuple[str, str], str | None] = {}
+    for piece in state.open:
+        read = piece.as_read
+        if read is None:
+            continue
+        out[(piece.key, "course")] = canonical(read.course)
+        out[(piece.key, "title")] = canonical(read.title)
+        for index, text in enumerate(read.texts):
+            out[(piece.key, f"instruction:{index}")] = canonical(text)
+        for card in (*own_wordless(piece), *own_carried(piece)):
+            out[(piece.key, wordless_field(card))] = ""
+        key = dates_key(piece.name)
+        out[(key, "due")] = None if read.due is None else read.due.isoformat()
+        out[(key, "assigned")] = None if read.assigned is None else read.assigned.isoformat()
+    return out
+
+
+def unreadable_dates(piece: Piece, corrections: Corrections) -> tuple[str, ...]:
+    """The piece's own dates typed as text Blossom can't read as a date: kept as typed, they
+    leave the piece open, so nothing of them is saved."""
+    dates = corrections.get(dates_key(piece.name), {})
+    return tuple(
+        field
+        for field in PIECE_DATES
+        if isinstance(dates.get(field), str) and not usable_correction(field, dates.get(field))
+    )
+
+
 def confirm_subject(key: str, field: str) -> str:
-    """A confirmation's subject: the row key and the field."""
+    """A confirmation's subject: the row key and the field, or for a date, the piece name and
+    the field (``confirm_of``)."""
     return json.dumps([key, field], separators=(",", ":"))
+
+
+PIECE_FIELDS: Final = frozenset({"footer", "heading"})
+"""The unsure fields each piece confirms or corrects on its own: its due date and its assigned
+date, which its own date boxes set. Every other field is its row's."""
+
+
+def confirm_owner(piece: Piece, field: str) -> str:
+    """Whose confirmation answers a piece's unsure field: the piece's own for a date, its row's
+    for any other field. A piece of a row that isn't split is named by its row key, so both
+    are the same there."""
+    return piece.name if field in PIECE_FIELDS else piece.key
+
+
+def confirm_of(piece: Piece, field: str) -> str:
+    """The subject of the confirmation that answers a piece's unsure field."""
+    return confirm_subject(confirm_owner(piece, field), field)
 
 
 def student_line(body: str) -> str | None:
@@ -387,10 +543,28 @@ def _confirmed_by(role: str) -> ConfirmedBy:
     return "household" if role == "household" else "parent"
 
 
-def correction_digest(fields: Mapping[str, str] | None) -> str:
-    """The digest of a row's typed corrections an answer was stored with."""
-    text = json.dumps(dict(sorted(fields.items())), separators=(",", ":")) if fields else ""
+def correction_digest(
+    fields: Mapping[str, str | None] | None, dates: Mapping[str, str | None] | None = None
+) -> str:
+    """The digest of the corrections an answer was stored with: its row's, and for a
+    destination its piece's own dates under ``date``. With none it is the digest of nothing."""
+    merged: dict[str, object] = dict(sorted((fields or {}).items()))
+    if dates:
+        merged["date"] = dict(sorted(dates.items()))
+    text = json.dumps(merged, separators=(",", ":")) if merged else ""
     return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+def piece_digest(piece: Piece, corrections: Corrections) -> str:
+    """The digest a piece's destination answer is stored with: its row's corrections and its
+    own dates, so an edit of another piece's date, or words typed for another piece's card read
+    with none, leaves it."""
+    row = {
+        field: value
+        for field, value in (corrections.get(piece.key) or {}).items()
+        if (card := wordless_card(field)) is None or card in piece.cards
+    }
+    return correction_digest(row, corrections.get(dates_key(piece.name)))
 
 
 # ------------------------------------------------------------------ the review's state
@@ -436,19 +610,40 @@ class ReviewState:
         return [p for p in self.pieces if p.name not in self.saved]
 
 
+def answer_values(
+    answers: Mapping[tuple[str, str], tuple[str, str]],
+) -> dict[tuple[str, str], str]:
+    """A draft's stored answers by kind and subject in the form ``subject_for`` gives. An answer
+    stored in that form wins over any naming the same new slot by its class and title. Answers
+    naming it by class and title answer where they agree; where two of them disagree, as a
+    review kept before its title was corrected can hold, which one is hers can't be told, so
+    the question is asked again."""
+    named: dict[tuple[str, str], str] = {}
+    by_name: dict[tuple[str, str], set[str]] = {}
+    for (kind, subject), (value, _) in answers.items():
+        slot_form = subject_now(subject)
+        if slot_form == subject:
+            named[(kind, subject)] = value
+        else:
+            by_name.setdefault((kind, slot_form), set()).add(value)
+    out = {key: next(iter(values)) for key, values in by_name.items() if len(values) == 1}
+    out.update(named)
+    return out
+
+
 def review_state(
     record: ProjectStateStore,
     tables: DraftForSave,
     *,
     now: datetime,
-    corrections: Mapping[str, Mapping[str, str]],
+    corrections: Corrections,
     defaults_posted: Mapping[str, str] | None = None,
 ) -> ReviewState:
     """The review's pieces, destinations, checks and preview from its tables and the record.
     A default the press posted, and its answers kept, still counts as the default it was. A
     piece a change of screenshots marked, or whose answer depended on a correction that wasn't
     kept, is given no default: it waits for an answer."""
-    values = {key: value for key, (value, _) in tables.answers.items()}
+    values = answer_values(tables.answers)
     split = {
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
     }
@@ -465,7 +660,7 @@ def review_state(
     for (kind, subject), (value, digest) in tables.answers.items():
         if kind != "destination" or subject in saved or subject not in by_name:
             continue
-        if digest != correction_digest(corrections.get(by_name[subject].key)):
+        if digest != piece_digest(by_name[subject], corrections):
             lost.add(subject)
             continue
         stored[subject] = value_of(value)
@@ -729,7 +924,7 @@ def _homework_transaction(
         if kind in ("split", "name"):
             return False
         if kind == "confirm":
-            return str(json.loads(subject)[0]) in whole_rows
+            return str(json.loads(subject)[0]) in done
         about = answer_names(kind, subject)
         return bool(about) and set(about) <= done
 
@@ -791,34 +986,66 @@ def _correction_counts(
     state: ReviewState,
     written: Collection[str],
     answers: Mapping[tuple[str, str], tuple[str, str]],
-    corrections: Mapping[str, Mapping[str, str]],
+    corrections: Corrections,
     readings: Sequence[StoredReading],
 ) -> tuple[int, int]:
     """The two counts of the rows whose destination this save wrote, leaving out rows another
-    save accepted: the fields corrected, and the other uncertain fields confirmed as read. A
-    correction counts when Blossom can use it and it differs from every value the screenshot
-    gave for the field, so a date chosen among the dates read is none. A field counts once."""
+    save accepted: the boxes corrected, and the uncertain fields confirmed as read and not
+    corrected. A box counts once, when Blossom can use its correction and it differs from
+    every value the screenshot gave for its field, so a date chosen among the dates read is
+    none; a removed instruction text or assigned date always counts."""
     taken = {state.by_name[name].key for name in state.saved if name in state.by_name}
     placed = cards_placed(readings)
-    fields: dict[tuple[str, str], Piece] = {}
+    rows: dict[str, Piece] = {}
+    pieces: list[Piece] = []
+    unsure: dict[tuple[str, str], Piece] = {}
     for name in sorted(written):
         piece = state.by_name[name]
         if piece.key in taken:
             continue
+        rows.setdefault(piece.key, piece)
+        pieces.append(piece)
         for field in sorted(confirm_fields(piece)):
-            fields.setdefault((piece.key, field), piece)
-    corrected = confirmed = 0
-    for (key, field), piece in fields.items():
-        typed = corrections.get(key, {}).get(field)
-        if typed is not None and usable_correction(field, typed):
-            read = _values_read(piece, field, placed)
-            value: object = typed_day(typed) if field in DATE_FIELDS else typed.strip()
-            if value not in read:
-                corrected += 1
-                continue
-        if ("confirm", confirm_subject(key, field)) in answers:
-            confirmed += 1
+            unsure.setdefault((confirm_owner(piece, field), field), piece)
+    corrected = 0
+    fixed: set[tuple[str, str]] = set()
+    boxes = [
+        (key, piece, field, value)
+        for key, piece in rows.items()
+        for field, value in sorted(corrections.get(key, {}).items())
+    ]
+    boxes += [
+        (piece.name, piece, field, value)
+        for piece in pieces
+        for field, value in sorted(corrections.get(dates_key(piece.name), {}).items())
+    ]
+    for key, piece, field, value in boxes:
+        if _corrects(piece, field, value, placed):
+            corrected += 1
+            fixed.add((key, CONFIRMED_BY.get(field, field.partition(":")[0])))
+    confirmed = sum(
+        1
+        for key, field in unsure
+        if (key, field) not in fixed and ("confirm", confirm_subject(key, field)) in answers
+    )
     return corrected, confirmed
+
+
+CONFIRMED_BY: Final = {"due": "footer", "assigned": "heading"}
+"""The unsure field a piece's own date correction answers."""
+
+
+def _corrects(
+    piece: Piece, field: str, value: str | None, placed: Mapping[CardPlace, PlacedCard]
+) -> bool:
+    """Whether one box's correction counts as corrected: a removal always; else one Blossom
+    can use whose value the screenshot gave nowhere for the field."""
+    if value is None:
+        return True
+    if not usable_correction(field, value):
+        return False
+    got: object = typed_day(value) if field in DATE_FIELDS else value.strip()
+    return got not in _values_read(piece, field, placed)
 
 
 def _values_read(
@@ -834,24 +1061,32 @@ def _values_read(
         return frozenset(days - {None})
     if target == "assigned":
         return frozenset({one.heading_day for one in piece.seen if one.card == "assigned"} - {None})
+    attribute = "instruction" if instruction_field(field) else field
     cards = [placed[c].card for c in piece.cards if c in placed]
-    return frozenset(getattr(card, field) for card in cards if card is not None)
+    return frozenset(getattr(card, attribute) for card in cards if card is not None)
 
 
 def _unconfirmed(
     state: ReviewState,
     unit: Sequence[str],
     answers: Mapping[tuple[str, str], tuple[str, str]],
-    corrections: Mapping[str, Mapping[str, str]],
+    corrections: Corrections,
 ) -> bool:
     """Whether a field the reader wasn't sure of, on a row of the unit, is neither confirmed as
-    read nor given a correction Blossom can use."""
-    return any(
-        ("confirm", confirm_subject(piece.key, field)) not in answers
-        and not usable_correction(field, corrections.get(piece.key, {}).get(field))
-        for piece in (state.by_name[name] for name in unit)
-        for field in confirm_fields(piece)
-    ) or any(not state.by_name[name].due_resolved for name in unit)
+    read nor answered by a correction Blossom can use in the fold's box, a piece's due date
+    waits for which due date Blossom uses, or a piece's date was typed as text Blossom can't
+    read."""
+    pieces = [state.by_name[name] for name in unit]
+    return (
+        any(
+            ("confirm", confirm_of(piece, field)) not in answers
+            and not fold_answers(piece, field, corrections)
+            for piece in pieces
+            for field in confirm_fields(piece)
+        )
+        or any(not piece.due_resolved for piece in pieces)
+        or any(unreadable_dates(piece, corrections) for piece in pieces)
+    )
 
 
 def _identity(

@@ -43,6 +43,7 @@ from tests.support import (
     main_of,
     names_not_led_by_their_words,
     names_without_their_words,
+    pressed_form,
     report,
     school_missing,
     scripted_graphs,
@@ -70,6 +71,7 @@ STATES = (
     "family, hand-in",
     "week, help",
     "week, help, parent",
+    "week, turned in",
 )
 HELP_STATES = ("week, help", "week, help, parent")
 """Her week's help, where no control is repeated per assignment."""
@@ -81,6 +83,9 @@ REPEATED = (
     "Keep it as it is",
     "Change",
     "Undo last update",
+    "Undo",
+    "I turned it in",
+    "Other turn-in options",
     "Update history",
     "Hand-in history",
     "Read instructions",
@@ -140,6 +145,15 @@ def pages(tmp_path: pathlib.Path) -> dict[str, str]:
         shown["details, hand-in history"] = client.get(DETAILS).text
         store_of(client).record_status_reports(ESSAY_ID, [school_missing(PLAN_DATE)])
         shown["week, to check"] = client.get(HER_PAGE).text
+        # Her last hand-in update taken back on the details leaves Still to turn in, so the
+        # card offers I turned it in again; its result shows both kinds of Undo and Change.
+        back = whole_form(client.get(DETAILS).text, HAND_IN.replace("/hand-in", "/undo-hand-in"))
+        assert (
+            client.post(HAND_IN.replace("/hand-in", "/undo-hand-in"), data=back).status_code == 303
+        )
+        action, sent = pressed_form(card_for(client.get(HER_PAGE).text, ESSAY_ID), "hand_in_head")
+        pressed = client.post(action, data=sent, headers=PAGE_HEADERS)
+        shown["week, turned in"] = client.get(pressed.headers["location"]).text
     with client_for(signed_in_household(tmp_path)) as client:
         signed_in(client, THEIRS)
         shown["week, help, parent"] = client.get(HER_PAGE).text
@@ -164,6 +178,7 @@ def test_the_states_show_the_controls_they_are_for(pages: dict[str, str]) -> Non
     assert ">Ask again<" in pages["week, help"]
     assert ">Help updates (2)<" in pages["week, help"]
     assert ">Her help requests<" in pages["week, help, parent"]
+    assert 'name="undo_hand_in"' in pages["week, turned in"]
 
 
 def test_every_control_s_name_holds_the_words_it_shows(pages: dict[str, str]) -> None:
@@ -633,3 +648,17 @@ def test_the_family_page_s_notices_break_a_long_word() -> None:
     notices = rules_naming(css, ".confidence")
 
     assert any("overflow-wrap: anywhere;" in inside for _, inside in notices)
+
+
+def test_the_two_undos_and_the_two_changes_on_a_card_have_different_names(
+    pages: dict[str, str],
+) -> None:
+    """Her work and Turning it in each have an Undo and a Change on one card. Each name starts
+    with the words it shows and says which of the two it is about."""
+    about = f"{ESSAY_TITLE}, {ESSAY.course}"
+    names = control_names(card_for(pages["week, turned in"], ESSAY_ID))
+    undos = sorted(name for words, name in names if words in ("Undo", "Undo last update"))
+    changes = sorted(name for words, name in names if words == "Change")
+
+    assert undos == [f"Undo last update on {about}", f"Undo your hand-in update for {about}"]
+    assert changes == [f"Change your hand-in update for {about}", f"Change your update on {about}"]

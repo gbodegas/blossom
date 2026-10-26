@@ -106,7 +106,13 @@ from blossom.evening import (
 )
 from blossom.grades.review import GradeValueUndecodable
 from blossom.grades.school_scores import Link, results_to_check
-from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEXT_ACTION_MAX_LENGTH
+from blossom.hand_in import (
+    HAND_IN_NOTE_MAX_LENGTH,
+    NEEDS_HAND_IN,
+    NEXT_ACTION_MAX_LENGTH,
+    UNKNOWN,
+    HandInState,
+)
 from blossom.noticing import (
     Everything,
     Noticing,
@@ -179,8 +185,11 @@ from blossom.routes.navigation import (
     segment,
     title_anchor,
     todays_plan_href,
+    turn_in_group_anchor,
     update_choice_anchor,
+    update_form_anchor,
     week_href,
+    work_group_anchor,
 )
 from blossom.routes.runs import (
     CHECK_AGAIN,
@@ -317,10 +326,13 @@ from blossom.stores.workload_signals import (
 from blossom.templating import answering, page_templates
 from blossom.to_turn_in import (
     COMPACT_ROWS,
+    ON_THE_CARD,
     Attempt,
     ListRefusal,
     ListResult,
     Receipt,
+    TurnInShown,
+    card_result_for,
     refusal_for,
     result_for,
     to_turn_in,
@@ -696,6 +708,10 @@ WEEK_UNREADABLE_WHY: Final = (
     "The record cannot be read right now, so the week, its updates and current date "
     "information are not shown. Try again in a moment."
 )
+TURN_IN_OVER: Final[tuple[HandInState | None, ...]] = (None, UNKNOWN, NEEDS_HAND_IN)
+"""What she may have said for I turned it in to be offered: nothing yet, not sure, or still
+to turn in."""
+TURN_IN_MEANS: Final = "Turning it in only updates Blossom. It does not send work to school."
 TURNING_IT_IN: Final = "turning-it-in"
 """The id of the section on an assignment's details that holds her hand-in account."""
 ASK_FOR_HELP: Final = "ask-for-help"
@@ -2362,6 +2378,8 @@ class CardState:
     marks the refusal that comes with a newer update to look at. ``well_done`` is the words
     for a Done the save has just made, on the page that answers it alone. ``undo_event`` is
     the undo an address says an Undo made: an id, which only her latest event can bear out.
+    ``kept`` marks her choice and words sent with a press about turning it in, shown again
+    unsaved in her update's form, which carries ``token``, the update her page had shown.
     """
 
     assignment_id: str
@@ -2374,6 +2392,24 @@ class CardState:
     note: str | None = None
     saved_elsewhere: bool = False
     undo_event: str | None = None
+    kept: bool = False
+    token: str = ""
+
+
+@dataclass(frozen=True)
+class TurnIn:
+    """What a press of I turned it in or its Undo adds to one assignment's card or details:
+    what it did, as the word for it and the event the save returned, or what it could not
+    do. The word and the event are good for nothing until the page's reading bears them
+    out."""
+
+    assignment_id: str
+    said: str | None = None
+    event_id: str | None = None
+    problem: str | None = None
+    direct: bool = False
+    """Whether the page answers the press itself, with no redirect between, so the line that
+    says what it did takes the focus as the page arrives."""
 
 
 @dataclass(frozen=True)
@@ -2628,6 +2664,34 @@ def as_read_by[Shown: (CardState, HandInCard)](shown: Shown | None, viewer: str)
     return replace(shown, said=None)
 
 
+def turn_in_offered(hand_in: HandInView) -> bool:
+    """Whether a card offers I turned it in over what she has said: nothing yet, not sure,
+    or still to turn in, on a record that can be read."""
+    return not hand_in.unavailable and hand_in.state in TURN_IN_OVER
+
+
+def turned_in_on_the_card(
+    turn_in: TurnIn | None, everything: Everything, viewer: str, on_the_page: set[str]
+) -> TurnInShown | None:
+    """What a turn-in press or its Undo did, as the page's one reading bears it out, for the
+    card it names. A result is hers: a parent who opens such an address reads what stands
+    and no result. A result the reading does not bear out says nothing."""
+    if turn_in is None:
+        return None
+    if turn_in.problem is not None:
+        return TurnInShown(turn_in.assignment_id, problem=turn_in.problem)
+    if viewer == "parent" or turn_in.assignment_id not in on_the_page:
+        return None
+    name = turn_in.assignment_id
+    return card_result_for(
+        name,
+        everything.hand_ins.get(name),
+        unavailable=name in everything.hand_ins_unavailable,
+        said=turn_in.said or "",
+        event_id=turn_in.event_id or "",
+    )
+
+
 def student_page(
     request: Request,
     state: ApplicationState,
@@ -2652,6 +2716,7 @@ def student_page(
     signal_removed: bool = False,
     plan_answer: PlanAnswer | None = None,
     signal_answer: SignalAnswer | None = None,
+    turn_in: TurnIn | None = None,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
@@ -2689,9 +2754,14 @@ def student_page(
        as the answer is built, takes the focus in place of the line. ``signal_answer`` is a
        Too much right now press that recorded nothing, said the same way, with ``PRESS_IT``
        after it when this page shows that button. Every page carries a fresh Too much right
-       now form, which needs no read.
+       now form, which needs no read. ``turn_in`` is what a press of I turned it in or its
+       Undo did on one card, checked against the page's one reading and said on that card,
+       or what it could not do, said there and at the top; it names that card the way
+       ``show`` does when no other card is named.
     """
     viewer = viewer_of(request)
+    if turn_in is not None and card is None:
+        card = CardState(turn_in.assignment_id)
     # An address that only brings a card into view, as a way back from its details does.
     only_shown = card is not None and card == CardState(card.assignment_id)
     card = as_read_by(card, viewer)
@@ -2708,6 +2778,8 @@ def student_page(
     # The assignment an address says a press was about is named to the reading too, so a
     # result is checked against that assignment's own events even when it is off the record.
     about = () if turning_in is None or turning_in.asked is None else (turning_in.asked.about,)
+    if turn_in is not None:
+        about = (*about, turn_in.assignment_id)
     # Her homework notes are read beside the record, in the same snapshot, and are no part
     # of it: nothing a plan, a digest, or a brief is made from ever holds one. Her requests
     # for help come in one statement, and the notes they are about in one more, however
@@ -2844,13 +2916,20 @@ def student_page(
         card = said_after_undo(card, item)
     held_week = held_from_its_group(view.assignments, shown_done)
     held_later = held_from_its_group(view.assigned_this_week, shown_done)
+    on_the_page = {item.assignment_id for item in listed}
+    turn_in_card = turned_in_on_the_card(turn_in, everything, viewer, on_the_page)
+    if turn_in_card is not None and turn_in_card.problem is not None and problem is None:
+        problem = turn_in_card.problem
     by_a_card = card is not None and card.problem is not None and problem is None
     # A card's problem is said on the card only when the card is on the page: a form made
     # for an id that is not on record is refused before any lookup, and has no card.
-    about_a_card = (
-        by_a_card
-        and card is not None
-        and card.assignment_id in {item.assignment_id for item in listed}
+    about_a_card = by_a_card and card is not None and card.assignment_id in on_the_page
+    turn_in_target = (
+        turn_in_card.assignment_id
+        if turn_in_card is not None
+        and turn_in_card.problem is not None
+        and turn_in_card.assignment_id in on_the_page
+        else None
     )
     return templates.TemplateResponse(
         request,
@@ -2898,7 +2977,13 @@ def student_page(
             and card is not None
             and card.assignment_id not in {item.assignment_id for item in listed},
             "problem": card.problem if card is not None and by_a_card else problem,
-            "problem_target": card.assignment_id if card is not None and about_a_card else None,
+            "problem_target": card.assignment_id
+            if card is not None and about_a_card
+            else turn_in_target,
+            "turn_in": turn_in_card,
+            "turn_in_direct": turn_in is not None and turn_in.direct,
+            "turn_in_means": viewer != "parent"
+            and any(turn_in_offered(item.hand_in) for item in listed),
             "pressed": pressed,
             "problem_opening": problem_opening,
             "plan_failure": plan_failure,
@@ -2978,6 +3063,14 @@ def student_page(
     )
 
 
+def turn_in_asked(said: str | None, about: str | None, event_id: str | None) -> TurnIn | None:
+    """What an address says a press of I turned it in or its Undo did on a card: one of the
+    three words, the card, and the event, held to the length of any id the store makes."""
+    if said not in ON_THE_CARD or not about or not event_id or len(event_id) > TOKEN_MAX_LENGTH:
+        return None
+    return TurnIn(about, said=said, event_id=event_id)
+
+
 def card_shown(
     saved: str | None,
     same: str | None,
@@ -3034,6 +3127,13 @@ def due_this_week(
     ] = None,
     about: Annotated[str | None, Query(description="the assignment it was about")] = None,
     hand_in_event: Annotated[
+        str | None, Query(description="the event that press made; looked up, never trusted")
+    ] = None,
+    turn_in_said: Annotated[
+        str | None, Query(description="what I turned it in or its Undo on a card did; a note")
+    ] = None,
+    turn_in_about: Annotated[str | None, Query(description="the card it was about")] = None,
+    turn_in_event: Annotated[
         str | None, Query(description="the event that press made; looked up, never trusted")
     ] = None,
     asked: Annotated[
@@ -3110,6 +3210,7 @@ def due_this_week(
     kept = InPlace.read(left)
     removed = left == SIGNAL_REMOVED
     card = met(card_shown(saved, same, undone, change, show, undo_event), left)
+    turn_in = turn_in_asked(turn_in_said, turn_in_about, turn_in_event)
     try:
         today = state.clock.today()
         signed = (
@@ -3145,6 +3246,7 @@ def due_this_week(
             run_notice=run_notice(state, run, PAGE, parent=parent, today=today),
             run_asked=run,
             signal_removed=removed,
+            turn_in=turn_in,
         )
     except sqlite3.Error as error:
         again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
@@ -3246,6 +3348,7 @@ def week_page(
     run_notice: RunNotice | None = None,
     run_asked: str | None = None,
     signal_removed: bool = False,
+    turn_in: TurnIn | None = None,
 ) -> HTMLResponse:
     """Her week as an address asks for it, with the cards a visit keeps in place, what a
     choice in Earlier homework to check did, what today's panel says about a planning run,
@@ -3267,6 +3370,7 @@ def week_page(
             run_notice=run_notice,
             run_asked=run_asked,
             signal_removed=signal_removed,
+            turn_in=turn_in,
         )
     try:
         chosen = date.fromisoformat(week.strip())
@@ -3304,6 +3408,7 @@ def week_page(
         today=today,
         run_notice=run_notice,
         run_asked=run_asked,
+        turn_in=turn_in,
     )
 
 
@@ -3408,6 +3513,70 @@ class ReportContext:
     history_apart: bool = False
     """Whether the page shows the update history itself, below the longer evidence,
     instead of under the component."""
+
+
+@dataclass(frozen=True)
+class WorkForm:
+    """How her update shows on one card or the details for this response: its whole form
+    open for a change, its one-press buttons, its whole form open with no update standing,
+    and the id of the form when it has a note she can type in, which the buttons about
+    turning it in join so that a press of one sends her words too."""
+
+    editing: bool
+    quick: bool
+    form_open: bool
+    form_id: str | None
+    as_it_stands: bool = False
+    """Whether the choice and words sent with a press read as the update that stands: the
+    same choice, the same note once kept as the store keeps it, and the update the page had
+    shown. They are then not headed as unsaved."""
+
+
+def work_form(
+    assignment: StudentAssignmentView, card: CardState | None, ctx: ReportContext
+) -> WorkForm:
+    """The update component's shape for one assignment. Her choice and words sent with a
+    press about turning it in come back in the folded one-press form while it is the form
+    the card offers, and in the whole form otherwise."""
+    here = card is not None and card.assignment_id == assignment.assignment_id
+    standing = assignment.update_status is not None
+    unreadable = assignment.updates_unavailable
+    kept = here and card is not None and card.kept
+    editing = (
+        here
+        and card is not None
+        and (card.change or (kept and (standing or card.status is not None or ctx.place != "week")))
+    )
+    quick = ctx.place == "week" and ctx.can_update and not unreadable and not editing
+    form_open = ctx.can_update and not unreadable and (editing or not (standing or quick))
+    typed = form_open or (quick and not standing)
+    as_it_stands = (
+        standing
+        and card is not None
+        and card.status == assignment.update_status
+        and normalize_note(card.note) == normalize_note(assignment.update_note)
+        and card.token == (assignment.update_head_id or "")
+    )
+    return WorkForm(
+        editing=editing,
+        quick=quick,
+        form_open=form_open,
+        form_id=update_form_anchor(assignment.assignment_id) if typed else None,
+        as_it_stands=as_it_stands,
+    )
+
+
+def turn_in_actions(assignment_id: str) -> tuple[str, str]:
+    """The two routes of I turned it in and its Undo, from a card or the details."""
+    base = f"/student/actions/assignments/{segment(assignment_id)}"
+    return f"{base}/turned-in", f"{base}/undo-turned-in"
+
+
+templates.env.globals["work_form"] = work_form
+templates.env.globals["turn_in_actions"] = turn_in_actions
+templates.env.globals["work_group_anchor"] = work_group_anchor
+templates.env.globals["turn_in_group_anchor"] = turn_in_group_anchor
+templates.env.globals["turn_in_means_line"] = TURN_IN_MEANS
 
 
 def hand_in_actions(assignment_id: str) -> tuple[str, str]:
@@ -3540,6 +3709,7 @@ def gone_page(
     hand_in: HandInCard | None = None,
     today: date | None = None,
     in_place: InPlace | None = None,
+    unsaved_update: bool = False,
 ) -> HTMLResponse:
     """The small page for an assignment that is not on record: said plainly, 404, with a
     safe way back and, when a form brought her here, what she chose and wrote, so it can
@@ -3549,7 +3719,9 @@ def gone_page(
     The explanation takes the focus when a form's press brought her here,
     whatever the form carried, and never on a look by link, whatever the
     address carries. When the plan the way back looks up can't be read, the
-    way back is made from the address alone and nothing more is read."""
+    way back is made from the address alone and nothing more is read. ``unsaved_update``
+    heads her choice and words as her unsaved update, as a press about turning it in
+    sends them."""
     try:
         link = way_back(
             state,
@@ -3569,6 +3741,7 @@ def gone_page(
             "pressed": request.method == "POST",
             "card": card,
             "hand_in_card": hand_in,
+            "unsaved_update": unsaved_update,
             "back": link,
             "marks": state.settings.page_marks,
         },
@@ -3597,6 +3770,7 @@ def detail_page(
     hand_in: HandInCard | None = None,
     problem: str | None = None,
     status_code: int = status.HTTP_200_OK,
+    turn_in: TurnIn | None = None,
 ) -> HTMLResponse:
     """One assignment's current record, with her update and the way back.
 
@@ -3607,7 +3781,9 @@ def detail_page(
     in one hold of the store, and whether it is in the planning window is
     decided as her week decides it. Everything shown is the record as it
     stands, whatever plan or page the reader came from; the way back is data
-    the reader's link carried, checked, and never chooses the assignment.
+    the reader's link carried, checked, and never chooses the assignment. ``turn_in`` is what
+    a press of I turned it in or its Undo did here, said in Turning it in only when this
+    reading bears it out, and to her alone.
     """
     viewer = viewer_of(request)
     card, hand_in = as_read_by(card, viewer), as_read_by(hand_in, viewer)
@@ -3662,6 +3838,17 @@ def detail_page(
             request, state, back, assignment_id, card=card, hand_in=hand_in, today=today
         )
     turning_in = HandInView.of(turned_in.readable.get(assignment_id))
+    turn_in_shown = (
+        None
+        if turn_in is None or turn_in.said is None or viewer == "parent"
+        else card_result_for(
+            assignment_id,
+            turned_in.readable.get(assignment_id),
+            unavailable=assignment_id in turned_in.unreadable,
+            said=turn_in.said,
+            event_id=turn_in.event_id or "",
+        )
+    )
     noticed = notice_due_date(expect_due_date(item), records)
     view = assignment_view(
         item,
@@ -3751,6 +3938,8 @@ def detail_page(
             "back": link,
             "card": card,
             "hand_in_card": hand_in,
+            "turn_in": turn_in_shown,
+            "turn_in_direct": turn_in is not None and turn_in.direct,
             "hand_in_actions": hand_in_actions(assignment_id),
             "hand_in_fields": [(name, value) for name, value in back.fields().items() if value],
             "hand_in_links": {
@@ -3796,6 +3985,12 @@ def assignment_details(
     hand_in: Annotated[
         str | None, Query(description="change to open the hand-in form, or what a save did")
     ] = None,
+    turn_in_said: Annotated[
+        str | None, Query(description="what I turned it in or its Undo here did; a note")
+    ] = None,
+    turn_in_event: Annotated[
+        str | None, Query(description="the event that press made; looked up, never trusted")
+    ] = None,
 ) -> HTMLResponse:
     """One assignment's details, for her, a parent, or whoever is there with the sign-in off.
 
@@ -3824,13 +4019,17 @@ def assignment_details(
     elif change == "1":
         card = CardState(assignment_id, change=True)
     turning_in = None
-    if hand_in in HAND_IN_CONFIRMATIONS:
+    # A turn-in result is read first; the hand-in form's words are read when there is none.
+    turn_in = turn_in_asked(turn_in_said, assignment_id, turn_in_event)
+    if turn_in is None and hand_in in HAND_IN_CONFIRMATIONS:
         turning_in = HandInCard(said=HAND_IN_CONFIRMATIONS[hand_in])
-    elif hand_in in ("change", "remember"):
+    elif turn_in is None and hand_in in ("change", "remember"):
         # A link that says ``remember`` opens the same form, so a saved address still lands.
         turning_in = HandInCard(change=True)
     try:
-        page = detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
+        page = detail_page(
+            request, state, assignment_id, back, card=card, hand_in=turning_in, turn_in=turn_in
+        )
     except sqlite3.Error as error:
         failed = unavailable_page(
             request,
@@ -4019,6 +4218,9 @@ class NotShown:
     card: CardState | None = None
     hand_in: HandInCard | None = None
     opening: tuple[str, str] | None = None
+    unsaved_update: bool = False
+    """Whether her choice and words are headed as her unsaved update, as a press about
+    turning it in sends them."""
 
 
 def shown_once(
@@ -4059,6 +4261,7 @@ def not_shown(
             "note_problem": fallback.said,
             "page_line": fallback.line,
             "opening": fallback.opening,
+            "unsaved_update": fallback.unsaved_update,
             "ways_back": fallback.ways_back,
             "marks": state.settings.page_marks,
         },

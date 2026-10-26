@@ -184,7 +184,7 @@ def turned_in_on_her_week(client: TestClient) -> Left:
     return Left(
         turned_in_on_the_list(client, HER_PAGE),
         TURNED_IN_FROM_THE_LIST,
-        "Reported turned in.",
+        "She reported it turned in on August 19.",
         ESSAY_ID,
     )
 

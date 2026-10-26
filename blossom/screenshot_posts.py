@@ -2,10 +2,13 @@
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """Reading a screenshot review's posts against what their page signed.
 
-The review form carries its answers, typed corrections and ticked groups, and signs its hidden
-fields, among them every question it asked with the values it offered. An offer, or a row
-found under another name, is a whole change of its own: a form whose every field is signed.
-A post that doesn't match what its page signed is refused whole, so nothing of it is kept.
+The review form carries its answers, its boxes of corrections and ticked groups, and signs its
+hidden fields, among them every question and box it offered with the values it offered. A box
+is a correction exactly when it differs from its value with no correction, so a page posted
+untouched corrects nothing and an earlier correction left in its box is posted again. An
+offer, or a row found under another name, is a whole change of its own: a form whose every
+field is signed. A post that doesn't match what its page signed is refused whole, so nothing
+of it is kept.
 """
 
 import dataclasses
@@ -15,18 +18,36 @@ from typing import Final, NamedTuple
 
 from blossom.screenshot_page import page_check, same_signature
 from blossom.screenshot_review import (
-    CORRECTION_MOST,
-    DATE_FIELDS,
+    OLD_DATES,
+    PIECE_DATES,
+    ROW_FIELDS,
+    Corrections,
+    Piece,
     answer_names,
+    date_target,
+    dates_key,
     dest_kind,
+    field_most,
+    instruction_index,
+    typed_day,
+    usable_correction,
     value_json,
     value_of,
+    wordless_card,
+    wordless_field,
 )
 from blossom.screenshot_save import (
-    CORRECTABLE,
     ReviewState,
+    canonical,
+    confirm_fields,
+    confirm_of,
+    correctable,
     correction_digest,
     correction_text,
+    fold_reads,
+    own_wordless,
+    piece_digest,
+    read_digest,
 )
 from blossom.stores.import_drafts import AnswerToKeep
 
@@ -64,7 +85,7 @@ class ReviewPost:
     acceptance: str
     progress_revision: int
     answers: tuple[AnswerToKeep, ...]
-    corrections: dict[str, dict[str, str]]
+    corrections: dict[str, dict[str, str | None]]
     units: tuple[str, ...]
     digests: dict[str, tuple[str, ...]]
     defaults: dict[str, str]
@@ -75,8 +96,19 @@ class ReviewPost:
     ticked: bool = True
     """Whether the press posted the page's ticks; an offer or a found row posts none."""
     too_long: tuple[tuple[str, str], ...] = ()
-    """Each correction, by row key and field, longer than its field takes: the press is refused
+    """Each correction, by key and field, longer than its field takes: the press is refused
     whole, and the correction goes back in its box as typed."""
+    needed: tuple[tuple[str, str], ...] = ()
+    """Each class, title or settled due date, by key and field, whose box was cleared: the press
+    is refused whole, and the box goes back empty."""
+    both: tuple[str, ...] = ()
+    """Each piece's dates key whose assigned date was typed beside "No assigned date was
+    given": the press is refused whole, and both go back as posted."""
+
+    @property
+    def refused(self) -> bool:
+        """Whether the press is refused whole for a box it can't take as posted."""
+        return bool(self.too_long or self.needed or self.both)
 
 
 WITHDRAWABLE: Final = ("answer:confirm:", "answer:instructions:", "answer:name:missing")
@@ -91,7 +123,7 @@ def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
     if kind in ("split", "kind") and not subject.startswith("["):
         return subject
     if kind == "confirm":
-        return str(json.loads(subject)[0])
+        return str(json.loads(subject)[0]).split("|")[0]
     names = answer_names(kind, subject)
     piece = state.by_name.get(names[0]) if names else None
     return None if piece is None else piece.key
@@ -100,8 +132,8 @@ def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
 def _names_of(state: ReviewState, kind: str, subject: str) -> tuple[str, ...]:
     """The piece names an answer is about, so one for pieces another save took is dropped."""
     if kind == "confirm":
-        key = str(json.loads(subject)[0])
-        return tuple(p.name for p in state.pieces if p.key == key)
+        owner = str(json.loads(subject)[0])
+        return tuple(p.name for p in state.pieces if owner in (p.key, p.name))
     if kind == "split" or (kind == "kind" and not subject.startswith("[")):
         return tuple(p.name for p in state.pieces if p.key == subject)
     return tuple(answer_names(kind, subject))
@@ -112,10 +144,14 @@ def _answer(
     kind: str,
     subject: str,
     value: str,
-    corrections: Mapping[str, Mapping[str, str]],
+    corrections: Corrections,
 ) -> AnswerToKeep:
-    row = _row_of(state, kind, subject)
-    digest = correction_digest(None if row is None else corrections.get(row))
+    piece = state.by_name.get(subject) if kind == "destination" else None
+    if piece is not None:
+        digest = piece_digest(piece, corrections)
+    else:
+        row = _row_of(state, kind, subject)
+        digest = correction_digest(None if row is None else corrections.get(row))
     return AnswerToKeep(kind, subject, value, digest, _names_of(state, kind, subject))
 
 
@@ -143,7 +179,7 @@ def read_change(
     items: Sequence[tuple[str, str]],
     page_key: bytes,
     state: ReviewState,
-    corrections: Mapping[str, Mapping[str, str]],
+    corrections: Corrections,
 ) -> ReviewPost:
     """An offer's or a found row's post: every field signed, destination answers alone, kept
     as a press of Keep these answers, with the corrections they were given with."""
@@ -183,12 +219,13 @@ def read_review(
     items: Sequence[tuple[str, str]], page_key: bytes, state: ReviewState
 ) -> ReviewPost:
     """The review form's post: its signed fields checked, each answer one the page asked with a
-    value it offered, each correction one for a field it asked to confirm, each ticked group
-    one it showed. A confirmation or instruction question the page asked and the press left
-    blank is withdrawn. A date Blossom couldn't read, carried back beside its empty date box,
-    stays the box's correction until a date is chosen there. A correction longer than its
-    field takes is named in ``too_long`` and kept as typed, never cut, for the page to give
-    back."""
+    value it offered, each box one the page offered, each ticked group one it showed. A
+    confirmation or instruction question the page asked and the press left blank is
+    withdrawn. Each box is compared with its value with no correction and kept as a
+    correction only where it differs (``box_corrections``). A date Blossom couldn't read,
+    carried back beside its empty date box, stays the box's correction until a date is chosen
+    there. A correction longer than its field takes is named in ``too_long`` and kept as typed,
+    never cut, for the page to give back."""
     signed = [(n, v) for n, v in items if n in SIGNED or n.startswith("digest:") or n == "check"]
     hidden = _single(signed)
     check = hidden.pop("check", "")
@@ -213,46 +250,31 @@ def read_review(
     units = tuple(v for n, v in rest if n == "unit")
     if len(set(units)) != len(units) or any(u not in digests for u in units):
         raise PostRefused
-    corrections: dict[str, dict[str, str]] = {}
+    boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
-    carried_long: dict[tuple[str, str], str] = {}
-    too_long: set[tuple[str, str]] = set()
+    none_given: set[str] = set()
     chosen: dict[str, list[str]] = {}
     for name, value in rest:
-        if name in ("press", "unit"):
+        if name in ("press", "unit") or name.startswith(READ_PREFIX):
             continue
-        if name.startswith("refused:"):
-            subject = name.removeprefix("refused:")
-            if f"answer:confirm:{subject}" not in offered:
+        if name.startswith(BOX_PREFIXES):
+            prefix = next(p for p in BOX_PREFIXES if name.startswith(p))
+            signs = f"correct:{name.removeprefix(prefix)}" if prefix == "refused:" else name
+            if signs not in offered:
                 raise PostRefused
-            try:
-                key, field = (str(part) for part in json.loads(subject))
-            except (ValueError, TypeError) as error:
-                raise PostRefused from error
-            if field not in DATE_FIELDS or (key, field) in carried | carried_long:
-                raise PostRefused
-            if len(value) > CORRECTION_MOST[field]:
-                carried_long[(key, field)] = value
-                continue
-            carried[(key, field)] = value.strip()
-            continue
-        if name.startswith("correct:"):
-            subject = name.removeprefix("correct:")
-            if f"answer:confirm:{subject}" not in offered:
-                raise PostRefused
-            try:
-                key, field = (str(part) for part in json.loads(subject))
-            except (ValueError, TypeError) as error:
-                raise PostRefused from error
-            if field not in CORRECTABLE:
-                raise PostRefused
-            text = correction_text(field, value)
-            if len(text) > CORRECTION_MOST[field]:
-                too_long.add((key, field))
-                corrections.setdefault(key, {})[field] = text
-                continue
-            if text.strip():
-                corrections.setdefault(key, {})[field] = text.strip()
+            key, field = _box(name.removeprefix(prefix))
+            if prefix == "none:":
+                if field != "assigned" or value != "none" or key in none_given:
+                    raise PostRefused
+                none_given.add(key)
+            elif prefix == "refused:":
+                if field not in PIECE_DATES or (key, field) in carried:
+                    raise PostRefused
+                carried[(key, field)] = value
+            else:
+                if (key, field) in boxes:
+                    raise PostRefused
+                boxes[(key, field)] = value
             continue
         kind, _ = _field(name)
         if name not in offered or value not in offered[name]:
@@ -260,13 +282,11 @@ def read_review(
         if name in chosen and kind != "instructions":
             raise PostRefused
         chosen.setdefault(name, []).append(value)
-    for (key, field), text in carried.items():
-        if text and not corrections.get(key, {}).get(field):
-            corrections.setdefault(key, {})[field] = text
-    for (key, field), text in carried_long.items():
-        if not corrections.get(key, {}).get(field):
-            too_long.add((key, field))
-            corrections.setdefault(key, {})[field] = text
+    for name in none_confirms(state, none_given):
+        if name in offered and "as_read" in offered[name]:
+            chosen.setdefault(name, ["as_read"])
+    folded = box_corrections(state, boxes, carried, none_given)
+    corrections = folded.corrections
     answers = []
     for name, values in chosen.items():
         kind, subject = _field(name)
@@ -298,29 +318,160 @@ def read_review(
         digests,
         defaults,
         withdrawn,
-        too_long=tuple(sorted(too_long)),
+        too_long=folded.too_long,
+        needed=folded.needed,
+        both=folded.both,
     )
 
 
+BOX_PREFIXES: Final = ("correct:", "refused:", "none:")
+"""The fields of the fold, by prefix: a box, a date Blossom couldn't read carried back beside
+its box, and "No assigned date was given"."""
+READ_PREFIX: Final = "read:"
+"""The unsigned field beside each box that tells a box posted unchanged, read only when a
+review that has gone gives its typing back (``typed_back``)."""
+
+
+def _box(subject: str) -> tuple[str, str]:
+    """A box's key and field, from its subject: a row key with ``course``, ``title`` or an
+    instruction text's field, or a piece's dates key with ``due`` or ``assigned``."""
+    try:
+        key, field = (str(part) for part in json.loads(subject))
+    except (ValueError, TypeError) as error:
+        raise PostRefused from error
+    if not correctable(field) or field in OLD_DATES or field == "instruction":
+        raise PostRefused
+    return key, field
+
+
+class Folded(NamedTuple):
+    """A post's boxes as corrections, and the boxes that refuse the press whole."""
+
+    corrections: dict[str, dict[str, str | None]]
+    too_long: tuple[tuple[str, str], ...]
+    needed: tuple[tuple[str, str], ...]
+    both: tuple[str, ...]
+
+
+def box_corrections(
+    state: ReviewState,
+    boxes: Mapping[tuple[str, str], str],
+    carried: Mapping[tuple[str, str], str],
+    none_given: Iterable[str],
+) -> Folded:
+    """Each box kept as a correction exactly where it differs from its value with no
+    correction, both stripped with line endings made line feeds and dates read as dates; the
+    length check runs on corrections only. A cleared class, title or settled due date is
+    refused; a cleared instruction text is its removal (``None``); a cleared assigned date is
+    the date as read. "No assigned date was given" is none (``None``) where one was read, its
+    box left empty or holding the date as read; beside any other date typed in the box it is
+    refused. Ticked, it wins over text Blossom couldn't read carried beside an empty box, which
+    is dropped; unticked, that text stays the box's correction until a date is chosen. A box the
+    page signed for a card another press has since saved, or that a change of screenshots took
+    away, is passed over, as the answers about it are."""
+    reads = fold_reads(state)
+    nones = set(none_given)
+    out: dict[str, dict[str, str | None]] = {}
+    too_long: set[tuple[str, str]] = set()
+    needed: set[tuple[str, str]] = set()
+    both: set[str] = set()
+
+    def keep(key: str, field: str, value: str | None) -> None:
+        out.setdefault(key, {})[field] = value
+
+    nones = {key for key in nones if (key, "assigned") in reads}
+    for (key, field), value in boxes.items():
+        if (key, field) not in reads:
+            continue
+        read = reads[(key, field)]
+        if field in PIECE_DATES:
+            if field == "assigned" and key in nones:
+                shown = value.strip()
+                day = typed_day(shown) if shown else None
+                if shown and (day is None or day.isoformat() != read):
+                    both.add(key)
+                    keep(key, field, shown)
+                elif read is not None:
+                    keep(key, field, None)
+                continue
+            typed = value.strip() or carried.get((key, field), "").strip()
+            day = typed_day(typed) if typed else None
+            if not typed:
+                if field == "due" and read is not None:
+                    needed.add((key, field))
+                    keep(key, field, "")
+            elif len(typed) > field_most(field):
+                too_long.add((key, field))
+                keep(key, field, typed)
+            elif day is None:
+                keep(key, field, typed)
+            elif day.isoformat() != read:
+                keep(key, field, day.isoformat())
+            continue
+        text = correction_text(field, value)
+        if canonical(text) == read:
+            continue
+        if not canonical(text):
+            if instruction_index(field) is not None:
+                keep(key, field, None)
+            else:
+                needed.add((key, field))
+                keep(key, field, "")
+        elif len(text) > field_most(field):
+            too_long.add((key, field))
+            keep(key, field, text)
+        else:
+            keep(key, field, canonical(text))
+    for key in nones:
+        if (key, "assigned") not in boxes and reads[(key, "assigned")] is not None:
+            keep(key, "assigned", None)
+    return Folded(out, tuple(sorted(too_long)), tuple(sorted(needed)), tuple(sorted(both)))
+
+
+def none_confirms(state: ReviewState, none_given: Iterable[str]) -> list[str]:
+    """The confirmations that "No assigned date was given" gives: on a piece that read no
+    assigned date under a day heading the reader wasn't sure of, ticking it says the date as
+    read, none, is right, so it answers that piece's question as "Confirm as read" does, and,
+    being the date as read, writes no correction."""
+    reads = fold_reads(state)
+    out = []
+    for key in none_given:
+        piece = state.by_name.get(key.removeprefix("date:"))
+        if piece is None or (key, "assigned") not in reads or reads[(key, "assigned")] is not None:
+            continue
+        if "heading" in confirm_fields(piece):
+            out.append(f"answer:confirm:{confirm_of(piece, 'heading')}")
+    return out
+
+
 def typed_back(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
-    """Each correction a post typed, by field, in the order it was posted: a box's text, or for
+    """Each correction a post typed, by field, in the order it was posted: a box's text that
+    differs from its value with no correction as the ``read:`` field beside it names it, or for
     a date box posted empty, the date Blossom couldn't read that was carried beside it. Read
     from the post alone, never from the review, to give back as typed when the review can't
     take it; a name that doesn't name a correction is passed over."""
     found: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
+    unchanged = {
+        name.removeprefix(READ_PREFIX): value
+        for name, value in items
+        if name.startswith(READ_PREFIX)
+    }
     for name, value in items:
         prefix = next((p for p in ("correct:", "refused:") if name.startswith(p)), None)
         if prefix is None:
             continue
+        named = name.removeprefix(prefix)
         try:
-            key, field = (str(part) for part in json.loads(name.removeprefix(prefix)))
+            key, field = (str(part) for part in json.loads(named))
         except (ValueError, TypeError):
             continue
-        if field not in CORRECTABLE:
+        if not correctable(field):
             continue
         text = correction_text(field, value)
         if prefix == "correct:":
+            if unchanged.get(named) == read_digest(text):
+                continue
             found.setdefault((key, field), text)
         else:
             carried.setdefault((key, field), text)
@@ -333,33 +484,66 @@ def typed_back(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
 # ------------------------------------------------------------------ saved progress
 
 PROGRESS_KEYS: Final = frozenset({"v", "corrected", "selected"})
-PROGRESS_SHAPE: Final = 3
+PROGRESS_SHAPE: Final = 4
+"""The shape saved progress is written in: a row's corrections under its key, and each
+piece's own dates under ``date:{piece name}``, a removal as null."""
+OLD_SHAPE: Final = 3
+"""Saved progress of shape 3: a row's corrections alone, its dates as its due line and day
+heading. It reads with ``date_target``'s meaning until a press writes shape 4."""
+OLD_FIELDS: Final = frozenset({"course", "title", "instruction", *OLD_DATES})
+"""The fields saved progress of shape 3 holds."""
 
 
 class SavedProgress(NamedTuple):
-    """What Save review for later keeps: the typed corrections by row key and field, and the
-    row keys of the groups ticked. Nothing else, and never an answer."""
+    """What Save review for later keeps: the typed corrections by key and field, and the row
+    keys of the groups ticked, in the shape they were written in. Nothing else, and never an
+    answer."""
 
-    corrected: dict[str, dict[str, str]]
+    corrected: dict[str, dict[str, str | None]]
     selected: frozenset[str]
+    shape: int = PROGRESS_SHAPE
 
 
-def progress_text(corrected: Mapping[str, Mapping[str, str]], selected: Iterable[str]) -> str:
+def progress_text(corrected: Corrections, selected: Iterable[str]) -> str:
     """Saved progress in its one shape."""
     return json.dumps(
         {
             "v": PROGRESS_SHAPE,
-            "corrected": {key: dict(fields) for key, fields in sorted(corrected.items())},
+            "corrected": {
+                key: dict(sorted(fields.items())) for key, fields in sorted(corrected.items())
+            },
             "selected": sorted(set(selected)),
         },
         separators=(",", ":"),
     )
 
 
+def _kept(shape: int, key: str, field: str, value: object) -> bool:
+    """Whether one entry of saved progress is one its shape holds: text within its field's
+    limit that isn't blank; in the new shape, under a piece's dates key its due or assigned
+    date, under a row key its class, title, an instruction text or the words of a card read
+    with none, a removal (null) only for an instruction text or an assigned date."""
+    if shape == OLD_SHAPE:
+        if field not in OLD_FIELDS:
+            return False
+    elif key.startswith("date:"):
+        if field not in PIECE_DATES:
+            return False
+    elif (
+        field not in ROW_FIELDS
+        and instruction_index(field) is None
+        and wordless_card(field) is None
+    ):
+        return False
+    if value is None:
+        return shape != OLD_SHAPE and (field == "assigned" or instruction_index(field) is not None)
+    return isinstance(value, str) and bool(value.strip()) and len(value) <= field_most(field)
+
+
 def progress_read(text: str | None) -> SavedProgress | None:
-    """Saved progress, read closed-world: exactly its three keys, shape 3, corrections only to
-    fields a page asks to confirm and within each field's limit, and row keys as text. Any other
-    shape reads as no progress."""
+    """Saved progress, read closed-world: exactly its three keys, shape 4 or shape 3,
+    each entry one its shape holds (``_kept``), and row keys as text. Any other shape reads as
+    no progress."""
     if text is None:
         return None
     try:
@@ -368,19 +552,80 @@ def progress_read(text: str | None) -> SavedProgress | None:
         return None
     if not isinstance(found, dict) or set(found) != PROGRESS_KEYS:
         return None
-    corrected, selected = found["corrected"], found["selected"]
-    if found["v"] != PROGRESS_SHAPE or not isinstance(corrected, dict):
+    corrected, selected, shape = found["corrected"], found["selected"], found["v"]
+    if shape not in (OLD_SHAPE, PROGRESS_SHAPE) or isinstance(shape, bool):
+        return None
+    if not isinstance(corrected, dict):
         return None
     if not isinstance(selected, list) or not all(isinstance(key, str) for key in selected):
         return None
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, str | None]] = {}
     for key, fields in corrected.items():
         if not isinstance(fields, dict):
             return None
-        for field, value in fields.items():
-            if field not in CORRECTABLE or not isinstance(value, str):
-                return None
-            if not value.strip() or len(value) > CORRECTION_MOST[field]:
-                return None
-        out[str(key)] = {str(field): str(value) for field, value in fields.items()}
-    return SavedProgress(out, frozenset(selected))
+        if not all(_kept(shape, str(key), str(field), value) for field, value in fields.items()):
+            return None
+        out[str(key)] = {str(field): value for field, value in fields.items()}
+    return SavedProgress(out, frozenset(selected), shape)
+
+
+def shape_four(state: ReviewState, corrections: Corrections) -> dict[str, dict[str, str | None]]:
+    """Corrections of saved progress of shape 3 as shape 4 holds them: each box as the page
+    shows it, from the pieces those corrections give (``state``), kept where it differs from
+    its value with no correction, as a first press posting the page untouched keeps it. An
+    instruction correction, which replaced every text or was added to a piece read with none,
+    is every text's box and every box of a card read with none that the reader wasn't sure of;
+    on a piece with neither, it is kept on the field of the piece's first card read with no
+    words, the reader sure of it, which then offers that card's box holding it
+    (``own_carried``). A due line or day heading Blossom can't read as a date is kept as typed
+    in the box of the date it sets (``unreadable_old_dates``)."""
+    boxes: dict[tuple[str, str], str] = {}
+    added: dict[str, dict[str, str]] = {}
+    for piece in state.open:
+        read = piece.as_read
+        if read is None:
+            continue
+        fields = corrections.get(piece.key, {})
+        old = fields.get("instruction")
+        words = str(old).strip() if usable_correction("instruction", old) else None
+        if (piece.key, "course") not in boxes:
+            boxes[(piece.key, "course")] = piece.course
+            boxes[(piece.key, "title")] = piece.title
+            for index, text in enumerate(read.texts):
+                boxes[(piece.key, f"instruction:{index}")] = text if words is None else words
+        own = own_wordless(piece)
+        for card in own:
+            boxes[(piece.key, wordless_field(card))] = "" if words is None else words
+        bare = [c for c in read.bare if c in piece.cards]
+        worded = any(c not in read.wordless and c not in read.bare for c in piece.cards)
+        if words is not None and not worded and not own and bare:
+            added.setdefault(piece.key, {})[wordless_field(bare[0])] = canonical(words)
+        key = dates_key(piece.name)
+        due = piece.due if piece.due_resolved else None
+        boxes[(key, "due")] = "" if due is None else due.isoformat()
+        boxes[(key, "assigned")] = "" if piece.assigned is None else piece.assigned.isoformat()
+        for target, text in unreadable_old_dates(piece, fields).items():
+            boxes[(key, target)] = text
+    out = box_corrections(state, boxes, {}, ()).corrections
+    for key, carried in added.items():
+        out.setdefault(key, {}).update(carried)
+    return out
+
+
+def unreadable_old_dates(piece: Piece, fields: Mapping[str, str | None]) -> dict[str, str]:
+    """The due line and day heading of saved progress of shape 3 that Blossom can't read as
+    dates, as typed, by the date each sets (``date_target``), where no correction it can read
+    sets that date; the day heading after the due line where both set one, as they apply."""
+    readable = {
+        date_target(piece.reading, field)
+        for field in OLD_DATES
+        if usable_correction(field, fields.get(field))
+    }
+    out: dict[str, str] = {}
+    for field in OLD_DATES:
+        value = fields.get(field)
+        target = date_target(piece.reading, field)
+        if value is None or not value.strip() or target is None or target in readable:
+            continue
+        out[target] = value
+    return out

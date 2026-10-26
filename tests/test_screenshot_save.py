@@ -22,9 +22,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from blossom import intake, screenshot_save
+from blossom import intake, screenshot_page, screenshot_review, screenshot_save
 from blossom.grades.identity import name_form
-from blossom.screenshot_review import carry, piece_names, unit_name, value_json
+from blossom.screenshot_review import Piece, carry, dates_key, piece_names, unit_name, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
     NotSaved,
@@ -36,6 +36,7 @@ from blossom.screenshot_save import (
     confirm_subject,
     correction_digest,
     instruction_subject,
+    piece_digest,
     review_state,
     save_homework,
     unit_digests,
@@ -813,6 +814,58 @@ def test_a_stale_page_a_closed_gate_and_a_changed_effect_save_nothing(house: Hou
     assert world(house) == gated
 
 
+STAYS: Final = "Updates Word Study. Stays homework, as saved."
+
+
+def heads_of(shown: screenshot_page.RowsShown) -> list[tuple[str, str, tuple[str, ...]]]:
+    """Each chosen destination's class, title and quiet lines, as her week's card shows them."""
+    return [
+        (block.head.course, block.head.title, block.head.quiet)
+        for unit in shown.units
+        for block in unit.blocks
+        if block.chosen
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "update"),
+    [
+        ("kind", {"kind": AssignmentKind.TASK}),
+        ("title", {"title": "Word Study Guide"}),
+        ("class", {"course": "English 7 Honors"}),
+    ],
+    ids=["kind", "title", "class"],
+)
+def test_a_saved_assignment_changed_elsewhere_after_the_preview_saves_nothing(
+    house: House, change: str, update: Mapping[str, object]
+) -> None:
+    """The Reading Log card goes to the saved Word Study row found for it, its kind left to the
+    saved row's. Another tab changes that row's kind, title or class after the page showed its
+    lines: the press is refused as changed and writes nothing, the page's lines say the change,
+    and a press from that page saves."""
+    draft_id = two_row_review(house)
+    log = next(p for p in state_of(house, draft_id).pieces if p.title == "Reading Log")
+    units = [u for u in unit_digests(state_of(house, draft_id)) if log.name in u.split("+")]
+    press = press_of(house, draft_id, units=units)
+    lines = heads_of(page_of(house, draft_id))
+    [saved] = [
+        a for a in house.record.all_assignments() if a.assignment_id == "assignment-word-study-x1"
+    ]
+    house.record.upsert_assignments([saved.model_copy(update=dict(update))])
+    before = world(house)
+    outcome = save(house, press)
+    after = world(house)
+    shown = page_of(house, draft_id)
+    again = save(house, press_of(house, draft_id, "9" * 32, units=units))
+
+    assert ("English 7", "Word Study", ("No assigned date.", STAYS)) in lines
+    assert isinstance(outcome, NotSaved)
+    assert outcome.reason == "changed"
+    assert after == before
+    assert heads_of(shown) != lines
+    assert isinstance(again, Saved)
+
+
 def test_a_press_with_a_unit_saved_elsewhere_and_a_changed_one_is_not_already_saved(
     house: House,
 ) -> None:
@@ -1005,7 +1058,7 @@ def keys_of(house: House, draft_id: str) -> dict[str, str]:
 def answered_press(
     house: House,
     draft_id: str,
-    corrections: Mapping[str, Mapping[str, str]],
+    corrections: Mapping[str, Mapping[str, str | None]],
     confirmed: Sequence[tuple[str, str]] = (),
     *,
     acceptance: str = "c" * 32,
@@ -1025,7 +1078,7 @@ def answered_press(
             "destination",
             piece.name,
             value_json(dict((destinations or {}).get(piece.title, {"new": 1}))),
-            correction_digest(corrections.get(piece.key)),
+            piece_digest(piece, corrections),
             (piece.name,),
         )
         for piece in state.open
@@ -1233,7 +1286,44 @@ def replayed_unchanged(house: House) -> tuple[tuple[object, ...], tuple[int, ...
     return counts_recorded(house, press.acceptance_id), (2, 3)
 
 
+def fold_corrections_on_a_confident_row(
+    house: House,
+) -> tuple[tuple[object, ...], tuple[int, int]]:
+    """A row read with confidence, its title and its own due date corrected in the fold, and
+    its instruction text typed back as read: two boxes corrected, nothing confirmed."""
+    draft_id = read_review(
+        house, screenshot("Friday 8/21/2026", unsure("Vocab Quiz", "Study list one.", 200))
+    )
+    [piece] = state_of(house, draft_id).pieces
+    corrections = {
+        piece.key: {"title": "Vocab Test", "instruction:0": "Study list one."},
+        dates_key(piece.name): {"due": "2026-08-25"},
+    }
+    press = answered_press(house, draft_id, corrections)
+    assert isinstance(save(house, press), Saved)
+    [written] = house.record.all_assignments()
+    assert (written.title, written.due_date) == ("Vocab Test", date(2026, 8, 25))
+    return counts_recorded(house, press.acceptance_id), (2, 0)
+
+
+def a_removal_answers_an_unsure_instruction(
+    house: House,
+) -> tuple[tuple[object, ...], tuple[int, int]]:
+    """An instruction the reader wasn't sure of, removed in the fold: a correction, which
+    answers the field, so nothing is confirmed."""
+    draft_id = read_review(
+        house,
+        screenshot("Friday 8/21/2026", unsure("Vocab Quiz", "Study list one.", 200, "instruction")),
+    )
+    [piece] = state_of(house, draft_id).pieces
+    press = answered_press(house, draft_id, {piece.key: {"instruction:0": None}})
+    assert isinstance(save(house, press), Saved)
+    return counts_recorded(house, press.acceptance_id), (1, 0)
+
+
 COUNT_CASES: Final[dict[str, Callable[[House], tuple[tuple[object, ...], tuple[int, ...]]]]] = {
+    "fold corrections on a confident row": fold_corrections_on_a_confident_row,
+    "a removal answers an unsure instruction": a_removal_answers_an_unsure_instruction,
     "two corrected and three confirmed": fields_corrected_and_confirmed,
     "the read values typed back": read_values_typed_back,
     "an unreadable date confirmed": unreadable_date_confirmed,
@@ -1606,3 +1696,594 @@ def test_the_save_reads_the_clock_once_inside_the_writer_and_dates_everything_fr
     assert seen["review_state"] == later
     assert seen["keep"] == (later, later.astimezone(clock.zone).date())
     assert later.astimezone(clock.zone).date() != OBSERVED_AT.astimezone(clock.zone).date()
+
+
+# ------------------------------------------------- what the page says Save does, and what it does
+
+
+def page_of(
+    house: House, draft_id: str, corrections: Mapping[str, Mapping[str, str | None]] | None = None
+) -> screenshot_page.RowsShown:
+    """The review's rows as its page shows them, with these corrections typed."""
+    state = review_state(
+        house.record,
+        house.record.draft_for_save(house.student, draft_id),  # type: ignore[arg-type]
+        now=OBSERVED_AT,
+        corrections=corrections or {},
+    )
+    images = house.drafts.snapshot(house.student, draft_id).images
+    return screenshot_page.rows_shown(
+        state,
+        places={image.sha256: n for n, image in enumerate(images, 1)},
+        images=[],
+        page_key=b"synthetic-page-key",
+        version=1,
+        progress_revision=0,
+        acceptance="a" * 32,
+        until="",
+        corrections=corrections or {},
+    )
+
+
+def type_lines(shown: screenshot_page.RowsShown) -> list[str]:
+    """Each line under a Type, in page order."""
+    return [
+        text
+        for unit in shown.units
+        for block in unit.blocks
+        for card in block.cards
+        if card.type is not None
+        for text, _ in card.type.notes
+    ]
+
+
+def quiet_lines(shown: screenshot_page.RowsShown) -> list[tuple[str, ...]]:
+    """Each destination's quiet lines of what saving does, in page order."""
+    return [block.head.quiet for unit in shown.units for block in unit.blocks if block.chosen]
+
+
+def kept(house: House, draft_id: str, *answers: tuple[str, str, str]) -> None:
+    """Answers kept at the review's version, each bound to no correction: (kind, subject,
+    value)."""
+    version = house.drafts.snapshot(house.student, draft_id).version
+    house.drafts.keep_answers(
+        house.student,
+        draft_id,
+        version=version,
+        answers=[AnswerToKeep(k, s, v, correction_digest_none(), ()) for k, s, v in answers],
+    )
+
+
+def saved_kinds(house: House) -> dict[str, str]:
+    return {a.title: a.kind.value for a in house.record.all_assignments()}
+
+
+def test_a_slot_corrected_to_a_task_title_saves_as_a_task(house: House) -> None:
+    """The joined-slot probe, inverted: a Reading Log corrected to Permission slip joins the
+    Permission slip on one new slot, both suggest a task, and the line, the preview and Save
+    agree on it."""
+    draft_id = read_review(
+        house,
+        screenshot(
+            "Friday 8/21/2026",
+            card("Permission slip", "Sign it.", 200),
+            card("Reading Log", "Read it.", 300),
+        ),
+    )
+    log = next(p for p in state_of(house, draft_id).pieces if p.title == "Reading Log")
+    corrections = {log.key: {"title": "Permission slip"}}
+    press = answered_press(house, draft_id, corrections)
+    shown = page_of(house, draft_id, corrections)
+    outcome = save(house, press)
+
+    assert type_lines(shown) == [
+        "Saving now: a task, suggested from the title.",
+        "Saving now: a task, suggested from the title.",
+    ]
+    assert quiet_lines(shown) == [
+        ("No assigned date.", "New assignment. Saved as a task, as suggested.")
+    ]
+    assert isinstance(outcome, Saved)
+    assert saved_kinds(house) == {"Permission slip": "TASK"}
+
+
+def test_a_class_edit_keeps_a_new_slot_s_date_and_kind_answers(house: House) -> None:
+    """Two rows of one name joined on a new slot, its due date and its kind asked and answered:
+    a class edit of both rows keeps both answers, which name the slot and its pieces, and Save
+    writes them."""
+    draft_id = read_review(
+        house,
+        screenshot("Friday 8/21/2026", card("Reading Log", "Read it.", 200)),
+        screenshot("Monday 8/24/2026", card("Reading Log", "Read it.", 200)),
+    )
+    a, b = sorted(state_of(house, draft_id).pieces, key=lambda p: p.due or MONDAY)
+    kept(
+        house,
+        draft_id,
+        ("destination", a.name, '{"new":1}'),
+        ("destination", b.name, '{"new":1}'),
+        ("kind", a.key, "TASK"),
+        ("kind", b.key, "HOMEWORK"),
+    )
+    joined = state_of(house, draft_id)
+    [dest] = joined.validation.destinations
+    subject = screenshot_review.subject_for(dest, [a.name, b.name])
+    kept(house, draft_id, ("due", subject, MONDAY.isoformat()), ("kind", subject, "TASK"))
+    corrections = {key: {"course": "English 8"} for key in (a.key, b.key)}
+    press = answered_press(house, draft_id, corrections)
+    moved = review_state(
+        house.record,
+        house.record.draft_for_save(house.student, draft_id),  # type: ignore[arg-type]
+        now=OBSERVED_AT,
+        corrections=corrections,
+    )
+    outcome = save(house, press)
+
+    [moved_dest] = moved.validation.destinations
+    assert moved_dest != dest
+    assert screenshot_review.subject_for(moved_dest, [a.name, b.name]) == subject
+    assert all(unit.ready for unit in moved.validation.units)
+    assert isinstance(outcome, Saved)
+    [row] = house.record.all_assignments()
+    assert (row.course, row.due_date, row.kind.value) == ("English 8", MONDAY, "TASK")
+
+
+TYPE_CASES: Final = {
+    "new, unchosen": (None, None, "Saving now: homework, suggested from the title.", "HOMEWORK"),
+    "existing, unchosen": ("TASK", None, "Saving now: a task, as saved.", "TASK"),
+    "new, her choice": (None, "TASK", "Saving now: a task, your choice.", "TASK"),
+    "existing, her choice": ("TASK", "TASK", "Saving now: a task, your choice.", "TASK"),
+}
+"""Each Type line Save's rule gives one card: the kind of a saved assignment it goes to (None
+for a new one), her choice on its row (None for none), the line, and the kind Save writes."""
+
+
+@pytest.mark.parametrize("case", list(TYPE_CASES))
+def test_each_type_line_is_save_s_rule(house: House, case: str) -> None:
+    saved_kind, chosen, line, written = TYPE_CASES[case]
+    destinations = None
+    if saved_kind is not None:
+        house.record.upsert_assignments(
+            [
+                Assignment(
+                    assignment_id="assignment-reading-log-s1",
+                    course=COURSE,
+                    title="Reading Log",
+                    due_date=FRIDAY,
+                    dependencies=[],
+                    reported_submission_status="not_reported",
+                    assigned_on=None,
+                    kind=AssignmentKind(saved_kind),
+                )
+            ]
+        )
+        destinations = {"Reading Log": {"existing": "assignment-reading-log-s1"}}
+    draft_id = read_review(
+        house, screenshot("Friday 8/21/2026", card("Reading Log", "Read pages 1 to 3.", 200))
+    )
+    [piece] = state_of(house, draft_id).pieces
+    if chosen is not None:
+        kept(house, draft_id, ("kind", piece.key, chosen))
+    press = answered_press(house, draft_id, {}, destinations=destinations)
+    shown = page_of(house, draft_id)
+    outcome = save(house, press)
+
+    assert type_lines(shown) == [line]
+    assert isinstance(outcome, Saved)
+    assert saved_kinds(house) == {"Reading Log": written}
+
+
+def joined_review(house: House) -> tuple[str, Piece, Piece]:
+    """Two cards of Reading Log, due Friday and Monday, both on one new slot."""
+    draft_id = read_review(
+        house,
+        screenshot("Friday 8/21/2026", card("Reading Log", "Read it.", 200)),
+        screenshot("Monday 8/24/2026", card("Reading Log", "Read it.", 200)),
+    )
+    a, b = sorted(state_of(house, draft_id).pieces, key=lambda p: p.due or MONDAY)
+    kept(
+        house,
+        draft_id,
+        ("destination", a.name, '{"new":1}'),
+        ("destination", b.name, '{"new":1}'),
+    )
+    return draft_id, a, b
+
+
+def test_a_choice_on_another_card_going_there_is_the_line_save_follows(house: House) -> None:
+    draft_id, a, b = joined_review(house)
+    kept(house, draft_id, ("kind", a.key, "TASK"))
+    [dest] = state_of(house, draft_id).validation.destinations
+    subject = screenshot_review.subject_for(dest, [a.name, b.name])
+    kept(house, draft_id, ("due", subject, FRIDAY.isoformat()))
+    shown = page_of(house, draft_id)
+    outcome = save(house, answered_press(house, draft_id, {}))
+
+    assert type_lines(shown) == [
+        "Saving now: a task, your choice.",
+        "Saving now: a task, chosen for Reading Log (screenshot 1, card 1).",
+    ]
+    assert quiet_lines(shown) == [("No assigned date.", "New assignment. Saved as a task.")]
+    assert isinstance(outcome, Saved)
+    assert saved_kinds(house) == {"Reading Log": "TASK"}
+
+
+def test_a_kind_question_waiting_or_no_destination_is_the_line(house: House) -> None:
+    """Choices that disagree ask the destination's own question, and the line links to it; a
+    card with no destination yet waits for one."""
+    draft_id, a, b = joined_review(house)
+    kept(house, draft_id, ("kind", a.key, "TASK"), ("kind", b.key, "HOMEWORK"))
+    asked = page_of(house, draft_id)
+    fields = {
+        q.field: q.anchor for unit in asked.units for block in unit.blocks for q in block.questions
+    }
+    links = [
+        (text, target)
+        for unit in asked.units
+        for block in unit.blocks
+        for card in block.cards
+        if card.type is not None
+        for text, target in card.type.notes
+    ]
+    lone = read_review(house, screenshot("Friday 8/21/2026", card("Vocab Quiz", "Study.", 200)))
+    [piece] = state_of(house, lone).pieces
+    kept(house, lone, ("destination", piece.name, '{"existing":"assignment-gone-x1"}'))
+
+    [(text, target)] = set(links)
+    assert text.startswith("Answer “Homework or task for A new Reading Log")
+    assert text.endswith("?” first.")
+    assert target in fields.values()
+    assert type_lines(page_of(house, lone)) == ["Choose where it goes first."]
+
+
+def test_a_split_row_s_type_line_names_each_piece_by_its_date(house: House) -> None:
+    """One assigned card read under two day headings, answered "These are different
+    assignments": each piece's line, led by its date, as Save writes each destination."""
+    house.record.upsert_assignments(
+        [
+            Assignment(
+                assignment_id="assignment-reading-log-t1",
+                course=COURSE,
+                title="Reading Log",
+                due_date=MONDAY,
+                dependencies=[],
+                reported_submission_status="not_reported",
+                assigned_on=date(2026, 8, 20),
+                kind=AssignmentKind.TASK,
+            )
+        ]
+    )
+    log = homework_card(
+        badge="ASSIGNED",
+        course=COURSE,
+        title="Reading Log",
+        instruction="Read it.",
+        footer="Due (8/24/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    draft_id = read_review(
+        house,
+        homework_answer(
+            headings=[{"text": "Thursday 8/20/2026", "y": 150, "uncertain": None}], cards=[log]
+        ),
+        homework_answer(
+            headings=[{"text": "Friday 8/21/2026", "y": 150, "uncertain": None}], cards=[log]
+        ),
+    )
+    [row] = state_of(house, draft_id).asking
+    kept(house, draft_id, ("split", row.key, json.dumps("split")))
+    thursday, friday = sorted(state_of(house, draft_id).pieces, key=lambda p: p.name)
+    kept(
+        house,
+        draft_id,
+        ("destination", thursday.name, '{"existing":"assignment-reading-log-t1"}'),
+        ("destination", friday.name, '{"new":1}'),
+    )
+    shown = page_of(house, draft_id)
+
+    assert type_lines(shown) == [
+        "Thu 8/20: Saving now: a task, as saved.",
+        "Fri 8/21: Saving now: homework, suggested from the title.",
+    ]
+    assert sorted(quiet_lines(shown)) == sorted(
+        [
+            ("Assigned Thursday, August 20.", "Updates Reading Log. Stays a task, as saved."),
+            ("Assigned Friday, August 21.", "New assignment. Saved as homework, as suggested."),
+        ]
+    )
+    outcome = save(house, press_of(house, draft_id))
+    kinds = {a.assignment_id: a.kind.value for a in house.record.all_assignments()}
+
+    assert isinstance(outcome, Saved)
+    assert kinds.pop("assignment-reading-log-t1") == "TASK"
+    assert list(kinds.values()) == ["HOMEWORK"]
+
+
+def test_an_existing_assignment_chosen_with_its_kind_shows_nothing_new_and_no_kind_line(
+    house: House,
+) -> None:
+    shot = screenshot("Friday 8/21/2026", card("Reading Log", "Read pages 1 to 3.", 200))
+    first = read_review(house, shot)
+    assert isinstance(save(house, answered_press(house, first, {})), Saved)
+    draft_id = read_review(house, shot, homework_answer(cards=[]))
+    [piece] = state_of(house, draft_id).pieces
+    kept(house, draft_id, ("kind", piece.key, "HOMEWORK"))
+    shown = page_of(house, draft_id)
+
+    assert quiet_lines(shown) == [("No assigned date.", screenshot_page.SAID["already"])]
+    assert not any("Saved as" in line or "Stays" in line for q in quiet_lines(shown) for line in q)
+
+
+def test_no_assigned_date_on_a_saved_assignment_keeps_its_date(house: House) -> None:
+    """ "No assigned date was given" on a card going to a saved assignment that has one: no
+    question, nothing cleared, and the preview says the saved date stays."""
+    house.record.upsert_assignments(
+        [
+            Assignment(
+                assignment_id="assignment-reading-log-a1",
+                course=COURSE,
+                title="Reading Log",
+                due_date=FRIDAY,
+                dependencies=[],
+                reported_submission_status="not_reported",
+                assigned_on=date(2026, 8, 17),
+                kind=AssignmentKind.HOMEWORK,
+            )
+        ]
+    )
+    log = homework_card(
+        badge="ASSIGNED",
+        course=COURSE,
+        title="Reading Log",
+        instruction="Read it.",
+        footer="Due (8/21/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    draft_id = read_review(
+        house,
+        homework_answer(
+            headings=[{"text": "Wednesday 8/19/2026", "y": 150, "uncertain": None}], cards=[log]
+        ),
+    )
+    [piece] = state_of(house, draft_id).pieces
+    none = {dates_key(piece.name): {"assigned": None}}
+    on_it = {"Reading Log": {"existing": "assignment-reading-log-a1"}}
+    asked_without = page_of(house, draft_id)
+    press = answered_press(house, draft_id, none, destinations=on_it)
+    shown = page_of(house, draft_id, none)
+    state = review_state(
+        house.record,
+        house.record.draft_for_save(house.student, draft_id),  # type: ignore[arg-type]
+        now=OBSERVED_AT,
+        corrections=none,
+    )
+    outcome = save(house, press)
+
+    assert piece.assigned == date(2026, 8, 19)
+    assert [u.questions for u in state.validation.units] == [()]
+    assert quiet_lines(shown)[0] == (
+        "Assigned Monday, August 17, as saved.",
+        "Updates Reading Log. Stays homework, as saved.",
+    )
+    assert asked_without.units
+    assert isinstance(outcome, Saved)
+    [row] = house.record.all_assignments()
+    assert row.assigned_on == date(2026, 8, 17)
+
+
+def test_a_piece_s_digest_is_its_row_s_corrections_and_its_own_dates() -> None:
+    """A destination answer's digest covers its row's fields and its own piece's dates, never
+    another piece's; with no correction it is the digest of nothing, and saved progress of
+    shape 3 digests as it always has."""
+    nothing = hashlib.sha256(b"").hexdigest()[:12]
+    row_fields = {"title": "Vocab Test"}
+    own = screenshot_review.Piece("k|2026-08-21", "k", COURSE, "Q", FRIDAY, None, frozenset())
+    sibling = dataclasses.replace(own, name="k|2026-08-24")
+    typed = {"k": row_fields, dates_key(sibling.name): {"due": "2026-08-25"}}
+
+    assert correction_digest(None) == correction_digest({}) == nothing
+    assert piece_digest(own, {}) == nothing
+    assert piece_digest(own, typed) == correction_digest(row_fields)
+    assert piece_digest(sibling, typed) != piece_digest(own, typed)
+    assert (
+        correction_digest(row_fields)
+        == hashlib.sha256(json.dumps(row_fields, separators=(",", ":")).encode()).hexdigest()[:12]
+    )
+
+
+def test_row_boxes_move_to_the_first_open_card_of_a_split_row(house: House) -> None:
+    """A split row's class, title and instructions boxes sit on its first open card, and the post
+    reader takes them from there. A row's pieces are saved together and a saved review is
+    frozen, so a review never shows a split row with one piece saved; this test sets ``saved``
+    on one piece directly to pin the rule on that defensive path."""
+    log = homework_card(
+        badge="ASSIGNED",
+        course=COURSE,
+        title="Reading Log",
+        instruction="Read it.",
+        footer="Due (8/24/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    draft_id = read_review(
+        house,
+        homework_answer(
+            headings=[{"text": "Thursday 8/20/2026", "y": 150, "uncertain": None}], cards=[log]
+        ),
+        homework_answer(
+            headings=[{"text": "Friday 8/21/2026", "y": 150, "uncertain": None}], cards=[log]
+        ),
+    )
+    [row] = state_of(house, draft_id).asking
+    kept(house, draft_id, ("split", row.key, json.dumps("split")))
+    state = state_of(house, draft_id)
+    thursday, friday = sorted(state.pieces, key=lambda p: p.name)
+    tables = house.record.draft_for_save(house.student, draft_id)
+    assert tables is not None
+    taken = review_state(
+        house.record,
+        tables._replace(saved={thursday.name: "assignment-reading-log-x1"}),
+        now=OBSERVED_AT,
+        corrections={},
+    )
+
+    def boxes(shown: screenshot_page.RowsShown) -> dict[str, list[str]]:
+        return {
+            card.name: [json.loads(b.subject)[1] for b in card.boxes]
+            for unit in shown.units
+            for block in unit.blocks
+            for card in block.cards
+        }
+
+    def shown_for(review: ReviewState) -> screenshot_page.RowsShown:
+        images = house.drafts.snapshot(house.student, draft_id).images
+        return screenshot_page.rows_shown(
+            review,
+            places={image.sha256: n for n, image in enumerate(images, 1)},
+            images=[],
+            page_key=b"synthetic-page-key",
+            version=1,
+            progress_revision=0,
+            acceptance="a" * 32,
+            until="",
+            corrections={},
+        )
+
+    row_fields = ["course", "title", "instruction:0", "due", "assigned"]
+    assert boxes(shown_for(state)) == {thursday.name: row_fields, friday.name: ["due", "assigned"]}
+    assert boxes(shown_for(taken)) == {friday.name: row_fields}
+    reads = screenshot_save.fold_reads(taken)
+    assert (row.key, "title") in reads
+    assert (dates_key(thursday.name), "due") not in reads
+
+
+@pytest.mark.parametrize("case", ["a lone card", "both cards of a joined slot"])
+def test_a_card_corrected_to_a_task_title_saves_as_a_task(house: House, case: str) -> None:
+    """A homework title corrected to a task's: the corrected title's suggestion is what the
+    line says and Save writes, whichever card of a joined slot leads it."""
+    cards = [card("Reading Log", "Read it.", 200)]
+    if case != "a lone card":
+        cards.append(card("Vocab Quiz", "Study it.", 300))
+    draft_id = read_review(house, screenshot("Friday 8/21/2026", *cards))
+    pieces = state_of(house, draft_id).pieces
+    corrections = {p.key: {"title": "Permission slip"} for p in pieces}
+    press = answered_press(house, draft_id, corrections)
+    shown = page_of(house, draft_id, corrections)
+    outcome = save(house, press)
+
+    assert set(type_lines(shown)) == {"Saving now: a task, suggested from the title."}
+    assert isinstance(outcome, Saved)
+    assert saved_kinds(house) == {"Permission slip": "TASK"}
+
+
+def test_a_new_slot_s_answers_stored_under_its_class_and_title_still_answer_it(
+    house: House,
+) -> None:
+    """Date and kind answers of a joined new slot stored under its class and title answer its
+    questions through the review's state, as answers named by its slot do; where both forms
+    are stored, the slot's own form wins."""
+    draft_id, a, b = joined_review(house)
+    kept(house, draft_id, ("kind", a.key, "TASK"), ("kind", b.key, "HOMEWORK"))
+    [dest] = state_of(house, draft_id).validation.destinations
+    names = sorted([a.name, b.name])
+    old = json.dumps([list(dest), names], separators=(",", ":"))
+    new = screenshot_review.subject_for(dest, names)
+    kept(house, draft_id, ("due", old, MONDAY.isoformat()), ("kind", old, "TASK"))
+    stored_old = state_of(house, draft_id)
+    kept(house, draft_id, ("due", new, FRIDAY.isoformat()))
+    both = state_of(house, draft_id)
+
+    assert old != new
+    assert [u.ready for u in stored_old.validation.units] == [True]
+    [entry] = stored_old.preview
+    assert (entry.due, entry.written_kind, entry.open_questions) == (MONDAY, "TASK", ())
+    [entry] = both.preview
+    assert entry.due == FRIDAY
+    outcome = save(house, press_of(house, draft_id))
+    assert isinstance(outcome, Saved)
+    [row] = house.record.all_assignments()
+    assert (row.due_date, row.kind.value) == (FRIDAY, "TASK")
+
+
+def test_old_answers_of_one_new_slot_that_disagree_ask_again(house: House) -> None:
+    """Due answers of one new slot stored under its class and two titles, as a review kept
+    before its title was corrected can hold them: disagreeing, neither answers, so the due date
+    is asked again and the group isn't saved; agreeing, they answer; and an answer named by the
+    slot still wins over both."""
+    draft_id, a, b = joined_review(house)
+    [dest] = state_of(house, draft_id).validation.destinations
+    names = sorted([a.name, b.name])
+    slot = screenshot_review.subject_for(dest, names)
+    kept(house, draft_id, ("kind", slot, "TASK"))
+    corrected = json.dumps([list(dest), names], separators=(",", ":"))
+    as_read = json.dumps([[*dest[:2], "Reading Log Old", dest[3]], names], separators=(",", ":"))
+    kept(
+        house,
+        draft_id,
+        ("due", as_read, MONDAY.isoformat()),
+        ("due", corrected, FRIDAY.isoformat()),
+    )
+    [asked] = state_of(house, draft_id).preview
+    assert asked.open_questions == ("due",)
+    refused = save(house, press_of(house, draft_id))
+    written = assignments(house)
+    kept(house, draft_id, ("due", as_read, FRIDAY.isoformat()))
+    agree = state_of(house, draft_id)
+    kept(house, draft_id, ("due", slot, MONDAY.isoformat()))
+    named = state_of(house, draft_id)
+
+    assert dest[0] == "new"
+    assert isinstance(refused, NotSaved)
+    assert refused.reason == "open"
+    assert written == {}
+    [entry] = agree.preview
+    assert (entry.due, entry.open_questions) == (FRIDAY, ())
+    [entry] = named.preview
+    assert entry.due == MONDAY
+
+
+def test_a_card_s_source_line_says_the_title_as_read(house: House) -> None:
+    """A card going to a saved assignment of another name says the title the screenshot read,
+    never the one she typed, and a card going to its own name says nothing more."""
+    house.record.upsert_assignments(
+        [
+            Assignment(
+                assignment_id="assignment-word-study-r1",
+                course=COURSE,
+                title="Word Study",
+                due_date=FRIDAY,
+                dependencies=[],
+                reported_submission_status="not_reported",
+                assigned_on=None,
+                kind=AssignmentKind.HOMEWORK,
+            )
+        ]
+    )
+    draft_id = read_review(
+        house, screenshot("Friday 8/21/2026", card("Reading Log", "Read it.", 200))
+    )
+    [piece] = state_of(house, draft_id).pieces
+    corrections = {piece.key: {"title": "Reading Notes"}}
+    house.drafts.keep_answers(
+        house.student,
+        draft_id,
+        version=house.drafts.snapshot(house.student, draft_id).version,
+        answers=[
+            AnswerToKeep(
+                "destination",
+                piece.name,
+                '{"found":"assignment-word-study-r1"}',
+                piece_digest(piece, corrections),
+                (piece.name,),
+            )
+        ],
+    )
+    found = page_of(house, draft_id, corrections)
+    plain = read_review(house, screenshot("Monday 8/24/2026", card("Vocab Quiz", "Study.", 200)))
+
+    [card_shown] = [c for u in found.units for b in u.blocks for c in b.cards]
+    assert card_shown.read_as == "read as Reading Log"
+    [own] = [c for u in page_of(house, plain).units for b in u.blocks for c in b.cards]
+    assert own.read_as is None

@@ -2,14 +2,19 @@
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her writes are hers: a parent's press on any of them is refused before anything is read.
 
-Thirteen presses under her tree change her record: her update and its Undo, her hand-in
-update and its Undo, a new note, a note's edit, archive, restore and delete, and a note's
-details, adding it to homework, linking it to homework found and unlinking it. A parent
+Fifteen presses under her tree change her record: her update and its Undo, her hand-in
+update and its Undo, I turned it in and its Undo, a new note, a note's edit, archive,
+restore and delete, and a note's details, adding it to homework, linking it to homework
+found and unlinking it. A parent
 signed in is answered 403 from the sign-in and the route alone: no form is read, no id the
 press names is looked up, the decision lock is not taken, and nothing is written. A
 parent's update, hand-in or Undo lands on her current week, whatever page the form came
 from. The four note presses keep a bounded copy of what that same request typed, read only
 after the refusal is fixed and never past 16 KiB, on a page that reads no store.
+
+Her I turned it in and its Undo, from a card or the details, are refused the same way before
+anything is read; they then keep a bounded copy of her update's note and choice from that
+same request, on the same page that reads no store.
 
 The family's tree has the same four note presses. She may reach them only to be refused
 the same way; a parent pressing them is the family's own workflow and is answered as it
@@ -81,6 +86,7 @@ from tests.support import (
     signed_in_household,
     state_of,
     store_of,
+    ways_back_of,
     whole_form,
     words,
 )
@@ -96,6 +102,7 @@ WEEK_TOP: Final = (
 """A parent's refused update, hand-in or Undo on her week: no card holds it, so it is the
 top line's, the one alert and the one focus."""
 UNSAVED: Final = '<h2 class="update-heading">Your unsaved details</h2>'
+UNSAVED_UPDATE: Final = '<h2 class="update-heading">Your unsaved update</h2>'
 NOT_SAVED_SENTENCE: Final = "These details were not saved. Everything typed is here to copy."
 NOWHERE: Final = "assignment-nowhere"
 NOT_A_NOTE: Final = "not-a-note"
@@ -106,7 +113,13 @@ BROKEN_MULTIPART: Final = (
 )
 LIMIT: Final = 16 * 1024
 
-ASSIGNMENT_PRESSES: Final = ("report", "undo-report", "hand-in", "undo-hand-in")
+TURN_IN_PRESSES: Final = ("turned-in", "undo-turned-in")
+"""Her I turned it in and its Undo, from a card or the details. A parent's press of either
+keeps a bounded copy of her update's note and choice, as the four note presses keep theirs."""
+ASSIGNMENT_PRESSES: Final = ("report", "undo-report", "hand-in", "undo-hand-in", *TURN_IN_PRESSES)
+WEEK_LANDINGS: Final = ASSIGNMENT_PRESSES[:4]
+"""The presses a parent's refusal answers on her current week. The two turn-in presses answer
+on the page that reads no store, with the copy."""
 NOTE_CHANGES: Final = ("edit", "archive", "restore", "delete")
 NOTE_PRESSES: Final = ("details", "add", "link", "unlink")
 """The four presses that keep a bounded copy of what the refused request typed."""
@@ -116,12 +129,16 @@ ORIGINS: Final[dict[str, tuple[str, ...]]] = {
     "undo-report": ("week", "details"),
     "hand-in": ("details", "list", "week list"),
     "undo-hand-in": ("details", "list", "week list"),
+    "turned-in": ("week", "details"),
+    "undo-turned-in": ("week", "details"),
 }
 SHOWN: Final[dict[str, str]] = {
     "report": "note",
     "undo-report": "report_id",
     "hand-in": "note",
     "undo-hand-in": "hand_in_id",
+    "turned-in": "note",
+    "undo-turned-in": "note",
     "create": "text",
     "edit": "text",
     "archive": "revision",
@@ -305,7 +322,7 @@ def watched(client: TestClient) -> Iterator[Watch]:
             patch.setattr(
                 module, "fields_of", recorded(module.fields_of, f"{name}.fields_of", watch)
             )
-        for module in (note_details, note_links):
+        for module in (note_details, note_links, hand_in_routes):
             kept = getattr(module, "kept_fields_of", None)
             if kept is not None:
                 patch.setattr(module, "kept_fields_of", recorded(kept, "kept_fields_of", watch))
@@ -422,6 +439,16 @@ def valid_form(press: str, origin: str, seeded: Seeded) -> list[tuple[str, str]]
             ]
         case "undo-hand-in", _:
             fields = [("hand_in_id", seeded.hand_in)]
+        case "turned-in" | "undo-turned-in", _:
+            button = "hand_in_head" if press == "turned-in" else "undo_hand_in"
+            words = [
+                (button, seeded.hand_in),
+                ("note", "Wren's <b>update</b>"),
+                ("expected_report_id", seeded.report),
+            ]
+            if origin == "week":
+                return [*words, ("week", FIXTURE_WEEK), ("in_place", "")]
+            return [*words, ("report_view", "detail"), *week_return]
         case "create", _:
             return [
                 ("capture_id", new_capture_id()),
@@ -488,7 +515,10 @@ def sent(client: TestClient, path: str, body: bytes, kind: str) -> Answer:
 
 def copy_made(press: str, body: str) -> bool:
     """Whether a refused note press is to show a copy: only a readable form within 16 KiB."""
-    return press in NOTE_PRESSES and body in ("her stale form", "a field twice")
+    return press in (*NOTE_PRESSES, *TURN_IN_PRESSES) and body in (
+        "her stale form",
+        "a field twice",
+    )
 
 
 def check_refused(
@@ -500,6 +530,19 @@ def check_refused(
     page = main_of(answer.text)
     refusal = NOT_A_PARENTS if family else NOT_HERS
     assert str(escape(refusal)) in page
+    if press in TURN_IN_PRESSES:
+        assert "<h1>Update not saved</h1>" in page
+        assert page.count(" autofocus") == 1
+        assert "<form" not in page
+        assert "<button" not in page
+        assert ways_back_of(page) == [("/student/due-this-week", "Back to her week")]
+        assert "Your choice" not in page
+        assert (UNSAVED_UPDATE in page) is (typed is not None)
+        if typed is not None:
+            assert str(escape(typed)) in page
+            assert UNSAVED not in page
+        assert "second" not in page
+        return
     if press in ASSIGNMENT_PRESSES:
         assert "<h1>Student week</h1>" in page
         assert WEEK_TOP in page
@@ -543,11 +586,12 @@ def check_refused(
 def check_untouched(watch: Watch, press: str, subject: str) -> None:
     """No form parsed, no body buffered, no id looked up, no lock taken; the four note presses
     read at most the bounded copy, and the note presses run no statement at all."""
-    assert watch.read == (["kept_fields_of"] if press in NOTE_PRESSES else []), watch.read
+    copying = press in (*NOTE_PRESSES, *TURN_IN_PRESSES)
+    assert watch.read == (["kept_fields_of"] if copying else []), watch.read
     assert watch.looked_up == []
     assert watch.locked == 0
     assert all(length <= LIMIT for length in watch.copied), watch.copied
-    if press in ASSIGNMENT_PRESSES:
+    if press in ASSIGNMENT_PRESSES and press not in TURN_IN_PRESSES:
         assert [line for line in watch.statements if f"= '{subject}'" in line] == []
         if subject == NOWHERE:
             assert [line for line in watch.statements if subject in line] == []
@@ -614,7 +658,7 @@ def test_a_parent_is_answered_at_once_while_a_decision_holds_the_lock(
     tmp_path: pathlib.Path,
 ) -> None:
     """Her presses wait for a decision to land; a parent's refusal waits for nothing and
-    never takes the lock, on all thirteen presses."""
+    never takes the lock, on all fifteen presses."""
     with household(tmp_path, "parent") as client, ThreadPoolExecutor(max_workers=13) as pool:
         seeded = seed(client)
         state = state_of(client)
@@ -1532,7 +1576,10 @@ ELSEWHERE_RETURNS: Final[dict[str, list[tuple[str, str]]]] = {
 }
 
 
-@pytest.mark.parametrize("press", ASSIGNMENT_PRESSES)
+# The two turn-in presses answer a parent on the page that reads no store, with the copy of
+# her update's words, and never on her week: that same refusal is checked for them in the
+# matrix above and in test_a_parents_turn_in_press_shows_her_words_read_only_and_reads_no_store.
+@pytest.mark.parametrize("press", WEEK_LANDINGS)
 @pytest.mark.parametrize("kind", ["known", "unknown", "gone"])
 @pytest.mark.parametrize("pointing", list(ELSEWHERE_RETURNS))
 def test_a_parents_update_hand_in_or_undo_lands_on_her_current_week(
@@ -1806,3 +1853,240 @@ def test_a_press_canceled_while_its_copy_is_read_stays_canceled(
     assert isinstance(ended, BaseException)
     assert not isinstance(ended, Exception)
     assert sent == []
+
+
+# ------------------------------------------- a parent's press of I turned it in or its Undo
+
+TURN_IN_BUTTONS: Final = {"turned-in": "hand_in_head", "undo-turned-in": "undo_hand_in"}
+"""The two presses about turning it in from a card, and the field each one's button sends."""
+HER_WORDS: Final = "Wren's <b>reading</b> notes"
+
+
+def turn_in_body(press: str, note: str = HER_WORDS, **more: str) -> bytes:
+    """A turn-in press as a card's folded one-press form sends it when its button joins that
+    form: the button's own value, her note, the update the page showed, the week, and the
+    cards kept in place. That form has no choice to send; its Done and Not yet are buttons."""
+    return urlencode(
+        {
+            TURN_IN_BUTTONS[press]: "",
+            "note": note,
+            "expected_report_id": "",
+            "week": FIXTURE_WEEK,
+            "in_place": "",
+            **more,
+        }
+    ).encode()
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+def test_a_parents_turn_in_press_shows_her_words_read_only_and_reads_no_store(
+    press: str, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """403, fixed before the form is read; then her note and choice as that same request
+    typed them, escaped and read-only, under the copy's heading, on a page with no form and
+    no button. No statement runs on any connection, no id is looked up, the lock is not
+    taken, nothing is written, and nothing she typed is logged."""
+    caplog.set_level(logging.DEBUG)
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    body = turn_in_body(press)
+    with household(tmp_path, "parent") as client:
+        before = everything_kept(client)
+        with watched(client) as watch:
+            answer = streamed(
+                client,
+                path,
+                [body],
+                [("content-type", URL_ENCODED), ("content-length", str(len(body)))],
+            )
+        after = everything_kept(client)
+    page = main_of(answer.text)
+
+    assert answer.status_code == 403
+    assert str(escape(NOT_HERS)) in page
+    assert page.count(" autofocus") == 1
+    assert UNSAVED_UPDATE in page
+    assert UNSAVED not in page
+    assert NOT_SAVED_SENTENCE not in page
+    assert f"readonly>\n{escape(HER_WORDS)}</textarea>" in page
+    assert "<b>reading</b>" not in page
+    assert "Your choice" not in page
+    assert "<form" not in page
+    assert "<button" not in page
+    assert "Back to her week" in page
+    assert watch.statements == []
+    assert watch.looked_up == []
+    assert watch.locked == 0
+    assert watch.copied == [len(body)]
+    assert after == before
+    assert [record for record in caplog.records if "Wren" in record.getMessage()] == []
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+@pytest.mark.parametrize("case", ["oversized", "multipart", "incomplete"])
+def test_a_parents_turn_in_press_shows_nothing_of_a_body_the_copy_refuses(
+    case: str, press: str, tmp_path: pathlib.Path
+) -> None:
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    body = turn_in_body(press, "Wren " + "x" * LIMIT if case == "oversized" else HER_WORDS)
+    kind = "multipart/form-data; boundary=synthetic" if case == "multipart" else URL_ENCODED
+    declared = len(body) + 10 if case == "incomplete" else len(body)
+    with household(tmp_path, "parent") as client:
+        before = everything_kept(client)
+        with watched(client) as watch:
+            answer = streamed(
+                client,
+                path,
+                [body],
+                [("content-type", kind), ("content-length", str(declared))],
+            )
+        after = everything_kept(client)
+    page = main_of(answer.text)
+
+    assert answer.status_code == 403
+    assert str(escape(NOT_HERS)) in page
+    assert UNSAVED_UPDATE not in page
+    assert "Wren" not in page
+    assert "<form" not in page
+    assert watch.statements == []
+    assert after == before
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+@pytest.mark.parametrize("sign_in", ["none", "aged out", "another origin"])
+def test_a_turn_in_press_from_elsewhere_or_with_no_sign_in_keeps_nothing(
+    sign_in: str, press: str, tmp_path: pathlib.Path
+) -> None:
+    """The gate answers first and the route never runs: no copy is made of anything."""
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    with household(tmp_path, "parent") as client:
+        headers = {"Content-Type": URL_ENCODED}
+        if sign_in != "another origin":
+            client.cookies.clear()
+        if sign_in == "aged out":
+            keys = client.app.state.household_keys  # type: ignore[attr-defined]
+            then = datetime.now(UTC) - timedelta(seconds=SESSION_SECONDS + 60)
+            headers["Cookie"] = f"{COOKIE}={issue(Principal.PARENT, keys[Principal.PARENT], then)}"
+        if sign_in == "another origin":
+            headers["Origin"] = "http://elsewhere.example"
+        with watched(client) as watch:
+            answer = client.post(
+                path, content=turn_in_body(press), headers={**PAGE_HEADERS, **headers}
+            )
+
+    assert watch.read == []
+    assert watch.statements == []
+    assert "Wren" not in answer.text
+    if sign_in == "another origin":
+        assert answer.status_code == 403
+        assert answer.text == "This request must come from the same origin."
+    else:
+        assert answer.status_code == 303
+        assert answer.headers["location"] == "/sign-in"
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+def test_a_parents_turn_in_press_is_answered_while_a_decision_holds_the_lock(
+    press: str, tmp_path: pathlib.Path
+) -> None:
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    with household(tmp_path, "parent") as client:
+        state = state_of(client)
+
+        async def held() -> None:
+            await state.decision_lock.acquire()
+
+        client.portal.call(held)  # type: ignore[union-attr]
+        try:
+            answer = client.post(
+                path,
+                content=turn_in_body(press),
+                headers={
+                    **PAGE_HEADERS,
+                    "Content-Type": URL_ENCODED,
+                },
+            )
+        finally:
+            client.portal.call(state.decision_lock.release)  # type: ignore[union-attr]
+
+    assert answer.status_code == 403
+    assert f"readonly>\n{escape(HER_WORDS)}</textarea>" in answer.text
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+@pytest.mark.parametrize(
+    ("subject", "returns"),
+    [
+        (NOWHERE, {}),
+        (ESSAY_ID, {"report_view": "detail", "return_to": "family", "week": "", "plan_id": ""}),
+        (ESSAY_ID, {"week": "2026-09-14"}),
+        (ESSAY_ID, {"report_view": "detail", "return_to": "to_turn_in", "week": ""}),
+        (ESSAY_ID, {"report_view": "detail", "return_to": "https://example.test/", "week": ""}),
+    ],
+    ids=[
+        "an id never on record",
+        "the family page",
+        "another week",
+        "to turn in",
+        "a foreign address",
+    ],
+)
+def test_a_parents_turn_in_press_goes_back_to_her_week_whatever_the_form_names(
+    press: str, subject: str, returns: dict[str, str], tmp_path: pathlib.Path
+) -> None:
+    """The one way back is her current week, from the sign-in alone: nothing the form names,
+    neither the assignment nor a page to go back to, is looked up or followed."""
+    path = f"/student/actions/assignments/{subject}/{press}"
+    body = turn_in_body(press, **returns)
+    with household(tmp_path, "parent") as client, watched(client) as watch:
+        answer = streamed(
+            client,
+            path,
+            [body],
+            [("content-type", URL_ENCODED), ("content-length", str(len(body)))],
+        )
+    page = main_of(answer.text)
+
+    assert answer.status_code == 403
+    assert ways_back_of(page) == [("/student/due-this-week", "Back to her week")]
+    assert "Week of September 14" not in page
+    assert "example.test" not in page
+    assert f"readonly>\n{escape(HER_WORDS)}</textarea>" in page
+    assert watch.statements == []
+    assert watch.looked_up == []
+
+
+@pytest.mark.parametrize("press", TURN_IN_PRESSES)
+def test_a_parents_press_from_an_open_form_shows_her_note_and_not_her_choice(
+    press: str, tmp_path: pathlib.Path
+) -> None:
+    """The open work form on the details sends her checked choice beside her note. A parent's
+    press of it copies the words of her note alone: the choice may be the one already saved,
+    so it is never shown again as unsaved."""
+    path = f"/student/actions/assignments/{ESSAY_ID}/{press}"
+    body = urlencode(
+        [
+            ("status", "done"),
+            ("note", HER_WORDS),
+            ("expected_report_id", "report-synthetic"),
+            ("report_view", "detail"),
+            ("return_to", "week"),
+            ("week", FIXTURE_WEEK),
+            ("plan_id", ""),
+            (TURN_IN_BUTTONS[press], ""),
+        ]
+    ).encode()
+    with household(tmp_path, "parent") as client, watched(client) as watch:
+        answer = streamed(
+            client,
+            path,
+            [body],
+            [("content-type", URL_ENCODED), ("content-length", str(len(body)))],
+        )
+    page = main_of(answer.text)
+
+    assert answer.status_code == 403
+    assert UNSAVED_UPDATE in page
+    assert f"readonly>\n{escape(HER_WORDS)}</textarea>" in page
+    assert "Your choice" not in page
+    assert "Done" not in words(page)
+    assert watch.statements == []

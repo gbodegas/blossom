@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Gerardo Bodegas Martinez
 /*
-  Four enhancements, and every page works with this file absent.
+  Five enhancements, and every page works with this file absent.
 
   The first is for the forms that make a plan: say that a plan is being made,
   keep saying so as the minutes pass, and let one press be one request from
@@ -36,6 +36,10 @@
   or Forward with no such place, an answer that took the focus as it arrived
   gives it back, until the reader's first key or press, or two frames after
   the page loads.
+
+  The fifth says under a screenshot picker how many screenshots are chosen,
+  since a phone hides the browser's own line with its button. Without this
+  file the browser's line still shows.
 */
 (function () {
   "use strict";
@@ -303,5 +307,20 @@
     if (fold) {
       fold.open = true;
     }
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll("input[type='file']"), function (picker) {
+    var line = picker.form ? picker.form.querySelector("[data-chosen]") : null;
+    if (!line) {
+      return;
+    }
+    function count() {
+      var chosen = picker.files ? picker.files.length : 0;
+      line.textContent = chosen === 0
+        ? ""
+        : chosen + (chosen === 1 ? " screenshot" : " screenshots") + " chosen.";
+    }
+    picker.addEventListener("change", count);
+    window.addEventListener("pageshow", count);
   });
 })();
