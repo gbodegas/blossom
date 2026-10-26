@@ -35,7 +35,7 @@ from functools import partial
 from html import unescape
 from html.parser import HTMLParser
 from time import monotonic, sleep
-from typing import Annotated, Any, Protocol, cast
+from typing import Annotated, Any, NoReturn, Protocol, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -2664,8 +2664,10 @@ class HeldByAnother:
     refuses a commit."""
 
     def __init__(self, path: pathlib.Path, *, reading: bool = False) -> None:
+        self.path = path
         self.connection = sqlite3.connect(path, isolation_level=None)
         self.reading = reading
+        self.released = False
 
     def __enter__(self) -> None:
         if self.reading:
@@ -2674,9 +2676,16 @@ class HeldByAnother:
         else:
             self.connection.execute("BEGIN EXCLUSIVE")
 
-    def __exit__(self, *_: object) -> None:
+    def release(self) -> None:
+        """Let the file go, once: leaving does the same, and nothing more after this."""
+        if self.released:
+            return
+        self.released = True
         self.connection.execute("ROLLBACK")
         self.connection.close()
+
+    def __exit__(self, *_: object) -> None:
+        self.release()
 
 
 HANG_LIMIT_SECONDS = 60.0
@@ -2685,18 +2694,22 @@ hung: a hang detector, far above any run measured, slowed or not. It times nothi
 
 
 class WaitBeside:
-    """Another connection running ``statement`` on the held file under a busy timeout of
+    """Another connection running ``statement`` on ``held``'s file under a busy timeout of
     ``seconds``, on a daemon thread beside a press, so a delay to the process while both wait
     reaches both: ``took`` is how long it lasted, ``refused`` whether its error's primary code
     was ``SQLITE_BUSY``. Entering it returns once the thread is about to run its statement, so
     a press made next starts with it; right after a connect that failed, which leaves
     ``refused`` false; or after ``HANG_LIMIT_SECONDS``, if the thread never gets that far.
-    Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the thread; a wait still running then is
-    interrupted, given at most 5 seconds more to end, and fails the test as hung, before either
-    is read."""
+    Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the thread. A wait still running then is
+    interrupted and the file let go, which ends a statement running or a busy wait, and is
+    given at most 5 seconds more: if it ends, the test fails as hung, before either is read;
+    if it still runs, ``watch`` ends the run, naming the test."""
 
-    def __init__(self, path: pathlib.Path, seconds: float, statement: str) -> None:
-        self.path, self.seconds, self.statement = path, seconds, statement
+    def __init__(
+        self, held: HeldByAnother, seconds: float, statement: str, watch: "HangWatch"
+    ) -> None:
+        self.held, self.path, self.watch = held, held.path, watch
+        self.seconds, self.statement = seconds, statement
         self.took = 0.0
         self.refused = False
         self.connection: sqlite3.Connection | None = None
@@ -2727,15 +2740,17 @@ class WaitBeside:
         self.thread.join(HANG_LIMIT_SECONDS)
         if not self.thread.is_alive():
             return
+        hung = f"the wait beside the press still ran after {HANG_LIMIT_SECONDS:g} s: hung"
         try:
             if self.connection is not None:
                 self.connection.interrupt()
         except sqlite3.ProgrammingError:
             pass
-        # Bounded too: the interrupted statement ends and its thread closes the connection.
+        self.held.release()
         self.thread.join(5.0)
+        if self.thread.is_alive():
+            self.watch.end_run(f"{hung}, and still ran once interrupted and let go")
         if kind is None:
-            hung = f"the wait beside the press still ran after {HANG_LIMIT_SECONDS:g} s: hung"
             raise AssertionError(hung)
 
 
@@ -2769,6 +2784,24 @@ class HangWatch:
         os.close(self.terminal)
         self.terminal = None
 
+    def say(self, line: str) -> int:
+        """The terminal's standard error, with what pytest has printed so far flushed to it and
+        ``line`` written there after the test's name."""
+        test = os.environ.get("PYTEST_CURRENT_TEST", "a held-file test")
+        with self.capsys.disabled():
+            sys.stdout.flush()
+            sys.stderr.flush()
+            terminal = os.dup(2)
+        os.write(terminal, f"\n{test}: {line}\n".encode())
+        return terminal
+
+    def end_run(self, hung: str) -> NoReturn:
+        """End the run now, naming the test, with every thread's traceback: for a thread that
+        nothing could stop, so it can't outlive the test."""
+        terminal = self.say(f"{hung}; the run ends now")
+        faulthandler.dump_traceback(file=terminal)
+        os._exit(1)
+
     def press[T](self, call: Callable[[], T]) -> tuple[T, float]:
         """What ``call`` returns, made on a daemon thread, and how long it took."""
         returned: list[T] = []
@@ -2790,14 +2823,8 @@ class HangWatch:
         thread.join(HANG_LIMIT_SECONDS)
         if thread.is_alive():
             hung = f"the press still ran after {HANG_LIMIT_SECONDS:g} s: hung"
-            test = os.environ.get("PYTEST_CURRENT_TEST", "a held-file test")
-            with self.capsys.disabled():
-                # What pytest has printed so far reaches the terminal even if the run ends.
-                sys.stdout.flush()
-                sys.stderr.flush()
-                self.terminal = os.dup(2)
-            ending = f"\n{test}: {hung}; the run ends in {HANG_LIMIT_SECONDS:g} s"
-            os.write(self.terminal, f"{ending} unless it cleans up\n".encode())
+            ending = f"the run ends in {HANG_LIMIT_SECONDS:g} s unless it cleans up"
+            self.terminal = self.say(f"{hung}; {ending}")
             self.hung, self.ends = thread, monotonic() + HANG_LIMIT_SECONDS
             faulthandler.dump_traceback_later(HANG_LIMIT_SECONDS, exit=True, file=self.terminal)
             raise AssertionError(hung)

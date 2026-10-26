@@ -1913,13 +1913,12 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
         before = every_row(database_of(client))
+        held = HeldByAnother(database_of(client))
         with (
             Statements(state_of(client)) as seen,
             AskedWaits(state_of(client).drafts) as asked,
-            HeldByAnother(database_of(client)),
-            WaitBeside(
-                database_of(client), STORE_WAIT_SECONDS, "SELECT COUNT(*) FROM drafts"
-            ) as beside,
+            held,
+            WaitBeside(held, STORE_WAIT_SECONDS, "SELECT COUNT(*) FROM drafts", watch) as beside,
         ):
             answer, took = watch.press(lambda: client.post(path, data=data, headers=PAGE_HEADERS))
         after = every_row(database_of(client))
@@ -1978,10 +1977,11 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
         asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
         path = f"/parent/actions/help/{asked}"
         before = every_row(database_of(client))
+        held = HeldByAnother(database_of(client))
         with (
             Statements(state) as seen,
-            HeldByAnother(database_of(client)),
-            WaitBeside(database_of(client), 5.0, "BEGIN IMMEDIATE") as beside,
+            held,
+            WaitBeside(held, 5.0, "BEGIN IMMEDIATE", watch) as beside,
         ):
             answer, took = watch.press(
                 lambda: client.post(path, data={"step": "accept", "response": TYPED})
