@@ -441,8 +441,9 @@ def upload_refusal(request: Request, state: ApplicationState, error: Exception) 
 
 
 def store_refusal(request: Request, state: ApplicationState, error: Exception) -> Response:
-    """A store's refusal of a press on a review, as its page says it. A busy store began
-    nothing, so the press changed nothing."""
+    """A store's refusal of a request on a review or one of its images, or of an upload for
+    any reason but a busy store, as its page says it. A busy store began nothing, so the
+    request changed nothing."""
     marks = marks_of(state)
     if isinstance(error, TooManyImages):
         return said_page(request, marks, too_many(error.free), 409)
