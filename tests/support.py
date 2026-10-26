@@ -2689,9 +2689,11 @@ class WaitBeside:
     ``seconds``, on a daemon thread beside a press, so a delay to the process while both wait
     reaches both: ``took`` is how long it lasted, ``refused`` whether its error's primary code
     was ``SQLITE_BUSY``. Entering it returns once the thread is about to run its statement, so
-    a press made next starts with it. Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the
-    thread; a wait still running then is interrupted, given at most 5 seconds more to end, and
-    fails the test as hung, before either is read."""
+    a press made next starts with it; right after a connect that failed, which leaves
+    ``refused`` false; or after ``HANG_LIMIT_SECONDS``, if the thread never gets that far.
+    Leaving it waits at most ``HANG_LIMIT_SECONDS`` for the thread; a wait still running then is
+    interrupted, given at most 5 seconds more to end, and fails the test as hung, before either
+    is read."""
 
     def __init__(self, path: pathlib.Path, seconds: float, statement: str) -> None:
         self.path, self.seconds, self.statement = path, seconds, statement
