@@ -8859,6 +8859,12 @@ def test_a_press_that_kept_answers_says_they_were_kept_before_the_review_ended(
         assert answer.text.index(first.group(0)) < answer.text.index(str(escape(gone)))
 
 
+NAMES_ENDED: Final = (
+    "The homework wasn't saved because the assignments you ticked come from screenshots with "
+    "different names."
+)
+
+
 def test_an_ended_review_s_page_says_each_press_line_as_listed() -> None:
     """Every line an ended review's page rewords or leaves out, as it says it; the changed line
     says no homework was saved only where no homework transaction committed."""
@@ -8884,6 +8890,11 @@ def test_an_ended_review_s_page_says_each_press_line_as_listed() -> None:
         said["already"]: [said["already"]],
         said["later_behind"]: [said["later_behind"]],
         imports.SAID["no_name_check"]: [imports.SAID["no_name_check"]],
+        imports.wasnt_saved("names"): [NAMES_ENDED],
+        said["unsaved_typing"]: [],
+        imports.wasnt_saved("gate"): [imports.wasnt_saved("gate")],
+        imports.wasnt_saved("open"): [imports.wasnt_saved("open")],
+        imports.wasnt_saved("stale"): [imports.wasnt_saved("stale")],
     }
     for line, ended in expected.items():
         assert imports.ended_lines([line], saved=False) == ended, line
@@ -8927,6 +8938,42 @@ def test_a_committed_save_with_a_changed_group_never_says_no_homework_when_its_r
         assert says(answer.text, imports.PRESS_SAID["incomplete"])
 
 
+def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_typing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save that committed one group with a title typed for the other: on a review that stays
+    readable it says the changes on the rows below aren't saved yet; on a review found ended at
+    the page's read, that line is left out, while the counts and the typed title stay."""
+    answers: dict[str, Answer] = {}
+    for mode in ("live", "ended"):
+        with here(open_settings(tmp_path / mode)) as browser:
+            draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+            page = her_name_answered(browser, draft_id, page)
+            first_unit, open_unit = units_on(page)
+            titles = [f"correct:{box_subject(page, 'title', n)}" for n in range(2)]
+            [other] = [t for t in titles if json.loads(t.removeprefix("correct:"))[0] in open_unit]
+            posted = page_post(page, "save", tick=[first_unit], typed={other: "Chains Guide Six"})
+            drafts = state_of(browser).import_drafts
+            puts = []
+            if mode == "ended":
+                puts.append(
+                    restored(drafts, "snapshot", failing_read(drafts.snapshot, 4, DraftExpired))
+                )
+            answers[mode] = send(browser, draft_id, posted)
+            for undo in puts:
+                undo()
+
+    live, ended = answers["live"].text, answers["ended"].text
+    counts = "Saved: 1 new assignment. 1 still needs checking."
+    assert answers["live"].status_code == answers["ended"].status_code == 200
+    assert says(live, imports.PRESS_SAID["unsaved_typing"])
+    assert not says(ended, imports.PRESS_SAID["unsaved_typing"])
+    assert says(live, counts)
+    assert says(ended, counts)
+    assert says(ended, imports.SAID["expired"])
+    assert TYPED_BACK.findall(ended) == ["Chains Guide Six"]
+
+
 INSTRUCTION_CASES: Final = {
     "keep refused busy": ("keep", "keep_answers", None, "keep_failed", "Try again."),
     "later refused busy": ("later", "save_for_later", None, "later_failed", "Try again."),
@@ -8942,6 +8989,7 @@ INSTRUCTION_CASES: Final = {
     ),
     "keep too long": ("keep", None, None, "too_long", "Shorten it and press again."),
     "save changed, no answer": ("save", None, NotSaved("changed"), "changed", None),
+    "save not saved, names": ("save", None, NotSaved("names"), "names", None),
 }
 
 
@@ -8954,7 +9002,11 @@ def test_an_ended_review_s_page_drops_instructions_that_need_the_review(
     fact kept, a lone instruction is left out, and the changed line of a homework transaction
     that didn't commit says no homework was saved by this attempt."""
     press, refused_write, outcome, key, instruction = INSTRUCTION_CASES[case]
-    full = {**imports.PRESS_SAID, "out_of_date": imports.OUT_OF_DATE}[key]
+    full = {
+        **imports.PRESS_SAID,
+        "out_of_date": imports.OUT_OF_DATE,
+        "names": imports.wasnt_saved("names"),
+    }[key]
     answers: dict[str, Answer] = {}
     for mode in ("live", "ended"):
         with here(open_settings(tmp_path / mode)) as browser:
@@ -8994,6 +9046,9 @@ def test_an_ended_review_s_page_drops_instructions_that_need_the_review(
         assert instruction not in ended
     if case == "save changed, no answer":
         assert says(ended, imports.NO_HOMEWORK)
+    elif case == "save not saved, names":
+        assert says(ended, NAMES_ENDED)
+        assert "save each name&#39;s assignments on their own" not in ended
     elif case == "save nothing ticked":
         assert not says(ended, imports.NO_HOMEWORK)
 

@@ -1194,6 +1194,24 @@ PRESS_SAID: Final = {
     ),
 }
 """What the review's presses say, all in one place."""
+NOT_SAVED_BECAUSE: Final = {
+    "gate": "a screenshot isn't read yet",
+    "open": "an assignment you ticked still has a question to answer",
+    "names": (
+        "the assignments you ticked come from screenshots with different names; save each "
+        "name's assignments on their own"
+    ),
+    "stale": "this review changed in another tab",
+}
+"""Why a press's homework wasn't saved, for "The homework wasn't saved: {reason}."."""
+
+
+def wasnt_saved(reason: str) -> str:
+    """Why a press's homework transaction didn't commit, by ``NOT_SAVED_BECAUSE``."""
+    because = NOT_SAVED_BECAUSE.get(reason, NOT_SAVED_BECAUSE["stale"])
+    return f"The homework wasn't saved: {because}. Nothing of it was written."
+
+
 UNSHOWN_SAID: Final = {
     PRESS_SAID["changed"]: (
         "Saving an assignment you ticked would now do something different. Check it in the "
@@ -1231,10 +1249,17 @@ ENDED_SAID: Final = {
     PRESS_SAID["too_long"]: without(PRESS_SAID["too_long"], "Shorten it and press again."),
     OUT_OF_DATE: without(OUT_OF_DATE, "Check the review before trying again."),
     PAGE_SAID["both"]: "",
+    wasnt_saved("names"): (
+        "The homework wasn't saved because the assignments you ticked come from screenshots "
+        "with different names."
+    ),
+    PRESS_SAID["unsaved_typing"]: "",
 }
 """A press's lines as the page for a review that expired, or that the sweep took away, says
-them: kept answers in the past, so no answer or correction seems reachable, and with no
-instruction that needs the review; an empty line is left out."""
+them: each line saying answers are kept, in the past; each line holding an instruction that
+needs that review, as listed here without it; each line that is only such an instruction, or
+points at the review's rows, left out (empty). A line not listed is said as the review says
+it."""
 
 
 def ended_lines(lines: Iterable[str], *, saved: bool) -> list[str]:
@@ -1255,16 +1280,6 @@ def ended_lines(lines: Iterable[str], *, saved: bool) -> list[str]:
 KEPT_SAID: Final = frozenset({PRESS_SAID["kept"], PRESS_SAID["answers_kept"]})
 """The lines that only confirm a press kept answers, said apart from its problems where the
 review can't be shown."""
-NOT_SAVED_BECAUSE: Final = {
-    "gate": "a screenshot isn't read yet",
-    "open": "an assignment you ticked still has a question to answer",
-    "names": (
-        "the assignments you ticked come from screenshots with different names; save each "
-        "name's assignments on their own"
-    ),
-    "stale": "this review changed in another tab",
-}
-"""Why a press's homework wasn't saved, for "The homework wasn't saved: {reason}."."""
 
 
 def saved_for_later_at(state: ApplicationState) -> str:
@@ -1309,8 +1324,7 @@ def not_saved(outcome: NotSaved, answered: bool) -> list[str]:
         return [PRESS_SAID["changed_by_answers"] if answered else PRESS_SAID["changed"]]
     if outcome.reason in ("busy", "failed"):
         return [*kept, PRESS_SAID[outcome.reason]]
-    because = NOT_SAVED_BECAUSE.get(outcome.reason, NOT_SAVED_BECAUSE["stale"])
-    return [*kept, f"The homework wasn't saved: {because}. Nothing of it was written."]
+    return [*kept, wasnt_saved(outcome.reason)]
 
 
 async def review_post(
