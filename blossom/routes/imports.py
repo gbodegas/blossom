@@ -483,17 +483,24 @@ REVIEW_UNAVAILABLE: Final = "This review can't be shown right now. Try again in 
 
 
 async def gone_with_typing(
-    request: Request, state: ApplicationState, gone: str, said: Sequence[str], status: int
+    request: Request,
+    state: ApplicationState,
+    gone: str,
+    said: Sequence[str],
+    status: int,
+    *,
+    saved: bool = False,
 ) -> Response:
     """A press on a review that expired, or that the sweep took away: what the press did first, if
-    anything committed, kept answers said in the past (``GONE_SAID``), then why the review can't
-    take more, and every correction the post typed in a box to copy, read from the post alone.
+    anything committed, as an ended review's page says it (``ended_lines``; ``saved`` when its
+    homework committed), then why the review can't take more, and every correction the post
+    typed in a box to copy, read from the post alone.
     Nothing of the review is shown, nothing is stored, and nothing more can be saved from it."""
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
-            "said": [*(GONE_SAID.get(line, line) for line in said), SAID[gone]],
+            "said": [*ended_lines(said, saved=saved), SAID[gone]],
             "typed": await typing_of(request),
             "typed_said": TYPED_SAID,
             "marks": marks_of(state),
@@ -525,7 +532,7 @@ async def unshown_with_typing(
     kept or failed to keep, its kept answers apart from the rest, then that the review can't be
     shown, every correction it typed given back to copy, and the way back to the review. It
     reads no store and offers nothing that repeats the press; its status is the press's own."""
-    lines = [UNSHOWN_SAID.get(line, line) for line in said]
+    lines = [shown for line in said for shown in UNSHOWN_SAID.get(line, (line,))]
     return templates.TemplateResponse(
         request,
         "import_said.html",
@@ -614,8 +621,8 @@ async def snapshot_keeping_typing(
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (DraftExpired, DraftNotFound) as error:
         if done:
-            ended = [GONE_SAID.get(line, line) for line in (*said, SAID[gone_by(error)])]
-            return await saved_unread(request, state, [GONE_SAID.get(d, d) for d in done], ended)
+            ended = [*ended_lines(said, saved=True), SAID[gone_by(error)]]
+            return await saved_unread(request, state, ended_lines(done, saved=True), ended)
         return await refused_keeping_typing(request, state, error, said, status)
     except (StoreBusy, WriterBusy):
         if done:
@@ -1190,20 +1197,61 @@ PRESS_SAID: Final = {
 UNSHOWN_SAID: Final = {
     PRESS_SAID["changed"]: (
         "Saving an assignment you ticked would now do something different. Check it in the "
-        "review and save again."
+        "review and save again.",
     ),
     PRESS_SAID["changed_by_answers"]: (
-        "Your answers are kept. They change what saving does, so no homework was saved by this "
-        "attempt. Check the effects in the review, then save."
+        PRESS_SAID["answers_kept"],
+        "They change what saving does, so no homework was saved by this attempt. Check the "
+        "effects in the review, then save.",
     ),
 }
-"""The press lines that point at the review's rows, as a page that can't show them says them."""
-GONE_SAID: Final = {
-    PRESS_SAID[key]: PRESS_SAID["kept_before_ended"]
-    for key in ("kept", "answers_kept", "later", "changed_by_answers", "left_open")
+"""The press lines that point at the review's rows, as a page that can't show them says them,
+the kept answers apart from the rest."""
+NO_HOMEWORK: Final = "No homework was saved by this attempt."
+"""What a press whose homework transaction didn't commit says of it where nothing else does."""
+
+
+def without(line: str, ending: str) -> str:
+    """A line with its closing instruction left out."""
+    return line.removesuffix(" " + ending)
+
+
+ENDED_SAID: Final = {
+    **{
+        PRESS_SAID[key]: PRESS_SAID["kept_before_ended"]
+        for key in ("kept", "answers_kept", "later", "left_open")
+    },
+    PRESS_SAID["changed_by_answers"]: f"{PRESS_SAID['kept_before_ended']} {NO_HOMEWORK}",
+    PRESS_SAID["none_chosen"]: "",
+    PRESS_SAID["busy"]: without(PRESS_SAID["busy"], "Save again."),
+    PRESS_SAID["failed"]: without(PRESS_SAID["failed"], "Save again."),
+    PRESS_SAID["keep_failed"]: without(PRESS_SAID["keep_failed"], "Try again."),
+    PRESS_SAID["save_failed"]: without(PRESS_SAID["save_failed"], "Try again."),
+    PRESS_SAID["later_failed"]: without(PRESS_SAID["later_failed"], "Try again."),
+    PRESS_SAID["too_long"]: without(PRESS_SAID["too_long"], "Shorten it and press again."),
+    OUT_OF_DATE: without(OUT_OF_DATE, "Check the review before trying again."),
+    PAGE_SAID["both"]: "",
 }
-"""The lines that say a press kept answers, as the page for a review that expired, or that the
-sweep took away, says them: in the past, suggesting no answer or correction can be reached."""
+"""A press's lines as the page for a review that expired, or that the sweep took away, says
+them: kept answers in the past, so no answer or correction seems reachable, and with no
+instruction that needs the review; an empty line is left out."""
+
+
+def ended_lines(lines: Iterable[str], *, saved: bool) -> list[str]:
+    """A press's lines as an ended review's page says them (``ENDED_SAID``). The changed line
+    of a homework transaction that didn't commit says that no homework was saved; beside a
+    save that committed (``saved``), it is left out."""
+    out = []
+    for line in lines:
+        if line == PRESS_SAID["changed"]:
+            ended = "" if saved else NO_HOMEWORK
+        else:
+            ended = ENDED_SAID.get(line, line)
+        if ended:
+            out.append(ended)
+    return out
+
+
 KEPT_SAID: Final = frozenset({PRESS_SAID["kept"], PRESS_SAID["answers_kept"]})
 """The lines that only confirm a press kept answers, said apart from its problems where the
 review can't be shown."""
@@ -1500,7 +1548,7 @@ async def outcome_page(
         lines = [PRESS_SAID["incomplete"], *done, *problems]
         gone = await gone_now(state, draft_id)
         if gone is not None:
-            return await gone_with_typing(request, state, gone, lines, 200)
+            return await gone_with_typing(request, state, gone, lines, 200, saved=True)
         return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
     if outcome.closed:
         week = await week_of(state, outcome.pairs)

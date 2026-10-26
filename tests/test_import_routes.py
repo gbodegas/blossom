@@ -8311,7 +8311,7 @@ KEPT_CASES: Final = {
     "not saved, busy": (503, ["answers_kept", "busy"]),
     "name check unreadable": (500, ["answers_kept", "no_name_check"]),
     "already saved": (200, ["answers_kept", "already"]),
-    "changed by answers": (409, ["changed_unshown"]),
+    "changed by answers": (409, ["answers_kept", "changed_unshown_rest"]),
 }
 
 
@@ -8357,7 +8357,10 @@ def test_a_press_that_kept_answers_says_so_when_its_review_can_t_be_read(
     lines = {
         **imports.PRESS_SAID,
         "no_name_check": imports.SAID["no_name_check"],
-        "changed_unshown": imports.UNSHOWN_SAID[imports.PRESS_SAID["changed_by_answers"]],
+        "changed_unshown_rest": (
+            "They change what saving does, so no homework was saved by this attempt. Check the "
+            "effects in the review, then save."
+        ),
     }
     assert answer.status_code == status
     for key in keys:
@@ -8368,14 +8371,20 @@ def test_a_press_that_kept_answers_says_so_when_its_review_can_t_be_read(
     assert not says(answer.text, imports.PRESS_SAID["changed_by_answers"])
     assert len(after) > len(before)
     kept_block = KEPT_BLOCK.search(answer.text)
+    problem = PROBLEM_BLOCK.search(answer.text)
+    assert problem is not None
     if "answers_kept" in keys:
+        assert kept_block is not None
         assert lines_in(kept_block) == [imports.PRESS_SAID["answers_kept"]]
         assert focused(answer.text) == KEPT_STATUS
+        assert kept_block.start() < problem.start()
     else:
         assert kept_block is None
-    shown = lines_in(PROBLEM_BLOCK.search(answer.text))
-    assert shown[-1] == imports.REVIEW_NOT_SHOWN
-    assert imports.PRESS_SAID["answers_kept"] not in shown
+    shown = lines_in(problem)
+    assert shown == [
+        *(lines[key] for key in keys if key != "answers_kept"),
+        imports.REVIEW_NOT_SHOWN,
+    ]
 
 
 FAILED_WRITES: Final = {"keep": "keep_answers", "later": "save_for_later", "save": "keep_answers"}
@@ -8747,23 +8756,33 @@ def test_a_save_that_would_now_do_something_else_says_to_check_it_in_the_review(
         after = stored_answers(browser, draft_id)
 
     assert answer.status_code == 409
-    assert says(answer.text, imports.UNSHOWN_SAID[imports.PRESS_SAID["changed"]])
+    assert says(answer.text, imports.UNSHOWN_SAID[imports.PRESS_SAID["changed"]][0])
     assert not says(answer.text, imports.PRESS_SAID["changed"])
     assert not says(answer.text, imports.PRESS_SAID["answers_kept"])
     assert says(answer.text, imports.REVIEW_NOT_SHOWN)
     assert after == before
 
 
+G6B: Final = (
+    "Your answers were kept before this review ended. No homework was saved by this attempt."
+)
+ENDED_LINES: Final = {
+    "busy, ended": (
+        "The homework wasn't saved because the household file was busy; nothing of it was written."
+    ),
+    "G6b": G6B,
+    "counts": "Saved: 1 new assignment. 1 still needs checking.",
+}
 ENDED_CASES: Final = {
-    "keep": (200, 2, []),
-    "later saved": (200, 2, []),
-    "later behind": (409, 2, ["later_behind"]),
-    "nothing ticked": (200, 2, ["none_chosen"]),
-    "name check unreadable": (500, 2, ["no_name_check"]),
-    "not saved, busy": (503, 2, ["busy"]),
-    "changed by answers": (409, 2, []),
-    "already saved": (200, 2, ["already"]),
-    "partly saved": (200, 3, []),
+    "keep": (200, 2, ["kept_before_ended"], []),
+    "later saved": (200, 2, ["kept_before_ended"], []),
+    "later behind": (409, 2, ["kept_before_ended", "later_behind"], []),
+    "nothing ticked": (200, 2, ["kept_before_ended"], ["none_chosen"]),
+    "name check unreadable": (500, 2, ["kept_before_ended", "no_name_check"], []),
+    "not saved, busy": (503, 2, ["kept_before_ended", "busy, ended"], ["busy"]),
+    "changed by answers": (409, 2, ["G6b"], ["changed_by_answers"]),
+    "already saved": (200, 2, ["kept_before_ended", "already"], []),
+    "partly saved": (200, 3, ["counts", "kept_before_ended"], []),
 }
 
 
@@ -8776,7 +8795,7 @@ def test_a_press_that_kept_answers_says_they_were_kept_before_the_review_ended(
     were kept before it ended, never that they are kept, saved for later or left open, then why
     the review is gone, at the press's own status. The page keeps its styling: the first line
     takes the focus in the problem style, or the save's outcome does."""
-    status, at, keys = ENDED_CASES[case]
+    status, at, keys, dropped = ENDED_CASES[case]
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
@@ -8809,11 +8828,14 @@ def test_a_press_that_kept_answers_says_they_were_kept_before_the_review_ended(
         put_back()
 
     gone = imports.SAID["expired" if ending is DraftExpired else "absent"]
-    lines = {**imports.PRESS_SAID, "no_name_check": imports.SAID["no_name_check"]}
+    lines = {**imports.PRESS_SAID, "no_name_check": imports.SAID["no_name_check"], **ENDED_LINES}
     assert answer.status_code == status
-    assert says(answer.text, imports.PRESS_SAID["kept_before_ended"])
     for key in keys:
         assert says(answer.text, lines[key]), key
+    for key in dropped:
+        assert not says(answer.text, lines[key]), key
+    for instruction in ("Save again.", "Try again.", "Choose at least one assignment to save."):
+        assert instruction not in answer.text
     assert says(answer.text, gone)
     assert "Your answers are kept" not in answer.text
     assert not says(answer.text, imports.PRESS_SAID["left_open"])
@@ -8822,12 +8844,121 @@ def test_a_press_that_kept_answers_says_they_were_kept_before_the_review_ended(
     if case == "partly saved":
         shown = OUTCOME.search(answer.text)
         assert shown is not None
-        assert imports.PRESS_SAID["kept_before_ended"] in lines_in(shown)
+        heading = re.search(r'<h2 id="outcome-heading"[^>]*>([^<]*)</h2>', shown.group(1))
+        assert heading is not None
+        assert html.unescape(heading.group(1)) == lines["counts"]
+        assert lines_in(shown)[0] == lines["kept_before_ended"]
     else:
         assert focused(answer.text) == ALERT
-        assert answer.text.index(str(escape(imports.PRESS_SAID["kept_before_ended"]))) < (
-            answer.text.index(str(escape(gone)))
+        first = re.search(
+            r'<p class="problem" role="alert" tabindex="-1" autofocus>([^<]*)</p>', answer.text
         )
+        assert first is not None
+        assert html.unescape(first.group(1)) == lines[keys[0]]
+        assert answer.text.index(first.group(0)) < answer.text.index(str(escape(gone)))
+
+
+def test_an_ended_review_s_page_says_each_press_line_as_listed() -> None:
+    """Every line an ended review's page rewords or leaves out, as it says it; the changed line
+    says no homework was saved only where no homework transaction committed."""
+    said = imports.PRESS_SAID
+    kept = "Your answers were kept before this review ended."
+    expected = {
+        said["kept"]: [kept],
+        said["answers_kept"]: [kept],
+        said["later"]: [kept],
+        said["left_open"]: [kept],
+        said["changed_by_answers"]: [G6B],
+        said["none_chosen"]: [],
+        said["busy"]: [ENDED_LINES["busy, ended"]],
+        said["failed"]: ["The homework wasn't saved; nothing of it was written."],
+        said["keep_failed"]: ["Your answers couldn't be kept."],
+        said["save_failed"]: ["Your answers couldn't be kept, and nothing was saved."],
+        said["later_failed"]: ["Your answers couldn't be kept, and nothing was saved for later."],
+        said["too_long"]: [
+            "A correction is longer than its field takes, so nothing was kept or saved."
+        ],
+        imports.OUT_OF_DATE: ["This page is out of date."],
+        screenshot_page.SAID["both"]: [],
+        said["already"]: [said["already"]],
+        said["later_behind"]: [said["later_behind"]],
+        imports.SAID["no_name_check"]: [imports.SAID["no_name_check"]],
+    }
+    for line, ended in expected.items():
+        assert imports.ended_lines([line], saved=False) == ended, line
+    assert imports.ended_lines([said["changed"]], saved=False) == [imports.NO_HOMEWORK]
+    assert imports.ended_lines([said["changed"]], saved=True) == []
+
+
+INSTRUCTION_CASES: Final = {
+    "keep refused busy": ("keep", "keep_answers", None, "keep_failed", "Try again."),
+    "later refused busy": ("later", "save_for_later", None, "later_failed", "Try again."),
+    "save refused busy": ("save", "keep_answers", None, "save_failed", "Try again."),
+    "save not saved, failed": ("save", None, NotSaved("failed"), "failed", "Save again."),
+    "save nothing ticked": ("save", None, None, "none_chosen", None),
+    "keep out of date": (
+        "keep",
+        None,
+        None,
+        "out_of_date",
+        "Check the review before trying again.",
+    ),
+    "keep too long": ("keep", None, None, "too_long", "Shorten it and press again."),
+    "save changed, no answer": ("save", None, NotSaved("changed"), "changed", None),
+}
+
+
+@pytest.mark.parametrize("case", list(INSTRUCTION_CASES))
+def test_an_ended_review_s_page_drops_instructions_that_need_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """The same press on a review that stays readable says its whole line, instruction
+    included; on a review found ended at the page's read, the instruction is left out and the
+    fact kept, a lone instruction is left out, and the changed line of a homework transaction
+    that didn't commit says no homework was saved by this attempt."""
+    press, refused_write, outcome, key, instruction = INSTRUCTION_CASES[case]
+    full = {**imports.PRESS_SAID, "out_of_date": imports.OUT_OF_DATE}[key]
+    answers: dict[str, Answer] = {}
+    for mode in ("live", "ended"):
+        with here(open_settings(tmp_path / mode)) as browser:
+            draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+            page = her_name_answered(browser, draft_id, page)
+            if case == "save changed, no answer":
+                send(browser, draft_id, page_post(page, "keep"))
+                page = browser.get(f"/parent/imports/{draft_id}").text
+            drafts = state_of(browser).import_drafts
+            _, title = name_and_title(page)
+            typed = {title: "T" * 2000} if case == "keep too long" else {}
+            tick = [] if case == "save nothing ticked" else units_on(page)[:1]
+            posted = page_post(page, press, typed=typed, tick=tick)
+            if case == "keep out of date":
+                send(browser, draft_id, page_post(page, "keep"))
+            puts = []
+            if refused_write is not None:
+                puts.append(restored(drafts, refused_write, busy_store(StoreBusy)))
+            if outcome is not None:
+                monkeypatch.setattr(imports, "save_homework", lambda *_, o=outcome, **__: o)
+            if mode == "ended":
+                puts.append(
+                    restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, DraftExpired))
+                )
+            answers[mode] = send(browser, draft_id, posted)
+            for undo in reversed(puts):
+                undo()
+
+    live, ended = answers["live"].text, answers["ended"].text
+    assert answers["live"].status_code == answers["ended"].status_code
+    assert says(live, full)
+    assert not says(ended, full)
+    assert says(ended, imports.SAID["expired"])
+    if instruction is not None:
+        assert full.endswith(" " + instruction)
+        assert says(ended, full.removesuffix(" " + instruction))
+        assert instruction not in ended
+    if case == "save changed, no answer":
+        assert says(ended, imports.NO_HOMEWORK)
+    elif case == "save nothing ticked":
+        assert not says(ended, imports.NO_HOMEWORK)
 
 
 @pytest.mark.parametrize("answered", [True, False], ids=["answers kept", "no answer changed"])
