@@ -2804,6 +2804,30 @@ class HangWatch:
         return returned[0], took
 
 
+class AskedWaits:
+    """The waits a store's calls are given, from the timeout each asks the store's lock for:
+    its ``_lock`` stands in while inside, so time the process is held up changes nothing."""
+
+    def __init__(self, store: Any) -> None:  # noqa: ANN401
+        self.store = store
+        self.lock = store._lock
+        self.waits: list[float] = []
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        self.waits.append(timeout)
+        return bool(self.lock.acquire(blocking, timeout))
+
+    def release(self) -> None:
+        self.lock.release()
+
+    def __enter__(self) -> "AskedWaits":
+        self.store._lock = self
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.store._lock = self.lock
+
+
 def the_alert(page: str) -> str:
     """The words of the one focused explanation on a page that reads no store, links and
     all, or empty when there is none."""

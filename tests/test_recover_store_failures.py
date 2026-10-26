@@ -56,6 +56,7 @@ from tests.support import (
     PLAN_DATE,
     REPORT,
     UNDO,
+    AskedWaits,
     HangWatch,
     HeldByAnother,
     Statements,
@@ -1903,8 +1904,8 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
 ) -> None:
     """While another connection holds the file, her press with neither Done nor Not yet chosen
     is refused on the page that reads no store, with her words and nothing written. It reads the
-    drafts store with a single statement, under a busy timeout above 4000 ms and at most 5000 ms,
-    and lasts less than 2.5 seconds longer than another connection's read of the held file
+    drafts store with a single statement, in a call given 5 seconds, under a busy timeout of at
+    most 5000 ms, and lasts within 2.5 seconds of another connection's read of the held file
     under ``STORE_WAIT_SECONDS``, timed beside the press so a delay to the process while both
     wait reaches both. The press and the wait beside it each have ``HANG_LIMIT_SECONDS`` before
     they count as hung."""
@@ -1914,6 +1915,7 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
         before = every_row(database_of(client))
         with (
             Statements(state_of(client)) as seen,
+            AskedWaits(state_of(client).drafts) as asked,
             HeldByAnother(database_of(client)),
             WaitBeside(
                 database_of(client), STORE_WAIT_SECONDS, "SELECT COUNT(*) FROM drafts"
@@ -1943,11 +1945,12 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
         for line in seen[: seen.index(ran[0])]
         if line.strip().upper().startswith("PRAGMA BUSY_TIMEOUT=")
     ]
+    assert asked.waits == [5.0]
     assert timeouts
-    assert 4000 < timeouts[-1] <= 5000
+    assert timeouts[-1] <= 5000
     assert beside.refused, (took, beside.took)
-    # Its time past the wait beside it: under half the 5 second wait pinned above.
-    assert took - beside.took < 2.5, (took, beside.took)
+    # Its time against the wait beside it: within half the 5 second wait pinned above.
+    assert -2.5 < took - beside.took < 2.5, (took, beside.took)
 
 
 def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
@@ -1956,7 +1959,7 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     """While another connection holds the file, a parent's reply is refused on the page that
     reads no store, with the words, nothing written and no transaction left open, and the same
     press lands once after. It asks once for the file's writer, under the help-requests store's
-    busy timeout of 5000 ms, and lasts less than 2.5 seconds longer than another connection's
+    busy timeout of 5000 ms, and lasts within 2.5 seconds of another connection's
     ``BEGIN IMMEDIATE`` on the held file under 5 seconds, timed beside the press so a delay to
     the process while both wait reaches both. Each press, and the wait beside the first, has
     ``HANG_LIMIT_SECONDS`` before it counts as hung."""
@@ -1994,8 +1997,8 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     assert [update.body for update in moved.parent_updates] == [TYPED]
     assert timeout == 5000
     assert beside.refused, (took, beside.took)
-    # Its time past the wait beside it: under half the 5 second wait pinned above.
-    assert took - beside.took < 2.5, (took, beside.took)
+    # Its time against the wait beside it: within half the 5 second wait pinned above.
+    assert -2.5 < took - beside.took < 2.5, (took, beside.took)
 
 
 def test_her_notes_while_the_file_is_held_say_they_cannot_be_shown(
