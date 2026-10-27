@@ -47,6 +47,9 @@ from blossom.household import UnreadableHouseholdSecret
 from blossom.routes import imports, navigation
 from blossom.screenshot_save import (
     CONFIRMABLE,
+    AlreadySaved,
+    NotSaved,
+    Saved,
     correction_digest,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
@@ -1247,7 +1250,7 @@ def test_a_visit_to_a_closed_or_missing_review_takes_no_focus_and_a_refused_pres
     assert focused(refused.text) == [landing]
 
 
-def test_a_page_made_before_a_newer_answer_keeps_nothing_and_says_the_review_changed(
+def test_a_page_made_before_a_newer_answer_keeps_nothing_and_says_it_is_out_of_date(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
@@ -1263,10 +1266,10 @@ def test_a_page_made_before_a_newer_answer_keeps_nothing_and_says_the_review_cha
         answers = stored_answers(browser, draft_id)
 
     assert answers == before
-    assert says(after, imports.CHANGED_IN_ANOTHER_TAB)
-    assert says(after, imports.PRESS_SAID["keep_stale"])
-    assert says(refused, imports.PRESS_SAID["save_stale"])
-    assert says(later, imports.PRESS_SAID["later_stale"])
+    for shown in (after, refused, later):
+        assert says(shown, imports.OUT_OF_DATE)
+        assert not says(shown, imports.CHANGED_IN_ANOTHER_TAB)
+        assert not says(shown, "weren't kept")
 
 
 def test_a_post_that_doesnt_match_its_page_keeps_nothing(
@@ -2243,8 +2246,8 @@ def test_a_page_from_before_a_change_answers_with_its_typing_in_the_current_revi
         stale = send(browser, draft_id, page_post(page, "keep", typed=typed))
 
     assert stale.status_code == 409
-    assert says(stale.text, imports.CHANGED_IN_ANOTHER_TAB)
-    assert says(stale.text, imports.PRESS_SAID["keep_stale"])
+    assert not says(stale.text, imports.CHANGED_IN_ANOTHER_TAB)
+    assert says(stale.text, imports.OUT_OF_DATE)
     assert 'value="Sentence Craft"' in review_form(stale.text)
 
 
@@ -5761,7 +5764,7 @@ def test_a_save_from_the_page_before_the_screenshot_was_added_writes_nothing(
 
     assert units_on(confirmed)
     assert stale.status_code == 409
-    assert says(shown, imports.PRESS_SAID["save_stale"])
+    assert says(shown, imports.OUT_OF_DATE)
     assert after == before
     assert ("name", "missing") not in held
     assert field not in checked_names(shown)
@@ -6541,10 +6544,17 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
         assert progress is not None
     else:
         assert progress == stored_before[1] is None
-    if press == "keep" and committed:
-        assert says(answer, imports.PRESS_SAID["kept"])
-    if press == "later" and committed:
-        assert says(answer, imports.PRESS_SAID["later"])
+    if press in ("keep", "later") and committed:
+        assert says(answer, imports.PRESS_SAID["kept_before_ended"])
+        assert focused(answer) == ALERT
+        assert answer.index('<p class="problem" role="alert"') < answer.index(
+            str(escape(imports.PRESS_SAID["kept_before_ended"]))
+        )
+    assert not says(answer, imports.PRESS_SAID["kept"])
+    assert not says(answer, imports.PRESS_SAID["later"])
+    assert not says(answer, imports.PRESS_SAID["left_open"])
+    assert "Saved for later at " not in answer
+    assert "Back to the review" not in answer
 
 
 @pytest.mark.parametrize("gone", ["expired", "removed"])
@@ -8021,7 +8031,8 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
 ) -> None:
     """One of two groups saved, a title typed for the other: the same press resent while the
     review can't be read answers with the counts it recorded in the success panel, which takes
-    the focus, never that the review is finished, and gives the typed title back to copy. Sent
+    the focus, and that the review can't be shown in the problem style, never that it is
+    finished, with the typed title to copy and the way back to the review. Sent
     again once the review can be read, it shows the review with those counts and the title
     still in its box."""
     with here(open_settings(tmp_path)) as browser:
@@ -8045,7 +8056,13 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
     assert again.status_code == 200
     assert shown is not None
     assert re.search(r'<h2 id="outcome-heading" tabindex="-1" autofocus>', shown.group(1))
-    assert [html.unescape(t) for t in re.findall(r">([^<>]+)</(?:h2|p)>", shown.group(1))] == counts
+    assert [html.unescape(t) for t in re.findall(r">([^<>]+)</(?:h2|p)>", shown.group(1))] == [
+        *counts,
+        imports.REVIEW_NOT_SHOWN,
+    ]
+    assert lines_in(PROBLEM_BLOCK.search(shown.group(1))) == [imports.REVIEW_NOT_SHOWN]
+    assert focused(again.text) == ['<h2 id="outcome-heading" tabindex="-1" autofocus>']
+    assert BACK_TO_REVIEW.format(draft_id) in again.text
     assert not says(again.text, imports.SAID["closed"])
     assert not says(again.text, imports.SAID["expired"])
     assert not says(again.text, imports.SAID["absent"])
@@ -8196,6 +8213,1032 @@ def test_a_save_that_closed_the_review_says_so_when_her_week_can_t_be_read(
         assert says(answer.text, "Saved: 2 new assignments.")
         assert "See them on her week" not in answer.text
     assert len(made) == 2
+
+
+# ------------------------------------------------------- a press whose review can't be read
+
+
+BACK_TO_REVIEW: Final = '<a href="/parent/imports/{}">Back to the review</a>'
+ALERT: Final = ['<p class="problem" role="alert" tabindex="-1" autofocus>']
+KEPT_STATUS: Final = ['<div role="status" id="kept" tabindex="-1" autofocus>']
+PROBLEM_BLOCK: Final = re.compile(
+    r'<div class="problem" role="alert" id="said" tabindex="-1"(?: autofocus)?>(.*?)</div>', re.S
+)
+KEPT_BLOCK: Final = re.compile(r'<div role="status" id="kept"[^>]*>(.*?)</div>', re.S)
+
+
+def restored(drafts: object, name: str, replacement: Callable[..., object]) -> Callable[[], None]:
+    """Replace one store method, and the call that puts it back."""
+    real = getattr(drafts, name)
+    setattr(drafts, name, replacement)
+    return lambda: setattr(drafts, name, real)
+
+
+def name_and_title(page: str) -> tuple[str, str]:
+    """The name question's field and the first title box's field, as a press posts them."""
+    [form] = fields_named(review_form(page), "answer:name:")
+    return f"answer:name:{form}", f"correct:{box_subject(page, 'title')}"
+
+
+@pytest.mark.parametrize("busy", [StoreBusy, WriterBusy], ids=["store busy", "writer busy"])
+def test_keep_these_answers_whose_review_can_t_be_read_says_they_are_kept_and_gives_the_typing_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, busy: type[Exception]
+) -> None:
+    """Keep these answers keeps her name answer, then the read for its page is refused: the
+    press answers 200 with what it kept and that the review can't be shown, its first line
+    taking the focus, the typed title to copy and the way back to the review. It never says
+    nothing was added or changed, and nothing on it repeats the press."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        name, title = name_and_title(page)
+        posted = page_post(page, "keep", choose={name: "hers"}, typed={title: "Chains Guide Six"})
+        drafts = state_of(browser).import_drafts
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, busy))
+        answer = send(browser, draft_id, posted)
+        put_back()
+        stored = stored_answers(browser, draft_id)
+
+    assert answer.status_code == 200
+    assert says(answer.text, imports.PRESS_SAID["kept"])
+    assert says(answer.text, imports.REVIEW_NOT_SHOWN)
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    assert BACK_TO_REVIEW.format(draft_id) in answer.text
+    assert focused(answer.text) == KEPT_STATUS
+    kept_block, problem = KEPT_BLOCK.search(answer.text), PROBLEM_BLOCK.search(answer.text)
+    assert kept_block is not None
+    assert problem is not None
+    assert lines_in(kept_block) == [imports.PRESS_SAID["kept"]]
+    assert '<p class="note">' in kept_block.group(1)
+    assert lines_in(problem) == [imports.REVIEW_NOT_SHOWN]
+    assert "steps-line" not in answer.text
+    assert "3. Saved" not in answer.text
+    assert not says(answer.text, imports.SAID["busy"])
+    assert not says(answer.text, imports.AFTER_SAID["busy"])
+    assert 'action="/parent/imports' not in answer.text
+    assert stored[("name", name.removeprefix("answer:name:"))] == "hers"
+
+
+def test_a_kept_answer_stays_when_its_page_can_t_be_read_and_reopening_the_review_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a Keep whose page couldn't be read, the way back opens the review with her name
+    answered, and Keep pressed there with the same answers writes nothing: the answers, the
+    review's version and the assignments stay as the first press left them."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        name, _ = name_and_title(page)
+        drafts = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, StoreBusy))
+        answer = send(browser, draft_id, page_post(page, "keep", choose={name: "hers"}))
+        put_back()
+        kept, version = (
+            stored_answers(browser, draft_id),
+            drafts.snapshot(student, draft_id).version,
+        )
+        count = assignment_count(browser)
+        link = re.search(r'<a href="([^"]+)">Back to the review</a>', answer.text)
+        assert link is not None
+        reopened = browser.get(link.group(1))
+        again = send(browser, draft_id, page_post(reopened.text, "keep"))
+        after = stored_answers(browser, draft_id), drafts.snapshot(student, draft_id).version
+        count_after = assignment_count(browser)
+
+    assert answer.status_code == 200
+    assert reopened.status_code == 200
+    assert not says(reopened.text, "Still to answer: the student name.")
+    assert again.status_code == 200
+    assert after == (kept, version)
+    assert count_after == count
+
+
+KEPT_CASES: Final = {
+    "later behind": (409, ["answers_kept", "later_behind"]),
+    "nothing ticked": (200, ["answers_kept", "none_chosen"]),
+    "not saved, busy": (503, ["answers_kept", "busy"]),
+    "name check unreadable": (500, ["answers_kept", "no_name_check"]),
+    "already saved": (200, ["answers_kept", "already"]),
+    "changed by answers": (409, ["answers_kept", "changed_unshown_rest"]),
+}
+
+
+@pytest.mark.parametrize("case", list(KEPT_CASES))
+def test_a_press_that_kept_answers_says_so_when_its_review_can_t_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A Save or Save review for later that kept her answers and then saved nothing, its page's
+    read refused: it answers with its own status and its own lines, the kept answers first,
+    then that the review can't be shown, never that nothing was added. A line that points at
+    the review's rows says the review instead."""
+    status, keys = KEPT_CASES[case]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        drafts = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        before = stored_answers(browser, draft_id)
+        posted = page_post(page, "save", tick=units_on(page)[:1])
+        if case == "later behind":
+            revision = drafts.snapshot(student, draft_id).progress_revision
+            drafts.save_progress(student, draft_id, revision=revision, progress="{}")
+            posted = page_post(page, "later")
+        elif case == "nothing ticked":
+            posted = page_post(page, "save")
+        elif case == "not saved, busy":
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("busy"))
+        elif case == "already saved":
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: AlreadySaved(()))
+        elif case == "changed by answers":
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("changed"))
+        else:
+
+            async def no_key(*_: object) -> bytes:
+                raise OSError
+
+            monkeypatch.setattr(imports, "grade_name_key", no_key)
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, StoreBusy))
+        answer = send(browser, draft_id, posted)
+        put_back()
+        after = stored_answers(browser, draft_id)
+
+    lines = {
+        **imports.PRESS_SAID,
+        "no_name_check": imports.SAID["no_name_check"],
+        "changed_unshown_rest": (
+            "They change what saving does, so no homework was saved by this attempt. Check the "
+            "effects in the review, then save."
+        ),
+    }
+    assert answer.status_code == status
+    for key in keys:
+        assert says(answer.text, lines[key]), key
+    assert says(answer.text, imports.REVIEW_NOT_SHOWN)
+    assert BACK_TO_REVIEW.format(draft_id) in answer.text
+    assert not says(answer.text, imports.SAID["busy"])
+    assert not says(answer.text, imports.PRESS_SAID["changed_by_answers"])
+    posted_answers = {
+        (kind, subject): value
+        for name, value in posted
+        if name.startswith("answer:")
+        for kind, _, subject in [name.removeprefix("answer:").partition(":")]
+    }
+    assert set(posted_answers) - set(before)
+    for answer_key, value in posted_answers.items():
+        assert after.get(answer_key) == value, answer_key
+    kept_block = KEPT_BLOCK.search(answer.text)
+    problem = PROBLEM_BLOCK.search(answer.text)
+    assert problem is not None
+    if "answers_kept" in keys:
+        assert kept_block is not None
+        assert lines_in(kept_block) == [imports.PRESS_SAID["answers_kept"]]
+        assert focused(answer.text) == KEPT_STATUS
+        assert kept_block.start() < problem.start()
+    else:
+        assert kept_block is None
+    shown = lines_in(problem)
+    assert shown == [
+        *(lines[key] for key in keys if key != "answers_kept"),
+        imports.REVIEW_NOT_SHOWN,
+    ]
+
+
+FAILED_WRITES: Final = {"keep": "keep_answers", "later": "save_for_later", "save": "keep_answers"}
+
+
+@pytest.mark.parametrize("press", list(FAILED_WRITES))
+def test_answers_that_couldn_t_be_kept_are_said_unkept_when_the_review_can_t_be_read_either(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The press's own write refused busy, then its page's read refused too: 503 with the
+    press's failure line, never that anything was kept, then that the review can't be shown,
+    with the typed title to copy; nothing is stored."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        name, title = name_and_title(page)
+        typed = {title: "Chains Guide Six"}
+        posted = page_post(page, press, choose={name: "hers"}, typed=typed, tick=units_on(page))
+        drafts = state_of(browser).import_drafts
+        put_write = restored(drafts, FAILED_WRITES[press], busy_store(StoreBusy))
+        put_read = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, StoreBusy))
+        answer = send(browser, draft_id, posted)
+        put_read()
+        put_write()
+        stored = stored_answers(browser, draft_id)
+
+    assert answer.status_code == 503
+    assert says(answer.text, imports.PRESS_SAID[f"{press}_failed"])
+    assert says(answer.text, imports.REVIEW_NOT_SHOWN)
+    assert not says(answer.text, imports.PRESS_SAID["answers_kept"])
+    assert not says(answer.text, imports.SAID["busy"])
+    assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    assert KEPT_BLOCK.search(answer.text) is None
+    assert focused(answer.text) == [
+        '<div class="problem" role="alert" id="said" tabindex="-1" autofocus>'
+    ]
+    assert stored == {}
+
+
+@pytest.mark.parametrize("press", list(FAILED_WRITES))
+def test_answers_that_couldn_t_be_kept_come_back_in_the_review_when_it_can_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The press's own write refused busy with the review readable: 503 with the failure line
+    and the review, the typed title still in its box."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        _, title = name_and_title(page)
+        posted = page_post(page, press, typed={title: "Chains Guide Six"}, tick=units_on(page))
+        drafts = state_of(browser).import_drafts
+        put_write = restored(drafts, FAILED_WRITES[press], busy_store(WriterBusy))
+        answer = send(browser, draft_id, posted)
+        put_write()
+
+    assert answer.status_code == 503
+    assert says(answer.text, imports.PRESS_SAID[f"{press}_failed"])
+    assert 'value="Chains Guide Six"' in review_form(answer.text)
+
+
+@pytest.mark.parametrize("refusal", ["out of date", "too long"])
+def test_a_refused_press_says_its_own_refusal_when_its_review_can_t_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    """A Keep from a page the review moved on from, or with a title past its field, its page's
+    read refused: its own status and refusal, then that the review can't be shown, and the
+    typing given back whole."""
+    title_text = "Chains Guide Six" if refusal == "out of date" else "T" * 2000
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        name, title = name_and_title(page)
+        if refusal == "out of date":
+            send(browser, draft_id, page_post(page, "keep", choose={name: "hers"}))
+        posted = page_post(page, "keep", typed={title: title_text})
+        drafts = state_of(browser).import_drafts
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, StoreBusy))
+        answer = send(browser, draft_id, posted)
+        put_back()
+
+    status, line = (
+        (409, imports.OUT_OF_DATE)
+        if refusal == "out of date"
+        else (422, imports.PRESS_SAID["too_long"])
+    )
+    assert answer.status_code == status
+    assert says(answer.text, line)
+    assert says(answer.text, imports.REVIEW_NOT_SHOWN)
+    assert TYPED_BACK.findall(answer.text) == [title_text]
+    assert not says(answer.text, imports.SAID["busy"])
+
+
+def test_the_review_s_address_says_it_can_t_be_shown_while_busy_and_keeps_the_press_s_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Save review for later commits and redirects; the review's address read while the store is
+    busy answers 503 saying the review can't be shown, never that nothing was added or changed,
+    and keeps the press's note, which the next readable visit shows."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        later = send(browser, draft_id, page_post(page, "later"))
+        drafts = state_of(browser).import_drafts
+        put_back = restored(drafts, "snapshot", busy_store(StoreBusy))
+        landed = browser.get(later.headers["location"])
+        put_back()
+        healthy = browser.get(later.headers["location"])
+
+    assert later.status_code == 303
+    assert landed.status_code == 503
+    assert says(landed.text, imports.REVIEW_UNAVAILABLE)
+    assert not says(landed.text, imports.SAID["busy"])
+    assert not says(landed.text, imports.AFTER_SAID["busy"])
+    assert imports.NOTE_COOKIE not in landed.headers.get("set-cookie", "")
+    assert says(healthy.text, imports.PRESS_SAID["later"])
+
+
+@pytest.mark.parametrize("where", ["first upload", "more, before the body", "more, on storing"])
+def test_an_upload_the_busy_file_refuses_still_says_nothing_was_added(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """An upload the busy store refuses began nothing, so its screenshots weren't added: it says
+    so and asks for them again, 503, and the review holds what it held. Refused at the review's
+    read, before its body, it reads none of the body."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        drafts_store = state_of(browser).import_drafts
+        method = {"first upload": "create", "more, before the body": "snapshot"}.get(
+            where, "add_images"
+        )
+        bodies: list[int] = []
+        real_body = imports.body_of
+
+        async def counted_body(*args: object, **kwargs: object) -> object:
+            bodies.append(1)
+            return await real_body(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(imports, "body_of", counted_body)
+        put_back = restored(drafts_store, method, busy_store(WriterBusy))
+        if where == "first upload":
+            answer = upload(browser, BLUE)
+        else:
+            answer = upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
+        put_back()
+        held = images_of(browser, draft_id)
+
+    assert answer.status_code == 503
+    assert says(answer.text, imports.SAID["busy"])
+    assert len(held) == 1
+    assert bodies == ([] if where == "more, before the body" else [1])
+
+
+def test_the_page_that_can_t_show_the_review_reads_no_store_after_the_refusal(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the read for a Keep's page is refused, the page that says so reads nothing more from
+    either store."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        name, _ = name_and_title(page)
+        drafts = state_of(browser).import_drafts
+        record = state_of(browser).project_state
+        refused: list[str] = []
+        later_reads: list[str] = []
+
+        def refuse_second(real: Callable[..., object]) -> Callable[..., object]:
+            calls: list[int] = []
+
+            def read(*args: object, **kwargs: object) -> object:
+                calls.append(1)
+                if refused:
+                    later_reads.append("snapshot")
+                if len(calls) == 2:
+                    refused.append("snapshot")
+                    raise StoreBusy
+                return real(*args, **kwargs)
+
+            return read
+
+        def watched(label: str, real: Callable[..., object]) -> Callable[..., object]:
+            def call(*args: object, **kwargs: object) -> object:
+                if refused:
+                    later_reads.append(label)
+                return real(*args, **kwargs)
+
+            return call
+
+        put = [restored(drafts, "snapshot", refuse_second(drafts.snapshot))]
+        for label in (
+            "draft_for_save",
+            "homework_counts",
+            "homework_acceptance",
+            "all_assignments",
+        ):
+            put.append(restored(record, label, watched(label, getattr(record, label))))
+        for label in ("review_answers", "image_png", "open_drafts"):
+            put.append(restored(drafts, label, watched(label, getattr(drafts, label))))
+        answer = send(browser, draft_id, page_post(page, "keep", choose={name: "hers"}))
+        for undo in put:
+            undo()
+
+    assert refused == ["snapshot"]
+    assert says(answer.text, imports.REVIEW_NOT_SHOWN)
+    assert later_reads == []
+
+
+NOTHING_WRITTEN: Final = {
+    "review": ("snapshot", "review"),
+    "find": ("snapshot", "find"),
+    "read": ("snapshot", "read"),
+    "set aside": ("snapshot", "set-aside"),
+    "finish": ("snapshot", "finish"),
+    "discard": ("snapshot", "discard"),
+    "not hers": ("snapshot", "not-hers"),
+    "remove": ("remove_image", "images/{image}/remove"),
+    "image": ("image_png", "images/{image}"),
+}
+
+
+@pytest.mark.parametrize("route", list(NOTHING_WRITTEN))
+def test_a_press_that_wrote_nothing_while_the_file_was_busy_says_nothing_changed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """A press on a review, or its image, whose first store call the busy store refused began
+    nothing: it says nothing changed and to try again, 503, never to send the screenshots again.
+    A review press also gives its typing back with the way to the review."""
+    method, path = NOTHING_WRITTEN[route]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        _, title = name_and_title(page)
+        [image] = images_of(browser, draft_id)
+        drafts = state_of(browser).import_drafts
+        before = stored_answers(browser, draft_id), images_of(browser, draft_id)
+        address = f"/parent/imports/{draft_id}/{path.format(image=image)}"
+        put_back = restored(drafts, method, busy_store(StoreBusy))
+        if route == "review":
+            answer = send(browser, draft_id, page_post(page, "keep", typed={title: "Craft"}))
+        elif route == "image":
+            answer = browser.get(address)
+        else:
+            answer = browser.post(address, data={"version": "1"})
+        put_back()
+        after = stored_answers(browser, draft_id), images_of(browser, draft_id)
+
+    assert answer.status_code == 503
+    assert says(answer.text, imports.AFTER_SAID["busy"])
+    assert not says(answer.text, imports.SAID["busy"])
+    assert after == before
+    if route == "review":
+        assert TYPED_BACK.findall(answer.text) == ["Craft"]
+        assert BACK_TO_REVIEW.format(draft_id) in answer.text
+
+
+def test_a_read_whose_readings_were_kept_goes_to_the_review_when_it_can_t_be_shown(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Read press stores its reading, then the read for its page is refused: it answers with
+    the way to the review, built from what it has without reading again, and the review shows
+    the reading once it can be read. Neither the answer nor the visit reads the screenshot
+    again or runs another Read."""
+    with here(open_settings(tmp_path)) as browser:
+        reader = Reader(monkeypatch)
+        reader.answers[RED] = ScreenshotAnswer(homework_answer(), None, 10, 5)
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        drafts = state_of(browser).import_drafts
+        real_snapshot = drafts.snapshot
+        real_read, real_changes = screenshot_reading.read_screenshots, imports.change_lines
+        runs: list[int] = []
+        changes: list[int] = []
+
+        async def read_then_busy(*args: object, **kwargs: object) -> object:
+            runs.append(1)
+            outcome = await real_read(*args, **kwargs)  # type: ignore[arg-type]
+            monkeypatch.setattr(drafts, "snapshot", busy_store(StoreBusy))
+            return outcome
+
+        async def counted_changes(*args: object, **kwargs: object) -> object:
+            changes.append(1)
+            return await real_changes(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(imports, "read_screenshots", read_then_busy)
+        monkeypatch.setattr(imports, "change_lines", counted_changes)
+        answer = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+        monkeypatch.setattr(drafts, "snapshot", real_snapshot)
+        shown = browser.get(f"/parent/imports/{draft_id}")
+        student = state_of(browser).project_state.student_id()
+        read_now = [image.read for image in drafts.snapshot(student, draft_id).images]
+
+    assert answer.status_code == 303
+    assert answer.headers["location"] == f"/parent/imports/{draft_id}"
+    assert changes == []
+    assert runs == [1]
+    assert reader.calls == [RED]
+    assert read_now == [True]
+    assert shown.status_code == 200
+    assert says(shown.text, "Screenshot 1 · Read.")
+    assert "<h3>Sentence Composing</h3>" in review_form(shown.text)
+
+
+def test_a_reading_the_busy_file_couldn_t_keep_is_left_to_its_label_when_a_read_goes_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Read whose reading the busy file couldn't keep, then the read for its page refused:
+    the way back to the review carries no line naming a screenshot by number, and the review's
+    own label says it needs reading once the review can be read. The screenshot was read once,
+    by one Read."""
+    with here(open_settings(tmp_path)) as browser:
+        reader = Reader(monkeypatch)
+        draft_id = made(browser, RED)
+        form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
+        drafts = state_of(browser).import_drafts
+        real_snapshot, real_read = drafts.snapshot, screenshot_reading.read_screenshots
+
+        runs: list[int] = []
+
+        async def read_then_busy(*args: object, **kwargs: object) -> object:
+            runs.append(1)
+            outcome = await real_read(*args, **kwargs)  # type: ignore[arg-type]
+            monkeypatch.setattr(drafts, "snapshot", busy_store(StoreBusy))
+            return outcome
+
+        monkeypatch.setattr(drafts, "store_reading", busy_store(WriterBusy))
+        monkeypatch.setattr(imports, "read_screenshots", read_then_busy)
+        answer = browser.post(f"/parent/imports/{draft_id}/read", data=form)
+        monkeypatch.setattr(drafts, "snapshot", real_snapshot)
+        shown = browser.get(answer.headers["location"])
+
+    assert answer.status_code == 303
+    assert imports.NOTE_COOKIE not in answer.headers.get("set-cookie", "")
+    assert not says(shown.text, imports.busy_reading(1))
+    assert "couldn&#39;t keep the reading" not in shown.text
+    assert says(shown.text, imports.LABELS["ended"])
+    assert reader.calls == [RED]
+    assert runs == [1]
+
+
+def test_a_read_whose_review_closed_meanwhile_says_it_is_finished(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Read whose review another press discarded while it read answers that the review is
+    finished, not with the review as if it were open."""
+    with here(open_settings(tmp_path)) as browser:
+        Reader(monkeypatch)
+        draft_id = made(browser, RED)
+        form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
+        drafts = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        real_read = screenshot_reading.read_screenshots
+
+        async def read_then_discarded(*args: object, **kwargs: object) -> object:
+            outcome = await real_read(*args, **kwargs)  # type: ignore[arg-type]
+            version = drafts.snapshot(student, draft_id).version
+            drafts.discard_review(student, draft_id, version=version, refuse_if_saved=False)
+            return outcome
+
+        monkeypatch.setattr(imports, "read_screenshots", read_then_discarded)
+        answer = browser.post(f"/parent/imports/{draft_id}/read", data=form)
+
+    assert answer.status_code == 200
+    assert says(answer.text, imports.SAID["closed"])
+    assert f'action="/parent/imports/{draft_id}/' not in answer.text
+
+
+def test_a_save_that_would_now_do_something_else_says_to_check_it_in_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Save that changed no answer and found a ticked assignment would now do something else,
+    its page's read refused: 409, the line that names the review instead of rows the page
+    doesn't show, then that the review can't be shown."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        send(browser, draft_id, page_post(page, "keep"))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        before = stored_answers(browser, draft_id)
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("changed"))
+        drafts = state_of(browser).import_drafts
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, StoreBusy))
+        answer = send(browser, draft_id, page_post(page, "save", tick=units_on(page)[:1]))
+        put_back()
+        after = stored_answers(browser, draft_id)
+
+    assert answer.status_code == 409
+    assert says(answer.text, imports.UNSHOWN_SAID[imports.PRESS_SAID["changed"]][0])
+    assert not says(answer.text, imports.PRESS_SAID["changed"])
+    assert not says(answer.text, imports.PRESS_SAID["answers_kept"])
+    assert says(answer.text, imports.REVIEW_NOT_SHOWN)
+    assert after == before
+
+
+G6B: Final = (
+    "Your answers were kept before this review ended. No homework was saved by this attempt."
+)
+ENDED_LINES: Final = {
+    "busy, ended": (
+        "The homework wasn't saved because the household file was busy; nothing of it was written."
+    ),
+    "G6b": G6B,
+    "counts": "Saved: 1 new assignment. 1 still needs checking.",
+}
+ENDED_CASES: Final = {
+    "keep": (200, 2, ["kept_before_ended"], []),
+    "later saved": (200, 2, ["kept_before_ended"], []),
+    "later behind": (409, 2, ["kept_before_ended", "later_behind"], []),
+    "nothing ticked": (200, 2, ["kept_before_ended"], ["none_chosen"]),
+    "name check unreadable": (500, 2, ["kept_before_ended", "no_name_check"], []),
+    "not saved, busy": (503, 2, ["kept_before_ended", "busy, ended"], ["busy"]),
+    "changed by answers": (409, 2, ["G6b"], ["changed_by_answers"]),
+    "already saved": (200, 2, ["kept_before_ended", "already"], []),
+    "partly saved": (200, 3, ["counts", "kept_before_ended"], []),
+}
+
+
+@pytest.mark.parametrize("ending", [DraftExpired, DraftNotFound], ids=["expired", "removed"])
+@pytest.mark.parametrize("case", list(ENDED_CASES))
+def test_a_press_that_kept_answers_says_they_were_kept_before_the_review_ended(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str, ending: type[Exception]
+) -> None:
+    """A press that kept her answers and then found the review expired or removed says they
+    were kept before it ended, never that they are kept, saved for later or left open, then why
+    the review is gone, at the press's own status. The page keeps its styling: the first line
+    takes the focus in the problem style, or the save's outcome does."""
+    status, at, keys, dropped = ENDED_CASES[case]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        drafts = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        posted = page_post(page, "save", tick=units_on(page)[:1])
+        if case == "keep":
+            posted = page_post(page, "keep")
+        elif case in ("later saved", "later behind"):
+            if case == "later behind":
+                revision = drafts.snapshot(student, draft_id).progress_revision
+                drafts.save_progress(student, draft_id, revision=revision, progress="{}")
+            posted = page_post(page, "later")
+        elif case == "nothing ticked":
+            posted = page_post(page, "save")
+        elif case == "not saved, busy":
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("busy"))
+        elif case == "changed by answers":
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("changed"))
+        elif case == "already saved":
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: AlreadySaved(()))
+        elif case == "name check unreadable":
+
+            async def no_key(*_: object) -> bytes:
+                raise OSError
+
+            monkeypatch.setattr(imports, "grade_name_key", no_key)
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, at, ending))
+        answer = send(browser, draft_id, posted)
+        put_back()
+
+    gone = imports.SAID["expired" if ending is DraftExpired else "absent"]
+    lines = {**imports.PRESS_SAID, "no_name_check": imports.SAID["no_name_check"], **ENDED_LINES}
+    assert answer.status_code == status
+    for key in keys:
+        assert says(answer.text, lines[key]), key
+    for key in dropped:
+        assert not says(answer.text, lines[key]), key
+    for instruction in ("Save again.", "Try again.", "Choose at least one assignment to save."):
+        assert instruction not in answer.text
+    assert says(answer.text, gone)
+    assert "Your answers are kept" not in answer.text
+    assert not says(answer.text, imports.PRESS_SAID["left_open"])
+    assert "Saved for later at " not in answer.text
+    assert "Back to the review" not in answer.text
+    if case == "partly saved":
+        shown = OUTCOME.search(answer.text)
+        assert shown is not None
+        heading = re.search(r'<h2 id="outcome-heading"[^>]*>([^<]*)</h2>', shown.group(1))
+        assert heading is not None
+        assert html.unescape(heading.group(1)) == lines["counts"]
+        assert lines_in(shown)[0] == lines["kept_before_ended"]
+    else:
+        assert focused(answer.text) == ALERT
+        first = re.search(
+            r'<p class="problem" role="alert" tabindex="-1" autofocus>([^<]*)</p>', answer.text
+        )
+        assert first is not None
+        assert html.unescape(first.group(1)) == lines[keys[0]]
+        assert answer.text.index(first.group(0)) < answer.text.index(str(escape(gone)))
+
+
+NAMES_ENDED: Final = (
+    "The homework wasn't saved because the assignments you ticked come from screenshots with "
+    "different names."
+)
+
+
+def test_an_ended_review_s_page_says_each_press_line_as_listed() -> None:
+    """Every line an ended review's page rewords or leaves out, as it says it; the changed line
+    says no homework was saved only where no homework transaction committed."""
+    said = imports.PRESS_SAID
+    kept = "Your answers were kept before this review ended."
+    expected = {
+        said["kept"]: [kept],
+        said["answers_kept"]: [kept],
+        said["later"]: [kept],
+        said["left_open"]: [kept],
+        said["changed_by_answers"]: [G6B],
+        said["none_chosen"]: [],
+        said["busy"]: [ENDED_LINES["busy, ended"]],
+        said["failed"]: ["The homework wasn't saved; nothing of it was written."],
+        said["keep_failed"]: ["Your answers couldn't be kept."],
+        said["save_failed"]: ["Your answers couldn't be kept, and nothing was saved."],
+        said["later_failed"]: ["Your answers couldn't be kept, and nothing was saved for later."],
+        said["too_long"]: [
+            "A correction is longer than its field takes, so nothing was kept or saved."
+        ],
+        imports.OUT_OF_DATE: ["This page is out of date."],
+        screenshot_page.SAID["both"]: [],
+        said["already"]: [said["already"]],
+        said["later_behind"]: [said["later_behind"]],
+        imports.SAID["no_name_check"]: [imports.SAID["no_name_check"]],
+        imports.wasnt_saved("names"): [NAMES_ENDED],
+        said["unsaved_typing"]: [],
+        imports.wasnt_saved("gate"): [imports.wasnt_saved("gate")],
+        imports.wasnt_saved("open"): [imports.wasnt_saved("open")],
+        imports.wasnt_saved("stale"): [imports.wasnt_saved("stale")],
+    }
+    for line, ended in expected.items():
+        assert imports.ended_lines([line], saved=False) == ended, line
+    assert imports.ended_lines([said["changed"]], saved=False) == [imports.NO_HOMEWORK]
+    assert imports.ended_lines([said["changed"]], saved=True) == []
+
+
+@pytest.mark.parametrize("ending", [DraftExpired, DraftNotFound], ids=["expired", "removed"])
+@pytest.mark.parametrize("path", ["review left open", "close unconfirmed"])
+def test_a_committed_save_with_a_changed_group_never_says_no_homework_when_its_review_ends(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, path: str, ending: type[Exception]
+) -> None:
+    """A save that committed homework, one ticked group of it changed, then its review found
+    ended at the next read: its counts stand and it never says no homework was saved by this
+    attempt, nor the changed line that needs the review, whether the review was left open or
+    its close couldn't be confirmed."""
+    saved = Saved(
+        "a" * 32,
+        (),
+        ("first",),
+        changed_units=("second",),
+        incomplete=() if path == "review left open" else ("close",),
+        counts=(1, 0, 0, 1),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: saved)
+        drafts = state_of(browser).import_drafts
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, ending))
+        answer = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        put_back()
+
+    gone = imports.SAID["expired" if ending is DraftExpired else "absent"]
+    assert answer.status_code == 200
+    assert says(answer.text, "Saved: 1 new assignment. 1 still needs checking.")
+    assert not says(answer.text, imports.NO_HOMEWORK)
+    assert not says(answer.text, imports.PRESS_SAID["changed"])
+    assert says(answer.text, gone)
+    if path == "close unconfirmed":
+        assert says(answer.text, imports.PRESS_SAID["incomplete"])
+
+
+def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_typing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save that committed one group with a title typed for the other: on a review that stays
+    readable it says the changes on the rows below aren't saved yet; on a review found ended at
+    the page's read, that line is left out, while the counts and the typed title stay."""
+    answers: dict[str, Answer] = {}
+    for mode in ("live", "ended"):
+        with here(open_settings(tmp_path / mode)) as browser:
+            draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+            page = her_name_answered(browser, draft_id, page)
+            first_unit, open_unit = units_on(page)
+            titles = [f"correct:{box_subject(page, 'title', n)}" for n in range(2)]
+            [other] = [t for t in titles if json.loads(t.removeprefix("correct:"))[0] in open_unit]
+            posted = page_post(page, "save", tick=[first_unit], typed={other: "Chains Guide Six"})
+            drafts = state_of(browser).import_drafts
+            puts = []
+            if mode == "ended":
+                puts.append(
+                    restored(drafts, "snapshot", failing_read(drafts.snapshot, 4, DraftExpired))
+                )
+            answers[mode] = send(browser, draft_id, posted)
+            for undo in puts:
+                undo()
+
+    live, ended = answers["live"].text, answers["ended"].text
+    counts = "Saved: 1 new assignment. 1 still needs checking."
+    assert answers["live"].status_code == answers["ended"].status_code == 200
+    assert says(live, imports.PRESS_SAID["unsaved_typing"])
+    assert not says(ended, imports.PRESS_SAID["unsaved_typing"])
+    assert says(live, counts)
+    assert says(ended, counts)
+    assert says(ended, imports.SAID["expired"])
+    assert TYPED_BACK.findall(ended) == ["Chains Guide Six"]
+
+
+BUSY_SAVE_CASES: Final = ("a group changed", "typing left open", "close unconfirmed", "resent")
+
+
+def panel_lines(section: str) -> list[str]:
+    """Each heading and paragraph of a panel, its text as the page shows it, in page order."""
+    found = re.findall(r"<(?:h2|p)\b[^>]*>(.*?)</(?:h2|p)>", section, re.S)
+    return [html.unescape(re.sub(r"<[^>]+>", "", text)).strip() for text in found]
+
+
+@pytest.mark.parametrize("busy", [StoreBusy, WriterBusy], ids=["store busy", "writer busy"])
+@pytest.mark.parametrize("case", BUSY_SAVE_CASES)
+def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str, busy: type[Exception]
+) -> None:
+    """A save that committed homework, a title typed on the row it left open, then the review
+    read busy: 200 with its counts, whose heading takes the focus, then the outcome's own lines
+    (on a resent save, the way to her week), then in one problem block that takes no focus: a
+    close that couldn't be confirmed, a changed group as the busy page says it, and that the
+    review can't be shown; no line pointing at rows the page doesn't show; the typed title to
+    copy and the way back to the review."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first_unit, open_unit = units_on(page)
+        titles = [f"correct:{box_subject(page, 'title', n)}" for n in range(2)]
+        [other] = [t for t in titles if json.loads(t.removeprefix("correct:"))[0] in open_unit]
+        posted = page_post(page, "save", tick=[first_unit], typed={other: "Chains Guide Six"})
+        drafts = state_of(browser).import_drafts
+        if case in ("a group changed", "close unconfirmed"):
+            saved = Saved(
+                "a" * 32,
+                (),
+                ("first",),
+                changed_units=("second",),
+                already_units=("third",),
+                incomplete=("close",) if case == "close unconfirmed" else (),
+                counts=(1, 0, 0, 1),
+            )
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: saved)
+        if case == "resent":
+            assert send(browser, draft_id, posted).status_code == 200
+            refuse = busy_store(busy)
+        else:
+            refuse = failing_read(drafts.snapshot, 4 if case == "typing left open" else 2, busy)
+        put_back = restored(drafts, "snapshot", refuse)
+        answer = send(browser, draft_id, posted)
+        put_back()
+
+    shown = OUTCOME.search(answer.text)
+    assert answer.status_code == 200
+    assert shown is not None
+    heading = re.search(r'<h2 id="outcome-heading"[^>]*>([^<]*)</h2>', shown.group(1))
+    assert heading is not None
+    assert html.unescape(heading.group(1)) == "Saved: 1 new assignment. 1 still needs checking."
+    changed_line = imports.UNSHOWN_SAID[imports.PRESS_SAID["changed"]][0]
+    expected = {
+        "a group changed": [changed_line],
+        "close unconfirmed": [imports.PRESS_SAID["incomplete"], changed_line],
+    }.get(case, [])
+    problem = PROBLEM_BLOCK.search(shown.group(1))
+    assert problem is not None
+    assert lines_in(problem) == [*expected, imports.REVIEW_NOT_SHOWN]
+    counts = "Saved: 1 new assignment. 1 still needs checking."
+    already, left_open = imports.PRESS_SAID["already"], imports.PRESS_SAID["left_open"]
+    own = {
+        "a group changed": [already, left_open],
+        "typing left open": [left_open],
+        "close unconfirmed": [already],
+        "resent": ["See them on her week"],
+    }[case]
+    assert panel_lines(shown.group(1)) == [counts, *own, *expected, imports.REVIEW_NOT_SHOWN]
+    if case == "resent":
+        week = re.search(r'<p><a href="([^"]+)">See them on her week</a></p>', shown.group(1))
+        assert week is not None
+        assert week.group(1).startswith(f"{navigation.WEEK_PAGE}?week=")
+    assert focused(answer.text) == ['<h2 id="outcome-heading" tabindex="-1" autofocus>']
+    assert re.findall(r'<p class="note">([^<]*)</p>', shown.group(1)) == []
+    assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
+    assert not says(answer.text, imports.PRESS_SAID["changed"])
+    changed = imports.UNSHOWN_SAID[imports.PRESS_SAID["changed"]][0]
+    assert says(answer.text, changed) == (case in ("a group changed", "close unconfirmed"))
+    assert says(answer.text, imports.PRESS_SAID["incomplete"]) == (case == "close unconfirmed")
+    assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert not says(answer.text, TYPED_SAID)
+    assert BACK_TO_REVIEW.format(draft_id) in answer.text
+    assert not says(answer.text, imports.SAID["busy"])
+    assert not says(answer.text, imports.SAID["closed"])
+
+
+@pytest.mark.parametrize("busy", [StoreBusy, WriterBusy], ids=["store busy", "writer busy"])
+def test_save_review_for_later_whose_check_reads_busy_still_goes_to_the_review_with_its_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, busy: type[Exception]
+) -> None:
+    """Save review for later commits, then its check that the review hasn't ended is refused
+    busy: a busy store isn't an ended review, so it answers its 303 to the review with its note,
+    which the next readable visit shows, never the page of an ended review."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        drafts = state_of(browser).import_drafts
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, busy))
+        answer = send(browser, draft_id, page_post(page, "later"))
+        put_back()
+        shown = browser.get(f"/parent/imports/{draft_id}")
+
+    assert answer.status_code == 303
+    assert answer.headers["location"] == f"/parent/imports/{draft_id}"
+    assert imports.NOTE_COOKIE in answer.headers.get("set-cookie", "")
+    assert not says(answer.text, imports.PRESS_SAID["kept_before_ended"])
+    assert shown.status_code == 200
+    assert says(shown.text, imports.PRESS_SAID["later"])
+    assert "Saved for later at " in shown.text
+
+
+INSTRUCTION_CASES: Final = {
+    "keep refused busy": ("keep", "keep_answers", None, "keep_failed", "Try again."),
+    "later refused busy": ("later", "save_for_later", None, "later_failed", "Try again."),
+    "save refused busy": ("save", "keep_answers", None, "save_failed", "Try again."),
+    "save not saved, failed": ("save", None, NotSaved("failed"), "failed", "Save again."),
+    "save nothing ticked": ("save", None, None, "none_chosen", None),
+    "keep out of date": (
+        "keep",
+        None,
+        None,
+        "out_of_date",
+        "Check the review before trying again.",
+    ),
+    "keep too long": ("keep", None, None, "too_long", "Shorten it and press again."),
+    "save changed, no answer": ("save", None, NotSaved("changed"), "changed", None),
+    "save not saved, names": ("save", None, NotSaved("names"), "names", None),
+}
+
+
+@pytest.mark.parametrize("case", list(INSTRUCTION_CASES))
+def test_an_ended_review_s_page_drops_instructions_that_need_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """The same press on a review that stays readable says its whole line, instruction
+    included; on a review found ended at the page's read, the instruction is left out and the
+    fact kept, a lone instruction is left out, and the changed line of a homework transaction
+    that didn't commit says no homework was saved by this attempt."""
+    press, refused_write, outcome, key, instruction = INSTRUCTION_CASES[case]
+    full = {
+        **imports.PRESS_SAID,
+        "out_of_date": imports.OUT_OF_DATE,
+        "names": imports.wasnt_saved("names"),
+    }[key]
+    answers: dict[str, Answer] = {}
+    for mode in ("live", "ended"):
+        with here(open_settings(tmp_path / mode)) as browser:
+            draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+            page = her_name_answered(browser, draft_id, page)
+            if case == "save changed, no answer":
+                send(browser, draft_id, page_post(page, "keep"))
+                page = browser.get(f"/parent/imports/{draft_id}").text
+            drafts = state_of(browser).import_drafts
+            _, title = name_and_title(page)
+            typed = {title: "T" * 2000} if case == "keep too long" else {}
+            tick = [] if case == "save nothing ticked" else units_on(page)[:1]
+            posted = page_post(page, press, typed=typed, tick=tick)
+            if case == "keep out of date":
+                send(browser, draft_id, page_post(page, "keep"))
+            puts = []
+            if refused_write is not None:
+                puts.append(restored(drafts, refused_write, busy_store(StoreBusy)))
+            if outcome is not None:
+                monkeypatch.setattr(imports, "save_homework", lambda *_, o=outcome, **__: o)
+            if mode == "ended":
+                puts.append(
+                    restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, DraftExpired))
+                )
+            answers[mode] = send(browser, draft_id, posted)
+            for undo in reversed(puts):
+                undo()
+
+    live, ended = answers["live"].text, answers["ended"].text
+    assert answers["live"].status_code == answers["ended"].status_code
+    assert says(live, full)
+    assert not says(ended, full)
+    assert says(ended, imports.SAID["expired"])
+    if instruction is not None:
+        assert full.endswith(" " + instruction)
+        assert says(ended, full.removesuffix(" " + instruction))
+        assert instruction not in ended
+    if case == "save changed, no answer":
+        assert says(ended, imports.NO_HOMEWORK)
+    elif case == "save not saved, names":
+        assert says(ended, NAMES_ENDED)
+        assert "save each name&#39;s assignments on their own" not in ended
+    elif case == "save nothing ticked":
+        assert not says(ended, imports.NO_HOMEWORK)
+
+
+@pytest.mark.parametrize("answered", [True, False], ids=["answers kept", "no answer changed"])
+def test_a_save_already_saved_says_the_answers_it_kept(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, answered: bool
+) -> None:
+    """A Save whose groups another press already saved says so, after its own kept answers
+    when it kept any."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        if not answered:
+            send(browser, draft_id, page_post(page, "keep"))
+            page = browser.get(f"/parent/imports/{draft_id}").text
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: AlreadySaved(()))
+        answer = send(browser, draft_id, page_post(page, "save", tick=units_on(page)[:1]))
+
+    assert answer.status_code == 200
+    assert says(answer.text, imports.PRESS_SAID["already"])
+    assert says(answer.text, imports.PRESS_SAID["answers_kept"]) == answered
+
+
+@pytest.mark.parametrize("ending", ["expired", "absent"])
+@pytest.mark.parametrize("answered", [True, False], ids=["answers kept", "no answer changed"])
+def test_a_save_whose_review_ended_after_its_answers_were_kept_says_what_was_kept(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ending: str, answered: bool
+) -> None:
+    """A Save that kept answers and then found the review ended answers 409: that the answers
+    were kept but the review ended before the homework was saved, then why the review is gone,
+    and the typing to copy; with no answer changed (nothing typed, the answers as kept), only
+    why it's gone."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        if not answered:
+            send(browser, draft_id, page_post(page, "keep"))
+            page = browser.get(f"/parent/imports/{draft_id}").text
+        _, title = name_and_title(page)
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved(ending))
+        typed = {title: "Chains"} if answered else {}
+        posted = page_post(page, "save", tick=units_on(page)[:1], typed=typed)
+        answer = send(browser, draft_id, posted)
+
+    assert answer.status_code == 409
+    assert says(answer.text, imports.PRESS_SAID["kept_then_ended"]) == answered
+    assert not says(answer.text, imports.PRESS_SAID["answers_kept"])
+    assert says(answer.text, imports.SAID[ending])
+    assert TYPED_BACK.findall(answer.text) == (["Chains"] if answered else [])
 
 
 def test_an_unsure_field_corrected_in_the_fold_isn_t_the_first_question(
