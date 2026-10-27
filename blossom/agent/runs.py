@@ -35,17 +35,21 @@ that travels in the graph's context: every planner and reviewer request, and
 every retry, gets only what is left of it, and the run is timed node by node.
 The budget also keeps each step the run takes, so a run cut off is recorded
 without reading its saved state. ``bounded`` waits a limited time for a call on a
-worker thread, so no wait on the drafts file holds the event loop.
+worker thread, so no wait on the drafts file holds the event loop. ``worker_to_the_end``
+waits for one to its end, even through a cancel, so a decision lock held around it is let
+go only once the call has ended.
 """
 
 import asyncio
 import contextlib
+import contextvars
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Final
 
+import anyio
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Durability, StateSnapshot
@@ -236,6 +240,35 @@ async def to_the_end[T](work: Awaitable[T]) -> T:
         with contextlib.suppress(BaseException):
             task.exception()
         raise
+
+
+async def worker_to_the_end[T](call: Callable[[], T]) -> T:
+    """What ``call`` returns, run on a worker thread and waited for to its end whatever cancels
+    the caller meanwhile, so a lock the caller holds is let go only once the call has returned
+    or raised. The wait has no limit, and what the call raises is raised as it is.
+
+    The call is a future on the default executor, not a task, with the caller's context
+    variables, as ``asyncio.to_thread`` gives them. A request is canceled through its
+    middleware's task group by anyio, which delivers the cancel again at every wait and would
+    turn ``to_the_end``'s wait into a busy loop: the shield keeps that cancel off until the
+    call has ended. A plain cancel still reaches ``to_the_end``, which waits the call out."""
+    context = contextvars.copy_context()
+    work = asyncio.get_running_loop().run_in_executor(None, context.run, call)
+    with anyio.CancelScope(shield=True):
+        returned = await to_the_end(work)
+    return returned
+
+
+async def awaited_to_the_end[T](work: Awaitable[T]) -> T:
+    """What ``work`` returns, run as a task and waited for to its end under the same rule as
+    ``worker_to_the_end``.
+
+    A worker thread ``work`` starts is waited for only where ``work`` itself waits for it, so
+    each new use needs its own check that it does. Unlike a worker's future, the task is one
+    the event loop's own teardown cancels."""
+    with anyio.CancelScope(shield=True):
+        returned = await to_the_end(work)
+    return returned
 
 
 class Unfinished(TimeoutError):

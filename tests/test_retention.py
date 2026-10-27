@@ -74,11 +74,14 @@ from blossom.stores.workload_signals import SIGNAL_RETENTION_DAYS
 from blossom.views import PlanRunView
 from tests.support import (
     FIXTURE_TIMEZONE,
+    HANG_LIMIT_SECONDS,
+    LOOP_CYCLES,
     OBSERVED_AT,
     SAME_ORIGIN,
     Awaited,
     FakeTime,
     Gated,
+    Parked,
     Scripted,
     Spending,
     accepting,
@@ -3083,3 +3086,55 @@ def test_run_rows_survive_every_sweep_so_a_used_form_stays_used(tmp_path: pathli
     assert published.status == "published"
     assert ended is not None
     assert (ended.status, ended.reason) == ("ended", "no_plan")
+
+
+@pytest.mark.parametrize("write", ["reconcile_runs", "record_decision"])
+def test_a_sweep_canceled_during_a_write_keeps_the_decision_lock_until_the_write_returns(
+    write: str,
+) -> None:
+    """The sweep is canceled, as the lifespan cancels it at shutdown, while one of its writes
+    under the decision lock runs on a worker: ending the runs out of time, or closing a draft
+    that waited too long. A decision waiting for the lock takes it only once that write has
+    returned, and the sweep then ends canceled."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[list[bool], Parked, bool]:
+            if write == "record_decision":
+                await graph_for(state, fixture_week_plan()).ainvoke(
+                    PlanState(plan_date=PLAN_DATE, rounds=0),
+                    config=run_config(admitted(state, "plan:stale")),
+                    durability=DURABILITY,
+                )
+                state.drafts.settle_run("plan:stale")
+            long_after = FrozenClock(OBSERVED_AT + timedelta(days=PAUSED_RETENTION_DAYS + 2), ZONE)
+            taken: list[bool] = []
+
+            async def sweeping() -> None:
+                async with state.decision_lock:
+                    await sweep_saved_state(state.checkpointer, state.drafts, long_after)
+
+            async def deciding() -> None:
+                async with state.decision_lock:
+                    taken.append(parked.returned.is_set())
+
+            with Parked(store=state.drafts, method=write) as parked:
+                sweep = asyncio.create_task(sweeping())
+                await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
+                decision = asyncio.create_task(deciding())
+                await asyncio.sleep(0)
+                sweep.cancel()
+                for _ in range(LOOP_CYCLES):
+                    await asyncio.sleep(0)
+                parked.release.set()
+                await asyncio.wait({sweep, decision}, timeout=HANG_LIMIT_SECONDS)
+            return taken, parked, sweep.cancelled()
+
+        taken, parked, canceled = asyncio.run(scenario())
+    finally:
+        state.close()
+
+    assert parked.on_the_loop is False
+    assert not parked.hung
+    assert taken == [True]
+    assert canceled
