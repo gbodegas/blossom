@@ -1258,8 +1258,8 @@ ENDED_SAID: Final = {
 """A press's lines as the page for a review that expired, or that the sweep took away, says
 them: each line saying answers are kept, in the past; each line holding an instruction that
 needs that review, as listed here without it; each line that is only such an instruction, or
-points at the review's rows, left out (empty). A line not listed is said as the review says
-it."""
+points at the review's rows, left out (empty). The changed line is said by ``ended_lines``;
+any other line not listed is said as the review says it."""
 
 
 def ended_lines(lines: Iterable[str], *, saved: bool) -> list[str]:
