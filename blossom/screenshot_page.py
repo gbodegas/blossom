@@ -366,8 +366,8 @@ def confirm_question(
     piece: Piece, field: str, values: Mapping[tuple[str, str], str], fold: str
 ) -> "Question":
     """Confirm as read, for a field the reader wasn't sure of, pointing to the box of "Correct
-    what was read" that corrects it (``fold``, its fold's id), except for the due or assigned
-    label, which is confirmed only."""
+    what was read" that corrects it (``fold``, its fold's summary's id), except for the due or
+    assigned label, which is confirmed only."""
     subject = confirm_of(piece, field)
     legend = SAID["unsure"].format(named=FIELD_NAMES[field])
     options = (("as_read", SAID["confirm"], values.get(("confirm", subject)) == "as_read"),)
@@ -709,7 +709,8 @@ class Question:
     about: str = ""
     """The card or row it is about, which its legend names to a screen reader."""
     fold: str = ""
-    """For a field the reader wasn't sure of: the id of the fold whose box corrects it."""
+    """For a field the reader wasn't sure of: the id of the summary of the fold whose box
+    corrects it."""
     notes: tuple[tuple[str, str], ...] = ()
     """Lines said above its options, each with the field of a question it links to, if any
     (resolved to that question's anchor once the page's questions are placed)."""
@@ -841,8 +842,8 @@ class RowsShown:
     saved: tuple[str, ...] = ()
     """The cards of this review already saved, each by its title and place."""
     first_open: str | None = None
-    """The id of the first fieldset, in page order, with no answer chosen or typed, or the fold
-    whose box was refused."""
+    """The id of the first fieldset, in page order, with no answer chosen or typed, or the
+    summary of the fold whose box was refused."""
     words: Mapping[str, str] = dataclasses.field(default_factory=lambda: dict(SAID))
     """The fixed sentences and labels the page shows beside the rows' own."""
 
@@ -1782,10 +1783,11 @@ def _placed(
 def _first_open(
     names: Sequence[NameQuestion], splits: Sequence[Question], units: Sequence[UnitShown]
 ) -> str | None:
-    """The id of the first place still to answer: a fold whose box a press refused, since
-    nothing of that press was kept until it is put right; else, in the order the page shows
-    them, a fieldset with no option checked, an unsure field answered by its fold's correction
-    aside. A Type left unchosen saves as its line says, so it is never still to answer."""
+    """The id of the first place still to answer: the summary of a fold whose box a press
+    refused, since nothing of that press was kept until it is put right; else, in the order the
+    page shows them, a fieldset with no option checked, an unsure field answered by its fold's
+    correction aside. A Type left unchosen saves as its line says, so it is never still to
+    answer."""
 
     def answered(question: Question | NameQuestion) -> bool:
         corrected = isinstance(question, Question) and question.answered

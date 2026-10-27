@@ -2064,6 +2064,57 @@ def test_each_card_s_fold_holds_what_was_read_for_it_whole(
     }
 
 
+def test_each_card_s_correct_what_was_read_is_in_the_tab_order_where_its_links_land(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each card's "Correct what was read" summary is a Tab stop, with no negative tabindex on
+    it or on its fold, whether or not a question links to it, and each link the review shows
+    lands on an element of the page, a question's link to a fold on the summary of its own
+    card's fold, whose id no other element carries."""
+    answer = homework_answer()
+    answer["cards"][1]["uncertain"] = [{"field": "title", "reason": "faint"}]
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    found = elements_of(page)
+    by_id = {e.attributes["id"]: e for e in found if "id" in e.attributes}
+    links = [e for e in found if e.tag == "a" and e.attributes.get("href", "").startswith("#")]
+    fold = screenshot_page.SAID["fold"]
+    summaries = [e for e in found if e.tag == "summary" and e.text.startswith(fold)]
+    to_folds = [link for link in links if link.text == fold]
+
+    def above(element: Element, tag: str) -> Element:
+        return next(e for e in element.ancestors() if e.tag == tag)
+
+    def card_named(element: Element) -> str:
+        """The card a control names in words only a screen reader hears."""
+        [said] = [e.text for e in found if e.parent is element and "visually-hidden" in e.classes]
+        return said
+
+    assert len(summaries) == 2
+    for summary in summaries:
+        card = above(summary, "article")
+        within = summary.ancestors()[: summary.ancestors().index(card)]
+        assert [element.tag for element in within] == ["details"]
+        assert "tabindex" not in within[0].attributes
+        assert summary.attributes["tabindex"] == "0"
+        assert [e for e in found if e.attributes.get("id") == summary.attributes["id"]] == [summary]
+    assert above(summaries[0], "article") is not above(summaries[1], "article")
+    assert links
+    for link in links:
+        assert link.attributes["href"][1:] in by_id
+    [link] = to_folds
+    target = by_id[link.attributes["href"][1:]]
+    legend = next(e for e in found if e.tag == "legend" and e.parent is above(link, "fieldset"))
+    assert target in summaries
+    assert above(target, "article") is above(link, "article")
+    assert (
+        card_named(target)
+        == card_named(legend)
+        == " for Chains Reading Guide 6 (screenshot 1, card 2)"
+    )
+
+
 def test_a_found_row_chosen_for_a_card_shows_the_same_facts_as_every_other_entry(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2416,12 +2467,16 @@ def test_a_correction_refused_as_too_long_is_the_first_question_still_to_answer(
     [holding] = [
         (anchor, markup)
         for anchor, markup in re.findall(
-            r'<details class="steps" id="([^"]+)"[^>]*>(.*?)</details>', refused, re.S
+            r'<details class="steps"[^>]*>\s*<summary id="([^"]+)"[^>]*>(.*?)</details>',
+            refused,
+            re.S,
         )
         if box in markup
     ]
     assert 'aria-invalid="true"' in holding[1]
-    assert re.search(rf'<details class="steps" id="{holding[0]}" tabindex="-1" open>', refused)
+    assert re.search(
+        rf'<details class="steps" open>\s*<summary id="{holding[0]}" tabindex="0">', refused
+    )
     assert link is not None
     assert link.group(1) == holding[0]
 
@@ -4051,7 +4106,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
 
     # Strict on purpose, beside the exact rules: any text that names the class changes this
     # count, a harmless comment included, and that upkeep is accepted.
-    assert css.count("import-review") == 37
+    assert css.count("import-review") == 38
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
     for landing in ("#told:focus", "#done:focus", "#outcome-heading:focus"):
@@ -4059,6 +4114,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
     for landing in (
         '.import-review .choice[tabindex="-1"]',
         '.import-review article[tabindex="-1"]',
+        ".import-review summary[id]",
     ):
         assert declared_for(landing) == ["scroll-margin-top: 0.75rem;"]
     assert carriers == ["import_find.html", "import_review.html", "parent_review.html"]
@@ -6984,7 +7040,9 @@ def test_unsure_instructions_read_as_none_offer_one_empty_box_whose_words_save_o
     words = [s for s in fields_named(form, "correct:") if json.loads(s)[1].startswith("instr")]
     [question] = re.findall(r"<legend>The reader wasn.*?</fieldset>", form, re.S)
     [fold] = re.findall(r'<a href="#([^"]+)">', question)
-    pointed = re.search(rf'<details class="steps" id="{fold}".*?</details>', form, re.S)
+    pointed = re.search(
+        rf'<details class="steps"[^>]*>\s*<summary id="{fold}".*?</details>', form, re.S
+    )
     assert words == [box.removeprefix("correct:")]
     assert box_of(form, box) is not None
     assert str(box_of(form, box)[0]).startswith("<textarea ")  # type: ignore[index]
