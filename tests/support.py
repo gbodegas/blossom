@@ -3049,10 +3049,21 @@ def counted_waits(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return waits
 
 
+def ended_canceled(task: "asyncio.Task[Any]") -> bool:
+    """Whether a task that has ended ended canceled. ``exception()`` raises asyncio's cancel
+    error exactly then."""
+    assert task.done()
+    try:
+        task.exception()
+    except BaseException:
+        return True
+    return False
+
+
 def ended_as(request: "asyncio.Task[httpx.Response]") -> str:
     """How a request that has ended ended, in words a test can compare: canceled, or raised
     and of what type, neither of which passed a response on, or answered and with what."""
-    if request.cancelled():
+    if ended_canceled(request):
         return "canceled"
     error = request.exception()
     if error is not None:

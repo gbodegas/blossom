@@ -85,6 +85,7 @@ from tests.support import (
     Scripted,
     Spending,
     accepting,
+    ended_canceled,
     ended_run,
     family_plan_body,
     fixture_settings,
@@ -3128,7 +3129,7 @@ def test_a_sweep_canceled_during_a_write_keeps_the_decision_lock_until_the_write
                     await asyncio.sleep(0)
                 parked.release.set()
                 await asyncio.wait({sweep, decision}, timeout=HANG_LIMIT_SECONDS)
-            return taken, parked, sweep.cancelled()
+            return taken, parked, ended_canceled(sweep)
 
         taken, parked, canceled = asyncio.run(scenario())
     finally:
