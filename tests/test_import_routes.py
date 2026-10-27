@@ -8375,7 +8375,15 @@ def test_a_press_that_kept_answers_says_so_when_its_review_can_t_be_read(
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert not says(answer.text, imports.SAID["busy"])
     assert not says(answer.text, imports.PRESS_SAID["changed_by_answers"])
-    assert len(after) > len(before)
+    posted_answers = {
+        (kind, subject): value
+        for name, value in posted
+        if name.startswith("answer:")
+        for kind, _, subject in [name.removeprefix("answer:").partition(":")]
+    }
+    assert set(posted_answers) - set(before)
+    for answer_key, value in posted_answers.items():
+        assert after.get(answer_key) == value, answer_key
     kept_block = KEPT_BLOCK.search(answer.text)
     problem = PROBLEM_BLOCK.search(answer.text)
     assert problem is not None
@@ -8510,13 +8518,22 @@ def test_an_upload_the_busy_file_refuses_still_says_nothing_was_added(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, where: str
 ) -> None:
     """An upload the busy store refuses began nothing, so its screenshots weren't added: it says
-    so and asks for them again, 503, and the review holds what it held."""
+    so and asks for them again, 503, and the review holds what it held. Refused at the review's
+    read, before its body, it reads none of the body."""
     with here(open_settings(tmp_path)) as browser:
         draft_id = made(browser, RED)
         drafts_store = state_of(browser).import_drafts
         method = {"first upload": "create", "more, before the body": "snapshot"}.get(
             where, "add_images"
         )
+        bodies: list[int] = []
+        real_body = imports.body_of
+
+        async def counted_body(*args: object, **kwargs: object) -> object:
+            bodies.append(1)
+            return await real_body(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(imports, "body_of", counted_body)
         put_back = restored(drafts_store, method, busy_store(WriterBusy))
         if where == "first upload":
             answer = upload(browser, BLUE)
@@ -8528,6 +8545,7 @@ def test_an_upload_the_busy_file_refuses_still_says_nothing_was_added(
     assert answer.status_code == 503
     assert says(answer.text, imports.SAID["busy"])
     assert len(held) == 1
+    assert bodies == ([] if where == "more, before the body" else [1])
 
 
 def test_the_page_that_can_t_show_the_review_reads_no_store_after_the_refusal(
