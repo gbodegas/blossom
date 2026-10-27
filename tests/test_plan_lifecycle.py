@@ -5492,6 +5492,8 @@ class HeldWork:
     order: list[str] = field(default_factory=list)
     on_the_loop: list[bool] = field(default_factory=list)
     raises: BaseException | None = None
+    answer: Callable[[], str] = lambda: "written"
+    """What the work returns, read on the thread it runs on."""
 
     def call(self) -> str:
         self.on_the_loop.append(on_an_event_loop())
@@ -5501,7 +5503,7 @@ class HeldWork:
         self.order.append("work returns")
         if self.raises is not None:
             raise self.raises
-        return "written"
+        return self.answer()
 
     def awaitable(self, form: str) -> Awaitable[str]:
         """The work in ``form``: the call itself on a worker, or a one-node graph's run."""
@@ -5525,6 +5527,10 @@ class Pressed:
 
     order: list[str]
     on_the_loop: list[bool]
+    waiting: bool
+    """Whether the second press had asked for the lock, and found it held, before the cancel."""
+    reached: bool
+    """Whether the cancel found the request, or the handler's task, still running."""
     waits_while_held: int
     ended: str
 
@@ -5549,7 +5555,10 @@ async def pressed_through_a_gate(
                 work.order.append("lock let go")
         return PlainTextResponse(said)
 
+    asking = asyncio.Event()
+
     async def second() -> None:
+        asking.set()
         async with lock:
             work.order.append("second holds the lock")
 
@@ -5565,15 +5574,17 @@ async def pressed_through_a_gate(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
         request = asyncio.create_task(http.post("/press"))
-        await holding.wait()
+        await asyncio.wait_for(holding.wait(), HANG_LIMIT_SECONDS)
         if not pool_full:
             await asyncio.to_thread(work.started.wait, HANG_LIMIT_SECONDS)
         waiting = asyncio.create_task(second())
+        await asyncio.wait_for(asking.wait(), HANG_LIMIT_SECONDS)
         await asyncio.sleep(0)
+        asked = lock.locked() and not waiting.done()
         if kind == "through the gate":
-            request.cancel()
-        elif handlers[0] is not None:
-            handlers[0].cancel()
+            reached = request.cancel()
+        else:
+            reached = handlers[0] is not None and handlers[0].cancel()
         before = waits[0]
         for _ in range(LOOP_CYCLES):
             await asyncio.sleep(0)
@@ -5584,7 +5595,8 @@ async def pressed_through_a_gate(
             await asyncio.wait(blockers, timeout=HANG_LIMIT_SECONDS)
         work.release.set()
         await asyncio.wait({request, waiting}, timeout=HANG_LIMIT_SECONDS)
-    return Pressed(work.order, work.on_the_loop, waits_while_held, ended_as(request))
+    ended = ended_as(request) if request.done() else "still running: hung"
+    return Pressed(work.order, work.on_the_loop, asked, reached, waits_while_held, ended)
 
 
 @pytest.mark.parametrize("kind", list(CANCEL_KINDS))
@@ -5599,6 +5611,8 @@ def test_a_lock_held_around_work_is_let_go_only_once_the_work_has_returned(
     pressed = asyncio.run(pressed_through_a_gate(HeldWork(), form, kind, waits))
 
     assert pressed.on_the_loop == [False]
+    assert pressed.waiting
+    assert pressed.reached
     assert pressed.order == [
         "work started",
         "work returns",
@@ -5610,14 +5624,18 @@ def test_a_lock_held_around_work_is_let_go_only_once_the_work_has_returned(
 
 
 @pytest.mark.parametrize("kind", list(CANCEL_KINDS))
+@pytest.mark.parametrize("form", FORMS)
 def test_a_call_queued_behind_a_full_pool_still_runs_before_its_lock_is_let_go(
-    kind: str, monkeypatch: pytest.MonkeyPatch
+    form: str, kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A press canceled while its call waits for a free worker: the call still runs once one
     frees, and the lock is let go only after it has returned."""
     waits = counted_waits(monkeypatch)
-    pressed = asyncio.run(pressed_through_a_gate(HeldWork(), FORMS[0], kind, waits, pool_full=True))
+    pressed = asyncio.run(pressed_through_a_gate(HeldWork(), form, kind, waits, pool_full=True))
 
+    assert pressed.on_the_loop == [False]
+    assert pressed.waiting
+    assert pressed.reached
     assert pressed.order == [
         "pool freed",
         "work started",
@@ -5635,7 +5653,7 @@ def test_what_the_work_raises_is_raised_as_it_is_even_when_it_is_no_exception(fo
     work.release.set()
 
     async def waited() -> str:
-        return await work.awaitable(form)
+        return await asyncio.wait_for(work.awaitable(form), HANG_LIMIT_SECONDS)
 
     with pytest.raises(Stopped) as raised:
         asyncio.run(waited())
@@ -5647,9 +5665,16 @@ def test_what_the_work_raises_is_raised_as_it_is_even_when_it_is_no_exception(fo
 CALLERS: Final = contextvars.ContextVar[str]("callers", default="none")
 
 
-def test_a_call_on_a_worker_has_its_callers_context_variables() -> None:
+@pytest.mark.parametrize("form", FORMS)
+def test_the_work_has_its_callers_context_variables(form: str) -> None:
+    """The work reads the caller's context variables on the thread it runs on, as it would
+    through ``asyncio.to_thread``."""
+    work = HeldWork(answer=CALLERS.get)
+    work.release.set()
+
     async def called() -> str:
         CALLERS.set("the caller's")
-        return await worker_to_the_end(CALLERS.get)
+        return await asyncio.wait_for(work.awaitable(form), HANG_LIMIT_SECONDS)
 
     assert asyncio.run(called()) == "the caller's"
+    assert work.on_the_loop == [False]

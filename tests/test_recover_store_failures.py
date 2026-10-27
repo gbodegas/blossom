@@ -12,6 +12,7 @@ pinned clock, and a failure made at the store call, or a second connection holdi
 """
 
 import asyncio
+import contextlib
 import pathlib
 import re
 import sqlite3
@@ -2119,6 +2120,14 @@ def a_signal_taken_back(client: TestClient) -> Sent:
     return Sent("POST", f"/student/actions/take-back/{signal.signal_id}")
 
 
+def a_signal_with_other_words(client: TestClient) -> Sent:
+    """The JSON press sent again with other words than the signal it recorded: refused, 409,
+    once the store has read what that id kept."""
+    fields = fresh_signal_fields(client)
+    assert client.post(SIGNALS, json={**fields, "detail": "the first words"}).status_code == 201
+    return Sent("POST", SIGNALS, json={**fields, "detail": "other words"})
+
+
 def a_signal_sent(client: TestClient) -> Sent:
     return Sent("POST", SIGNALS, json=fresh_signal_fields(client))
 
@@ -2167,7 +2176,7 @@ ON_THE_LOOP_CASES = [
         id="take back, no such signal",
     ),
     pytest.param(a_signal_taken_back, 303, id="take back"),
-    pytest.param(lambda _: Sent("POST", SIGNALS, json={}), 422, id="signal refused"),
+    pytest.param(a_signal_with_other_words, 409, id="signal refused"),
     pytest.param(a_signal_sent, 201, id="signal"),
     pytest.param(
         lambda _: Sent("DELETE", f"{SIGNALS}/{UNKNOWN_SIGNAL}"), 404, id="withdraw, no such signal"
@@ -2184,14 +2193,16 @@ def test_her_press_runs_no_statement_on_the_event_loop(
     made: Callable[[TestClient], Sent], code: int
 ) -> None:
     """Every store read and write a press makes, and the page it answers with, runs on a
-    worker thread: a wait on the file holds that thread, never the loop."""
+    worker thread: a wait on the file holds that thread, never the loop. Each press reads a
+    store, so the trace sees statements on a worker, which shows it saw the route."""
     with browser() as client:
         request = made(client)
         with OnTheLoop(state_of(client)) as seen:
             answer = answer_to(client, request)
 
     assert answer.status_code == code, answer.text[:300]
-    assert seen == []
+    assert seen.loop == []
+    assert seen.workers != []
 
 
 def held_in_place(state: Any, where: str) -> Parked:  # noqa: ANN401
@@ -2222,10 +2233,10 @@ async def a_static_file_beside(app: Any, press: Sent, where: str) -> tuple[list[
 
                 pressing = asyncio.create_task(pressed())
                 await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
-                static = await http.get(STATIC)
+                static = await asyncio.wait_for(http.get(STATIC), HANG_LIMIT_SECONDS)
                 order.append(f"static file answered {static.status_code}")
                 parked.release.set()
-                code = await pressing
+                code = await asyncio.wait_for(pressing, HANG_LIMIT_SECONDS)
     return order, parked, code
 
 
@@ -2257,10 +2268,16 @@ class Canceled:
     """What a press canceled while its store call was held left behind."""
 
     calls: list[str]
+    """In order: each time a press took the decision lock, and each store call's entry and
+    return."""
     parked: Parked
+    reached: bool
+    """Whether the cancel found the request, or the handler's task, still running."""
     waits_while_held: int
     ended: str
     """How the canceled request ended: canceled, raised, or answered with a status and words."""
+    waiting: bool | None
+    """Whether the press made again had asked for the decision lock before the cancel."""
     second: int | None
 
 
@@ -2310,10 +2327,17 @@ async def a_press_canceled(
         lock = state.decision_lock
         acquire = lock.acquire
         holders: list[asyncio.Task[Any] | None] = []
+        asked_again = asyncio.Event()
 
         async def taken() -> bool:
             holders.append(asyncio.current_task())
-            return bool(await acquire())
+            if len(holders) > 1:
+                asked_again.set()
+            took = bool(await acquire())
+            # Before any store lock: a section entered early shows here even when its first
+            # store call then waits for a lock the held write keeps.
+            calls.append("lock taken")
+            return took
 
         setattr(store, method, noted)
         setattr(lock, "acquire", taken)  # noqa: B010
@@ -2324,18 +2348,23 @@ async def a_press_canceled(
                 transport=transport, base_url=ORIGIN, headers=headers
             ) as http:
                 if held.remade:
-                    page = (await http.get(HER_PAGE)).text
-                    press = Sent(press.method, press.path, form_fields(page, press.path))
+                    shown = await asyncio.wait_for(http.get(HER_PAGE), HANG_LIMIT_SECONDS)
+                    press = Sent(press.method, press.path, form_fields(shown.text, press.path))
                 where = first_write_to(held.table)
                 with Parked(store._connection, where, loop_parks=False) as parked:
                     first = asyncio.create_task(sent_on(http, press))
                     await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
                     again = asyncio.create_task(sent_on(http, press)) if second else None
+                    waiting = None
+                    if again is not None:
+                        with contextlib.suppress(TimeoutError):
+                            await asyncio.wait_for(asked_again.wait(), HANG_LIMIT_SECONDS)
+                        waiting = asked_again.is_set()
                     await asyncio.sleep(0)
                     if kind == "through the gate":
-                        first.cancel()
-                    elif holders and holders[0] is not None:
-                        holders[0].cancel()
+                        reached = first.cancel()
+                    else:
+                        reached = bool(holders) and holders[0] is not None and holders[0].cancel()
                     before = waits[0]
                     for _ in range(LOOP_CYCLES):
                         await asyncio.sleep(0)
@@ -2345,11 +2374,11 @@ async def a_press_canceled(
                     ended = ended_as(first) if first in done else "still running: hung"
                     answered = None
                     if again is not None:
-                        answered = (await again).status_code
+                        answered = (await asyncio.wait_for(again, HANG_LIMIT_SECONDS)).status_code
         finally:
             delattr(store, method)
             delattr(lock, "acquire")
-    return Canceled(calls, parked, waits_while_held, ended, answered)
+    return Canceled(calls, parked, reached, waits_while_held, ended, waiting, answered)
 
 
 async def sent_on(http: httpx.AsyncClient, request: Sent) -> httpx.Response:
@@ -2428,10 +2457,14 @@ def test_a_canceled_press_keeps_the_decision_lock_until_its_store_call_returns(
 
     assert canceled.parked.on_the_loop is False
     assert not canceled.parked.hung
+    assert canceled.waiting
+    assert canceled.reached
     assert canceled.ended == CANCELS[kind]
     assert canceled.calls == [
+        "lock taken",
         "store call entered",
         "store call returned",
+        "lock taken",
         "store call entered",
         "store call returned",
     ]
@@ -2490,8 +2523,9 @@ def test_a_canceled_press_is_whole_or_absent_and_said_truly_after(
         again = answer_to(client, press)
 
     assert canceled.parked.on_the_loop is False
+    assert canceled.reached
     assert canceled.ended == CANCELS[kind]
-    assert canceled.calls == ["store call entered", "store call returned"]
+    assert canceled.calls == ["lock taken", "store call entered", "store call returned"]
     if fails:
         assert newest is None
         assert again.status_code == 500
@@ -2537,9 +2571,9 @@ async def a_request_canceled(
                     first.add_done_callback(lambda _: calls.append("request ended"))
                     await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
                     if kind == "through the gate":
-                        first.cancel()
-                    elif readers and readers[0] is not None:
-                        readers[0].cancel()
+                        reached = first.cancel()
+                    else:
+                        reached = bool(readers) and readers[0] is not None and readers[0].cancel()
                     before = waits[0]
                     for _ in range(LOOP_CYCLES):
                         await asyncio.sleep(0)
@@ -2549,7 +2583,7 @@ async def a_request_canceled(
                     ended = ended_as(first) if first in done else "still running: hung"
         finally:
             del store.ask_once
-    return Canceled(calls, parked, waits_while_held, ended, None)
+    return Canceled(calls, parked, reached, waits_while_held, ended, None, None)
 
 
 @pytest.mark.parametrize("kind", CANCELS)
@@ -2577,6 +2611,7 @@ def test_a_canceled_request_for_help_ends_only_after_its_write_and_is_kept_once(
 
     assert canceled.parked.on_the_loop is False
     assert not canceled.parked.hung
+    assert canceled.reached
     assert canceled.ended == CANCELS[kind]
     assert canceled.calls == ["store call entered", "store call returned", "request ended"]
     assert canceled.waits_while_held <= 2, canceled.waits_while_held

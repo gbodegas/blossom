@@ -3100,7 +3100,7 @@ def test_a_sweep_canceled_during_a_write_keeps_the_decision_lock_until_the_write
     state = application()
     try:
 
-        async def scenario() -> tuple[list[bool], Parked, bool]:
+        async def scenario() -> tuple[list[bool], Parked, bool, bool, bool]:
             if write == "record_decision":
                 await graph_for(state, fixture_week_plan()).ainvoke(
                     PlanState(plan_date=PLAN_DATE, rounds=0),
@@ -3110,12 +3110,14 @@ def test_a_sweep_canceled_during_a_write_keeps_the_decision_lock_until_the_write
                 state.drafts.settle_run("plan:stale")
             long_after = FrozenClock(OBSERVED_AT + timedelta(days=PAUSED_RETENTION_DAYS + 2), ZONE)
             taken: list[bool] = []
+            asking = asyncio.Event()
 
             async def sweeping() -> None:
                 async with state.decision_lock:
                     await sweep_saved_state(state.checkpointer, state.drafts, long_after)
 
             async def deciding() -> None:
+                asking.set()
                 async with state.decision_lock:
                     taken.append(parked.returned.is_set())
 
@@ -3123,19 +3125,24 @@ def test_a_sweep_canceled_during_a_write_keeps_the_decision_lock_until_the_write
                 sweep = asyncio.create_task(sweeping())
                 await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
                 decision = asyncio.create_task(deciding())
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(asking.wait(), HANG_LIMIT_SECONDS)
                 await asyncio.sleep(0)
-                sweep.cancel()
+                waiting = asking.is_set() and state.decision_lock.locked()
+                reached = sweep.cancel()
                 for _ in range(LOOP_CYCLES):
                     await asyncio.sleep(0)
                 parked.release.set()
                 await asyncio.wait({sweep, decision}, timeout=HANG_LIMIT_SECONDS)
-            return taken, parked, ended_canceled(sweep)
+            return taken, parked, waiting, reached, sweep.done() and ended_canceled(sweep)
 
-        taken, parked, canceled = asyncio.run(scenario())
+        taken, parked, waiting, reached, canceled = asyncio.run(scenario())
     finally:
         state.close()
 
     assert parked.on_the_loop is False
     assert not parked.hung
+    assert waiting
+    assert reached
     assert taken == [True]
     assert canceled

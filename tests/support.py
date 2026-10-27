@@ -2938,26 +2938,31 @@ EVERY_STORE = (
 
 
 class OnTheLoop:
-    """Every statement a store of ``state`` runs on the event loop's thread while this is
-    entered, as the store's name and the statement, in the order they ran. A statement on a
-    worker thread is left out. It sees statements only: a store's lock taken with none would
-    not show."""
+    """Every statement a store of ``state`` runs while this is entered, as the store's name and
+    the statement, in the order they ran: ``loop`` holds those run on the event loop's thread,
+    ``workers`` those run on any other. ``workers`` is the trace's own check that it saw the
+    route: a route that reads a store and shows neither list a statement was not traced.
+
+    Every store in ``EVERY_STORE`` must be there; one that is not fails the test rather than go
+    untraced. It sees statements only: a store's lock taken with none would not show. It
+    registers through ``traced``, so a test that sets a connection's callback directly can't
+    be combined with it: the callback set last is the only one called."""
 
     def __init__(self, state: ApplicationState) -> None:
         self.state = state
-        self.seen: list[tuple[str, str]] = []
+        self.loop: list[tuple[str, str]] = []
+        self.workers: list[tuple[str, str]] = []
         self.stack = contextlib.ExitStack()
 
-    def __enter__(self) -> list[tuple[str, str]]:
+    def __enter__(self) -> "OnTheLoop":
         for name in EVERY_STORE:
-            store = getattr(self.state, name, None)
-            if store is not None:
-                self.stack.enter_context(traced(store._connection, partial(self.note, name)))
-        return self.seen
+            store = getattr(self.state, name)
+            assert store is not None, f"no {name} store to trace"
+            self.stack.enter_context(traced(store._connection, partial(self.note, name)))
+        return self
 
     def note(self, name: str, statement: str) -> None:
-        if on_an_event_loop():
-            self.seen.append((name, statement))
+        (self.loop if on_an_event_loop() else self.workers).append((name, statement))
 
     def __exit__(self, *_: object) -> None:
         self.stack.close()
