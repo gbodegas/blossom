@@ -9002,15 +9002,23 @@ def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_t
 BUSY_SAVE_CASES: Final = ("a group changed", "typing left open", "close unconfirmed", "resent")
 
 
+def panel_lines(section: str) -> list[str]:
+    """Each heading and paragraph of a panel, its text as the page shows it, in page order."""
+    found = re.findall(r"<(?:h2|p)\b[^>]*>(.*?)</(?:h2|p)>", section, re.S)
+    return [html.unescape(re.sub(r"<[^>]+>", "", text)).strip() for text in found]
+
+
+@pytest.mark.parametrize("busy", [StoreBusy, WriterBusy], ids=["store busy", "writer busy"])
 @pytest.mark.parametrize("case", BUSY_SAVE_CASES)
 def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_back(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str, busy: type[Exception]
 ) -> None:
     """A save that committed homework, a title typed on the row it left open, then the review
-    read busy: 200 with its counts, whose heading takes the focus, no line pointing at rows the
-    page doesn't show, then in one problem block that takes no focus: a close that couldn't be
-    confirmed, a changed group as the busy page says it, and that the review can't be shown;
-    the typed title to copy and the way back to the review."""
+    read busy: 200 with its counts, whose heading takes the focus, then the outcome's own lines
+    and the way to her week, then in one problem block that takes no focus: a close that
+    couldn't be confirmed, a changed group as the busy page says it, and that the review can't
+    be shown; no line pointing at rows the page doesn't show; the typed title to copy and the
+    way back to the review."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
@@ -9025,17 +9033,16 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
                 (),
                 ("first",),
                 changed_units=("second",),
+                already_units=("third",),
                 incomplete=("close",) if case == "close unconfirmed" else (),
                 counts=(1, 0, 0, 1),
             )
             monkeypatch.setattr(imports, "save_homework", lambda *_, **__: saved)
         if case == "resent":
             assert send(browser, draft_id, posted).status_code == 200
-            refuse = busy_store(StoreBusy)
+            refuse = busy_store(busy)
         else:
-            refuse = failing_read(
-                drafts.snapshot, 4 if case == "typing left open" else 2, StoreBusy
-            )
+            refuse = failing_read(drafts.snapshot, 4 if case == "typing left open" else 2, busy)
         put_back = restored(drafts, "snapshot", refuse)
         answer = send(browser, draft_id, posted)
         put_back()
@@ -9054,6 +9061,19 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
     problem = PROBLEM_BLOCK.search(shown.group(1))
     assert problem is not None
     assert lines_in(problem) == [*expected, imports.REVIEW_NOT_SHOWN]
+    counts = "Saved: 1 new assignment. 1 still needs checking."
+    already, left_open = imports.PRESS_SAID["already"], imports.PRESS_SAID["left_open"]
+    own = {
+        "a group changed": [already, left_open],
+        "typing left open": [left_open],
+        "close unconfirmed": [already],
+        "resent": ["See them on her week"],
+    }[case]
+    assert panel_lines(shown.group(1)) == [counts, *own, *expected, imports.REVIEW_NOT_SHOWN]
+    if case == "resent":
+        week = re.search(r'<p><a href="([^"]+)">See them on her week</a></p>', shown.group(1))
+        assert week is not None
+        assert week.group(1).startswith(f"{navigation.WEEK_PAGE}?week=")
     assert focused(answer.text) == ['<h2 id="outcome-heading" tabindex="-1" autofocus>']
     assert re.findall(r'<p class="note">([^<]*)</p>', shown.group(1)) == []
     assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
@@ -9067,6 +9087,31 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert not says(answer.text, imports.SAID["busy"])
     assert not says(answer.text, imports.SAID["closed"])
+
+
+@pytest.mark.parametrize("busy", [StoreBusy, WriterBusy], ids=["store busy", "writer busy"])
+def test_save_review_for_later_whose_check_reads_busy_still_goes_to_the_review_with_its_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, busy: type[Exception]
+) -> None:
+    """Save review for later commits, then its check that the review hasn't ended is refused
+    busy: a busy store isn't an ended review, so it answers its 303 to the review with its note,
+    which the next readable visit shows, never the page of an ended review."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        drafts = state_of(browser).import_drafts
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, busy))
+        answer = send(browser, draft_id, page_post(page, "later"))
+        put_back()
+        shown = browser.get(f"/parent/imports/{draft_id}")
+
+    assert answer.status_code == 303
+    assert answer.headers["location"] == f"/parent/imports/{draft_id}"
+    assert imports.NOTE_COOKIE in answer.headers.get("set-cookie", "")
+    assert not says(answer.text, imports.PRESS_SAID["kept_before_ended"])
+    assert shown.status_code == 200
+    assert says(shown.text, imports.PRESS_SAID["later"])
+    assert "Saved for later at " in shown.text
 
 
 INSTRUCTION_CASES: Final = {
