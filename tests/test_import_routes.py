@@ -9015,10 +9015,10 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
 ) -> None:
     """A save that committed homework, a title typed on the row it left open, then the review
     read busy: 200 with its counts, whose heading takes the focus, then the outcome's own lines
-    and the way to her week, then in one problem block that takes no focus: a close that
-    couldn't be confirmed, a changed group as the busy page says it, and that the review can't
-    be shown; no line pointing at rows the page doesn't show; the typed title to copy and the
-    way back to the review."""
+    (on a resent save, the way to her week), then in one problem block that takes no focus: a
+    close that couldn't be confirmed, a changed group as the busy page says it, and that the
+    review can't be shown; no line pointing at rows the page doesn't show; the typed title to
+    copy and the way back to the review."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
