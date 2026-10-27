@@ -2066,7 +2066,8 @@ def test_each_card_s_correct_what_was_read_is_in_the_tab_order_where_its_links_l
 ) -> None:
     """Each card's "Correct what was read" summary is a Tab stop, with no negative tabindex on
     it or on its fold, whether or not a question links to it, and each link the review shows
-    lands on an element of the page, a question's link to a fold on that fold's summary."""
+    lands on an element of the page, a question's link to a fold on the summary of its own
+    card's fold, whose id no other element carries."""
     answer = homework_answer()
     answer["cards"][1]["uncertain"] = [{"field": "title", "reason": "faint"}]
     with here(open_settings(tmp_path)) as browser:
@@ -2077,21 +2078,38 @@ def test_each_card_s_correct_what_was_read_is_in_the_tab_order_where_its_links_l
     links = [e for e in found if e.tag == "a" and e.attributes.get("href", "").startswith("#")]
     fold = screenshot_page.SAID["fold"]
     summaries = [e for e in found if e.tag == "summary" and e.text.startswith(fold)]
-    to_folds = [link.attributes["href"][1:] for link in links if link.text == fold]
+    to_folds = [link for link in links if link.text == fold]
+
+    def above(element: Element, tag: str) -> Element:
+        return next(e for e in element.ancestors() if e.tag == tag)
+
+    def card_named(element: Element) -> str:
+        """The card a control names in words only a screen reader hears."""
+        [said] = [e.text for e in found if e.parent is element and "visually-hidden" in e.classes]
+        return said
+
     assert len(summaries) == 2
     for summary in summaries:
-        card = next(above for above in summary.ancestors() if above.tag == "article")
+        card = above(summary, "article")
         within = summary.ancestors()[: summary.ancestors().index(card)]
-        assert [above.tag for above in within] == ["details"]
+        assert [element.tag for element in within] == ["details"]
         assert "tabindex" not in within[0].attributes
         assert summary.attributes["tabindex"] == "0"
-    assert sorted(summary.attributes["id"] in to_folds for summary in summaries) == [False, True]
+        assert [e for e in found if e.attributes.get("id") == summary.attributes["id"]] == [summary]
+    assert above(summaries[0], "article") is not above(summaries[1], "article")
     assert links
     for link in links:
         assert link.attributes["href"][1:] in by_id
-    assert to_folds
-    for target in to_folds:
-        assert by_id[target] in summaries
+    [link] = to_folds
+    target = by_id[link.attributes["href"][1:]]
+    legend = next(e for e in found if e.tag == "legend" and e.parent is above(link, "fieldset"))
+    assert target in summaries
+    assert above(target, "article") is above(link, "article")
+    assert (
+        card_named(target)
+        == card_named(legend)
+        == " for Chains Reading Guide 6 (screenshot 1, card 2)"
+    )
 
 
 def test_a_found_row_chosen_for_a_card_shows_the_same_facts_as_every_other_entry(
