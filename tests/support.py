@@ -2955,10 +2955,15 @@ class OnTheLoop:
         self.stack = contextlib.ExitStack()
 
     def __enter__(self) -> "OnTheLoop":
-        for name in EVERY_STORE:
-            store = getattr(self.state, name)
-            assert store is not None, f"no {name} store to trace"
-            self.stack.enter_context(traced(store._connection, partial(self.note, name)))
+        # A failure partway leaves no callback behind: __exit__ doesn't run after it.
+        try:
+            for name in EVERY_STORE:
+                store = getattr(self.state, name)
+                assert store is not None, f"no {name} store to trace"
+                self.stack.enter_context(traced(store._connection, partial(self.note, name)))
+        except BaseException:
+            self.stack.close()
+            raise
         return self
 
     def note(self, name: str, statement: str) -> None:
@@ -3017,12 +3022,17 @@ class Parked:
         return holding
 
     def __enter__(self) -> "Parked":
-        if self.connection is not None:
-            self.registration.enter_context(traced(self.connection, self.hold))
-        if self.method:
-            made = getattr(self.store, self.method)
-            setattr(self.store, self.method, self.held(made))
-            self.registration.callback(delattr, self.store, self.method)
+        # As OnTheLoop's: a failure partway undoes what was registered before it.
+        try:
+            if self.connection is not None:
+                self.registration.enter_context(traced(self.connection, self.hold))
+            if self.method:
+                made = getattr(self.store, self.method)
+                setattr(self.store, self.method, self.held(made))
+                self.registration.callback(delattr, self.store, self.method)
+        except BaseException:
+            self.registration.close()
+            raise
         return self
 
     def __exit__(self, *_: object) -> None:
