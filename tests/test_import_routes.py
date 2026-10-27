@@ -8031,8 +8031,8 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
 ) -> None:
     """One of two groups saved, a title typed for the other: the same press resent while the
     review can't be read answers with the counts it recorded in the success panel, which takes
-    the focus, and that the review can't be shown, never that it is finished, with the typed
-    title to copy and the way back to the review. Sent
+    the focus, and that the review can't be shown in the problem style, never that it is
+    finished, with the typed title to copy and the way back to the review. Sent
     again once the review can be read, it shows the review with those counts and the title
     still in its box."""
     with here(open_settings(tmp_path)) as browser:
@@ -8060,6 +8060,8 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
         *counts,
         imports.REVIEW_NOT_SHOWN,
     ]
+    assert lines_in(PROBLEM_BLOCK.search(shown.group(1))) == [imports.REVIEW_NOT_SHOWN]
+    assert focused(again.text) == ['<h2 id="outcome-heading" tabindex="-1" autofocus>']
     assert BACK_TO_REVIEW.format(draft_id) in again.text
     assert not says(again.text, imports.SAID["closed"])
     assert not says(again.text, imports.SAID["expired"])
@@ -9005,9 +9007,10 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     """A save that committed homework, a title typed on the row it left open, then the review
-    read busy: 200 with its counts, no line pointing at rows the page doesn't show, that the
-    review can't be shown, the typed title to copy and the way back to the review. A changed
-    group is said as the busy page says it; a close that couldn't be confirmed says so."""
+    read busy: 200 with its counts, whose heading takes the focus, no line pointing at rows the
+    page doesn't show, then in one problem block that takes no focus: a close that couldn't be
+    confirmed, a changed group as the busy page says it, and that the review can't be shown;
+    the typed title to copy and the way back to the review."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
@@ -9043,7 +9046,16 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
     heading = re.search(r'<h2 id="outcome-heading"[^>]*>([^<]*)</h2>', shown.group(1))
     assert heading is not None
     assert html.unescape(heading.group(1)) == "Saved: 1 new assignment. 1 still needs checking."
-    assert lines_in(shown)[-1] == imports.REVIEW_NOT_SHOWN
+    changed_line = imports.UNSHOWN_SAID[imports.PRESS_SAID["changed"]][0]
+    expected = {
+        "a group changed": [changed_line],
+        "close unconfirmed": [imports.PRESS_SAID["incomplete"], changed_line],
+    }.get(case, [])
+    problem = PROBLEM_BLOCK.search(shown.group(1))
+    assert problem is not None
+    assert lines_in(problem) == [*expected, imports.REVIEW_NOT_SHOWN]
+    assert focused(answer.text) == ['<h2 id="outcome-heading" tabindex="-1" autofocus>']
+    assert re.findall(r'<p class="note">([^<]*)</p>', shown.group(1)) == []
     assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
     assert not says(answer.text, imports.PRESS_SAID["changed"])
     changed = imports.UNSHOWN_SAID[imports.PRESS_SAID["changed"]][0]

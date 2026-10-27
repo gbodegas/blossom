@@ -578,10 +578,10 @@ async def saved_busy(
     week: str | None = None,
 ) -> Response:
     """A save that committed whose open review the store refuses to read: what it saved in the
-    success panel, what else the press said as a page without the rows says it
-    (``UNSHOWN_SAID``), that the review can't be shown, every correction it typed given back
-    to copy, and the way back to the review."""
-    notes = [shown for line in said for shown in UNSHOWN_SAID.get(line, (line,))]
+    success panel, whose heading takes the focus; then, in the problem style, what else the
+    press said as a page without the rows says it (``UNSHOWN_SAID``) and that the review can't
+    be shown; every correction it typed given back to copy; and the way back to the review."""
+    lines = [shown for line in said for shown in UNSHOWN_SAID.get(line, (line,))]
     return saved_outcome(
         request,
         state,
@@ -589,7 +589,7 @@ async def saved_busy(
         week,
         finished=False,
         typed=await typing_of(request),
-        notes=[*notes, REVIEW_NOT_SHOWN],
+        problems=[*lines, REVIEW_NOT_SHOWN],
         typed_said=UNSHOWN_TYPED,
         review=f"{PREFIX}/{draft_id}",
     )
@@ -1642,6 +1642,7 @@ def saved_outcome(
     finished: bool = True,
     typed: Sequence[tuple[str, str]] = (),
     notes: Sequence[str] = (),
+    problems: Sequence[str] = (),
     typed_said: str = TYPED_SAID,
     review: str | None = None,
 ) -> Response:
@@ -1649,12 +1650,14 @@ def saved_outcome(
     at Saved, the counts as the panel's heading, her week, and that the review is finished.
     Where whether it finished isn't known (``finished`` false), it isn't said, what else the
     press said (``notes``) is, and the corrections the post typed (``typed``) are given back to
-    copy."""
+    copy. ``problems`` are said beneath, in the problem style, with no focus of their own, and
+    ``review`` adds the way back to the review."""
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
             "said": [SAID["closed"], *notes] if finished else list(notes),
+            "problems": list(problems),
             "outcome": list(lines),
             "week": week,
             "typed": list(typed),

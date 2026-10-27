@@ -4,10 +4,13 @@
   A screenshot review's page that says why nothing more happened, or, for a save that finished
   the review, what it saved in the grade save's pattern: the steps line at Saved, the counts as
   the panel's heading, which takes the focus, her week, and that the review is finished (left
-  out, with the typing given back to copy, where the review couldn't be read to know). A press
-  whose open review can't be read says what it kept in the status style, which takes the
-  focus, and the rest with the line that the review can't be shown in the problem style, which
-  takes it when nothing was kept, then the typing and the way back to the review.
+  out, with the typing given back to copy, where the review couldn't be read to know). A save
+  whose open review can't be read shows its counts the same way, the heading taking the focus,
+  then in the problem style what else it said and that the review can't be shown, then the
+  typing and the way back to the review. A press whose open review can't be read says what it
+  kept in the status style, which takes the focus, and the rest with the line that the review
+  can't be shown in the problem style, which takes it when nothing was kept, then the typing
+  and the way back to the review.
 #}
 {% extends "base.html" %}
 {% macro typed_back(typed, typed_said) %}
@@ -33,6 +36,11 @@
       {% for line in outcome[1:] %}<p>{{ line }}</p>{% endfor %}
       {% if week %}<p><a href="{{ week }}">See them on her week</a></p>{% endif %}
       {% for line in said %}<p class="note">{{ line }}</p>{% endfor %}
+      {% if problems %}
+        <div class="problem" role="alert" id="said" tabindex="-1">
+          {% for line in problems %}<p>{{ line }}</p>{% endfor %}
+        </div>
+      {% endif %}
     </section>
     {% if typed %}<section class="panel">{{ typed_back(typed, typed_said) }}</section>{% endif %}
     {% if review %}<p class="return"><a href="{{ review }}">Back to the review</a></p>{% endif %}
