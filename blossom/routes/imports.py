@@ -612,7 +612,7 @@ async def refused_keeping_typing(
     return store_refusal(request, state, error)
 
 
-async def read_now(state: ApplicationState, draft_id: str) -> str | None:
+async def review_state_now(state: ApplicationState, draft_id: str) -> str | None:
     """Whether the review, read now, has expired (``expired``), is gone (``absent``) or can't
     be read for a busy store (``busy``); None while it can be read, open or closed, or for any
     other refusal."""
@@ -633,7 +633,7 @@ async def read_now(state: ApplicationState, draft_id: str) -> str | None:
 async def gone_now(state: ApplicationState, draft_id: str) -> str | None:
     """Whether the review, read now, has expired (``expired``) or is gone
     (``absent``); None while it can still be read, open or closed, or can't be read for now."""
-    now = await read_now(state, draft_id)
+    now = await review_state_now(state, draft_id)
     return None if now == "busy" else now
 
 
@@ -647,10 +647,11 @@ async def snapshot_keeping_typing(
 ) -> DraftSnapshot | Response:
     """The review as one read sees it after a press, or the page that says why it can't be
     shown: for a review that expired or is gone, what the press did and its typing. After a
-    save that committed (``done``, what it saved), a review the store refuses to read answers
-    with what it saved and the press's typing (``saved_unread``), never that nothing was
-    saved; one known to have expired, or to be gone, says so beneath what it saved. Any other
-    press the store refuses to read for answers with its own lines and status
+    save that committed (``done``, what it saved), a review the store refuses to read for a
+    busy store answers with what it saved, that the review can't be shown, the press's typing
+    and the way back to it (``saved_busy``), never that nothing was saved; one known to have
+    expired, or to be gone, says so beneath what it saved (``saved_unread``). Any other press
+    the store refuses to read for answers with its own lines and status
     (``unshown_with_typing``)."""
     student = state.project_state.student_id()
     try:
@@ -1597,7 +1598,7 @@ async def outcome_page(
     problems = [PRESS_SAID["changed"]] if outcome.changed_units else []
     if outcome.incomplete:
         lines = [PRESS_SAID["incomplete"], *done, *problems]
-        now = await read_now(state, draft_id)
+        now = await review_state_now(state, draft_id)
         if now == "busy":
             notes = [PRESS_SAID["incomplete"], *problems]
             return await saved_busy(request, state, draft_id, done, notes)
