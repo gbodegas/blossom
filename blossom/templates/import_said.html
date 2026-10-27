@@ -35,6 +35,7 @@
       {% for line in said %}<p class="note">{{ line }}</p>{% endfor %}
     </section>
     {% if typed %}<section class="panel">{{ typed_back(typed, typed_said) }}</section>{% endif %}
+    {% if review %}<p class="return"><a href="{{ review }}">Back to the review</a></p>{% endif %}
     <p class="return"><a href="/parent">Back to Family review</a></p>
   {% elif review %}
   <section class="panel">

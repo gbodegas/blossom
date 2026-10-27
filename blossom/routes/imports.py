@@ -569,6 +569,32 @@ async def saved_unread(
     return saved_outcome(request, state, done, week, finished=False, typed=typed, notes=said)
 
 
+async def saved_busy(
+    request: Request,
+    state: ApplicationState,
+    draft_id: str,
+    done: Sequence[str],
+    said: Sequence[str] = (),
+    week: str | None = None,
+) -> Response:
+    """A save that committed whose open review the store refuses to read: what it saved in the
+    success panel, what else the press said as a page without the rows says it
+    (``UNSHOWN_SAID``), that the review can't be shown, every correction it typed given back
+    to copy, and the way back to the review."""
+    notes = [shown for line in said for shown in UNSHOWN_SAID.get(line, (line,))]
+    return saved_outcome(
+        request,
+        state,
+        done,
+        week,
+        finished=False,
+        typed=await typing_of(request),
+        notes=[*notes, REVIEW_NOT_SHOWN],
+        typed_said=UNSHOWN_TYPED,
+        review=f"{PREFIX}/{draft_id}",
+    )
+
+
 async def refused_keeping_typing(
     request: Request,
     state: ApplicationState,
@@ -586,9 +612,10 @@ async def refused_keeping_typing(
     return store_refusal(request, state, error)
 
 
-async def gone_now(state: ApplicationState, draft_id: str) -> str | None:
-    """Whether the review, read now, has expired (``expired``) or is gone
-    (``absent``); None while it can still be read, open or closed."""
+async def read_now(state: ApplicationState, draft_id: str) -> str | None:
+    """Whether the review, read now, has expired (``expired``), is gone (``absent``) or can't
+    be read for a busy store (``busy``); None while it can be read, open or closed, or for any
+    other refusal."""
     student = state.project_state.student_id()
     try:
         await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
@@ -596,9 +623,18 @@ async def gone_now(state: ApplicationState, draft_id: str) -> str | None:
         return "expired"
     except DraftNotFound:
         return "absent"
+    except (StoreBusy, WriterBusy):
+        return "busy"
     except STORE_REFUSALS:
         return None
     return None
+
+
+async def gone_now(state: ApplicationState, draft_id: str) -> str | None:
+    """Whether the review, read now, has expired (``expired``) or is gone
+    (``absent``); None while it can still be read, open or closed, or can't be read for now."""
+    now = await read_now(state, draft_id)
+    return None if now == "busy" else now
 
 
 async def snapshot_keeping_typing(
@@ -626,7 +662,7 @@ async def snapshot_keeping_typing(
         return await refused_keeping_typing(request, state, error, said, status)
     except (StoreBusy, WriterBusy):
         if done:
-            return await saved_unread(request, state, done, said)
+            return await saved_busy(request, state, draft_id, done, said)
         return await unshown_with_typing(request, state, draft_id, said, status or 503)
     except STORE_REFUSALS as error:
         return await refused_keeping_typing(request, state, error, said, status)
@@ -1217,6 +1253,7 @@ UNSHOWN_SAID: Final = {
         "Saving an assignment you ticked would now do something different. Check it in the "
         "review and save again.",
     ),
+    PRESS_SAID["unsaved_typing"]: (),
     PRESS_SAID["changed_by_answers"]: (
         PRESS_SAID["answers_kept"],
         "They change what saving does, so no homework was saved by this attempt. Check the "
@@ -1560,9 +1597,12 @@ async def outcome_page(
     problems = [PRESS_SAID["changed"]] if outcome.changed_units else []
     if outcome.incomplete:
         lines = [PRESS_SAID["incomplete"], *done, *problems]
-        gone = await gone_now(state, draft_id)
-        if gone is not None:
-            return await gone_with_typing(request, state, gone, lines, 200, saved=True)
+        now = await read_now(state, draft_id)
+        if now == "busy":
+            notes = [PRESS_SAID["incomplete"], *problems]
+            return await saved_busy(request, state, draft_id, done, notes)
+        if now is not None:
+            return await gone_with_typing(request, state, now, lines, 200, saved=True)
         return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
     if outcome.closed:
         week = await week_of(state, outcome.pairs)
@@ -1602,6 +1642,8 @@ def saved_outcome(
     finished: bool = True,
     typed: Sequence[tuple[str, str]] = (),
     notes: Sequence[str] = (),
+    typed_said: str = TYPED_SAID,
+    review: str | None = None,
 ) -> Response:
     """A save that finished the review, as the grade save's outcome shows one: the steps line
     at Saved, the counts as the panel's heading, her week, and that the review is finished.
@@ -1616,7 +1658,8 @@ def saved_outcome(
             "outcome": list(lines),
             "week": week,
             "typed": list(typed),
-            "typed_said": TYPED_SAID,
+            "typed_said": typed_said,
+            "review": review,
             "marks": marks_of(state),
             "page": "parent",
         },
@@ -1695,19 +1738,23 @@ async def saved_page(
     """A resent press whose acceptance id is recorded: that save's counts, and nothing
     written. A review it finished says so. With the review still open, the press gets its
     typing back in the review, as the save it repeats did, its post read here when the
-    caller had none. A review the store refuses to read (busy, or gone) can't say whether it
-    finished: the counts show in the success panel with no word of that, and every
-    correction the post typed is given back to copy. A review known to have expired, or to be
-    gone, says so beneath the counts as a refused press does."""
+    caller had none. A review the store refuses to read can't say whether it finished: the
+    counts show in the success panel with no word of that, and every correction the post typed
+    is given back to copy; for a busy store, with the line that the review can't be shown and
+    the way back to it (``saved_busy``), and for a review known to have expired, or to be gone,
+    with that said beneath the counts as a refused press does."""
     record = state.project_state
     student = record.student_id()
     counts = await asyncio.to_thread(record.homework_counts, student, draft_id, acceptance)
     lines = [*said, counted(*counts)] if counts else said
     gone: list[str] = []
+    busy = False
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (DraftExpired, DraftNotFound) as error:
         snapshot, gone = None, [SAID[gone_by(error)]]
+    except (StoreBusy, WriterBusy):
+        snapshot, busy = None, True
     except STORE_REFUSALS:
         snapshot = None
     if snapshot is None or snapshot.closed_at is not None or snapshot.finished:
@@ -1715,6 +1762,8 @@ async def saved_page(
             return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
         pairs = await asyncio.to_thread(record.homework_acceptance, student, draft_id, acceptance)
         week = await week_of(state, pairs or ())
+        if busy:
+            return await saved_busy(request, state, draft_id, lines, [], week)
         if snapshot is None:
             return await saved_unread(request, state, lines, gone, week)
         return saved_outcome(request, state, lines, week)

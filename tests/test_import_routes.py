@@ -8031,7 +8031,8 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
 ) -> None:
     """One of two groups saved, a title typed for the other: the same press resent while the
     review can't be read answers with the counts it recorded in the success panel, which takes
-    the focus, never that the review is finished, and gives the typed title back to copy. Sent
+    the focus, and that the review can't be shown, never that it is finished, with the typed
+    title to copy and the way back to the review. Sent
     again once the review can be read, it shows the review with those counts and the title
     still in its box."""
     with here(open_settings(tmp_path)) as browser:
@@ -8055,7 +8056,11 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
     assert again.status_code == 200
     assert shown is not None
     assert re.search(r'<h2 id="outcome-heading" tabindex="-1" autofocus>', shown.group(1))
-    assert [html.unescape(t) for t in re.findall(r">([^<>]+)</(?:h2|p)>", shown.group(1))] == counts
+    assert [html.unescape(t) for t in re.findall(r">([^<>]+)</(?:h2|p)>", shown.group(1))] == [
+        *counts,
+        imports.REVIEW_NOT_SHOWN,
+    ]
+    assert BACK_TO_REVIEW.format(draft_id) in again.text
     assert not says(again.text, imports.SAID["closed"])
     assert not says(again.text, imports.SAID["expired"])
     assert not says(again.text, imports.SAID["absent"])
@@ -8972,6 +8977,66 @@ def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_t
     assert says(ended, counts)
     assert says(ended, imports.SAID["expired"])
     assert TYPED_BACK.findall(ended) == ["Chains Guide Six"]
+
+
+BUSY_SAVE_CASES: Final = ("a group changed", "typing left open", "close unconfirmed", "resent")
+
+
+@pytest.mark.parametrize("case", BUSY_SAVE_CASES)
+def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A save that committed homework, a title typed on the row it left open, then the review
+    read busy: 200 with its counts, no line pointing at rows the page doesn't show, that the
+    review can't be shown, the typed title to copy and the way back to the review. A changed
+    group is said as the busy page says it; a close that couldn't be confirmed says so."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first_unit, open_unit = units_on(page)
+        titles = [f"correct:{box_subject(page, 'title', n)}" for n in range(2)]
+        [other] = [t for t in titles if json.loads(t.removeprefix("correct:"))[0] in open_unit]
+        posted = page_post(page, "save", tick=[first_unit], typed={other: "Chains Guide Six"})
+        drafts = state_of(browser).import_drafts
+        if case in ("a group changed", "close unconfirmed"):
+            saved = Saved(
+                "a" * 32,
+                (),
+                ("first",),
+                changed_units=("second",),
+                incomplete=("close",) if case == "close unconfirmed" else (),
+                counts=(1, 0, 0, 1),
+            )
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: saved)
+        if case == "resent":
+            assert send(browser, draft_id, posted).status_code == 200
+            refuse = busy_store(StoreBusy)
+        else:
+            refuse = failing_read(
+                drafts.snapshot, 4 if case == "typing left open" else 2, StoreBusy
+            )
+        put_back = restored(drafts, "snapshot", refuse)
+        answer = send(browser, draft_id, posted)
+        put_back()
+
+    shown = OUTCOME.search(answer.text)
+    assert answer.status_code == 200
+    assert shown is not None
+    heading = re.search(r'<h2 id="outcome-heading"[^>]*>([^<]*)</h2>', shown.group(1))
+    assert heading is not None
+    assert html.unescape(heading.group(1)) == "Saved: 1 new assignment. 1 still needs checking."
+    assert lines_in(shown)[-1] == imports.REVIEW_NOT_SHOWN
+    assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
+    assert not says(answer.text, imports.PRESS_SAID["changed"])
+    changed = imports.UNSHOWN_SAID[imports.PRESS_SAID["changed"]][0]
+    assert says(answer.text, changed) == (case in ("a group changed", "close unconfirmed"))
+    assert says(answer.text, imports.PRESS_SAID["incomplete"]) == (case == "close unconfirmed")
+    assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert not says(answer.text, TYPED_SAID)
+    assert BACK_TO_REVIEW.format(draft_id) in answer.text
+    assert not says(answer.text, imports.SAID["busy"])
+    assert not says(answer.text, imports.SAID["closed"])
 
 
 INSTRUCTION_CASES: Final = {
