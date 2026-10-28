@@ -2558,6 +2558,24 @@ def a_note_detailed(client: TestClient, *, family: bool = False, add: bool = Fal
     return Sent("POST", action, form)
 
 
+def an_add_with_a_class_left_behind(client: TestClient) -> Sent:
+    """Her add with the essay's class chosen from the list, after every homework of that class
+    was renamed: the list no longer holds it, so the route reads the homework of that class
+    and title before it asks for the lock, to tell a change from a stale choice."""
+    press = a_note_detailed(client, add=True)
+    store = state_of(client).project_state
+    assignments = store.all_assignments()
+    (course,) = {item.course for item in assignments if item.assignment_id == ESSAY_ID}
+    renamed = [item for item in assignments if item.course == course]
+    store.upsert_assignments(
+        [item.model_copy(update={"course": "Renamed class"}) for item in renamed]
+    )
+    assert press.data is not None
+    return Sent(
+        press.method, press.path, {**press.data, "course_choice": course, "course_other": ""}
+    )
+
+
 def refused_on_a_note(step: Callable[[str], str]) -> Callable[[TestClient], Sent]:
     """A press with an empty form on a note of hers, to the address ``step`` names: refused
     before the store is asked, on a page that reads the note."""
@@ -2863,8 +2881,10 @@ NOTE_ON_THE_LOOP_CASES = [
             pytest.param(partial(a_note_detailed, family=family, add=True), 303, id=f"{tree} add"),
         ]
     ],
+    pytest.param(an_add_with_a_class_left_behind, 422, id="her add, class left behind"),
 ]
-"""Each press on a note, refused and made, in her tree and the family's where it has both."""
+"""Each press on a note, refused and made, in her tree and the family's where it has both,
+and her add with a class the list no longer holds, which reads the store before the lock."""
 
 
 @pytest.mark.parametrize(("made", "code"), NOTE_ON_THE_LOOP_CASES)
@@ -2901,6 +2921,48 @@ NOTE_REPEATS = {
     "family add": "said=already",
 }
 """What the address a repeat of each press on a note is answered with says."""
+ALREADY_SAVED = "Already saved. This is the note as it stands now."
+"""The note's page for ``said=same`` or ``said=unchanged`` naming the change that stands:
+``NOTE_ALREADY_SAVED`` in ``blossom/routes/captures.py``, through ``SAID``."""
+ALREADY_ADDED = "Already added to homework. This is the note as it stands now."
+"""The note's page for ``said=already``: ``ALREADY_ADDED`` in ``captures.py``."""
+UNLINKED_STANDS = (
+    "Unlinked. This note is back in Homework notes, and the homework it was joined to is unchanged."
+)
+"""The note's page for ``said=unlinked``: ``UNLINKED`` in ``captures.py``."""
+ALREADY_DELETED = "That note was already deleted."
+"""Her notes for ``already=``: ``NOTE_ALREADY_DELETED`` in ``captures.py``, through
+``deleted_result``."""
+REQUEST_ALREADY_SAVED = "That request is already saved."
+"""Her week for ``asked_again=``: ``ALREADY_SENT`` in ``blossom/routes/student.py``, through
+``help_result_for``."""
+NOTE_STANDING = {
+    "new note": (ALREADY_SAVED, True),
+    "note edit": (ALREADY_SAVED, True),
+    "note archive": (ALREADY_SAVED, True),
+    "note restore": (ALREADY_SAVED, True),
+    "note delete": (ALREADY_DELETED, True),
+    "help about a note": (REQUEST_ALREADY_SAVED, True),
+    "her link": (ALREADY_ADDED, False),
+    "family link": (ALREADY_ADDED, False),
+    "her unlink": (UNLINKED_STANDS, True),
+    "family unlink": (UNLINKED_STANDS, True),
+    "her details": (ALREADY_SAVED, True),
+    "family details": (ALREADY_SAVED, True),
+    "her add": (ALREADY_ADDED, False),
+    "family add": (ALREADY_ADDED, False),
+}
+"""The sentence the page a repeat lands on opens its result line with, and whether it is the
+whole line. A note in homework adds to it, after a space, whether the homework is in today's
+planning window and a link to the assignment."""
+
+
+def standing_line(sentence: str, alone: bool, location: str) -> str:
+    """The opening of the result line ``location`` lands on, as a page writes it when that
+    line says ``sentence``: the element the address's fragment names, then the sentence, then
+    the line's end when the sentence is the whole line, or the space before what follows."""
+    fragment = location.rsplit("#", 1)[1]
+    return f'id="{fragment}" tabindex="-1">{escape(sentence)}' + ("</p>" if alone else " ")
 
 
 def note_of(press: Sent) -> str:
@@ -2942,8 +3004,8 @@ def test_a_canceled_note_press_is_whole_or_absent_and_said_truly_after(
     """A press on a note canceled while its write is held sends no answer. When the write
     then lands, the record holds one more row of it, and the same press again is answered as
     a repeat whose address names the deleted note, the request kept, or the newest change the
-    record holds, a page that opens; when the file refuses it, the record holds nothing of it
-    and the same press again is refused again, 500."""
+    record holds, and whose page says that save stands; when the file refuses it, the record
+    holds nothing of it and the same press again is refused again, 500."""
     held = NOTE_PRESSES[named]
     with browser() as client:
         app = client.app
@@ -2985,3 +3047,4 @@ def test_a_canceled_note_press_is_whole_or_absent_and_said_truly_after(
             assert f"event={newest}" in location
         assert opened is not None
         assert opened.status_code == 200
+        assert standing_line(*NOTE_STANDING[named], location) in opened.text
