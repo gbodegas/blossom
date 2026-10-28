@@ -41,11 +41,12 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import partial
 from typing import Any, Final
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from blossom.agent.runs import GRAPH_VERSION, GRAPH_VERSION_KEY, to_the_end
+from blossom.agent.runs import GRAPH_VERSION, GRAPH_VERSION_KEY, to_the_end, worker_to_the_end
 from blossom.clock import Clock
 from blossom.drafts import Decision, DraftStatus
 from blossom.stores.drafts import DraftsStore
@@ -222,7 +223,9 @@ async def sweep_saved_state(
         listed.add(str(item.config["configurable"]["thread_id"]))
 
     finished = await finish_held_reviews(checkpointer, drafts)
-    ended = await asyncio.to_thread(drafts.reconcile_runs)
+    # Both writes are seen to their end, so a sweep canceled at shutdown lets the decision
+    # lock go only once its write has stopped.
+    ended = await worker_to_the_end(drafts.reconcile_runs)
 
     today = clock.today()
     expired: list[str] = []
@@ -230,12 +233,14 @@ async def sweep_saved_state(
     # adding the span to a plan date near the calendar's last day would.
     for record in await asyncio.to_thread(drafts.waiting):
         if today - record.plan_date > timedelta(days=PAUSED_RETENTION_DAYS):
-            await asyncio.to_thread(
-                drafts.record_decision,
-                record.draft_id,
-                status=DraftStatus.DRAFT,
-                decision="expired",
-                reason=EXPIRED_REASON,
+            await worker_to_the_end(
+                partial(
+                    drafts.record_decision,
+                    record.draft_id,
+                    status=DraftStatus.DRAFT,
+                    decision="expired",
+                    reason=EXPIRED_REASON,
+                )
             )
             expired.append(record.draft_id)
 

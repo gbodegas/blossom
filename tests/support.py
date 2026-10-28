@@ -17,6 +17,7 @@ makes the same file reachable under two module names, which mypy rejects.
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import faulthandler
 import hashlib
@@ -2879,6 +2880,211 @@ class AskedWaits:
         self.store._lock = self.lock
         del self.store._session
         del self.store._wait_until
+
+
+_TRACED: dict[int, list[Callable[[str], None]]] = {}
+"""The callbacks registered on each traced connection, by the connection's id."""
+
+
+@contextmanager
+def traced(connection: sqlite3.Connection, callback: Callable[[str], None]) -> Iterator[None]:
+    """``callback`` given every statement ``connection`` runs, beside any other registered here.
+
+    A connection keeps one trace callback and can't say which, so two seams that each set
+    their own would put one out. Each registers here instead: the first puts one callback on
+    the connection that calls them all in the order they came, and the last to leave takes it
+    off, so the connection ends the test as it began. A test that sets a callback directly
+    can't be combined with one registered here."""
+    callbacks = _TRACED.get(id(connection))
+    if callbacks is None:
+        callbacks = _TRACED[id(connection)] = []
+        listed = callbacks
+
+        def every(statement: str) -> None:
+            for each in tuple(listed):
+                each(statement)
+
+        connection.set_trace_callback(every)
+    callbacks.append(callback)
+    try:
+        yield
+    finally:
+        callbacks.remove(callback)
+        if not callbacks:
+            del _TRACED[id(connection)]
+            # A store closed with its application has no callback left to take off.
+            with contextlib.suppress(sqlite3.ProgrammingError):
+                connection.set_trace_callback(None)
+
+
+def on_an_event_loop() -> bool:
+    """Whether this thread is running an event loop: the loop's thread, never a worker's."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+EVERY_STORE = (
+    "project_state",
+    "drafts",
+    "workload_signals",
+    "help_requests",
+    "import_drafts",
+    "traces",
+)
+"""Every store an application keeps a connection to."""
+
+
+class OnTheLoop:
+    """Every statement a store of ``state`` runs while this is entered, as the store's name and
+    the statement, in the order they ran: ``loop`` holds those run on the event loop's thread,
+    ``workers`` those run on any other. ``workers`` is the trace's own check that it saw the
+    route: a route that reads a store and shows neither list a statement was not traced.
+
+    Every store in ``EVERY_STORE`` must be there; one that is not fails the test rather than go
+    untraced. It sees statements only: a store's lock taken with none would not show. It
+    registers through ``traced``, so a test that sets a connection's callback directly can't
+    be combined with it: the callback set last is the only one called."""
+
+    def __init__(self, state: ApplicationState) -> None:
+        self.state = state
+        self.loop: list[tuple[str, str]] = []
+        self.workers: list[tuple[str, str]] = []
+        self.stack = contextlib.ExitStack()
+
+    def __enter__(self) -> "OnTheLoop":
+        # A failure partway leaves no callback behind: __exit__ doesn't run after it.
+        try:
+            for name in EVERY_STORE:
+                store = getattr(self.state, name)
+                assert store is not None, f"no {name} store to trace"
+                self.stack.enter_context(traced(store._connection, partial(self.note, name)))
+        except BaseException:
+            self.stack.close()
+            raise
+        return self
+
+    def note(self, name: str, statement: str) -> None:
+        (self.loop if on_an_event_loop() else self.workers).append((name, statement))
+
+    def __exit__(self, *_: object) -> None:
+        self.stack.close()
+
+
+class Parked:
+    """A store call held inside itself, at the first statement ``connection`` runs that
+    ``where`` picks, or with ``method`` as ``store``'s method is called, for a call that may
+    run no statement. Held, it waits for ``release``: at most ``HANG_LIMIT_SECONDS``, a hang
+    detector, after which the call goes on and ``hung`` says so. ``entered`` is set once the
+    call is held, ``on_the_loop`` says whether it was the event loop's thread, and
+    ``returned`` is set once a held ``method`` has returned or raised.
+
+    With ``loop_parks`` false a call on the loop's thread is noted and let through at once,
+    since a held loop could take neither the release nor a cancel. Only the first is held."""
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection | None = None,
+        where: Callable[[str], bool] = lambda _: True,
+        *,
+        store: object = None,
+        method: str = "",
+        loop_parks: bool = True,
+    ) -> None:
+        self.connection, self.where, self.loop_parks = connection, where, loop_parks
+        self.store, self.method = store, method
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.returned = threading.Event()
+        self.on_the_loop: bool | None = None
+        self.hung = False
+        self.registration = contextlib.ExitStack()
+
+    def hold(self, statement: str) -> None:
+        if self.entered.is_set() or not self.where(statement):
+            return
+        self.on_the_loop = on_an_event_loop()
+        self.entered.set()
+        if self.on_the_loop and not self.loop_parks:
+            return
+        self.hung = not self.release.wait(HANG_LIMIT_SECONDS)
+
+    def held[T](self, made: Callable[..., T]) -> Callable[..., T]:
+        def holding(*args: Any, **kwargs: Any) -> T:  # noqa: ANN401
+            self.hold("")
+            try:
+                return made(*args, **kwargs)
+            finally:
+                self.returned.set()
+
+        return holding
+
+    def __enter__(self) -> "Parked":
+        # As OnTheLoop's: a failure partway undoes what was registered before it.
+        try:
+            if self.connection is not None:
+                self.registration.enter_context(traced(self.connection, self.hold))
+            if self.method:
+                made = getattr(self.store, self.method)
+                setattr(self.store, self.method, self.held(made))
+                self.registration.callback(delattr, self.store, self.method)
+        except BaseException:
+            self.registration.close()
+            raise
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.release.set()
+        self.registration.close()
+
+
+def first_write_to(table: str) -> Callable[[str], bool]:
+    """Picks a statement that writes to ``table``."""
+    written = re.compile(rf"^\s*(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+{table}\b", re.I)
+    return lambda statement: written.match(statement) is not None
+
+
+LOOP_CYCLES = 200
+"""Turns of the event loop a test lets pass while a canceled call is held, counting waits."""
+
+
+def counted_waits(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """How many times ``asyncio.wait`` is called from now on: a spinning wait calls it on
+    every turn of the loop."""
+    waits = [0]
+    wait = asyncio.wait
+
+    async def counted(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        waits[0] += 1
+        return await wait(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "wait", counted)
+    return waits
+
+
+def ended_canceled(task: "asyncio.Task[Any]") -> bool:
+    """Whether a task that has ended ended canceled. ``exception()`` raises asyncio's cancel
+    error exactly then."""
+    assert task.done()
+    try:
+        task.exception()
+    except BaseException:
+        return True
+    return False
+
+
+def ended_as(request: "asyncio.Task[httpx.Response]") -> str:
+    """How a request that has ended ended, in words a test can compare: canceled, or raised
+    and of what type, neither of which passed a response on, or answered and with what."""
+    if ended_canceled(request):
+        return "canceled"
+    error = request.exception()
+    if error is not None:
+        return f"raised {type(error).__name__}"
+    answer = request.result()
+    return f"answered {answer.status_code}: {words(answer.text)}"
 
 
 def the_alert(page: str) -> str:

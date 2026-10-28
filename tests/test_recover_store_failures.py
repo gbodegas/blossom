@@ -12,6 +12,7 @@ pinned clock, and a failure made at the store call, or a second connection holdi
 """
 
 import asyncio
+import contextlib
 import pathlib
 import re
 import sqlite3
@@ -23,16 +24,19 @@ from datetime import UTC, date, datetime
 from typing import Any, cast
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.agent.runs import Unfinished
+from blossom.dependencies import STATE_ATTRIBUTE
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.routes import hand_in as hand_in_routes
 from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
+from blossom.routes.forms import fields_of
 from blossom.routes.navigation import details_href, week_href
 from blossom.routes.runs import Unconfirmed
 from blossom.stores.drafts import STORE_WAIT_SECONDS
@@ -48,27 +52,37 @@ from tests.support import (
     FAMILY_FORM_NOT_WHOLE,
     FAMILY_NEWER_PLAN_AUGUST_19,
     FIXTURE_WEEK,
+    HANG_LIMIT_SECONDS,
     HER_PAGE,
     HER_UPDATES_SAVED,
+    LOOP_CYCLES,
     MISSING_EMAIL,
     NOTHING_FOR_AUGUST_20,
+    ORIGIN,
     PAGE_HEADERS,
     PLAN_DATE,
     REPORT,
+    SAME_ORIGIN,
     UNDO,
     AskedWaits,
     HangWatch,
     HeldByAnother,
+    OnTheLoop,
+    Parked,
     Statements,
     WaitBeside,
     after_the_failure,
     browser,
     card_for,
+    counted_waits,
     database_of,
+    due,
+    ended_as,
     ended_run,
     every_row,
     family_line_focused,
     family_plan,
+    first_write_to,
     fixture_settings,
     form_fields,
     fresh_plan_fields,
@@ -76,12 +90,14 @@ from tests.support import (
     hidden,
     household_client,
     main_of,
+    page_of,
     plan_form,
     planned,
     pressed_form,
     quiet_client,
     refusing,
     report,
+    reported,
     rules_named,
     runs_recorded,
     sign_in_as,
@@ -2021,3 +2037,584 @@ def test_her_notes_while_the_file_is_held_say_they_cannot_be_shown(
 
     store_free_page(answer, status=503, heading="Homework notes", alert=notes_alert("her"))
     assert readable.status_code == 200
+
+
+# ------------------------------------------------------- the event loop while she presses
+
+TURNED_IN_UNDO = f"/student/actions/assignments/{ESSAY_ID}/undo-turned-in"
+EARLIER_WORK = f"/student/actions/assignments/{ESSAY_ID}/earlier-work"
+TOO_MUCH = "/student/actions/too-much"
+ASK_FOR_HELP = "/student/actions/ask-for-help"
+SIGNALS = "/student/workload-signals"
+STATIC = "/static/blossom.css"
+
+
+@dataclass(frozen=True)
+class Sent:
+    """One request as a test sends it: its method, its address, and a form or a JSON body."""
+
+    method: str
+    path: str
+    data: dict[str, str] | None = None
+    json: dict[str, str] | None = None
+
+
+def answer_to(client: TestClient, request: Sent) -> Any:  # noqa: ANN401
+    """What ``client`` is answered for ``request``, sent as a page or a script sends it."""
+    headers = PAGE_HEADERS if request.json is None else {}
+    return client.request(
+        request.method, request.path, data=request.data, json=request.json, headers=headers
+    )
+
+
+def a_hand_in(_: TestClient) -> Sent:
+    return Sent("POST", HAND_IN, {**HAND_IN_PRESS})
+
+
+HAND_IN_PRESS = {"state": TURNED_IN, "next_action": "", "note": "", "expected_hand_in_id": ""}
+REPORT_PRESS = {
+    "status": "done",
+    "note": "",
+    "expected_report_id": "",
+    "week": FIXTURE_WEEK,
+    "in_place": "",
+}
+
+
+def a_hand_in_undo(client: TestClient) -> Sent:
+    assert client.post(HAND_IN, data=HAND_IN_PRESS).status_code == 303
+    made = state_of(client).project_state.hand_in_chains([ESSAY_ID])[ESSAY_ID][-1].event_id
+    blank = {"return_to": "", "week": "", "plan_id": ""}
+    return Sent("POST", UNDO_HAND_IN, {"hand_in_id": made, **blank})
+
+
+def a_card_turn_in(client: TestClient) -> Sent:
+    page = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+    action, fields = pressed_form(card_for(page, ESSAY_ID), "hand_in_head")
+    return Sent("POST", action, fields)
+
+
+def a_card_undo(client: TestClient) -> Sent:
+    pressed = answer_to(client, a_card_turn_in(client))
+    assert pressed.status_code == 303, pressed.text[:300]
+    page = client.get(pressed.headers["location"]).text
+    action, fields = pressed_form(card_for(page, ESSAY_ID), "undo_hand_in")
+    return Sent("POST", action, fields)
+
+
+def a_report(_: TestClient) -> Sent:
+    return Sent("POST", REPORT, {**REPORT_PRESS})
+
+
+def a_report_undo(client: TestClient) -> Sent:
+    reported(state_of(client).project_state, "done")
+    return Sent("POST", UNDO, form_fields(card_for(page_of(client), ESSAY_ID), UNDO))
+
+
+def a_signal(client: TestClient) -> Sent:
+    return Sent("POST", TOO_MUCH, fresh_signal_fields(client))
+
+
+def a_signal_taken_back(client: TestClient) -> Sent:
+    signal = state_of(client).workload_signals.record(PLAN_DATE, None)
+    return Sent("POST", f"/student/actions/take-back/{signal.signal_id}")
+
+
+def a_signal_with_other_words(client: TestClient) -> Sent:
+    """The JSON press sent again with other words than the signal it recorded: refused, 409,
+    once the store has read what that id kept."""
+    fields = fresh_signal_fields(client)
+    assert client.post(SIGNALS, json={**fields, "detail": "the first words"}).status_code == 201
+    return Sent("POST", SIGNALS, json={**fields, "detail": "other words"})
+
+
+def a_signal_sent(client: TestClient) -> Sent:
+    return Sent("POST", SIGNALS, json=fresh_signal_fields(client))
+
+
+def a_signal_withdrawn(client: TestClient) -> Sent:
+    signal = state_of(client).workload_signals.record(PLAN_DATE, None)
+    return Sent("DELETE", f"{SIGNALS}/{signal.signal_id}")
+
+
+def a_request_for_help(client: TestClient) -> Sent:
+    fields = form_fields(client.get(HER_PAGE).text, ASK_FOR_HELP)
+    return Sent("POST", ASK_FOR_HELP, {**fields, "note": "the outline"})
+
+
+EARLIER = due("earlier-aug-18", "Fractions practice", date(2026, 8, 18))
+"""Homework due the day before the fixture's day, which her week lists as earlier work."""
+
+
+def an_earlier_choice(client: TestClient) -> Sent:
+    state_of(client).project_state.put_on_record([EARLIER], {})
+    action = student_routes.earlier_action(EARLIER.assignment_id)
+    return Sent("POST", action, form_fields(client.get(HER_PAGE).text, action))
+
+
+UNKNOWN_SIGNAL = "0" * 32
+ON_THE_LOOP_CASES = [
+    pytest.param(lambda _: Sent("POST", HAND_IN, {}), 422, id="hand-in refused"),
+    pytest.param(a_hand_in, 303, id="hand-in"),
+    pytest.param(lambda _: Sent("POST", UNDO_HAND_IN, {}), 422, id="hand-in undo refused"),
+    pytest.param(a_hand_in_undo, 303, id="hand-in undo"),
+    pytest.param(lambda _: Sent("POST", TURNED_IN_PRESS, {}), 422, id="card turn-in refused"),
+    pytest.param(a_card_turn_in, 303, id="card turn-in"),
+    pytest.param(lambda _: Sent("POST", TURNED_IN_UNDO, {}), 422, id="card undo refused"),
+    pytest.param(a_card_undo, 303, id="card undo"),
+    pytest.param(lambda _: Sent("POST", REPORT, {}), 422, id="report refused"),
+    pytest.param(a_report, 303, id="report"),
+    pytest.param(lambda _: Sent("POST", UNDO, {}), 422, id="report undo refused"),
+    pytest.param(a_report_undo, 303, id="report undo"),
+    pytest.param(lambda _: Sent("POST", EARLIER_WORK, {}), 422, id="earlier work refused"),
+    pytest.param(an_earlier_choice, 303, id="earlier work"),
+    pytest.param(lambda _: Sent("POST", TOO_MUCH, {}), 422, id="too much refused"),
+    pytest.param(a_signal, 303, id="too much"),
+    pytest.param(
+        lambda _: Sent("POST", f"/student/actions/take-back/{UNKNOWN_SIGNAL}"),
+        303,
+        id="take back, no such signal",
+    ),
+    pytest.param(a_signal_taken_back, 303, id="take back"),
+    pytest.param(a_signal_with_other_words, 409, id="signal refused"),
+    pytest.param(a_signal_sent, 201, id="signal"),
+    pytest.param(
+        lambda _: Sent("DELETE", f"{SIGNALS}/{UNKNOWN_SIGNAL}"), 404, id="withdraw, no such signal"
+    ),
+    pytest.param(a_signal_withdrawn, 204, id="withdraw"),
+    pytest.param(lambda _: Sent("POST", ASK_FOR_HELP, {}), 422, id="ask for help refused"),
+    pytest.param(a_request_for_help, 303, id="ask for help"),
+]
+"""Each of her presses on the hand-in and student routes, refused and made."""
+
+
+@pytest.mark.parametrize(("made", "code"), ON_THE_LOOP_CASES)
+def test_her_press_runs_no_statement_on_the_event_loop(
+    made: Callable[[TestClient], Sent], code: int
+) -> None:
+    """Every store read and write a press makes, and the page it answers with, runs on a
+    worker thread: a wait on the file holds that thread, never the loop. Each press reads a
+    store, so the trace sees statements on a worker, which shows it saw the route."""
+    with browser() as client:
+        request = made(client)
+        with OnTheLoop(state_of(client)) as seen:
+            answer = answer_to(client, request)
+
+    assert answer.status_code == code, answer.text[:300]
+    assert seen.loop == []
+    assert seen.workers != []
+
+
+def held_in_place(state: Any, where: str) -> Parked:  # noqa: ANN401
+    """Her press held inside its store call: at the hand-in's or the update's write, or at the
+    first statement of a page that only reads."""
+    connection = state.project_state._connection
+    if where == "page":
+        return Parked(connection, lambda _: True)
+    return Parked(connection, first_write_to(where))
+
+
+async def a_static_file_beside(app: Any, press: Sent, where: str) -> tuple[list[str], Parked, int]:  # noqa: ANN401
+    """Her press held in its store call, and a request for a static file sent meanwhile, on
+    one event loop: the order they were answered in, the hold, and the press's status. The
+    test sets the release only once the static file is answered."""
+    order: list[str] = []
+    async with app.router.lifespan_context(app):
+        state = getattr(app.state, STATE_ATTRIBUTE)
+        transport = httpx.ASGITransport(app=app)
+        headers = {**SAME_ORIGIN, **PAGE_HEADERS}
+        async with httpx.AsyncClient(transport=transport, base_url=ORIGIN, headers=headers) as http:
+            with held_in_place(state, where) as parked:
+
+                async def pressed() -> int:
+                    answer = await http.request(press.method, press.path, data=press.data)
+                    order.append("press answered")
+                    return answer.status_code
+
+                pressing = asyncio.create_task(pressed())
+                await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
+                static = await asyncio.wait_for(http.get(STATIC), HANG_LIMIT_SECONDS)
+                order.append(f"static file answered {static.status_code}")
+                parked.release.set()
+                code = await asyncio.wait_for(pressing, HANG_LIMIT_SECONDS)
+    return order, parked, code
+
+
+@pytest.mark.parametrize(
+    ("press", "where", "code"),
+    [
+        pytest.param(Sent("POST", HAND_IN, HAND_IN_PRESS), "hand_in_events", 303, id="hand-in"),
+        pytest.param(Sent("POST", UNDO_HAND_IN, {}), "page", 422, id="hand-in undo refused"),
+    ],
+)
+def test_a_static_file_is_answered_while_her_press_is_held_in_its_store_call(
+    press: Sent, where: str, code: int
+) -> None:
+    """While her press waits inside its store call, a request that needs neither the file nor
+    the store's lock is answered first, and the press then ends as it would have. A static
+    file: never a page that reads the record, which waits for the same lock."""
+    with browser() as client:
+        app = client.app
+    order, parked, answered = asyncio.run(a_static_file_beside(app, press, where))
+
+    assert parked.on_the_loop is False
+    assert not parked.hung
+    assert order == ["static file answered 200", "press answered"]
+    assert answered == code
+
+
+@dataclass
+class Canceled:
+    """What a press canceled while its store call was held left behind."""
+
+    calls: list[str]
+    """In order: each time a press took the decision lock, and each store call's entry and
+    return."""
+    parked: Parked
+    reached: bool
+    """Whether the cancel found the request, or the handler's task, still running."""
+    waits_while_held: int
+    ended: str
+    """How the canceled request ended: canceled, raised, or answered with a status and words."""
+    waiting: bool | None
+    """Whether the press made again had asked for the decision lock before the cancel."""
+    second: int | None
+
+
+@dataclass(frozen=True)
+class Held:
+    """A press of hers made with the decision lock held, and where its write is held: the
+    store, its method, and the table the write goes to."""
+
+    made: Callable[[TestClient], Sent]
+    store: str
+    method: str
+    table: str
+    again: int
+    """The status the same press made again is answered with, as a repeat: a save already
+    saved, or an Undo already undone."""
+    remade: bool = False
+    """Whether the form is signed with the key drawn at each start, and so is made again from
+    the page as this start shows it."""
+
+
+async def a_press_canceled(
+    app: Any,  # noqa: ANN401
+    press: Sent,
+    held: Held,
+    kind: str,
+    *,
+    second: bool,
+    waits: list[int],
+) -> Canceled:
+    """Her press held at its write on a worker and canceled, as uvicorn cancels a request
+    through the household gate's task group or as a plain cancel of the handler's own task;
+    with ``second``, the same press made again meanwhile, waiting for the lock."""
+    calls: list[str] = []
+    method = held.method
+    async with app.router.lifespan_context(app):
+        state = getattr(app.state, STATE_ATTRIBUTE)
+        store = getattr(state, held.store)
+        made = getattr(store, method)
+
+        def noted(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            calls.append("store call entered")
+            try:
+                return made(*args, **kwargs)
+            finally:
+                calls.append("store call returned")
+
+        lock = state.decision_lock
+        acquire = lock.acquire
+        holders: list[asyncio.Task[Any] | None] = []
+        asked_again = asyncio.Event()
+
+        async def taken() -> bool:
+            holders.append(asyncio.current_task())
+            if len(holders) > 1:
+                asked_again.set()
+            took = bool(await acquire())
+            # Before any store lock: a section entered early shows here even when its first
+            # store call then waits for a lock the held write keeps.
+            calls.append("lock taken")
+            return took
+
+        setattr(store, method, noted)
+        setattr(lock, "acquire", taken)  # noqa: B010
+        transport = httpx.ASGITransport(app=app)
+        headers = {**SAME_ORIGIN, **PAGE_HEADERS}
+        try:
+            async with httpx.AsyncClient(
+                transport=transport, base_url=ORIGIN, headers=headers
+            ) as http:
+                if held.remade:
+                    shown = await asyncio.wait_for(http.get(HER_PAGE), HANG_LIMIT_SECONDS)
+                    press = Sent(press.method, press.path, form_fields(shown.text, press.path))
+                where = first_write_to(held.table)
+                with Parked(store._connection, where, loop_parks=False) as parked:
+                    first = asyncio.create_task(sent_on(http, press))
+                    await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
+                    again = asyncio.create_task(sent_on(http, press)) if second else None
+                    waiting = None
+                    if again is not None:
+                        with contextlib.suppress(TimeoutError):
+                            await asyncio.wait_for(asked_again.wait(), HANG_LIMIT_SECONDS)
+                        waiting = asked_again.is_set()
+                    await asyncio.sleep(0)
+                    if kind == "through the gate":
+                        reached = first.cancel()
+                    else:
+                        reached = bool(holders) and holders[0] is not None and holders[0].cancel()
+                    before = waits[0]
+                    for _ in range(LOOP_CYCLES):
+                        await asyncio.sleep(0)
+                    waits_while_held = waits[0] - before
+                    parked.release.set()
+                    done, _ = await asyncio.wait({first}, timeout=HANG_LIMIT_SECONDS)
+                    ended = ended_as(first) if first in done else "still running: hung"
+                    answered = None
+                    if again is not None:
+                        answered = (await asyncio.wait_for(again, HANG_LIMIT_SECONDS)).status_code
+        finally:
+            delattr(store, method)
+            delattr(lock, "acquire")
+    return Canceled(calls, parked, reached, waits_while_held, ended, waiting, answered)
+
+
+async def sent_on(http: httpx.AsyncClient, request: Sent) -> httpx.Response:
+    """``request`` sent on ``http`` as a page or a script sends it."""
+    if request.json is not None:
+        return await http.request(
+            request.method, request.path, json=request.json, headers={"Accept": "*/*"}
+        )
+    return await http.request(request.method, request.path, data=request.data)
+
+
+HAND_IN_HELD = Held(a_hand_in, "project_state", "record_hand_in", "hand_in_events", 303)
+PRESSES_HELD = [
+    pytest.param(HAND_IN_HELD, id="hand-in"),
+    pytest.param(
+        Held(a_hand_in_undo, "project_state", "undo_hand_in", "hand_in_events", 409),
+        id="hand-in undo",
+    ),
+    pytest.param(
+        Held(a_card_turn_in, "project_state", "record_hand_in", "hand_in_events", 303),
+        id="card turn-in",
+    ),
+    pytest.param(
+        Held(a_card_undo, "project_state", "undo_hand_in", "hand_in_events", 409), id="card undo"
+    ),
+    pytest.param(
+        Held(a_report, "project_state", "report_status", "student_reports", 303), id="report"
+    ),
+    pytest.param(
+        Held(a_report_undo, "project_state", "undo_report", "student_reports", 409),
+        id="report undo",
+    ),
+    pytest.param(
+        Held(an_earlier_choice, "project_state", "choose_catch_up", "catch_up_choices", 303, True),
+        id="earlier work",
+    ),
+    pytest.param(
+        Held(a_signal, "workload_signals", "record_once", "workload_signals", 303), id="too much"
+    ),
+    pytest.param(
+        Held(a_signal_taken_back, "workload_signals", "withdraw", "workload_signals", 303),
+        id="take back",
+    ),
+    pytest.param(
+        Held(a_signal_sent, "workload_signals", "record_once", "workload_signals", 200),
+        id="signal",
+    ),
+    pytest.param(
+        Held(a_signal_withdrawn, "workload_signals", "withdraw", "workload_signals", 404),
+        id="withdraw",
+    ),
+]
+CANCELS = {
+    "through the gate": "canceled",
+    "of the handler's own task": "raised RuntimeError",
+}
+"""Each way a handler is canceled, and how the request then ends, with no response passed on
+either way: through the household gate's task group, as uvicorn cancels a request at a
+shutdown, the request is canceled; a plain cancel of the handler's own task leaves the gate
+with no response, and it raises."""
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+@pytest.mark.parametrize("held", PRESSES_HELD)
+def test_a_canceled_press_keeps_the_decision_lock_until_its_store_call_returns(
+    held: Held, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press canceled while its write is held on a worker keeps the decision lock until that
+    write has returned: the same press made again meanwhile enters its own store call only
+    after, and is answered as a repeat. The wait does not spin while the write is held."""
+    with browser() as client:
+        app = client.app
+        press = held.made(client)
+    waits = counted_waits(monkeypatch)
+    canceled = asyncio.run(a_press_canceled(app, press, held, kind, second=True, waits=waits))
+
+    assert canceled.parked.on_the_loop is False
+    assert not canceled.parked.hung
+    assert canceled.waiting
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == [
+        "lock taken",
+        "store call entered",
+        "store call returned",
+        "lock taken",
+        "store call entered",
+        "store call returned",
+    ]
+    assert canceled.waits_while_held <= 2, canceled.waits_while_held
+    assert canceled.second == held.again
+
+
+REPORT_HELD = Held(a_report, "project_state", "report_status", "student_reports", 303)
+
+
+def head_shown(client: TestClient, held: Held) -> tuple[str, str | None]:
+    """The head a reload's form carries for the essay beside the newest row the record holds,
+    or ``None`` when it holds none: a hand-in on the details, an update on her week."""
+    connection = state_of(client).project_state._connection
+    if held is HAND_IN_HELD:
+        page = client.get(DETAILS, params={"hand_in": "change"}, headers=PAGE_HEADERS).text
+        shown = form_fields(page, HAND_IN)["expected_hand_in_id"]
+        newest = "SELECT event_id FROM hand_in_events ORDER BY rowid DESC LIMIT 1"
+    else:
+        page = client.get(HER_PAGE, params={"week": FIXTURE_WEEK, "change": ESSAY_ID}).text
+        shown = hidden(card_for(page, ESSAY_ID), "expected_report_id")
+        newest = "SELECT report_id FROM student_reports ORDER BY rowid DESC LIMIT 1"
+    row = connection.execute(newest).fetchone()
+    return shown, None if row is None else str(row[0])
+
+
+REPEATED = {"hand-in": "hand_in=same", "report": f"same={ESSAY_ID}"}
+"""What the address a repeat of each press is answered with says."""
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+@pytest.mark.parametrize("fails", [False, True], ids=["committed", "refused by the file"])
+@pytest.mark.parametrize(
+    ("held", "named"), [(HAND_IN_HELD, "hand-in"), (REPORT_HELD, "report")], ids=REPEATED
+)
+def test_a_canceled_press_is_whole_or_absent_and_said_truly_after(
+    held: Held, named: str, kind: str, fails: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press canceled while its write is held sends no answer. When the write then lands, a
+    reload's form carries it as the head and the same press again is already saved; when the
+    file refuses it, the record holds nothing of it and pressing again says so again."""
+    with browser() as client:
+        app = client.app
+        press = held.made(client)
+        if fails:
+            store = state_of(client).project_state
+            store._connection.execute(
+                f"CREATE TRIGGER refuse_writes BEFORE INSERT ON {held.table} "
+                "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+            )
+            store._connection.commit()
+    waits = counted_waits(monkeypatch)
+    canceled = asyncio.run(a_press_canceled(app, press, held, kind, second=False, waits=waits))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        shown, newest = head_shown(client, held)
+        again = answer_to(client, press)
+
+    assert canceled.parked.on_the_loop is False
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == ["lock taken", "store call entered", "store call returned"]
+    if fails:
+        assert newest is None
+        assert again.status_code == 500
+    else:
+        assert newest is not None
+        assert shown == newest
+        assert again.status_code == 303
+        assert REPEATED[named] in again.headers["location"]
+
+
+async def a_request_canceled(
+    app: Any,  # noqa: ANN401
+    press: Sent,
+    kind: str,
+    waits: list[int],
+    readers: list[asyncio.Task[Any] | None],
+) -> Canceled:
+    """Her request for help, which takes no decision lock, held at its write on a worker and
+    canceled as ``a_press_canceled`` cancels a press. The handler's own task is the first in
+    ``readers``, the tasks that read a form."""
+    calls: list[str] = []
+    async with app.router.lifespan_context(app):
+        store = getattr(app.state, STATE_ATTRIBUTE).help_requests
+        made = store.ask_once
+
+        def noted(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            calls.append("store call entered")
+            try:
+                return made(*args, **kwargs)
+            finally:
+                calls.append("store call returned")
+
+        store.ask_once = noted
+        transport = httpx.ASGITransport(app=app)
+        headers = {**SAME_ORIGIN, **PAGE_HEADERS}
+        try:
+            async with httpx.AsyncClient(
+                transport=transport, base_url=ORIGIN, headers=headers
+            ) as http:
+                where = first_write_to("help_requests")
+                with Parked(store._connection, where, loop_parks=False) as parked:
+                    first = asyncio.create_task(sent_on(http, press))
+                    first.add_done_callback(lambda _: calls.append("request ended"))
+                    await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
+                    if kind == "through the gate":
+                        reached = first.cancel()
+                    else:
+                        reached = bool(readers) and readers[0] is not None and readers[0].cancel()
+                    before = waits[0]
+                    for _ in range(LOOP_CYCLES):
+                        await asyncio.sleep(0)
+                    waits_while_held = waits[0] - before
+                    parked.release.set()
+                    done, _ = await asyncio.wait({first}, timeout=HANG_LIMIT_SECONDS)
+                    ended = ended_as(first) if first in done else "still running: hung"
+        finally:
+            del store.ask_once
+    return Canceled(calls, parked, reached, waits_while_held, ended, None, None)
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+def test_a_canceled_request_for_help_ends_only_after_its_write_and_is_kept_once(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Her request for help takes no decision lock, yet a cancel while its write is held on a
+    worker ends the request only once that write has returned, with no answer sent. The
+    request is then kept once, and the same press again is answered as one already sent."""
+    with browser() as client:
+        app = client.app
+        press = a_request_for_help(client)
+    readers: list[asyncio.Task[Any] | None] = []
+
+    async def reading(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        readers.append(asyncio.current_task())
+        return await fields_of(*args, **kwargs)
+
+    monkeypatch.setattr(student_routes, "fields_of", reading)
+    waits = counted_waits(monkeypatch)
+    canceled = asyncio.run(a_request_canceled(app, press, kind, waits, readers))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        again = answer_to(client, press)
+        kept = client.get("/student/help-requests").json()
+
+    assert canceled.parked.on_the_loop is False
+    assert not canceled.parked.hung
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == ["store call entered", "store call returned", "request ended"]
+    assert canceled.waits_while_held <= 2, canceled.waits_while_held
+    assert again.status_code == 303
+    assert press.data is not None
+    assert [asked["request_id"] for asked in kept] == [press.data["request_id"]]

@@ -35,11 +35,13 @@ import logging
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from functools import partial
 from typing import Final, cast
 
 from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from blossom.agent.runs import worker_to_the_end
 from blossom.authored_text import TextRefused, multiline, single_line
 from blossom.dependencies import ApplicationState
 from blossom.hand_in import (
@@ -481,6 +483,44 @@ def accepted_at(state: ApplicationState) -> tuple[datetime, date]:
     return now, now.astimezone(state.clock.zone).date()
 
 
+def hand_in_now(
+    state: ApplicationState,
+    assignment_id: str,
+    said: HandInState,
+    action: str,
+    note: str,
+    *,
+    expected_head: str | None,
+    only_over: HandInState | None = None,
+    offered_over: frozenset[HandInState | None] | None = None,
+) -> HandInSaved | HandInAlreadySaved | HandInConflict | HandInNotOffered:
+    """Her hand-in update kept as of the moment it is accepted: the clock read and the write
+    in one call, made on a worker thread under the decision lock."""
+    now, today = accepted_at(state)
+    return state.project_state.record_hand_in(
+        assignment_id,
+        said,
+        action,
+        note,
+        expected_head=expected_head,
+        now=now,
+        today=today,
+        only_over=only_over,
+        offered_over=offered_over,
+    )
+
+
+def undone_now(
+    state: ApplicationState, assignment_id: str, event_id: str, *, only_over: HandInState | None
+) -> HandInUndone | HandInConflict | HandInNotOffered:
+    """Her hand-in update taken back as of the moment the Undo is accepted, in one call, as
+    ``hand_in_now`` keeps one."""
+    now, today = accepted_at(state)
+    return state.project_state.undo_hand_in(
+        assignment_id, event_id, now=now, today=today, only_over=only_over
+    )
+
+
 def words_refused(refusal: TextRefused, *, next_action: bool) -> str:
     """The sentence for words the record will not keep, by the rule they met."""
     if refusal.reason == "too_long":
@@ -555,7 +595,9 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     """
     viewer = viewer_of(request)
     if viewer == "parent":
-        return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
+        return await asyncio.to_thread(
+            not_hers, request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE
+        )
     fields, whole = await fields_of(
         request, HAND_IN_FIELDS | CARD_ONLY, may_be_absent=NOTHING_CHOSEN | CARD_ONLY
     )
@@ -574,12 +616,21 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     chosen = said if said in STATES else None
     step_dropped = said != NEEDS_HAND_IN and action.strip() != ""
 
-    def refused(problem: str, code: int, *, field: str | None = None) -> Response:
+    async def refused(problem: str, code: int, *, field: str | None = None) -> Response:
         if view is not None:
-            return list_refused(
-                request, state, view, problem=problem, status_code=code, attempt=pressed
+            return await asyncio.to_thread(
+                partial(
+                    list_refused,
+                    request,
+                    state,
+                    view,
+                    problem=problem,
+                    status_code=code,
+                    attempt=pressed,
+                )
             )
-        return details_refused(
+        return await asyncio.to_thread(
+            details_refused,
             request,
             state,
             assignment_id,
@@ -597,7 +648,7 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
         )
 
     if not whole:
-        return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if view is not None and (
         fields.keys() != LIST_PRESS_FIELDS
         or fields["state"] != TURNED_IN
@@ -608,16 +659,16 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
         # The list's one press says one thing, in the values the row wrote. Another state,
         # or words, or a way back, or a value with space around it, from a form that says it
         # is the list's is refused whole: nothing is coerced, trimmed, or dropped.
-        return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if not valid:
-        return refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if said not in STATES:
-        return refused(CHOOSE_A_STATE, status.HTTP_422_UNPROCESSABLE_CONTENT, field="state")
+        return await refused(CHOOSE_A_STATE, status.HTTP_422_UNPROCESSABLE_CONTENT, field="state")
     if said == NEEDS_HAND_IN:
         try:
             single_line(action, NEXT_ACTION_MAX_LENGTH)
         except TextRefused as refusal:
-            return refused(
+            return await refused(
                 words_refused(refusal, next_action=True),
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 field="next_action",
@@ -625,45 +676,52 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     try:
         multiline(note, HAND_IN_NOTE_MAX_LENGTH)
     except TextRefused as refusal:
-        return refused(
+        return await refused(
             words_refused(refusal, next_action=False),
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             field="note",
         )
     if len(token) > TOKEN_MAX_LENGTH:
-        return refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            result = state.project_state.record_hand_in(
-                assignment_id,
-                cast(HandInState, said),
-                action,
-                note,
-                expected_head=token or None,
-                now=now,
-                today=today,
-                # A row is drawn only over still to turn in, so that is all its press may
-                # be written over. The store decides it where it decides the write.
-                only_over=NEEDS_HAND_IN if view is not None else None,
+            result = await worker_to_the_end(
+                partial(
+                    hand_in_now,
+                    state,
+                    assignment_id,
+                    cast(HandInState, said),
+                    action,
+                    note,
+                    expected_head=token or None,
+                    # A row is drawn only over still to turn in, so that is all its press may
+                    # be written over. The store decides it where it decides the write.
+                    only_over=NEEDS_HAND_IN if view is not None else None,
+                )
             )
     except UnknownAssignment:
         if view is not None:
-            return refused(GONE_FROM_THE_LIST, status.HTTP_404_NOT_FOUND)
-        return gone_page(
-            request,
-            state,
-            back,
-            assignment_id,
-            hand_in=HandInCard(state=chosen, next_action=action, note=note),
+            return await refused(GONE_FROM_THE_LIST, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(
+            partial(
+                gone_page,
+                request,
+                state,
+                back,
+                assignment_id,
+                hand_in=HandInCard(state=chosen, next_action=action, note=note),
+            )
         )
     except UnknownHandIn:
-        return refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     except CouldNotSave:
         logger.exception("her hand-in update on %s could not be saved", assignment_id)
         if view is not None:
-            return could_not_on_the_list(request, state, view, pressed, HAND_IN_NOT_SAVED)
-        return could_not(
+            return await asyncio.to_thread(
+                could_not_on_the_list, request, state, view, pressed, HAND_IN_NOT_SAVED
+            )
+        return await asyncio.to_thread(
+            could_not,
             request,
             state,
             assignment_id,
@@ -686,9 +744,9 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
         case HandInAlreadySaved():
             where = after(assignment_id, "same_without_step" if step_dropped else "same", back)
         case HandInConflict():
-            return refused(HAND_IN_CHANGED, status.HTTP_409_CONFLICT)
+            return await refused(HAND_IN_CHANGED, status.HTTP_409_CONFLICT)
         case HandInNotOffered():
-            return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+            return await refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -712,7 +770,9 @@ async def undo_hand_in_from_the_page(
     """
     viewer = viewer_of(request)
     if viewer == "parent":
-        return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
+        return await asyncio.to_thread(
+            not_hers, request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE
+        )
     fields, whole = await fields_of(
         request, HAND_IN_UNDO_FIELDS, may_be_absent=RETURN_FIELDS | SHOWN_ON
     )
@@ -725,48 +785,59 @@ async def undo_hand_in_from_the_page(
         "undo", assignment_id, target=named if 0 < len(named) <= TOKEN_MAX_LENGTH else None
     )
 
-    def refused(problem: str, code: int) -> Response:
+    async def refused(problem: str, code: int) -> Response:
         if view is not None:
-            return list_refused(
-                request, state, view, problem=problem, status_code=code, attempt=pressed
+            return await asyncio.to_thread(
+                partial(
+                    list_refused,
+                    request,
+                    state,
+                    view,
+                    problem=problem,
+                    status_code=code,
+                    attempt=pressed,
+                )
             )
-        return details_refused(
-            request, state, assignment_id, back, HandInCard(problem=problem), code
+        return await asyncio.to_thread(
+            details_refused, request, state, assignment_id, back, HandInCard(problem=problem), code
         )
 
     if not whole:
-        return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if view is not None and (fields.keys() != LIST_UNDO_FIELDS or fields["hand_in_id"] != named):
         # The list's Undo names the update exactly as the result wrote it.
-        return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if not valid:
-        return refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if len(named) > TOKEN_MAX_LENGTH:
-        return refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            result = state.project_state.undo_hand_in(
-                assignment_id,
-                named,
-                now=now,
-                today=today,
-                # The list offers Undo beside her report that it was turned in and nothing
-                # else, so that is all an Undo from the list may take back.
-                only_over=TURNED_IN if view is not None else None,
+            result = await worker_to_the_end(
+                partial(
+                    undone_now,
+                    state,
+                    assignment_id,
+                    named,
+                    # The list offers Undo beside her report that it was turned in and nothing
+                    # else, so that is all an Undo from the list may take back.
+                    only_over=TURNED_IN if view is not None else None,
+                )
             )
     except UnknownAssignment:
         if view is not None:
-            return refused(GONE_FROM_THE_LIST, status.HTTP_404_NOT_FOUND)
-        return gone_page(request, state, back, assignment_id)
+            return await refused(GONE_FROM_THE_LIST, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(gone_page, request, state, back, assignment_id)
     except UnknownHandIn:
-        return refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     except CouldNotSave:
         logger.exception("her hand-in update on %s could not be undone", assignment_id)
         if view is not None:
-            return could_not_on_the_list(request, state, view, pressed, HAND_IN_NOT_UNDONE)
-        return could_not(
-            request, state, assignment_id, back, HandInCard(problem=HAND_IN_NOT_UNDONE)
+            return await asyncio.to_thread(
+                could_not_on_the_list, request, state, view, pressed, HAND_IN_NOT_UNDONE
+            )
+        return await asyncio.to_thread(
+            could_not, request, state, assignment_id, back, HandInCard(problem=HAND_IN_NOT_UNDONE)
         )
     match result:
         case HandInUndone(event=made):
@@ -777,12 +848,12 @@ async def undo_hand_in_from_the_page(
             )
             return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
         case HandInConflict() as conflict:
-            return refused(
+            return await refused(
                 ALREADY_UNDONE if already_undone(conflict, named) else HAND_IN_CANNOT_UNDO,
                 status.HTTP_409_CONFLICT,
             )
         case HandInNotOffered():
-            return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+            return await refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
 
 
 # ------------------------------------------------------------- I turned it in, from a card
@@ -1098,8 +1169,9 @@ async def turned_in_from_the_card(request: Request, assignment_id: str, state: S
     the card held; a head that moved on is a change made elsewhere; any other state is no
     form a card made. Her update is not read and not changed; its choice and words, when
     the button sent them, come back unsaved in its form. Every page this answers with is
-    built off the event loop after the decision lock is released, so no page adds a wait
-    on the loop; the write itself waits on the loop as every press's does.
+    built off the event loop after the decision lock is released, and the write is made on
+    a worker thread that the lock is held for until it ends, so nothing here waits on the
+    loop.
     """
     if viewer_of(request) == "parent":
         return await parent_refused(request, state)
@@ -1111,16 +1183,17 @@ async def turned_in_from_the_card(request: Request, assignment_id: str, state: S
         )
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            result = state.project_state.record_hand_in(
-                assignment_id,
-                TURNED_IN,
-                "",
-                "",
-                expected_head=press.named or None,
-                now=now,
-                today=today,
-                offered_over=TURN_IN_OFFERED,
+            result = await worker_to_the_end(
+                partial(
+                    hand_in_now,
+                    state,
+                    assignment_id,
+                    TURNED_IN,
+                    "",
+                    "",
+                    expected_head=press.named or None,
+                    offered_over=TURN_IN_OFFERED,
+                )
             )
     except UnknownAssignment:
         return await gone_from_the_card(request, state, press)
@@ -1173,9 +1246,8 @@ async def undo_turned_in_from_the_card(
         )
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            result = state.project_state.undo_hand_in(
-                assignment_id, press.named, now=now, today=today, only_over=TURNED_IN
+            result = await worker_to_the_end(
+                partial(undone_now, state, assignment_id, press.named, only_over=TURNED_IN)
             )
     except UnknownAssignment:
         return await gone_from_the_card(request, state, press)

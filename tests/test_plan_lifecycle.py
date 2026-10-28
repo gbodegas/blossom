@@ -4,19 +4,21 @@
 answer keeps, publication only by ``settle_run``, and an answer that matches the record."""
 
 import asyncio
+import contextvars
 import json
 import logging
+import os
 import pathlib
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Coroutine, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from html import unescape
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 from urllib.parse import urlencode
 
 import httpx
@@ -25,7 +27,13 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from langchain_core.messages import BaseMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
+from starlette.responses import PlainTextResponse, Response
+from starlette.routing import Route
 
 from blossom.agent import graph as graph_module
 from blossom.agent.graph import Ask, ModelAnswer, PlanState, plan_graph_for
@@ -35,8 +43,10 @@ from blossom.agent.runs import (
     RUN_DEADLINE_SECONDS,
     RunBudget,
     RunTimedOut,
+    awaited_to_the_end,
     bounded,
     run_config,
+    worker_to_the_end,
 )
 from blossom.agent.steps import (
     RunTiming,
@@ -97,8 +107,10 @@ from blossom.stores.household_claim import AnotherProcessHasTheHousehold, claim_
 from blossom.stores.project_state import Assignment
 from blossom.views import DecisionView, PlanRunView
 from tests.support import (
+    HANG_LIMIT_SECONDS,
     HER_PAGE,
     HERS,
+    LOOP_CYCLES,
     OBSERVED_AT,
     ORIGIN,
     PAGE_HEADERS,
@@ -113,7 +125,9 @@ from tests.support import (
     Turn,
     accepting,
     admissions_refused,
+    counted_waits,
     due,
+    ended_as,
     every_row,
     family_plan_body,
     files_in,
@@ -127,6 +141,7 @@ from tests.support import (
     light_fixture_plan,
     model_graphs,
     ok,
+    on_an_event_loop,
     plan_evening,
     record,
     scripted_graphs,
@@ -5436,3 +5451,230 @@ def test_a_draft_save_refused_because_another_writer_ended_the_run_answers_that_
     assert answered(answer) == "interrupted"
     assert (status, outcome, category) == ("ended", "interrupted", "interrupted")
     assert RESULT_NOT_SAVED_LINE not in steps
+
+
+# ------------------------------------------- a call waited for to its end through a cancel
+
+FORMS = ["a call on a worker", "an awaited graph"]
+"""The two ways a held lock waits out its work: a call on a worker thread, or an awaitable,
+here a graph of one node that runs on a worker as the decision's graph does."""
+CANCEL_KINDS = {
+    "through the gate": "canceled",
+    "of the handler's own task": "raised RuntimeError",
+}
+"""How a request is canceled, and how it then ends, with no response passed on either way:
+through a gate's task group, as uvicorn cancels a request at a shutdown and anyio delivers
+it, or by a plain cancel of the task that runs the handler, after which the gate has no
+response to pass on and raises."""
+
+
+class Stopped(BaseException):
+    """A failure that is no ``Exception``, raised on a worker."""
+
+
+class GateInFront(BaseHTTPMiddleware):
+    """A gate of the household gate's kind, which runs the app behind it in a task group."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        return await call_next(request)
+
+
+class OneNode(TypedDict):
+    said: str
+
+
+@dataclass
+class HeldWork:
+    """Work held on a worker until released, and what happened around it, in order."""
+
+    started: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+    order: list[str] = field(default_factory=list)
+    on_the_loop: list[bool] = field(default_factory=list)
+    raises: BaseException | None = None
+    answer: Callable[[], str] = lambda: "written"
+    """What the work returns, read on the thread it runs on."""
+
+    def call(self) -> str:
+        self.on_the_loop.append(on_an_event_loop())
+        self.order.append("work started")
+        self.started.set()
+        self.release.wait(HANG_LIMIT_SECONDS)
+        self.order.append("work returns")
+        if self.raises is not None:
+            raise self.raises
+        return self.answer()
+
+    def awaitable(self, form: str) -> Awaitable[str]:
+        """The work in ``form``: the call itself on a worker, or a one-node graph's run."""
+        if form == "a call on a worker":
+            return worker_to_the_end(self.call)
+        graph: StateGraph[OneNode, Any, OneNode, OneNode] = StateGraph(OneNode)
+        graph.add_node("record_decision", lambda _: {"said": self.call()})
+        graph.add_edge(START, "record_decision")
+        graph.add_edge("record_decision", END)
+
+        async def decided() -> str:
+            ran = await graph.compile().ainvoke(OneNode(said=""))
+            return str(ran["said"])
+
+        return awaited_to_the_end(decided())
+
+
+@dataclass
+class Pressed:
+    """How a press whose work was held through a cancel went."""
+
+    order: list[str]
+    on_the_loop: list[bool]
+    waiting: bool
+    """Whether the second press had asked for the lock, and found it held, before the cancel."""
+    reached: bool
+    """Whether the cancel found the request, or the handler's task, still running."""
+    waits_while_held: int
+    ended: str
+
+
+async def pressed_through_a_gate(
+    work: HeldWork, form: str, kind: str, waits: list[int], *, pool_full: bool = False
+) -> Pressed:
+    """A press that holds a lock while its work is held, canceled as ``kind`` says, with a
+    second press waiting for the lock; with ``pool_full``, every worker of the default
+    executor is busy when the press is made, so its call waits in the queue."""
+    lock = asyncio.Lock()
+    holding = asyncio.Event()
+    handlers: list[asyncio.Task[Any] | None] = []
+
+    async def press(_: Request) -> Response:
+        handlers.append(asyncio.current_task())
+        async with lock:
+            holding.set()
+            try:
+                said = await work.awaitable(form)
+            finally:
+                work.order.append("lock let go")
+        return PlainTextResponse(said)
+
+    asking = asyncio.Event()
+
+    async def second() -> None:
+        asking.set()
+        async with lock:
+            work.order.append("second holds the lock")
+
+    app = Starlette(
+        routes=[Route("/press", press, methods=["POST"])], middleware=[Middleware(GateInFront)]
+    )
+    loop = asyncio.get_running_loop()
+    busy = threading.Event()
+    blockers = [
+        loop.run_in_executor(None, busy.wait, HANG_LIMIT_SECONDS)
+        for _ in range(min(32, (os.cpu_count() or 1) + 4) if pool_full else 0)
+    ]
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
+        request = asyncio.create_task(http.post("/press"))
+        await asyncio.wait_for(holding.wait(), HANG_LIMIT_SECONDS)
+        if not pool_full:
+            await asyncio.to_thread(work.started.wait, HANG_LIMIT_SECONDS)
+        waiting = asyncio.create_task(second())
+        await asyncio.wait_for(asking.wait(), HANG_LIMIT_SECONDS)
+        await asyncio.sleep(0)
+        asked = lock.locked() and not waiting.done()
+        if kind == "through the gate":
+            reached = request.cancel()
+        else:
+            reached = handlers[0] is not None and handlers[0].cancel()
+        before = waits[0]
+        for _ in range(LOOP_CYCLES):
+            await asyncio.sleep(0)
+        waits_while_held = waits[0] - before
+        if pool_full:
+            work.order.append("pool freed")
+            busy.set()
+            await asyncio.wait(blockers, timeout=HANG_LIMIT_SECONDS)
+        work.release.set()
+        await asyncio.wait({request, waiting}, timeout=HANG_LIMIT_SECONDS)
+    ended = ended_as(request) if request.done() else "still running: hung"
+    return Pressed(work.order, work.on_the_loop, asked, reached, waits_while_held, ended)
+
+
+@pytest.mark.parametrize("kind", list(CANCEL_KINDS))
+@pytest.mark.parametrize("form", FORMS)
+def test_a_lock_held_around_work_is_let_go_only_once_the_work_has_returned(
+    form: str, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press canceled while its work runs on a worker keeps its lock until that work has
+    returned, and a press waiting for the lock takes it only then. The wait for the work does
+    not spin: over a fixed number of turns of the loop it waits at most twice."""
+    waits = counted_waits(monkeypatch)
+    pressed = asyncio.run(pressed_through_a_gate(HeldWork(), form, kind, waits))
+
+    assert pressed.on_the_loop == [False]
+    assert pressed.waiting
+    assert pressed.reached
+    assert pressed.order == [
+        "work started",
+        "work returns",
+        "lock let go",
+        "second holds the lock",
+    ]
+    assert pressed.waits_while_held <= 2, pressed.waits_while_held
+    assert pressed.ended == CANCEL_KINDS[kind]
+
+
+@pytest.mark.parametrize("kind", list(CANCEL_KINDS))
+@pytest.mark.parametrize("form", FORMS)
+def test_a_call_queued_behind_a_full_pool_still_runs_before_its_lock_is_let_go(
+    form: str, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press canceled while its call waits for a free worker: the call still runs once one
+    frees, and the lock is let go only after it has returned."""
+    waits = counted_waits(monkeypatch)
+    pressed = asyncio.run(pressed_through_a_gate(HeldWork(), form, kind, waits, pool_full=True))
+
+    assert pressed.on_the_loop == [False]
+    assert pressed.waiting
+    assert pressed.reached
+    assert pressed.order == [
+        "pool freed",
+        "work started",
+        "work returns",
+        "lock let go",
+        "second holds the lock",
+    ]
+    assert pressed.waits_while_held <= 2, pressed.waits_while_held
+    assert pressed.ended == CANCEL_KINDS[kind]
+
+
+@pytest.mark.parametrize("form", FORMS)
+def test_what_the_work_raises_is_raised_as_it_is_even_when_it_is_no_exception(form: str) -> None:
+    work = HeldWork(raises=Stopped("stopped on the worker"))
+    work.release.set()
+
+    async def waited() -> str:
+        return await asyncio.wait_for(work.awaitable(form), HANG_LIMIT_SECONDS)
+
+    with pytest.raises(Stopped) as raised:
+        asyncio.run(waited())
+
+    assert raised.value is work.raises
+    assert work.order == ["work started", "work returns"]
+
+
+CALLERS: Final = contextvars.ContextVar[str]("callers", default="none")
+
+
+@pytest.mark.parametrize("form", FORMS)
+def test_the_work_has_its_callers_context_variables(form: str) -> None:
+    """The work reads the caller's context variables on the thread it runs on, as it would
+    through ``asyncio.to_thread``."""
+    work = HeldWork(answer=CALLERS.get)
+    work.release.set()
+
+    async def called() -> str:
+        CALLERS.set("the caller's")
+        return await asyncio.wait_for(work.awaitable(form), HANG_LIMIT_SECONDS)
+
+    assert asyncio.run(called()) == "the caller's"
+    assert work.on_the_loop == [False]

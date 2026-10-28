@@ -37,6 +37,10 @@ PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "blossom"
 ALLOWED_IMPORTS: dict[str, str] = {
     "aiosqlite": "async SQLite driver for the checkpoint store; local files only, see LOCAL_STORES",
     "anthropic": "model access; confined to the model seam, see NETWORK_CAPABLE",
+    "anyio": (
+        "the async layer under Starlette; shields a decision lock's wait for a worker's call "
+        "from a repeated cancel; it can open sockets, so it is confined, see NETWORK_CAPABLE"
+    ),
     "asyncio": "standard library; the lock around decisions and her signals; the sweep schedule",
     "base64": (
         "standard library; encodes a prepared screenshot for the one request that sends it to "
@@ -45,6 +49,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "blossom": "the package itself",
     "collections": "standard library containers and ABCs",
     "contextlib": "standard library context managers",
+    "contextvars": "standard library; a call on a worker thread runs with its caller's context",
     "fcntl": "standard library; the POSIX lock behind one process per household",
     "ctypes": "standard library; asks Windows whether a drive letter is a network share",
     "dataclasses": "standard library",
@@ -138,6 +143,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
 # dependency, not available anywhere a future route might reach for it.
 NETWORK_CAPABLE: dict[str, frozenset[str]] = {
     "anthropic": frozenset({"anthropic_client.py"}),
+    "anyio": frozenset({"agent/runs.py"}),
     "httpx": frozenset({"anthropic_client.py"}),
     "langchain_anthropic": frozenset({"anthropic_client.py"}),
     "langsmith": frozenset({"settings.py"}),

@@ -57,6 +57,7 @@ has since changed is shown that change and asked to look again. A parent
 signed in sees her update and cannot make one in her name.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -88,7 +89,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import URL
 
-from blossom.agent.runs import Unfinished, bounded
+from blossom.agent.runs import Unfinished, bounded, worker_to_the_end
 from blossom.agent.steps import DATE_PROBLEM
 from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
 from blossom.anthropic_client import model_configured
@@ -269,7 +270,7 @@ from blossom.routes.runs import (
 from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
-from blossom.stores.catch_up import ChoiceMade, ChoiceNotSaved, NotOnRecord
+from blossom.stores.catch_up import ChoiceMade, ChoiceNotSaved, ChoiceOutcome, NotOnRecord
 from blossom.stores.drafts import (
     INTERRUPTED,
     OVERTAKEN,
@@ -1041,20 +1042,25 @@ async def press_once(
     it takes.
     """
     async with state.decision_lock:
-        today = state.clock.today()
-        if form.evening != today:
-            return NotTonight(today)
-        if form.expired(state.real_clock.now()):
-            return SignalExpired()
-        return state.workload_signals.record_once(
-            form.signal_id, form.evening, form.issued_at, detail
-        )
+        return await worker_to_the_end(partial(kept_once, state, form, detail))
+
+
+def kept_once(
+    state: ApplicationState, form: SignalForm, detail: str | None
+) -> NotTonight | SignalOutcome:
+    """The checks and the write of one press, in one call on a worker thread."""
+    today = state.clock.today()
+    if form.evening != today:
+        return NotTonight(today)
+    if form.expired(state.real_clock.now()):
+        return SignalExpired()
+    return state.workload_signals.record_once(form.signal_id, form.evening, form.issued_at, detail)
 
 
 async def withdraw_signal(state: ApplicationState, signal_id: str) -> bool:
     """Take one signal back, under the same lock and for the same reason."""
     async with state.decision_lock:
-        return state.workload_signals.withdraw(signal_id)
+        return await worker_to_the_end(partial(state.workload_signals.withdraw, signal_id))
 
 
 async def register_workload_signal(
@@ -4425,7 +4431,9 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     page that reads no store, with its status and her input.
     """
     if viewer_of(request) == "parent":
-        return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
+        return await asyncio.to_thread(
+            not_hers, request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE
+        )
     fields, whole = await fields_of(
         request, REPORT_FIELDS, may_be_absent=NOTHING_CHOSEN | FROM_A_CARD
     )
@@ -4438,7 +4446,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     token = fields.get("expected_report_id", "").strip()
     chosen = said if said in (DONE, NOT_YET) and whole else None
 
-    def refused(
+    async def refused(
         problem: str, code: int, *, field: str | None = None, saved_elsewhere: bool = False
     ) -> Response:
         card = CardState(
@@ -4450,7 +4458,8 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
             note=note,
             saved_elsewhere=saved_elsewhere,
         )
-        return shown_once(
+        return await asyncio.to_thread(
+            shown_once,
             request,
             state,
             lambda: result_page(
@@ -4461,43 +4470,49 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
         )
 
     if not whole:
-        return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if not origin.valid:
-        return refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if said not in (DONE, NOT_YET):
-        return refused(CHOOSE_ONE, status.HTTP_422_UNPROCESSABLE_CONTENT, field="status")
+        return await refused(CHOOSE_ONE, status.HTTP_422_UNPROCESSABLE_CONTENT, field="status")
     if words is not None and len(words) > UPDATE_NOTE_MAX_LENGTH:
-        return refused(NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
+        return await refused(NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
     if len(token) > TOKEN_MAX_LENGTH:
-        return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     try:
         async with state.decision_lock:
-            result = state.project_state.report_status(
-                assignment_id,
-                cast(StudentStatus, said),
-                words,
-                expected_head=token or None,
-                now=state.clock.now(),
-                today=state.clock.today(),
+            result = await worker_to_the_end(
+                lambda: state.project_state.report_status(
+                    assignment_id,
+                    cast(StudentStatus, said),
+                    words,
+                    expected_head=token or None,
+                    now=state.clock.now(),
+                    today=state.clock.today(),
+                )
             )
     except UnknownAssignment:
         # The card is gone, so her choice and words go to the page that keeps them to
         # copy, with the way back to where she was and the other cards still in place.
-        return gone_page(
-            request,
-            state,
-            origin.back if origin.detail else ReturnTo("week", origin.week),
-            assignment_id,
-            card=CardState(assignment_id, status=chosen, note=note),
-            in_place=kept,
+        return await asyncio.to_thread(
+            partial(
+                gone_page,
+                request,
+                state,
+                origin.back if origin.detail else ReturnTo("week", origin.week),
+                assignment_id,
+                card=CardState(assignment_id, status=chosen, note=note),
+                in_place=kept,
+            )
         )
     except UnknownReport:
-        return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     except NoteTooLong:
-        return refused(NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
+        return await refused(NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
     except CouldNotSave:
         logger.exception("her update on %s could not be saved", assignment_id)
-        return could_not(
+        return await asyncio.to_thread(
+            could_not,
             request,
             state,
             assignment_id,
@@ -4512,7 +4527,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
         case AlreadySaved():
             return answered(origin, "same", assignment_id, kept)
         case Conflict():
-            return refused(SAVED_ELSEWHERE, status.HTTP_409_CONFLICT, saved_elsewhere=True)
+            return await refused(SAVED_ELSEWHERE, status.HTTP_409_CONFLICT, saved_elsewhere=True)
 
 
 @router.post(
@@ -4536,16 +4551,19 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
     is said on the page that reads no store.
     """
     if viewer_of(request) == "parent":
-        return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
+        return await asyncio.to_thread(
+            not_hers, request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE
+        )
     fields, whole = await fields_of(request, UNDO_FIELDS, may_be_absent=FROM_A_CARD)
     origin = origin_of(request, fields)
     # The details are not her week, so a press there keeps no card in place.
     kept = InPlace() if origin.detail else InPlace.read(fields.get(IN_PLACE))
     named = fields.get("report_id", "").strip()
 
-    def refused(problem: str, code: int, *, saved_elsewhere: bool = False) -> Response:
+    async def refused(problem: str, code: int, *, saved_elsewhere: bool = False) -> Response:
         card = CardState(assignment_id, problem=problem, saved_elsewhere=saved_elsewhere)
-        return shown_once(
+        return await asyncio.to_thread(
+            shown_once,
             request,
             state,
             lambda: result_page(
@@ -4556,23 +4574,26 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
         )
 
     if not whole:
-        return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if not origin.valid:
-        return refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if len(named) > TOKEN_MAX_LENGTH:
-        return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     try:
         async with state.decision_lock:
-            result = state.project_state.undo_report(
-                assignment_id,
-                named,
-                now=state.clock.now(),
-                today=state.clock.today(),
+            result = await worker_to_the_end(
+                lambda: state.project_state.undo_report(
+                    assignment_id,
+                    named,
+                    now=state.clock.now(),
+                    today=state.clock.today(),
+                )
             )
     except UnknownAssignment:
         if origin.detail:
-            return gone_page(request, state, origin.back, assignment_id)
-        return shown_once(
+            return await asyncio.to_thread(gone_page, request, state, origin.back, assignment_id)
+        return await asyncio.to_thread(
+            shown_once,
             request,
             state,
             lambda: student_page(
@@ -4594,10 +4615,11 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
             status.HTTP_404_NOT_FOUND,
         )
     except UnknownReport:
-        return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     except CouldNotSave:
         logger.exception("her update on %s could not be undone", assignment_id)
-        return could_not(
+        return await asyncio.to_thread(
+            could_not,
             request,
             state,
             assignment_id,
@@ -4610,7 +4632,7 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
             return answered(origin, "undone", assignment_id, kept, undo_event=made.report_id)
         case Conflict(head=head):
             repeat = head is not None and head.operation == UNDO and head.undoes_report_id == named
-            return refused(
+            return await refused(
                 ALREADY_UNDONE if repeat else CANNOT_UNDO,
                 status.HTTP_409_CONFLICT,
                 saved_elsewhere=True,
@@ -4829,7 +4851,9 @@ async def ask_for_help_from_the_page(request: Request, state: State) -> Response
     sends nothing and keeps her words.
     """
     if viewer_of(request) == "parent":
-        return not_hers(request, state, REQUEST_NOT_SENT, NOT_HERS_TO_ASK, in_help=True)
+        return await asyncio.to_thread(
+            partial(not_hers, request, state, REQUEST_NOT_SENT, NOT_HERS_TO_ASK, in_help=True)
+        )
     fields, whole = await fields_of(request, ASK_FIELDS)
     words = fields.get("note", "")
     try:
@@ -4837,7 +4861,8 @@ async def ask_for_help_from_the_page(request: Request, state: State) -> Response
     except NotARequestId:
         form = None
     if not whole or form is None:
-        return help_again(
+        return await asyncio.to_thread(
+            help_again,
             request,
             state,
             HelpForm(words, HELP_FORM_NOT_WHOLE),
@@ -4845,7 +4870,8 @@ async def ask_for_help_from_the_page(request: Request, state: State) -> Response
         )
     note = words.strip()
     if len(note) > NOTE_MAX_LENGTH:
-        return help_again(
+        return await asyncio.to_thread(
+            help_again,
             request,
             state,
             HelpForm(
@@ -4856,10 +4882,15 @@ async def ask_for_help_from_the_page(request: Request, state: State) -> Response
             status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     try:
-        outcome = state.help_requests.ask_once(form, state.clock.today(), note or None)
+        # No decision lock is held, but the write is still seen to its end, so a cancel never
+        # leaves a request that may yet be kept without its press.
+        outcome = await worker_to_the_end(
+            lambda: state.help_requests.ask_once(form, state.clock.today(), note or None)
+        )
     except Exception:
         logger.exception("her request for help could not be sent")
-        return help_again(
+        return await asyncio.to_thread(
+            help_again,
             request,
             state,
             HelpForm(words, HELP_NOT_SENT),
@@ -4880,7 +4911,9 @@ async def ask_for_help_from_the_page(request: Request, state: State) -> Response
             problem = FORM_SENT_OTHER_WORDS
         case HelpFormUsed():
             problem = FORM_USED
-    return help_again(request, state, HelpForm(words, problem), status.HTTP_409_CONFLICT)
+    return await asyncio.to_thread(
+        help_again, request, state, HelpForm(words, problem), status.HTTP_409_CONFLICT
+    )
 
 
 def help_again(
@@ -4963,28 +4996,37 @@ async def too_much_from_the_page(request: Request, state: State) -> Response:
     so a press is never kept for an evening that has just ended.
     """
     if viewer_of(request) == "parent":
-        return not_hers(request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL)
+        return await asyncio.to_thread(
+            not_hers, request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL
+        )
     fields, whole = await fields_of(request, SIGNAL_FIELDS)
     form = signal_form_from(fields, state.real_clock.now()) if whole else None
     if form is None:
-        return signal_refused(
-            request, state, SignalAnswer(status.HTTP_422_UNPROCESSABLE_CONTENT, SIGNAL_NOT_USED)
+        return await asyncio.to_thread(
+            signal_refused,
+            request,
+            state,
+            SignalAnswer(status.HTTP_422_UNPROCESSABLE_CONTENT, SIGNAL_NOT_USED),
         )
     try:
         handled = await press_once(state, form)
     except sqlite3.Error as error:
         logger.warning("her signal could not be kept: %s", type(error).__name__)
-        return signal_not_saved(request, state)
+        return await asyncio.to_thread(signal_not_saved, request, state)
     match handled:
         case NotTonight():
-            return signal_refused(
+            return await asyncio.to_thread(
+                signal_refused,
                 request,
                 state,
                 SignalAnswer(status.HTTP_409_CONFLICT, signal_another_evening(form.evening)),
             )
         case SignalExpired():
-            return signal_refused(
-                request, state, SignalAnswer(status.HTTP_409_CONFLICT, SIGNAL_A_WEEK_AGO)
+            return await asyncio.to_thread(
+                signal_refused,
+                request,
+                state,
+                SignalAnswer(status.HTTP_409_CONFLICT, SIGNAL_A_WEEK_AGO),
             )
         case SignalUsed(standing=None):
             return sent_removed(address(PAGE, fragment=TOO_MUCH_STATE))
@@ -5016,12 +5058,14 @@ async def take_back_from_the_page(request: Request, signal_id: str, state: State
     up: the signal is hers to take back. A removal the file refuses is rolled back and said at
     the top of her week, 500."""
     if viewer_of(request) == "parent":
-        return not_hers(request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL)
+        return await asyncio.to_thread(
+            not_hers, request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL
+        )
     try:
         await withdraw_signal(state, signal_id)
     except sqlite3.Error as error:
         logger.warning("her signal could not be taken back: %s", type(error).__name__)
-        return signal_not_saved(request, state)
+        return await asyncio.to_thread(signal_not_saved, request, state)
     return sent_removed(address(PAGE, fragment=TOO_MUCH_STATE))
 
 
@@ -5150,7 +5194,9 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
     anyone's notes.
     """
     if viewer_of(request) == "parent":
-        return not_hers(request, state, CHOICE_NOT_SAVED, NOT_HERS_TO_CHOOSE)
+        return await asyncio.to_thread(
+            not_hers, request, state, CHOICE_NOT_SAVED, NOT_HERS_TO_CHOOSE
+        )
     fields, whole = await fields_of(
         request, EARLIER_FIELDS | {IN_PLACE}, may_be_absent=frozenset({IN_PLACE})
     )
@@ -5160,10 +5206,11 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
     place = fields.get("place", "")
     # The cards this visit keeps where they were, carried on so a choice regroups none.
     kept = InPlace.read(fields.get(IN_PLACE))
-    # The household day once the lock has read it, so a refusal is shown for that day.
-    today: date | None = None
+    # The household day once the lock has read it, so a refusal is shown for that day, even
+    # one the write raises after the day was read.
+    read: list[date] = []
 
-    def refused(problem: str, code: int) -> Response:
+    async def refused(problem: str, code: int) -> Response:
         note = EarlierNote(
             assignment_id,
             problem=problem,
@@ -5171,7 +5218,8 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
             folded={"fold": True, "list": False}.get(place),
             on_card=place == "card",
         )
-        return shown_once(
+        return await asyncio.to_thread(
+            shown_once,
             request,
             state,
             lambda: student_page(
@@ -5182,7 +5230,7 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
                 pressed=True,
                 in_place=kept,
                 status_code=code,
-                today=today,
+                today=read[0] if read else None,
             ),
             week_not_shown(request, CHOICE_NOT_SAVED, problem, fragment=EARLIER_WORK),
             code,
@@ -5194,32 +5242,61 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
         or place not in EARLIER_PLACES
         or (given and week is None)
     ):
-        return refused(CHOICE_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(CHOICE_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     made_for = day_made_for(state.result_key, fields["made_with"], assignment_id, choice)
     if made_for is None:
-        return refused(CHOICE_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await refused(CHOICE_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     include = choice == "include"
     try:
         async with state.decision_lock:
-            today = state.clock.today()
-            if made_for != today:
-                return refused(CHOICE_FROM_ANOTHER_DAY, status.HTTP_409_CONFLICT)
-            if include:
-                found = read_everything(state.project_state, state.project_state)
-                if assignment_id not in {item.assignment_id for item in found.assignments}:
-                    return refused(NOT_ON_RECORD, status.HTTP_404_NOT_FOUND)
-                eligible = {item.assignment_id for item in earlier_to_check(found, today)}
-                if assignment_id not in eligible:
-                    return refused(NOT_EARLIER_NOW, status.HTTP_409_CONFLICT)
-            outcome = state.project_state.choose_catch_up(assignment_id, today, include=include)
+            outcome = await worker_to_the_end(
+                partial(chosen_today, state, assignment_id, made_for, read, include=include)
+            )
     except NotOnRecord:
-        return refused(NOT_ON_RECORD, status.HTTP_404_NOT_FOUND)
+        return await refused(NOT_ON_RECORD, status.HTTP_404_NOT_FOUND)
     except (ChoiceNotSaved, sqlite3.Error):
         logger.exception("a choice of earlier work could not be saved")
-        return refused(CHOICE_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return await refused(CHOICE_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    if isinstance(outcome, EarlierRefused):
+        return await refused(outcome.problem, outcome.status_code)
     if isinstance(outcome, ChoiceMade):
         said = "included" if include else "removed"
     else:
         said = "already_included" if include else "already_removed"
-    receipt = earlier_receipt(state.result_key, today, assignment_id, said)
+    receipt = earlier_receipt(state.result_key, read[0], assignment_id, said)
     return sent_in_place(after_choice(week, receipt, assignment_id, place), kept)
+
+
+@dataclass(frozen=True)
+class EarlierRefused:
+    """A choice of earlier work refused under the decision lock, with what to say and the
+    status, shown once the lock is let go."""
+
+    problem: str
+    status_code: int
+
+
+def chosen_today(
+    state: ApplicationState,
+    assignment_id: str,
+    made_for: date,
+    read: list[date],
+    *,
+    include: bool,
+) -> EarlierRefused | ChoiceOutcome:
+    """One choice of earlier work decided and kept for the household's day, in one call on a
+    worker thread under the decision lock, with the day put in ``read`` as soon as it is read:
+    refused when the form was made on another day or, to include it, when the work is not on
+    record or not earlier work now."""
+    today = state.clock.today()
+    read.append(today)
+    if made_for != today:
+        return EarlierRefused(CHOICE_FROM_ANOTHER_DAY, status.HTTP_409_CONFLICT)
+    if include:
+        found = read_everything(state.project_state, state.project_state)
+        if assignment_id not in {item.assignment_id for item in found.assignments}:
+            return EarlierRefused(NOT_ON_RECORD, status.HTTP_404_NOT_FOUND)
+        eligible = {item.assignment_id for item in earlier_to_check(found, today)}
+        if assignment_id not in eligible:
+            return EarlierRefused(NOT_EARLIER_NOW, status.HTTP_409_CONFLICT)
+    return state.project_state.choose_catch_up(assignment_id, today, include=include)
