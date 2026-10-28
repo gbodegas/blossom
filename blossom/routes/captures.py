@@ -31,16 +31,19 @@ with the way to the assignment, and with whether the assignment is inside
 today's planning window.
 """
 
+import asyncio
 import logging
 import re
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import date
+from functools import partial
 from typing import Final, get_args
 
 from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from blossom.agent.runs import worker_to_the_end
 from blossom.authored_text import TextRefused, multiline, single_line
 from blossom.captures import (
     ARCHIVE,
@@ -1282,11 +1285,14 @@ async def save_a_new_note(request: Request, state: State) -> Response:
     """
     viewer = viewer_of(request)
     if viewer == "parent":
-        return new_note_page(
-            request,
-            state,
-            NoteForm(capture_id="", problem=NOT_HERS_TO_UPDATE),
-            status_code=status.HTTP_403_FORBIDDEN,
+        return await asyncio.to_thread(
+            partial(
+                new_note_page,
+                request,
+                state,
+                NoteForm(capture_id="", problem=NOT_HERS_TO_UPDATE),
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
         )
     fields, whole = await fields_of(request, CREATE_FIELDS, may_be_absent=PRESSED_OR_PENDING)
     try:
@@ -1296,37 +1302,53 @@ async def save_a_new_note(request: Request, state: State) -> Response:
     ready = prepared(fields, name)
     form = ready.form
     if not whole or not date_controls_are_valid(fields):
-        return new_note_page(
-            request,
-            state,
-            replace(form, problem=BAD_FORM),
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return await asyncio.to_thread(
+            partial(
+                new_note_page,
+                request,
+                state,
+                replace(form, problem=BAD_FORM),
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         )
     form, due = checked(ready)
     if form.problem is not None:
-        return new_note_page(
-            request, state, form, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT
+        return await asyncio.to_thread(
+            partial(
+                new_note_page,
+                request,
+                state,
+                form,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         )
+
+    def created() -> CaptureCreated | CaptureAlreadyCreated | CaptureIdTaken | CaptureWasDeleted:
+        now, today = accepted_at(state)
+        return state.project_state.create_capture(
+            name,
+            form.text,
+            form.course,
+            due,
+            authored_by=author_of(viewer),
+            channel=SourceChannel.STUDENT_REPORT,
+            now=now,
+            today=today,
+        )
+
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            outcome = state.project_state.create_capture(
-                name,
-                form.text,
-                form.course,
-                due,
-                authored_by=author_of(viewer),
-                channel=SourceChannel.STUDENT_REPORT,
-                now=now,
-                today=today,
-            )
+            outcome = await worker_to_the_end(created)
     except CaptureNotSaved:
         logger.exception("her homework note %s could not be saved", name)
-        return new_note_page(
-            request,
-            state,
-            replace(form, problem=NOTE_NOT_SAVED),
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        return await asyncio.to_thread(
+            partial(
+                new_note_page,
+                request,
+                state,
+                replace(form, problem=NOTE_NOT_SAVED),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         )
     match outcome:
         case CaptureCreated(event=made):
@@ -1334,22 +1356,28 @@ async def save_a_new_note(request: Request, state: State) -> Response:
         case CaptureAlreadyCreated(head=found):
             where = note_href(name, fragment=NOTE_RESULT, said="same", event=found.event_id)
         case CaptureIdTaken(capture=note):
-            return new_note_page(
-                request,
-                state,
-                replace(form, capture_id=new_capture_id(), problem=NOTE_ID_TAKEN, unsaved=True),
-                taken=note,
-                status_code=status.HTTP_409_CONFLICT,
+            return await asyncio.to_thread(
+                partial(
+                    new_note_page,
+                    request,
+                    state,
+                    replace(form, capture_id=new_capture_id(), problem=NOTE_ID_TAKEN, unsaved=True),
+                    taken=note,
+                    status_code=status.HTTP_409_CONFLICT,
+                )
             )
         case CaptureWasDeleted():
             # Nothing of the deleted note comes back, not its id and not these words: a
             # new note is her choice, from a fresh page with an id of its own.
-            return new_note_page(
-                request,
-                state,
-                NoteForm(capture_id="", problem=NOTE_WAS_DELETED),
-                deleted=True,
-                status_code=status.HTTP_409_CONFLICT,
+            return await asyncio.to_thread(
+                partial(
+                    new_note_page,
+                    request,
+                    state,
+                    NoteForm(capture_id="", problem=NOTE_WAS_DELETED),
+                    deleted=True,
+                    status_code=status.HTTP_409_CONFLICT,
+                )
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1381,66 +1409,81 @@ async def edit_a_note(request: Request, capture_id: str, state: State) -> Respon
     """
     viewer = viewer_of(request)
     if viewer == "parent":
-        return note_refused(request, state, capture_id)
+        return await asyncio.to_thread(note_refused, request, state, capture_id)
     fields, whole = await fields_of(request, EDIT_FIELDS, may_be_absent=PRESSED_OR_PENDING)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return gone(request, state)
+        return await asyncio.to_thread(gone, request, state)
     revision = revision_of(fields)
     ready = prepared(fields, name, revision)
     form = ready.form
     if not whole or revision is None or not date_controls_are_valid(fields):
-        return note_page(
-            request,
-            state,
-            name,
-            form=form,
-            problem=BAD_FORM,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return await asyncio.to_thread(
+            partial(
+                note_page,
+                request,
+                state,
+                name,
+                form=form,
+                problem=BAD_FORM,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         )
     form, due = checked(ready)
     if form.problem is not None:
-        return note_page(
-            request,
-            state,
-            name,
-            form=form,
-            problem=form.problem,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return await asyncio.to_thread(
+            partial(
+                note_page,
+                request,
+                state,
+                name,
+                form=form,
+                problem=form.problem,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         )
+
+    def edited() -> CaptureChanged | CaptureUnchanged | CaptureConflict:
+        now, today = accepted_at(state)
+        return state.project_state.edit_capture(
+            name,
+            form.text,
+            form.course,
+            due,
+            expected_revision=revision,
+            authored_by=author_of(viewer),
+            channel=SourceChannel.STUDENT_REPORT,
+            now=now,
+            today=today,
+        )
+
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            outcome = state.project_state.edit_capture(
-                name,
-                form.text,
-                form.course,
-                due,
-                expected_revision=revision,
-                authored_by=author_of(viewer),
-                channel=SourceChannel.STUDENT_REPORT,
-                now=now,
-                today=today,
-            )
+            outcome = await worker_to_the_end(edited)
     except UnknownCapture:
-        return plain_failure(request, state, NOTE_GONE, form, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(
+            plain_failure, request, state, NOTE_GONE, form, status.HTTP_404_NOT_FOUND
+        )
     except CaptureNotSaved:
         logger.exception("her homework note %s could not be changed", name)
-        return note_or_plain(request, state, name, NOTE_NOT_SAVED, form)
+        return await asyncio.to_thread(note_or_plain, request, state, name, NOTE_NOT_SAVED, form)
     match outcome:
         case CaptureChanged(event=made):
             where = note_href(name, fragment=NOTE_RESULT, said="edited", event=made.event_id)
         case CaptureUnchanged(head=found):
             where = note_href(name, fragment=NOTE_RESULT, said="same", event=found.event_id)
         case CaptureConflict(capture=note):
-            return note_page(
-                request,
-                state,
-                name,
-                form=replace(form, revision=note.revision, unsaved=True),
-                problem=NOTE_CHANGED,
-                status_code=status.HTTP_409_CONFLICT,
+            return await asyncio.to_thread(
+                partial(
+                    note_page,
+                    request,
+                    state,
+                    name,
+                    form=replace(form, revision=note.revision, unsaved=True),
+                    problem=NOTE_CHANGED,
+                    status_code=status.HTTP_409_CONFLICT,
+                )
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1454,38 +1497,45 @@ async def move_a_note(
     read or the note looked up."""
     viewer = viewer_of(request)
     if viewer == "parent":
-        return note_refused(request, state, capture_id)
+        return await asyncio.to_thread(note_refused, request, state, capture_id)
     fields, whole = await fields_of(request, MOVE_FIELDS)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return gone(request, state)
+        return await asyncio.to_thread(gone, request, state)
     revision = revision_of(fields)
     if not whole or revision is None:
-        return note_page(
-            request,
-            state,
-            name,
-            problem=BAD_FORM,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return await asyncio.to_thread(
+            partial(
+                note_page,
+                request,
+                state,
+                name,
+                problem=BAD_FORM,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         )
     store = state.project_state
+
+    def moved() -> CaptureChanged | CaptureUnchanged | CaptureConflict:
+        now, today = accepted_at(state)
+        move = store.archive_capture if archive else store.restore_capture
+        return move(
+            name,
+            expected_revision=revision,
+            authored_by=author_of(viewer),
+            now=now,
+            today=today,
+        )
+
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            move = store.archive_capture if archive else store.restore_capture
-            outcome = move(
-                name,
-                expected_revision=revision,
-                authored_by=author_of(viewer),
-                now=now,
-                today=today,
-            )
+            outcome = await worker_to_the_end(moved)
     except UnknownCapture:
-        return gone(request, state, name)
+        return await asyncio.to_thread(gone, request, state, name)
     except CaptureNotSaved:
         logger.exception("her homework note %s could not be moved", name)
-        return note_or_plain(request, state, name, NOTE_NOT_MOVED, None)
+        return await asyncio.to_thread(note_or_plain, request, state, name, NOTE_NOT_MOVED, None)
     match outcome:
         case CaptureChanged(event=made):
             said = "archived" if archive else "restored"
@@ -1493,12 +1543,15 @@ async def move_a_note(
         case CaptureUnchanged(head=found):
             where = note_href(name, fragment=NOTE_RESULT, said="same", event=found.event_id)
         case CaptureConflict():
-            return note_page(
-                request,
-                state,
-                name,
-                problem=NOTE_CHANGED,
-                status_code=status.HTTP_409_CONFLICT,
+            return await asyncio.to_thread(
+                partial(
+                    note_page,
+                    request,
+                    state,
+                    name,
+                    problem=NOTE_CHANGED,
+                    status_code=status.HTTP_409_CONFLICT,
+                )
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1600,51 +1653,64 @@ async def delete_a_note(request: Request, capture_id: str, state: State) -> Resp
     nothing is deleted.
     """
     if viewer_of(request) == "parent":
-        return note_refused(request, state, capture_id)
+        return await asyncio.to_thread(note_refused, request, state, capture_id)
     fields, whole = await fields_of(request, MOVE_FIELDS)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return gone(request, state)
+        return await asyncio.to_thread(gone, request, state)
     revision = revision_of(fields)
     if not whole or revision is None:
-        return note_page(
-            request,
-            state,
-            name,
-            problem=BAD_FORM,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return await asyncio.to_thread(
+            partial(
+                note_page,
+                request,
+                state,
+                name,
+                problem=BAD_FORM,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         )
     try:
         async with state.decision_lock:
-            outcome = state.project_state.delete_capture(name, expected_revision=revision)
+            outcome = await worker_to_the_end(
+                partial(state.project_state.delete_capture, name, expected_revision=revision)
+            )
     except UnknownCapture:
-        return gone(request, state, name)
+        return await asyncio.to_thread(gone, request, state, name)
     except UnreadableCapture:
-        return unreadable(request, state, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return await asyncio.to_thread(
+            unreadable, request, state, status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
     except CaptureNotSaved:
         logger.exception("her homework note %s could not be deleted", name)
-        return note_or_plain(request, state, name, NOTE_NOT_DELETED, None)
+        return await asyncio.to_thread(note_or_plain, request, state, name, NOTE_NOT_DELETED, None)
     match outcome:
         case CaptureDeleted():
             where = address(NOTES_PAGE, NOTES_RESULT, deleted=name)
         case CaptureAlreadyDeleted():
             where = address(NOTES_PAGE, NOTES_RESULT, already=name)
         case CaptureInUse(capture=note, use=use):
-            return note_page(
-                request,
-                state,
-                name,
-                problem=kept_because(use, archived=note.archived, just=True),
-                status_code=status.HTTP_409_CONFLICT,
+            return await asyncio.to_thread(
+                partial(
+                    note_page,
+                    request,
+                    state,
+                    name,
+                    problem=kept_because(use, archived=note.archived, just=True),
+                    status_code=status.HTTP_409_CONFLICT,
+                )
             )
         case CaptureConflict():
-            return note_page(
-                request,
-                state,
-                name,
-                problem=NOTE_CHANGED_NOT_DELETED,
-                status_code=status.HTTP_409_CONFLICT,
+            return await asyncio.to_thread(
+                partial(
+                    note_page,
+                    request,
+                    state,
+                    name,
+                    problem=NOTE_CHANGED_NOT_DELETED,
+                    status_code=status.HTTP_409_CONFLICT,
+                )
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1685,13 +1751,17 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
             shown: str | None = capture_id_from(capture_id)
         except NotACaptureId:
             shown = None
-        return help_not_sent(request, state, NOT_HERS_TO_ASK, "", shown, status.HTTP_403_FORBIDDEN)
+        return await asyncio.to_thread(
+            help_not_sent, request, state, NOT_HERS_TO_ASK, "", shown, status.HTTP_403_FORBIDDEN
+        )
     fields, whole = await fields_of(request, HELP_FIELDS)
     question = fields.get("note", "")
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(
+            help_not_sent, request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND
+        )
     words = question.strip()
     try:
         form = request_id_from(fields.get("request_id", ""))
@@ -1706,10 +1776,13 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     before: AskOutcome | None = None
     if sound and form is not None and len(words) <= NOTE_MAX_LENGTH:
         try:
-            before = state.help_requests.already_asked(form, words or None, capture_id=name)
+            before = await asyncio.to_thread(
+                partial(state.help_requests.already_asked, form, words or None, capture_id=name)
+            )
         except Exception:
             logger.exception("the form for her request for help about note %s was not read", name)
-            return help_not_sent(
+            return await asyncio.to_thread(
+                help_not_sent,
                 request,
                 state,
                 HELP_NOT_ASKED,
@@ -1723,24 +1796,55 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
                 status_code=status.HTTP_303_SEE_OTHER,
             )
     try:
-        found = state.project_state.sound_capture_history(name)
+        found = await asyncio.to_thread(state.project_state.sound_capture_history, name)
     except (UnreadableCapture, sqlite3.Error) as fault:
         if refused is not None:
             # The form is refused before the note is weighed, and says so first.
             logger.warning("a note help was asked about can't be read: %s", type(fault).__name__)
-            return help_not_sent(
-                request,
-                state,
-                HELP_WITHOUT_THE_PAGE[refused],
-                question,
-                name,
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                line=HELP_NOTE_NOT_SHOWN,
-                fresh=True,
+            return await asyncio.to_thread(
+                partial(
+                    help_not_sent,
+                    request,
+                    state,
+                    HELP_WITHOUT_THE_PAGE[refused],
+                    question,
+                    name,
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    line=HELP_NOTE_NOT_SHOWN,
+                    fresh=True,
+                )
             )
         if isinstance(fault, sqlite3.Error):
             logger.exception("the note %s could not be read for her request for help", name)
-            return help_not_sent(
+            return await asyncio.to_thread(
+                partial(
+                    help_not_sent,
+                    request,
+                    state,
+                    HELP_NOT_ASKED,
+                    question,
+                    name,
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    before=before,
+                )
+            )
+        return await asyncio.to_thread(
+            partial(
+                help_not_sent,
+                request,
+                state,
+                NOTE_UNREADABLE,
+                question,
+                name,
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                before=before,
+            )
+        )
+    except Exception:
+        logger.exception("the note %s could not be read for her request for help", name)
+        return await asyncio.to_thread(
+            partial(
+                help_not_sent,
                 request,
                 state,
                 HELP_NOT_ASKED,
@@ -1749,58 +1853,58 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
                 before=before,
             )
-        return help_not_sent(
-            request,
-            state,
-            NOTE_UNREADABLE,
-            question,
-            name,
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            before=before,
-        )
-    except Exception:
-        logger.exception("the note %s could not be read for her request for help", name)
-        return help_not_sent(
-            request,
-            state,
-            HELP_NOT_ASKED,
-            question,
-            name,
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            before=before,
         )
     if found is None:
-        return help_not_sent(
-            request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND, before=before
+        return await asyncio.to_thread(
+            partial(
+                help_not_sent,
+                request,
+                state,
+                NOTE_GONE,
+                question,
+                None,
+                status.HTTP_404_NOT_FOUND,
+                before=before,
+            )
         )
     note = found[0]
     if form is None or refused is not None:
-        return help_page(
-            request,
-            state,
-            note,
-            question=question,
-            problem=refused,
-            question_error=sound,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return await asyncio.to_thread(
+            partial(
+                help_page,
+                request,
+                state,
+                note,
+                question=question,
+                problem=refused,
+                question_error=sound,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         )
     try:
         async with state.decision_lock:
-            outcome = state.help_requests.ask_once(
-                form, state.clock.today(), words or None, capture_id=name
+            outcome = await worker_to_the_end(
+                lambda: state.help_requests.ask_once(
+                    form, state.clock.today(), words or None, capture_id=name
+                )
             )
     except UnknownCaptureReference:
-        return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(
+            help_not_sent, request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND
+        )
     except Exception:
         logger.exception("her request for help about note %s could not be sent", name)
-        return help_page(
-            request,
-            state,
-            note,
-            question=question,
-            problem=HELP_NOT_ASKED,
-            before_the_refusal=True,
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        return await asyncio.to_thread(
+            partial(
+                help_page,
+                request,
+                state,
+                note,
+                question=question,
+                problem=HELP_NOT_ASKED,
+                before_the_refusal=True,
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         )
     match outcome:
         case HelpAsked(request=asked):
@@ -1808,12 +1912,17 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
         case HelpAlreadyAsked(request=asked):
             where = address(WEEK_PAGE, "help-result", asked_again=asked.request_id)
         case HelpFormChanged() | HelpFormUsed():
-            return help_page(
-                request,
-                state,
-                note,
-                question=question,
-                problem=FORM_USED if isinstance(outcome, HelpFormUsed) else FORM_SENT_OTHER_WORDS,
-                status_code=status.HTTP_409_CONFLICT,
+            return await asyncio.to_thread(
+                partial(
+                    help_page,
+                    request,
+                    state,
+                    note,
+                    question=question,
+                    problem=(
+                        FORM_USED if isinstance(outcome, HelpFormUsed) else FORM_SENT_OTHER_WORDS
+                    ),
+                    status_code=status.HTTP_409_CONFLICT,
+                )
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
