@@ -21,14 +21,17 @@ on a page that reads no store, with what it typed kept as far as a bounded
 copy of that same request reads it, whether or not the name is a note's.
 """
 
+import asyncio
 import logging
 import sqlite3
 from dataclasses import dataclass
+from functools import partial
 from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from blossom.agent.runs import worker_to_the_end
 from blossom.authored_text import TextRefused, single_line
 from blossom.candidates import CandidateReading, readings_for, row_reader
 from blossom.captures import (
@@ -454,13 +457,16 @@ async def refused_press(
     if way.open_to(viewer_of(request)):
         return None
     kept = await kept_fields_of(request, allowed) or {}
-    return plain_search(
-        request,
-        state,
-        form_of(capture_id, kept),
-        way.refusal,
-        status.HTTP_403_FORBIDDEN,
-        refused=True,
+    return await asyncio.to_thread(
+        partial(
+            plain_search,
+            request,
+            state,
+            form_of(capture_id, kept),
+            way.refusal,
+            status.HTTP_403_FORBIDDEN,
+            refused=True,
+        )
     )
 
 
@@ -491,19 +497,33 @@ async def link_to_homework(
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return plain_search(request, state, form, NOTE_GONE, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(
+            plain_search, request, state, form, NOTE_GONE, status.HTTP_404_NOT_FOUND
+        )
     target = one_row(fields, "target")
     # The fingerprint is sixty-four hexadecimal digits as the page writes it; anything
     # else is a form this page never made, not homework that changed.
     basis = fields.get("basis", "") if BASIS_AS_WRITTEN.fullmatch(fields.get("basis", "")) else None
     leaving = one_row(fields, "from") if fields.get("from") else None
     if not whole or form.revision is None or basis is None or (fields.get("from") and not leaving):
-        return search_or_plain(
-            request, state, way, form, BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
+        return await asyncio.to_thread(
+            search_or_plain,
+            request,
+            state,
+            way,
+            form,
+            BAD_FORM,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     if target is None:
-        return search_or_plain(
-            request, state, way, form, NO_CHOICE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        return await asyncio.to_thread(
+            search_or_plain,
+            request,
+            state,
+            way,
+            form,
+            NO_CHOICE,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     # The words and the page the press carries are held to the search's own rules before
     # the store is asked, so nothing is written for a context the page would refuse; what
@@ -511,35 +531,67 @@ async def link_to_homework(
     try:
         terms_of(form.query)
     except TextRefused:
-        return search_or_plain(
-            request, state, way, form, QUERY_REFUSED, status.HTTP_422_UNPROCESSABLE_CONTENT
+        return await asyncio.to_thread(
+            search_or_plain,
+            request,
+            state,
+            way,
+            form,
+            QUERY_REFUSED,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     number = page_number(form.page)
     if number is None or number < 1:
-        return search_or_plain(
-            request, state, way, form, NO_SUCH_PAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        return await asyncio.to_thread(
+            search_or_plain,
+            request,
+            state,
+            way,
+            form,
+            NO_SUCH_PAGE,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
+    revision = form.revision
+
+    def linked() -> (
+        CapturePromoted
+        | CaptureAlreadyPromoted
+        | CaptureConflict
+        | CaptureNotJoined
+        | HomeworkGone
+        | CandidatesChanged
+    ):
+        now, today = accepted_at(state)
+        return state.project_state.link_capture(
+            name,
+            target=target,
+            expected_revision=revision,
+            basis=basis,
+            leaving=leaving,
+            shown=row_reader(state.project_state),
+            authored_by=actor(viewer_of(request)),
+            channel=way.channel,
+            now=now,
+            today=today,
+        )
+
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            outcome = state.project_state.link_capture(
-                name,
-                target=target,
-                expected_revision=form.revision,
-                basis=basis,
-                leaving=leaving,
-                shown=row_reader(state.project_state),
-                authored_by=actor(viewer_of(request)),
-                channel=way.channel,
-                now=now,
-                today=today,
-            )
+            outcome = await worker_to_the_end(linked)
     except UnknownCapture:
-        return search_or_plain(request, state, way, form, NOT_SAVED, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(
+            search_or_plain, request, state, way, form, NOT_SAVED, status.HTTP_404_NOT_FOUND
+        )
     except CaptureNotSaved:
         logger.exception("note %s could not be joined to homework found", name)
-        return search_or_plain(
-            request, state, way, form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
+        return await asyncio.to_thread(
+            search_or_plain,
+            request,
+            state,
+            way,
+            form,
+            NOT_SAVED,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     said = "relinked" if leaving else "joined"
     match outcome:
@@ -548,20 +600,28 @@ async def link_to_homework(
         case CaptureAlreadyPromoted(head=head):
             where = note_href(name, fragment=NOTE_RESULT, said="already", event=head.event_id)
         case CaptureConflict():
-            return search_or_plain(
-                request, state, way, form, NOTE_CHANGED, status.HTTP_409_CONFLICT
+            return await asyncio.to_thread(
+                search_or_plain, request, state, way, form, NOTE_CHANGED, status.HTTP_409_CONFLICT
             )
         case CaptureNotJoined():
-            return search_or_plain(request, state, way, form, NOT_JOINED, status.HTTP_409_CONFLICT)
+            return await asyncio.to_thread(
+                search_or_plain, request, state, way, form, NOT_JOINED, status.HTTP_409_CONFLICT
+            )
         case HomeworkGone():
-            return search_or_plain(
-                request, state, way, form, HOMEWORK_GONE, status.HTTP_409_CONFLICT
+            return await asyncio.to_thread(
+                search_or_plain, request, state, way, form, HOMEWORK_GONE, status.HTTP_409_CONFLICT
             )
         case CandidatesChanged():
             # The page reads the homework chosen again with its own reading and shows it
             # as it stands then, once, with a fresh press.
-            return search_or_plain(
-                request, state, way, form, HOMEWORK_CHANGED, status.HTTP_409_CONFLICT
+            return await asyncio.to_thread(
+                search_or_plain,
+                request,
+                state,
+                way,
+                form,
+                HOMEWORK_CHANGED,
+                status.HTTP_409_CONFLICT,
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
@@ -632,30 +692,51 @@ async def unlink_from_homework(
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return plain_search(request, state, form, NOTE_GONE, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(
+            plain_search, request, state, form, NOTE_GONE, status.HTTP_404_NOT_FOUND
+        )
     leaving = one_row(fields, "from")
     if not whole or form.revision is None or leaving is None:
-        return unlink_or_plain(
-            request, state, way, form, BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
+        return await asyncio.to_thread(
+            unlink_or_plain,
+            request,
+            state,
+            way,
+            form,
+            BAD_FORM,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
+    revision = form.revision
+
+    def unlinked() -> CaptureUnlinked | CaptureAlreadyUnlinked | CaptureConflict | CaptureNotJoined:
+        now, today = accepted_at(state)
+        return state.project_state.unlink_capture(
+            name,
+            expected_revision=revision,
+            leaving=leaving,
+            authored_by=actor(viewer_of(request)),
+            channel=way.channel,
+            now=now,
+            today=today,
+        )
+
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            outcome = state.project_state.unlink_capture(
-                name,
-                expected_revision=form.revision,
-                leaving=leaving,
-                authored_by=actor(viewer_of(request)),
-                channel=way.channel,
-                now=now,
-                today=today,
-            )
+            outcome = await worker_to_the_end(unlinked)
     except UnknownCapture:
-        return unlink_or_plain(request, state, way, form, NOT_SAVED, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(
+            unlink_or_plain, request, state, way, form, NOT_SAVED, status.HTTP_404_NOT_FOUND
+        )
     except CaptureNotSaved:
         logger.exception("note %s could not be unlinked", name)
-        return unlink_or_plain(
-            request, state, way, form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
+        return await asyncio.to_thread(
+            unlink_or_plain,
+            request,
+            state,
+            way,
+            form,
+            NOT_SAVED,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     match outcome:
         case CaptureUnlinked(event=made):
@@ -663,11 +744,13 @@ async def unlink_from_homework(
         case CaptureAlreadyUnlinked(head=head):
             where = note_href(name, fragment=NOTE_RESULT, said="unlinked", event=head.event_id)
         case CaptureConflict():
-            return unlink_or_plain(
-                request, state, way, form, NOTE_CHANGED, status.HTTP_409_CONFLICT
+            return await asyncio.to_thread(
+                unlink_or_plain, request, state, way, form, NOTE_CHANGED, status.HTTP_409_CONFLICT
             )
         case CaptureNotJoined():
-            return unlink_or_plain(request, state, way, form, NOT_JOINED, status.HTTP_409_CONFLICT)
+            return await asyncio.to_thread(
+                unlink_or_plain, request, state, way, form, NOT_JOINED, status.HTTP_409_CONFLICT
+            )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
 
