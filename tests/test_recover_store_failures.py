@@ -2559,8 +2559,8 @@ def a_note_detailed(client: TestClient, *, family: bool = False, add: bool = Fal
 
 
 def an_add_with_a_class_left_behind(client: TestClient) -> Sent:
-    """Her add with the essay's class chosen from the list, after every homework of that class
-    was renamed: the list no longer holds it, so the route reads the homework of that class
+    """Her add with the essay's class chosen from the list, then every homework of that class
+    given another class: the list doesn't hold it, so the route reads the homework of that class
     and title before it asks for the lock, to tell a change from a stale choice."""
     press = a_note_detailed(client, add=True)
     store = state_of(client).project_state
@@ -2884,7 +2884,7 @@ NOTE_ON_THE_LOOP_CASES = [
     pytest.param(an_add_with_a_class_left_behind, 422, id="her add, class left behind"),
 ]
 """Each press on a note, refused and made, in her tree and the family's where it has both,
-and her add with a class the list no longer holds, which reads the store before the lock."""
+and her add with a class the list doesn't hold, which reads the store before the lock."""
 
 
 @pytest.mark.parametrize(("made", "code"), NOTE_ON_THE_LOOP_CASES)
