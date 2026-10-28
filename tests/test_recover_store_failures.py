@@ -21,6 +21,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from functools import partial
 from typing import Any, cast
 from uuid import uuid4
 
@@ -37,7 +38,20 @@ from blossom.routes import hand_in as hand_in_routes
 from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
 from blossom.routes.forms import fields_of
-from blossom.routes.navigation import details_href, week_href
+from blossom.routes.navigation import (
+    NEW_NOTE_PAGE,
+    NOTE_ACTIONS,
+    details_href,
+    note_action,
+    note_add_action,
+    note_add_href,
+    note_details_action,
+    note_help_href,
+    note_link_action,
+    note_search_href,
+    note_unlink_action,
+    week_href,
+)
 from blossom.routes.runs import Unconfirmed
 from blossom.stores.drafts import STORE_WAIT_SECONDS
 from tests.support import (
@@ -89,6 +103,7 @@ from tests.support import (
     fresh_signal_fields,
     hidden,
     household_client,
+    link_note,
     main_of,
     page_of,
     plan_form,
@@ -106,6 +121,7 @@ from tests.support import (
     unwrapped,
     walkthrough,
     ways_back_of,
+    whole_form,
     words,
 )
 
@@ -2047,6 +2063,10 @@ TOO_MUCH = "/student/actions/too-much"
 ASK_FOR_HELP = "/student/actions/ask-for-help"
 SIGNALS = "/student/workload-signals"
 STATIC = "/static/blossom.css"
+NOTE_WORDS = {"text": "Geometry 4-8", "course": "", "due_date": ""}
+"""What she types on a new note: words alone, with no class and no day."""
+A_NOTE_ID = "6f1c2b9e-4d3a-4f8e-9b7a-2c5d8e1f0a43"
+"""A note's id as the new note form gives one, for a press made before any page is read."""
 
 
 @dataclass(frozen=True)
@@ -2245,6 +2265,15 @@ async def a_static_file_beside(app: Any, press: Sent, where: str) -> tuple[list[
     [
         pytest.param(Sent("POST", HAND_IN, HAND_IN_PRESS), "hand_in_events", 303, id="hand-in"),
         pytest.param(Sent("POST", UNDO_HAND_IN, {}), "page", 422, id="hand-in undo refused"),
+        pytest.param(
+            Sent("POST", NOTE_ACTIONS, {"capture_id": A_NOTE_ID, **NOTE_WORDS}),
+            "homework_captures",
+            303,
+            id="new note",
+        ),
+        pytest.param(
+            Sent("POST", note_action(A_NOTE_ID, "edit"), {}), "page", 422, id="note edit refused"
+        ),
     ],
 )
 def test_a_static_file_is_answered_while_her_press_is_held_in_its_store_call(
@@ -2283,8 +2312,8 @@ class Canceled:
 
 @dataclass(frozen=True)
 class Held:
-    """A press of hers made with the decision lock held, and where its write is held: the
-    store, its method, and the table the write goes to."""
+    """A press made with the decision lock held, and where its write is held: the store, its
+    method, and the table the write goes to."""
 
     made: Callable[[TestClient], Sent]
     store: str
@@ -2296,6 +2325,10 @@ class Held:
     remade: bool = False
     """Whether the form is signed with the key drawn at each start, and so is made again from
     the page as this start shows it."""
+    at_the_call: bool = False
+    """Whether the write is held as its method is called, before the store's own lock, rather
+    than at its first write: for a press that reads that store before it asks for the decision
+    lock, so the same press made again can reach the lock while the first is held."""
 
 
 async def a_press_canceled(
@@ -2307,9 +2340,10 @@ async def a_press_canceled(
     second: bool,
     waits: list[int],
 ) -> Canceled:
-    """Her press held at its write on a worker and canceled, as uvicorn cancels a request
-    through the household gate's task group or as a plain cancel of the handler's own task;
-    with ``second``, the same press made again meanwhile, waiting for the lock."""
+    """A press held on a worker, at its write or as its write is called, and canceled, as
+    uvicorn cancels a request through the household gate's task group or as a plain cancel
+    of the handler's own task; with ``second``, the same press made again meanwhile, waiting
+    for the lock."""
     calls: list[str] = []
     method = held.method
     async with app.router.lifespan_context(app):
@@ -2318,6 +2352,8 @@ async def a_press_canceled(
         made = getattr(store, method)
 
         def noted(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            if held.at_the_call:
+                parked.hold("")
             calls.append("store call entered")
             try:
                 return made(*args, **kwargs)
@@ -2350,7 +2386,9 @@ async def a_press_canceled(
                 if held.remade:
                     shown = await asyncio.wait_for(http.get(HER_PAGE), HANG_LIMIT_SECONDS)
                     press = Sent(press.method, press.path, form_fields(shown.text, press.path))
-                where = first_write_to(held.table)
+                # Held at the call, the hold is the call's own, with no statement: a trace
+                # never gives an empty one.
+                where = (lambda run: not run) if held.at_the_call else first_write_to(held.table)
                 with Parked(store._connection, where, loop_parks=False) as parked:
                     first = asyncio.create_task(sent_on(http, press))
                     await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
@@ -2431,6 +2469,158 @@ PRESSES_HELD = [
         id="withdraw",
     ),
 ]
+
+
+def a_note_saved(client: TestClient) -> str:
+    """A note of hers saved through the new note form; its id."""
+    press = a_new_note(client)
+    pressed = answer_to(client, press)
+    assert pressed.status_code == 303, pressed.text[:300]
+    assert press.data is not None
+    return press.data["capture_id"]
+
+
+def a_new_note(client: TestClient) -> Sent:
+    fields = form_fields(client.get(NEW_NOTE_PAGE, headers=PAGE_HEADERS).text, NOTE_ACTIONS)
+    return Sent("POST", NOTE_ACTIONS, {**fields, **NOTE_WORDS})
+
+
+def a_note_with_other_words(client: TestClient) -> Sent:
+    """The new note form sent again with other words than the note it saved: refused, 409,
+    once the store has read what that id holds."""
+    press = a_new_note(client)
+    assert answer_to(client, press).status_code == 303
+    assert press.data is not None
+    return Sent("POST", NOTE_ACTIONS, {**press.data, "text": "Other words"})
+
+
+def a_note_edit(client: TestClient) -> Sent:
+    name = a_note_saved(client)
+    return Sent("POST", note_action(name, "edit"), {**NOTE_WORDS, "revision": "1", "text": "4-9"})
+
+
+def a_note_archived(client: TestClient) -> Sent:
+    return Sent("POST", note_action(a_note_saved(client), "archive"), {"revision": "1"})
+
+
+def a_note_restored(client: TestClient) -> Sent:
+    archived = a_note_archived(client)
+    assert answer_to(client, archived).status_code == 303
+    restore = archived.path.removesuffix("archive") + "restore"
+    return Sent("POST", restore, {"revision": "2"})
+
+
+def a_note_deleted(client: TestClient) -> Sent:
+    return Sent("POST", note_action(a_note_saved(client), "delete"), {"revision": "1"})
+
+
+def a_note_asked_about(client: TestClient) -> Sent:
+    name = a_note_saved(client)
+    action = note_action(name, "ask-for-help")
+    fields = form_fields(client.get(note_help_href(name), headers=PAGE_HEADERS).text, action)
+    return Sent("POST", action, {**fields, "note": "the outline"})
+
+
+def a_note_linked(client: TestClient, *, family: bool = False) -> Sent:
+    """A note joined to the essay as the search for it shows it, in her tree or the family's."""
+    name = a_note_saved(client)
+    action = note_link_action(name, family=family)
+    page = client.get(note_search_href(name, family=family, q="essay"), headers=PAGE_HEADERS)
+    row = page.text[page.text.index(f'action="{action}"') :]
+    return Sent("POST", action, {**form_fields(row, action), "q": "essay", "page": "1"})
+
+
+def a_note_unlinked(client: TestClient, *, family: bool = False) -> Sent:
+    name = a_note_saved(client)
+    homework = link_note(state_of(client).project_state, name).assignment_id
+    form = {"revision": "2", "from": homework}
+    return Sent("POST", note_unlink_action(name, family=family), form)
+
+
+NOTE_DETAILS = {
+    "course_choice": "__another__",
+    "course_other": "Geometry",
+    "title": "Questions 4-8",
+    "due_date": "",
+    "kind": "HOMEWORK",
+    "note": "",
+}
+"""The details she types for a note: a class of her own and a title."""
+
+
+def a_note_detailed(client: TestClient, *, family: bool = False, add: bool = False) -> Sent:
+    """The details form of a note with its details typed, sent to save them or, with ``add``,
+    to add the note to homework, in her tree or the family's."""
+    name = a_note_saved(client)
+    page = client.get(note_add_href(name, family=family), headers=PAGE_HEADERS).text
+    form = {**whole_form(page, note_add_action(name, family=family)), **NOTE_DETAILS}
+    action = (note_add_action if add else note_details_action)(name, family=family)
+    return Sent("POST", action, form)
+
+
+def refused_on_a_note(step: Callable[[str], str]) -> Callable[[TestClient], Sent]:
+    """A press with an empty form on a note of hers, to the address ``step`` names: refused
+    before the store is asked, on a page that reads the note."""
+    return lambda client: Sent("POST", step(a_note_saved(client)), {})
+
+
+NOTE_PRESSES = {
+    "new note": Held(a_new_note, "project_state", "create_capture", "homework_captures", 303),
+    "note edit": Held(a_note_edit, "project_state", "edit_capture", "capture_events", 303),
+    "note archive": Held(
+        a_note_archived, "project_state", "archive_capture", "capture_events", 303
+    ),
+    "note restore": Held(
+        a_note_restored, "project_state", "restore_capture", "capture_events", 303
+    ),
+    "note delete": Held(a_note_deleted, "project_state", "delete_capture", "deleted_captures", 303),
+    "help about a note": Held(
+        a_note_asked_about, "help_requests", "ask_once", "help_requests", 303, at_the_call=True
+    ),
+    "her link": Held(a_note_linked, "project_state", "link_capture", "capture_events", 303),
+    "family link": Held(
+        partial(a_note_linked, family=True), "project_state", "link_capture", "capture_events", 303
+    ),
+    "her unlink": Held(a_note_unlinked, "project_state", "unlink_capture", "capture_events", 303),
+    "family unlink": Held(
+        partial(a_note_unlinked, family=True),
+        "project_state",
+        "unlink_capture",
+        "capture_events",
+        303,
+    ),
+    "her details": Held(
+        a_note_detailed, "project_state", "clarify_capture", "capture_events", 303, at_the_call=True
+    ),
+    "family details": Held(
+        partial(a_note_detailed, family=True),
+        "project_state",
+        "clarify_capture",
+        "capture_events",
+        303,
+        at_the_call=True,
+    ),
+    "her add": Held(
+        partial(a_note_detailed, add=True),
+        "project_state",
+        "promote_capture",
+        "capture_events",
+        303,
+        at_the_call=True,
+    ),
+    "family add": Held(
+        partial(a_note_detailed, family=True, add=True),
+        "project_state",
+        "promote_capture",
+        "capture_events",
+        303,
+        at_the_call=True,
+    ),
+}
+"""Each press on a note made with the decision lock held. The request for help and the two
+details presses read the store their write holds before they ask for the lock, so they are
+held as the write is called."""
+NOTE_PRESSES_HELD = [pytest.param(held, id=named) for named, held in NOTE_PRESSES.items()]
 CANCELS = {
     "through the gate": "canceled",
     "of the handler's own task": "raised RuntimeError",
@@ -2442,7 +2632,7 @@ with no response, and it raises."""
 
 
 @pytest.mark.parametrize("kind", CANCELS)
-@pytest.mark.parametrize("held", PRESSES_HELD)
+@pytest.mark.parametrize("held", PRESSES_HELD + NOTE_PRESSES_HELD)
 def test_a_canceled_press_keeps_the_decision_lock_until_its_store_call_returns(
     held: Held, kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2618,3 +2808,180 @@ def test_a_canceled_request_for_help_ends_only_after_its_write_and_is_kept_once(
     assert again.status_code == 303
     assert press.data is not None
     assert [asked["request_id"] for asked in kept] == [press.data["request_id"]]
+
+
+NOTE_ON_THE_LOOP_CASES = [
+    pytest.param(a_note_with_other_words, 409, id="new note refused"),
+    pytest.param(a_new_note, 303, id="new note"),
+    pytest.param(refused_on_a_note(lambda name: note_action(name, "edit")), 422, id="edit refused"),
+    pytest.param(a_note_edit, 303, id="edit"),
+    pytest.param(
+        refused_on_a_note(lambda name: note_action(name, "archive")), 422, id="archive refused"
+    ),
+    pytest.param(a_note_archived, 303, id="archive"),
+    pytest.param(
+        refused_on_a_note(lambda name: note_action(name, "restore")), 422, id="restore refused"
+    ),
+    pytest.param(a_note_restored, 303, id="restore"),
+    pytest.param(
+        refused_on_a_note(lambda name: note_action(name, "delete")), 422, id="delete refused"
+    ),
+    pytest.param(a_note_deleted, 303, id="delete"),
+    pytest.param(
+        refused_on_a_note(lambda name: note_action(name, "ask-for-help")),
+        422,
+        id="help about a note refused",
+    ),
+    pytest.param(a_note_asked_about, 303, id="help about a note"),
+    *[
+        param
+        for family, tree in [(False, "her"), (True, "family")]
+        for param in [
+            pytest.param(
+                refused_on_a_note(partial(note_link_action, family=family)),
+                422,
+                id=f"{tree} link refused",
+            ),
+            pytest.param(partial(a_note_linked, family=family), 303, id=f"{tree} link"),
+            pytest.param(
+                refused_on_a_note(partial(note_unlink_action, family=family)),
+                422,
+                id=f"{tree} unlink refused",
+            ),
+            pytest.param(partial(a_note_unlinked, family=family), 303, id=f"{tree} unlink"),
+            pytest.param(
+                refused_on_a_note(partial(note_details_action, family=family)),
+                422,
+                id=f"{tree} details refused",
+            ),
+            pytest.param(partial(a_note_detailed, family=family), 303, id=f"{tree} details"),
+            pytest.param(
+                refused_on_a_note(partial(note_add_action, family=family)),
+                422,
+                id=f"{tree} add refused",
+            ),
+            pytest.param(partial(a_note_detailed, family=family, add=True), 303, id=f"{tree} add"),
+        ]
+    ],
+]
+"""Each press on a note, refused and made, in her tree and the family's where it has both."""
+
+
+@pytest.mark.parametrize(("made", "code"), NOTE_ON_THE_LOOP_CASES)
+def test_a_note_press_runs_no_statement_on_the_event_loop(
+    made: Callable[[TestClient], Sent], code: int
+) -> None:
+    """Every store read and write a press on a note makes, and the page it answers with, runs
+    on a worker thread. Each press reads a store, so the trace sees statements on a worker,
+    which shows it saw the route."""
+    with browser() as client:
+        request = made(client)
+        with OnTheLoop(state_of(client)) as seen:
+            answer = answer_to(client, request)
+
+    assert answer.status_code == code, answer.text[:300]
+    assert seen.loop == []
+    assert seen.workers != []
+
+
+NOTE_REPEATS = {
+    "new note": "said=same",
+    "note edit": "said=same",
+    "note archive": "said=same",
+    "note restore": "said=same",
+    "note delete": "already=",
+    "help about a note": "asked_again=",
+    "her link": "said=already",
+    "family link": "said=already",
+    "her unlink": "said=unlinked",
+    "family unlink": "said=unlinked",
+    "her details": "said=unchanged",
+    "family details": "said=unchanged",
+    "her add": "said=already",
+    "family add": "said=already",
+}
+"""What the address a repeat of each press on a note is answered with says."""
+
+
+def note_of(press: Sent) -> str:
+    """The note a press is about: the id its form gives a new note, or the one its address
+    names."""
+    if press.path == NOTE_ACTIONS:
+        assert press.data is not None
+        return press.data["capture_id"]
+    return press.path.split("/")[-2]
+
+
+def rows_in(client: TestClient, held: Held) -> int:
+    """How many rows the table a press writes to holds."""
+    connection = getattr(state_of(client), held.store)._connection
+    counted = f"SELECT count(*) FROM {held.table}"  # noqa: S608
+    return int(connection.execute(counted).fetchone()[0])
+
+
+def newest_change(client: TestClient, name: str) -> str | None:
+    """The id of the newest change the record holds for a note, or ``None`` with none."""
+    row = (
+        state_of(client)
+        .project_state._connection.execute(
+            "SELECT event_id FROM capture_events WHERE capture_id = ? "
+            "ORDER BY sequence DESC LIMIT 1",
+            (name,),
+        )
+        .fetchone()
+    )
+    return None if row is None else str(row[0])
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+@pytest.mark.parametrize("fails", [False, True], ids=["committed", "refused by the file"])
+@pytest.mark.parametrize("named", NOTE_PRESSES)
+def test_a_canceled_note_press_is_whole_or_absent_and_said_truly_after(
+    named: str, kind: str, fails: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press on a note canceled while its write is held sends no answer. When the write
+    then lands, the record holds one more row of it, and the same press again is answered as
+    a repeat whose address names the deleted note, the request kept, or the newest change the
+    record holds, a page that opens; when the file refuses it, the record holds nothing of it
+    and the same press again is refused again, 500."""
+    held = NOTE_PRESSES[named]
+    with browser() as client:
+        app = client.app
+        press = held.made(client)
+        before = rows_in(client, held)
+        if fails:
+            connection = getattr(state_of(client), held.store)._connection
+            connection.execute(
+                f"CREATE TRIGGER refuse_writes BEFORE INSERT ON {held.table} "
+                "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+            )
+            connection.commit()
+    waits = counted_waits(monkeypatch)
+    canceled = asyncio.run(a_press_canceled(app, press, held, kind, second=False, waits=waits))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        after = rows_in(client, held)
+        again = answer_to(client, press)
+        newest = newest_change(client, note_of(press))
+        opened = None if fails else client.get(again.headers["location"], headers=PAGE_HEADERS)
+
+    assert canceled.parked.on_the_loop is False
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == ["lock taken", "store call entered", "store call returned"]
+    if fails:
+        assert after == before
+        assert again.status_code == 500
+    else:
+        assert after == before + 1
+        assert again.status_code == held.again
+        location = again.headers["location"]
+        assert NOTE_REPEATS[named] in location
+        if named == "note delete":
+            assert f"already={note_of(press)}" in location
+        elif named == "help about a note":
+            assert press.data is not None
+            assert f"asked_again={press.data['request_id']}" in location
+        else:
+            assert f"event={newest}" in location
+        assert opened is not None
+        assert opened.status_code == 200
