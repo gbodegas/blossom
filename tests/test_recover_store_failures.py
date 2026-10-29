@@ -4697,6 +4697,14 @@ def a_plan_asked_for_on_her_week(client: TestClient) -> Sent:
     return Sent("POST", "/student/actions/plan", fresh_plan_fields(client))
 
 
+def a_card_press_on_gone_work(client: TestClient) -> Sent:
+    """I turned it in pressed on the details, sent for work gone from the record, today as
+    the way back."""
+    page = client.get(DETAILS, params=TO_TODAY, headers=PAGE_HEADERS).text
+    action, sent = pressed_form(page, "hand_in_head")
+    return Sent("POST", action.replace(ESSAY_ID, GONE_ID), {**sent, "note": TYPED, **TO_TODAY})
+
+
 def on_gone_work(route: str, fields: dict[str, str]) -> Callable[[TestClient], Sent]:
     """``route`` pressed on the details of work gone from the record, a plan as the way back."""
     blank = {"return_to": "", "week": "", "plan_id": ""}
@@ -4742,6 +4750,9 @@ HELD_PRESSES = {
     ),
     "a hand-in Undo on work gone from the record": HeldPress(
         "open", on_gone_work("undo-hand-in", {"hand_in_id": "hand-in-not-here"})
+    ),
+    "a turn-in on the details of work gone from the record": HeldPress(
+        "open", a_card_press_on_gone_work
     ),
 }
 UNREADABLE_DRAFTS = ("newest_published", "latest_for", "get")
