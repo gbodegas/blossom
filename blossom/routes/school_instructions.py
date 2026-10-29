@@ -32,6 +32,7 @@ a parent does, and the household with the sign-in off does, from the family's
 own pages.
 """
 
+import asyncio
 import hmac
 import logging
 import re
@@ -44,6 +45,7 @@ from typing import Final, Literal
 from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from blossom.agent.runs import worker_to_the_end
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.routes.forms import form_of
 from blossom.routes.inbox import State
@@ -61,6 +63,7 @@ from blossom.routes.navigation import (
 )
 from blossom.routes.student import viewer_of
 from blossom.school_instructions import (
+    InstructionsOutcome,
     InstructionsSettled,
     InstructionsStanding,
     InstructionsUnchanged,
@@ -476,7 +479,8 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
     submitted = read.answer
     carried = read.carried
     if submitted is None:
-        return page_or_plain(
+        return await asyncio.to_thread(
+            page_or_plain,
             request,
             state,
             assignment_id,
@@ -490,10 +494,11 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
         # A kept row's words never change, so the words its row names now are the words the
         # parent was shown; a row not kept for this assignment is no form this page wrote.
         try:
-            _, standing, readable = reading_of(state, assignment_id)
+            _, standing, readable = await asyncio.to_thread(reading_of, state, assignment_id)
         except sqlite3.Error:
             logger.exception("the rows a choice named could not be read")
-            return page_or_plain(
+            return await asyncio.to_thread(
+                page_or_plain,
                 request,
                 state,
                 assignment_id,
@@ -504,7 +509,8 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
                 carried=carried,
             )
         if not readable:
-            return page_or_plain(
+            return await asyncio.to_thread(
+                page_or_plain,
                 request,
                 state,
                 assignment_id,
@@ -515,7 +521,8 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
             )
         resolved = submitted.resolved(() if standing is None else standing.kept)
         if resolved is None:
-            return page_or_plain(
+            return await asyncio.to_thread(
+                page_or_plain,
                 request,
                 state,
                 assignment_id,
@@ -528,7 +535,8 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
         submitted = resolved
     choice = submitted.choice()
     if choice is None:
-        return page_or_plain(
+        return await asyncio.to_thread(
+            page_or_plain,
             request,
             state,
             assignment_id,
@@ -538,18 +546,23 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
             carried=carried,
         )
     now, today = state.project_state.instruction_moment()
+
+    def settled() -> InstructionsOutcome | InstructionsForNoAssignment:
+        return state.project_state.settle_school_instructions(
+            assignment_id,
+            [],
+            choice,
+            authored_by="parent" if viewer_of(request) == "parent" else "household",
+            now=now,
+            today=today,
+        )
+
     try:
         async with state.decision_lock:
-            outcome = state.project_state.settle_school_instructions(
-                assignment_id,
-                [],
-                choice,
-                authored_by="parent" if viewer_of(request) == "parent" else "household",
-                now=now,
-                today=today,
-            )
+            outcome = await worker_to_the_end(settled)
     except UnreadableInstruction:
-        return page_or_plain(
+        return await asyncio.to_thread(
+            page_or_plain,
             request,
             state,
             assignment_id,
@@ -559,7 +572,8 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
         )
     except sqlite3.Error:
         logger.exception("a choice of school instructions could not be saved")
-        return page_or_plain(
+        return await asyncio.to_thread(
+            page_or_plain,
             request,
             state,
             assignment_id,
@@ -569,15 +583,22 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
             failed=True,
         )
     if isinstance(outcome, InstructionsForNoAssignment):
-        return page_or_plain(
-            request, state, assignment_id, submitted, NOT_ON_RECORD, status.HTTP_404_NOT_FOUND
+        return await asyncio.to_thread(
+            page_or_plain,
+            request,
+            state,
+            assignment_id,
+            submitted,
+            NOT_ON_RECORD,
+            status.HTTP_404_NOT_FOUND,
         )
     if isinstance(outcome, InstructionsSettled):
         token = result_token(state.result_key, assignment_id, "saved", outcome.revision)
     elif isinstance(outcome, InstructionsUnchanged):
         token = result_token(state.result_key, assignment_id, "stood", outcome.revision)
     else:
-        return page_or_plain(
+        return await asyncio.to_thread(
+            page_or_plain,
             request,
             state,
             assignment_id,
