@@ -10,6 +10,7 @@ no-store. Nothing on Family review offers the upload yet.
 import ast
 import asyncio
 import dataclasses
+import functools
 import html
 import http.client
 import io
@@ -19,6 +20,7 @@ import pathlib
 import re
 import socket
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -50,6 +52,7 @@ from blossom.screenshot_save import (
     AlreadySaved,
     NotSaved,
     Saved,
+    SaveHooks,
     correction_digest,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
@@ -67,14 +70,18 @@ from blossom.uploads import as_new_image, prepare_image
 from tests.support import (
     ARRIVAL_CUE,
     HERS,
+    PAGE_HEADERS,
     PLAN_DATE,
     THEIRS,
     Answer,
     Element,
+    HangWatch,
+    HeldByAnother,
     Rule,
     UnreadCss,
     View,
     control_names,
+    database_of,
     declared_for,
     elements_of,
     field_names,
@@ -84,6 +91,9 @@ from tests.support import (
     homework_from_a_note,
     names_not_led_by_their_words,
     names_without_their_words,
+    quiet_client,
+    refusing,
+    refusing_coded,
     selector,
     signed_in,
     signed_in_household,
@@ -10078,3 +10088,1177 @@ def test_a_press_refused_for_two_boxes_says_nothing_was_kept_once(
         imports.PRESS_SAID["nothing_kept"],
     ]
     assert imports.PRESS_SAID["none_chosen"] == "Choose at least one assignment to save."
+
+
+# ------------------------------------------------------------------ the household's file refused
+
+WRITE_UNKNOWN: Final = "Blossom couldn't tell whether this was saved."
+"""What a press says when the file refused its write for a reason that isn't a busy file."""
+COUNTS_UNSHOWN: Final = "This homework was already saved, but its counts can't be shown right now."
+"""What a resent save says when its earlier save is on record and its counts can't be read."""
+BUSY_LINES: Final = (
+    imports.SAID["busy"],
+    imports.SAID["read_busy"],
+    imports.AFTER_SAID["busy"],
+    imports.PRESS_SAID["busy"],
+)
+NOTHING_LINES: Final = (
+    *BUSY_LINES,
+    imports.PRESS_SAID["failed"],
+    imports.PRESS_SAID["keep_failed"],
+    imports.PRESS_SAID["later_failed"],
+    imports.PRESS_SAID["save_failed"],
+    imports.PRESS_SAID["nothing_kept"],
+    imports.AFTER_SAID["nothing_saved"],
+    "Nothing was added.",
+)
+"""The import pages' sentences that say this press saved, added or changed nothing."""
+TYPED_TITLE: Final = "Chains Guide Six"
+PLAIN_BODY: Final = "Internal Server Error"
+FIRST_LINES: Final = (
+    re.compile(r'<h2 id="outcome-heading"[^>]*>([^<]*)</h2>'),
+    re.compile(r'<div role="status" id="kept"[^>]*>\s*<p[^>]*>([^<]*)</p>'),
+    re.compile(
+        r'<div class="problem" role="(?:alert|status)" id="said"[^>]*>\s*<p[^>]*>([^<]*)</p>'
+    ),
+    re.compile(r'<section class="panel">\s*<p class="problem"[^>]*>([^<]*)</p>'),
+)
+
+
+def first_said(page: str) -> str:
+    """The first sentence a page says: a saved panel's heading, a press's kept lines, its
+    problem lines, or a said page's first line."""
+    for pattern in FIRST_LINES:
+        found = pattern.search(page)
+        if found is not None:
+            return html.unescape(found.group(1))
+    raise AssertionError(page[:600])
+
+
+@contextmanager
+def held_here(settings: Settings, *, raising: bool = False) -> Iterator[TestClient]:
+    """``here``, with a failure no page catches answered as a server answers it, a plain 500,
+    or raised into the test with ``raising``."""
+    with TestClient(
+        create_app(settings),
+        follow_redirects=False,
+        headers={"Host": LOOPBACK, "Origin": f"http://{LOOPBACK}"},
+        client=("127.0.0.1", 50000),
+        raise_server_exceptions=raising,
+    ) as browser:
+        yield browser
+
+
+def file_rows(path: pathlib.Path) -> list[str]:
+    """Every row of the household's file, read through a fresh connection."""
+    connection = sqlite3.connect(path)
+    try:
+        return list(connection.iterdump())
+    finally:
+        connection.close()
+
+
+def one_row(path: pathlib.Path, sql: str, *parameters: object) -> tuple[object, ...]:
+    """One statement's first row, read through a fresh connection."""
+    connection = sqlite3.connect(path)
+    try:
+        return tuple(connection.execute(sql, parameters).fetchone())
+    finally:
+        connection.close()
+
+
+class Refusing:
+    """``asyncio.to_thread`` as the import routes reach their stores, with chosen calls refused.
+    Each rule names the function that makes the call, the store method it calls, which of those
+    calls in the request it is, counted from one, and the store call that fails in its place,
+    raised where the call's own error would be. Every other call is made as it is."""
+
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, *rules: tuple[str, str, int, Callable[..., None]]
+    ) -> None:
+        self.rules = rules
+        self.seen: dict[tuple[str, str], int] = {}
+        self.refused: list[tuple[str, str, int]] = []
+        real = asyncio.to_thread
+
+        async def to_thread(func: Callable[..., Any], /, *args: object, **kwargs: object) -> Any:  # noqa: ANN401
+            key = (sys._getframe(1).f_code.co_name, getattr(func, "__name__", ""))
+            nth = self.seen[key] = self.seen.get(key, 0) + 1
+            for caller, method, at, fail in self.rules:
+                if (caller, method, at) == (*key, nth):
+                    self.refused.append((caller, method, at))
+                    fail()
+            return await real(func, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", to_thread)
+
+
+class HeldOnceCalled:
+    """The household's file held by another program from the moment ``take`` is called, on any
+    thread, until ``release`` is, from any thread."""
+
+    def __init__(self, path: pathlib.Path) -> None:
+        self.path = path
+        self.connection: sqlite3.Connection | None = None
+
+    def take(self) -> None:
+        if self.connection is None:
+            self.connection = sqlite3.connect(
+                self.path, isolation_level=None, check_same_thread=False
+            )
+            self.connection.execute("BEGIN EXCLUSIVE")
+
+    def release(self) -> None:
+        if self.connection is not None:
+            self.connection.execute("ROLLBACK")
+            self.connection.close()
+            self.connection = None
+
+
+def then_held(real: Callable[..., Any], held: HeldOnceCalled) -> Callable[..., Any]:
+    """``real`` as it is, and once it has returned, the file held before its answer goes on."""
+
+    @functools.wraps(real)
+    def call(*args: object, **kwargs: object) -> object:
+        answer = real(*args, **kwargs)
+        held.take()
+        return answer
+
+    return call
+
+
+def a_read_review(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+    return read_review(browser, monkeypatch, (RED, homework_answer()))
+
+
+def typed_post(page: str, press: str, tick: Sequence[str] | None = None) -> list[tuple[str, str]]:
+    """A press with her name answered in it and the first title corrected, every group of the
+    page ticked unless told otherwise."""
+    name, title = name_and_title(page)
+    ticked = digests_on(page) if tick is None else tick
+    return page_post(page, press, choose={name: "hers"}, typed={title: TYPED_TITLE}, tick=ticked)
+
+
+Press = Callable[[], Answer]
+
+
+def first_upload_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    Reader(monkeypatch)
+    return lambda: upload(browser, RED)
+
+
+def more_images_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    Reader(monkeypatch)
+    draft_id = made(browser, RED)
+    return lambda: upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
+
+
+def remove_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    Reader(monkeypatch)
+    draft_id = made(browser, RED, BLUE)
+    image_id = images_of(browser, draft_id)[0]
+    return lambda: browser.post(f"/parent/imports/{draft_id}/images/{image_id}/remove")
+
+
+def view_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    Reader(monkeypatch)
+    draft_id = made(browser, RED)
+    [image_id] = images_of(browser, draft_id)
+    return lambda: browser.get(f"/parent/imports/{draft_id}/images/{image_id}")
+
+
+def review_visit(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    Reader(monkeypatch)
+    draft_id = made(browser, RED)
+    return lambda: browser.get(f"/parent/imports/{draft_id}", headers=PAGE_HEADERS)
+
+
+def read_review_visit(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    draft_id, _ = a_read_review(browser, monkeypatch)
+    return lambda: browser.get(f"/parent/imports/{draft_id}", headers=PAGE_HEADERS)
+
+
+def read_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    Reader(monkeypatch)
+    draft_id = made(browser, RED)
+    shown = browser.get(f"/parent/imports/{draft_id}").text
+    return lambda: browser.post(f"/parent/imports/{draft_id}/read", data=read_form(shown))
+
+
+def keep_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    draft_id, page = a_read_review(browser, monkeypatch)
+    return lambda: send(browser, draft_id, typed_post(page, "keep"))
+
+
+def later_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    draft_id, page = a_read_review(browser, monkeypatch)
+    return lambda: send(browser, draft_id, typed_post(page, "later"))
+
+
+def save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    draft_id, page = a_read_review(browser, monkeypatch)
+    return lambda: send(browser, draft_id, typed_post(page, "save"))
+
+
+def partly_post(page: str) -> list[tuple[str, str]]:
+    """Save selected homework with the first of two groups ticked and the other group's title
+    corrected, so the save leaves that typing open."""
+    first_unit, open_unit = units_on(page)
+    titles = [f"correct:{box_subject(page, 'title', n)}" for n in range(2)]
+    [other] = [t for t in titles if json.loads(t.removeprefix("correct:"))[0] in open_unit]
+    return page_post(page, "save", tick=[first_unit], typed={other: TYPED_TITLE})
+
+
+def partly_save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    draft_id, page = a_read_review(browser, monkeypatch)
+    page = her_name_answered(browser, draft_id, page)
+    return lambda: send(browser, draft_id, partly_post(page))
+
+
+def resent_save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    """A save of one group of two, sent again with the review still open."""
+    draft_id, page = a_read_review(browser, monkeypatch)
+    page = her_name_answered(browser, draft_id, page)
+    posted = partly_post(page)
+    assert send(browser, draft_id, posted).status_code == 200
+    return lambda: send(browser, draft_id, posted)
+
+
+def closed_resend_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    """A save that closed its review, sent again."""
+    draft_id, page = a_read_review(browser, monkeypatch)
+    page = her_name_answered(browser, draft_id, page)
+    posted = page_post(page, "save", tick=units_on(page))
+    assert send(browser, draft_id, posted).status_code == 200
+    assert closed(browser, draft_id)
+    return lambda: send(browser, draft_id, posted)
+
+
+def find_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    draft_id, page = a_read_review(browser, monkeypatch)
+    piece = fields_named(review_form(page), "answer:destination:")[0]
+    return lambda: browser.post(
+        f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "essay"}
+    )
+
+
+def set_aside_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    draft_id, page = a_read_review(browser, monkeypatch)
+    page = her_name_answered(browser, draft_id, page)
+    return lambda: press_outside(browser, page, "leave-1")
+
+
+def finish_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    draft_id, page = a_read_review(browser, monkeypatch)
+    page = her_name_answered(browser, draft_id, page)
+    first, _ = units_on(page)
+    after = followed(browser, send(browser, draft_id, page_post(page, "save", tick=[first])))
+    return lambda: press_outside(browser, after, "finish")
+
+
+def discard_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    _, page = a_read_review(browser, monkeypatch)
+    return lambda: press_outside(browser, page, "discard")
+
+
+def not_hers_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
+    _, page = a_read_review(browser, monkeypatch)
+    return lambda: press_outside(browser, page, "not-hers")
+
+
+PRESSES: Final[dict[str, Callable[[TestClient, pytest.MonkeyPatch], Press]]] = {
+    "first upload": first_upload_press,
+    "more images": more_images_press,
+    "remove": remove_press,
+    "view": view_press,
+    "review": review_visit,
+    "read review": read_review_visit,
+    "read": read_press,
+    "keep": keep_press,
+    "later": later_press,
+    "save": save_press,
+    "partly save": partly_save_press,
+    "resent save": resent_save_press,
+    "closed resend": closed_resend_press,
+    "find": find_press,
+    "set aside": set_aside_press,
+    "finish": finish_press,
+    "discard": discard_press,
+    "not hers": not_hers_press,
+}
+ORDINARY: Final = {
+    "first upload": 303,
+    "more images": 303,
+    "remove": 303,
+    "view": 200,
+    "review": 200,
+    "read": 200,
+    "keep": 200,
+    "later": 303,
+    "save": 200,
+    "find": 200,
+    "set aside": 303,
+    "finish": 200,
+    "discard": 200,
+    "not hers": 200,
+}
+"""How each route answers with nothing held."""
+TYPING_KEPT: Final = frozenset({"keep", "later", "save"})
+
+
+def shown_after(browser: TestClient, answer: Answer) -> str:
+    """The page an answer shows: its own, or the review its redirect names, read once nothing
+    is held."""
+    return followed(browser, answer)
+
+
+@pytest.mark.parametrize("route", list(ORDINARY))
+def test_each_import_route_answers_as_before_with_nothing_held(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    with held_here(open_settings(tmp_path)) as browser:
+        answer = PRESSES[route](browser, monkeypatch)()
+
+    assert answer.status_code == ORDINARY[route], answer.text[:600]
+    assert answer.headers["cache-control"] == "no-store"
+
+
+HELD_ANSWERS: Final = {
+    "first upload": (503, imports.SAID["busy"]),
+    "more images": (503, imports.SAID["busy"]),
+    "remove": (503, imports.AFTER_SAID["busy"]),
+    "view": (503, imports.AFTER_SAID["busy"]),
+    "review": (503, imports.REVIEW_UNAVAILABLE),
+    "read": (503, imports.AFTER_SAID["busy"]),
+    "keep": (503, imports.AFTER_SAID["busy"]),
+    "find": (503, imports.AFTER_SAID["busy"]),
+    "set aside": (503, imports.AFTER_SAID["busy"]),
+    "finish": (503, imports.AFTER_SAID["busy"]),
+    "discard": (503, imports.AFTER_SAID["busy"]),
+    "not hers": (503, imports.AFTER_SAID["busy"]),
+}
+"""Each import route's busy page while another program holds the household's file."""
+
+
+@pytest.mark.parametrize("route", list(HELD_ANSWERS))
+def test_each_import_route_answers_its_busy_page_while_another_program_holds_the_file(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    route: str,
+) -> None:
+    """The file held exclusively: the route's own busy page, its status and first sentence,
+    never the plain body, marked no-store, and nothing written."""
+    status, said = HELD_ANSWERS[route]
+    with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
+        press = PRESSES[route](browser, monkeypatch)
+        path = database_of(browser)
+        before = file_rows(path)
+        with HeldByAnother(path):
+            answer, _ = watch.press(press)
+        after = file_rows(path)
+
+    assert answer.status_code == status, answer.text[:600]
+    assert answer.text != PLAIN_BODY
+    assert first_said(answer.text) == said
+    assert answer.headers["cache-control"] == "no-store"
+    assert after == before
+
+
+def test_the_review_answers_its_busy_page_signed_in_while_another_program_holds_the_file(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with HangWatch(capsys) as watch, quiet_client(signed_in_with_import(tmp_path)) as browser:
+        signed_in(browser, THEIRS)
+        Reader(monkeypatch)
+        draft_id = made(browser, RED)
+        with HeldByAnother(database_of(browser)):
+            answer, _ = watch.press(
+                lambda: browser.get(f"/parent/imports/{draft_id}", headers=PAGE_HEADERS)
+            )
+
+    assert answer.status_code == 503, answer.text[:600]
+    assert first_said(answer.text) == imports.REVIEW_UNAVAILABLE
+    assert answer.headers["cache-control"] == "no-store"
+
+
+HELD_WRITES: Final = {
+    "first upload": (503, imports.SAID["busy"]),
+    "more images": (503, imports.SAID["busy"]),
+    "remove": (503, imports.AFTER_SAID["busy"]),
+    "read": (303, WRITE_UNKNOWN),
+    "keep": (503, imports.PRESS_SAID["keep_failed"]),
+    "later": (503, imports.PRESS_SAID["later_failed"]),
+    "save": (503, imports.PRESS_SAID["save_failed"]),
+    "set aside": (303, imports.AFTER_SAID["busy"]),
+    "finish": (303, imports.AFTER_SAID["busy"]),
+    "discard": (303, imports.AFTER_SAID["busy"]),
+    "not hers": (303, imports.AFTER_SAID["busy"]),
+}
+"""Each import write's answer while another program reads the file, so its commit is refused."""
+
+
+@pytest.mark.parametrize("route", list(HELD_WRITES))
+def test_each_import_write_a_reading_program_refuses_says_so_and_writes_nothing(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    route: str,
+) -> None:
+    """A read held open on the file, so the write's commit is refused as busy: the press's own
+    answer, or the review its redirect names with that answer's note, its typing kept where
+    the press keeps it, marked no-store, and nothing written. A Read press can't tell whether
+    its readings were kept before the refusal, so it says so."""
+    status, said = HELD_WRITES[route]
+    with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
+        press = PRESSES[route](browser, monkeypatch)
+        path = database_of(browser)
+        before = file_rows(path)
+        with HeldByAnother(path, reading=True):
+            answer, _ = watch.press(press)
+        after = file_rows(path)
+        shown = shown_after(browser, answer)
+
+    assert answer.status_code == status, answer.text[:600]
+    assert answer.text != PLAIN_BODY
+    assert first_said(shown) == said
+    assert answer.headers["cache-control"] == "no-store"
+    assert after == before
+    if route in TYPING_KEPT:
+        assert f'value="{TYPED_TITLE}"' in review_form(answer.text)
+
+
+class HoldAfterCommit(SaveHooks):
+    """The save's own seam: the file held once the homework commits, before the review closes."""
+
+    def __init__(self, held: HeldOnceCalled) -> None:
+        self.held = held
+
+    def after_commit(self) -> None:
+        self.held.take()
+
+
+IMAGES: Final = (
+    "SELECT (SELECT COUNT(*) FROM import_drafts), (SELECT COUNT(*) FROM import_draft_images)"
+)
+READINGS: Final = "SELECT COUNT(*) FROM import_draft_images WHERE reading IS NOT NULL"
+ANSWERS: Final = "SELECT COUNT(*) FROM import_draft_answers"
+LATER: Final = "SELECT COUNT(*) FROM import_draft_progress"
+SAVED: Final = (
+    "SELECT (SELECT COUNT(*) FROM assignments), "
+    "(SELECT COUNT(*) FROM import_drafts WHERE closed_at IS NOT NULL)"
+)
+
+
+def committed_then_held(
+    browser: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    watch: HangWatch,
+    route: str,
+) -> tuple[Answer, tuple[object, ...], tuple[object, ...], str]:
+    """Make ``route``'s press with the file held from the moment its write commits: the answer,
+    what landed before and after, read through a fresh connection, and the page shown once
+    the file is let go."""
+    press = PRESSES["partly save" if route.startswith("save") else route](browser, monkeypatch)
+    path = database_of(browser)
+    held = HeldOnceCalled(path)
+    drafts_store = state_of(browser).import_drafts
+    landed = {
+        "first upload": IMAGES,
+        "more images": IMAGES,
+        "remove": IMAGES,
+        "read": READINGS,
+        "keep": ANSWERS,
+        "later": LATER,
+    }.get(route, SAVED)
+    if route == "first upload":
+        monkeypatch.setattr(drafts_store, "create", then_held(drafts_store.create, held))
+    elif route == "more images":
+        monkeypatch.setattr(drafts_store, "add_images", then_held(drafts_store.add_images, held))
+    elif route == "remove":
+        real_remove = drafts_store.remove_image
+        monkeypatch.setattr(drafts_store, "remove_image", then_held(real_remove, held))
+    elif route == "read":
+        real_read = imports.read_screenshots
+
+        async def read_then_held(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            outcome = await real_read(*args, **kwargs)
+            held.take()
+            return outcome
+
+        monkeypatch.setattr(imports, "read_screenshots", read_then_held)
+    elif route in ("keep", "save after its answers"):
+        real_keep = drafts_store.keep_answers
+        monkeypatch.setattr(drafts_store, "keep_answers", then_held(real_keep, held))
+    elif route == "later":
+        real_later = drafts_store.save_for_later
+        monkeypatch.setattr(drafts_store, "save_for_later", then_held(real_later, held))
+    elif route == "save, review left open":
+        monkeypatch.setattr(imports, "save_homework", then_held(imports.save_homework, held))
+    else:
+        real_save = imports.save_homework
+        hooked = functools.partial(real_save, hooks=HoldAfterCommit(held))
+        monkeypatch.setattr(imports, "save_homework", hooked)
+    before = one_row(path, landed)
+    try:
+        answer, _ = watch.press(press)
+    finally:
+        held.release()
+    after = one_row(path, landed)
+    return answer, before, after, shown_after(browser, answer)
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["first upload", "more images", "remove", "read", "keep", "later"],
+)
+def test_a_press_whose_write_committed_before_the_file_was_held_says_what_it_did(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    route: str,
+) -> None:
+    """The write commits, then another program holds the file before the press reads anything
+    for its answer: what landed stays, and the press answers as its commit does, by its
+    redirect to the review or, for Keep these answers, with the answers kept and the typing
+    given back, never a sentence that nothing was saved, added or changed."""
+    with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
+        answer, before, after, shown = committed_then_held(browser, monkeypatch, watch, route)
+
+    assert answer.text != PLAIN_BODY, route
+    assert after != before
+    assert answer.headers["cache-control"] == "no-store"
+    for line in NOTHING_LINES:
+        assert not says(shown, line), line
+    if route == "keep":
+        assert answer.status_code == 200
+        assert lines_in(KEPT_BLOCK.search(answer.text)) == [imports.PRESS_SAID["kept"]]
+        assert lines_in(PROBLEM_BLOCK.search(answer.text)) == [imports.REVIEW_NOT_SHOWN]
+        assert TYPED_TITLE in TYPED_BACK.findall(answer.text)
+    else:
+        assert answer.status_code == 303
+        assert answer.headers["location"].startswith("/parent/imports/")
+    if route == "later":
+        assert said_lines(shown)[0] == imports.PRESS_SAID["later"]
+
+
+SAVE_SHAPES: Final = {
+    "save, review left open": "Saved: 1 new assignment. 1 still needs checking.",
+    "save, review not closed": "Saved: 2 new assignments.",
+}
+
+
+@pytest.mark.parametrize("shape", list(SAVE_SHAPES))
+def test_a_save_whose_homework_committed_before_the_file_was_held_says_what_it_saved(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    shape: str,
+) -> None:
+    """One group of two saved, or both with the file held before the review closes: the
+    homework stays saved, and the success panel says what was saved, then that the review
+    can't be shown, at 200, never that nothing was saved."""
+    with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
+        if shape == "save, review not closed":
+            draft_id, page = a_read_review(browser, monkeypatch)
+            page = her_name_answered(browser, draft_id, page)
+            posted = page_post(page, "save", tick=units_on(page))
+            monkeypatch.setitem(
+                PRESSES, "partly save", lambda *_: lambda: send(browser, draft_id, posted)
+            )
+        answer, before, after, _ = committed_then_held(browser, monkeypatch, watch, shape)
+
+    assert answer.status_code == 200, answer.text[:600]
+    assert first_said(answer.text) == SAVE_SHAPES[shape]
+    assert after[0] > before[0]  # type: ignore[operator]
+    assert after[1] == before[1]
+    assert imports.REVIEW_NOT_SHOWN in lines_in(PROBLEM_BLOCK.search(answer.text))
+    assert answer.headers["cache-control"] == "no-store"
+    for line in NOTHING_LINES:
+        assert not says(answer.text, line), line
+
+
+def test_a_save_that_closed_its_review_before_the_file_was_held_answers_as_designed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_read_review(browser, monkeypatch)
+        page = her_name_answered(browser, draft_id, page)
+        posted = page_post(page, "save", tick=units_on(page))
+        path = database_of(browser)
+        held = HeldOnceCalled(path)
+        monkeypatch.setattr(imports, "save_homework", then_held(imports.save_homework, held))
+        before = one_row(path, SAVED)
+        try:
+            answer, _ = watch.press(lambda: send(browser, draft_id, posted))
+        finally:
+            held.release()
+        after = one_row(path, SAVED)
+
+    assert answer.status_code == 200
+    assert first_said(answer.text) == "Saved: 2 new assignments."
+    assert after == (before[0] + 2, before[1] + 1)  # type: ignore[operator]
+
+
+def test_a_save_whose_answers_were_kept_before_the_file_was_held_says_so_and_saved_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Save step 1 keeps the answers, then another program holds the file before the name
+    check reads her record: the answers kept, then that the homework wasn't saved because the
+    file was busy, with the typing given back, 503, never that the name couldn't be checked."""
+    with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_read_review(browser, monkeypatch)
+        posted = typed_post(page, "save")
+        monkeypatch.setitem(
+            PRESSES, "partly save", lambda *_: lambda: send(browser, draft_id, posted)
+        )
+        answer, before, after, _ = committed_then_held(
+            browser, monkeypatch, watch, "save after its answers"
+        )
+        answers = one_row(database_of(browser), ANSWERS)
+
+    assert answer.status_code == 503, answer.text[:600]
+    assert lines_in(KEPT_BLOCK.search(answer.text)) == [imports.PRESS_SAID["answers_kept"]]
+    assert lines_in(PROBLEM_BLOCK.search(answer.text)) == [
+        imports.PRESS_SAID["busy"],
+        imports.REVIEW_NOT_SHOWN,
+    ]
+    assert not says(answer.text, imports.SAID["no_name_check"])
+    assert TYPED_TITLE in TYPED_BACK.findall(answer.text)
+    assert after == before
+    assert answers[0] > 0  # type: ignore[operator]
+    assert answer.headers["cache-control"] == "no-store"
+
+
+CALL_SITES: Final = {
+    # Reads before any write: the route's own busy answer.
+    "upload, her record": (
+        "first upload",
+        "first_upload",
+        "student_id",
+        1,
+        503,
+        imports.SAID["busy"],
+    ),
+    "more, her record": ("more images", "more_images", "student_id", 1, 503, imports.SAID["busy"]),
+    "more, the review": ("more images", "more_images", "snapshot", 1, 503, imports.SAID["busy"]),
+    "remove, her record": (
+        "remove",
+        "remove_image",
+        "student_id",
+        1,
+        503,
+        imports.AFTER_SAID["busy"],
+    ),
+    "remove, tables' record": (
+        "remove",
+        "tables_of",
+        "student_id",
+        1,
+        503,
+        imports.AFTER_SAID["busy"],
+    ),
+    "remove, tables": ("remove", "tables_of", "draft_for_save", 1, 503, imports.AFTER_SAID["busy"]),
+    "view, her record": ("view", "view_image", "student_id", 1, 503, imports.AFTER_SAID["busy"]),
+    "view, the image": ("view", "view_image", "image_png", 1, 503, imports.AFTER_SAID["busy"]),
+    "review, her record": (
+        "review",
+        "snapshot_or_page",
+        "student_id",
+        1,
+        503,
+        imports.REVIEW_UNAVAILABLE,
+    ),
+    "review, the review": (
+        "review",
+        "snapshot_or_page",
+        "snapshot",
+        1,
+        503,
+        imports.REVIEW_UNAVAILABLE,
+    ),
+    "review, rows' record": (
+        "read review",
+        "state_of_review",
+        "student_id",
+        1,
+        503,
+        imports.REVIEW_UNAVAILABLE,
+    ),
+    "review, rows' tables": (
+        "read review",
+        "state_of_review",
+        "draft_for_save",
+        1,
+        503,
+        imports.REVIEW_UNAVAILABLE,
+    ),
+    "review, her name": (
+        "read review",
+        "image_names",
+        "identity_of",
+        1,
+        503,
+        imports.REVIEW_UNAVAILABLE,
+    ),
+    "read, her record": ("read", "read", "student_id", 1, 503, imports.SAID["read_busy"]),
+    "read, tables before": ("read", "tables_of", "student_id", 1, 503, imports.SAID["read_busy"]),
+    "find, her record": (
+        "find",
+        "snapshot_or_page",
+        "student_id",
+        1,
+        503,
+        imports.AFTER_SAID["busy"],
+    ),
+    "find, the cards": (
+        "find",
+        "state_of_review",
+        "student_id",
+        1,
+        503,
+        imports.AFTER_SAID["busy"],
+    ),
+    "press, her record": ("keep", "review_press", "student_id", 1, 503, imports.AFTER_SAID["busy"]),
+    "press, the review": ("keep", "review_press", "snapshot", 1, 503, imports.AFTER_SAID["busy"]),
+    "press, the post's cards": (
+        "keep",
+        "state_of_review",
+        "student_id",
+        1,
+        503,
+        imports.AFTER_SAID["busy"],
+    ),
+    "keep, her record": (
+        "keep",
+        "review_press",
+        "student_id",
+        2,
+        503,
+        imports.PRESS_SAID["keep_failed"],
+    ),
+    "later, her record": (
+        "later",
+        "later_press",
+        "student_id",
+        1,
+        503,
+        imports.PRESS_SAID["later_failed"],
+    ),
+    "later, the ticks": (
+        "later",
+        "state_of_review",
+        "draft_for_save",
+        2,
+        503,
+        imports.PRESS_SAID["later_failed"],
+    ),
+    "save, her record": (
+        "save",
+        "save_press",
+        "student_id",
+        1,
+        503,
+        imports.PRESS_SAID["save_failed"],
+    ),
+    "save, its acceptance": (
+        "save",
+        "save_press",
+        "homework_acceptance",
+        1,
+        503,
+        imports.PRESS_SAID["save_failed"],
+    ),
+    "set aside, her record": (
+        "set aside",
+        "closing_press",
+        "student_id",
+        1,
+        303,
+        imports.AFTER_SAID["busy"],
+    ),
+    "discard, her record": (
+        "discard",
+        "discarding_press",
+        "student_id",
+        1,
+        303,
+        imports.AFTER_SAID["busy"],
+    ),
+    # The writes: the route's own busy answer.
+    "upload, its write": ("first upload", "first_upload", "create", 1, 503, imports.SAID["busy"]),
+    "more, its write": ("more images", "more_images", "add_images", 1, 503, imports.SAID["busy"]),
+    "remove, its write": (
+        "remove",
+        "remove_image",
+        "remove_image",
+        1,
+        503,
+        imports.AFTER_SAID["busy"],
+    ),
+    "read, its attempt": ("read", "read_screenshots", "start_attempt", 1, 303, WRITE_UNKNOWN),
+    "keep, its write": (
+        "keep",
+        "review_press",
+        "keep_answers",
+        1,
+        503,
+        imports.PRESS_SAID["keep_failed"],
+    ),
+    "later, its write": (
+        "later",
+        "later_press",
+        "save_for_later",
+        1,
+        503,
+        imports.PRESS_SAID["later_failed"],
+    ),
+    "save, its answers": (
+        "save",
+        "save_press",
+        "keep_answers",
+        1,
+        503,
+        imports.PRESS_SAID["save_failed"],
+    ),
+    "set aside, its write": (
+        "set aside",
+        "closing_press",
+        "set_aside",
+        1,
+        303,
+        imports.AFTER_SAID["busy"],
+    ),
+    "finish, its write": (
+        "finish",
+        "closing_press",
+        "discard_rest",
+        1,
+        303,
+        imports.AFTER_SAID["busy"],
+    ),
+    "discard, its write": (
+        "discard",
+        "discarding_press",
+        "discard_review",
+        1,
+        303,
+        imports.AFTER_SAID["busy"],
+    ),
+    "not hers, its write": (
+        "not hers",
+        "discarding_press",
+        "discard_review",
+        1,
+        303,
+        imports.AFTER_SAID["busy"],
+    ),
+    # After a commit: what the press did, as its commit says it.
+    "upload, then her record": ("first upload", "upload_told", "student_id", 1, 303, None),
+    "upload, then the review": ("first upload", "upload_told", "snapshot", 1, 303, None),
+    "more, then her record": ("more images", "upload_told", "student_id", 1, 303, None),
+    "remove, then the tables": ("remove", "tables_of", "student_id", 2, 303, None),
+    "read, then the review": ("read", "read", "snapshot", 1, 303, None),
+    "read, then the tables": ("read", "tables_of", "draft_for_save", 2, 200, None),
+    "read, then the rows": ("read", "state_of_review", "student_id", 1, 303, None),
+    "read, then her name": ("read", "image_names", "identity_of", 1, 303, None),
+    "keep, then her record": (
+        "keep",
+        "snapshot_keeping_typing",
+        "student_id",
+        1,
+        200,
+        imports.PRESS_SAID["kept"],
+    ),
+    "keep, then the review": (
+        "keep",
+        "snapshot_keeping_typing",
+        "snapshot",
+        1,
+        200,
+        imports.PRESS_SAID["kept"],
+    ),
+    "keep, then the rows": (
+        "keep",
+        "state_of_review",
+        "student_id",
+        2,
+        200,
+        imports.PRESS_SAID["kept"],
+    ),
+    "later, then her record": (
+        "later",
+        "review_state_now",
+        "student_id",
+        1,
+        303,
+        imports.PRESS_SAID["later"],
+    ),
+    "later, then the review": (
+        "later",
+        "review_state_now",
+        "snapshot",
+        1,
+        303,
+        imports.PRESS_SAID["later"],
+    ),
+    "save, then her name": (
+        "save",
+        "image_names",
+        "identity_of",
+        1,
+        503,
+        imports.PRESS_SAID["answers_kept"],
+    ),
+    "save, then the review": (
+        "partly save",
+        "snapshot_keeping_typing",
+        "student_id",
+        1,
+        200,
+        SAVE_SHAPES["save, review left open"],
+    ),
+    "resent, her record": ("resent save", "saved_page", "student_id", 1, 200, COUNTS_UNSHOWN),
+    "resent, its counts": ("resent save", "saved_page", "homework_counts", 1, 200, COUNTS_UNSHOWN),
+    "resent, the review": (
+        "resent save",
+        "saved_page",
+        "snapshot",
+        1,
+        200,
+        SAVE_SHAPES["save, review left open"],
+    ),
+    "resent closed, her record": (
+        "closed resend",
+        "replayed",
+        "student_id",
+        1,
+        200,
+        imports.SAID["closed"],
+    ),
+    "resent closed, its acceptance": (
+        "closed resend",
+        "replayed",
+        "homework_acceptance",
+        1,
+        200,
+        imports.SAID["closed"],
+    ),
+    "resent closed, its homework": (
+        "closed resend",
+        "saved_page",
+        "homework_acceptance",
+        1,
+        200,
+        "Saved: 2 new assignments.",
+    ),
+}
+"""Each store call of the import routes refused as busy by its code: the route, the function
+that makes the call, the method called and which of those calls, then the status and the first
+sentence of the answer, or of the review its redirect names (None: the review says nothing)."""
+
+
+def refused_at(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    *rules: tuple[str, str, int, Callable[..., None]],
+    raising: bool = False,
+) -> tuple[Answer, str, Refusing]:
+    """``route``'s press with ``rules``' calls refused: the answer, the page shown once nothing
+    is refused, and what was refused."""
+    with held_here(open_settings(tmp_path), raising=raising) as browser:
+        press = PRESSES[route](browser, monkeypatch)
+        with monkeypatch.context() as patch:
+            refusing_now = Refusing(patch, *rules)
+            answer = press()
+        return answer, shown_after(browser, answer), refusing_now
+
+
+@pytest.mark.parametrize("site", list(CALL_SITES))
+def test_each_import_store_call_a_busy_file_refuses_answers_with_the_route_s_own_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, site: str
+) -> None:
+    route, caller, method, nth, status, said = CALL_SITES[site]
+    refused = refusing_coded("SQLITE_BUSY")
+    answer, shown, refusing_now = refused_at(
+        tmp_path, monkeypatch, route, (caller, method, nth, refused)
+    )
+
+    assert refusing_now.refused == [(caller, method, nth)], refusing_now.seen
+    assert answer.status_code == status, answer.text[:600]
+    assert answer.text != PLAIN_BODY
+    assert answer.headers["cache-control"] == "no-store"
+    if said is not None:
+        assert first_said(shown) == said
+    if route == "save" and method == "identity_of":
+        assert says(answer.text, imports.PRESS_SAID["busy"])
+        assert not says(answer.text, imports.SAID["no_name_check"])
+    if said == COUNTS_UNSHOWN:
+        assert "Saved: 0" not in answer.text
+        assert "Save again" not in answer.text
+        assert "Try again" not in answer.text
+        assert (
+            BACK_TO_REVIEW.format(re.findall(r"/parent/imports/([0-9a-f]{32})", answer.text)[0])
+            in answer.text
+        )
+
+
+@pytest.mark.parametrize("code", ["SQLITE_BUSY_SNAPSHOT", "SQLITE_BUSY_RECOVERY"])
+def test_an_extended_busy_code_is_a_busy_file(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    rule = ("review_press", "keep_answers", 1, refusing_coded(code))
+    answer, _, _ = refused_at(tmp_path, monkeypatch, "keep", rule)
+
+    assert answer.status_code == 503
+    assert said_lines(answer.text) == [imports.PRESS_SAID["keep_failed"]]
+
+
+REPLAY_GUARDED: Final = {
+    "busy": (StoreBusy, 503, imports.AFTER_SAID["busy"]),
+    "expired": (DraftExpired, 410, imports.SAID["expired"]),
+}
+
+
+@pytest.mark.parametrize("path", list(REPLAY_GUARDED))
+@pytest.mark.parametrize("method", ["student_id", "homework_acceptance"])
+def test_a_resent_save_whose_record_can_t_be_read_answers_with_the_page_it_guards(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, path: str, method: str
+) -> None:
+    """The review refused as busy, or as expired, and the record of earlier saves refused
+    too: the press's own page, never the plain body."""
+    error, status, said = REPLAY_GUARDED[path]
+    rules = (
+        ("review_press", "snapshot", 1, refusing(error)),
+        ("replayed", method, 1, refusing_coded("SQLITE_BUSY")),
+    )
+    answer, _, refusing_now = refused_at(tmp_path, monkeypatch, "resent save", *rules)
+
+    assert len(refusing_now.refused) == 2, refusing_now.seen
+    assert answer.status_code == status, answer.text[:600]
+    assert said in [first_said(answer.text), *said_lines(answer.text)]
+    assert TYPED_TITLE in TYPED_BACK.findall(answer.text)
+
+
+@pytest.mark.parametrize(
+    ("route", "caller"),
+    [
+        ("first upload", "first_upload"),
+        ("review", "snapshot_or_page"),
+        ("keep", "review_press"),
+        ("set aside", "closing_press"),
+        ("resent save", "saved_page"),
+    ],
+)
+def test_an_error_that_isn_t_the_file_s_is_still_the_server_s(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str, caller: str
+) -> None:
+    def broken(*_: object, **__: object) -> None:
+        raise RuntimeError
+
+    with pytest.raises(RuntimeError):
+        refused_at(tmp_path, monkeypatch, route, (caller, "student_id", 1, broken), raising=True)
+
+
+NOT_BUSY: Final = {
+    "no code": refusing(),
+    "I/O": refusing_coded("SQLITE_IOERR"),
+    "locked": refusing_coded("SQLITE_LOCKED"),
+}
+NOT_BUSY_SITES: Final = {
+    "upload, her record": (
+        "first upload",
+        "first_upload",
+        "student_id",
+        1,
+        503,
+        imports.REVIEW_UNAVAILABLE,
+    ),
+    "upload, its write": ("first upload", "first_upload", "create", 1, 503, WRITE_UNKNOWN),
+    "review, the review": (
+        "review",
+        "snapshot_or_page",
+        "snapshot",
+        1,
+        503,
+        imports.REVIEW_UNAVAILABLE,
+    ),
+    "find, her record": (
+        "find",
+        "snapshot_or_page",
+        "student_id",
+        1,
+        503,
+        imports.REVIEW_UNAVAILABLE,
+    ),
+    "press, the review": ("keep", "review_press", "snapshot", 1, 503, imports.REVIEW_NOT_SHOWN),
+    "keep, her record": ("keep", "review_press", "student_id", 2, 503, imports.REVIEW_NOT_SHOWN),
+    "keep, its write": ("keep", "review_press", "keep_answers", 1, 503, WRITE_UNKNOWN),
+    "set aside, her record": (
+        "set aside",
+        "closing_press",
+        "student_id",
+        1,
+        503,
+        imports.REVIEW_UNAVAILABLE,
+    ),
+    "set aside, its write": ("set aside", "closing_press", "set_aside", 1, 303, WRITE_UNKNOWN),
+    "read, its attempt": ("read", "read_screenshots", "start_attempt", 1, 303, WRITE_UNKNOWN),
+    "keep, then the review": (
+        "keep",
+        "snapshot_keeping_typing",
+        "snapshot",
+        1,
+        200,
+        imports.PRESS_SAID["kept"],
+    ),
+    "save, then her name": (
+        "save",
+        "image_names",
+        "identity_of",
+        1,
+        503,
+        imports.PRESS_SAID["answers_kept"],
+    ),
+}
+"""A read and a write of each kind refused for a reason that isn't a busy file: neutral words
+at a read, the outcome-unknown words at a write, and what a commit did after it."""
+
+
+@pytest.mark.parametrize("kind", list(NOT_BUSY))
+@pytest.mark.parametrize("site", list(NOT_BUSY_SITES))
+def test_a_refusal_that_isn_t_a_busy_file_never_says_blossom_was_busy(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, kind: str, site: str
+) -> None:
+    route, caller, method, nth, status, said = NOT_BUSY_SITES[site]
+    answer, shown, refusing_now = refused_at(
+        tmp_path, monkeypatch, route, (caller, method, nth, NOT_BUSY[kind])
+    )
+
+    assert refusing_now.refused == [(caller, method, nth)], refusing_now.seen
+    assert answer.status_code == status, answer.text[:600]
+    assert first_said(shown) == said
+    assert answer.headers["cache-control"] == "no-store"
+    for line in BUSY_LINES:
+        assert not says(answer.text, line), line
+        assert not says(shown, line), line
+    if route == "save":
+        assert says(answer.text, imports.PRESS_SAID["failed"])
+        assert not says(answer.text, imports.SAID["no_name_check"])
+
+
+def test_only_a_busy_primary_code_is_a_busy_file() -> None:
+    def coded(code: object) -> sqlite3.OperationalError:
+        error = sqlite3.OperationalError("database is locked")
+        error.sqlite_errorcode = code  # type: ignore[assignment]
+        return error
+
+    assert imports.busy_file(coded(sqlite3.SQLITE_BUSY))
+    assert imports.busy_file(coded(sqlite3.SQLITE_BUSY_SNAPSHOT))
+    assert not imports.busy_file(coded(sqlite3.SQLITE_LOCKED))
+    assert not imports.busy_file(coded(sqlite3.SQLITE_IOERR))
+    assert not imports.busy_file(coded(None))
+    assert not imports.busy_file(coded("5"))
+    assert not imports.busy_file(sqlite3.OperationalError("database is locked"))
+    assert not imports.busy_file(sqlite3.DatabaseError("database is locked"))
