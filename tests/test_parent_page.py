@@ -2418,8 +2418,9 @@ def test_a_refused_decision_on_a_plan_with_no_box_keeps_the_reason_under_the_pro
 ) -> None:
     """A plan already decided and one not on record have no box for the words, so they are
     shown to copy under the problem, read-only, and put in no other plan's box. The first
-    decision stands with its own words. A plan no review can resume keeps its box on its
-    own refusal's page, where the refusal is the authority, so the words are in that box."""
+    decision stands with its own words. A plan no review can resume is marked so on its own
+    refusal's page, as the family page marks it, with no box, so the words are kept under the
+    problem there too."""
     caplog.set_level(logging.DEBUG)
     lost = "plan:2026-08-19:lost"
     with browser() as client:
@@ -2458,9 +2459,9 @@ def test_a_refused_decision_on_a_plan_with_no_box_keeps_the_reason_under_the_pro
     assert UNRESUMABLE_TODAY in on_the_lost_plan.text
     assert "Go to the field." not in on_the_lost_plan.text
     boxes = note_boxes(on_the_lost_plan.text)
-    assert value_of(boxes[f"draft:{lost}"][1]) == TYPED_REASON
+    assert f"draft:{lost}" not in boxes
     assert value_of(boxes[waiting][1]) is None
-    assert kept_under_the_problem(on_the_lost_plan.text) is None
+    assert kept_under_the_problem(on_the_lost_plan.text) == TYPED_REASON
     assert (record["decision"], record["reason"]) == ("approved", "First words.")
     for still in (untouched, unresumed):
         assert (still["decision"], still["reason"]) == (None, None)
