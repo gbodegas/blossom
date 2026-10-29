@@ -15,6 +15,7 @@ silent difference. A form that fails to validate comes back with every
 field as it was, the failing field named, and the section open.
 """
 
+import asyncio
 import hmac
 import json
 import logging
@@ -28,6 +29,7 @@ from typing import Annotated, Final
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from blossom.agent.runs import worker_to_the_end
 from blossom.authored_text import TextRefused
 from blossom.candidates import readings_for
 from blossom.captures import CaptureNotSaved, UnreadableCapture, candidate_basis
@@ -1448,12 +1450,14 @@ async def read_paste(request: Request, state: State) -> Response:
     """Read the pasted text and show what was read, without writing anything."""
     form = await submitted(request)
     if not form.get("text", "").strip():
-        return problem_page(request, state, {"text": ""}, Problem("text", NOTHING_PASTED))
+        return await asyncio.to_thread(
+            problem_page, request, state, {"text": ""}, Problem("text", NOTHING_PASTED)
+        )
     draft = stamped(state, draft_of(form))
     read = read_draft(state, draft)
     if isinstance(read, Problem):
-        return problem_page(request, state, draft, read)
-    return preview_page(request, state, read, draft)
+        return await asyncio.to_thread(problem_page, request, state, draft, read)
+    return await asyncio.to_thread(preview_page, request, state, read, draft)
 
 
 @router.post("/enter", response_class=HTMLResponse, include_in_schema=False)
@@ -1463,8 +1467,8 @@ async def read_entry(request: Request, state: State) -> Response:
     draft = stamped(state, {name: form.get(name, "") for name in ENTRY_FIELDS})
     read = read_draft(state, draft)
     if isinstance(read, Problem):
-        return problem_page(request, state, draft, read)
-    return preview_page(request, state, read, draft)
+        return await asyncio.to_thread(problem_page, request, state, draft, read)
+    return await asyncio.to_thread(preview_page, request, state, read, draft)
 
 
 @router.post("/edit", response_class=HTMLResponse, include_in_schema=False)
@@ -1472,7 +1476,8 @@ async def edit_draft(request: Request, state: State) -> Response:
     """Back to the family page with the draft as it was, to change it; nothing is written."""
     form = await submitted(request)
     draft = draft_of(form)
-    return review_page(
+    return await asyncio.to_thread(
+        review_page,
         request,
         state,
         paste=draft.get("text") or None,
@@ -1515,7 +1520,7 @@ async def search_review(request: Request, state: State) -> Response:
     draft = draft_of(form)
     read = read_draft(state, draft)
     if isinstance(read, Problem):
-        return problem_page(request, state, draft, read)
+        return await asyncio.to_thread(problem_page, request, state, draft, read)
     fields = (await form_of(request)).multi_items()
     read_answers = paste_answers(fields)
     instruction_answers = read_answers.answers
@@ -1560,11 +1565,12 @@ async def search_review(request: Request, state: State) -> Response:
     pressed = one_press(fields)
     action, value = pressed if pressed is not None else ("", "")
     try:
-        occurrences, kinds = answers_from(form, unasked_for(state, read))
+        occurrences, kinds = answers_from(form, await asyncio.to_thread(unasked_for, state, read))
         # An answer about the school's instructions is held to the question the page asked,
         # as at Save: one the page never asked is said back as not saved, never signed.
         never_put = answers_to_no_question(
-            changes_for(
+            await asyncio.to_thread(
+                changes_for,
                 read.items,
                 store,
                 occurrences=occurrences,
@@ -1611,8 +1617,11 @@ async def search_review(request: Request, state: State) -> Response:
             if key is None or key not in page_made.offers or target not in offered_rows:
                 refused = True
             else:
-                row = store.one_assignment(target)
-                basis = None if row is None else candidate_basis(readings_for(store, [row]))
+                row = await asyncio.to_thread(store.one_assignment, target)
+                readings = (
+                    None if row is None else await asyncio.to_thread(readings_for, store, [row])
+                )
+                basis = None if readings is None else candidate_basis(readings)
                 if basis == offered_rows[target]:
                     picks[key] = Pick(target, offered_rows[target], page_made.offers[key])
                     identities.pop(key, None)
@@ -1638,7 +1647,8 @@ async def search_review(request: Request, state: State) -> Response:
             refused = True
         if refused:
             shown = page_made.query
-            return preview_or_recovery(
+            return await asyncio.to_thread(
+                preview_or_recovery,
                 request,
                 state,
                 read,
@@ -1659,7 +1669,8 @@ async def search_review(request: Request, state: State) -> Response:
                 notice=PRESS_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
-        return preview_or_recovery(
+        return await asyncio.to_thread(
+            preview_or_recovery,
             request,
             state,
             read,
@@ -1679,17 +1690,25 @@ async def search_review(request: Request, state: State) -> Response:
             focus=focus,
         )
     except UnreadableClaim:
-        return intake_unavailable(request, state, draft, kept_answers)
+        return await asyncio.to_thread(intake_unavailable, request, state, draft, kept_answers)
     except UnreadableInstruction:
-        return intake_unavailable(request, state, draft, kept_answers, INSTRUCTION_UNREADABLE)
+        return await asyncio.to_thread(
+            intake_unavailable, request, state, draft, kept_answers, INSTRUCTION_UNREADABLE
+        )
     except UnreadableDecision:
-        return intake_unavailable(request, state, draft, kept_answers, DECISION_UNREADABLE)
+        return await asyncio.to_thread(
+            intake_unavailable, request, state, draft, kept_answers, DECISION_UNREADABLE
+        )
     except UnreadableCapture:
         logger.exception("a note offered on the review could not be read")
-        return intake_unavailable(request, state, draft, kept_answers, NOTE_UNREADABLE)
+        return await asyncio.to_thread(
+            intake_unavailable, request, state, draft, kept_answers, NOTE_UNREADABLE
+        )
     except sqlite3.Error:
         logger.exception("the review could not be read for a press")
-        return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
+        return await asyncio.to_thread(
+            intake_unavailable, request, state, draft, kept_answers, STORE_REFUSED
+        )
 
 
 @router.post("/keep", response_class=HTMLResponse, include_in_schema=False)
@@ -1709,7 +1728,7 @@ async def keep_readings(request: Request, state: State) -> Response:
     draft = draft_of(form)
     read = read_draft(state, draft)
     if isinstance(read, Problem):
-        return problem_page(request, state, draft, read)
+        return await asyncio.to_thread(problem_page, request, state, draft, read)
     # Every answer about the school's instructions is read from the fields as sent, before
     # any is collapsed, and kept, contradictions included, in words a page that reads no
     # store can show: all of it before anything touches the store.
@@ -1757,12 +1776,13 @@ async def keep_readings(request: Request, state: State) -> Response:
     # homework each was said to be and the notes ticked among them; so does a write the
     # file refuses, which is never tried again.
     try:
-        occurrences, kinds = answers_from(form, unasked_for(state, read))
+        occurrences, kinds = answers_from(form, await asyncio.to_thread(unasked_for, state, read))
         if identity_unreadable:
             # An answer about which homework a card is that the page did not ask, a homework
             # or token it did not give, or one sent twice, is no form the page wrote. The
             # answers that were read, on other cards and in the notes ticked, are kept.
-            return preview_page(
+            return await asyncio.to_thread(
+                preview_page,
                 request,
                 state,
                 read,
@@ -1786,7 +1806,8 @@ async def keep_readings(request: Request, state: State) -> Response:
             # A box the page did not offer, a box sent twice, as a file, or with another value,
             # or a note ticked twice is no form the page wrote. The notice says only that the
             # choices could not be read, since it holds for every one of these.
-            return preview_page(
+            return await asyncio.to_thread(
+                preview_page,
                 request,
                 state,
                 read,
@@ -1810,7 +1831,8 @@ async def keep_readings(request: Request, state: State) -> Response:
             # A choice of homework under another name the page did not show, or one changed,
             # left out, sent twice, or sent beside an answer to the card's own question, is no
             # form the page wrote. The page comes back with the choices it showed.
-            return preview_page(
+            return await asyncio.to_thread(
+                preview_page,
                 request,
                 state,
                 read,
@@ -1833,7 +1855,8 @@ async def keep_readings(request: Request, state: State) -> Response:
         # An answer where the page puts no such question is no form the page wrote. The
         # questions the page signed say where it asked, at which revision, and about which
         # assignment, as the answers about which homework each card is land it.
-        changes = changes_for(
+        changes = await asyncio.to_thread(
+            changes_for,
             read.items,
             state.project_state,
             occurrences=occurrences,
@@ -1847,7 +1870,8 @@ async def keep_readings(request: Request, state: State) -> Response:
         if unreadable or contradicted:
             # Nothing of the text is written until the answers are put right; each comes back
             # as made when it was made against what stands, and in words when it was not.
-            return preview_page(
+            return await asyncio.to_thread(
+                preview_page,
                 request,
                 state,
                 read,
@@ -1875,8 +1899,9 @@ async def keep_readings(request: Request, state: State) -> Response:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
         now, today = moment_of(state, draft)
-        async with state.decision_lock:
-            kept = keep(
+
+        def saved() -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
+            return keep(
                 read.items,
                 state.project_state,
                 occurrences=occurrences,
@@ -1893,25 +1918,39 @@ async def keep_readings(request: Request, state: State) -> Response:
                 now=now,
                 today=today,
             )
+
+        async with state.decision_lock:
+            kept = await worker_to_the_end(saved)
     except UnreadableClaim:
-        return intake_unavailable(request, state, draft, kept_answers)
+        return await asyncio.to_thread(intake_unavailable, request, state, draft, kept_answers)
     except UnreadableInstruction:
-        return intake_unavailable(request, state, draft, kept_answers, INSTRUCTION_UNREADABLE)
+        return await asyncio.to_thread(
+            intake_unavailable, request, state, draft, kept_answers, INSTRUCTION_UNREADABLE
+        )
     except UnreadableDecision:
-        return intake_unavailable(request, state, draft, kept_answers, DECISION_UNREADABLE)
+        return await asyncio.to_thread(
+            intake_unavailable, request, state, draft, kept_answers, DECISION_UNREADABLE
+        )
     except UnreadableCapture:
         logger.exception("a note ticked to link could not be read")
-        return intake_unavailable(request, state, draft, kept_answers, NOTE_UNREADABLE)
+        return await asyncio.to_thread(
+            intake_unavailable, request, state, draft, kept_answers, NOTE_UNREADABLE
+        )
     except CaptureNotSaved:
         logger.exception("a note could not be linked from the paste")
-        return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
+        return await asyncio.to_thread(
+            intake_unavailable, request, state, draft, kept_answers, STORE_REFUSED
+        )
     except sqlite3.Error:
         logger.exception("a paste could not be saved")
-        return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
+        return await asyncio.to_thread(
+            intake_unavailable, request, state, draft, kept_answers, STORE_REFUSED
+        )
     if isinstance(kept, NotOffered):
         # Checked again where the save writes: a choice on a card the page didn't offer it
         # on, or beside the card's own answer, is no form the page wrote.
-        return preview_or_recovery(
+        return await asyncio.to_thread(
+            preview_or_recovery,
             request,
             state,
             read,
@@ -1934,7 +1973,8 @@ async def keep_readings(request: Request, state: State) -> Response:
     if isinstance(kept, NotAsked):
         # The same check as above, made again where the save writes: another connection's
         # save can move a card to other homework after the first check.
-        return preview_or_recovery(
+        return await asyncio.to_thread(
+            preview_or_recovery,
             request,
             state,
             read,
@@ -1962,7 +2002,8 @@ async def keep_readings(request: Request, state: State) -> Response:
         )
     if isinstance(kept, ChangedSinceShown):
         instructions_moved = any(change.instructions_stale for change in kept.changes)
-        return preview_or_recovery(
+        return await asyncio.to_thread(
+            preview_or_recovery,
             request,
             state,
             read,
@@ -2009,7 +2050,8 @@ async def keep_readings(request: Request, state: State) -> Response:
             refused = "waiting"
         elif not conflicting and any(change.identity_asked for change in kept):
             refused = "identify"
-        return preview_or_recovery(
+        return await asyncio.to_thread(
+            preview_or_recovery,
             request,
             state,
             read,
