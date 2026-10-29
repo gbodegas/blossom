@@ -13,6 +13,8 @@ pinned clock, and a failure made at the store call, or a second connection holdi
 
 import asyncio
 import contextlib
+import html
+import io
 import pathlib
 import re
 import sqlite3
@@ -29,8 +31,11 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
+from PIL import Image
 
+from blossom import screenshot_reading
 from blossom.agent.runs import Unfinished
+from blossom.anthropic_client import ScreenshotAnswer
 from blossom.dependencies import STATE_ATTRIBUTE
 from blossom.drafts import Draft
 from blossom.grades.draft import capture_key
@@ -64,6 +69,7 @@ from blossom.routes.runs import Unconfirmed
 from blossom.school_instructions import InstructionChoice, InstructionSeen
 from blossom.stores.drafts import STORE_WAIT_SECONDS
 from blossom.stores.help_requests import new_request_id
+from blossom.stores.import_drafts import new_creation_token
 from blossom.stores.paths import SECRET_NAME
 from tests.support import (
     DETAILS,
@@ -119,6 +125,7 @@ from tests.support import (
     fresh_signal_fields,
     grade_answers,
     hidden,
+    homework_answer,
     homework_from_a_note,
     household_client,
     link_note,
@@ -3443,11 +3450,12 @@ NO_SUCH_REVIEW = "0" * 32
 IMPORTS = "/parent/imports"
 
 
-def grades_open() -> TestClient:
-    """Her page on the pinned day with screenshot import on, and the grade and screenshot
-    routes open to the test's client as they are to a browser on this computer: the rule that
-    decides who may use them is not what these tests are about."""
-    client = browser(BLOSSOM_SCREENSHOT_IMPORT="1")
+def grades_open(*, key: bool = False) -> TestClient:
+    """Her page on the pinned day with screenshot import on, scripted models when ``key`` is
+    set, and the grade and screenshot routes open to the test's client as they are to a browser
+    on this computer: the rule that decides who may use them is not what these tests are
+    about."""
+    client = browser(key=key, BLOSSOM_SCREENSHOT_IMPORT="1")
     overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
     overrides[grade_routes.on_this_computer] = lambda: None
     overrides[import_routes.screenshots_here] = lambda: None
@@ -4056,3 +4064,164 @@ def test_a_canceled_grade_press_is_whole_or_absent_and_said_truly_after(
         assert len(after) == len(before) + ROWS_ADDED.get(named, 1)
         assert again.status_code == held.again
         assert GRADE_STANDING[named] in opened.text
+
+
+# ------------------------------------------- the event loop while a screenshot review is used
+
+
+def a_screenshot() -> bytes:
+    """A small synthetic PNG, as a phone's screenshot is uploaded."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), (200, 40, 40)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def read_as_homework(*_: object, **__: object) -> ScreenshotAnswer:
+    """A fake reader: every screenshot read as her homework list, with no call made."""
+    return ScreenshotAnswer(homework_answer(), None, 10, 5)
+
+
+def uploading(client: TestClient) -> Callable[[], Any]:
+    """A first upload of one screenshot, from a form made now."""
+    form = {"token": new_creation_token(), "issued": state_of(client).real_clock.now().isoformat()}
+    files = [("screenshots", ("shot-0.png", a_screenshot(), "image/png"))]
+    return lambda: client.post(IMPORTS, data=form, files=files)
+
+
+def uploaded(client: TestClient) -> tuple[str, str]:
+    """A review made by a first upload: its address, and its page."""
+    sent = uploading(client)()
+    assert sent.status_code == 303, sent.text[:300]
+    address = sent.headers["location"]
+    return address, client.get(address, headers=PAGE_HEADERS).text
+
+
+def fields_of_form(page: str, action: str) -> dict[str, str]:
+    """The hidden fields of the first form on the page with this action."""
+    found = re.search(rf'<form [^>]*action="{re.escape(action)}".*?</form>', page, re.S)
+    assert found is not None, action
+    pairs = re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)"', found.group(0))
+    return {html.unescape(name): html.unescape(value) for name, value in pairs}
+
+
+def read_through(client: TestClient) -> tuple[str, str]:
+    """A review whose one screenshot is read as her homework list: its address and page."""
+    address, page = uploaded(client)
+    action = f"{address}/read"
+    pressed = client.post(action, data=fields_of_form(page, action), headers=PAGE_HEADERS)
+    assert pressed.status_code == 200, pressed.text[:300]
+    return address, client.get(address, headers=PAGE_HEADERS).text
+
+
+def reading(client: TestClient) -> Callable[[], Any]:
+    address, page = uploaded(client)
+    action = f"{address}/read"
+    fields = fields_of_form(page, action)
+    return lambda: client.post(action, data=fields, headers=PAGE_HEADERS)
+
+
+def reviewing(client: TestClient) -> Callable[[], Any]:
+    address, _ = read_through(client)
+    return lambda: client.get(address, headers=PAGE_HEADERS)
+
+
+def pressed_on_review(
+    press: str, *, ticked: bool = False
+) -> Callable[[TestClient], Callable[[], Any]]:
+    """A press of the review form as its page shows it, her name answered as hers, and the
+    first group ticked when ``ticked``."""
+
+    def made(client: TestClient) -> Callable[[], Any]:
+        address, page = read_through(client)
+        action = f"{address}/review"
+        if ticked:
+            kept = client.post(action, data=review_fields(page, action, "keep"))
+            assert kept.status_code == 200, kept.text[:300]
+            page = client.get(address, headers=PAGE_HEADERS).text
+        fields = review_fields(page, action, press)
+        if ticked:
+            fields["unit"] = html.unescape(re.findall(r'name="unit" value="([^"]+)"', page)[0])
+        return lambda: client.post(action, data=fields, headers=PAGE_HEADERS)
+
+    return made
+
+
+def review_fields(page: str, action: str, press: str) -> dict[str, str]:
+    """The review form as its page sends it with ``press``: her name answered as hers, and
+    each other question still open given the first answer it offers."""
+    fields = {**whole_form(page, action), "press": press}
+    for tag in re.findall(r'<input [^>]*type="radio"[^>]*>', page):
+        name = html.unescape(re.findall(r'name="([^"]+)"', tag)[0])
+        value = html.unescape(re.findall(r'value="([^"]*)"', tag)[0])
+        if name.startswith("answer:name:"):
+            fields[name] = "hers"
+        elif name.startswith("answer:") and not fields.get(name):
+            fields[name] = value
+    return fields
+
+
+def saved_again(client: TestClient) -> Callable[[], Any]:
+    """The same save sent again: the outcome recorded under its acceptance id is shown."""
+    send = pressed_on_review("save", ticked=True)(client)
+    first = send()
+    assert first.status_code == 200, first.text[:300]
+    return send
+
+
+def pressed_after_discard(client: TestClient) -> Callable[[], Any]:
+    """A press of the review form after the review was discarded: the press is looked for
+    among the saves recorded before it is refused."""
+    address, page = read_through(client)
+    action = f"{address}/review"
+    fields = review_fields(page, action, "keep")
+    discard = f"{address}/discard"
+    gone = client.post(discard, data=fields_of_form(page, discard), headers=PAGE_HEADERS)
+    assert gone.status_code == 200, gone.text[:300]
+    return lambda: client.post(action, data=fields, headers=PAGE_HEADERS)
+
+
+def small_press(step: str) -> Callable[[TestClient], Callable[[], Any]]:
+    """The review's own small form for ``step``, as its page signs it."""
+
+    def made(client: TestClient) -> Callable[[], Any]:
+        address, page = read_through(client)
+        action = f"{address}/{step}"
+        fields = fields_of_form(page, action)
+        return lambda: client.post(action, data=fields, headers=PAGE_HEADERS)
+
+    return made
+
+
+SCREENSHOT_STEPS = [
+    pytest.param(uploading, 303, id="first upload"),
+    pytest.param(reading, 200, id="read"),
+    pytest.param(reviewing, 200, id="review read"),
+    pytest.param(pressed_on_review("keep"), 200, id="keep"),
+    pytest.param(pressed_on_review("later"), 303, id="later"),
+    pytest.param(pressed_on_review("save", ticked=True), 200, id="save"),
+    pytest.param(saved_again, 200, id="save again"),
+    pytest.param(pressed_after_discard, 200, id="press after discard"),
+    pytest.param(small_press("set-aside"), 303, id="set aside"),
+    pytest.param(small_press("finish"), 200, id="finish"),
+    pytest.param(small_press("discard"), 200, id="discard"),
+    pytest.param(small_press("not-hers"), 200, id="not hers"),
+]
+"""Each step of a screenshot review that reads her student ID or her name's forms: a first
+upload, a Read press, the review read, its form's presses and its small forms."""
+
+
+@pytest.mark.parametrize(("step", "code"), SCREENSHOT_STEPS)
+def test_a_screenshot_review_step_runs_no_statement_on_the_event_loop(
+    step: Callable[[TestClient], Callable[[], Any]], code: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every store read and write a step of a screenshot review makes, her student ID and her
+    name's forms included, and the page it answers with, runs on a worker thread."""
+    monkeypatch.setattr(screenshot_reading, "read_screenshot", read_as_homework)
+    with grades_open(key=True) as client:
+        send = step(client)
+        with OnTheLoop(state_of(client)) as seen:
+            answer = send()
+
+    assert answer.status_code == code, answer.text[:300]
+    assert seen.loop == []
+    assert seen.workers != []
