@@ -4462,6 +4462,28 @@ def test_family_review_whose_drafts_another_caller_holds_is_no_store_with_the_si
     assert answer.headers["cache-control"] == "no-store"
 
 
+def asked_at_once(client: TestClient, watch: HangWatch, sent: list[Sent]) -> list[Any]:
+    """The answers to ``sent``, each asked 30 ms after the one before while another program
+    holds the file exclusively."""
+    answers: dict[int, Any] = {}
+
+    def ask(i: int) -> None:
+        answers[i] = answer_to(client, sent[i])
+
+    def all_at_once() -> None:
+        asking = [threading.Thread(target=ask, args=(i,), daemon=True) for i in range(len(sent))]
+        for thread in asking:
+            thread.start()
+            time.sleep(0.03)
+        for thread in asking:
+            thread.join(HANG_LIMIT_SECONDS)
+
+    with HeldByAnother(database_of(client)):
+        watch.press(all_at_once)
+    assert sorted(answers) == list(range(len(sent)))
+    return [answers[i] for i in range(len(sent))]
+
+
 def test_three_pages_at_once_on_a_held_file_each_fall_back(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -4473,37 +4495,48 @@ def test_three_pages_at_once_on_a_held_file_each_fall_back(
     one of its guarded reads was refused as busy, and is inconclusive otherwise; her week's
     count is recorded, not required. The held lock above is the sure case for both."""
     addresses = ["/parent", HER_PAGE, "/parent"]
-    answers: dict[int, Any] = {}
     with HangWatch(capsys) as watch, unheld() as client:
         for address in addresses[:2]:
             assert client.get(address, headers=PAGE_HEADERS).status_code == 200
         refused = busy_at_the_catch(monkeypatch, state_of(client).drafts)
-
-        def ask(i: int) -> None:
-            answers[i] = client.get(addresses[i], headers=PAGE_HEADERS)
-
-        def three_at_once() -> None:
-            asking = [threading.Thread(target=ask, args=(i,), daemon=True) for i in range(3)]
-            for thread in asking:
-                thread.start()
-                time.sleep(0.03)
-            for thread in asking:
-                thread.join(HANG_LIMIT_SECONDS)
-
-        with HeldByAnother(database_of(client)):
-            watch.press(three_at_once)
+        answers = asked_at_once(client, watch, [Sent("GET", address) for address in addresses])
         monkeypatch.undo()
 
-    assert sorted(answers) == [0, 1, 2]
-    assert [answers[i].text != "Internal Server Error" for i in range(3)] == [True] * 3
-    for i, address in enumerate(addresses):
+    assert [answer.text != "Internal Server Error" for answer in answers] == [True] * 3
+    for answer, address in zip(answers, addresses, strict=True):
         if address == "/parent":
-            store_free_page(answers[i], status=503, heading="Family review", alert=FAMILY_NOT_READ)
+            store_free_page(answer, status=503, heading="Family review", alert=FAMILY_NOT_READ)
         else:
-            store_free_page(answers[i], status=503, heading=WEEK_UNREADABLE, alert=WEEK_NOT_READ)
+            store_free_page(answer, status=503, heading=WEEK_UNREADABLE, alert=WEEK_NOT_READ)
     record_property("busy refusals at each page's guarded reads", dict(refused))
     if not refused["family review"]:
         pytest.skip("no read family review's catch covers was refused as busy in this run")
+
+
+@pytest.mark.parametrize("case", ["her week", "an update refused on her week"])
+def test_three_at_once_on_her_week_on_a_held_file_each_fall_back(
+    case: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    record_property: Callable[[str, object], None],
+) -> None:
+    """Her week asked for, or a refused update answered on it, three times 30 ms apart while
+    another program holds the file. Every answer is the page its catch falls back to. The
+    run counts only when one of her week's guarded reads was refused as busy, and is
+    inconclusive otherwise; the held lock above is the sure case."""
+    page = BUSY_PAGES[case]
+    with HangWatch(capsys) as watch, unheld() as client:
+        assert client.get(HER_PAGE, headers=PAGE_HEADERS).status_code == 200
+        sent = busy_request(client, case, TO_TODAY)
+        refused = busy_at_the_catch(monkeypatch, state_of(client).drafts)
+        answers = asked_at_once(client, watch, [sent] * 3)
+        monkeypatch.undo()
+
+    for answer in answers:
+        busy_answer(answer, page, TO_TODAY)
+    record_property("busy refusals at each page's guarded reads", dict(refused))
+    if not refused["her week"]:
+        pytest.skip("no read her week's catch covers was refused as busy in this run")
 
 
 TURNED_IN_WORDS = {"note": "Outline finished, essay next", "expected_report_id": ""}
