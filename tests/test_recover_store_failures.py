@@ -4282,6 +4282,9 @@ BUSY_PAGES = {
         f"Nothing was saved, because neither Done nor Not yet was chosen. {YOUR_WEEK}",
     ),
     "work gone from the record": BusyPage("latest_for", 404, "Assignment", NOT_ON_RECORD),
+    "an update on work gone from the record": BusyPage(
+        "latest_for", 404, "Assignment", NOT_ON_RECORD
+    ),
     "the details": BusyPage(
         "latest_for", 503, "Assignment", f"{THIS_ASSIGNMENT} Try again in a moment. Try again"
     ),
@@ -4292,6 +4295,7 @@ ANSWERED_AS_BEFORE = {
     "a check refused on family review": 404,
     "an update refused on her week": 422,
     "work gone from the record": 404,
+    "an update on work gone from the record": 404,
     "the details": 200,
 }
 
@@ -4323,6 +4327,10 @@ def busy_request(client: TestClient, case: str, back: dict[str, str]) -> Sent:
     if case == "an update refused on her week":
         path, data = week_press(client, "nothing chosen")
         return Sent("POST", path, data)
+    if case == "an update on work gone from the record":
+        fields = {"status": "done", "note": TYPED, "expected_report_id": "", "week": ""}
+        update = f"/student/actions/assignments/{GONE_ID}/report"
+        return Sent("POST", update, {**fields, "report_view": "detail", "plan_id": "", **back})
     where = f"/student/assignments/{GONE_ID}" if case == "work gone from the record" else DETAILS
     return Sent("GET", f"{where}?{httpx.QueryParams(back)}")
 
