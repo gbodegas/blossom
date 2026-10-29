@@ -279,7 +279,9 @@ from blossom.stores.drafts import (
     DraftRecord,
     RunState,
     StaleBasis,
+    StoreBusy,
     UnknownBasis,
+    WriterBusy,
 )
 from blossom.stores.help_requests import (
     HELP_RECENT_DAYS,
@@ -3254,7 +3256,7 @@ def due_this_week(
             signal_removed=removed,
             turn_in=turn_in,
         )
-    except sqlite3.Error as error:
+    except (sqlite3.Error, StoreBusy, WriterBusy) as error:
         again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
         if removed:
             again = f"{again}#{TOO_MUCH_STATE}"
@@ -3418,7 +3420,9 @@ def week_page(
     )
 
 
-def week_unreadable(request: Request, error: sqlite3.Error, *, again: str) -> HTMLResponse:
+def week_unreadable(
+    request: Request, error: sqlite3.Error | StoreBusy | WriterBusy, *, again: str
+) -> HTMLResponse:
     """Her week when the record cannot be read as the page is made: the failure said once,
     with the way to try again, and today's plan as saved when it was read first. Nothing is
     read here, and the failure is logged by its kind alone."""
@@ -3736,7 +3740,7 @@ def gone_page(
             today=state.clock.today() if today is None else today,
             in_place=in_place,
         )
-    except sqlite3.Error as error:
+    except (sqlite3.Error, StoreBusy, WriterBusy) as error:
         logger.warning("a way back could not be read: %s", type(error).__name__)
         link = plain_way_back(back, assignment_id)
     return templates.TemplateResponse(
@@ -4036,7 +4040,7 @@ def assignment_details(
         page = detail_page(
             request, state, assignment_id, back, card=card, hand_in=turning_in, turn_in=turn_in
         )
-    except sqlite3.Error as error:
+    except (sqlite3.Error, StoreBusy, WriterBusy) as error:
         failed = unavailable_page(
             request,
             state,
@@ -4242,7 +4246,7 @@ def shown_once(
     logged by its kind alone; any other failure is not caught here."""
     try:
         return page()
-    except sqlite3.Error as error:
+    except (sqlite3.Error, StoreBusy, WriterBusy) as error:
         logger.warning("the page for a press could not be read: %s", type(error).__name__)
         return not_shown(request, state, fallback, status_code)
 
@@ -4333,7 +4337,7 @@ def not_hers(
 def unavailable_page(
     request: Request,
     state: ApplicationState,
-    error: sqlite3.Error,
+    error: sqlite3.Error | StoreBusy | WriterBusy,
     *,
     heading: str,
     alert: str,

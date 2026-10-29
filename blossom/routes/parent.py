@@ -191,7 +191,9 @@ from blossom.stores.drafts import (
     NotPublished,
     RunState,
     StaleBasis,
+    StoreBusy,
     UnknownBasis,
+    WriterBusy,
 )
 from blossom.stores.help_requests import (
     HELP_RETENTION_DAYS,
@@ -1775,7 +1777,7 @@ def review(
             run_notice=run_notice(state, run, FAMILY_PAGE, parent=True, today=None),
             run_asked=run,
         )
-    except sqlite3.Error as error:
+    except (sqlite3.Error, StoreBusy, WriterBusy) as error:
         return review_unreadable(
             request,
             error,
@@ -1783,7 +1785,9 @@ def review(
         )
 
 
-def review_unreadable(request: Request, error: sqlite3.Error, *, again: str) -> HTMLResponse:
+def review_unreadable(
+    request: Request, error: sqlite3.Error | StoreBusy | WriterBusy, *, again: str
+) -> HTMLResponse:
     """The family page when the record cannot be read as the page is made: the failure said
     once, with the way to try again, and each evening's plan in force as saved when the plans
     were read first. Nothing is read here, and the failure is logged by its kind alone."""
@@ -2384,7 +2388,7 @@ def reviewed_once(
     sentence, gives that sentence the focus. Any other failure is not caught here."""
     try:
         return page()
-    except sqlite3.Error as error:
+    except (sqlite3.Error, StoreBusy, WriterBusy) as error:
         logger.warning("the family page could not be read for a refusal: %s", type(error).__name__)
         return family_not_shown(
             request,

@@ -2694,6 +2694,36 @@ HANG_LIMIT_SECONDS = 60.0
 hung: a hang detector, far above any run measured, slowed or not. It times nothing."""
 
 
+class LockHeldByAnother:
+    """A store's own lock held by another caller in this process, on a daemon thread of its
+    own, so each call of the store waits out its whole wait and is refused as busy. Entering
+    it returns once the lock is taken. It is let go on leaving, or after
+    ``HANG_LIMIT_SECONDS`` should leaving never come."""
+
+    def __init__(self, store: Any) -> None:  # noqa: ANN401
+        self.lock = store._lock
+        self.taken = threading.Event()
+        self.leaving = threading.Event()
+        self.thread = threading.Thread(target=self.hold, daemon=True)
+
+    def hold(self) -> None:
+        if not self.lock.acquire(timeout=HANG_LIMIT_SECONDS):
+            return
+        try:
+            self.taken.set()
+            self.leaving.wait(HANG_LIMIT_SECONDS)
+        finally:
+            self.lock.release()
+
+    def __enter__(self) -> None:
+        self.thread.start()
+        assert self.taken.wait(HANG_LIMIT_SECONDS), "the store's lock was never free"
+
+    def __exit__(self, *_: object) -> None:
+        self.leaving.set()
+        self.thread.join(HANG_LIMIT_SECONDS)
+
+
 class WaitBeside:
     """Another connection running ``statement`` on ``held``'s file under a busy timeout of
     ``seconds``, on a daemon thread beside a press, so a delay to the process while both wait
