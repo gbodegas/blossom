@@ -21,7 +21,7 @@ import sqlite3
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -366,6 +366,10 @@ OTHER_FAILURES = {
     "her To turn in list": ("routes", "read_everything", "get list"),
     "her week": ("drafts", "latest_for", "get week"),
     "family review": ("drafts", "review_snapshot", "get family"),
+    "the way back from work gone from the record": ("drafts", "latest_for", "get gone"),
+    "the way back after an update on gone work": ("drafts", "latest_for", "gone update"),
+    "the way back from the details": ("drafts", "latest_for", "get details today"),
+    "her week after a turn-in with her words": ("drafts", "newest_published", "turn in"),
     "taking a request back": ("help_requests", "take_back", "take back"),
     "saying today is too much": ("workload_signals", "record_once", "too much"),
     "a parent taking her request up": ("help_requests", "accept", "take up"),
@@ -392,6 +396,12 @@ def test_another_kind_of_failure_is_not_taken_for_a_file_that_cannot_be_read(
             path, data = HAND_IN, {"state": TURNED_IN, "note": "typed", "hand_in_view": "list"}
         if press == "family":
             path, data = "/parent/actions/plan", {"plan_date": "someday"}
+        if press == "gone update":
+            path = f"/student/actions/assignments/{GONE_ID}/report"
+            data = {**GONE_UPDATE, "plan_id": "", **TO_TODAY}
+        if press == "turn in":
+            card = a_card_turn_in(client)
+            path, data = card.path, {**(card.data or {}), **TURNED_IN_WORDS}
         target = hand_in_routes if store == "routes" else getattr(state, store)
         monkeypatch.setattr(target, name, refusing(kind))
         if press.startswith("get "):
@@ -401,6 +411,8 @@ def test_another_kind_of_failure_is_not_taken_for_a_file_that_cannot_be_read(
                 "get list": "/student/to-turn-in",
                 "get week": HER_PAGE,
                 "get family": "/parent",
+                "get gone": f"/student/assignments/{GONE_ID}?return_to=today",
+                "get details today": f"{DETAILS}?return_to=today",
             }[press]
             answer = client.get(where, headers=PAGE_HEADERS)
         elif press == "take back":
@@ -4247,6 +4259,13 @@ FAMILY_NOT_READ = (
     "are not shown. Try again in a moment. Try again"
 )
 NOT_ON_RECORD = "This assignment is not on record now."
+GONE_UPDATE = {
+    "status": "done",
+    "note": TYPED,
+    "expected_report_id": "",
+    "week": "",
+    "report_view": "detail",
+}
 TO_TODAY = {"return_to": "today"}
 TO_A_PLAN = {"return_to": "family", "plan_id": "draft:a"}
 WAYS_BACK = {
@@ -4314,23 +4333,22 @@ def quiet(client: TestClient) -> TestClient:
     )
 
 
-def busy_request(client: TestClient, case: str, back: dict[str, str]) -> Sent:
+def busy_request(client: TestClient, case: str, back: dict[str, str], reader: str = "open") -> Sent:
     """Make what ``case`` needs; the request itself, with ``back`` as the way back where the
-    page offers one."""
+    page offers one, as ``reader`` makes it."""
     if case == "her week":
         return Sent("GET", HER_PAGE)
     if case == "family review":
         return Sent("GET", "/parent")
     if case == "a check refused on family review":
-        path, data, _ = family_press(client, "a check of homework not on record", "open")
+        path, data, _ = family_press(client, "a check of homework not on record", reader)
         return Sent("POST", path, data)
     if case == "an update refused on her week":
         path, data = week_press(client, "nothing chosen")
         return Sent("POST", path, data)
     if case == "an update on work gone from the record":
-        fields = {"status": "done", "note": TYPED, "expected_report_id": "", "week": ""}
         update = f"/student/actions/assignments/{GONE_ID}/report"
-        return Sent("POST", update, {**fields, "report_view": "detail", "plan_id": "", **back})
+        return Sent("POST", update, {**GONE_UPDATE, "plan_id": "", **back})
     where = f"/student/assignments/{GONE_ID}" if case == "work gone from the record" else DETAILS
     return Sent("GET", f"{where}?{httpx.QueryParams(back)}")
 
@@ -4348,21 +4366,32 @@ def busy_answer(answer: Any, page: BusyPage, back: dict[str, str]) -> None:  # n
         assert ways_back_of(main) == WAYS_BACK[back["return_to"]]
 
 
-def busy_refusals(monkeypatch: pytest.MonkeyPatch, store: Any) -> list[str]:  # noqa: ANN401
-    """Each call of ``store`` refused as busy, by kind, as it is refused."""
-    refused: list[str] = []
-    session = store._session
+GUARDED_READS = {
+    "review_snapshot": "family review",
+    "runs_without_a_draft": "family review",
+    "newest_published": "her week",
+    "latest_for": "her week",
+}
+"""The drafts reads the catch of family review and of her week covers, by the page that
+makes them. A busy refusal of any other read, the latest run's, is caught before it."""
 
-    @contextlib.contextmanager
-    def watched(*args: object, **kwargs: object) -> Iterator[object]:
-        try:
-            with session(*args, **kwargs) as held:
-                yield held
-        except (StoreBusy, WriterBusy) as error:
-            refused.append(type(error).__name__)
-            raise
 
-    monkeypatch.setattr(store, "_session", watched)
+def busy_at_the_catch(monkeypatch: pytest.MonkeyPatch, store: Any) -> Counter[str]:  # noqa: ANN401
+    """How many of each page's guarded drafts reads were refused as busy, by page."""
+    refused: Counter[str] = Counter()
+
+    def watching(read: Callable[..., Any], page: str) -> Callable[..., Any]:
+        def watched(*args: object, **kwargs: object) -> Any:  # noqa: ANN401
+            try:
+                return read(*args, **kwargs)
+            except (StoreBusy, WriterBusy):
+                refused[page] += 1
+                raise
+
+        return watched
+
+    for name, page in GUARDED_READS.items():
+        monkeypatch.setattr(store, name, watching(getattr(store, name), page))
     return refused
 
 
@@ -4421,7 +4450,7 @@ def test_a_page_whose_drafts_are_free_answers_as_before(case: str) -> None:
     assert "cannot be read right now" not in answer.text
 
 
-def test_family_review_whose_drafts_another_caller_holds_is_not_kept_signed_in(
+def test_family_review_whose_drafts_another_caller_holds_is_no_store_with_the_sign_in_on(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with HangWatch(capsys) as watch, quiet(household_client("parent", tmp_path)) as client:
@@ -4434,17 +4463,21 @@ def test_family_review_whose_drafts_another_caller_holds_is_not_kept_signed_in(
 
 
 def test_three_pages_at_once_on_a_held_file_each_fall_back(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    record_property: Callable[[str, object], None],
 ) -> None:
     """Three pages asked for 30 ms apart while another program holds the file: each drafts
     read holds the store's lock through its file wait, so a later one can be refused as busy
-    first. A run in which none was is inconclusive; the held lock above is the sure case."""
+    first. Every answer is its page's fallback. The run counts for family review only when
+    one of its guarded reads was refused as busy, and is inconclusive otherwise; her week's
+    count is recorded, not required. The held lock above is the sure case for both."""
     addresses = ["/parent", HER_PAGE, "/parent"]
     answers: dict[int, Any] = {}
     with HangWatch(capsys) as watch, unheld() as client:
         for address in addresses[:2]:
             assert client.get(address, headers=PAGE_HEADERS).status_code == 200
-        refused = busy_refusals(monkeypatch, state_of(client).drafts)
+        refused = busy_at_the_catch(monkeypatch, state_of(client).drafts)
 
         def ask(i: int) -> None:
             answers[i] = client.get(addresses[i], headers=PAGE_HEADERS)
@@ -4462,13 +4495,15 @@ def test_three_pages_at_once_on_a_held_file_each_fall_back(
         monkeypatch.undo()
 
     assert sorted(answers) == [0, 1, 2]
+    assert [answers[i].text != "Internal Server Error" for i in range(3)] == [True] * 3
     for i, address in enumerate(addresses):
         if address == "/parent":
             store_free_page(answers[i], status=503, heading="Family review", alert=FAMILY_NOT_READ)
         else:
             store_free_page(answers[i], status=503, heading=WEEK_UNREADABLE, alert=WEEK_NOT_READ)
-    if not refused:
-        pytest.skip("no drafts read was refused as busy in this run, so it shows nothing of them")
+    record_property("busy refusals at each page's guarded reads", dict(refused))
+    if not refused["family review"]:
+        pytest.skip("no read family review's catch covers was refused as busy in this run")
 
 
 TURNED_IN_WORDS = {"note": "Outline finished, essay next", "expected_report_id": ""}
@@ -4538,7 +4573,7 @@ def test_a_turn_in_with_her_words_is_her_week_as_before_when_the_drafts_are_free
     assert after == before + 1
 
 
-def test_a_decision_on_a_decided_draft_keeps_its_409_when_the_drafts_are_busy(
+def test_a_decision_on_a_decided_draft_keeps_its_409_when_family_review_is_refused_as_busy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with quiet(browser(key=True)) as client:
@@ -4582,3 +4617,176 @@ def test_family_review_after_a_saved_keep_whose_drafts_another_caller_holds_fall
 
     store_free_page(answer, status=503, heading="Family review", alert=FAMILY_NOT_READ)
     assert set(after) - set(before)
+
+
+SIGNED_IN = {
+    "her week": "her",
+    "family review": "parent",
+    "a check refused on family review": "parent",
+    "an update refused on her week": "her",
+    "work gone from the record": "her",
+    "an update on work gone from the record": "her",
+    "the details": "her",
+}
+"""Who, signed in, asks for each page or makes each press."""
+
+
+@pytest.mark.parametrize("case", list(BUSY_PAGES))
+def test_a_page_whose_drafts_are_refused_as_busy_is_no_store_with_the_sign_in_on(
+    case: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = BUSY_PAGES[case]
+    reader = SIGNED_IN[case]
+    with quiet(household_client(reader, tmp_path)) as client:
+        sign_in_as(client, reader)
+        sent = busy_request(client, case, TO_TODAY, reader)
+        monkeypatch.setattr(state_of(client).drafts, page.read, refusing(StoreBusy))
+        answer = answer_to(client, sent)
+        monkeypatch.undo()
+
+    busy_answer(answer, page, TO_TODAY)
+    assert answer.headers["cache-control"] == "no-store"
+
+
+def test_a_turn_in_with_her_words_saved_before_her_week_is_busy_is_no_store_with_the_sign_in_on(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with quiet(household_client("her", tmp_path)) as client:
+        sign_in_as(client, "her")
+        press = a_card_turn_in(client)
+        sent = Sent(press.method, press.path, {**(press.data or {}), **TURNED_IN_WORDS})
+        monkeypatch.setattr(state_of(client).drafts, "newest_published", refusing(StoreBusy))
+        answer = answer_to(client, sent)
+        monkeypatch.undo()
+
+    store_free_page(
+        answer, status=503, heading="Turning it in", alert=f"{TURNED_IN_SAID} {YOUR_WEEK}"
+    )
+    assert answer.headers["cache-control"] == "no-store"
+
+
+@dataclass(frozen=True)
+class HeldPress:
+    """A press whose answer is made inside the catch around her week's, the details' or the
+    gone page's drafts reads: who makes it, the press itself, and the store and write of its
+    own the file refuses, for an answer to a write not saved."""
+
+    reader: str
+    press: Callable[[TestClient], Sent]
+    refused: tuple[str, str] | None = None
+
+
+def week_refusal(case: str) -> Callable[[TestClient], Sent]:
+    """A refused press on her week, as ``week_press`` makes it."""
+    return lambda client: Sent("POST", *week_press(client, case))
+
+
+def a_list_refusal_on_her_week(client: TestClient) -> Sent:
+    path, data, _ = list_press(client, "a row that changed", "week")
+    return Sent("POST", path, data)
+
+
+def a_refusal_on_the_details(client: TestClient) -> Sent:
+    """A refused hand-in press on the details, whose way back is today."""
+    path, data, _ = details_press(client, "a hand-in that changed")
+    return Sent("POST", path, {**data, **TO_TODAY})
+
+
+def a_plan_asked_for_on_her_week(client: TestClient) -> Sent:
+    # With no model her week offers no button: the press carries a fresh form.
+    return Sent("POST", "/student/actions/plan", fresh_plan_fields(client))
+
+
+def on_gone_work(route: str, fields: dict[str, str]) -> Callable[[TestClient], Sent]:
+    """``route`` pressed on the details of work gone from the record, a plan as the way back."""
+    blank = {"return_to": "", "week": "", "plan_id": ""}
+    path = f"/student/actions/assignments/{GONE_ID}/{route}"
+    return lambda _: Sent("POST", path, {**fields, **blank, **TO_A_PLAN})
+
+
+HELD_PRESSES = {
+    "an Undo refused on her week": HeldPress("open", week_refusal("undo already undone")),
+    "an Undo of work not on record from her week": HeldPress(
+        "open", week_refusal("undo of homework not on record")
+    ),
+    "a parent's update on her week": HeldPress(
+        "parent", lambda _: Sent("POST", REPORT, {"status": "done", "note": TYPED})
+    ),
+    "a refusal in To turn in on her week": HeldPress("open", a_list_refusal_on_her_week),
+    "a refusal on the details": HeldPress("open", a_refusal_on_the_details),
+    "a refusal on her card": HeldPress(
+        "open", week_refusal("I turned it in from a card that fell behind")
+    ),
+    "a turn-in on her card the file refused": HeldPress(
+        "open", a_card_turn_in, ("project_state", "_confirm_hand_in_head_locked")
+    ),
+    "her plan refused before a run": HeldPress("parent", a_plan_asked_for_on_her_week),
+    "a request for help taken back that is not here": HeldPress(
+        "open", lambda _: Sent("POST", "/student/actions/take-back-help/" + "0" * 32)
+    ),
+    "too much right now refused": HeldPress("open", lambda _: Sent("POST", TOO_MUCH, {})),
+    "too much right now the file refused": HeldPress(
+        "open", a_signal, ("workload_signals", "record_once")
+    ),
+    "earlier work refused": HeldPress("open", lambda _: Sent("POST", EARLIER_WORK, {})),
+    "an Undo on work gone from the record": HeldPress(
+        "open",
+        on_gone_work("undo-report", {"report_id": "report-not-here", "report_view": "detail"}),
+    ),
+    "a hand-in on work gone from the record": HeldPress(
+        "open",
+        on_gone_work(
+            "hand-in",
+            {"state": NEEDS_HAND_IN, "next_action": "", "note": TYPED, "expected_hand_in_id": ""},
+        ),
+    ),
+    "a hand-in Undo on work gone from the record": HeldPress(
+        "open", on_gone_work("undo-hand-in", {"hand_in_id": "hand-in-not-here"})
+    ),
+}
+UNREADABLE_DRAFTS = ("newest_published", "latest_for", "get")
+"""The drafts reads her week, the details and the gone page's way back make."""
+
+
+@pytest.mark.parametrize("case", list(HELD_PRESSES))
+def test_a_press_whose_answer_another_caller_holds_the_drafts_of_reads_as_for_an_unreadable_file(
+    case: str,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the drafts store's lock held past its wait, each group of presses answered
+    through these catches gets the answer it gets when those drafts reads find a file that
+    can't be read: the same status and the same page, and nothing written."""
+    held = HELD_PRESSES[case]
+    answers = []
+    with HangWatch(capsys) as watch:
+        for busy in (False, True):
+            folder = tmp_path / ("busy" if busy else "unread")
+            folder.mkdir()
+            with quiet(household_client(held.reader, folder)) as client:
+                sign_in_as(client, held.reader)
+                sent = held.press(client)
+                state = state_of(client)
+                if held.refused is not None:
+                    store, write = held.refused
+                    monkeypatch.setattr(getattr(state, store), write, refusing())
+                before = every_row(database_of(client))
+                if busy:
+                    with LockHeldByAnother(state.drafts):
+                        answer, _ = watch.press(partial(answer_to, client, sent))
+                else:
+                    for read in UNREADABLE_DRAFTS:
+                        monkeypatch.setattr(state.drafts, read, refusing())
+                    answer = answer_to(client, sent)
+                monkeypatch.undo()
+                after = every_row(database_of(client))
+            assert answer.text != "Internal Server Error", (busy, answer.status_code)
+            assert after == before
+            answers.append(answer)
+
+    unread, answer = answers
+    assert answer.status_code == unread.status_code
+    assert main_of(answer.text) == main_of(unread.text)
+    shown = words(main_of(answer.text))
+    assert "can't be shown right now" in shown or NOT_ON_RECORD in shown, shown
