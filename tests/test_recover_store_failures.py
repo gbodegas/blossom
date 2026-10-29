@@ -33,6 +33,10 @@ from markupsafe import escape
 from blossom.agent.runs import Unfinished
 from blossom.dependencies import STATE_ATTRIBUTE
 from blossom.drafts import Draft
+from blossom.grades.draft import capture_key
+from blossom.grades.identity import name_form_key
+from blossom.grades.review import GradeReportSaved
+from blossom.grades.text_reader import read_grade_report
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.household import secret_beside
 from blossom.reconciliation import SourceChannel, SourceRecord
@@ -113,6 +117,7 @@ from tests.support import (
     form_values,
     fresh_plan_fields,
     fresh_signal_fields,
+    grade_answers,
     hidden,
     homework_from_a_note,
     household_client,
@@ -129,6 +134,7 @@ from tests.support import (
     row_for,
     rules_named,
     runs_recorded,
+    save_grade,
     settled_run,
     sign_in_as,
     state_of,
@@ -3536,6 +3542,59 @@ def a_class_connected_on_record(client: TestClient) -> Sent:
     raise AssertionError(msg)
 
 
+SECOND_TERM_REPORT = GRADE_REPORT.replace("**T1**", "**T2**")
+"""The same report for the second term of the school year."""
+
+
+def two_terms(client: TestClient) -> None:
+    """The report saved whole for T1 from its page, then the same report for T2 through the
+    store under the household's key, as the grade pages' tests seed one: T1 stays current."""
+    assert answer_to(client, a_grade_save(client)).status_code == 303
+    store = state_of(client).project_state
+    key = client.app.state.grade_name_key  # type: ignore[attr-defined]
+    draft = read_grade_report(SECOND_TERM_REPORT).draft
+    assert draft is not None
+    review = store.review_grade_report(draft, capture_key(draft), key=key)
+    saved = save_grade(store, draft, key=key, review=review, answers=grade_answers(review))
+    assert isinstance(saved, GradeReportSaved), saved
+
+
+def a_term_chosen(path: str) -> Callable[[TestClient], Sent]:
+    """T2 chosen as the term Grades opens on, with T1 current."""
+
+    def made(client: TestClient) -> Sent:
+        two_terms(client)
+        return Sent("POST", path, {"view": "2026-2027 T2"})
+
+    return made
+
+
+def a_term_made_current_on_record(client: TestClient) -> Sent:
+    """T2 made the current term from the family's Grades while it shows T1, the term chosen
+    there, so the page after says which term is current."""
+    two_terms(client)
+    chose = answer_to(client, Sent("POST", "/parent/grades/view", {"view": "2026-2027 T1"}))
+    assert chose.status_code == 303, chose.text[:300]
+    fields = {"shown": "2026-2027 T1", "term": "2026-2027 T2"}
+    return Sent("POST", "/parent/grades/current-term", fields)
+
+
+def a_link_kept_apart(client: TestClient) -> Sent:
+    """The essay kept apart from a result of the report saved whole, at the revision of the
+    result's class and term: no class name needs to be connected for that."""
+    assert answer_to(client, a_grade_save(client)).status_code == 303
+    connection = state_of(client).project_state._connection
+    result_id, class_id, term = connection.execute(
+        "SELECT result_id, class_id, term_label FROM grade_results ORDER BY rowid LIMIT 1"
+    ).fetchone()
+    (revision,) = connection.execute(
+        "SELECT revision FROM grade_scope_revisions WHERE class_id = ? AND term_label = ?",
+        (class_id, term),
+    ).fetchone()
+    fields = {"homework": ESSAY_ID, "decision": "apart", "revision": str(revision)}
+    return Sent("POST", f"/parent/grades/results/{result_id}/homework", fields)
+
+
 def on_no_review(step: str = "") -> Callable[[TestClient], Sent]:
     """A press on a screenshot review no record holds, at ``step`` under its address."""
     return lambda _: Sent("POST", f"{IMPORTS}/{NO_SUCH_REVIEW}{step}", {})
@@ -3696,6 +3755,14 @@ GRADE_PRESSES = {
         422,
         at_the_call=True,
     ),
+    "current term on record": Held(
+        a_term_made_current_on_record,
+        "project_state",
+        "set_current_context",
+        "grade_context",
+        303,
+        at_the_call=True,
+    ),
     "homework class connected": Held(
         a_class_connected_on_record,
         "project_state",
@@ -3718,12 +3785,32 @@ GRADE_PRESSES = {
         404,
         at_the_call=True,
     ),
+    "link kept apart": Held(
+        a_link_kept_apart,
+        "project_state",
+        "decide_homework_link",
+        "grade_homework_links",
+        303,
+        at_the_call=True,
+    ),
 }
 """Each press on the grade pages made with the decision lock held, held as its write is called:
 a question and a link read the record before they ask for the lock."""
-KEY_READ_FIRST = {"grade save"}
-"""The presses that, as the first since the app started, read the key name forms are made under
-with the decision lock held before they ask for it again for their write."""
+KEY_READ_BEFORE = {"grade save"}
+"""The presses that, as the first since the app started, would read the key name forms are made
+under with the decision lock held before they ask for it again for their write. The test reads
+the key before the press instead, so the press made again is the one seen waiting."""
+
+
+def key_read_before(monkeypatch: pytest.MonkeyPatch, state: Any) -> None:  # noqa: ANN401
+    """The key name forms are made under, read from the household's secret before the press,
+    as a first review already made since the app started would hold it."""
+    key = name_form_key(secret_beside(state.settings.database_path))
+
+    async def held(*_: object) -> bytes:
+        return key
+
+    monkeypatch.setattr(grade_routes, "grade_name_key", held)
 
 
 @pytest.mark.parametrize("kind", CANCELS)
@@ -3739,9 +3826,10 @@ def test_a_canceled_grade_press_keeps_the_decision_lock_until_its_store_call_ret
     with grades_open() as client:
         app = client.app
         press = held.made(client)
+        if named in KEY_READ_BEFORE:
+            key_read_before(monkeypatch, state_of(client))
     waits = counted_waits(monkeypatch)
     canceled = asyncio.run(a_press_canceled(app, press, held, kind, second=True, waits=waits))
-    first = ["lock taken"] if named in KEY_READ_FIRST else []
 
     assert canceled.parked.on_the_loop is False
     assert not canceled.parked.hung
@@ -3749,7 +3837,6 @@ def test_a_canceled_grade_press_keeps_the_decision_lock_until_its_store_call_ret
     assert canceled.reached
     assert canceled.ended == CANCELS[kind]
     assert canceled.calls == [
-        *first,
         "lock taken",
         "store call entered",
         "store call returned",
@@ -3871,3 +3958,101 @@ def test_a_canceled_first_review_keeps_the_decision_lock_until_the_secret_is_rea
     assert canceled.waits_while_held <= 2, canceled.waits_while_held
     assert canceled.second == 200
     assert sorted(path.name for path in folder.glob(f"{SECRET_NAME}*")) == [SECRET_NAME]
+
+
+GRADE_COMMITS = {
+    "her term": Held(
+        a_term_chosen("/student/grades/view"),
+        "project_state",
+        "choose_view",
+        "grade_view_choices",
+        303,
+        at_the_call=True,
+    ),
+    "family term": Held(
+        a_term_chosen("/parent/grades/view"),
+        "project_state",
+        "choose_view",
+        "grade_view_choices",
+        303,
+        at_the_call=True,
+    ),
+    "current term": GRADE_PRESSES["current term on record"],
+    "homework class": GRADE_PRESSES["homework class connected"],
+    "grade save": GRADE_PRESSES["grade save"],
+    "question": GRADE_PRESSES["question"],
+    "link": GRADE_PRESSES["link kept apart"],
+}
+"""Each locked write of the grade pages, made where it lands, held as its write is called."""
+SHOWING_T2 = "Showing T2 · 2026-2027. Your household's current term in Blossom is T1 · 2026-2027."
+SHOWING_T1 = "Showing T1 · 2026-2027. Your household's current term in Blossom is T2 · 2026-2027."
+"""Grades opening on a term other than the current one, ``blossom/templates/grades.html``."""
+CONNECTED = "Connected to Biology."
+"""``CONNECTED_TO``, ``blossom/routes/grades.py``, on the name's line."""
+SAVED_NINE = "Saved. 9 added."
+"""The first line of a save's outcome, ``outcome_lines`` in ``blossom/routes/grades.py``."""
+KEPT_APART = f"Kept apart from {ESSAY_TITLE}. Blossom won't match these two by itself."
+"""``KEPT_APART_FROM``, ``blossom/routes/grades.py``, on the essay's row."""
+GRADE_STANDING = {
+    "her term": SHOWING_T2,
+    "family term": SHOWING_T2,
+    "current term": SHOWING_T1,
+    "homework class": str(escape(CONNECTED)),
+    "grade save": str(escape(SAVED_NINE)),
+    "question": str(escape(REQUEST_ALREADY_SAVED)),
+    "link": str(escape(KEPT_APART)),
+}
+"""What the page a repeat of each press lands on says of the write that stands, as its HTML
+carries it: the template's own words as written, a sentence the route passes in escaped."""
+ROWS_ADDED = {"current term": 0}
+"""The rows each write adds to its table, one unless named: a current term changes its row."""
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+@pytest.mark.parametrize("fails", [False, True], ids=["committed", "refused by the file"])
+@pytest.mark.parametrize("named", GRADE_COMMITS)
+def test_a_canceled_grade_press_is_whole_or_absent_and_said_truly_after(
+    named: str, kind: str, fails: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press on the grade pages canceled while its write is held sends no answer. When the
+    write then lands, its table holds it once, and the same press again lands on a page that
+    says what stands; when the file refuses it, the table is as it was and the same press again
+    is refused again, 500."""
+    held = GRADE_COMMITS[named]
+    with grades_open() as client:
+        app = client.app
+        press = held.made(client)
+        before = rows_of(client, held)
+        if named in KEY_READ_BEFORE:
+            key_read_before(monkeypatch, state_of(client))
+        if fails:
+            connection = getattr(state_of(client), held.store)._connection
+            for change in ("INSERT", "UPDATE"):
+                connection.execute(
+                    f"CREATE TRIGGER refuse_{change.lower()} BEFORE {change} ON {held.table} "
+                    "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+                )
+            connection.commit()
+    waits = counted_waits(monkeypatch)
+    canceled = asyncio.run(a_press_canceled(app, press, held, kind, second=False, waits=waits))
+    with TestClient(
+        app, follow_redirects=False, headers=SAME_ORIGIN, raise_server_exceptions=False
+    ) as client:
+        after = rows_of(client, held)
+        again = answer_to(client, press)
+        opened = again
+        if again.is_redirect:
+            opened = client.get(again.headers["location"], headers=PAGE_HEADERS)
+
+    assert canceled.parked.on_the_loop is False
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == ["lock taken", "store call entered", "store call returned"]
+    if fails:
+        assert after == before
+        assert again.status_code == 500
+    else:
+        assert after != before
+        assert len(after) == len(before) + ROWS_ADDED.get(named, 1)
+        assert again.status_code == held.again
+        assert GRADE_STANDING[named] in opened.text
