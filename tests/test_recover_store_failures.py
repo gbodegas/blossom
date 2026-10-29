@@ -110,6 +110,7 @@ from tests.support import (
     first_write_to,
     fixture_settings,
     form_fields,
+    form_values,
     fresh_plan_fields,
     fresh_signal_fields,
     hidden,
@@ -3505,6 +3506,36 @@ def a_question_on_no_result(_: TestClient) -> Sent:
     return Sent("POST", f"/student/grades/results/{NO_SUCH_RESULT}/ask", fields)
 
 
+def a_result_asked_about(client: TestClient) -> Sent:
+    """Her question about a result of the report saved whole, from its own page: the form's
+    request and the result are read before the decision lock."""
+    assert answer_to(client, a_grade_save(client)).status_code == 303
+    store = state_of(client).project_state
+    for (result_id,) in store._connection.execute("SELECT result_id FROM grade_results"):
+        address = f"/student/grades/results/{result_id}/ask"
+        page = client.get(address, headers=PAGE_HEADERS)
+        if page.status_code == 200:
+            return Sent("POST", address, {**form_fields(page.text, address), "note": "Why?"})
+    msg = "no result of hers to ask about"
+    raise AssertionError(msg)
+
+
+def a_class_connected_on_record(client: TestClient) -> Sent:
+    """The first homework class name on its page connected to the class the page offers, once
+    the report is saved whole: the names on record are read after the write."""
+    assert answer_to(client, a_grade_save(client)).status_code == 303
+    address = "/parent/grades/homework-classes"
+    values = form_values(client.get(address, headers=PAGE_HEADERS).text, address)
+    form: dict[str, str] = {}
+    for _, name, value in values:
+        if name == "class" and value:
+            return Sent("POST", address, {**form, "class": value})
+        if name != "class":
+            form[name] = value
+    msg = "no class to connect"
+    raise AssertionError(msg)
+
+
 def on_no_review(step: str = "") -> Callable[[TestClient], Sent]:
     """A press on a screenshot review no record holds, at ``step`` under its address."""
     return lambda _: Sent("POST", f"{IMPORTS}/{NO_SUCH_REVIEW}{step}", {})
@@ -3525,6 +3556,7 @@ GRADE_ON_THE_LOOP_CASES = [
         id="homework class refused",
     ),
     pytest.param(a_class_connected, 422, id="homework class, no class on record"),
+    pytest.param(a_class_connected_on_record, 303, id="homework class"),
     pytest.param(a_grade_review, 200, id="grade review"),
     pytest.param(unanswered(GRADE_CHECK), 422, id="grade check refused"),
     pytest.param(a_grade_check, 200, id="grade check"),
@@ -3536,6 +3568,7 @@ GRADE_ON_THE_LOOP_CASES = [
         id="question refused",
     ),
     pytest.param(a_question_on_no_result, 404, id="question on no result"),
+    pytest.param(a_result_asked_about, 303, id="question"),
     pytest.param(
         lambda _: Sent("POST", f"/parent/grades/results/{NO_SUCH_RESULT}/homework", {}),
         404,
@@ -3663,6 +3696,17 @@ GRADE_PRESSES = {
         422,
         at_the_call=True,
     ),
+    "homework class connected": Held(
+        a_class_connected_on_record,
+        "project_state",
+        "connect_homework_class",
+        "grade_homework_classes",
+        303,
+        at_the_call=True,
+    ),
+    "question": Held(
+        a_result_asked_about, "help_requests", "ask_once", "help_requests", 303, at_the_call=True
+    ),
     "grade save": Held(
         a_grade_save, "project_state", "save_grade_report", "grade_reports", 303, at_the_call=True
     ),
@@ -3676,7 +3720,7 @@ GRADE_PRESSES = {
     ),
 }
 """Each press on the grade pages made with the decision lock held, held as its write is called:
-a link reads the record before it asks for the lock."""
+a question and a link read the record before they ask for the lock."""
 KEY_READ_FIRST = {"grade save"}
 """The presses that, as the first since the app started, read the key name forms are made under
 with the decision lock held before they ask for it again for their write."""
