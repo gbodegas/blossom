@@ -18,8 +18,10 @@ import io
 import pathlib
 import re
 import sqlite3
+import threading
+import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -67,7 +69,7 @@ from blossom.routes.navigation import (
 )
 from blossom.routes.runs import Unconfirmed
 from blossom.school_instructions import InstructionChoice, InstructionSeen
-from blossom.stores.drafts import STORE_WAIT_SECONDS
+from blossom.stores.drafts import STORE_WAIT_SECONDS, StoreBusy, WriterBusy
 from blossom.stores.help_requests import new_request_id
 from blossom.stores.import_drafts import new_creation_token
 from blossom.stores.paths import SECRET_NAME
@@ -99,6 +101,7 @@ from tests.support import (
     AskedWaits,
     HangWatch,
     HeldByAnother,
+    LockHeldByAnother,
     OnTheLoop,
     Parked,
     Statements,
@@ -361,6 +364,8 @@ OTHER_FAILURES = {
     "the details": ("project_state", "one_assignment", "get details"),
     "her notes": ("project_state", "outstanding_captures", "get notes"),
     "her To turn in list": ("routes", "read_everything", "get list"),
+    "her week": ("drafts", "latest_for", "get week"),
+    "family review": ("drafts", "review_snapshot", "get family"),
     "taking a request back": ("help_requests", "take_back", "take back"),
     "saying today is too much": ("workload_signals", "record_once", "too much"),
     "a parent taking her request up": ("help_requests", "accept", "take up"),
@@ -394,6 +399,8 @@ def test_another_kind_of_failure_is_not_taken_for_a_file_that_cannot_be_read(
                 "get details": DETAILS,
                 "get notes": "/student/homework-notes",
                 "get list": "/student/to-turn-in",
+                "get week": HER_PAGE,
+                "get family": "/parent",
             }[press]
             answer = client.get(where, headers=PAGE_HEADERS)
         elif press == "take back":
@@ -4225,3 +4232,345 @@ def test_a_screenshot_review_step_runs_no_statement_on_the_event_loop(
     assert answer.status_code == code, answer.text[:300]
     assert seen.loop == []
     assert seen.workers != []
+
+
+# ------------------------------------------------------------- the drafts store busy
+
+
+WEEK_UNREADABLE = "This week cannot be shown right now"
+WEEK_NOT_READ = (
+    "The record cannot be read right now, so the week, its updates and current date "
+    "information are not shown. Try again in a moment. Try again"
+)
+FAMILY_NOT_READ = (
+    "The record cannot be read right now, so reviews, updates and current date information "
+    "are not shown. Try again in a moment. Try again"
+)
+NOT_ON_RECORD = "This assignment is not on record now."
+TO_TODAY = {"return_to": "today"}
+TO_A_PLAN = {"return_to": "family", "plan_id": "draft:a"}
+WAYS_BACK = {
+    "today": [("/student/due-this-week#today", "Back to Today")],
+    "family": [("/parent?plan=draft%3Aa#plan-draft-a", "Back to family review")],
+}
+
+
+@dataclass(frozen=True)
+class BusyPage:
+    """A page, or a press's answer, made inside a catch around a drafts read: the read to
+    refuse, and the status, heading and explanation of the page it falls back to."""
+
+    read: str
+    status: int
+    heading: str
+    alert: str
+
+
+BUSY_PAGES = {
+    "her week": BusyPage("latest_for", 503, WEEK_UNREADABLE, WEEK_NOT_READ),
+    "family review": BusyPage("review_snapshot", 503, "Family review", FAMILY_NOT_READ),
+    "a check refused on family review": BusyPage(
+        "review_snapshot",
+        404,
+        "Family review",
+        f"No assignment with that id is on record. Nothing was written. {FAMILY}",
+    ),
+    "an update refused on her week": BusyPage(
+        "latest_for",
+        422,
+        "Update not saved",
+        f"Nothing was saved, because neither Done nor Not yet was chosen. {YOUR_WEEK}",
+    ),
+    "work gone from the record": BusyPage("latest_for", 404, "Assignment", NOT_ON_RECORD),
+    "the details": BusyPage(
+        "latest_for", 503, "Assignment", f"{THIS_ASSIGNMENT} Try again in a moment. Try again"
+    ),
+}
+ANSWERED_AS_BEFORE = {
+    "her week": 200,
+    "family review": 200,
+    "a check refused on family review": 404,
+    "an update refused on her week": 422,
+    "work gone from the record": 404,
+    "the details": 200,
+}
+
+
+def unheld() -> TestClient:
+    """The fixture week with the sign-in off, a failure no page catches answered as a server
+    answers it."""
+    return quiet_client(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
+
+
+def quiet(client: TestClient) -> TestClient:
+    """The application ``client`` reaches, with a failure no page catches answered as a
+    server answers it."""
+    return TestClient(
+        client.app, follow_redirects=False, headers=SAME_ORIGIN, raise_server_exceptions=False
+    )
+
+
+def busy_request(client: TestClient, case: str, back: dict[str, str]) -> Sent:
+    """Make what ``case`` needs; the request itself, with ``back`` as the way back where the
+    page offers one."""
+    if case == "her week":
+        return Sent("GET", HER_PAGE)
+    if case == "family review":
+        return Sent("GET", "/parent")
+    if case == "a check refused on family review":
+        path, data, _ = family_press(client, "a check of homework not on record", "open")
+        return Sent("POST", path, data)
+    if case == "an update refused on her week":
+        path, data = week_press(client, "nothing chosen")
+        return Sent("POST", path, data)
+    where = f"/student/assignments/{GONE_ID}" if case == "work gone from the record" else DETAILS
+    return Sent("GET", f"{where}?{httpx.QueryParams(back)}")
+
+
+def busy_answer(answer: Any, page: BusyPage, back: dict[str, str]) -> None:  # noqa: ANN401
+    """``answer`` is the page ``page`` falls back to, never the server's own error."""
+    assert answer.text != "Internal Server Error"
+    if page.alert == NOT_ON_RECORD:
+        assert answer.status_code == page.status, answer.text[:300]
+        main = main_of(answer.text)
+        assert NOT_ON_RECORD in main
+    else:
+        main = store_free_page(answer, status=page.status, heading=page.heading, alert=page.alert)
+    if page.heading == "Assignment":
+        assert ways_back_of(main) == WAYS_BACK[back["return_to"]]
+
+
+def busy_refusals(monkeypatch: pytest.MonkeyPatch, store: Any) -> list[str]:  # noqa: ANN401
+    """Each call of ``store`` refused as busy, by kind, as it is refused."""
+    refused: list[str] = []
+    session = store._session
+
+    @contextlib.contextmanager
+    def watched(*args: object, **kwargs: object) -> Iterator[object]:
+        try:
+            with session(*args, **kwargs) as held:
+                yield held
+        except (StoreBusy, WriterBusy) as error:
+            refused.append(type(error).__name__)
+            raise
+
+    monkeypatch.setattr(store, "_session", watched)
+    return refused
+
+
+BUSY_KINDS = [
+    *[pytest.param(case, StoreBusy, id=case) for case in BUSY_PAGES],
+    pytest.param("family review", WriterBusy, id="family review, its writer busy"),
+]
+
+
+@pytest.mark.parametrize(("case", "kind"), BUSY_KINDS)
+def test_a_page_whose_drafts_are_refused_as_busy_falls_back_and_writes_nothing(
+    case: str, kind: type[Exception], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drafts read refused as busy, inside the catch a page or a press is made in, gets
+    the page that catch already falls back to, the same as a file that can't be read."""
+    page = BUSY_PAGES[case]
+    with unheld() as client:
+        sent = busy_request(client, case, TO_TODAY)
+        before = every_row(database_of(client))
+        with Statements(state_of(client)) as seen:
+            monkeypatch.setattr(state_of(client).drafts, page.read, refusing(kind, seen))
+            answer = answer_to(client, sent)
+        monkeypatch.undo()
+        after = every_row(database_of(client))
+
+    busy_answer(answer, page, TO_TODAY)
+    assert after_the_failure(seen) == []
+    assert after == before
+
+
+@pytest.mark.parametrize("case", list(BUSY_PAGES))
+def test_a_page_whose_drafts_another_caller_holds_falls_back_and_writes_nothing(
+    case: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The drafts store's own lock held past its wait, so each drafts read is refused as
+    busy in earnest: the page that catch falls back to, and nothing written."""
+    page = BUSY_PAGES[case]
+    with HangWatch(capsys) as watch, unheld() as client:
+        sent = busy_request(client, case, TO_A_PLAN)
+        before = every_row(database_of(client))
+        with LockHeldByAnother(state_of(client).drafts):
+            answer, _ = watch.press(lambda: answer_to(client, sent))
+        after = every_row(database_of(client))
+
+    busy_answer(answer, page, TO_A_PLAN)
+    assert after == before
+
+
+@pytest.mark.parametrize("case", list(BUSY_PAGES))
+def test_a_page_whose_drafts_are_free_answers_as_before(case: str) -> None:
+    with unheld() as client:
+        answer = answer_to(client, busy_request(client, case, TO_A_PLAN))
+
+    assert answer.status_code == ANSWERED_AS_BEFORE[case], answer.text[:300]
+    assert "can't be shown right now" not in answer.text
+    assert "cannot be read right now" not in answer.text
+
+
+def test_family_review_whose_drafts_another_caller_holds_is_not_kept_signed_in(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with HangWatch(capsys) as watch, quiet(household_client("parent", tmp_path)) as client:
+        sign_in_as(client, "parent")
+        with LockHeldByAnother(state_of(client).drafts):
+            answer, _ = watch.press(lambda: client.get("/parent", headers=PAGE_HEADERS))
+
+    store_free_page(answer, status=503, heading="Family review", alert=FAMILY_NOT_READ)
+    assert answer.headers["cache-control"] == "no-store"
+
+
+def test_three_pages_at_once_on_a_held_file_each_fall_back(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three pages asked for 30 ms apart while another program holds the file: each drafts
+    read holds the store's lock through its file wait, so a later one can be refused as busy
+    first. A run in which none was is inconclusive; the held lock above is the sure case."""
+    addresses = ["/parent", HER_PAGE, "/parent"]
+    answers: dict[int, Any] = {}
+    with HangWatch(capsys) as watch, unheld() as client:
+        for address in addresses[:2]:
+            assert client.get(address, headers=PAGE_HEADERS).status_code == 200
+        refused = busy_refusals(monkeypatch, state_of(client).drafts)
+
+        def ask(i: int) -> None:
+            answers[i] = client.get(addresses[i], headers=PAGE_HEADERS)
+
+        def three_at_once() -> None:
+            asking = [threading.Thread(target=ask, args=(i,), daemon=True) for i in range(3)]
+            for thread in asking:
+                thread.start()
+                time.sleep(0.03)
+            for thread in asking:
+                thread.join(HANG_LIMIT_SECONDS)
+
+        with HeldByAnother(database_of(client)):
+            watch.press(three_at_once)
+        monkeypatch.undo()
+
+    assert sorted(answers) == [0, 1, 2]
+    for i, address in enumerate(addresses):
+        if address == "/parent":
+            store_free_page(answers[i], status=503, heading="Family review", alert=FAMILY_NOT_READ)
+        else:
+            store_free_page(answers[i], status=503, heading=WEEK_UNREADABLE, alert=WEEK_NOT_READ)
+    if not refused:
+        pytest.skip("no drafts read was refused as busy in this run, so it shows nothing of them")
+
+
+TURNED_IN_WORDS = {"note": "Outline finished, essay next", "expected_report_id": ""}
+TURNED_IN_SAID = "You reported this turned in."
+NOT_SAVED_ON_A_TURN_IN = (
+    hand_in_routes.HAND_IN_NOT_SAVED,
+    hand_in_routes.HAND_IN_NOT_UNDONE,
+    hand_in_routes.LIST_NOT_SAVED,
+    hand_in_routes.LIST_TURN_IN_FAILED,
+    hand_in_routes.LIST_UNDO_FAILED,
+    "Update not saved",
+)
+
+
+def turn_ins(client: TestClient) -> int:
+    """How many turn-in events the file holds, read through a connection of its own."""
+    connection = sqlite3.connect(database_of(client))
+    try:
+        return connection.execute("SELECT COUNT(*) FROM hand_in_events").fetchone()[0]
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("busy", ["refused", "held by another caller"])
+def test_a_turn_in_with_her_words_saved_before_her_week_is_busy_says_it_was_saved(
+    busy: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I turned it in with her update's words is saved first; her week, which its answer
+    is, then can't read the drafts. The answer says what was saved, keeps her words, and
+    says nothing of a turn-in not saved."""
+    with HangWatch(capsys) as watch, unheld() as client:
+        press = a_card_turn_in(client)
+        sent = Sent(press.method, press.path, {**(press.data or {}), **TURNED_IN_WORDS})
+        before = turn_ins(client)
+        if busy == "refused":
+            drafts = state_of(client).drafts
+            monkeypatch.setattr(drafts, "newest_published", refusing(StoreBusy))
+            answer, _ = watch.press(lambda: answer_to(client, sent))
+            monkeypatch.undo()
+        else:
+            with LockHeldByAnother(state_of(client).drafts):
+                answer, _ = watch.press(lambda: answer_to(client, sent))
+        after = turn_ins(client)
+
+    main = store_free_page(
+        answer,
+        status=503,
+        heading="Turning it in",
+        alert=f"{TURNED_IN_SAID} {YOUR_WEEK}",
+    )
+    assert after == before + 1
+    assert TURNED_IN_WORDS["note"] in main
+    for never in NOT_SAVED_ON_A_TURN_IN:
+        assert never not in main, never
+
+
+def test_a_turn_in_with_her_words_is_her_week_as_before_when_the_drafts_are_free() -> None:
+    with unheld() as client:
+        press = a_card_turn_in(client)
+        sent = Sent(press.method, press.path, {**(press.data or {}), **TURNED_IN_WORDS})
+        before = turn_ins(client)
+        answer = answer_to(client, sent)
+        after = turn_ins(client)
+
+    assert answer.status_code == 200, answer.text[:300]
+    assert TURNED_IN_SAID in answer.text
+    assert after == before + 1
+
+
+def test_a_decision_on_a_decided_draft_keeps_its_409_when_the_drafts_are_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with quiet(browser(key=True)) as client:
+        walkthrough(client)
+        made = planned(client)
+        decide = f"/parent/actions/decide/{made.draft_id}"
+        assert client.post(decide, data={"decision": "approve", "reason": ""}).status_code == 303
+        before = every_row(database_of(client))
+        with Statements(state_of(client)) as seen:
+            monkeypatch.setattr(
+                state_of(client).drafts, "review_snapshot", refusing(StoreBusy, seen)
+            )
+            answer = client.post(decide, data={"decision": "refuse", "reason": TYPED})
+        monkeypatch.undo()
+        after = every_row(database_of(client))
+
+    main = store_free_page(
+        answer,
+        status=409,
+        heading="Family review",
+        alert=f"draft '{made.draft_id}' was already approved. {FAMILY}",
+    )
+    assert f"readonly>{escape(TYPED)}</textarea>" in main
+    assert after_the_failure(seen) == []
+    assert after == before
+
+
+def test_family_review_after_a_saved_keep_whose_drafts_another_caller_holds_falls_back(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A paste kept is saved and redirects to family review; that page then can't read the
+    drafts. It falls back, and what the keep saved stays saved."""
+    with HangWatch(capsys) as watch, unheld() as client:
+        before = every_row(database_of(client))
+        with LockHeldByAnother(state_of(client).drafts):
+            kept, _ = watch.press(lambda: answer_to(client, a_paste_saved(client)))
+            assert kept.status_code == 303, kept.text[:300]
+            where = kept.headers["location"]
+            answer, _ = watch.press(lambda: client.get(where, headers=PAGE_HEADERS))
+        after = every_row(database_of(client))
+
+    store_free_page(answer, status=503, heading="Family review", alert=FAMILY_NOT_READ)
+    assert set(after) - set(before)
