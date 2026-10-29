@@ -4343,6 +4343,9 @@ def busy_request(client: TestClient, case: str, back: dict[str, str], reader: st
     if case == "a check refused on family review":
         path, data, _ = family_press(client, "a check of homework not on record", reader)
         return Sent("POST", path, data)
+    if case == "a check form not whole on family review":
+        path, data, _ = family_press(client, "a check form not whole", reader)
+        return Sent("POST", path, data)
     if case == "an update refused on her week":
         path, data = week_press(client, "nothing chosen")
         return Sent("POST", path, data)
@@ -4373,7 +4376,8 @@ GUARDED_READS = {
     "latest_for": "her week",
 }
 """The drafts reads the catch of family review and of her week covers, by the page that
-makes them. A busy refusal of any other read, the latest run's, is caught before it."""
+makes them. These pages read the drafts twice more, the latest run and, with ``?run=``, that
+run's status, and a busy refusal of either is caught before the page's catch."""
 
 
 def busy_at_the_catch(monkeypatch: pytest.MonkeyPatch, store: Any) -> Counter[str]:  # noqa: ANN401
@@ -4487,7 +4491,7 @@ def asked_at_once(client: TestClient, watch: HangWatch, sent: list[Sent]) -> lis
 def test_three_pages_at_once_on_a_held_file_each_fall_back(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
-    record_property: Callable[[str, object], None],
+    request: pytest.FixtureRequest,
 ) -> None:
     """Three pages asked for 30 ms apart while another program holds the file: each drafts
     read holds the store's lock through its file wait, so a later one can be refused as busy
@@ -4508,23 +4512,43 @@ def test_three_pages_at_once_on_a_held_file_each_fall_back(
             store_free_page(answer, status=503, heading="Family review", alert=FAMILY_NOT_READ)
         else:
             store_free_page(answer, status=503, heading=WEEK_UNREADABLE, alert=WEEK_NOT_READ)
-    record_property("busy refusals at each page's guarded reads", dict(refused))
+    request.node.user_properties.append(
+        ("busy refusals at each page's guarded reads", dict(refused))
+    )
     if not refused["family review"]:
         pytest.skip("no read family review's catch covers was refused as busy in this run")
 
 
-@pytest.mark.parametrize("case", ["her week", "an update refused on her week"])
-def test_three_at_once_on_her_week_on_a_held_file_each_fall_back(
+AT_ONCE = {
+    "her week": (BUSY_PAGES["her week"], "her week"),
+    "an update refused on her week": (BUSY_PAGES["an update refused on her week"], "her week"),
+    "a check form not whole on family review": (
+        BusyPage(
+            "review_snapshot",
+            422,
+            "Family review",
+            f"The form did not arrive whole. Nothing was written. {FAMILY}",
+        ),
+        "family review",
+    ),
+}
+"""Each request asked three times at once, the page its catch falls back to, and the page
+whose guarded reads that catch covers."""
+
+
+@pytest.mark.parametrize("case", list(AT_ONCE))
+def test_three_alike_at_once_on_a_held_file_each_fall_back(
     case: str,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
-    record_property: Callable[[str, object], None],
+    request: pytest.FixtureRequest,
 ) -> None:
-    """Her week asked for, or a refused update answered on it, three times 30 ms apart while
-    another program holds the file. Every answer is the page its catch falls back to. The
-    run counts only when one of her week's guarded reads was refused as busy, and is
-    inconclusive otherwise; the held lock above is the sure case."""
-    page = BUSY_PAGES[case]
+    """Her week, a refused update answered on it, or a refused check answered on family
+    review, asked three times 30 ms apart while another program holds the file. Every answer
+    is the page its catch falls back to. The run counts only when one of the guarded reads
+    that catch covers was refused as busy, and is inconclusive otherwise; the held lock
+    above is the sure case."""
+    page, guarded = AT_ONCE[case]
     with HangWatch(capsys) as watch, unheld() as client:
         assert client.get(HER_PAGE, headers=PAGE_HEADERS).status_code == 200
         sent = busy_request(client, case, TO_TODAY)
@@ -4534,9 +4558,11 @@ def test_three_at_once_on_her_week_on_a_held_file_each_fall_back(
 
     for answer in answers:
         busy_answer(answer, page, TO_TODAY)
-    record_property("busy refusals at each page's guarded reads", dict(refused))
-    if not refused["her week"]:
-        pytest.skip("no read her week's catch covers was refused as busy in this run")
+    request.node.user_properties.append(
+        ("busy refusals at each page's guarded reads", dict(refused))
+    )
+    if not refused[guarded]:
+        pytest.skip(f"no read {guarded}'s catch covers was refused as busy in this run")
 
 
 TURNED_IN_WORDS = {"note": "Outline finished, essay next", "expected_report_id": ""}
@@ -4793,7 +4819,7 @@ UNREADABLE_DRAFTS = ("newest_published", "latest_for", "get")
 
 
 @pytest.mark.parametrize("case", list(HELD_PRESSES))
-def test_a_press_whose_answer_another_caller_holds_the_drafts_of_reads_as_for_an_unreadable_file(
+def test_a_press_answered_while_another_caller_holds_the_drafts_reads_as_for_an_unreadable_file(
     case: str,
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
