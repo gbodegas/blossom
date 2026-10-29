@@ -10227,7 +10227,7 @@ def then_held(real: Callable[..., Any], held: HeldOnceCalled) -> Callable[..., A
     return call
 
 
-def a_read_review(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+def review_and_page(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
     return read_review(browser, monkeypatch, (RED, homework_answer()))
 
 
@@ -10274,7 +10274,7 @@ def review_visit(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
 
 
 def read_review_visit(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    draft_id, _ = a_read_review(browser, monkeypatch)
+    draft_id, _ = review_and_page(browser, monkeypatch)
     return lambda: browser.get(f"/parent/imports/{draft_id}", headers=PAGE_HEADERS)
 
 
@@ -10286,17 +10286,17 @@ def read_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
 
 
 def keep_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    draft_id, page = a_read_review(browser, monkeypatch)
+    draft_id, page = review_and_page(browser, monkeypatch)
     return lambda: send(browser, draft_id, typed_post(page, "keep"))
 
 
 def later_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    draft_id, page = a_read_review(browser, monkeypatch)
+    draft_id, page = review_and_page(browser, monkeypatch)
     return lambda: send(browser, draft_id, typed_post(page, "later"))
 
 
 def save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    draft_id, page = a_read_review(browser, monkeypatch)
+    draft_id, page = review_and_page(browser, monkeypatch)
     return lambda: send(browser, draft_id, typed_post(page, "save"))
 
 
@@ -10310,14 +10310,14 @@ def partly_post(page: str) -> list[tuple[str, str]]:
 
 
 def partly_save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    draft_id, page = a_read_review(browser, monkeypatch)
+    draft_id, page = review_and_page(browser, monkeypatch)
     page = her_name_answered(browser, draft_id, page)
     return lambda: send(browser, draft_id, partly_post(page))
 
 
 def resent_save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
     """A save of one group of two, sent again with the review still open."""
-    draft_id, page = a_read_review(browser, monkeypatch)
+    draft_id, page = review_and_page(browser, monkeypatch)
     page = her_name_answered(browser, draft_id, page)
     posted = partly_post(page)
     assert send(browser, draft_id, posted).status_code == 200
@@ -10326,7 +10326,7 @@ def resent_save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> P
 
 def closed_resend_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
     """A save that closed its review, sent again."""
-    draft_id, page = a_read_review(browser, monkeypatch)
+    draft_id, page = review_and_page(browser, monkeypatch)
     page = her_name_answered(browser, draft_id, page)
     posted = page_post(page, "save", tick=units_on(page))
     assert send(browser, draft_id, posted).status_code == 200
@@ -10335,7 +10335,7 @@ def closed_resend_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def find_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    draft_id, page = a_read_review(browser, monkeypatch)
+    draft_id, page = review_and_page(browser, monkeypatch)
     piece = fields_named(review_form(page), "answer:destination:")[0]
     return lambda: browser.post(
         f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "essay"}
@@ -10343,13 +10343,13 @@ def find_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
 
 
 def set_aside_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    draft_id, page = a_read_review(browser, monkeypatch)
+    draft_id, page = review_and_page(browser, monkeypatch)
     page = her_name_answered(browser, draft_id, page)
     return lambda: press_outside(browser, page, "leave-1")
 
 
 def finish_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    draft_id, page = a_read_review(browser, monkeypatch)
+    draft_id, page = review_and_page(browser, monkeypatch)
     page = her_name_answered(browser, draft_id, page)
     first, _ = units_on(page)
     after = followed(browser, send(browser, draft_id, page_post(page, "save", tick=[first])))
@@ -10357,12 +10357,12 @@ def finish_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
 
 
 def discard_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    _, page = a_read_review(browser, monkeypatch)
+    _, page = review_and_page(browser, monkeypatch)
     return lambda: press_outside(browser, page, "discard")
 
 
 def not_hers_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
-    _, page = a_read_review(browser, monkeypatch)
+    _, page = review_and_page(browser, monkeypatch)
     return lambda: press_outside(browser, page, "not-hers")
 
 
@@ -10579,7 +10579,7 @@ def committed_then_held(
         real_remove = drafts_store.remove_image
         monkeypatch.setattr(drafts_store, "remove_image", then_held(real_remove, held))
     elif route == "read":
-        real_read = imports.read_screenshots
+        real_read = screenshot_reading.read_screenshots
 
         async def read_then_held(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
             outcome = await real_read(*args, **kwargs)
@@ -10594,9 +10594,11 @@ def committed_then_held(
         real_later = drafts_store.save_for_later
         monkeypatch.setattr(drafts_store, "save_for_later", then_held(real_later, held))
     elif route == "save, review left open":
-        monkeypatch.setattr(imports, "save_homework", then_held(imports.save_homework, held))
+        monkeypatch.setattr(
+            imports, "save_homework", then_held(screenshot_save.save_homework, held)
+        )
     else:
-        real_save = imports.save_homework
+        real_save = screenshot_save.save_homework
         hooked = functools.partial(real_save, hooks=HoldAfterCommit(held))
         monkeypatch.setattr(imports, "save_homework", hooked)
     before = one_row(path, landed)
@@ -10639,7 +10641,7 @@ def test_a_press_whose_write_committed_before_the_file_was_held_says_what_it_did
         assert answer.status_code == 303
         assert answer.headers["location"].startswith("/parent/imports/")
     if route == "later":
-        assert said_lines(shown)[0] == imports.PRESS_SAID["later"]
+        assert first_said(shown) == imports.PRESS_SAID["later"]
 
 
 SAVE_SHAPES: Final = {
@@ -10660,7 +10662,7 @@ def test_a_save_whose_homework_committed_before_the_file_was_held_says_what_it_s
     can't be shown, at 200, never that nothing was saved."""
     with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
         if shape == "save, review not closed":
-            draft_id, page = a_read_review(browser, monkeypatch)
+            draft_id, page = review_and_page(browser, monkeypatch)
             page = her_name_answered(browser, draft_id, page)
             posted = page_post(page, "save", tick=units_on(page))
             monkeypatch.setitem(
@@ -10682,12 +10684,14 @@ def test_a_save_that_closed_its_review_before_the_file_was_held_answers_as_desig
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
-        draft_id, page = a_read_review(browser, monkeypatch)
+        draft_id, page = review_and_page(browser, monkeypatch)
         page = her_name_answered(browser, draft_id, page)
         posted = page_post(page, "save", tick=units_on(page))
         path = database_of(browser)
         held = HeldOnceCalled(path)
-        monkeypatch.setattr(imports, "save_homework", then_held(imports.save_homework, held))
+        monkeypatch.setattr(
+            imports, "save_homework", then_held(screenshot_save.save_homework, held)
+        )
         before = one_row(path, SAVED)
         try:
             answer, _ = watch.press(lambda: send(browser, draft_id, posted))
@@ -10707,7 +10711,7 @@ def test_a_save_whose_answers_were_kept_before_the_file_was_held_says_so_and_sav
     check reads her record: the answers kept, then that the homework wasn't saved because the
     file was busy, with the typing given back, 503, never that the name couldn't be checked."""
     with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
-        draft_id, page = a_read_review(browser, monkeypatch)
+        draft_id, page = review_and_page(browser, monkeypatch)
         posted = typed_post(page, "save")
         monkeypatch.setitem(
             PRESSES, "partly save", lambda *_: lambda: send(browser, draft_id, posted)
@@ -11104,6 +11108,37 @@ def test_each_import_store_call_a_busy_file_refuses_answers_with_the_route_s_own
         )
 
 
+REFUSED_THEN_UNREAD: Final = {
+    "keep": ("review_press", "keep_answers", "keep_failed"),
+    "later": ("later_press", "save_for_later", "later_failed"),
+    "save": ("save_press", "keep_answers", "save_failed"),
+}
+
+
+@pytest.mark.parametrize("read", ["student_id", "snapshot"])
+@pytest.mark.parametrize("press", list(REFUSED_THEN_UNREAD))
+def test_a_write_a_busy_file_refused_whose_page_can_t_be_read_either_says_it_kept_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, read: str
+) -> None:
+    """The press's write refused as busy by its code, then its page's own read of her record or
+    of the review refused the same way: the press's failure line, then that the review can't be
+    shown, 503, never that anything was kept, with the typing given back."""
+    caller, method, failed = REFUSED_THEN_UNREAD[press]
+    busy = refusing_coded("SQLITE_BUSY")
+    rules = ((caller, method, 1, busy), ("snapshot_keeping_typing", read, 1, busy))
+    answer, _, refusing_now = refused_at(tmp_path, monkeypatch, press, *rules)
+
+    assert len(refusing_now.refused) == 2, refusing_now.seen
+    assert answer.status_code == 503, answer.text[:600]
+    assert lines_in(PROBLEM_BLOCK.search(answer.text)) == [
+        imports.PRESS_SAID[failed],
+        imports.REVIEW_NOT_SHOWN,
+    ]
+    assert KEPT_BLOCK.search(answer.text) is None
+    assert TYPED_TITLE in TYPED_BACK.findall(answer.text)
+    assert answer.headers["cache-control"] == "no-store"
+
+
 @pytest.mark.parametrize("code", ["SQLITE_BUSY_SNAPSHOT", "SQLITE_BUSY_RECOVERY"])
 def test_an_extended_busy_code_is_a_busy_file(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, code: str
@@ -11112,7 +11147,7 @@ def test_an_extended_busy_code_is_a_busy_file(
     answer, _, _ = refused_at(tmp_path, monkeypatch, "keep", rule)
 
     assert answer.status_code == 503
-    assert said_lines(answer.text) == [imports.PRESS_SAID["keep_failed"]]
+    assert first_said(answer.text) == imports.PRESS_SAID["keep_failed"]
 
 
 REPLAY_GUARDED: Final = {
@@ -11137,7 +11172,7 @@ def test_a_resent_save_whose_record_can_t_be_read_answers_with_the_page_it_guard
 
     assert len(refusing_now.refused) == 2, refusing_now.seen
     assert answer.status_code == status, answer.text[:600]
-    assert said in [first_said(answer.text), *said_lines(answer.text)]
+    assert first_said(answer.text) == said
     assert TYPED_TITLE in TYPED_BACK.findall(answer.text)
 
 
