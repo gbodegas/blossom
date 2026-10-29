@@ -4479,7 +4479,7 @@ def turn_ins(client: TestClient) -> int:
     """How many turn-in events the file holds, read through a connection of its own."""
     connection = sqlite3.connect(database_of(client))
     try:
-        return connection.execute("SELECT COUNT(*) FROM hand_in_events").fetchone()[0]
+        return int(connection.execute("SELECT COUNT(*) FROM hand_in_events").fetchone()[0])
     finally:
         connection.close()
 
