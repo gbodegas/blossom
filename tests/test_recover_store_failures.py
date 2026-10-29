@@ -32,6 +32,7 @@ from markupsafe import escape
 
 from blossom.agent.runs import Unfinished
 from blossom.dependencies import STATE_ATTRIBUTE
+from blossom.drafts import Draft
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.routes import hand_in as hand_in_routes
@@ -53,6 +54,7 @@ from blossom.routes.navigation import (
     week_href,
 )
 from blossom.routes.runs import Unconfirmed
+from blossom.school_instructions import InstructionChoice, InstructionSeen
 from blossom.stores.drafts import STORE_WAIT_SECONDS
 from tests.support import (
     DETAILS,
@@ -85,6 +87,8 @@ from tests.support import (
     Parked,
     Statements,
     WaitBeside,
+    a_discrepancy,
+    action_of,
     after_the_failure,
     browser,
     card_for,
@@ -95,6 +99,7 @@ from tests.support import (
     ended_run,
     every_row,
     family_line_focused,
+    family_page,
     family_plan,
     first_write_to,
     fixture_settings,
@@ -102,6 +107,7 @@ from tests.support import (
     fresh_plan_fields,
     fresh_signal_fields,
     hidden,
+    homework_from_a_note,
     household_client,
     link_note,
     main_of,
@@ -113,8 +119,10 @@ from tests.support import (
     refusing,
     report,
     reported,
+    row_for,
     rules_named,
     runs_recorded,
+    settled_run,
     sign_in_as,
     state_of,
     store_free_page,
@@ -2274,6 +2282,13 @@ async def a_static_file_beside(app: Any, press: Sent, where: str) -> tuple[list[
         pytest.param(
             Sent("POST", note_action(A_NOTE_ID, "edit"), {}), "page", 422, id="note edit refused"
         ),
+        pytest.param(
+            Sent("POST", "/parent/inbox/keep", {"text": MISSING_EMAIL}),
+            "status_reports",
+            303,
+            id="paste save",
+        ),
+        pytest.param(Sent("POST", "/parent/inbox/read", {}), "page", 422, id="paste read refused"),
     ],
 )
 def test_a_static_file_is_answered_while_her_press_is_held_in_its_store_call(
@@ -2639,6 +2654,127 @@ NOTE_PRESSES = {
 details presses read the store their write holds before they ask for the lock, so they are
 held as the write is called."""
 NOTE_PRESSES_HELD = [pytest.param(held, id=named) for named, held in NOTE_PRESSES.items()]
+
+
+INSTRUCTIONS = f"/parent/actions/school-instructions/{ESSAY_ID}"
+INSTRUCTIONS_PAGE = f"/parent/school-instructions/{ESSAY_ID}"
+CHECK = f"/parent/actions/checks/{ESSAY_ID}"
+KEEP = "/parent/inbox/keep"
+FIND = "/parent/inbox/find"
+PLAN_KEPT = "draft:plan:kept"
+OUTLINE = "Outline three causes before drafting."
+CITE = "Cite the map handout."
+ASSIGNED_ELSEWHERE = (
+    "Homework for Wren\n- 08/24/2026 - Monday\n"
+    "08 Algebra - Assigned: Q1 Check 3: (Due:08/27/2026)\n"
+)
+"""A paste of homework the school names otherwise than the record does: its card offers a
+search."""
+
+
+def an_instruction_chosen(client: TestClient) -> Sent:
+    """Both of the essay's instructions chosen from its review as the page shows it: the
+    first applies, and the second was read later and kept apart."""
+    settle = partial(
+        state_of(client).project_state.settle_school_instructions,
+        ESSAY_ID,
+        authored_by="parent",
+        now=datetime(2026, 8, 19, 20, 0, tzinfo=UTC),
+        today=PLAN_DATE,
+    )
+    settle([InstructionSeen(OUTLINE, SourceChannel.LMS, "assigned", date(2026, 8, 17))], None)
+    later = InstructionSeen(CITE, SourceChannel.LMS, "due", date(2026, 8, 21))
+    settle([later], InstructionChoice(1, (OUTLINE, CITE), frozenset({OUTLINE})))
+    page = client.get(INSTRUCTIONS_PAGE, headers=PAGE_HEADERS).text
+    both = {"apply-0": "1", "apply-1": "1"}
+    return Sent("POST", INSTRUCTIONS, {**whole_form(page, INSTRUCTIONS), **both})
+
+
+def a_row_never_kept(_: TestClient) -> Sent:
+    """A choice of a kept row the essay doesn't keep: refused once the rows kept are read."""
+    return Sent("POST", INSTRUCTIONS, {"revision": "0", "row-0": "7", "apply-0": "1"})
+
+
+def a_paste_saved(_: TestClient) -> Sent:
+    return Sent("POST", KEEP, {"text": MISSING_EMAIL})
+
+
+def a_search_chosen(client: TestClient) -> Sent:
+    """Choose, on a card that offers a search, homework the search found: the choice reads
+    that homework before the page is made."""
+    target = homework_from_a_note(
+        state_of(client).project_state,
+        course="08 Algebra",
+        title="Patterns quiz",
+        due_date=date(2026, 8, 27),
+    )
+    read = client.post("/parent/inbox/read", data={"text": ASSIGNED_ELSEWHERE})
+    assert read.status_code == 200, read.text[:300]
+    looked = client.post(
+        FIND, data={**whole_form(read.text, KEEP), "find": "0", "search-0": "patterns"}
+    )
+    assert looked.status_code == 200, looked.text[:300]
+    assert f'name="choose" value="0:{target}"' in looked.text
+    return Sent("POST", FIND, {**whole_form(looked.text, KEEP), "choose": f"0:{target}"})
+
+
+def a_check_marked(client: TestClient) -> Sent:
+    a_discrepancy(client)
+    row = row_for(family_page(client), ESSAY_ID)
+    fields = {"basis": hidden(row, "basis"), "expected_check_id": "", "note": "Seen."}
+    return Sent("POST", action_of(row, "mark"), fields)
+
+
+def a_check_reopened(client: TestClient) -> Sent:
+    assert answer_to(client, a_check_marked(client)).status_code == 303
+    row = row_for(family_page(client), ESSAY_ID)
+    fields = {"check_id": hidden(row, "check_id"), "basis": hidden(row, "basis")}
+    return Sent("POST", action_of(row, "again"), fields)
+
+
+def a_plan_the_saver_lost(client: TestClient) -> None:
+    """Today's plan, waiting, settled without a graph: the saver holds no review step for it."""
+    settled_run(
+        state_of(client).drafts,
+        Draft(
+            draft_id="draft:plan:kept",
+            body="Plan",
+            created_at=datetime(2026, 8, 19, 22, 0, tzinfo=UTC),
+        ),
+        thread_id="plan:kept",
+        plan_date=PLAN_DATE,
+    )
+
+
+def a_plan_it_cannot_resume(client: TestClient) -> Sent:
+    """Looks good on a waiting plan whose saved review step the saver doesn't hold: refused,
+    409, on the family page."""
+    a_plan_the_saver_lost(client)
+    return Sent("POST", f"/parent/actions/decide/{PLAN_KEPT}", {"decision": "approve"})
+
+
+REVIEW_PRESSES = {
+    "instructions": Held(
+        an_instruction_chosen,
+        "project_state",
+        "settle_school_instructions",
+        "school_instructions",
+        303,
+    ),
+    "paste save": Held(
+        a_paste_saved,
+        "project_state",
+        "comparing_and_writing",
+        "status_reports",
+        303,
+        at_the_call=True,
+    ),
+    "mark checked": Held(a_check_marked, "project_state", "mark_checked", "family_checks", 303),
+    "check again": Held(a_check_reopened, "project_state", "check_again", "family_checks", 409),
+}
+"""Each press on the family's review pages made with the decision lock held. A paste save
+reads the record before it asks for the lock, so it is held as its write is called."""
+REVIEW_PRESSES_HELD = [pytest.param(held, id=named) for named, held in REVIEW_PRESSES.items()]
 CANCELS = {
     "through the gate": "canceled",
     "of the handler's own task": "raised RuntimeError",
@@ -2650,7 +2786,7 @@ with no response, and it raises."""
 
 
 @pytest.mark.parametrize("kind", CANCELS)
-@pytest.mark.parametrize("held", PRESSES_HELD + NOTE_PRESSES_HELD)
+@pytest.mark.parametrize("held", PRESSES_HELD + NOTE_PRESSES_HELD + REVIEW_PRESSES_HELD)
 def test_a_canceled_press_keeps_the_decision_lock_until_its_store_call_returns(
     held: Held, kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3048,3 +3184,234 @@ def test_a_canceled_note_press_is_whole_or_absent_and_said_truly_after(
         assert opened is not None
         assert opened.status_code == 200
         assert standing_line(*NOTE_STANDING[named], location) in opened.text
+
+
+REVIEW_ON_THE_LOOP_CASES = [
+    pytest.param(lambda _: Sent("POST", INSTRUCTIONS, {}), 422, id="instructions refused"),
+    pytest.param(a_row_never_kept, 422, id="instructions, a row never kept"),
+    pytest.param(an_instruction_chosen, 303, id="instructions"),
+    pytest.param(lambda _: Sent("POST", "/parent/inbox/read", {}), 422, id="paste read refused"),
+    pytest.param(
+        lambda _: Sent("POST", "/parent/inbox/read", {"text": MISSING_EMAIL}), 200, id="paste read"
+    ),
+    pytest.param(lambda _: Sent("POST", "/parent/inbox/enter", {}), 422, id="entry refused"),
+    pytest.param(
+        lambda _: Sent(
+            "POST",
+            "/parent/inbox/enter",
+            {"course": "08 Algebra", "title": "Patterns quiz", "due_date": "2026-08-27"},
+        ),
+        200,
+        id="entry",
+    ),
+    pytest.param(lambda _: Sent("POST", "/parent/inbox/edit", {}), 200, id="paste edit"),
+    pytest.param(lambda _: Sent("POST", FIND, {}), 422, id="review press refused"),
+    pytest.param(a_search_chosen, 200, id="review search chosen"),
+    pytest.param(lambda _: Sent("POST", KEEP, {}), 422, id="paste save refused"),
+    pytest.param(a_paste_saved, 303, id="paste save"),
+    pytest.param(lambda _: Sent("POST", f"{CHECK}/mark", {}), 422, id="mark checked refused"),
+    pytest.param(a_check_marked, 303, id="mark checked"),
+    pytest.param(lambda _: Sent("POST", f"{CHECK}/again", {}), 422, id="check again refused"),
+    pytest.param(a_check_reopened, 303, id="check again"),
+    pytest.param(
+        lambda _: Sent("POST", "/parent/actions/decide/draft:none", {"decision": "sideways"}),
+        422,
+        id="decision refused",
+    ),
+    pytest.param(a_plan_it_cannot_resume, 409, id="decision on a plan it can't resume"),
+]
+"""Each press on the school's instructions, the paste review and the family's checks and
+decisions, refused and made, and the reads some make before the decision lock: the kept rows a
+choice names, and the homework a search's choice names."""
+
+
+@pytest.mark.parametrize(("made", "code"), REVIEW_ON_THE_LOOP_CASES)
+def test_a_family_review_press_runs_no_statement_on_the_event_loop(
+    made: Callable[[TestClient], Sent], code: int
+) -> None:
+    """Every store read and write a press on the family's review pages makes, and the page it
+    answers with, runs on a worker thread. Each press reads a store, so the trace sees
+    statements on a worker, which shows it saw the route."""
+    with browser() as client:
+        request = made(client)
+        with OnTheLoop(state_of(client)) as seen:
+            answer = answer_to(client, request)
+
+    assert answer.status_code == code, answer.text[:300]
+    assert seen.loop == []
+    assert seen.workers != []
+
+
+@pytest.mark.parametrize("page", [True, False], ids=["from the family page", "as JSON"])
+def test_a_decision_at_the_gate_runs_no_statement_on_the_event_loop(page: bool) -> None:
+    """Looks good on today's plan waiting at the gate, from the family page or as JSON: the
+    record's reads and the graph's write of the decision run on worker threads."""
+    with browser(key=True) as client:
+        draft_id = planned(client).draft_id
+        with OnTheLoop(state_of(client)) as seen:
+            if page:
+                answer = client.post(
+                    f"/parent/actions/decide/{draft_id}",
+                    data={"decision": "approve"},
+                    headers=PAGE_HEADERS,
+                )
+            else:
+                answer = client.post(f"/parent/approvals/{draft_id}", json={"approved": True})
+
+    assert answer.status_code == (303 if page else 200), answer.text[:300]
+    assert seen.loop == []
+    assert seen.workers != []
+
+
+def rows_of(client: TestClient, held: Held) -> list[tuple[object, ...]]:
+    """Every row of the table a press writes to, in the order they were written."""
+    connection = getattr(state_of(client), held.store)._connection
+    every = f"SELECT * FROM {held.table} ORDER BY rowid"  # noqa: S608
+    return list(connection.execute(every).fetchall())
+
+
+INSTRUCTIONS_STOOD = "Nothing changed: the school's instructions already stood as chosen."
+"""``ALREADY_STOOD``, ``blossom/routes/school_instructions.py``, on the review's result line."""
+NOTHING_NEW = "Nothing to save: everything read was saved already (1 unchanged)."
+"""What the family page says of a paste saved already, ``parent_review.html``."""
+CHECKED_ALREADY = (
+    "Already marked checked, from this device or another, so nothing was written. The note "
+    "on record is the one shown."
+)
+"""``CHECK_ALREADY``, ``blossom/routes/parent.py``."""
+REOPENED_ELSEWHERE = (
+    "This row was marked checked or reopened from another device since this page was made. "
+    "Nothing was written; the row shows what stands now."
+)
+"""``CHECK_MOVED_ON``, ``blossom/routes/parent.py``: a check reopened already is not
+the check the form names."""
+REVIEW_STANDING = {
+    "instructions": f'id="result" tabindex="-1">{escape(INSTRUCTIONS_STOOD)} ',
+    "paste save": str(escape(NOTHING_NEW)),
+    "mark checked": str(escape(CHECKED_ALREADY)),
+    "check again": str(escape(REOPENED_ELSEWHERE)),
+}
+"""What the page a repeat of each press lands on says: the instructions' result line as it
+opens, and the family page's sentence for the rest."""
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+@pytest.mark.parametrize("fails", [False, True], ids=["committed", "refused by the file"])
+@pytest.mark.parametrize("named", REVIEW_PRESSES)
+def test_a_canceled_review_press_is_whole_or_absent_and_said_truly_after(
+    named: str, kind: str, fails: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press on the family's review pages canceled while its write is held sends no answer.
+    When the write then lands, the table holds it, and the same press again is answered as a
+    repeat whose page says what stands; when the file refuses it, the table is as it was and
+    the same press again is refused again, 500."""
+    held = REVIEW_PRESSES[named]
+    with browser() as client:
+        app = client.app
+        press = held.made(client)
+        before = rows_of(client, held)
+        if fails:
+            connection = getattr(state_of(client), held.store)._connection
+            for change in ("INSERT", "UPDATE"):
+                connection.execute(
+                    f"CREATE TRIGGER refuse_{change.lower()} BEFORE {change} ON {held.table} "
+                    "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+                )
+            connection.commit()
+    waits = counted_waits(monkeypatch)
+    canceled = asyncio.run(a_press_canceled(app, press, held, kind, second=False, waits=waits))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        after = rows_of(client, held)
+        again = answer_to(client, press)
+        opened = again
+        if again.is_redirect:
+            opened = client.get(again.headers["location"], headers=PAGE_HEADERS)
+
+    assert canceled.parked.on_the_loop is False
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == ["lock taken", "store call entered", "store call returned"]
+    if fails:
+        assert after == before
+        assert again.status_code == 500
+    else:
+        assert after != before
+        assert again.status_code == held.again
+        assert REVIEW_STANDING[named] in opened.text
+
+
+def decision_form_of(page: str, draft_id: str) -> bool:
+    """Whether a page offers the two buttons for this plan."""
+    return f'action="/parent/actions/decide/{draft_id}"' in page
+
+
+@pytest.mark.parametrize(
+    "press",
+    [
+        pytest.param(Sent("POST", f"{CHECK}/mark", {}), id="mark checked refused"),
+        pytest.param(Sent("POST", "/parent/inbox/read", {}), id="paste read refused"),
+    ],
+)
+def test_a_press_page_marks_a_plan_it_cannot_resume_as_the_family_page_does(press: Sent) -> None:
+    """A waiting plan whose saved review step the saver doesn't hold: the family page says it
+    can't be approved or refused here, in place of the two buttons, and a press answered with
+    the family page, built on a worker, says the same in the same words."""
+    with browser() as client:
+        a_plan_the_saver_lost(client)
+        page = family_page(client)
+        pressed = answer_to(client, press)
+    said = f'<p class="note">{escape(parent_routes.unresumable(PLAN_DATE, PLAN_DATE))}</p>'
+
+    assert pressed.status_code == 422
+    assert said in page
+    assert said in pressed.text
+    assert not decision_form_of(page, PLAN_KEPT)
+    assert not decision_form_of(pressed.text, PLAN_KEPT)
+
+
+def a_decision_at_the_gate(client: TestClient) -> Sent:
+    """Looks good on today's plan, made from her page and waiting at the gate."""
+    record = planned(client)
+    return Sent("POST", f"/parent/actions/decide/{record.draft_id}", {"decision": "approve"})
+
+
+DECISION_HELD = Held(
+    a_decision_at_the_gate, "drafts", "record_decision", "drafts", 409, at_the_call=True
+)
+"""The decision's write, held as the graph's last step calls it, on the graph's own worker."""
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+def test_a_canceled_decision_keeps_the_decision_lock_until_the_graph_has_written_it(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decision canceled while the graph's write of it is held keeps the decision lock until
+    that write has returned: the same decision made again meanwhile takes the lock only after,
+    finds the plan decided, and is refused as a decided plan is, 409; the record holds the one
+    decision. The wait does not spin while the write is held."""
+    with browser(key=True) as client:
+        app = client.app
+        press = DECISION_HELD.made(client)
+    draft_id = press.path.rsplit("/", 1)[1]
+    waits = counted_waits(monkeypatch)
+    canceled = asyncio.run(
+        a_press_canceled(app, press, DECISION_HELD, kind, second=True, waits=waits)
+    )
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        record = state_of(client).drafts.get(draft_id)
+
+    assert canceled.parked.on_the_loop is False
+    assert not canceled.parked.hung
+    assert canceled.waiting
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == [
+        "lock taken",
+        "store call entered",
+        "store call returned",
+        "lock taken",
+    ]
+    assert canceled.waits_while_held <= 2, canceled.waits_while_held
+    assert canceled.second == DECISION_HELD.again
+    assert record is not None
+    assert (record.waiting, record.decision) == (False, "approved")

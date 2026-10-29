@@ -2891,10 +2891,14 @@ def traced(connection: sqlite3.Connection, callback: Callable[[str], None]) -> I
     """``callback`` given every statement ``connection`` runs, beside any other registered here.
 
     A connection keeps one trace callback and can't say which, so two seams that each set
-    their own would put one out. Each registers here instead: the first puts one callback on
-    the connection that calls them all in the order they came, and the last to leave takes it
-    off, so the connection ends the test as it began. A test that sets a callback directly
-    can't be combined with one registered here."""
+    their own would put one out. Each registers here instead, before the requests it watches:
+    the first puts one callback on the connection that calls them all in the order they came.
+    The last to leave drops the connection's entry and leaves that callback in place, calling
+    nothing. Taking it off waits for the connection while holding the interpreter lock, which
+    a statement still running on a worker, in a page a canceled press left behind, needs to
+    call it. A connection can't be weakly referenced and its id can be reused, so no entry
+    outlives its registrations. A test that sets a callback directly can't be combined with
+    one registered here."""
     callbacks = _TRACED.get(id(connection))
     if callbacks is None:
         callbacks = _TRACED[id(connection)] = []
@@ -2912,9 +2916,6 @@ def traced(connection: sqlite3.Connection, callback: Callable[[str], None]) -> I
         callbacks.remove(callback)
         if not callbacks:
             del _TRACED[id(connection)]
-            # A store closed with its application has no callback left to take off.
-            with contextlib.suppress(sqlite3.ProgrammingError):
-                connection.set_trace_callback(None)
 
 
 def on_an_event_loop() -> bool:

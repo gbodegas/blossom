@@ -47,6 +47,7 @@ risk, the parent needs to be able to see that the notification happened.
 Without that, the visibility policy is stated but not observable.
 """
 
+import asyncio
 import logging
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
@@ -67,9 +68,11 @@ from blossom.agent.runs import (
     RunBudget,
     StaleGraphVersion,
     Unfinished,
+    awaited_to_the_end,
     bounded,
     ensure_current_version,
     run_config,
+    worker_to_the_end,
 )
 from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, basis_parts, statuses_for
@@ -915,7 +918,7 @@ async def decide_draft(
                 detail=unresumable(record.plan_date, state.clock.today()),
             ) from error
         try:
-            await graph.ainvoke(resume, config=config, durability=DURABILITY)
+            await awaited_to_the_end(graph.ainvoke(resume, config=config, durability=DURABILITY))
         except (AlreadyDecided, NotPublished) as error:
             # The review reached the thread, so the gate is passed and the
             # thread cannot pause again, and the table refused because the
@@ -2521,38 +2524,57 @@ async def mark_checked_from_the_page(
         )
 
     if not whole:
-        return refused(BAD_CHECK_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await asyncio.to_thread(
+            refused, BAD_CHECK_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
     if (
         not basis
         or len(basis) > BASIS_MAX_LENGTH
         or len(token) > TOKEN_MAX_LENGTH
         or another_rows(basis, assignment_id)
     ):
-        return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await asyncio.to_thread(
+            refused, NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
     if words is not None and len(words) > CHECK_NOTE_MAX_LENGTH:
-        return refused(CHECK_NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
+        return await asyncio.to_thread(
+            refused, CHECK_NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note"
+        )
     store = state.project_state
+
+    def checked() -> Checked | AlreadyChecked | CheckConflict:
+        return store.mark_checked(
+            assignment_id,
+            basis,
+            words,
+            expected_check=token or None,
+            basis_now=lambda: statuses_for(store, [assignment_id])[assignment_id].check_basis,
+            now=state.clock.now(),
+            today=state.clock.today(),
+        )
+
     try:
         async with state.decision_lock:
-            result = store.mark_checked(
-                assignment_id,
-                basis,
-                words,
-                expected_check=token or None,
-                basis_now=lambda: statuses_for(store, [assignment_id])[assignment_id].check_basis,
-                now=state.clock.now(),
-                today=state.clock.today(),
-            )
+            result = await worker_to_the_end(checked)
     except UnknownAssignment:
-        return refused_on_the_page(request, state, NOT_ON_RECORD, status.HTTP_404_NOT_FOUND, typed)
+        return await asyncio.to_thread(
+            refused_on_the_page, request, state, NOT_ON_RECORD, status.HTTP_404_NOT_FOUND, typed
+        )
     except UnknownCheck:
-        return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await asyncio.to_thread(
+            refused, NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
     except NoteTooLong:
-        return refused(CHECK_NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
+        return await asyncio.to_thread(
+            refused, CHECK_NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note"
+        )
     except CouldNotSave:
         logger.exception("the check on %s could not be saved", assignment_id)
-        return check_could_not(
-            request, state, CheckState(assignment_id, problem=CHECK_NOT_SAVED, note=note)
+        return await asyncio.to_thread(
+            check_could_not,
+            request,
+            state,
+            CheckState(assignment_id, problem=CHECK_NOT_SAVED, note=note),
         )
     match result:
         case Checked():
@@ -2567,8 +2589,8 @@ async def mark_checked_from_the_page(
         case CheckConflict(head=head):
             marked_since = head is not None and head.operation == CHECKED and head.basis == basis
             moved = marked_since or (None if head is None else head.check_id) != (token or None)
-            return refused(
-                CHECK_MOVED_ON if moved else CHECK_FACTS_CHANGED, status.HTTP_409_CONFLICT
+            return await asyncio.to_thread(
+                refused, CHECK_MOVED_ON if moved else CHECK_FACTS_CHANGED, status.HTTP_409_CONFLICT
             )
 
 
@@ -2607,33 +2629,45 @@ async def check_again_from_the_page(request: Request, assignment_id: str, state:
         )
 
     if not whole:
-        return refused(BAD_CHECK_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await asyncio.to_thread(
+            refused, BAD_CHECK_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
     if (
         not token
         or len(token) > TOKEN_MAX_LENGTH
         or len(basis) > BASIS_MAX_LENGTH
         or (basis and another_rows(basis, assignment_id))
     ):
-        return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await asyncio.to_thread(
+            refused, NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
     store = state.project_state
+
+    def reopened() -> Reopened | CheckConflict:
+        return store.check_again(
+            assignment_id,
+            token,
+            expected_basis=basis or None,
+            basis_now=lambda: statuses_for(store, [assignment_id])[assignment_id].check_basis,
+            now=state.clock.now(),
+            today=state.clock.today(),
+        )
+
     try:
         async with state.decision_lock:
-            result = store.check_again(
-                assignment_id,
-                token,
-                expected_basis=basis or None,
-                basis_now=lambda: statuses_for(store, [assignment_id])[assignment_id].check_basis,
-                now=state.clock.now(),
-                today=state.clock.today(),
-            )
+            result = await worker_to_the_end(reopened)
     except UnknownAssignment:
-        return refused_on_the_page(request, state, NOT_ON_RECORD, status.HTTP_404_NOT_FOUND)
+        return await asyncio.to_thread(
+            refused_on_the_page, request, state, NOT_ON_RECORD, status.HTTP_404_NOT_FOUND
+        )
     except UnknownCheck:
-        return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await asyncio.to_thread(
+            refused, NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
     except CouldNotSave:
         logger.exception("the check on %s could not be reopened", assignment_id)
-        return check_could_not(
-            request, state, CheckState(assignment_id, problem=CHECK_NOT_REOPENED)
+        return await asyncio.to_thread(
+            check_could_not, request, state, CheckState(assignment_id, problem=CHECK_NOT_REOPENED)
         )
     match result:
         case Reopened():
@@ -2642,8 +2676,10 @@ async def check_again_from_the_page(request: Request, assignment_id: str, state:
             )
         case CheckConflict(head=head):
             same_check = head is not None and head.check_id == token and head.operation == CHECKED
-            return refused(
-                CHECK_FACTS_CHANGED if same_check else CHECK_MOVED_ON, status.HTTP_409_CONFLICT
+            return await asyncio.to_thread(
+                refused,
+                CHECK_FACTS_CHANGED if same_check else CHECK_MOVED_ON,
+                status.HTTP_409_CONFLICT,
             )
 
 
@@ -2670,7 +2706,8 @@ async def decide_from_the_page(
     words = reason.strip()
     kept = ReasonKept(draft_id, reason) if words else None
     if decision not in DECISIONS:
-        return refused_on_the_page(
+        return await asyncio.to_thread(
+            refused_on_the_page,
             request,
             state,
             f"{decision!r} is not one of the two buttons, approve or refuse.",
@@ -2679,7 +2716,8 @@ async def decide_from_the_page(
             reason_kept=kept,
         )
     if len(words) > REASON_MAX_LENGTH:
-        return refused_on_the_page(
+        return await asyncio.to_thread(
+            refused_on_the_page,
             request,
             state,
             f"A reason is at most {REASON_MAX_LENGTH} characters; this one is {len(words)}.",
@@ -2693,8 +2731,14 @@ async def decide_from_the_page(
     except HTTPException as error:
         if kept is not None and isinstance(error, PlanGoneStale):
             kept = ReasonKept(draft_id, reason, stale=True)
-        return refused_on_the_page(
-            request, state, str(error.detail), error.status_code, typed, reason_kept=kept
+        return await asyncio.to_thread(
+            refused_on_the_page,
+            request,
+            state,
+            str(error.detail),
+            error.status_code,
+            typed,
+            reason_kept=kept,
         )
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
