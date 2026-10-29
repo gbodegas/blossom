@@ -3242,6 +3242,27 @@ def test_a_family_review_press_runs_no_statement_on_the_event_loop(
     assert seen.workers != []
 
 
+@pytest.mark.parametrize("page", [True, False], ids=["from the family page", "as JSON"])
+def test_a_decision_at_the_gate_runs_no_statement_on_the_event_loop(page: bool) -> None:
+    """Looks good on today's plan waiting at the gate, from the family page or as JSON: the
+    record's reads and the graph's write of the decision run on worker threads."""
+    with browser(key=True) as client:
+        draft_id = planned(client).draft_id
+        with OnTheLoop(state_of(client)) as seen:
+            if page:
+                answer = client.post(
+                    f"/parent/actions/decide/{draft_id}",
+                    data={"decision": "approve"},
+                    headers=PAGE_HEADERS,
+                )
+            else:
+                answer = client.post(f"/parent/approvals/{draft_id}", json={"approved": True})
+
+    assert answer.status_code == (303 if page else 200), answer.text[:300]
+    assert seen.loop == []
+    assert seen.workers != []
+
+
 def rows_of(client: TestClient, held: Held) -> list[tuple[object, ...]]:
     """Every row of the table a press writes to, in the order they were written."""
     connection = getattr(state_of(client), held.store)._connection
