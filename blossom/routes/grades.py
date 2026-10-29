@@ -43,6 +43,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.requests import Request as StarletteRequest
 
+from blossom.agent.runs import worker_to_the_end
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.grades.dates import due_date_of
 from blossom.grades.draft import (
@@ -473,7 +474,7 @@ async def grade_name_key(request: Request, state: ApplicationState) -> bytes:
     async with state.decision_lock:
         held = getattr(request.app.state, "grade_name_key", None)
         if held is None:
-            secret = await asyncio.to_thread(secret_beside, state.settings.database_path)
+            secret = await worker_to_the_end(partial(secret_beside, state.settings.database_path))
             held = name_form_key(secret)
             request.app.state.grade_name_key = held
     return held
@@ -542,11 +543,17 @@ async def review_report(request: Request, state: State) -> Response:
         logger.warning("The household secret couldn't be read: %s", type(error).__name__)
         return paste_page(request, state, text=text, said=NO_NAME_CHECK, status_code=500)
     complete = reading_complete(reading)
-    review = state.project_state.review_grade_report(
-        draft, capture_key(draft), key=key, complete=complete
-    )
-    shown = review_context(review, draft, text, list(reading.unrecognized), state)
-    return templates.TemplateResponse(request, "grade_review.html", {**shown, "complete": complete})
+
+    def reviewed() -> Response:
+        review = state.project_state.review_grade_report(
+            draft, capture_key(draft), key=key, complete=complete
+        )
+        shown = review_context(review, draft, text, list(reading.unrecognized), state)
+        return templates.TemplateResponse(
+            request, "grade_review.html", {**shown, "complete": complete}
+        )
+
+    return await asyncio.to_thread(reviewed)
 
 
 @dataclass(frozen=True)
@@ -1693,21 +1700,24 @@ async def save_report(request: Request, state: State) -> Response:
     if isinstance(key, Response):
         return key
     if form.text_changed:
-        return changed_text(request, state, form, key)
-    answers = refused_answers(request, state, form, key)
+        return await asyncio.to_thread(changed_text, request, state, form, key)
+    answers = await asyncio.to_thread(refused_answers, request, state, form, key)
     if isinstance(answers, Response):
         return answers
     try:
         async with state.decision_lock:
-            outcome = state.project_state.save_grade_report(
-                form.draft,
-                capture_key(form.draft),
-                key=key,
-                page=form.posted.page,
-                answers=answers,
-                selection=form.posted.selection,
-                role=role_of(state),
-                complete=form.complete,
+            outcome = await worker_to_the_end(
+                partial(
+                    state.project_state.save_grade_report,
+                    form.draft,
+                    capture_key(form.draft),
+                    key=key,
+                    page=form.posted.page,
+                    answers=answers,
+                    selection=form.posted.selection,
+                    role=role_of(state),
+                    complete=form.complete,
+                )
             )
     except GradeTransactionLost:
         logger.warning("A grade report's save may not have finished: GradeTransactionLost")
@@ -1717,7 +1727,7 @@ async def save_report(request: Request, state: State) -> Response:
         return retry_page(request, state, form, NOT_SAVED)
     if isinstance(outcome, AlreadyRecorded) and not outcome.uncovered:
         return RedirectResponse(outcome_address(outcome.saved.acceptance_id), status_code=303)
-    return returned_page(request, state, form, answers, outcome, key)
+    return await asyncio.to_thread(returned_page, request, state, form, answers, outcome, key)
 
 
 @family_router.post("/add/check", response_class=HTMLResponse)
@@ -1732,20 +1742,23 @@ async def check_answers(request: Request, state: State) -> Response:
     if isinstance(key, Response):
         return key
     if form.text_changed:
-        return changed_text(request, state, form, key)
-    answers = refused_answers(request, state, form, key)
+        return await asyncio.to_thread(changed_text, request, state, form, key)
+    answers = await asyncio.to_thread(refused_answers, request, state, form, key)
     if isinstance(answers, Response):
         return answers
-    outcome = state.project_state.check_grade_answers(
-        form.draft,
-        capture_key(form.draft),
-        key=key,
-        complete=form.complete,
-        page=form.posted.page,
-        answers=answers,
-        selection=form.posted.selection,
+    outcome = await asyncio.to_thread(
+        partial(
+            state.project_state.check_grade_answers,
+            form.draft,
+            capture_key(form.draft),
+            key=key,
+            complete=form.complete,
+            page=form.posted.page,
+            answers=answers,
+            selection=form.posted.selection,
+        )
     )
-    return returned_page(request, state, form, answers, outcome, key)
+    return await asyncio.to_thread(returned_page, request, state, form, answers, outcome, key)
 
 
 def counted(number: int, one: str, many: str) -> str:
@@ -2112,12 +2125,18 @@ async def chosen_view(request: Request, state: ApplicationState, base: str) -> R
     value = fields.get("view", "")
     view = None if value == FOLLOW_CURRENT else term_posted(value)
     if not whole or (value != FOLLOW_CURRENT and view is None):
-        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+        return await asyncio.to_thread(
+            grades_page, request, state, said=TERM_NOT_ON_RECORD, status_code=422
+        )
     try:
         async with state.decision_lock:
-            state.project_state.choose_view(cast(Viewer, viewer_of(request)), view)
+            await worker_to_the_end(
+                partial(state.project_state.choose_view, cast(Viewer, viewer_of(request)), view)
+            )
     except ViewNotOnRecord:
-        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+        return await asyncio.to_thread(
+            grades_page, request, state, said=TERM_NOT_ON_RECORD, status_code=422
+        )
     return RedirectResponse(base, status_code=303)
 
 
@@ -2140,23 +2159,26 @@ async def current_term(request: Request, state: State) -> Response:
     fields, whole = await fields_of(request, CONTEXT_FIELDS)
     shown = term_posted(fields.get("shown", ""))
     chosen = term_posted(fields.get("term", ""))
+    page = partial(grades_page, request, state)
     if not whole or shown is None or chosen is None:
-        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+        return await asyncio.to_thread(page, said=TERM_NOT_ON_RECORD, status_code=422)
     try:
         async with state.decision_lock:
-            outcome = state.project_state.set_current_context(shown, chosen, role_of(state))
+            outcome = await worker_to_the_end(
+                partial(state.project_state.set_current_context, shown, chosen, role_of(state))
+            )
     except TermNotOnRecord:
-        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+        return await asyncio.to_thread(page, said=TERM_NOT_ON_RECORD, status_code=422)
     except GradeTransactionLost as error:
         logger.warning("The current term may not have been set: %s", type(error).__name__)
-        return grades_page(request, state, said=CONTEXT_UNKNOWN, status_code=500)
+        return await asyncio.to_thread(page, said=CONTEXT_UNKNOWN, status_code=500)
     except GradeReportNotSaved as error:
         logger.warning("The current term was not set: %s", type(error).__name__)
-        return grades_page(request, state, said=NOT_SAVED, status_code=500)
+        return await asyncio.to_thread(page, said=NOT_SAVED, status_code=500)
     if isinstance(outcome, ContextChanged):
-        return grades_page(request, state, said=CONTEXT_CHANGED, status_code=409)
+        return await asyncio.to_thread(page, said=CONTEXT_CHANGED, status_code=409)
     if isinstance(outcome, ContextNotOnRecord):
-        return grades_page(request, state, said=TERM_NOT_ON_RECORD, status_code=422)
+        return await asyncio.to_thread(page, said=TERM_NOT_ON_RECORD, status_code=422)
     return RedirectResponse(GRADES, status_code=303)
 
 
@@ -2293,28 +2315,32 @@ async def connect_homework_class(request: Request, state: State) -> Response:
         or (chosen != UNCONNECTED and CLASS_ID.fullmatch(chosen) is None)
         or (shown not in (UNANSWERED, UNCONNECTED) and CLASS_ID.fullmatch(shown) is None)
     ):
-        return refused(said=CHOOSE_A_CLASS, status_code=422)
+        return await asyncio.to_thread(refused, said=CHOOSE_A_CLASS, status_code=422)
     store = state.project_state
     try:
         async with state.decision_lock:
-            outcome = store.connect_homework_class(
-                year,
-                name,
-                shown=None if shown == UNANSWERED else shown,
-                chosen=chosen,
-                role=role_of(state),
+            outcome = await worker_to_the_end(
+                partial(
+                    store.connect_homework_class,
+                    year,
+                    name,
+                    shown=None if shown == UNANSWERED else shown,
+                    chosen=chosen,
+                    role=role_of(state),
+                )
             )
     except HomeworkClassNotOnRecord:
-        return refused(said=CHOOSE_A_CLASS, status_code=422)
+        return await asyncio.to_thread(refused, said=CHOOSE_A_CLASS, status_code=422)
     except GradeTransactionLost as error:
         logger.warning("A homework class name may not be connected: %s", type(error).__name__)
-        return refused(said=SAVE_UNKNOWN, status_code=500)
+        return await asyncio.to_thread(refused, said=SAVE_UNKNOWN, status_code=500)
     except GradeReportNotSaved as error:
         logger.warning("A homework class name was not connected: %s", type(error).__name__)
-        return refused(said=NOT_SAVED, status_code=500)
+        return await asyncio.to_thread(refused, said=NOT_SAVED, status_code=500)
     if isinstance(outcome, HomeworkClassChanged | HomeworkYearNotCurrent):
-        return refused(said=NAME_CHANGED, status_code=409)
-    listed = [key for key, _ in names_on_record(one.course for one in store.all_assignments())]
+        return await asyncio.to_thread(refused, said=NAME_CHANGED, status_code=409)
+    assignments = await asyncio.to_thread(store.all_assignments)
+    listed = [key for key, _ in names_on_record(one.course for one in assignments)]
     key = name_key(name)
     address = NAME_AT.format(n=listed.index(key) + 1) if key in listed else HOMEWORK_CLASSES
     return RedirectResponse(address, status_code=303)
@@ -2790,8 +2816,13 @@ async def ask_a_parent_about_a_result(result_id: str, request: Request, state: S
     before: AskOutcome | None = None
     if form is not None and refused is None:
         try:
-            before = state.help_requests.already_asked(
-                form, words or None, grade_result_id=result_id
+            before = await asyncio.to_thread(
+                partial(
+                    state.help_requests.already_asked,
+                    form,
+                    words or None,
+                    grade_result_id=result_id,
+                )
             )
         except Exception:
             logger.exception("the form for her request for help about a result was not read")
@@ -2802,7 +2833,7 @@ async def ask_a_parent_about_a_result(result_id: str, request: Request, state: S
                 status_code=303,
             )
     try:
-        shown = result_ask_read(state, result_id)
+        shown = await asyncio.to_thread(result_ask_read, state, result_id)
     except Exception as error:
         # The type alone: a stored grade value can ride in the error's message or its cause.
         logger.warning(
@@ -2833,11 +2864,16 @@ async def ask_a_parent_about_a_result(result_id: str, request: Request, state: S
         return result_ask_page(
             request, state, shown, question=question, problem=said, status_code=409
         )
+    asking = form
+
+    def once() -> AskOutcome:
+        return state.help_requests.ask_once(
+            asking, state.clock.today(), words or None, grade_result_id=result_id
+        )
+
     try:
         async with state.decision_lock:
-            outcome = state.help_requests.ask_once(
-                form, state.clock.today(), words or None, grade_result_id=result_id
-            )
+            outcome = await worker_to_the_end(once)
     except UnknownResultReference:
         return result_help_not_sent(request, state, RESULT_NOT_ON_RECORD, question, 404)
     except Exception:
@@ -3345,9 +3381,15 @@ async def decide_homework(result_id: str, request: Request, state: State) -> Res
     homework, decision = fields.get("homework", "").strip(), fields.get("decision", "")
     revision = fields.get("revision", "")
     answer = partial(result_page, request, state, result_id)
+    store = state.project_state
+
+    def owned() -> None:
+        with store.reading():
+            result_own(store, result_id)
+
     try:
         if not RESULT_ID.fullmatch(result_id):
-            return answer()
+            return await asyncio.to_thread(answer)
         if (
             not whole
             or not homework
@@ -3355,35 +3397,37 @@ async def decide_homework(result_id: str, request: Request, state: State) -> Res
             or not A_REVISION.fullmatch(revision)
             or int(revision) > REVISION_MAX
         ):
-            return answer(said=CHOOSE_HOMEWORK, status_code=422)
+            return await asyncio.to_thread(answer, said=CHOOSE_HOMEWORK, status_code=422)
         # A read of its own, before the write and outside its transaction: a term not among
         # its year's terms stops the press as it stops the page; no result is the write's 404.
-        with state.project_state.reading():
-            result_own(state.project_state, result_id)
+        await asyncio.to_thread(owned)
         try:
             async with state.decision_lock:
-                outcome = state.project_state.decide_homework_link(
-                    result_id,
-                    homework,
-                    decision=cast(LinkDecision, decision),
-                    revision=int(revision),
-                    role=role_of(state),
+                outcome = await worker_to_the_end(
+                    partial(
+                        store.decide_homework_link,
+                        result_id,
+                        homework,
+                        decision=cast(LinkDecision, decision),
+                        revision=int(revision),
+                        role=role_of(state),
+                    )
                 )
         except GradeTransactionLost:
-            return answer(said=PRESS_UNKNOWN, status_code=500)
+            return await asyncio.to_thread(answer, said=PRESS_UNKNOWN, status_code=500)
         except GradeReportNotSaved:
-            return answer(said=NOT_SAVED, status_code=500)
+            return await asyncio.to_thread(answer, said=NOT_SAVED, status_code=500)
         if isinstance(outcome, RequiredIndexUnavailable):
             logger.warning(INDEX_UNAVAILABLE)
             return Response("Internal Server Error", status_code=500, media_type="text/plain")
         if isinstance(outcome, HomeworkLinkResultNotOnRecord):
-            return answer()
+            return await asyncio.to_thread(answer)
         if isinstance(outcome, HomeworkLinkChanged):
-            return answer(said=LINKS_CHANGED, status_code=409)
+            return await asyncio.to_thread(answer, said=LINKS_CHANGED, status_code=409)
         if isinstance(outcome, HomeworkLinkClassNameChanged):
-            return answer(said=NAME_CONNECTED_DIFFERENTLY, status_code=409)
+            return await asyncio.to_thread(answer, said=NAME_CONNECTED_DIFFERENTLY, status_code=409)
         if isinstance(outcome, HomeworkLinkHomeworkNotOnRecord):
-            return answer(said=HOMEWORK_NOT_ON_RECORD, status_code=409)
+            return await asyncio.to_thread(answer, said=HOMEWORK_NOT_ON_RECORD, status_code=409)
     except GradeValueUndecodable as error:
         return link_not_written(error)
     return RedirectResponse(RESULT_HOMEWORK_AT.format(result_id=result_id), status_code=303)
@@ -3399,7 +3443,7 @@ async def search_homework(result_id: str, request: Request, state: State) -> Res
     answer = partial(result_page, request, state, result_id, words=words)
     try:
         if not whole:
-            return answer(said=SEARCH_WORDS_REFUSED, status_code=422)
-        return answer(search=(words, fields["page"]))
+            return await asyncio.to_thread(answer, said=SEARCH_WORDS_REFUSED, status_code=422)
+        return await asyncio.to_thread(answer, search=(words, fields["page"]))
     except GradeValueUndecodable as error:
         return grade_page_not_shown(error)

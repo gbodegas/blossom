@@ -13,6 +13,8 @@ pinned clock, and a failure made at the store call, or a second connection holdi
 
 import asyncio
 import contextlib
+import html
+import io
 import pathlib
 import re
 import sqlite3
@@ -29,13 +31,23 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
+from PIL import Image
 
+from blossom import screenshot_reading
 from blossom.agent.runs import Unfinished
+from blossom.anthropic_client import ScreenshotAnswer
 from blossom.dependencies import STATE_ATTRIBUTE
 from blossom.drafts import Draft
+from blossom.grades.draft import capture_key
+from blossom.grades.identity import name_form_key
+from blossom.grades.review import GradeReportSaved
+from blossom.grades.text_reader import read_grade_report
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
+from blossom.household import secret_beside
 from blossom.reconciliation import SourceChannel, SourceRecord
+from blossom.routes import grades as grade_routes
 from blossom.routes import hand_in as hand_in_routes
+from blossom.routes import imports as import_routes
 from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
 from blossom.routes.forms import fields_of
@@ -56,6 +68,9 @@ from blossom.routes.navigation import (
 from blossom.routes.runs import Unconfirmed
 from blossom.school_instructions import InstructionChoice, InstructionSeen
 from blossom.stores.drafts import STORE_WAIT_SECONDS
+from blossom.stores.help_requests import new_request_id
+from blossom.stores.import_drafts import new_creation_token
+from blossom.stores.paths import SECRET_NAME
 from tests.support import (
     DETAILS,
     ENDED_REASONS,
@@ -68,6 +83,7 @@ from tests.support import (
     FAMILY_FORM_NOT_WHOLE,
     FAMILY_NEWER_PLAN_AUGUST_19,
     FIXTURE_WEEK,
+    FIXTURES,
     HANG_LIMIT_SECONDS,
     HER_PAGE,
     HER_UPDATES_SAVED,
@@ -104,9 +120,12 @@ from tests.support import (
     first_write_to,
     fixture_settings,
     form_fields,
+    form_values,
     fresh_plan_fields,
     fresh_signal_fields,
+    grade_answers,
     hidden,
+    homework_answer,
     homework_from_a_note,
     household_client,
     link_note,
@@ -122,6 +141,7 @@ from tests.support import (
     row_for,
     rules_named,
     runs_recorded,
+    save_grade,
     settled_run,
     sign_in_as,
     state_of,
@@ -3415,3 +3435,793 @@ def test_a_canceled_decision_keeps_the_decision_lock_until_the_graph_has_written
     assert canceled.second == DECISION_HELD.again
     assert record is not None
     assert (record.waiting, record.decision) == (False, "approved")
+
+
+# ----------------------------------------------- the event loop while the family adds grades
+
+GRADE_REPORT = (FIXTURES / "grade_report.md").read_text(encoding="utf-8")
+"""The synthetic grade report the grade pages are tested with."""
+GRADE_REVIEW = "/parent/grades/add/review"
+GRADE_CHECK = "/parent/grades/add/check"
+GRADE_SAVE = "/parent/grades/add/save"
+NO_SUCH_RESULT = "result-" + "0" * 32
+NO_SUCH_REVIEW = "0" * 32
+"""A result's and a screenshot review's id, each of the shape the store gives, naming none."""
+IMPORTS = "/parent/imports"
+
+
+def grades_open(*, key: bool = False) -> TestClient:
+    """Her page on the pinned day with screenshot import on, scripted models when ``key`` is
+    set, and the grade and screenshot routes open to the test's client as they are to a browser
+    on this computer: the rule that decides who may use them is not what these tests are
+    about."""
+    client = browser(key=key, BLOSSOM_SCREENSHOT_IMPORT="1")
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    overrides[grade_routes.on_this_computer] = lambda: None
+    overrides[import_routes.screenshots_here] = lambda: None
+    return client
+
+
+def a_grade_review(_: TestClient) -> Sent:
+    return Sent("POST", GRADE_REVIEW, {"report_text": GRADE_REPORT})
+
+
+def a_grade_form(client: TestClient, *, answered: bool = True) -> dict[str, str]:
+    """The review's form for the report as its page sends it, with "Yes, this is her name"
+    chosen, or with the name's question left unanswered."""
+    page = answer_to(client, a_grade_review(client))
+    assert page.status_code == 200, page.text[:300]
+    form = whole_form(page.text, GRADE_SAVE)
+    return {**form, "identity": "hers"} if answered else form
+
+
+def a_grade_save(client: TestClient) -> Sent:
+    return Sent("POST", GRADE_SAVE, a_grade_form(client))
+
+
+def a_grade_check(client: TestClient) -> Sent:
+    return Sent("POST", GRADE_CHECK, a_grade_form(client))
+
+
+def unanswered(path: str) -> Callable[[TestClient], Sent]:
+    """The review's form sent to ``path`` with the name's question left unanswered: refused
+    once the review is read again."""
+    return lambda client: Sent("POST", path, a_grade_form(client, answered=False))
+
+
+def a_term_followed(path: str) -> Callable[[TestClient], Sent]:
+    return lambda _: Sent("POST", path, {"view": grade_routes.FOLLOW_CURRENT})
+
+
+def a_term_made_current(_: TestClient) -> Sent:
+    """A current term chosen while none is on record: the record refuses it in its write."""
+    return Sent(
+        "POST", "/parent/grades/current-term", {"shown": "2026-2027 T1", "term": "2026-2027 T2"}
+    )
+
+
+def a_class_connected(_: TestClient) -> Sent:
+    """A homework class name connected to a class no record holds: the record refuses it in its
+    write."""
+    fields = {"year": "2026-2027", "name": "08 Algebra", "shown": "unanswered"}
+    return Sent("POST", "/parent/grades/homework-classes", {**fields, "class": "class-" + "0" * 32})
+
+
+def a_link_decided(_: TestClient) -> Sent:
+    """Link a result no record holds to the essay: its result is read before the decision lock
+    and again in the write, which finds none."""
+    fields = {"homework": ESSAY_ID, "decision": "link", "revision": "0"}
+    return Sent("POST", f"/parent/grades/results/{NO_SUCH_RESULT}/homework", fields)
+
+
+def a_question_on_no_result(_: TestClient) -> Sent:
+    """Her question about a result no record holds: the form's request is read first."""
+    fields = {"note": "Why is this one low?", "request_id": new_request_id()}
+    return Sent("POST", f"/student/grades/results/{NO_SUCH_RESULT}/ask", fields)
+
+
+def a_result_asked_about(client: TestClient) -> Sent:
+    """Her question about a result of the report saved whole, from its own page: the form's
+    request and the result are read before the decision lock."""
+    assert answer_to(client, a_grade_save(client)).status_code == 303
+    store = state_of(client).project_state
+    for (result_id,) in store._connection.execute("SELECT result_id FROM grade_results"):
+        address = f"/student/grades/results/{result_id}/ask"
+        page = client.get(address, headers=PAGE_HEADERS)
+        if page.status_code == 200:
+            return Sent("POST", address, {**form_fields(page.text, address), "note": "Why?"})
+    msg = "no result of hers to ask about"
+    raise AssertionError(msg)
+
+
+def a_class_connected_on_record(client: TestClient) -> Sent:
+    """The first homework class name on its page connected to the class the page offers, once
+    the report is saved whole: the names on record are read after the write."""
+    assert answer_to(client, a_grade_save(client)).status_code == 303
+    address = "/parent/grades/homework-classes"
+    values = form_values(client.get(address, headers=PAGE_HEADERS).text, address)
+    form: dict[str, str] = {}
+    for _, name, value in values:
+        if name == "class" and value:
+            return Sent("POST", address, {**form, "class": value})
+        if name != "class":
+            form[name] = value
+    msg = "no class to connect"
+    raise AssertionError(msg)
+
+
+SECOND_TERM_REPORT = GRADE_REPORT.replace("**T1**", "**T2**")
+"""The same report for the second term of the school year."""
+
+
+def two_terms(client: TestClient) -> None:
+    """The report saved whole for T1 from its page, then the same report for T2 through the
+    store under the household's key, as the grade pages' tests seed one: T1 stays current."""
+    assert answer_to(client, a_grade_save(client)).status_code == 303
+    store = state_of(client).project_state
+    key = client.app.state.grade_name_key  # type: ignore[attr-defined]
+    draft = read_grade_report(SECOND_TERM_REPORT).draft
+    assert draft is not None
+    review = store.review_grade_report(draft, capture_key(draft), key=key)
+    saved = save_grade(store, draft, key=key, review=review, answers=grade_answers(review))
+    assert isinstance(saved, GradeReportSaved), saved
+
+
+def a_term_chosen(path: str) -> Callable[[TestClient], Sent]:
+    """T2 chosen as the term Grades opens on, with T1 current."""
+
+    def made(client: TestClient) -> Sent:
+        two_terms(client)
+        return Sent("POST", path, {"view": "2026-2027 T2"})
+
+    return made
+
+
+def a_term_made_current_on_record(client: TestClient) -> Sent:
+    """T2 made the current term from the family's Grades while it shows T1, the term chosen
+    there, so the page after says which term is current."""
+    two_terms(client)
+    chose = answer_to(client, Sent("POST", "/parent/grades/view", {"view": "2026-2027 T1"}))
+    assert chose.status_code == 303, chose.text[:300]
+    fields = {"shown": "2026-2027 T1", "term": "2026-2027 T2"}
+    return Sent("POST", "/parent/grades/current-term", fields)
+
+
+def a_link_kept_apart(client: TestClient) -> Sent:
+    """The essay kept apart from a result of the report saved whole, at the revision of the
+    result's class and term: no class name needs to be connected for that."""
+    assert answer_to(client, a_grade_save(client)).status_code == 303
+    connection = state_of(client).project_state._connection
+    result_id, class_id, term = connection.execute(
+        "SELECT result_id, class_id, term_label FROM grade_results ORDER BY rowid LIMIT 1"
+    ).fetchone()
+    (revision,) = connection.execute(
+        "SELECT revision FROM grade_scope_revisions WHERE class_id = ? AND term_label = ?",
+        (class_id, term),
+    ).fetchone()
+    fields = {"homework": ESSAY_ID, "decision": "apart", "revision": str(revision)}
+    return Sent("POST", f"/parent/grades/results/{result_id}/homework", fields)
+
+
+def on_no_review(step: str = "") -> Callable[[TestClient], Sent]:
+    """A press on a screenshot review no record holds, at ``step`` under its address."""
+    return lambda _: Sent("POST", f"{IMPORTS}/{NO_SUCH_REVIEW}{step}", {})
+
+
+GRADE_ON_THE_LOOP_CASES = [
+    pytest.param(lambda _: Sent("POST", "/student/grades/view", {}), 422, id="her term refused"),
+    pytest.param(a_term_followed("/student/grades/view"), 303, id="her term"),
+    pytest.param(lambda _: Sent("POST", "/parent/grades/view", {}), 422, id="family term refused"),
+    pytest.param(a_term_followed("/parent/grades/view"), 303, id="family term"),
+    pytest.param(
+        lambda _: Sent("POST", "/parent/grades/current-term", {}), 422, id="current term refused"
+    ),
+    pytest.param(a_term_made_current, 422, id="current term, none on record"),
+    pytest.param(
+        lambda _: Sent("POST", "/parent/grades/homework-classes", {}),
+        422,
+        id="homework class refused",
+    ),
+    pytest.param(a_class_connected, 422, id="homework class, no class on record"),
+    pytest.param(a_class_connected_on_record, 303, id="homework class"),
+    pytest.param(a_grade_review, 200, id="grade review"),
+    pytest.param(unanswered(GRADE_CHECK), 422, id="grade check refused"),
+    pytest.param(a_grade_check, 200, id="grade check"),
+    pytest.param(unanswered(GRADE_SAVE), 422, id="grade save refused"),
+    pytest.param(a_grade_save, 303, id="grade save"),
+    pytest.param(
+        lambda _: Sent("POST", f"/student/grades/results/{NO_SUCH_RESULT}/ask", {}),
+        404,
+        id="question refused",
+    ),
+    pytest.param(a_question_on_no_result, 404, id="question on no result"),
+    pytest.param(a_result_asked_about, 303, id="question"),
+    pytest.param(
+        lambda _: Sent("POST", f"/parent/grades/results/{NO_SUCH_RESULT}/homework", {}),
+        404,
+        id="link refused",
+    ),
+    pytest.param(a_link_decided, 404, id="link on no result"),
+    pytest.param(
+        lambda _: Sent("POST", f"/parent/grades/results/{NO_SUCH_RESULT}/homework/search", {}),
+        404,
+        id="search refused",
+    ),
+    pytest.param(
+        lambda _: Sent(
+            "POST",
+            f"/parent/grades/results/{NO_SUCH_RESULT}/homework/search",
+            {"words": "essay", "page": "1"},
+        ),
+        404,
+        id="search on no result",
+    ),
+    pytest.param(on_no_review("/images"), 404, id="more screenshots"),
+    pytest.param(on_no_review(f"/images/{NO_SUCH_REVIEW}/remove"), 404, id="screenshot removed"),
+    pytest.param(
+        lambda _: Sent("GET", f"{IMPORTS}/{NO_SUCH_REVIEW}/images/{NO_SUCH_REVIEW}"),
+        404,
+        id="screenshot shown",
+    ),
+    pytest.param(lambda _: Sent("GET", f"{IMPORTS}/{NO_SUCH_REVIEW}"), 404, id="screenshot review"),
+    pytest.param(on_no_review("/read"), 404, id="screenshots read"),
+    pytest.param(on_no_review("/review"), 404, id="screenshot review press"),
+    pytest.param(on_no_review("/find"), 404, id="screenshot find"),
+    pytest.param(on_no_review("/set-aside"), 404, id="screenshots set aside"),
+    pytest.param(on_no_review("/finish"), 404, id="screenshots finished"),
+    pytest.param(on_no_review("/discard"), 404, id="screenshots discarded"),
+    pytest.param(on_no_review("/not-hers"), 404, id="screenshots not hers"),
+]
+"""Each press on the grade pages, refused and made, with the reads some make before the
+decision lock: her request's form and the result a question or a link names; and each press on
+a screenshot review, whose first read is her student ID."""
+
+
+@pytest.mark.parametrize(("made", "code"), GRADE_ON_THE_LOOP_CASES)
+def test_a_grade_or_screenshot_press_runs_no_statement_on_the_event_loop(
+    made: Callable[[TestClient], Sent], code: int
+) -> None:
+    """Every store read and write a press on the grade pages or a screenshot review makes, and
+    the page it answers with, runs on a worker thread. Each press reads a store, so the trace
+    sees statements on a worker, which shows it saw the route."""
+    with grades_open() as client:
+        request = made(client)
+        with OnTheLoop(state_of(client)) as seen:
+            answer = answer_to(client, request)
+
+    assert answer.status_code == code, answer.text[:300]
+    assert seen.loop == []
+    assert seen.workers != []
+
+
+@pytest.mark.parametrize(
+    ("press", "where", "code"),
+    [
+        pytest.param(
+            Sent("POST", "/parent/grades/view", {"view": grade_routes.FOLLOW_CURRENT}),
+            "grade_view_choices",
+            303,
+            id="family term",
+        ),
+        pytest.param(
+            Sent("POST", f"/parent/grades/results/{NO_SUCH_RESULT}/homework/search", {}),
+            "page",
+            404,
+            id="search refused",
+        ),
+        pytest.param(
+            Sent("GET", f"{IMPORTS}/{NO_SUCH_REVIEW}"), "page", 404, id="screenshot review"
+        ),
+    ],
+)
+def test_a_static_file_is_answered_while_a_grade_or_screenshot_press_is_held(
+    press: Sent, where: str, code: int
+) -> None:
+    """While a press on the grade pages or a screenshot review waits inside its store call, a
+    static file is answered first, and the press then ends as it would have: a term followed
+    held at its write, and a search and a review held at the first statement they read."""
+    with grades_open() as client:
+        app = client.app
+    order, parked, answered = asyncio.run(a_static_file_beside(app, press, where))
+
+    assert parked.on_the_loop is False
+    assert not parked.hung
+    assert order == ["static file answered 200", "press answered"]
+    assert answered == code
+
+
+GRADE_PRESSES = {
+    "her term": Held(
+        a_term_followed("/student/grades/view"),
+        "project_state",
+        "choose_view",
+        "grade_view_choices",
+        303,
+        at_the_call=True,
+    ),
+    "family term": Held(
+        a_term_followed("/parent/grades/view"),
+        "project_state",
+        "choose_view",
+        "grade_view_choices",
+        303,
+        at_the_call=True,
+    ),
+    "current term": Held(
+        a_term_made_current,
+        "project_state",
+        "set_current_context",
+        "grade_context",
+        422,
+        at_the_call=True,
+    ),
+    "homework class": Held(
+        a_class_connected,
+        "project_state",
+        "connect_homework_class",
+        "grade_homework_classes",
+        422,
+        at_the_call=True,
+    ),
+    "current term on record": Held(
+        a_term_made_current_on_record,
+        "project_state",
+        "set_current_context",
+        "grade_context",
+        303,
+        at_the_call=True,
+    ),
+    "homework class connected": Held(
+        a_class_connected_on_record,
+        "project_state",
+        "connect_homework_class",
+        "grade_homework_classes",
+        303,
+        at_the_call=True,
+    ),
+    "question": Held(
+        a_result_asked_about, "help_requests", "ask_once", "help_requests", 303, at_the_call=True
+    ),
+    "grade save": Held(
+        a_grade_save, "project_state", "save_grade_report", "grade_reports", 303, at_the_call=True
+    ),
+    "link": Held(
+        a_link_decided,
+        "project_state",
+        "decide_homework_link",
+        "grade_homework_links",
+        404,
+        at_the_call=True,
+    ),
+    "link kept apart": Held(
+        a_link_kept_apart,
+        "project_state",
+        "decide_homework_link",
+        "grade_homework_links",
+        303,
+        at_the_call=True,
+    ),
+}
+"""Each press on the grade pages made with the decision lock held, held as its write is called:
+a question and a link read the record before they ask for the lock."""
+KEY_READ_BEFORE = {"grade save"}
+"""The presses that, as the first since the app started, would read the key name forms are made
+under with the decision lock held before they ask for it again for their write. The test reads
+the key before the press instead, so the press made again is the one seen waiting."""
+
+
+def key_read_before(monkeypatch: pytest.MonkeyPatch, state: Any) -> None:  # noqa: ANN401
+    """The key name forms are made under, read from the household's secret before the press,
+    as a first review already made since the app started would hold it."""
+    key = name_form_key(secret_beside(state.settings.database_path))
+
+    async def held(*_: object) -> bytes:
+        return key
+
+    monkeypatch.setattr(grade_routes, "grade_name_key", held)
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+@pytest.mark.parametrize("named", GRADE_PRESSES)
+def test_a_canceled_grade_press_keeps_the_decision_lock_until_its_store_call_returns(
+    named: str, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press on the grade pages canceled while its write is held on a worker keeps the
+    decision lock until that write has returned: the same press made again meanwhile enters
+    its own store call only after, and is answered as it was the first time or as a repeat.
+    The wait does not spin while the write is held."""
+    held = GRADE_PRESSES[named]
+    with grades_open() as client:
+        app = client.app
+        press = held.made(client)
+        if named in KEY_READ_BEFORE:
+            key_read_before(monkeypatch, state_of(client))
+    waits = counted_waits(monkeypatch)
+    canceled = asyncio.run(a_press_canceled(app, press, held, kind, second=True, waits=waits))
+
+    assert canceled.parked.on_the_loop is False
+    assert not canceled.parked.hung
+    assert canceled.waiting
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == [
+        "lock taken",
+        "store call entered",
+        "store call returned",
+        "lock taken",
+        "store call entered",
+        "store call returned",
+    ]
+    assert canceled.waits_while_held <= 2, canceled.waits_while_held
+    assert canceled.second == held.again
+
+
+async def a_first_review_canceled(
+    app: Any,  # noqa: ANN401
+    press: Sent,
+    kind: str,
+    waits: list[int],
+    parked: Parked,
+    calls: list[str],
+) -> Canceled:
+    """The first grade review since the app started, held as it reads the household's secret
+    on a worker, and canceled as ``a_press_canceled`` cancels a press, with a second first
+    review made meanwhile, waiting for the decision lock."""
+    async with app.router.lifespan_context(app):
+        lock = getattr(app.state, STATE_ATTRIBUTE).decision_lock
+        acquire = lock.acquire
+        holders: list[asyncio.Task[Any] | None] = []
+        asked_again = asyncio.Event()
+
+        async def taken() -> bool:
+            holders.append(asyncio.current_task())
+            if len(holders) > 1:
+                asked_again.set()
+            took = bool(await acquire())
+            calls.append("lock taken")
+            return took
+
+        setattr(lock, "acquire", taken)  # noqa: B010
+        transport = httpx.ASGITransport(app=app)
+        headers = {**SAME_ORIGIN, **PAGE_HEADERS}
+        try:
+            async with httpx.AsyncClient(
+                transport=transport, base_url=ORIGIN, headers=headers
+            ) as http:
+                first = asyncio.create_task(sent_on(http, press))
+                await asyncio.to_thread(parked.entered.wait, HANG_LIMIT_SECONDS)
+                again = asyncio.create_task(sent_on(http, press))
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(asked_again.wait(), HANG_LIMIT_SECONDS)
+                waiting = asked_again.is_set()
+                await asyncio.sleep(0)
+                if kind == "through the gate":
+                    reached = first.cancel()
+                else:
+                    reached = bool(holders) and holders[0] is not None and holders[0].cancel()
+                before = waits[0]
+                for _ in range(LOOP_CYCLES):
+                    await asyncio.sleep(0)
+                waits_while_held = waits[0] - before
+                parked.release.set()
+                done, _ = await asyncio.wait({first}, timeout=HANG_LIMIT_SECONDS)
+                ended = ended_as(first) if first in done else "still running: hung"
+                answered = (await asyncio.wait_for(again, HANG_LIMIT_SECONDS)).status_code
+        finally:
+            delattr(lock, "acquire")
+    return Canceled(calls, parked, reached, waits_while_held, ended, waiting, answered)
+
+
+READ_AGAIN = {
+    "through the gate": [],
+    "of the handler's own task": ["secret read entered", "secret read returned"],
+}
+"""What the second first review reads under the lock after each cancel: through the gate the
+first keeps the key it read before the cancel reaches it at its next wait, and the second finds
+it; a plain cancel ends the first as its read returns, and the second reads the secret again."""
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+def test_a_canceled_first_review_keeps_the_decision_lock_until_the_secret_is_read(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first grade review, canceled while it reads the household's secret on a worker,
+    keeps the decision lock until that read has returned: a second first review made meanwhile
+    takes the lock only after, reads the secret again only where the first kept no key, and is
+    answered with the review. One secret is made. The wait does not spin while the read is
+    held."""
+    with grades_open() as client:
+        app = client.app
+        folder = pathlib.Path(state_of(client).settings.database_path).parent
+    calls: list[str] = []
+    parked = Parked(loop_parks=False)
+
+    def noted(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        parked.hold("")
+        calls.append("secret read entered")
+        try:
+            return secret_beside(*args, **kwargs)
+        finally:
+            calls.append("secret read returned")
+
+    monkeypatch.setattr(grade_routes, "secret_beside", noted)
+    waits = counted_waits(monkeypatch)
+    with parked:
+        canceled = asyncio.run(
+            a_first_review_canceled(app, a_grade_review(client), kind, waits, parked, calls)
+        )
+
+    assert canceled.parked.on_the_loop is False
+    assert not canceled.parked.hung
+    assert canceled.waiting
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == [
+        "lock taken",
+        "secret read entered",
+        "secret read returned",
+        "lock taken",
+        *READ_AGAIN[kind],
+    ]
+    assert canceled.waits_while_held <= 2, canceled.waits_while_held
+    assert canceled.second == 200
+    assert sorted(path.name for path in folder.glob(f"{SECRET_NAME}*")) == [SECRET_NAME]
+
+
+GRADE_COMMITS = {
+    "her term": Held(
+        a_term_chosen("/student/grades/view"),
+        "project_state",
+        "choose_view",
+        "grade_view_choices",
+        303,
+        at_the_call=True,
+    ),
+    "family term": Held(
+        a_term_chosen("/parent/grades/view"),
+        "project_state",
+        "choose_view",
+        "grade_view_choices",
+        303,
+        at_the_call=True,
+    ),
+    "current term": GRADE_PRESSES["current term on record"],
+    "homework class": GRADE_PRESSES["homework class connected"],
+    "grade save": GRADE_PRESSES["grade save"],
+    "question": GRADE_PRESSES["question"],
+    "link": GRADE_PRESSES["link kept apart"],
+}
+"""Each locked write of the grade pages, made where it lands, held as its write is called."""
+SHOWING_T2 = "Showing T2 · 2026-2027. Your household's current term in Blossom is T1 · 2026-2027."
+SHOWING_T1 = "Showing T1 · 2026-2027. Your household's current term in Blossom is T2 · 2026-2027."
+"""Grades opening on a term other than the current one, ``blossom/templates/grades.html``."""
+CONNECTED = "Connected to Biology."
+"""``CONNECTED_TO``, ``blossom/routes/grades.py``, on the name's line."""
+SAVED_NINE = "Saved. 9 added."
+"""The first line of a save's outcome, ``outcome_lines`` in ``blossom/routes/grades.py``."""
+KEPT_APART = f"Kept apart from {ESSAY_TITLE}. Blossom won't match these two by itself."
+"""``KEPT_APART_FROM``, ``blossom/routes/grades.py``, on the essay's row."""
+GRADE_STANDING = {
+    "her term": SHOWING_T2,
+    "family term": SHOWING_T2,
+    "current term": SHOWING_T1,
+    "homework class": str(escape(CONNECTED)),
+    "grade save": str(escape(SAVED_NINE)),
+    "question": str(escape(REQUEST_ALREADY_SAVED)),
+    "link": str(escape(KEPT_APART)),
+}
+"""What the page a repeat of each press lands on says of the write that stands, as its HTML
+carries it: the template's own words as written, a sentence the route passes in escaped."""
+ROWS_ADDED = {"current term": 0}
+"""The rows each write adds to its table, one unless named: a current term changes its row."""
+
+
+@pytest.mark.parametrize("kind", CANCELS)
+@pytest.mark.parametrize("fails", [False, True], ids=["committed", "refused by the file"])
+@pytest.mark.parametrize("named", GRADE_COMMITS)
+def test_a_canceled_grade_press_is_whole_or_absent_and_said_truly_after(
+    named: str, kind: str, fails: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press on the grade pages canceled while its write is held sends no answer. When the
+    write then lands, its table holds it once, and the same press again lands on a page that
+    says what stands; when the file refuses it, the table is as it was and the same press again
+    is refused again, 500."""
+    held = GRADE_COMMITS[named]
+    with grades_open() as client:
+        app = client.app
+        press = held.made(client)
+        before = rows_of(client, held)
+        if named in KEY_READ_BEFORE:
+            key_read_before(monkeypatch, state_of(client))
+        if fails:
+            connection = getattr(state_of(client), held.store)._connection
+            for change in ("INSERT", "UPDATE"):
+                connection.execute(
+                    f"CREATE TRIGGER refuse_{change.lower()} BEFORE {change} ON {held.table} "
+                    "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+                )
+            connection.commit()
+    waits = counted_waits(monkeypatch)
+    canceled = asyncio.run(a_press_canceled(app, press, held, kind, second=False, waits=waits))
+    with TestClient(
+        app, follow_redirects=False, headers=SAME_ORIGIN, raise_server_exceptions=False
+    ) as client:
+        after = rows_of(client, held)
+        again = answer_to(client, press)
+        opened = again
+        if again.is_redirect:
+            opened = client.get(again.headers["location"], headers=PAGE_HEADERS)
+
+    assert canceled.parked.on_the_loop is False
+    assert canceled.reached
+    assert canceled.ended == CANCELS[kind]
+    assert canceled.calls == ["lock taken", "store call entered", "store call returned"]
+    if fails:
+        assert after == before
+        assert again.status_code == 500
+    else:
+        assert after != before
+        assert len(after) == len(before) + ROWS_ADDED.get(named, 1)
+        assert again.status_code == held.again
+        assert GRADE_STANDING[named] in opened.text
+
+
+# ------------------------------------------- the event loop while a screenshot review is used
+
+
+def a_screenshot() -> bytes:
+    """A small synthetic PNG, as a phone's screenshot is uploaded."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), (200, 40, 40)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def read_as_homework(*_: object, **__: object) -> ScreenshotAnswer:
+    """A fake reader: every screenshot read as her homework list, with no call made."""
+    return ScreenshotAnswer(homework_answer(), None, 10, 5)
+
+
+def uploading(client: TestClient) -> Callable[[], Any]:
+    """A first upload of one screenshot, from a form made now."""
+    form = {"token": new_creation_token(), "issued": state_of(client).real_clock.now().isoformat()}
+    files = [("screenshots", ("shot-0.png", a_screenshot(), "image/png"))]
+    return lambda: client.post(IMPORTS, data=form, files=files)
+
+
+def uploaded(client: TestClient) -> tuple[str, str]:
+    """A review made by a first upload: its address, and its page."""
+    sent = uploading(client)()
+    assert sent.status_code == 303, sent.text[:300]
+    address = sent.headers["location"]
+    return address, client.get(address, headers=PAGE_HEADERS).text
+
+
+def fields_of_form(page: str, action: str) -> dict[str, str]:
+    """The hidden fields of the first form on the page with this action."""
+    found = re.search(rf'<form [^>]*action="{re.escape(action)}".*?</form>', page, re.S)
+    assert found is not None, action
+    pairs = re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)"', found.group(0))
+    return {html.unescape(name): html.unescape(value) for name, value in pairs}
+
+
+def read_through(client: TestClient) -> tuple[str, str]:
+    """A review whose one screenshot is read as her homework list: its address and page."""
+    address, page = uploaded(client)
+    action = f"{address}/read"
+    pressed = client.post(action, data=fields_of_form(page, action), headers=PAGE_HEADERS)
+    assert pressed.status_code == 200, pressed.text[:300]
+    return address, client.get(address, headers=PAGE_HEADERS).text
+
+
+def reading(client: TestClient) -> Callable[[], Any]:
+    address, page = uploaded(client)
+    action = f"{address}/read"
+    fields = fields_of_form(page, action)
+    return lambda: client.post(action, data=fields, headers=PAGE_HEADERS)
+
+
+def reviewing(client: TestClient) -> Callable[[], Any]:
+    address, _ = read_through(client)
+    return lambda: client.get(address, headers=PAGE_HEADERS)
+
+
+def pressed_on_review(
+    press: str, *, ticked: bool = False
+) -> Callable[[TestClient], Callable[[], Any]]:
+    """A press of the review form as its page shows it, her name answered as hers, and the
+    first group ticked when ``ticked``."""
+
+    def made(client: TestClient) -> Callable[[], Any]:
+        address, page = read_through(client)
+        action = f"{address}/review"
+        if ticked:
+            kept = client.post(action, data=review_fields(page, action, "keep"))
+            assert kept.status_code == 200, kept.text[:300]
+            page = client.get(address, headers=PAGE_HEADERS).text
+        fields = review_fields(page, action, press)
+        if ticked:
+            fields["unit"] = html.unescape(re.findall(r'name="unit" value="([^"]+)"', page)[0])
+        return lambda: client.post(action, data=fields, headers=PAGE_HEADERS)
+
+    return made
+
+
+def review_fields(page: str, action: str, press: str) -> dict[str, str]:
+    """The review form as its page sends it with ``press``: her name answered as hers, and
+    each other question still open given the first answer it offers."""
+    fields = {**whole_form(page, action), "press": press}
+    for tag in re.findall(r'<input [^>]*type="radio"[^>]*>', page):
+        name = html.unescape(re.findall(r'name="([^"]+)"', tag)[0])
+        value = html.unescape(re.findall(r'value="([^"]*)"', tag)[0])
+        if name.startswith("answer:name:"):
+            fields[name] = "hers"
+        elif name.startswith("answer:") and not fields.get(name):
+            fields[name] = value
+    return fields
+
+
+def saved_again(client: TestClient) -> Callable[[], Any]:
+    """The same save sent again: the outcome recorded under its acceptance id is shown."""
+    send = pressed_on_review("save", ticked=True)(client)
+    first = send()
+    assert first.status_code == 200, first.text[:300]
+    return send
+
+
+def pressed_after_discard(client: TestClient) -> Callable[[], Any]:
+    """A press of the review form after the review was discarded: the press is looked for
+    among the saves recorded before it is refused."""
+    address, page = read_through(client)
+    action = f"{address}/review"
+    fields = review_fields(page, action, "keep")
+    discard = f"{address}/discard"
+    gone = client.post(discard, data=fields_of_form(page, discard), headers=PAGE_HEADERS)
+    assert gone.status_code == 200, gone.text[:300]
+    return lambda: client.post(action, data=fields, headers=PAGE_HEADERS)
+
+
+def small_press(step: str) -> Callable[[TestClient], Callable[[], Any]]:
+    """The review's own small form for ``step``, as its page signs it."""
+
+    def made(client: TestClient) -> Callable[[], Any]:
+        address, page = read_through(client)
+        action = f"{address}/{step}"
+        fields = fields_of_form(page, action)
+        return lambda: client.post(action, data=fields, headers=PAGE_HEADERS)
+
+    return made
+
+
+SCREENSHOT_STEPS = [
+    pytest.param(uploading, 303, id="first upload"),
+    pytest.param(reading, 200, id="read"),
+    pytest.param(reviewing, 200, id="review read"),
+    pytest.param(pressed_on_review("keep"), 200, id="keep"),
+    pytest.param(pressed_on_review("later"), 303, id="later"),
+    pytest.param(pressed_on_review("save", ticked=True), 200, id="save"),
+    pytest.param(saved_again, 200, id="save again"),
+    pytest.param(pressed_after_discard, 200, id="press after discard"),
+    pytest.param(small_press("set-aside"), 303, id="set aside"),
+    pytest.param(small_press("finish"), 200, id="finish"),
+    pytest.param(small_press("discard"), 200, id="discard"),
+    pytest.param(small_press("not-hers"), 200, id="not hers"),
+]
+"""Each step of a screenshot review that reads her student ID or her name's forms: a first
+upload, a Read press, the review read, its form's presses and its small forms."""
+
+
+@pytest.mark.parametrize(("step", "code"), SCREENSHOT_STEPS)
+def test_a_screenshot_review_step_runs_no_statement_on_the_event_loop(
+    step: Callable[[TestClient], Callable[[], Any]], code: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every store read and write a step of a screenshot review makes, her student ID and her
+    name's forms included, and the page it answers with, runs on a worker thread."""
+    monkeypatch.setattr(screenshot_reading, "read_screenshot", read_as_homework)
+    with grades_open(key=True) as client:
+        send = step(client)
+        with OnTheLoop(state_of(client)) as seen:
+            answer = send()
+
+    assert answer.status_code == code, answer.text[:300]
+    assert seen.loop == []
+    assert seen.workers != []
