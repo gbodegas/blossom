@@ -616,7 +616,7 @@ async def review_state_now(state: ApplicationState, draft_id: str) -> str | None
     """Whether the review, read now, has expired (``expired``), is gone (``absent``) or can't
     be read for a busy store (``busy``); None while it can be read, open or closed, or for any
     other refusal."""
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except DraftExpired:
@@ -653,7 +653,7 @@ async def snapshot_keeping_typing(
     expired, or to be gone, says so beneath what it saved (``saved_unread``). Any other press
     the store refuses to read for answers with its own lines and status
     (``unshown_with_typing``)."""
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (DraftExpired, DraftNotFound) as error:
@@ -698,7 +698,7 @@ async def first_upload(request: Request, state: State) -> Response:
     if not in_time:
         return said_page(request, marks_of(state), SAID["too_old"], 400)
     prepared = await asyncio.to_thread(prepare_upload, upload.files)
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         added = await asyncio.to_thread(
             state.import_drafts.create,
@@ -723,7 +723,7 @@ async def upload_told(state: ApplicationState, added: Added) -> list[str]:
     are read, as the review stands after its commit."""
     if not added.added:
         return []
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         after = await asyncio.to_thread(state.import_drafts.snapshot, student, added.draft_id)
     except STORE_REFUSALS:
@@ -738,7 +738,7 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
     checked before any byte of the body is read, and again when the images are stored."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
         if snapshot.closed_at is not None or snapshot.finished:
@@ -769,7 +769,8 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
 async def tables_of(state: ApplicationState, draft_id: str) -> DraftForSave | None:
     """A homework review's tables as the save reads them; None for any other review."""
     record = state.project_state
-    return await asyncio.to_thread(record.draft_for_save, record.student_id(), draft_id)
+    student = await asyncio.to_thread(record.student_id)
+    return await asyncio.to_thread(record.draft_for_save, student, draft_id)
 
 
 async def change_lines(
@@ -793,7 +794,7 @@ async def remove_image(request: Request, draft_id: str, image_id: str, state: St
     The next page says what the change cleared."""
     if not opaque(draft_id) or not opaque(image_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     before = await tables_of(state, draft_id)
     try:
         await asyncio.to_thread(state.import_drafts.remove_image, student, draft_id, image_id)
@@ -809,7 +810,7 @@ async def view_image(request: Request, draft_id: str, image_id: str, state: Stat
     """The prepared PNG of one image: the bytes stored, sent to the reader and shown."""
     if not opaque(draft_id) or not opaque(image_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         png = await asyncio.to_thread(state.import_drafts.image_png, student, draft_id, image_id)
     except UnknownImage:
@@ -898,7 +899,7 @@ async def image_names(
         if reading.kind != "homework_list" or reading.sha256 not in ids:
             continue
         line = student_line(reading.body)
-        identity = state.project_state.identity_of(key, line)
+        identity = await asyncio.to_thread(state.project_state.identity_of, key, line)
         images.append(
             ImageName(
                 ids[reading.sha256],
@@ -918,7 +919,8 @@ async def state_of_review(
     """The review's state as the save works it out, from its stored tables and the record now;
     None when there is no such homework review."""
     record = state.project_state
-    tables = await asyncio.to_thread(record.draft_for_save, record.student_id(), snapshot.draft_id)
+    student = await asyncio.to_thread(record.student_id)
+    tables = await asyncio.to_thread(record.draft_for_save, student, snapshot.draft_id)
     if tables is None:
         return None
     return await asyncio.to_thread(
@@ -1050,7 +1052,7 @@ async def snapshot_or_page(
     press with the page saying it changed nothing."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (StoreBusy, WriterBusy) as error:
@@ -1100,7 +1102,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         or not same_signature(fields.get("check", ""), read_check(found.page_key, named))
     ):
         return review_page(request, state, found, [SAID["unchecked"]], 400)
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     before = await tables_of(state, draft_id)
     try:
         outcome = await read_screenshots(
@@ -1393,7 +1395,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     its typing, that correction whole in its box."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         found = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (StoreBusy, WriterBusy):
@@ -1417,7 +1419,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         return await later_press(request, state, found, post)
     if post.press == "save":
         return await save_press(request, state, found, post)
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         await asyncio.to_thread(
             state.import_drafts.keep_answers,
@@ -1467,7 +1469,7 @@ async def later_press(
 ) -> Response:
     """Save review for later: the answers and the typed corrections, in one transaction, the
     corrections only when no other tab saved for later since the page."""
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     review = await state_of_review(state, found, post.corrections)
     ticked = row_keys(review, post.units) if review is not None else frozenset()
     progress = progress_text(post.corrections, ticked)
@@ -1505,7 +1507,7 @@ async def save_press(
     otherwise the answers kept at the page's version, then the homework transaction for the
     groups ticked, and closing the review when that finished it."""
     record = state.project_state
-    student = record.student_id()
+    student = await asyncio.to_thread(record.student_id)
     draft_id = found.draft_id
     recorded = await asyncio.to_thread(
         record.homework_acceptance, student, draft_id, post.acceptance
@@ -1725,7 +1727,7 @@ async def replayed(request: Request, state: ApplicationState, draft_id: str) -> 
     if not isinstance(acceptance, str) or not opaque(acceptance):
         return None
     record = state.project_state
-    student = record.student_id()
+    student = await asyncio.to_thread(record.student_id)
     if await asyncio.to_thread(record.homework_acceptance, student, draft_id, acceptance) is None:
         return None
     return await saved_page(request, state, draft_id, acceptance, [])
@@ -1748,7 +1750,7 @@ async def saved_page(
     the way back to it (``saved_busy``), and for a review known to have expired, or to be gone,
     with that said beneath the counts as a refused press does."""
     record = state.project_state
-    student = record.student_id()
+    student = await asyncio.to_thread(record.student_id)
     counts = await asyncio.to_thread(record.homework_counts, student, draft_id, acceptance)
     lines = [*said, counted(*counts)] if counts else said
     gone: list[str] = []
@@ -1922,7 +1924,7 @@ async def closing_press(
     if posted is None:
         return to_review(state, draft_id, [AFTER_SAID["unchecked"]])
     version, keys = posted
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     store = state.import_drafts
     try:
         if action == "set-aside":
@@ -1972,7 +1974,7 @@ async def discarding_press(
     posted = await small_form(request, state, found, action)
     if posted is None:
         return to_review(state, draft_id, [AFTER_SAID["unchecked"]])
-    student = state.project_state.student_id()
+    student = await asyncio.to_thread(state.project_state.student_id)
     try:
         done = await asyncio.to_thread(
             state.import_drafts.discard_review,
