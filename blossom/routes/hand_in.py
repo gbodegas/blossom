@@ -115,6 +115,7 @@ from blossom.routes.student import (
     unavailable_page,
     viewer_of,
 )
+from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.project_state import (
     DONE,
     NOT_YET,
@@ -1077,7 +1078,7 @@ def answered_with_words(
             TurnIn(press.assignment_id, said=said, event_id=event_id, direct=True),
             status.HTTP_200_OK,
         )
-    except sqlite3.Error as error:
+    except (sqlite3.Error, StoreBusy, WriterBusy) as error:
         logger.warning("the page for a turn-in press could not be read: %s", type(error).__name__)
         return committed_not_shown(request, state, press, said)
 
