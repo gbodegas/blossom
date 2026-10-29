@@ -18,17 +18,20 @@ changed is put again. Nothing here asks a model anything, and her words are
 copied nowhere.
 """
 
+import asyncio
 import logging
 import re
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date
+from functools import partial
 from typing import Final
 
 from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from blossom.agent.runs import worker_to_the_end
 from blossom.authored_text import TextRefused, multiline, single_line
 from blossom.candidates import CandidateReading, candidate_readings, reader
 from blossom.captures import (
@@ -940,14 +943,17 @@ async def refused_press(
         name: str | None = capture_id_from(capture_id)
     except NotACaptureId:
         name = None
-    return plain_details(
-        request,
-        state,
-        copied(kept, name or ""),
-        way.refusal,
-        status.HTTP_403_FORBIDDEN,
-        back_to_the_note=name is not None,
-        refused=True,
+    return await asyncio.to_thread(
+        partial(
+            plain_details,
+            request,
+            state,
+            copied(kept, name or ""),
+            way.refusal,
+            status.HTTP_403_FORBIDDEN,
+            back_to_the_note=name is not None,
+            refused=True,
+        )
     )
 
 
@@ -992,19 +998,27 @@ async def save_details(
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return gone(request, state)
+        return await asyncio.to_thread(gone, request, state)
     ready = prepared(fields, name, revision_of(fields))
-    revision = on_arrival(request, state, way, ready, fields, whole=whole)
+    revision = await asyncio.to_thread(
+        partial(on_arrival, request, state, way, ready, fields, whole=whole)
+    )
     if not isinstance(revision, int):
         return revision
-    courses = classes_on_record(state)
+    courses = await asyncio.to_thread(classes_on_record, state)
     if courses is None:
-        return plain_details(
-            request, state, ready.form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
+        return await asyncio.to_thread(
+            plain_details,
+            request,
+            state,
+            ready.form,
+            NOT_SAVED,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     form, details = read_details(ready, courses, to_add=False)
     if details is None:
-        return details_or_plain(
+        return await asyncio.to_thread(
+            details_or_plain,
             request,
             state,
             name,
@@ -1016,7 +1030,8 @@ async def save_details(
     if class_left_behind(form, courses) is not None:
         # Saving details asks no fingerprint, so a class the list does not offer is refused
         # here, kept as the chosen option and marked as not in the list.
-        return details_or_plain(
+        return await asyncio.to_thread(
+            details_or_plain,
             request,
             state,
             name,
@@ -1025,26 +1040,38 @@ async def save_details(
             CLASS_NOT_OFFERED,
             status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
+    asked = details
+
+    def clarified() -> CaptureChanged | CaptureUnchanged | CaptureConflict:
+        now, today = accepted_at(state)
+        return state.project_state.clarify_capture(
+            name,
+            asked,
+            expected_revision=revision,
+            authored_by=actor(viewer_of(request)),
+            channel=way.channel,
+            now=now,
+            today=today,
+        )
+
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            outcome = state.project_state.clarify_capture(
-                name,
-                details,
-                expected_revision=revision,
-                authored_by=actor(viewer_of(request)),
-                channel=way.channel,
-                now=now,
-                today=today,
-            )
+            outcome = await worker_to_the_end(clarified)
     except UnknownCapture:
-        return details_or_plain(
-            request, state, name, way, form, NOT_SAVED, status.HTTP_404_NOT_FOUND
+        return await asyncio.to_thread(
+            details_or_plain, request, state, name, way, form, NOT_SAVED, status.HTTP_404_NOT_FOUND
         )
     except CaptureNotSaved:
         logger.exception("the details of note %s could not be saved", name)
-        return details_or_plain(
-            request, state, name, way, form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
+        return await asyncio.to_thread(
+            details_or_plain,
+            request,
+            state,
+            name,
+            way,
+            form,
+            NOT_SAVED,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     match outcome:
         case CaptureChanged(event=made):
@@ -1052,7 +1079,8 @@ async def save_details(
         case CaptureUnchanged(head=head):
             where = note_href(name, fragment=NOTE_RESULT, said="unchanged", event=head.event_id)
         case CaptureConflict(capture=note):
-            return details_or_plain(
+            return await asyncio.to_thread(
+                details_or_plain,
                 request,
                 state,
                 name,
@@ -1081,19 +1109,27 @@ async def add_to_homework(
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return gone(request, state)
+        return await asyncio.to_thread(gone, request, state)
     ready = prepared(fields, name, revision_of(fields))
-    revision = on_arrival(request, state, way, ready, fields, whole=whole)
+    revision = await asyncio.to_thread(
+        partial(on_arrival, request, state, way, ready, fields, whole=whole)
+    )
     if not isinstance(revision, int):
         return revision
-    courses = classes_on_record(state)
+    courses = await asyncio.to_thread(classes_on_record, state)
     if courses is None:
-        return plain_details(
-            request, state, ready.form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
+        return await asyncio.to_thread(
+            plain_details,
+            request,
+            state,
+            ready.form,
+            NOT_SAVED,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     form, details = read_details(ready, courses, to_add=True)
     if details is None:
-        return details_or_plain(
+        return await asyncio.to_thread(
+            details_or_plain,
             request,
             state,
             name,
@@ -1112,14 +1148,21 @@ async def add_to_homework(
         # its transaction. A read that fails here is answered by the page that reads no
         # store, with everything typed kept, and the write is not tried.
         try:
-            unchanged = candidate_basis(candidate_readings(state.project_state, details)) == basis
+            readings = await asyncio.to_thread(candidate_readings, state.project_state, details)
+            unchanged = candidate_basis(readings) == basis
         except Exception:
             logger.exception("the homework for a note's chosen class could not be read")
-            return plain_details(
-                request, state, form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
+            return await asyncio.to_thread(
+                plain_details,
+                request,
+                state,
+                form,
+                NOT_SAVED,
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if unchanged:
-            return details_or_plain(
+            return await asyncio.to_thread(
+                details_or_plain,
                 request,
                 state,
                 name,
@@ -1129,30 +1172,49 @@ async def add_to_homework(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
     choice, target = choice_from(fields.get("candidate")) or ("new", None)
+    asked = details
+
+    def promoted() -> (
+        CapturePromoted
+        | CaptureAlreadyPromoted
+        | CaptureConflict
+        | DetailsMissing
+        | ChoiceNeeded
+        | CandidatesChanged
+    ):
+        now, today = accepted_at(state)
+        return state.project_state.promote_capture(
+            name,
+            asked,
+            expected_revision=revision,
+            basis=basis,
+            choice=choice,
+            target=target,
+            candidates=reader(state.project_state),
+            authored_by=actor(viewer_of(request)),
+            channel=way.channel,
+            now=now,
+            today=today,
+        )
+
     try:
         async with state.decision_lock:
-            now, today = accepted_at(state)
-            outcome = state.project_state.promote_capture(
-                name,
-                details,
-                expected_revision=revision,
-                basis=basis,
-                choice=choice,
-                target=target,
-                candidates=reader(state.project_state),
-                authored_by=actor(viewer_of(request)),
-                channel=way.channel,
-                now=now,
-                today=today,
-            )
+            outcome = await worker_to_the_end(promoted)
     except UnknownCapture:
-        return details_or_plain(
-            request, state, name, way, form, NOT_SAVED, status.HTTP_404_NOT_FOUND
+        return await asyncio.to_thread(
+            details_or_plain, request, state, name, way, form, NOT_SAVED, status.HTTP_404_NOT_FOUND
         )
     except CaptureNotSaved:
         logger.exception("note %s could not be added to homework", name)
-        return details_or_plain(
-            request, state, name, way, form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
+        return await asyncio.to_thread(
+            details_or_plain,
+            request,
+            state,
+            name,
+            way,
+            form,
+            NOT_SAVED,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     match outcome:
         case CapturePromoted(event=made, created=created):
@@ -1161,7 +1223,8 @@ async def add_to_homework(
         case CaptureAlreadyPromoted(head=head):
             where = note_href(name, fragment=NOTE_RESULT, said="already", event=head.event_id)
         case CaptureConflict(capture=note):
-            return details_or_plain(
+            return await asyncio.to_thread(
+                details_or_plain,
                 request,
                 state,
                 name,
@@ -1171,7 +1234,8 @@ async def add_to_homework(
                 status.HTTP_409_CONFLICT,
             )
         case DetailsMissing():
-            return details_or_plain(
+            return await asyncio.to_thread(
+                details_or_plain,
                 request,
                 state,
                 name,
@@ -1183,7 +1247,8 @@ async def add_to_homework(
         case ChoiceNeeded(candidates=found) | CandidatesChanged(candidates=found):
             # With homework of that class and title on record the choice is put, or put
             # again. With none left, the choice sent was about homework that has gone.
-            return details_or_plain(
+            return await asyncio.to_thread(
+                details_or_plain,
                 request,
                 state,
                 name,
