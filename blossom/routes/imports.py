@@ -60,7 +60,7 @@ from blossom.screenshot_posts import (
     shape_four,
     typed_back,
 )
-from blossom.screenshot_reading import read_screenshots
+from blossom.screenshot_reading import ReadOutcome, read_screenshots
 from blossom.screenshot_review import Corrections, change_told, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
@@ -1270,7 +1270,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         after = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (StoreBusy, WriterBusy, sqlite3.Error) as error:
         noted(error)
-        return to_review(state, draft_id)
+        return to_review(state, draft_id, told=kept_readings(outcome))
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
     if after.closed_at is not None:
@@ -1292,6 +1292,18 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         noted(error)
         return to_review(state, draft_id, said, told)
     return review_page(request, state, after, said, rows=rows, told=told)
+
+
+def kept_readings(outcome: ReadOutcome | None) -> list[str]:
+    """What a Read press says when its review can't be read again after its attempt: how many
+    readings the attempt stored, by count alone, and nothing when it stored none. It names no
+    screenshot and says nothing of the others; the review's labels, shown beside it, say how
+    each one stands."""
+    kept = 0 if outcome is None else len(outcome.read)
+    if not kept:
+        return []
+    s = "" if kept == 1 else "s"
+    return [f"This attempt kept the reading{s} of {kept} screenshot{s}."]
 
 
 def read_said(snapshot: DraftSnapshot, now: datetime) -> list[str]:
