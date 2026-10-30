@@ -548,7 +548,7 @@ NOTHING_ADDED: Final = "Nothing was added."
 file refusing a read before its write began."""
 UNKNOWN_SAID: Final = {
     "upload": "Blossom couldn't tell whether the screenshots were uploaded.",
-    "remove": "Blossom couldn't tell whether the screenshot was removed.",
+    "remove": "Blossom couldn't tell whether the screenshot was taken out of this review.",
     "keep": "Blossom couldn't tell whether your answers were kept.",
     "later": (
         "Blossom couldn't tell whether your answers were kept and your corrections saved for later."
