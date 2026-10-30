@@ -243,7 +243,7 @@ State = Annotated[ApplicationState, Depends(get_application_state)]
 class NoStoreForImports:
     """Mark every answer the application makes to an import address no-store, whatever made
     it: a route, a refusal handler or a missing address. The server's bare 500 for an error no
-    page catches is made outside the application's layers and carries no mark."""
+    page catches is made outside this layer and carries no mark."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -452,8 +452,16 @@ def busy_refusal(error: Exception) -> bool:
     return isinstance(error, sqlite3.Error) and busy_file(error)
 
 
+def noted(error: Exception) -> None:
+    """A refusal of the household's file that isn't a busy one, in the log by its kind alone,
+    never its words, so a failure a page answers is still on record. A busy refusal isn't
+    logged, as the busy pages never were."""
+    if isinstance(error, sqlite3.Error) and not busy_file(error):
+        logger.warning("The household file refused an import request: %s", type(error).__name__)
+
+
 def upload_refusal(request: Request, state: ApplicationState, error: Exception) -> Response:
-    """A store's refusal of an upload: a busy store began nothing, so the screenshots weren't
+    """A store's refusal of an upload: a busy store wrote nothing, so the screenshots weren't
     added and sending them again is what works; any other refusal as a press's."""
     if busy_refusal(error):
         return said_page(request, marks_of(state), SAID["busy"], 503)
@@ -490,12 +498,18 @@ def unread_page(
 
 
 def unwritten_page(
-    request: Request, state: ApplicationState, error: Exception, *, upload: bool = False
+    request: Request,
+    state: ApplicationState,
+    error: Exception,
+    unknown: str,
+    *,
+    upload: bool = False,
 ) -> Response:
     """The household's file refusing a write: a busy file wrote nothing, as the route says a
-    busy store; for any other refusal whether the write committed can't be known."""
+    busy store; for any other refusal whether the write committed can't be known, as
+    ``unknown``, the press's own sentence, says."""
     if not busy_refusal(error):
-        return said_page(request, marks_of(state), WRITE_UNKNOWN, 503)
+        return said_page(request, marks_of(state), unknown, 503)
     return upload_refusal(request, state, error) if upload else store_refusal(request, state, error)
 
 
@@ -522,8 +536,25 @@ REVIEW_NOT_SHOWN: Final = "This review can't be shown right now."
 REVIEW_UNAVAILABLE: Final = "This review can't be shown right now. Try again in a moment."
 """What the review's address says while the store refuses to read it."""
 WRITE_UNKNOWN: Final = "Blossom couldn't tell whether this was saved."
-"""What a press says when the household's file refused its write for a reason that isn't a
-busy file, so whether the write committed isn't known."""
+"""What a Read press says when the household's file refused it as its attempt began or ended,
+after its readings may have been kept."""
+UNKNOWN_SAID: Final = {
+    "upload": "Blossom couldn't tell whether the screenshots were uploaded.",
+    "remove": "Blossom couldn't tell whether the screenshot was removed.",
+    "keep": "Blossom couldn't tell whether your answers were kept.",
+    "later": (
+        "Blossom couldn't tell whether your answers were kept and your corrections saved for later."
+    ),
+    "save": "Blossom couldn't tell whether your answers were kept.",
+    "set-aside": "Blossom couldn't tell whether this group was set aside.",
+    "finish": "Blossom couldn't tell whether this review was finished.",
+    "discard": "Blossom couldn't tell whether this review was discarded.",
+    "not-hers": 'Blossom couldn\'t tell whether this review was discarded as "Not hers".',
+}
+"""What each press says when the household's file refused its write for a reason that isn't a
+busy file, so whether its change was made isn't known: the change it would have made, in the
+words of its own success line. A Save whose answers' keep is refused this way says too that no
+homework was saved, since its homework was never begun."""
 COUNTS_UNSHOWN: Final = "This homework was already saved, but its counts can't be shown right now."
 """What a resent save says when its earlier save is on record and its counts can't be read."""
 
@@ -669,7 +700,8 @@ async def review_state_now(state: ApplicationState, draft_id: str) -> str | None
         return "expired"
     except DraftNotFound:
         return "absent"
-    except (StoreBusy, WriterBusy, sqlite3.Error):
+    except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        noted(error)
         return "busy"
     except STORE_REFUSALS:
         return None
@@ -708,7 +740,8 @@ async def snapshot_keeping_typing(
             ended = [*ended_lines(said, saved=True), SAID[gone_by(error)]]
             return await saved_unread(request, state, ended_lines(done, saved=True), ended)
         return await refused_keeping_typing(request, state, error, said, status)
-    except (StoreBusy, WriterBusy, sqlite3.Error):
+    except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        noted(error)
         return await unshown(request, state, draft_id, said, status, done)
     except STORE_REFUSALS as error:
         return await refused_keeping_typing(request, state, error, said, status)
@@ -761,6 +794,7 @@ async def first_upload(request: Request, state: State) -> Response:
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
     except sqlite3.Error as error:
+        noted(error)
         return unread_page(request, state, error, upload=True)
     try:
         added = await asyncio.to_thread(
@@ -774,7 +808,8 @@ async def first_upload(request: Request, state: State) -> Response:
     except STORE_REFUSALS as error:
         return upload_refusal(request, state, error)
     except sqlite3.Error as error:
-        return unwritten_page(request, state, error, upload=True)
+        noted(error)
+        return unwritten_page(request, state, error, UNKNOWN_SAID["upload"], upload=True)
     if added is None:
         lines = [image_refusal(place + 1, kind) for place, kind in prepared.refused]
         return said_page(request, marks_of(state), "Nothing was added.", 422, *lines)
@@ -791,7 +826,8 @@ async def upload_told(state: ApplicationState, added: Added) -> list[str]:
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         after = await asyncio.to_thread(state.import_drafts.snapshot, student, added.draft_id)
-    except (*STORE_REFUSALS, sqlite3.Error):
+    except (*STORE_REFUSALS, sqlite3.Error) as error:
+        noted(error)
         return []
     read = sum(1 for image in after.images if image.read)
     return uploaded_said(len(added.added), len(after.images), read)
@@ -813,6 +849,7 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
     except STORE_REFUSALS as error:
         return upload_refusal(request, state, error)
     except sqlite3.Error as error:
+        noted(error)
         return unread_page(request, state, error, upload=True)
     try:
         upload = await body_of(request, {})
@@ -829,7 +866,8 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
     except STORE_REFUSALS as error:
         return upload_refusal(request, state, error)
     except sqlite3.Error as error:
-        return unwritten_page(request, state, error, upload=True)
+        noted(error)
+        return unwritten_page(request, state, error, UNKNOWN_SAID["upload"], upload=True)
     places = [place for place, _ in prepared.images]
     told = await upload_told(state, added)
     return to_review(state, draft_id, upload_said(added, places, prepared.refused), told)
@@ -853,7 +891,8 @@ async def change_lines(
         return []
     try:
         after = await tables_of(state, draft_id)
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        noted(error)
         return []
     if after is None or after.closed_at is not None:
         return []
@@ -871,6 +910,7 @@ async def remove_image(request: Request, draft_id: str, image_id: str, state: St
         student = await asyncio.to_thread(state.project_state.student_id)
         before = await tables_of(state, draft_id)
     except sqlite3.Error as error:
+        noted(error)
         return unread_page(request, state, error)
     try:
         await asyncio.to_thread(state.import_drafts.remove_image, student, draft_id, image_id)
@@ -879,7 +919,8 @@ async def remove_image(request: Request, draft_id: str, image_id: str, state: St
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
     except sqlite3.Error as error:
-        return unwritten_page(request, state, error)
+        noted(error)
+        return unwritten_page(request, state, error, UNKNOWN_SAID["remove"])
     return to_review(state, draft_id, await change_lines(state, draft_id, before))
 
 
@@ -896,6 +937,7 @@ async def view_image(request: Request, draft_id: str, image_id: str, state: Stat
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
     except sqlite3.Error as error:
+        noted(error)
         return unread_page(request, state, error)
     return Response(png, media_type="image/png")
 
@@ -1137,6 +1179,7 @@ async def snapshot_or_page(
         student = await asyncio.to_thread(state.project_state.student_id)
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        noted(error)
         if address:
             return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
         return unread_page(request, state, error)
@@ -1159,7 +1202,8 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
         answering(request)
     try:
         rows = await rows_of(request, state, found, said)
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        noted(error)
         return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
     answer = review_page(request, state, found, said, rows=rows, told=note.told, done=note.done)
     if request.cookies.get(NOTE_COOKIE) is not None:
@@ -1190,6 +1234,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         student = await asyncio.to_thread(state.project_state.student_id)
         before = await tables_of(state, draft_id)
     except sqlite3.Error as error:
+        noted(error)
         if busy_file(error):
             return review_page(request, state, found, [SAID["read_busy"]], 503)
         return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
@@ -1209,12 +1254,14 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         return review_page(request, state, found, [SAID["read_busy"]], 503)
     except (DraftClosed, DraftExpired, DraftFrozen, DraftNotFound) as error:
         return store_refusal(request, state, error)
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        noted(error)
         # Refused as the attempt began or as it ended, after its readings may have been kept.
         return to_review(state, draft_id, [WRITE_UNKNOWN])
     try:
         after = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
-    except (StoreBusy, WriterBusy, sqlite3.Error):
+    except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        noted(error)
         return to_review(state, draft_id)
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
@@ -1233,7 +1280,8 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         told = read_said(after, state.real_clock.now())
     try:
         rows = await rows_of(request, state, after, said)
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        noted(error)
         return to_review(state, draft_id, said, told)
     return review_page(request, state, after, said, rows=rows, told=told)
 
@@ -1494,6 +1542,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         student = await asyncio.to_thread(state.project_state.student_id)
         found = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        noted(error)
         return await replayed(request, state, draft_id) or await unshown_unread(
             request, state, draft_id, error
         )
@@ -1507,6 +1556,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     try:
         post, named = await review_post(request, state, found)
     except sqlite3.Error as error:
+        noted(error)
         return await replayed(request, state, draft_id) or await unshown_unread(
             request, state, draft_id, error
         )
@@ -1522,6 +1572,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
     except sqlite3.Error as error:
+        noted(error)
         return await press_refused(request, state, draft_id, post, error, "keep_failed")
     try:
         await asyncio.to_thread(
@@ -1539,7 +1590,9 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return await refused_keeping_typing(request, state, error)
     except sqlite3.Error as error:
-        return await press_refused(request, state, draft_id, post, error, "keep_failed", wrote=True)
+        noted(error)
+        unknown = [UNKNOWN_SAID["keep"]]
+        return await press_refused(request, state, draft_id, post, error, "keep_failed", unknown)
     return await with_typing(request, state, draft_id, post, [PRESS_SAID["kept"]], 200)
 
 
@@ -1560,17 +1613,16 @@ async def press_refused(
     post: ReviewPost,
     error: sqlite3.Error,
     failed: str,
-    *,
-    wrote: bool = False,
+    unknown: Sequence[str] = (),
 ) -> Response:
     """Keep, Save or Save for later refused by the household's file, with the typing kept: a
-    busy file as the press's own failure line (``failed``), since nothing of it began; any
-    other refusal, at a read before the press's write, as the review that can't be shown, and
-    at the write (``wrote``), as a write whose outcome isn't known."""
+    busy file as the press's own failure line (``failed``), since it wrote nothing; any other
+    refusal, at a read before the press's write, as the review that can't be shown, and at the
+    write, as the press's own lines for a write whose outcome isn't known (``unknown``)."""
     if busy_file(error):
         return await with_typing(request, state, draft_id, post, [PRESS_SAID[failed]], 503)
-    if wrote:
-        return await with_typing(request, state, draft_id, post, [WRITE_UNKNOWN], 503)
+    if unknown:
+        return await with_typing(request, state, draft_id, post, unknown, 503)
     return await unshown_with_typing(request, state, draft_id, [], 503)
 
 
@@ -1598,7 +1650,8 @@ async def with_typing(
         rows = await rows_of(
             request, state, after, lines, typed=post.corrections, ticked=ticked, both=post.both
         )
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        noted(error)
         return await unshown(request, state, draft_id, said, status, done)
     return review_page(request, state, after, lines, status, rows=rows, done=done)
 
@@ -1612,6 +1665,7 @@ async def later_press(
         student = await asyncio.to_thread(state.project_state.student_id)
         review = await state_of_review(state, found, post.corrections)
     except sqlite3.Error as error:
+        noted(error)
         return await press_refused(request, state, found.draft_id, post, error, "later_failed")
     ticked = row_keys(review, post.units) if review is not None else frozenset()
     progress = progress_text(post.corrections, ticked)
@@ -1634,8 +1688,9 @@ async def later_press(
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return await refused_keeping_typing(request, state, error)
     except sqlite3.Error as error:
+        noted(error)
         return await press_refused(
-            request, state, found.draft_id, post, error, "later_failed", wrote=True
+            request, state, found.draft_id, post, error, "later_failed", [UNKNOWN_SAID["later"]]
         )
     if done.progress_saved:
         gone = await gone_now(state, found.draft_id)
@@ -1660,6 +1715,7 @@ async def save_press(
             record.homework_acceptance, student, draft_id, post.acceptance
         )
     except sqlite3.Error as error:
+        noted(error)
         return await press_refused(request, state, draft_id, post, error, "save_failed")
     if recorded is not None:
         return await saved_page(request, state, draft_id, post.acceptance, [], post)
@@ -1679,7 +1735,9 @@ async def save_press(
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return await refused_keeping_typing(request, state, error)
     except sqlite3.Error as error:
-        return await press_refused(request, state, draft_id, post, error, "save_failed", wrote=True)
+        noted(error)
+        unknown = [UNKNOWN_SAID["save"], NO_HOMEWORK]
+        return await press_refused(request, state, draft_id, post, error, "save_failed", unknown)
     answered = kept.stored > 0 or kept.withdrawn > 0
     kept_said = [PRESS_SAID["answers_kept"]] if answered else []
     if not post.units:
@@ -1688,6 +1746,7 @@ async def save_press(
     try:
         named = await image_names(request, state, found)
     except sqlite3.Error as error:
+        noted(error)
         # The answers are kept and the homework transaction never began.
         unsaved = NotSaved("busy" if busy_file(error) else "failed")
         return await outcome_page(request, state, draft_id, unsaved, answered, post)
@@ -1847,7 +1906,8 @@ async def partly_saved(
     problems = list(said)
     try:
         kept = await saved_corrections(state, after)
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        noted(error)
         return await saved_busy(request, state, draft_id, done, said)
     if unsaved_typing(after, post.corrections, kept):
         problems.append(PRESS_SAID["unsaved_typing"])
@@ -1892,7 +1952,8 @@ async def replayed(request: Request, state: ApplicationState, draft_id: str) -> 
         recorded = await asyncio.to_thread(
             record.homework_acceptance, student, draft_id, acceptance
         )
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        noted(error)
         return None
     if recorded is None:
         return None
@@ -1921,7 +1982,8 @@ async def saved_page(
     try:
         student = await asyncio.to_thread(record.student_id)
         counts = await asyncio.to_thread(record.homework_counts, student, draft_id, acceptance)
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        noted(error)
         return await saved_busy(request, state, draft_id, [*said, COUNTS_UNSHOWN])
     lines = [*said, counted(*counts)] if counts else said
     gone: list[str] = []
@@ -1930,7 +1992,8 @@ async def saved_page(
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (DraftExpired, DraftNotFound) as error:
         snapshot, gone = None, [SAID[gone_by(error)]]
-    except (StoreBusy, WriterBusy, sqlite3.Error):
+    except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        noted(error)
         snapshot, busy = None, True
     except STORE_REFUSALS:
         snapshot = None
@@ -1941,7 +2004,8 @@ async def saved_page(
             pairs = await asyncio.to_thread(
                 record.homework_acceptance, student, draft_id, acceptance
             )
-        except sqlite3.Error:
+        except sqlite3.Error as error:
+            noted(error)
             pairs = None
         week = await week_of(state, pairs or ())
         if busy:
@@ -1952,7 +2016,8 @@ async def saved_page(
     if post is None:
         try:
             post, _ = await review_post(request, state, snapshot)
-        except sqlite3.Error:
+        except sqlite3.Error as error:
+            noted(error)
             return await saved_busy(request, state, draft_id, lines)
     if post is not None:
         return await partly_saved(request, state, draft_id, post, lines)
@@ -1985,6 +2050,7 @@ async def find(request: Request, draft_id: str, state: State) -> Response:
     try:
         review = await state_of_review(state, found, await saved_corrections(state, found))
     except sqlite3.Error as error:
+        noted(error)
         return unread_page(request, state, error)
     piece = None if review is None else review.by_name.get(piece_name)
     if review is None or piece is None or piece.name in review.saved:
@@ -2092,17 +2158,16 @@ def unchanged(
     state: ApplicationState,
     draft_id: str,
     error: sqlite3.Error,
-    *,
-    wrote: bool = False,
+    unknown: str | None = None,
 ) -> Response:
     """A small form's press refused by the household's file: a busy file changed nothing, as a
     busy store's note on the review says; any other refusal, at a read before the press's write,
-    as the review that can't be shown, and at the write (``wrote``), as a note that whether it
-    changed anything isn't known."""
+    as the review that can't be shown, and at the write, as a note of the press's own sentence
+    that whether its change was made isn't known (``unknown``)."""
     if busy_file(error):
         return to_review(state, draft_id, [AFTER_SAID["busy"]])
-    if wrote:
-        return to_review(state, draft_id, [WRITE_UNKNOWN])
+    if unknown is not None:
+        return to_review(state, draft_id, [unknown])
     return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
 
 
@@ -2128,6 +2193,7 @@ async def closing_press(
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
     except sqlite3.Error as error:
+        noted(error)
         return unchanged(request, state, draft_id, error)
     store = state.import_drafts
     try:
@@ -2146,7 +2212,8 @@ async def closing_press(
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return store_refusal(request, state, error)
     except sqlite3.Error as error:
-        return unchanged(request, state, draft_id, error, wrote=True)
+        noted(error)
+        return unchanged(request, state, draft_id, error, UNKNOWN_SAID[action])
     first = [AFTER_SAID["set_aside"]] if action == "set-aside" else []
     if done.closed:
         lines = finished_said(done, *first)
@@ -2183,6 +2250,7 @@ async def discarding_press(
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
     except sqlite3.Error as error:
+        noted(error)
         return unchanged(request, state, draft_id, error)
     try:
         done = await asyncio.to_thread(
@@ -2201,7 +2269,8 @@ async def discarding_press(
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
         return store_refusal(request, state, error)
     except sqlite3.Error as error:
-        return unchanged(request, state, draft_id, error, wrote=True)
+        noted(error)
+        return unchanged(request, state, draft_id, error, UNKNOWN_SAID[action])
     if action == "not-hers":
         return said_page(request, marks_of(state), AFTER_SAID["not_hers"], 200)
     last = AFTER_SAID["safe"] if done.saved else AFTER_SAID["nothing_saved"]
