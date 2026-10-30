@@ -10093,7 +10093,22 @@ def test_a_press_refused_for_two_boxes_says_nothing_was_kept_once(
 # ------------------------------------------------------------------ the household's file refused
 
 WRITE_UNKNOWN: Final = "Blossom couldn't tell whether this was saved."
-"""What a press says when the file refused its write for a reason that isn't a busy file."""
+"""What a Read press says when the file refused it as its attempt began or ended."""
+UNKNOWN: Final = {
+    "upload": "Blossom couldn't tell whether the screenshots were uploaded.",
+    "remove": "Blossom couldn't tell whether the screenshot was removed.",
+    "keep": "Blossom couldn't tell whether your answers were kept.",
+    "later": (
+        "Blossom couldn't tell whether your answers were kept and your corrections saved for later."
+    ),
+    "save": "Blossom couldn't tell whether your answers were kept.",
+    "set-aside": "Blossom couldn't tell whether this group was set aside.",
+    "finish": "Blossom couldn't tell whether this review was finished.",
+    "discard": "Blossom couldn't tell whether this review was discarded.",
+    "not-hers": 'Blossom couldn\'t tell whether this review was discarded as "Not hers".',
+}
+"""What each press says when the file refused its write for a reason that isn't a busy file,
+naming the change it would have made."""
 COUNTS_UNSHOWN: Final = "This homework was already saved, but its counts can't be shown right now."
 """What a resent save says when its earlier save is on record and its counts can't be read."""
 BUSY_LINES: Final = (
@@ -10206,9 +10221,11 @@ class HeldOnceCalled:
     def __init__(self, path: pathlib.Path) -> None:
         self.path = path
         self.connection: sqlite3.Connection | None = None
+        self.taken = False
 
     def take(self) -> None:
         if self.connection is None:
+            self.taken = True
             self.connection = sqlite3.connect(
                 self.path, isolation_level=None, check_same_thread=False
             )
@@ -11218,7 +11235,7 @@ NOT_BUSY_SITES: Final = {
         503,
         imports.REVIEW_UNAVAILABLE,
     ),
-    "upload, its write": ("first upload", "first_upload", "create", 1, 503, WRITE_UNKNOWN),
+    "upload, its write": ("first upload", "first_upload", "create", 1, 503, UNKNOWN["upload"]),
     "review, the review": (
         "review",
         "snapshot_or_page",
@@ -11237,7 +11254,9 @@ NOT_BUSY_SITES: Final = {
     ),
     "press, the review": ("keep", "review_press", "snapshot", 1, 503, imports.REVIEW_NOT_SHOWN),
     "keep, her record": ("keep", "review_press", "student_id", 2, 503, imports.REVIEW_NOT_SHOWN),
-    "keep, its write": ("keep", "review_press", "keep_answers", 1, 503, WRITE_UNKNOWN),
+    "keep, its write": ("keep", "review_press", "keep_answers", 1, 503, UNKNOWN["keep"]),
+    "later, its write": ("later", "later_press", "save_for_later", 1, 503, UNKNOWN["later"]),
+    "save, its answers": ("save", "save_press", "keep_answers", 1, 503, UNKNOWN["save"]),
     "set aside, her record": (
         "set aside",
         "closing_press",
@@ -11246,7 +11265,15 @@ NOT_BUSY_SITES: Final = {
         503,
         imports.REVIEW_UNAVAILABLE,
     ),
-    "set aside, its write": ("set aside", "closing_press", "set_aside", 1, 303, WRITE_UNKNOWN),
+    "set aside, its write": (
+        "set aside",
+        "closing_press",
+        "set_aside",
+        1,
+        303,
+        UNKNOWN["set-aside"],
+    ),
+    "read, her record": ("read", "read", "student_id", 1, 503, imports.REVIEW_UNAVAILABLE),
     "read, its attempt": ("read", "read_screenshots", "start_attempt", 1, 303, WRITE_UNKNOWN),
     "keep, then the review": (
         "keep",
@@ -11286,9 +11313,142 @@ def test_a_refusal_that_isn_t_a_busy_file_never_says_blossom_was_busy(
     for line in BUSY_LINES:
         assert not says(answer.text, line), line
         assert not says(shown, line), line
-    if route == "save":
+    if site == "save, then her name":
         assert says(answer.text, imports.PRESS_SAID["failed"])
         assert not says(answer.text, imports.SAID["no_name_check"])
+    if site == "save, its answers":
+        assert said_block(shown) == [UNKNOWN["save"], imports.NO_HOMEWORK]
+    if site == "read, her record":
+        assert not says(answer.text, imports.SAID["read_busy"])
+
+
+def said_block(page: str) -> list[str]:
+    """The lines of a page's said block, problem or status, as the page shows them."""
+    found = re.search(
+        r'<div class="problem" role="(?:alert|status)" id="said"[^>]*>(.*?)</div>', page, re.S
+    )
+    return lines_in(found)
+
+
+WRITES: Final = {
+    "first upload": ("first_upload", "create", 503, UNKNOWN["upload"]),
+    "more images": ("more_images", "add_images", 503, UNKNOWN["upload"]),
+    "remove": ("remove_image", "remove_image", 503, UNKNOWN["remove"]),
+    "keep": ("review_press", "keep_answers", 503, UNKNOWN["keep"]),
+    "later": ("later_press", "save_for_later", 503, UNKNOWN["later"]),
+    "save": ("save_press", "keep_answers", 503, UNKNOWN["save"]),
+    "set aside": ("closing_press", "set_aside", 303, UNKNOWN["set-aside"]),
+    "finish": ("closing_press", "discard_rest", 303, UNKNOWN["finish"]),
+    "discard": ("discarding_press", "discard_review", 303, UNKNOWN["discard"]),
+    "not hers": ("discarding_press", "discard_review", 303, UNKNOWN["not-hers"]),
+}
+"""Each import write, with the sentence that says its outcome isn't known."""
+
+
+@pytest.mark.parametrize("route", list(WRITES))
+def test_a_write_whose_outcome_isn_t_known_names_the_change_it_would_have_made(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """The file refuses the write for a reason that isn't a busy file: the press says Blossom
+    couldn't tell whether its own change happened, in its own words, and nothing else of that
+    kind; a Save adds that no homework was saved, since its homework was never begun."""
+    caller, method, status, said = WRITES[route]
+    rule = (caller, method, 1, refusing_coded("SQLITE_IOERR"))
+    answer, shown, refusing_now = refused_at(tmp_path, monkeypatch, route, rule)
+
+    assert refusing_now.refused == [(caller, method, 1)], refusing_now.seen
+    assert answer.status_code == status, answer.text[:600]
+    assert first_said(shown) == said
+    assert not says(shown, WRITE_UNKNOWN)
+    assert answer.headers["cache-control"] == "no-store"
+    if route == "save":
+        assert said_block(shown) == [said, imports.NO_HOMEWORK]
+
+
+LOGGED_SITES: Final = {
+    "a read": ("first upload", "first_upload", "student_id"),
+    "a write": ("keep", "review_press", "keep_answers"),
+}
+
+
+@pytest.mark.parametrize("code", ["SQLITE_IOERR", "SQLITE_BUSY"])
+@pytest.mark.parametrize("site", list(LOGGED_SITES))
+def test_a_refusal_that_isn_t_a_busy_file_is_logged_by_its_kind_alone(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    site: str,
+    code: str,
+) -> None:
+    """A read or a write the file refuses for a reason that isn't a busy file leaves its error's
+    kind in the log, never its words; a busy refusal leaves nothing, as the busy pages always
+    have."""
+    route, caller, method = LOGGED_SITES[site]
+    with caplog.at_level(logging.WARNING, logger=imports.logger.name):
+        refused_at(tmp_path, monkeypatch, route, (caller, method, 1, refusing_coded(code)))
+
+    logged = [r.getMessage() for r in caplog.records if r.name == imports.logger.name]
+    assert "database is locked" not in caplog.text
+    if code == "SQLITE_BUSY":
+        assert logged == []
+    else:
+        assert len(logged) == 1, logged
+        assert logged[0].endswith(": OperationalError"), logged
+
+
+def test_a_resent_save_whose_counts_the_held_file_refuses_acknowledges_the_earlier_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A save sent again once its first press saved, with the file held from the moment the
+    record says so: the earlier save acknowledged in the success panel without its counts, 200,
+    never a zero and never an invitation to save again, and nothing written."""
+    with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
+        press = PRESSES["resent save"](browser, monkeypatch)
+        path = database_of(browser)
+        record = state_of(browser).project_state
+        held = HeldOnceCalled(path)
+        real = record.homework_acceptance
+        monkeypatch.setattr(record, "homework_acceptance", then_held(real, held))
+        before = file_rows(path)
+        try:
+            answer, _ = watch.press(press)
+        finally:
+            held.release()
+        after = file_rows(path)
+
+    assert held.taken
+    assert answer.status_code == 200, answer.text[:600]
+    assert saved_heading(answer.text) == COUNTS_UNSHOWN
+    assert answer.headers["cache-control"] == "no-store"
+    assert "Saved: 0" not in answer.text
+    assert "Save again" not in answer.text
+    assert "Try again" not in answer.text
+    assert after == before
+
+
+def test_a_read_whose_attempt_couldn_t_be_ended_keeps_its_readings_and_never_says_none_was_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every reading is kept, then the file refuses as busy the write that ends the attempt:
+    the readings stay on record, read through a fresh connection, and the answer never says
+    nothing was read, nor the plain body."""
+    rule = ("read_screenshots", "end_attempt", 1, refusing_coded("SQLITE_BUSY"))
+    with held_here(open_settings(tmp_path)) as browser:
+        press = PRESSES["read"](browser, monkeypatch)
+        path = database_of(browser)
+        before = one_row(path, READINGS)
+        with monkeypatch.context() as patch:
+            refusing_now = Refusing(patch, rule)
+            answer = press()
+        after = one_row(path, READINGS)
+        shown = shown_after(browser, answer)
+
+    assert refusing_now.refused == [rule[:3]], refusing_now.seen
+    assert after[0] > before[0]  # type: ignore[operator]
+    assert answer.status_code != 500
+    assert answer.text != PLAIN_BODY
+    assert not says(answer.text, imports.SAID["read_busy"])
+    assert not says(shown, imports.SAID["read_busy"])
 
 
 def test_only_a_busy_primary_code_is_a_busy_file() -> None:
