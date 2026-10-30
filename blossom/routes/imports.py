@@ -1856,8 +1856,11 @@ async def outcome_page(
 async def week_of(state: ApplicationState, pairs: Iterable[tuple[str, str]]) -> str | None:
     """Her week at the earliest due date among the assignments a save wrote, with that card in
     view; None when none of them has a due date, or when the assignments can't be read once the
-    save has committed, so the saved outcome still shows, with no way to her week."""
+    save has committed, so the saved outcome still shows, with no way to her week. With no
+    assignment named, such as when the save's own record can't be read, it reads nothing."""
     targets = {target for _, target in pairs}
+    if not targets:
+        return None
     try:
         everything = await asyncio.to_thread(state.project_state.all_assignments)
     except Exception as error:
