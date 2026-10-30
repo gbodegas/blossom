@@ -11634,7 +11634,7 @@ UNPAIRED: Final = {
     "closed review, I/O": ("closed resend", "SQLITE_IOERR", False),
     "open review unread, busy file": ("resent save", "SQLITE_BUSY", True),
 }
-"""A resent save whose record of the assignments it saved is refused: the route, the refusal's
+"""A resent save whose record of the assignments it saved is refused: the press, the refusal's
 code, and whether the review's own read is refused as busy before it."""
 
 
@@ -11667,6 +11667,27 @@ def test_a_resent_save_whose_saved_assignments_can_t_be_read_keeps_its_outcome_a
     assert "See them on her week" not in answer.text
     assert ("week_of", "all_assignments") not in refusing_now.seen
     assert after == before
+
+
+def test_no_way_to_her_week_is_looked_for_when_no_assignment_is_named(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``week_of`` with no assignment named, from either of its callers: no way to her week, and
+    her week's assignments aren't read for it."""
+    with here(open_settings(tmp_path)) as browser:
+        state = state_of(browser)
+        reads: list[int] = []
+        real = state.project_state.all_assignments
+
+        def counted() -> object:
+            reads.append(1)
+            return real()
+
+        monkeypatch.setattr(state.project_state, "all_assignments", counted)
+        week = asyncio.run(imports.week_of(state, ()))
+
+    assert week is None
+    assert reads == []
 
 
 def test_a_resent_save_that_closed_its_review_shows_the_way_to_her_week(
