@@ -1275,7 +1275,8 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         return store_refusal(request, state, error)
     if after.closed_at is not None:
         return said_page(request, marks_of(state), SAID["closed"], 200)
-    said = await change_lines(state, draft_id, before)
+    changed = await change_lines(state, draft_id, before)
+    said = list(changed)
     told: list[str] = []
     if outcome is not None:
         places = {image.image_id: index + 1 for index, image in enumerate(after.images)}
@@ -1290,16 +1291,19 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         rows = await rows_of(request, state, after, said)
     except sqlite3.Error as error:
         noted(error)
-        return to_review(state, draft_id, said, told)
+        # The review may change before the way back is followed, so its note names no screenshot
+        # by its place and gives no total: what this press changed, and its confirmed readings.
+        return to_review(state, draft_id, changed, kept_readings(outcome))
     return review_page(request, state, after, said, rows=rows, told=told)
 
 
 def kept_readings(outcome: ReadOutcome | None) -> list[str]:
-    """What a Read press says when its review can't be read again after its attempt: how many
-    readings the attempt is known to have kept, by count alone, and nothing when none is
-    confirmed. An unfinished reading may have been kept too, so the count is what was confirmed,
-    not all that was kept. It names no screenshot and says nothing of the others; the review's
-    labels, shown beside it, say how each one stands."""
+    """What a Read press's way back to its review says of its readings when the review can't be
+    read again, or its rows built, after its attempt: how many readings the attempt is known to
+    have kept, by count alone, and nothing when none is confirmed. An unfinished reading may
+    have been kept too, so the count is what was confirmed, not all that was kept. It names no
+    screenshot and says nothing of the others; the review's labels, shown beside it, say how
+    each one stands."""
     kept = 0 if outcome is None else len(outcome.read)
     if not kept:
         return []
