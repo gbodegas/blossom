@@ -10092,8 +10092,12 @@ def test_a_press_refused_for_two_boxes_says_nothing_was_kept_once(
 
 # ------------------------------------------------------------------ the household's file refused
 
-WRITE_UNKNOWN: Final = "Blossom couldn't tell whether this was saved."
-"""What a Read press says when the file refused it as its attempt began or ended."""
+READINGS_UNCONFIRMED: Final = (
+    "Blossom couldn't confirm which screenshot readings from this attempt were kept."
+)
+"""What a Read press says when the file refused it as its attempt began or ended: none, some
+or all of its readings may have been kept."""
+NOTHING_ADDED: Final = "Nothing was added."
 UNKNOWN: Final = {
     "upload": "Blossom couldn't tell whether the screenshots were uploaded.",
     "remove": "Blossom couldn't tell whether the screenshot was removed.",
@@ -10509,7 +10513,7 @@ HELD_WRITES: Final = {
     "first upload": (503, imports.SAID["busy"]),
     "more images": (503, imports.SAID["busy"]),
     "remove": (503, imports.AFTER_SAID["busy"]),
-    "read": (303, WRITE_UNKNOWN),
+    "read": (303, READINGS_UNCONFIRMED),
     "keep": (503, imports.PRESS_SAID["keep_failed"]),
     "later": (503, imports.PRESS_SAID["later_failed"]),
     "save": (503, imports.PRESS_SAID["save_failed"]),
@@ -10923,7 +10927,14 @@ CALL_SITES: Final = {
         503,
         imports.AFTER_SAID["busy"],
     ),
-    "read, its attempt": ("read", "read_screenshots", "start_attempt", 1, 303, WRITE_UNKNOWN),
+    "read, its attempt": (
+        "read",
+        "read_screenshots",
+        "start_attempt",
+        1,
+        303,
+        READINGS_UNCONFIRMED,
+    ),
     "keep, its write": (
         "keep",
         "review_press",
@@ -11227,15 +11238,12 @@ NOT_BUSY: Final = {
     "locked": refusing_coded("SQLITE_LOCKED"),
 }
 NOT_BUSY_SITES: Final = {
-    "upload, her record": (
-        "first upload",
-        "first_upload",
-        "student_id",
-        1,
-        503,
-        imports.REVIEW_UNAVAILABLE,
-    ),
+    "upload, her record": ("first upload", "first_upload", "student_id", 1, 503, NOTHING_ADDED),
     "upload, its write": ("first upload", "first_upload", "create", 1, 503, UNKNOWN["upload"]),
+    "more, her record": ("more images", "more_images", "student_id", 1, 503, NOTHING_ADDED),
+    "more, the review": ("more images", "more_images", "snapshot", 1, 503, NOTHING_ADDED),
+    "more, its write": ("more images", "more_images", "add_images", 1, 503, UNKNOWN["upload"]),
+    "view, the image": ("view", "view_image", "image_png", 1, 503, imports.REVIEW_UNAVAILABLE),
     "review, the review": (
         "review",
         "snapshot_or_page",
@@ -11274,7 +11282,14 @@ NOT_BUSY_SITES: Final = {
         UNKNOWN["set-aside"],
     ),
     "read, her record": ("read", "read", "student_id", 1, 503, imports.REVIEW_UNAVAILABLE),
-    "read, its attempt": ("read", "read_screenshots", "start_attempt", 1, 303, WRITE_UNKNOWN),
+    "read, its attempt": (
+        "read",
+        "read_screenshots",
+        "start_attempt",
+        1,
+        303,
+        READINGS_UNCONFIRMED,
+    ),
     "keep, then the review": (
         "keep",
         "snapshot_keeping_typing",
@@ -11313,8 +11328,21 @@ def test_a_refusal_that_isn_t_a_busy_file_never_says_blossom_was_busy(
     for line in BUSY_LINES:
         assert not says(answer.text, line), line
         assert not says(shown, line), line
+    if said == NOTHING_ADDED:
+        for line in [*UNKNOWN.values(), READINGS_UNCONFIRMED, imports.REVIEW_UNAVAILABLE]:
+            assert not says(answer.text, line), line
     if site == "save, then her name":
-        assert says(answer.text, imports.PRESS_SAID["failed"])
+        assert lines_in(KEPT_BLOCK.search(answer.text)) == [imports.PRESS_SAID["answers_kept"]]
+        assert lines_in(PROBLEM_BLOCK.search(answer.text)) == [
+            imports.NO_HOMEWORK,
+            imports.REVIEW_NOT_SHOWN,
+        ]
+        assert TYPED_TITLE in TYPED_BACK.findall(answer.text)
+        [draft_id] = set(re.findall(r"/parent/imports/([0-9a-f]{32})", answer.text))
+        assert BACK_TO_REVIEW.format(draft_id) in answer.text
+        assert re.search(r'<form method="post" action="[^"]+/review"', answer.text) is None
+        for line in [*UNKNOWN.values(), imports.PRESS_SAID["failed"], "Save again"]:
+            assert not says(answer.text, line), line
         assert not says(answer.text, imports.SAID["no_name_check"])
     if site == "save, its answers":
         assert said_block(shown) == [UNKNOWN["save"], imports.NO_HOMEWORK]
@@ -11359,7 +11387,7 @@ def test_a_write_whose_outcome_isn_t_known_names_the_change_it_would_have_made(
     assert refusing_now.refused == [(caller, method, 1)], refusing_now.seen
     assert answer.status_code == status, answer.text[:600]
     assert first_said(shown) == said
-    assert not says(shown, WRITE_UNKNOWN)
+    assert not says(shown, READINGS_UNCONFIRMED)
     assert answer.headers["cache-control"] == "no-store"
     if route == "save":
         assert said_block(shown) == [said, imports.NO_HOMEWORK]
@@ -11392,8 +11420,7 @@ def test_a_refusal_that_isn_t_a_busy_file_is_logged_by_its_kind_alone(
     if code == "SQLITE_BUSY":
         assert logged == []
     else:
-        assert len(logged) == 1, logged
-        assert logged[0].endswith(": OperationalError"), logged
+        assert logged == ["an import page's store call failed: OperationalError"]
 
 
 def test_a_resent_save_whose_counts_the_held_file_refuses_acknowledges_the_earlier_save(
@@ -11426,13 +11453,27 @@ def test_a_resent_save_whose_counts_the_held_file_refuses_acknowledges_the_earli
     assert after == before
 
 
-def test_a_read_whose_attempt_couldn_t_be_ended_keeps_its_readings_and_never_says_none_was_read(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+READ_REFUSED: Final = {
+    "before reading, busy": ("start_attempt", "SQLITE_BUSY"),
+    "before reading, I/O": ("start_attempt", "SQLITE_IOERR"),
+    "before reading, no code": ("start_attempt", None),
+    "after the readings, busy": ("end_attempt", "SQLITE_BUSY"),
+    "after the readings, I/O": ("end_attempt", "SQLITE_IOERR"),
+}
+"""Where the file refuses a Read press: as its attempt begins, before any reading, or as it
+ends, once every reading is kept."""
+
+
+@pytest.mark.parametrize("case", list(READ_REFUSED))
+def test_a_read_the_file_refused_says_its_readings_can_t_be_confirmed_and_never_none_was_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
-    """Every reading is kept, then the file refuses as busy the write that ends the attempt:
-    the readings stay on record, read through a fresh connection, and the answer never says
-    nothing was read, nor the plain body."""
-    rule = ("read_screenshots", "end_attempt", 1, refusing_coded("SQLITE_BUSY"))
+    """The redirect to the review, whose note says Blossom couldn't confirm which readings were
+    kept, never that nothing was read, marked no-store; the readings kept before the refusal
+    stay on record, read through a fresh connection, and none is kept when it came first."""
+    method, code = READ_REFUSED[case]
+    fail = refusing() if code is None else refusing_coded(code)
+    rule = ("read_screenshots", method, 1, fail)
     with held_here(open_settings(tmp_path)) as browser:
         press = PRESSES["read"](browser, monkeypatch)
         path = database_of(browser)
@@ -11444,11 +11485,14 @@ def test_a_read_whose_attempt_couldn_t_be_ended_keeps_its_readings_and_never_say
         shown = shown_after(browser, answer)
 
     assert refusing_now.refused == [rule[:3]], refusing_now.seen
-    assert after[0] > before[0]  # type: ignore[operator]
-    assert answer.status_code != 500
-    assert answer.text != PLAIN_BODY
-    assert not says(answer.text, imports.SAID["read_busy"])
+    assert answer.status_code == 303, answer.text[:600]
+    assert answer.headers["cache-control"] == "no-store"
+    assert said_block(shown) == [READINGS_UNCONFIRMED]
     assert not says(shown, imports.SAID["read_busy"])
+    if method == "end_attempt":
+        assert after[0] > before[0]  # type: ignore[operator]
+    else:
+        assert after == before
 
 
 def test_only_a_busy_primary_code_is_a_busy_file() -> None:
