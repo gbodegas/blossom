@@ -1060,8 +1060,9 @@ def intake_unavailable(
     """The page for a review or a save refused because a claim about a date on record, or a
     saved instruction of the school's, cannot be read; with ``unread``, for a press whose read
     of the household's records was refused, headed that it can't be shown, with 503. It reads
-    no store, tries nothing again, and says nothing was saved, or with ``unread`` nothing about
-    a save. It keeps the text as pasted, or the entry as typed, and the answers given on the
+    no store, tries nothing again, and says nothing was saved; with ``unread``, its own
+    sentence says nothing about a save, though answers kept are still labeled not saved.
+    It keeps the text as pasted, or the entry as typed, and the answers given on the
     cards, to copy. The way on is a press through the same reading, never a retry made here:
     the paste's for a draft with a text field, even an empty one, else the entry's."""
     text = draft.get("text") or None
