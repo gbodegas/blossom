@@ -8839,8 +8839,9 @@ def read_then_refused(
     Those in ``unfinished`` end with an error nothing expects once ``reader`` has answered,
     ``busy_image``'s reading meets a busy writer, and the store refuses to keep
     ``dropped_image``'s. The change lines are ``changed`` alone when it is given. It returns the
-    answer, the visit, the store calls the press made from the refusal on, the refused one
-    first, and a mark for each time it worked out its change lines."""
+    answer, the visit, the refused call first (a store call, or the stand-in ``rows_of``) and
+    then each store call the press made after it, and a mark for each time it worked out its
+    change lines."""
     form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
     drafts = state_of(browser).import_drafts
     record = state_of(browser).project_state
@@ -9036,9 +9037,9 @@ the store call refused."""
 
 
 def assert_only_changes_and_count(shown: Answer, told: list[str]) -> None:
-    """The visit after a Read press whose rows couldn't be built: what the press changed, then
-    ``told``, and no line naming a screenshot by its place, no review-wide total, and no line
-    page-building added."""
+    """The visit after a Read press whose rows couldn't be built: what the press changed in the
+    said block, ``told`` in the status block, and no line naming a screenshot by its place, no
+    review-wide total, and no line page-building added."""
     assert shown.status_code == 200
     assert said_block(shown.text) == [CHANGED]
     assert lines_in(TOLD.search(shown.text)) == told
