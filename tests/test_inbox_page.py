@@ -58,6 +58,7 @@ from tests.support import (
     outside_earlier_work,
     refusing,
     refusing_coded,
+    waiting_note,
     words,
 )
 
@@ -1630,6 +1631,7 @@ FILE_REFUSALS = ["busy", "an I/O error", "with no code"]
 SENT_AGAIN = {
     "a paste": "/parent/inbox/read",
     "an empty paste": "/parent/inbox/read",
+    "a long paste": "/parent/inbox/read",
     "an entry": "/parent/inbox/enter",
     "an entry with no title": "/parent/inbox/enter",
     "an edit of a paste": "/parent/inbox/read",
@@ -1639,12 +1641,14 @@ SENT_AGAIN = {
 """Where each press's way on sends what it kept: through the same reading."""
 FAMILY_PAGE_PRESSES = [
     "an empty paste",
+    "a long paste",
     "an entry with no title",
     "an edit of a paste",
     "an empty find",
     "an empty save",
 ]
-"""The presses that answer with the family page, which reads the drafts store first."""
+"""The presses that answer with the family page, which reads the drafts store first: empty,
+with a problem, or Edit."""
 
 
 def quiet_in(tmp_path: pathlib.Path, **environ: str) -> TestClient:
@@ -1671,6 +1675,7 @@ def inbox_press(client: TestClient, case: str) -> tuple[str, dict[str, str]]:
     return {
         "a paste": ("read", {"text": SUMMARY}),
         "an empty paste": ("read", {}),
+        "a long paste": ("read", {"text": "x" * (TEXT_MAX_LENGTH + 1)}),
         "an entry": ("enter", ENTRY),
         "an entry with no title": ("enter", {**ENTRY, "title": ""}),
         "an empty find": ("find", {}),
@@ -1770,8 +1775,9 @@ def test_an_inbox_press_while_another_program_holds_the_file_says_the_records_ca
     assert after == before
 
 
-def test_a_parent_s_paste_while_another_program_holds_the_file_is_kept_from_caches(
-    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("case", ["a paste", "an empty paste", "an edit of a paste"])
+def test_a_parent_s_press_while_another_program_holds_the_file_is_kept_from_caches(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], case: str
 ) -> None:
     with (
         HangWatch(capsys) as watch,
@@ -1780,15 +1786,14 @@ def test_a_parent_s_paste_while_another_program_holds_the_file_is_kept_from_cach
         ) as client,
     ):
         assert client.post("/sign-in", data={"passphrase": THEIRS}).status_code == 303
+        press, form = inbox_press(client, case)
         before = every_row(database_of(client))
         with HeldByAnother(database_of(client)):
-            answer, _ = watch.press(
-                lambda: client.post("/parent/inbox/read", data={"text": SUMMARY})
-            )
+            answer, _ = watch.press(lambda: client.post(f"/parent/inbox/{press}", data=form))
         after = every_row(database_of(client))
 
     main = unread_page(answer)
-    kept_as_sent(main, "a paste", {"text": SUMMARY})
+    kept_as_sent(main, case, form)
     assert answer.headers["cache-control"] == "no-store"
     assert after == before
 
@@ -1895,6 +1900,96 @@ def test_an_edit_whose_family_page_is_refused_keeps_the_answers_given_on_the_car
     assert answers_listed(main) == [
         "Card 0: the same assignment.",
         "Card 1: new work under the same name.",
+    ]
+    assert '<a href="#kept-answers">See the answers given.</a>' in main
+    kept_as_sent(main, "an edit of a paste", sent)
+    assert after == before
+
+
+CHECK_ASSIGNED = """Homework for Wren
+- 09/23/2026 - Wednesday
+07 Algebra - Assigned: Q1 Check 3: (Due:10/01/2026)
+Patterns, if-then statements, first proofs.
+"""
+BLUE = "Use the blue sheet."
+CHECK_DUE_WITH_THE_GUIDE = f"""Homework for Wren
+- 10/01/2026 - Thursday
+07 Algebra - Due: Q1 Check 3:
+{BLUE}
+Health - Due: Course Guide Due:
+"""
+STRIPED = "Bring the striped folder."
+
+
+def ticked_on(page: str) -> dict[str, str]:
+    """The boxes a page shows ticked, as a browser sends them."""
+    return dict.fromkeys(
+        re.findall(r'<input type="checkbox" name="([^"]+)" value="1" checked>', page), "1"
+    )
+
+
+def box_for(page: str, words: str) -> str:
+    """The name of the school's instruction box whose label quotes ``words``."""
+    found = re.search(
+        rf'<input type="checkbox" name="(apply-\d+-\d+)" value="1"[^>]*> '
+        rf'<span><q class="authored-text">{re.escape(str(escape(words)))}</q>',
+        page,
+    )
+    assert found is not None, words
+    return found.group(1)
+
+
+def link_boxes(page: str) -> list[str]:
+    """The boxes the page offers for linking her waiting notes, none ticked."""
+    return re.findall(r'<input type="checkbox" name="(link-\d+-\d+)" value="1">', page)
+
+
+def test_an_edit_whose_family_page_is_refused_keeps_each_kind_of_answer_given(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An assignment on record whose instructions the school changed, and a note of hers
+    waiting for other homework. On the review, a new instruction is ticked to apply, a type is
+    changed and the note is ticked to link; Edit is pressed and the family page can't be read.
+    The page lists each answer as the save's own refusal lists it for the same form."""
+    with quiet_in(tmp_path, BLOSSOM_TODAY="2026-09-24") as client:
+        first = client.post("/parent/inbox/read", data={"text": CHECK_ASSIGNED}).text
+        kept = client.post("/parent/inbox/keep", data={**sent_back(first), **ticked_on(first)})
+        assert kept.status_code == 303, kept.text[:300]
+        store = state_of(client).project_state
+        waiting_note(
+            store,
+            course="Health",
+            title="Course Guide Due",
+            text=STRIPED,
+            due_date=date(2026, 10, 1),
+        )
+        page = client.post("/parent/inbox/read", data={"text": CHECK_DUE_WITH_THE_GUIDE}).text
+        offered = link_boxes(page)
+        assert len(offered) == 1, offered
+        sent = {
+            **sent_back(page),
+            **ticked_on(page),
+            box_for(page, BLUE): "1",
+            "kind-0": "TASK",
+            offered[0]: "1",
+        }
+        with monkeypatch.context() as refusing_drafts:
+            refusing_drafts.setattr(state_of(client).drafts, "review_snapshot", refusing(StoreBusy))
+            before = every_row(database_of(client))
+            edited = client.post("/parent/inbox/edit", data=sent)
+            after = every_row(database_of(client))
+        monkeypatch.setattr(store, "put_on_record", refusing_coded("SQLITE_IOERR"))
+        monkeypatch.setattr(store, "settle_school_instructions", refusing_coded("SQLITE_IOERR"))
+        refused = client.post("/parent/inbox/keep", data=sent)
+
+    main = unread_page(edited)
+    assert refused.status_code == 500, refused.text[:300]
+    listed = answers_listed(main)
+    assert listed == answers_listed(main_of(refused.text))
+    assert listed == [
+        f"Card 0: no answer about the assignment; type Task. The school's instructions chosen "
+        f"to apply: {BLUE}.",
+        f"Card 1: no answer about the assignment. Her note ticked to link: {STRIPED}.",
     ]
     assert '<a href="#kept-answers">See the answers given.</a>' in main
     kept_as_sent(main, "an edit of a paste", sent)
