@@ -508,9 +508,11 @@ class HouseholdGate(BaseHTTPMiddleware):
     and from there to the person's home, since a sign-in cannot send the form
     again; a JSON call is answered 401. A signed-in student asking for a
     parent's page is told the page is not hers, 403, and offered her own.
-    Every answer but a static file is marked not to be stored: pages, calls,
-    the sign-in and its redirects, and the gate's own refusals, so a shared
-    browser or anything on the way keeps no copy to show after a sign-out.
+    Every answer the application makes but a static file is marked not to be
+    stored: pages, calls, the sign-in and its redirects, and the gate's own
+    refusals, so a shared browser or anything on the way keeps no copy to show
+    after a sign-out. The server's bare 500 for an error no page catches is
+    made outside the gate and carries no mark.
 
     Before any of that, and whether or not the sign-in is on, a request that
     would change something must come from this server's own pages: a page on

@@ -2432,6 +2432,22 @@ def refusing(
     return refused
 
 
+def refusing_coded(name: str) -> Callable[..., None]:
+    """A store call that fails as SQLite fails one: an ``OperationalError`` whose result code,
+    the one ``name`` names (``"SQLITE_BUSY"``, ``"SQLITE_IOERR"``), and that name are set on
+    the instance as the module sets them, with the message a busy file gives whatever the
+    code, so the codes can't be told apart by their words."""
+    code = getattr(sqlite3, name)
+
+    def refused(*_: object, **__: object) -> None:
+        error = sqlite3.OperationalError("database is locked")
+        error.sqlite_errorcode = code
+        error.sqlite_errorname = name
+        raise error
+
+    return refused
+
+
 def unreadable_claim(
     store: ProjectStateStore, assignment_id: str, value: str = "2026-10-06"
 ) -> None:
