@@ -8804,8 +8804,8 @@ def test_a_reading_the_busy_file_couldn_t_keep_is_left_to_its_label_when_a_read_
     assert runs == [1]
 
 
-YELLOW = png(color=(200, 200, 40))
-KEPT_ONE: Final = "This attempt kept the reading of 1 screenshot."
+YELLOW, VIOLET = png(color=(200, 200, 40)), png(color=(140, 40, 160))
+KEPT_ONE: Final = "Blossom confirmed that this attempt kept the reading of 1 screenshot."
 REFUSED_AFTER_READING: Final = {
     "store busy": busy_store(StoreBusy),
     "busy file": refusing_coded("SQLITE_BUSY"),
@@ -8822,13 +8822,15 @@ def read_then_refused(
     refusal: str,
     *,
     busy_image: str | None = None,
+    dropped_image: str | None = None,
     unfinished: Sequence[bytes] = (),
 ) -> tuple[Answer, Answer, list[str], list[int]]:
     """A Read press on the review's unread screenshots whose review read is refused once its
     attempt has returned, then a visit to the address it answers with. Those in ``unfinished``
-    end with an error nothing expects once ``reader`` has answered, and ``busy_image``'s reading
-    meets a busy writer. It returns the answer, the visit, the store reads the press made from
-    the refusal on, and the change lines it worked out."""
+    end with an error nothing expects once ``reader`` has answered, ``busy_image``'s reading
+    meets a busy writer, and the store refuses to keep ``dropped_image``'s. It returns the
+    answer, the visit, the review reads the press made from the refusal on, and the change lines
+    it worked out."""
     form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
     drafts = state_of(browser).import_drafts
     real_snapshot, real_store = drafts.snapshot, drafts.store_reading
@@ -8846,6 +8848,8 @@ def read_then_refused(
     def busy_for_one(*args: object, **kwargs: object) -> object:
         if kwargs.get("image_id") == busy_image:
             raise WriterBusy
+        if kwargs.get("image_id") == dropped_image:
+            return False
         return real_store(*args, **kwargs)  # type: ignore[arg-type]
 
     def refused_then_watched(*args: object, **kwargs: object) -> object:
@@ -8878,23 +8882,25 @@ def read_then_refused(
 def test_a_read_whose_review_can_t_be_read_again_counts_the_readings_it_kept(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str
 ) -> None:
-    """Four screenshots read by one press: a reading kept, a failure kept, a reading the busy
-    writer couldn't keep and one that ended with an error nothing expects. The review's read
-    is then refused, busy or not. The way back counts the one reading kept, and says nothing of
-    the other three, nothing doubtful and no screenshot by its place; the review's labels say
-    how each one stands. Nothing is read twice and no store read is added."""
+    """Five screenshots read by one press: a reading kept, a failure kept, a reading the busy
+    writer couldn't keep, one that ended with an error nothing expects and one the store refused
+    to keep. The review's read is then refused, busy or not. The way back counts the one reading
+    kept, and says nothing of the other four, nothing doubtful and no screenshot by its place;
+    the review's labels say how each one stands. Nothing is read twice, the review isn't read
+    again after the refusal, and no change lines are worked out."""
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
         reader.answers[BLUE] = ScreenshotAnswer(None, "model_refused", 10, 5)
-        draft_id = made(browser, RED, BLUE, GREEN, YELLOW)
-        busy_image = images_of(browser, draft_id)[2]
+        draft_id = made(browser, RED, BLUE, GREEN, YELLOW, VIOLET)
+        images = images_of(browser, draft_id)
         answer, shown, later, changes = read_then_refused(
             browser,
             monkeypatch,
             reader,
             draft_id,
             refusal,
-            busy_image=busy_image,
+            busy_image=images[2],
+            dropped_image=images[4],
             unfinished=[YELLOW],
         )
 
@@ -8903,7 +8909,7 @@ def test_a_read_whose_review_can_t_be_read_again_counts_the_readings_it_kept(
     assert answer.headers["cache-control"] == "no-store"
     assert later == ["snapshot"]
     assert changes == []
-    assert sorted(reader.calls) == sorted([RED, BLUE, GREEN, YELLOW])
+    assert sorted(reader.calls) == sorted([RED, BLUE, GREEN, YELLOW, VIOLET])
     assert shown.status_code == 200
     assert lines_in(TOLD.search(shown.text)) == [KEPT_ONE]
     assert said_block(shown.text) == []
@@ -8911,6 +8917,7 @@ def test_a_read_whose_review_can_t_be_read_again_counts_the_readings_it_kept(
     assert says(shown.text, f"Screenshot 2 · {imports.FAILED['model_refused']}")
     assert says(shown.text, f"Screenshot 3 · {imports.LABELS['ended']}")
     assert says(shown.text, f"Screenshot 4 · {imports.LABELS['ended']}")
+    assert says(shown.text, f"Screenshot 5 · {imports.LABELS['ended']}")
     assert not says(shown.text, imports.READINGS_UNCONFIRMED)
     assert "couldn&#39;t keep the reading" not in shown.text
 
@@ -8929,7 +8936,9 @@ def test_a_read_whose_review_can_t_be_read_again_counts_every_reading_it_kept(
     assert answer.status_code == 303
     assert later == ["snapshot"]
     assert sorted(reader.calls) == sorted([RED, BLUE])
-    assert lines_in(TOLD.search(shown.text)) == ["This attempt kept the readings of 2 screenshots."]
+    assert lines_in(TOLD.search(shown.text)) == [
+        "Blossom confirmed that this attempt kept the readings of 2 screenshots."
+    ]
     assert said_block(shown.text) == []
 
 
