@@ -10,14 +10,17 @@ were. The text is synthetic, in the portal's shapes.
 
 import dataclasses
 import html
+import logging
 import pathlib
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.clock import FrozenClock
@@ -38,11 +41,25 @@ from blossom.routes.inbox import (
     NOT_A_DUE_DATE,
     NOT_A_KIND,
     NOTHING_PASTED,
+    STORE_REFUSED,
     TOO_LONG,
 )
 from blossom.settings import Settings
+from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.project_state import Assignment, AssignmentKind, UnreadableClaim
-from tests.support import SAME_ORIGIN, fixture_settings, outside_earlier_work
+from tests.support import (
+    SAME_ORIGIN,
+    HangWatch,
+    HeldByAnother,
+    LockHeldByAnother,
+    every_row,
+    fixture_settings,
+    main_of,
+    outside_earlier_work,
+    refusing,
+    refusing_coded,
+    words,
+)
 
 PAGE = {"Accept": "text/html"}
 HERS = "quiet mornings and loud music"
@@ -1586,6 +1603,377 @@ def test_a_padded_spelling_of_a_cards_key_names_no_card(tmp_path: pathlib.Path, 
     assert saved.headers["location"] == "/parent?added=0&updated=2&unchanged=0"
     assert len(rows) == 2
     assert all(row.kind is AssignmentKind.HOMEWORK for row in rows)
+
+
+# ------------------------------------------------------------------ a file that can't be read
+
+RECORDS_UNREAD = "Blossom couldn't read the household's records."
+UNREAD_HEADING = "This can't be shown right now"
+LOGGED = "an inbox page could not be read: {}"
+REFUSALS: dict[str, Callable[[], Callable[..., None]]] = {
+    "busy": lambda: refusing_coded("SQLITE_BUSY"),
+    "an I/O error": lambda: refusing_coded("SQLITE_IOERR"),
+    "with no code": refusing,
+    "the drafts store busy": lambda: refusing(StoreBusy),
+    "its writer busy": lambda: refusing(WriterBusy),
+}
+"""Each way a read of the household's records is refused, as a store call raises it."""
+KINDS = {
+    "busy": "OperationalError",
+    "an I/O error": "OperationalError",
+    "with no code": "OperationalError",
+    "the drafts store busy": "StoreBusy",
+    "its writer busy": "WriterBusy",
+}
+FILE_REFUSALS = ["busy", "an I/O error", "with no code"]
+"""The refusals of the file itself: all a read of the record alone can meet."""
+SENT_AGAIN = {
+    "a paste": "/parent/inbox/read",
+    "an empty paste": "/parent/inbox/read",
+    "an entry": "/parent/inbox/enter",
+    "an entry with no title": "/parent/inbox/enter",
+    "an edit of a paste": "/parent/inbox/read",
+    "an empty find": "/parent/inbox/enter",
+    "an empty save": "/parent/inbox/enter",
+}
+"""Where each press's way on sends what it kept: through the same reading."""
+FAMILY_PAGE_PRESSES = [
+    "an empty paste",
+    "an entry with no title",
+    "an edit of a paste",
+    "an empty find",
+    "an empty save",
+]
+"""The presses that answer with the family page, which reads the drafts store first."""
+
+
+def quiet_in(tmp_path: pathlib.Path, **environ: str) -> TestClient:
+    """The household of ``settings_in``, a failure no page catches answered as a server
+    answers it, a bare 500, rather than raised into the test."""
+    return TestClient(
+        create_app(settings_in(tmp_path, **environ)),
+        follow_redirects=False,
+        headers=SAME_ORIGIN,
+        raise_server_exceptions=False,
+    )
+
+
+def database_of(client: TestClient) -> pathlib.Path:
+    return pathlib.Path(state_of(client).settings.database_path)
+
+
+def inbox_press(client: TestClient, case: str) -> tuple[str, dict[str, str]]:
+    """The press ``case`` names and its form, as the page that offers it sends it."""
+    if case == "an edit of a paste":
+        shown = client.post("/parent/inbox/read", data={"text": SUMMARY})
+        assert shown.status_code == 200, shown.text[:300]
+        return "edit", sent_back(shown.text)
+    return {
+        "a paste": ("read", {"text": SUMMARY}),
+        "an empty paste": ("read", {}),
+        "an entry": ("enter", ENTRY),
+        "an entry with no title": ("enter", {**ENTRY, "title": ""}),
+        "an empty find": ("find", {}),
+        "an empty save": ("keep", {}),
+    }[case]
+
+
+def unread_page(answer: Any) -> str:  # noqa: ANN401
+    """The page for a press whose read of the household's records was refused: 503, headed
+    and titled that it can't be shown, the one sentence about the records taking the focus as
+    the page arrives, and nothing about a save, a wait, or what is below. Its main part."""
+    assert answer.status_code == 503, (answer.status_code, answer.text[:600])
+    heading = str(escape(UNREAD_HEADING))
+    assert f"<title>Blossom - {heading}</title>" in answer.text
+    main = main_of(answer.text)
+    assert f"<h1>{heading}</h1>" in main, main[:600]
+    found = re.search(
+        r'<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>(.*?)</p>',
+        main,
+        re.S,
+    )
+    assert found is not None, main[:600]
+    said = found.group(1).removesuffix(' <a href="#kept-answers">See the answers given.</a>')
+    assert said == str(escape(RECORDS_UNREAD)), found.group(1)
+    assert answer.text.count("autofocus") == 1
+    for never in ("Nothing was saved", "could not be saved", "below", "Try again", "a moment"):
+        assert never not in main, never
+    return main
+
+
+def sent_again(main: str) -> tuple[str, list[str]]:
+    """Where the page's "Review it again" sends, and the names of the fields it sends."""
+    found = re.search(
+        r'<form method="post" action="([^"]+)" class="action">(.*?)</form>', main, re.S
+    )
+    assert found is not None, main[:600]
+    assert '<button type="submit" class="secondary">Review it again</button>' in found.group(2)
+    return found.group(1), re.findall(r'name="([^"]+)"', found.group(2))
+
+
+def answers_listed(main: str) -> list[str]:
+    """The answers given on the cards, as the page lists them, in words."""
+    if 'id="kept-answers"' not in main:
+        return []
+    listed = main.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0]
+    return [words(item) for item in re.findall(r"<li>(.*?)</li>", listed, re.S)]
+
+
+def kept_as_sent(main: str, case: str, form: dict[str, str]) -> None:
+    """The page keeps what the press sent, as sent, and its way on sends that alone."""
+    address, names = sent_again(main)
+    assert address == SENT_AGAIN[case]
+    if form.get("text"):
+        assert names == ["text"]
+        assert f'<textarea id="kept-paste" rows="8" readonly>{escape(form["text"])}</textarea>' in (
+            main
+        )
+        assert ", as typed:" not in main
+    elif case.startswith("an entry"):
+        assert names == list(inbox.ENTRY_FIELDS)
+        typed = words(main)
+        assert f"Course, as typed: {ENTRY['course']}" in typed
+        assert f"Note, as typed: {ENTRY['note']}" in typed
+        assert f"Due date, as typed: {ENTRY['due_date']}" in typed
+        assert ("Title, as typed: " in typed) == (case == "an entry")
+        assert "The text, as pasted" not in main
+    else:
+        assert names == (["text"] if case == "an empty paste" else list(inbox.ENTRY_FIELDS))
+        assert "The text, as pasted" not in main
+        assert ", as typed:" not in main
+
+
+def inbox_log(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """What the inbox's own log said."""
+    return [record.getMessage() for record in caplog.records if record.name == inbox.__name__]
+
+
+@pytest.mark.parametrize("case", [case for case in SENT_AGAIN if case != "an entry with no title"])
+def test_an_inbox_press_while_another_program_holds_the_file_says_the_records_can_t_be_read(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], case: str
+) -> None:
+    """Another program holds the household's file: the press reads what it was sent, and the
+    first read its page makes waits and is refused. The answer is the page that reads no
+    store, with what was sent kept as sent, and nothing is written."""
+    with HangWatch(capsys) as watch, quiet_in(tmp_path) as client:
+        press, form = inbox_press(client, case)
+        before = every_row(database_of(client))
+        with HeldByAnother(database_of(client)):
+            answer, _ = watch.press(lambda: client.post(f"/parent/inbox/{press}", data=form))
+        after = every_row(database_of(client))
+
+    main = unread_page(answer)
+    kept_as_sent(main, case, form)
+    assert answers_listed(main) == []
+    assert "See the answers given." not in main
+    assert "cache-control" not in answer.headers
+    assert after == before
+
+
+def test_a_parent_s_paste_while_another_program_holds_the_file_is_kept_from_caches(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with (
+        HangWatch(capsys) as watch,
+        quiet_in(
+            tmp_path, BLOSSOM_STUDENT_PASSPHRASE=HERS, BLOSSOM_PARENT_PASSPHRASE=THEIRS
+        ) as client,
+    ):
+        assert client.post("/sign-in", data={"passphrase": THEIRS}).status_code == 303
+        before = every_row(database_of(client))
+        with HeldByAnother(database_of(client)):
+            answer, _ = watch.press(
+                lambda: client.post("/parent/inbox/read", data={"text": SUMMARY})
+            )
+        after = every_row(database_of(client))
+
+    main = unread_page(answer)
+    kept_as_sent(main, "a paste", {"text": SUMMARY})
+    assert answer.headers["cache-control"] == "no-store"
+    assert after == before
+
+
+def test_an_empty_paste_whose_drafts_another_caller_holds_says_the_records_can_t_be_read(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The drafts store's own lock held past its wait, so the family page's first read is
+    refused as busy in earnest."""
+    with HangWatch(capsys) as watch, quiet_in(tmp_path) as client:
+        before = every_row(database_of(client))
+        with LockHeldByAnother(state_of(client).drafts):
+            answer, _ = watch.press(lambda: client.post("/parent/inbox/read", data={}))
+        after = every_row(database_of(client))
+
+    main = unread_page(answer)
+    kept_as_sent(main, "an empty paste", {})
+    assert after == before
+
+
+@pytest.mark.parametrize("refusal", list(REFUSALS))
+@pytest.mark.parametrize("case", FAMILY_PAGE_PRESSES)
+def test_an_inbox_press_whose_family_page_is_refused_keeps_what_was_sent(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    case: str,
+    refusal: str,
+) -> None:
+    """Empty submissions, a problem with an entry, and Edit go back to the family page, whose
+    first read is the drafts store's: refused in each way, the press answers the page that
+    reads no store, keeps what was sent, writes nothing, and logs the refusal by its kind
+    alone, never its words."""
+    caplog.set_level(logging.WARNING, logger=inbox.__name__)
+    with quiet_in(tmp_path) as client:
+        press, form = inbox_press(client, case)
+        monkeypatch.setattr(state_of(client).drafts, "review_snapshot", REFUSALS[refusal]())
+        before = every_row(database_of(client))
+        caplog.clear()
+        answer = client.post(f"/parent/inbox/{press}", data=form)
+        after = every_row(database_of(client))
+
+    main = unread_page(answer)
+    kept_as_sent(main, case, form)
+    assert inbox_log(caplog) == [LOGGED.format(KINDS[refusal])]
+    assert after == before
+
+
+@pytest.mark.parametrize("refusal", FILE_REFUSALS)
+@pytest.mark.parametrize("case", ["a paste", "an entry"])
+def test_a_paste_or_entry_read_whose_review_is_refused_keeps_what_was_sent(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    case: str,
+    refusal: str,
+) -> None:
+    """The text or the entry reads without a problem, and the review's first read of the
+    record is refused: the page says only that the records couldn't be read, keeps what was
+    sent, writes nothing, and logs the refusal by its kind alone."""
+    caplog.set_level(logging.WARNING, logger=inbox.__name__)
+    read: list[int] = []
+    refuse = REFUSALS[refusal]()
+
+    def refused(readings: tuple[object, ...], *_: object, **__: object) -> None:
+        read.append(len(readings))
+        refuse()
+
+    with quiet_in(tmp_path) as client:
+        press, form = inbox_press(client, case)
+        monkeypatch.setattr(inbox, "changes_for", refused)
+        before = every_row(database_of(client))
+        answer = client.post(f"/parent/inbox/{press}", data=form)
+        after = every_row(database_of(client))
+
+    main = unread_page(answer)
+    kept_as_sent(main, case, form)
+    assert read == [3 if case == "a paste" else 1]
+    assert inbox_log(caplog) == [LOGGED.format(KINDS[refusal])]
+    assert after == before
+
+
+def test_an_edit_whose_family_page_is_refused_keeps_the_answers_given_on_the_cards(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two names a week on; both cards ask, and both are answered; Edit is pressed and the
+    family page can't be read. The page lists the answers as the save's own refusal lists
+    them for the same form, keeps the text, and its way on sends the text alone."""
+    with quiet_in(tmp_path) as client:
+        assert client.post("/parent/inbox/keep", data={"text": TWO_NAMES}).status_code == 303
+        shown = client.post("/parent/inbox/read", data={"text": TWO_NAMES_AGAIN})
+        sent = {**sent_back(shown.text), "occurrence-0": "update", "occurrence-1": "new"}
+        with monkeypatch.context() as refusing_drafts:
+            refusing_drafts.setattr(state_of(client).drafts, "review_snapshot", refusing(StoreBusy))
+            before = every_row(database_of(client))
+            edited = client.post("/parent/inbox/edit", data=sent)
+            after = every_row(database_of(client))
+        claim_damaged(client, "Reading log")
+        refused = client.post("/parent/inbox/keep", data=sent)
+
+    main = unread_page(edited)
+    assert refused.status_code == 500, refused.text[:300]
+    assert answers_listed(main) == answers_listed(main_of(refused.text))
+    assert answers_listed(main) == [
+        "Card 0: the same assignment.",
+        "Card 1: new work under the same name.",
+    ]
+    assert '<a href="#kept-answers">See the answers given.</a>' in main
+    kept_as_sent(main, "an edit of a paste", sent)
+    assert after == before
+
+
+@pytest.mark.parametrize("press", ["find", "keep"])
+def test_a_review_press_with_a_problem_whose_family_page_is_refused_keeps_the_answers(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """An entry's review, its type changed on the card and its title emptied, so the press
+    has a problem and goes back to the family page, which can't be read: the page keeps the
+    entry as typed and the answer given on the card, and its way on sends the entry alone."""
+    with quiet_in(tmp_path) as client:
+        shown = client.post("/parent/inbox/enter", data={**ENTRY, "kind": ""})
+        assert shown.status_code == 200, shown.text[:300]
+        sent = {**sent_back(shown.text), "kind-0": "TASK", "title": ""}
+        monkeypatch.setattr(
+            state_of(client).drafts, "review_snapshot", refusing_coded("SQLITE_BUSY")
+        )
+        before = every_row(database_of(client))
+        answer = client.post(f"/parent/inbox/{press}", data=sent)
+        after = every_row(database_of(client))
+
+    main = unread_page(answer)
+    assert answers_listed(main) == ["Card 0: no answer about the assignment; type Task."]
+    assert '<a href="#kept-answers">See the answers given.</a>' in main
+    kept_as_sent(main, "an entry with no title", {**ENTRY, "kind": "", "title": ""})
+    assert after == before
+
+
+@pytest.mark.parametrize("case", ["a paste", "an empty paste", "an edit of a paste"])
+def test_a_failure_that_is_not_the_file_s_is_still_the_server_s_error_on_an_inbox_press(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    marker = "a defect in the page"
+
+    def broken(*_: object, **__: object) -> None:
+        raise RuntimeError(marker)
+
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        press, form = inbox_press(client, case)
+        if case == "a paste":
+            monkeypatch.setattr(inbox, "changes_for", broken)
+        else:
+            monkeypatch.setattr(state_of(client).drafts, "review_snapshot", broken)
+        with pytest.raises(RuntimeError, match=marker):
+            client.post(f"/parent/inbox/{press}", data=form)
+
+
+@pytest.mark.parametrize("draft", ["a paste", "an entry"])
+@pytest.mark.parametrize("press", ["find", "keep"])
+def test_a_review_press_whose_comparison_the_file_refuses_keeps_its_designed_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, draft: str
+) -> None:
+    """Past the draft's reading, find's and keep's own catches answer as they always have:
+    headed that nothing was saved, with their sentence, and 500; and the way on sends the
+    text to be read again, or the entry, as before."""
+    with quiet_in(tmp_path) as client:
+        if draft == "a paste":
+            shown = client.post("/parent/inbox/read", data={"text": SUMMARY})
+        else:
+            shown = client.post("/parent/inbox/enter", data=ENTRY)
+        assert shown.status_code == 200, shown.text[:300]
+        sent = sent_back(shown.text)
+        monkeypatch.setattr(inbox, "unasked_for", refusing_coded("SQLITE_BUSY"))
+        answer = client.post(f"/parent/inbox/{press}", data=sent)
+
+    assert answer.status_code == 500, answer.text[:300]
+    assert "<title>Blossom - Nothing was saved</title>" in answer.text
+    assert "<h1>Nothing was saved</h1>" in answer.text
+    assert str(escape(STORE_REFUSED)) in answer.text
+    assert str(escape(RECORDS_UNREAD)) not in answer.text
+    if draft == "a paste":
+        assert sent_again(main_of(answer.text)) == ("/parent/inbox/read", ["text"])
+    else:
+        assert sent_again(main_of(answer.text)) == ("/parent/inbox/enter", list(inbox.ENTRY_FIELDS))
 
 
 STYLESHEET = pathlib.Path(inbox.__file__).parents[1] / "static" / "blossom.css"
