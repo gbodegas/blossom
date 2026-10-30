@@ -11629,6 +11629,71 @@ def test_a_resent_save_whose_counts_the_held_file_refuses_acknowledges_the_earli
     assert after == before
 
 
+UNPAIRED: Final = {
+    "closed review, busy file": ("closed resend", "SQLITE_BUSY", False),
+    "closed review, I/O": ("closed resend", "SQLITE_IOERR", False),
+    "open review unread, busy file": ("resent save", "SQLITE_BUSY", True),
+}
+"""A resent save whose record of the assignments it saved is refused: the route, the refusal's
+code, and whether the review's own read is refused as busy before it."""
+
+
+@pytest.mark.parametrize("case", list(UNPAIRED))
+def test_a_resent_save_whose_saved_assignments_can_t_be_read_keeps_its_outcome_and_reads_no_week(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A save sent again once its first press saved, whose record of the assignments it saved
+    is refused: the saved outcome as the press gives it, 200 and no-store, with no way to her
+    week, since no assignment is named to find there. Her week's assignments aren't read for
+    it, and nothing is written."""
+    route, code, review_refused = UNPAIRED[case]
+    rules = [("saved_page", "homework_acceptance", 1, refusing_coded(code))]
+    if review_refused:
+        rules.insert(0, ("saved_page", "snapshot", 1, refusing_coded("SQLITE_BUSY")))
+    with held_here(open_settings(tmp_path)) as browser:
+        press = PRESSES[route](browser, monkeypatch)
+        path = database_of(browser)
+        before = file_rows(path)
+        with monkeypatch.context() as patch:
+            refusing_now = Refusing(patch, *rules)
+            answer = press()
+        after = file_rows(path)
+
+    heading = SAVE_SHAPES["save, review left open" if review_refused else "save, review not closed"]
+    assert refusing_now.refused == [(caller, method, nth) for caller, method, nth, _ in rules]
+    assert answer.status_code == 200, answer.text[:600]
+    assert saved_heading(answer.text) == heading
+    assert answer.headers["cache-control"] == "no-store"
+    assert "See them on her week" not in answer.text
+    assert ("week_of", "all_assignments") not in refusing_now.seen
+    assert after == before
+
+
+def test_a_resent_save_that_closed_its_review_shows_the_way_to_her_week(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same closed review's save sent again with nothing refused: the way to her week where
+    the earliest saved assignment is due, its assignments read once for it."""
+    with held_here(open_settings(tmp_path)) as browser:
+        press = PRESSES["closed resend"](browser, monkeypatch)
+        with monkeypatch.context() as patch:
+            refusing_now = Refusing(patch)
+            answer = press()
+        [earliest] = [
+            a
+            for a in state_of(browser).project_state.all_assignments()
+            if a.title == "Chains Reading Guide 6"
+        ]
+
+    link = re.search(r'<a href="([^"]+)">See them on her week</a>', answer.text)
+    assert answer.status_code == 200
+    assert link is not None
+    assert html.unescape(link.group(1)) == navigation.week_href(
+        earliest.due_date, earliest.assignment_id
+    )
+    assert refusing_now.seen[("week_of", "all_assignments")] == 1
+
+
 READ_REFUSED: Final = {
     "before reading, busy": ("start_attempt", "SQLITE_BUSY"),
     "before reading, I/O": ("start_attempt", "SQLITE_IOERR"),
