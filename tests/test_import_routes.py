@@ -8763,6 +8763,7 @@ def test_a_read_whose_readings_were_kept_goes_to_the_review_when_it_can_t_be_sho
     assert read_now == [True]
     assert shown.status_code == 200
     assert says(shown.text, "Screenshot 1 · Read.")
+    assert lines_in(TOLD.search(shown.text)) == [KEPT_ONE]
     assert "<h3>Sentence Composing</h3>" in review_form(shown.text)
 
 
@@ -8801,6 +8802,172 @@ def test_a_reading_the_busy_file_couldn_t_keep_is_left_to_its_label_when_a_read_
     assert says(shown.text, imports.LABELS["ended"])
     assert reader.calls == [RED]
     assert runs == [1]
+
+
+YELLOW = png(color=(200, 200, 40))
+KEPT_ONE: Final = "This attempt kept the reading of 1 screenshot."
+REFUSED_AFTER_READING: Final = {
+    "store busy": busy_store(StoreBusy),
+    "busy file": refusing_coded("SQLITE_BUSY"),
+    "i/o error": refusing_coded("SQLITE_IOERR"),
+}
+"""The review's read after a Read's attempt returned, refused busy or not."""
+
+
+def read_then_refused(
+    browser: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    reader: Reader,
+    draft_id: str,
+    refusal: str,
+    *,
+    busy_image: str | None = None,
+    unfinished: Sequence[bytes] = (),
+) -> tuple[Answer, Answer, list[str], list[int]]:
+    """A Read press on the review's unread screenshots whose review read is refused once its
+    attempt has returned, then a visit to the address it answers with. Those in ``unfinished``
+    end with an error nothing expects once ``reader`` has answered, and ``busy_image``'s reading
+    meets a busy writer. It returns the answer, the visit, the store reads the press made from
+    the refusal on, and the change lines it worked out."""
+    form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
+    drafts = state_of(browser).import_drafts
+    real_snapshot, real_store = drafts.snapshot, drafts.store_reading
+    real_read, real_changes = screenshot_reading.read_screenshots, imports.change_lines
+    refuse = REFUSED_AFTER_READING[refusal]
+    later: list[str] = []
+    changes: list[int] = []
+
+    def ended_unexpectedly(settings: Settings, png_bytes: bytes, *, timeout: float) -> object:
+        answer = reader.read(settings, png_bytes, timeout=timeout)
+        if png_bytes in unfinished:
+            raise RuntimeError
+        return answer
+
+    def busy_for_one(*args: object, **kwargs: object) -> object:
+        if kwargs.get("image_id") == busy_image:
+            raise WriterBusy
+        return real_store(*args, **kwargs)  # type: ignore[arg-type]
+
+    def refused_then_watched(*args: object, **kwargs: object) -> object:
+        later.append("snapshot")
+        if later == ["snapshot"]:
+            refuse()
+        return real_snapshot(*args, **kwargs)  # type: ignore[arg-type]
+
+    async def read_then_refuse(*args: object, **kwargs: object) -> object:
+        outcome = await real_read(*args, **kwargs)  # type: ignore[arg-type]
+        monkeypatch.setattr(drafts, "snapshot", refused_then_watched)
+        return outcome
+
+    async def counted_changes(*args: object, **kwargs: object) -> object:
+        changes.append(1)
+        return await real_changes(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(screenshot_reading, "read_screenshot", ended_unexpectedly)
+    monkeypatch.setattr(drafts, "store_reading", busy_for_one)
+    monkeypatch.setattr(imports, "read_screenshots", read_then_refuse)
+    monkeypatch.setattr(imports, "change_lines", counted_changes)
+    answer = browser.post(f"/parent/imports/{draft_id}/read", data=form)
+    monkeypatch.setattr(drafts, "snapshot", real_snapshot)
+    monkeypatch.setattr(drafts, "store_reading", real_store)
+    shown = browser.get(f"/parent/imports/{draft_id}")
+    return answer, shown, later, changes
+
+
+@pytest.mark.parametrize("refusal", list(REFUSED_AFTER_READING))
+def test_a_read_whose_review_can_t_be_read_again_counts_the_readings_it_kept(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    """Four screenshots read by one press: a reading kept, a failure kept, a reading the busy
+    writer couldn't keep and one that ended with an error nothing expects. The review's read
+    is then refused, busy or not. The way back counts the one reading kept, and says nothing of
+    the other three, nothing doubtful and no screenshot by its place; the review's labels say
+    how each one stands. Nothing is read twice and no store read is added."""
+    with here(open_settings(tmp_path)) as browser:
+        reader = Reader(monkeypatch)
+        reader.answers[BLUE] = ScreenshotAnswer(None, "model_refused", 10, 5)
+        draft_id = made(browser, RED, BLUE, GREEN, YELLOW)
+        busy_image = images_of(browser, draft_id)[2]
+        answer, shown, later, changes = read_then_refused(
+            browser,
+            monkeypatch,
+            reader,
+            draft_id,
+            refusal,
+            busy_image=busy_image,
+            unfinished=[YELLOW],
+        )
+
+    assert answer.status_code == 303
+    assert answer.headers["location"] == f"/parent/imports/{draft_id}"
+    assert answer.headers["cache-control"] == "no-store"
+    assert later == ["snapshot"]
+    assert changes == []
+    assert sorted(reader.calls) == sorted([RED, BLUE, GREEN, YELLOW])
+    assert shown.status_code == 200
+    assert lines_in(TOLD.search(shown.text)) == [KEPT_ONE]
+    assert said_block(shown.text) == []
+    assert says(shown.text, "Screenshot 1 · Read.")
+    assert says(shown.text, f"Screenshot 2 · {imports.FAILED['model_refused']}")
+    assert says(shown.text, f"Screenshot 3 · {imports.LABELS['ended']}")
+    assert says(shown.text, f"Screenshot 4 · {imports.LABELS['ended']}")
+    assert not says(shown.text, imports.READINGS_UNCONFIRMED)
+    assert "couldn&#39;t keep the reading" not in shown.text
+
+
+def test_a_read_whose_review_can_t_be_read_again_counts_every_reading_it_kept(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two readings kept, then the review's read refused: the way back counts both."""
+    with here(open_settings(tmp_path)) as browser:
+        reader = Reader(monkeypatch)
+        draft_id = made(browser, RED, BLUE)
+        answer, shown, later, _ = read_then_refused(
+            browser, monkeypatch, reader, draft_id, "i/o error"
+        )
+
+    assert answer.status_code == 303
+    assert later == ["snapshot"]
+    assert sorted(reader.calls) == sorted([RED, BLUE])
+    assert lines_in(TOLD.search(shown.text)) == ["This attempt kept the readings of 2 screenshots."]
+    assert said_block(shown.text) == []
+
+
+@pytest.mark.parametrize("ended", ["unfinished", "failed"])
+def test_a_read_that_kept_no_reading_says_nothing_of_one_when_its_review_can_t_be_read_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ended: str
+) -> None:
+    """A press whose two readings both ended unfinished, or both with a failure kept, then the
+    review's read refused: the way back carries no note, so nothing says that nothing or none
+    was read or kept, or that a reading couldn't be confirmed; the labels say how each stands."""
+    with here(open_settings(tmp_path)) as browser:
+        reader = Reader(monkeypatch)
+        if ended == "failed":
+            reader.answers[RED] = reader.answers[BLUE] = ScreenshotAnswer(
+                None, "model_refused", 10, 5
+            )
+        draft_id = made(browser, RED, BLUE)
+        answer, shown, later, _ = read_then_refused(
+            browser,
+            monkeypatch,
+            reader,
+            draft_id,
+            "busy file",
+            unfinished=[RED, BLUE] if ended == "unfinished" else (),
+        )
+
+    label = imports.LABELS["ended"] if ended == "unfinished" else imports.FAILED["model_refused"]
+    assert answer.status_code == 303
+    assert imports.NOTE_COOKIE not in answer.headers.get("set-cookie", "")
+    assert later == ["snapshot"]
+    assert sorted(reader.calls) == sorted([RED, BLUE])
+    assert TOLD.search(shown.text) is None
+    assert said_block(shown.text) == []
+    assert says(shown.text, f"Screenshot 1 · {label}")
+    assert says(shown.text, f"Screenshot 2 · {label}")
+    for words in ("kept the reading", " 0 screenshot", "othing was read", "None read"):
+        assert words not in shown.text, words
+    assert not says(shown.text, imports.READINGS_UNCONFIRMED)
 
 
 def test_a_read_whose_review_closed_meanwhile_says_it_is_finished(
