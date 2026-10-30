@@ -10135,6 +10135,12 @@ def first_said(page: str) -> str:
     raise AssertionError(page[:600])
 
 
+def saved_heading(page: str) -> str | None:
+    """The heading of a save's success panel, or None when the page has no such panel."""
+    found = FIRST_LINES[0].search(page)
+    return None if found is None else html.unescape(found.group(1))
+
+
 @contextmanager
 def held_here(settings: Settings, *, raising: bool = False) -> Iterator[TestClient]:
     """``here``, with a failure no page catches answered as a server answers it, a plain 500,
@@ -10671,7 +10677,7 @@ def test_a_save_whose_homework_committed_before_the_file_was_held_says_what_it_s
         answer, before, after, _ = committed_then_held(browser, monkeypatch, watch, shape)
 
     assert answer.status_code == 200, answer.text[:600]
-    assert first_said(answer.text) == SAVE_SHAPES[shape]
+    assert saved_heading(answer.text) == SAVE_SHAPES[shape]
     assert after[0] > before[0]  # type: ignore[operator]
     assert after[1] == before[1]
     assert imports.REVIEW_NOT_SHOWN in lines_in(PROBLEM_BLOCK.search(answer.text))
@@ -10700,7 +10706,7 @@ def test_a_save_that_closed_its_review_before_the_file_was_held_answers_as_desig
         after = one_row(path, SAVED)
 
     assert answer.status_code == 200
-    assert first_said(answer.text) == "Saved: 2 new assignments."
+    assert saved_heading(answer.text) == "Saved: 2 new assignments."
     assert after == (before[0] + 2, before[1] + 1)  # type: ignore[operator]
 
 
@@ -11095,6 +11101,8 @@ def test_each_import_store_call_a_busy_file_refuses_answers_with_the_route_s_own
     assert answer.headers["cache-control"] == "no-store"
     if said is not None:
         assert first_said(shown) == said
+    if route in ("partly save", "resent save", "closed resend") and status == 200:
+        assert saved_heading(shown) == (None if said == imports.SAID["closed"] else said)
     if route == "save" and method == "identity_of":
         assert says(answer.text, imports.PRESS_SAID["busy"])
         assert not says(answer.text, imports.SAID["no_name_check"])
