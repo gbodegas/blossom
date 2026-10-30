@@ -492,7 +492,8 @@ def unread_page(
     """The household's file refusing a read before anything was written: a busy file as the
     route says a busy store, an upload's or a press's; any other refusal, for an upload, that
     nothing was added, since its write never began and a review may not exist yet, and for a
-    press, as the review that can't be shown, which says nothing of what was saved."""
+    press or a page asked for, as the review that can't be shown, which says nothing of what
+    was saved."""
     if not busy_refusal(error):
         said = NOTHING_ADDED if upload else REVIEW_UNAVAILABLE
         return said_page(request, marks_of(state), said, 503)
@@ -559,9 +560,9 @@ UNKNOWN_SAID: Final = {
     "not-hers": 'Blossom couldn\'t tell whether this review was discarded as "Not hers".',
 }
 """What each press says when the household's file refused its write for a reason that isn't a
-busy file, so whether its change was made isn't known: the change it would have made, in the
-words of its own success line. A Save whose answers' keep is refused this way says too that no
-homework was saved, since its homework was never begun."""
+busy file, so whether its change was made isn't known: the change it would have made, and
+nothing more. A Save whose answers' keep is refused this way says too that no homework was
+saved, since its homework was never begun."""
 COUNTS_UNSHOWN: Final = "This homework was already saved, but its counts can't be shown right now."
 """What a resent save says when its earlier save is on record and its counts can't be read."""
 
