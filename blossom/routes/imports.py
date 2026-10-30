@@ -1296,14 +1296,15 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
 
 def kept_readings(outcome: ReadOutcome | None) -> list[str]:
     """What a Read press says when its review can't be read again after its attempt: how many
-    readings the attempt stored, by count alone, and nothing when it stored none. It names no
-    screenshot and says nothing of the others; the review's labels, shown beside it, say how
-    each one stands."""
+    readings the attempt is known to have kept, by count alone, and nothing when none is
+    confirmed. An unfinished reading may have been kept too, so the count is what was confirmed,
+    not all that was kept. It names no screenshot and says nothing of the others; the review's
+    labels, shown beside it, say how each one stands."""
     kept = 0 if outcome is None else len(outcome.read)
     if not kept:
         return []
     s = "" if kept == 1 else "s"
-    return [f"This attempt kept the reading{s} of {kept} screenshot{s}."]
+    return [f"Blossom confirmed that this attempt kept the reading{s} of {kept} screenshot{s}."]
 
 
 def read_said(snapshot: DraftSnapshot, now: datetime) -> list[str]:
