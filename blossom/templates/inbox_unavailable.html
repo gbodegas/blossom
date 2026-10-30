@@ -2,10 +2,13 @@
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {% extends "base.html" %}
 {% set page = "parent" %}
-{% block title %}Blossom - Nothing was saved{% endblock %}
+{% block title %}Blossom - {{ heading }}{% endblock %}
 {#
   The page for a review or a save the record refused because a claim about a
-  date on record cannot be read: what happened, in a sentence that takes the
+  date on record cannot be read, headed that nothing was saved; or for a press
+  whose read of the household's records was refused, headed that it can't be
+  shown, with a sentence that says nothing about a save: what happened, in a
+  sentence that takes the
   focus as the page arrives, with no script; the text as pasted or the entry
   as typed, to copy; the answers given on the cards, as unsaved input, the
   homework each card was said to be, her notes ticked to link, and homework
@@ -16,7 +19,7 @@
   the same reading as the first time.
 #}
 {% block content %}
-  <h1>Nothing was saved</h1>
+  <h1>{{ heading }}</h1>
   <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ problem }}{% if answers %} <a href="#kept-answers">See the answers given.</a>{% endif %}</p>
   <section class="panel">
     {% if text %}

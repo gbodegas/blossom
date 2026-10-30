@@ -13,9 +13,11 @@ her sign-in reads the instructions and never the control.
 
 import hashlib
 import json
+import logging
 import pathlib
 import re
 import sqlite3
+from collections.abc import Callable
 from datetime import date
 from html import unescape
 from urllib.parse import urlencode
@@ -66,13 +68,21 @@ from tests.support import (
     PLAN_DATE,
     THEIRS,
     Answer,
+    HangWatch,
+    HeldByAnother,
     as_a_browser_sends,
     client_for,
+    every_row,
     fixture_settings,
+    main_of,
+    quiet_client,
+    refusing,
+    refusing_coded,
     signed_in,
     signed_in_household,
     state_of,
     store_of,
+    ways_back_of,
     whole_form,
 )
 
@@ -1205,6 +1215,121 @@ def test_a_failure_that_is_not_the_files_is_raised_not_shown_as_a_refusal(
         monkeypatch.setattr(store, "one_assignment", break_the_page)
         with pytest.raises(LookupError, match="a defect in the page"):
             post_as_sent(client, fields)
+
+
+# ------------------------------------------------------------------ a record that can't be read
+
+INSTRUCTIONS_UNSHOWN = "The school's instructions for this assignment can't be shown right now."
+LOGGED = "the review of school instructions could not be read: {}"
+FILE_REFUSALS: dict[str, Callable[[], Callable[..., None]]] = {
+    "busy": lambda: refusing_coded("SQLITE_BUSY"),
+    "an I/O error": lambda: refusing_coded("SQLITE_IOERR"),
+    "with no code": refusing,
+}
+"""Each way the file refuses a read of the record, as a store call raises it."""
+
+
+def unshown_page(answer: Answer) -> str:
+    """The review when the record can't be read for a look at it: 503, the one sentence, not
+    focused as the page arrives, the way back to the assignment, no form, and nothing about a
+    save or a wait. Its main part."""
+    assert answer.status_code == 503, (answer.status_code, answer.text[:600])
+    main = main_of(answer.text)
+    found = re.search(r'<p class="problem" role="alert" id="problem-summary">(.*?)</p>', main, re.S)
+    assert found is not None, main[:600]
+    assert found.group(1) == str(escape(INSTRUCTIONS_UNSHOWN)), found.group(1)
+    assert "autofocus" not in answer.text
+    assert "tabindex" not in main
+    assert ways_back_of(main) == [
+        (details_href(ESSAY_ID, return_to="family"), "Back to the assignment")
+    ]
+    assert "<form" not in main
+    for never in ("saved", "Saved", "Try again", "a moment"):
+        assert never not in main, never
+    return main
+
+
+def instructions_log(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """What the school instructions' own log said."""
+    name = "blossom.routes.school_instructions"
+    return [record.getMessage() for record in caplog.records if record.name == name]
+
+
+@pytest.mark.parametrize("reader", ["open", "parent"])
+def test_the_review_while_another_program_holds_the_file_says_it_can_t_be_shown(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], reader: str
+) -> None:
+    settings = open_household(tmp_path) if reader == "open" else signed_in_household(tmp_path)
+    database = pathlib.Path(settings.database_path)
+    with HangWatch(capsys) as watch, quiet_client(settings) as client:
+        if reader == "parent":
+            signed_in(client, THEIRS)
+        a_current_b_earlier(store_of(client))
+        before = every_row(database)
+        with HeldByAnother(database):
+            answer, _ = watch.press(lambda: client.get(PAGE, headers=PAGE_HEADERS))
+        after = every_row(database)
+
+    unshown_page(answer)
+    assert answer.headers.get("cache-control") == ("no-store" if reader == "parent" else None)
+    assert after == before
+
+
+def test_the_review_after_a_saved_choice_that_can_t_be_read_says_nothing_of_the_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A choice is saved, and the review its redirect lands on can't read the record: the
+    page says only that the instructions can't be shown, neither that the choice was saved
+    nor that it wasn't, and nothing more is written."""
+    caplog.set_level(logging.WARNING, logger="blossom.routes.school_instructions")
+    with quiet_client(open_household(tmp_path)) as client:
+        store = store_of(client)
+        a_current_b_earlier(store)
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        saved = client.post(ACTION, data=the_form(page, B))
+        before = tables(client)
+        monkeypatch.setattr(store, "one_assignment", refusing_coded("SQLITE_IOERR"))
+        landed = client.get(saved.headers["location"], headers=PAGE_HEADERS)
+        after = tables(client)
+
+    assert saved.status_code == 303
+    assert lands_on_result(saved.headers["location"], "saved")
+    unshown_page(landed)
+    assert str(escape(SAVED_AS_CHOSEN)) not in landed.text
+    assert instructions_log(caplog) == [LOGGED.format("OperationalError")]
+    assert after == before
+
+
+@pytest.mark.parametrize("refusal", list(FILE_REFUSALS))
+def test_the_review_whose_record_is_refused_says_it_can_t_be_shown_and_logs_the_kind_alone(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    refusal: str,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="blossom.routes.school_instructions")
+    with quiet_client(open_household(tmp_path)) as client:
+        store = store_of(client)
+        a_current_b_earlier(store)
+        monkeypatch.setattr(store, "one_assignment", FILE_REFUSALS[refusal]())
+        answer = client.get(PAGE, headers=PAGE_HEADERS)
+
+    unshown_page(answer)
+    assert instructions_log(caplog) == [LOGGED.format("OperationalError")]
+
+
+def test_a_failure_that_is_not_the_file_s_is_still_the_server_s_error_on_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = "a defect in the page"
+
+    def broken(*_: object, **__: object) -> None:
+        raise RuntimeError(marker)
+
+    with client_for(open_household(tmp_path)) as client:
+        monkeypatch.setattr(store_of(client), "one_assignment", broken)
+        with pytest.raises(RuntimeError, match=marker):
+            client.get(PAGE, headers=PAGE_HEADERS)
 
 
 # ------------------------------------------------------------------ a note longer than a paste

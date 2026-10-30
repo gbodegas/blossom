@@ -97,6 +97,7 @@ from blossom.routes.note_links import (
 from blossom.routes.parent import review_page
 from blossom.routes.student import parent_reads, viewer_of
 from blossom.school_instructions import SubmittedChoice
+from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.intake_decisions import UnreadableDecision
 from blossom.stores.project_state import Assignment, AssignmentKind, UnreadableClaim
 from blossom.stores.school_instructions import UnreadableInstruction
@@ -193,6 +194,13 @@ INSTRUCTION_FORM_UNREADABLE: Final = (
     "The answers about the school's instructions could not be read, so nothing was saved. "
     "Look at them again below."
 )
+RECORDS_UNREAD: Final = "Blossom couldn't read the household's records."
+"""Said for a press whose read of the household's records was refused, busy or not: nothing
+about a save, or about whether the text was read, or about what is shown below it."""
+UNREAD_HEADING: Final = "This can't be shown right now"
+READ_REFUSALS: Final = (sqlite3.Error, StoreBusy, WriterBusy)
+"""What a read of the household's records raises when the file, or the drafts store's own
+lock, refuses it."""
 STORE_REFUSED: Final = (
     "The text could not be saved: the file refused it. Nothing of it was saved; the text and "
     "the answers given on the cards are below."
@@ -698,20 +706,28 @@ def read_draft(state: ApplicationState, draft: Mapping[str, str]) -> Read | Prob
 
 
 def problem_page(
-    request: Request, state: ApplicationState, draft: Mapping[str, str], problem: Problem
+    request: Request,
+    state: ApplicationState,
+    draft: Mapping[str, str],
+    problem: Problem,
+    answers: "Sequence[AnswerKept]" = (),
 ) -> HTMLResponse:
     """The family page again, with the draft as it was, the failing field named, and the
-    section open."""
-    return review_page(
-        request,
-        state,
-        problem=problem.message,
-        problem_field=problem.field,
-        paste=draft.get("text") or None,
-        entry=None if draft.get("text") else dict(draft),
-        entry_open=True,
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-    )
+    section open. When the household's records can't be read for it, the page that reads no
+    store, with the draft and ``answers``, the answers given on the cards, kept."""
+    try:
+        return review_page(
+            request,
+            state,
+            problem=problem.message,
+            problem_field=problem.field,
+            paste=draft.get("text") or None,
+            entry=None if draft.get("text") else dict(draft),
+            entry_open=True,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    except READ_REFUSALS as error:
+        return read_refused(request, state, draft, list(answers), error)
 
 
 @dataclass(frozen=True)
@@ -781,6 +797,36 @@ def answers_kept(
         words,
         picks,
         {key: target for key, (target, _) in not_taken.items()},
+    )
+
+
+def answers_sent(
+    state: ApplicationState,
+    form: Mapping[str, str],
+    fields: Sequence[tuple[str, object]],
+    draft: Mapping[str, str],
+) -> list[AnswerKept]:
+    """The answers a review form carried, read as the keep press reads them, for a page that
+    reads no store: nothing on record is read, and only what the page wrote is an answer."""
+    read_answers = paste_answers(fields)
+    made = {key: UnsavedChoice.of(answer) for key, answer in read_answers.answers.items()}
+    chosen = {key for key, answer in {**made, **read_answers.unsaved}.items() if answer.chooses}
+    carried = {
+        key: account for key, account in carried_accounts(fields).items() if key not in chosen
+    }
+    page_made = made_with(state.result_key, form, draft)
+    identities, _ = identity_answers(fields, page_made)
+    linked, _ = link_answers(fields, page_made)
+    picks, _ = pick_answers(fields, page_made)
+    return answers_kept(
+        form,
+        read_answers.answers,
+        read_answers.unsaved,
+        carried,
+        page_made,
+        identities,
+        linked,
+        picks,
     )
 
 
@@ -1008,12 +1054,17 @@ def intake_unavailable(
     draft: Mapping[str, str],
     answers: list[AnswerKept],
     problem: str = CLAIM_UNREADABLE,
+    *,
+    unread: bool = False,
 ) -> HTMLResponse:
     """The page for a review or a save refused because a claim about a date on record, or a
-    saved instruction of the school's, cannot be read. It reads no store, tries nothing
-    again, and says nothing was saved. It keeps the text as pasted, or the entry as typed,
-    and the answers given on the cards, to copy. The way on is a press through the same
-    reading, never a retry made here."""
+    saved instruction of the school's, cannot be read; with ``unread``, for a press whose read
+    of the household's records was refused, headed that it can't be shown, with 503. It reads
+    no store, tries nothing again, and says nothing was saved; with ``unread``, its own
+    sentence says nothing about a save, though answers kept are still labeled not saved.
+    It keeps the text as pasted, or the entry as typed, and the answers given on the
+    cards, to copy. The way on is a press through the same reading, never a retry made here:
+    the paste's for a draft with a text field, even an empty one, else the entry's."""
     text = draft.get("text") or None
     entry = None
     if text is None:
@@ -1023,19 +1074,47 @@ def intake_unavailable(
         request,
         "inbox_unavailable.html",
         {
+            "heading": UNREAD_HEADING if unread else "Nothing was saved",
             "problem": problem,
             "text": text,
             "entry": entry,
             "entry_fields": ENTRY_FIELDS,
             "answers": answers,
-            "again": "/parent/inbox/read" if text else "/parent/inbox/enter",
+            "again": "/parent/inbox/read" if "text" in draft else "/parent/inbox/enter",
             "draft": {
                 name: value for name, value in draft.items() if name in (*ENTRY_FIELDS, "text")
             },
             "marks": state.settings.page_marks,
         },
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        status_code=(
+            status.HTTP_503_SERVICE_UNAVAILABLE if unread else status.HTTP_500_INTERNAL_SERVER_ERROR
+        ),
     )
+
+
+def read_refused(
+    request: Request,
+    state: ApplicationState,
+    draft: Mapping[str, str],
+    answers: list[AnswerKept],
+    error: sqlite3.Error | StoreBusy | WriterBusy,
+) -> HTMLResponse:
+    """The page for a press whose read of the household's records was refused, busy or not,
+    with what was sent kept; the refusal is logged by its kind alone, never its words."""
+    logger.warning("an inbox page could not be read: %s", type(error).__name__)
+    return intake_unavailable(request, state, draft, answers, RECORDS_UNREAD, unread=True)
+
+
+def first_review(
+    request: Request, state: ApplicationState, read: Read, draft: Mapping[str, str]
+) -> HTMLResponse:
+    """What a paste or an entry was read as, before any answer is given on its cards; when the
+    household's records can't be read for its review, the page that reads no store, with the
+    text as pasted or the entry as typed."""
+    try:
+        return preview_page(request, state, read, draft)
+    except READ_REFUSALS as error:
+        return read_refused(request, state, draft, [], error)
 
 
 def preview_page(
@@ -1457,7 +1536,7 @@ async def read_paste(request: Request, state: State) -> Response:
     read = read_draft(state, draft)
     if isinstance(read, Problem):
         return await asyncio.to_thread(problem_page, request, state, draft, read)
-    return await asyncio.to_thread(preview_page, request, state, read, draft)
+    return await asyncio.to_thread(first_review, request, state, read, draft)
 
 
 @router.post("/enter", response_class=HTMLResponse, include_in_schema=False)
@@ -1468,22 +1547,28 @@ async def read_entry(request: Request, state: State) -> Response:
     read = read_draft(state, draft)
     if isinstance(read, Problem):
         return await asyncio.to_thread(problem_page, request, state, draft, read)
-    return await asyncio.to_thread(preview_page, request, state, read, draft)
+    return await asyncio.to_thread(first_review, request, state, read, draft)
 
 
 @router.post("/edit", response_class=HTMLResponse, include_in_schema=False)
 async def edit_draft(request: Request, state: State) -> Response:
-    """Back to the family page with the draft as it was, to change it; nothing is written."""
+    """Back to the family page with the draft as it was, to change it; nothing is written.
+    When the household's records can't be read for it, the page that reads no store, with the
+    draft and the answers given on the cards kept."""
     form = await submitted(request)
     draft = draft_of(form)
-    return await asyncio.to_thread(
-        review_page,
-        request,
-        state,
-        paste=draft.get("text") or None,
-        entry=None if draft.get("text") else draft,
-        entry_open=True,
-    )
+    try:
+        return await asyncio.to_thread(
+            review_page,
+            request,
+            state,
+            paste=draft.get("text") or None,
+            entry=None if draft.get("text") else draft,
+            entry_open=True,
+        )
+    except READ_REFUSALS as error:
+        answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
+        return await asyncio.to_thread(read_refused, request, state, draft, answers, error)
 
 
 SEARCH_PRESSES: Final = ("find", "results_page", "choose", "remove")
@@ -1520,7 +1605,8 @@ async def search_review(request: Request, state: State) -> Response:
     draft = draft_of(form)
     read = read_draft(state, draft)
     if isinstance(read, Problem):
-        return await asyncio.to_thread(problem_page, request, state, draft, read)
+        answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
+        return await asyncio.to_thread(problem_page, request, state, draft, read, answers)
     fields = (await form_of(request)).multi_items()
     read_answers = paste_answers(fields)
     instruction_answers = read_answers.answers
@@ -1728,7 +1814,8 @@ async def keep_readings(request: Request, state: State) -> Response:
     draft = draft_of(form)
     read = read_draft(state, draft)
     if isinstance(read, Problem):
-        return await asyncio.to_thread(problem_page, request, state, draft, read)
+        answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
+        return await asyncio.to_thread(problem_page, request, state, draft, read, answers)
     # Every answer about the school's instructions is read from the fields as sent, before
     # any is collapsed, and kept, contradictions included, in words a page that reads no
     # store can show: all of it before anything touches the store.

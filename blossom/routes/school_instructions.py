@@ -121,6 +121,11 @@ NOT_SAVED: Final = (
     "The choice could not be saved: the file refused it. Nothing was saved, and the choice is "
     "shown below as it was sent."
 )
+INSTRUCTIONS_UNSHOWN: Final = (
+    "The school's instructions for this assignment can't be shown right now."
+)
+"""Said when the record can't be read for a look at the review: nothing about a save, which
+a redirect after one may name, or about a wait."""
 
 STANDINGS: Final = {
     "current": "Applies now.",
@@ -380,11 +385,14 @@ def plain_page(
     problem: str,
     status_code: int,
     carried: CarriedAccount | None = None,
+    *,
+    pressed: bool = True,
 ) -> HTMLResponse:
     """The page when the record cannot be read back: what happened, the answer as it was
     sent, or the choice the form carried when it chose nothing, and the ways on. Nothing
     here reads the store, offers a save, or claims one; an instruction selected by
-    reference to a row is counted, since its text is not read."""
+    reference to a row is counted, since its text is not read. A press's page puts the focus
+    on what happened; a look at the page, not ``pressed``, leaves it where a page starts."""
     said, why = carried_or(said_back(account, None), None, carried)
     return templates.TemplateResponse(
         request,
@@ -393,7 +401,7 @@ def plain_page(
             "item": None,
             "plain": True,
             "problem": problem,
-            "pressed": True,
+            "pressed": pressed,
             "not_saved": said,
             "not_saved_why": why,
             "back": details_href(assignment_id, return_to="family"),
@@ -447,13 +455,28 @@ def review(
 ) -> Response:
     """The review, as the record stands. Nothing here writes. ``result`` is what a save just
     did, which the save wrote and the address only carries; a value this process did not sign
-    for this assignment says nothing."""
-    return review_page(
-        request,
-        state,
-        assignment_id,
-        result=result_of(state.result_key, assignment_id, result),
-    )
+    for this assignment says nothing. When the record can't be read, the page that reads no
+    store says the instructions can't be shown, and nothing of a save; the refusal is logged
+    by its kind alone, never its words."""
+    try:
+        return review_page(
+            request,
+            state,
+            assignment_id,
+            result=result_of(state.result_key, assignment_id, result),
+        )
+    except sqlite3.Error as error:
+        logger.warning(
+            "the review of school instructions could not be read: %s", type(error).__name__
+        )
+        return plain_page(
+            request,
+            assignment_id,
+            None,
+            INSTRUCTIONS_UNSHOWN,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            pressed=False,
+        )
 
 
 @router.post(
