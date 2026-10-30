@@ -8829,8 +8829,8 @@ def read_then_refused(
     attempt has returned, then a visit to the address it answers with. Those in ``unfinished``
     end with an error nothing expects once ``reader`` has answered, ``busy_image``'s reading
     meets a busy writer, and the store refuses to keep ``dropped_image``'s. It returns the
-    answer, the visit, the review reads the press made from the refusal on, and the change lines
-    it worked out."""
+    answer, the visit, the review reads the press made from the refusal on, and a mark for each
+    time it worked out its change lines."""
     form = read_form(browser.get(f"/parent/imports/{draft_id}").text)
     drafts = state_of(browser).import_drafts
     real_snapshot, real_store = drafts.snapshot, drafts.store_reading
