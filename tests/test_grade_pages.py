@@ -1231,9 +1231,11 @@ def test_the_review_s_closing_buttons_are_one_group_with_the_way_back_under_it(
     assert after.lstrip().startswith(way_back)
 
 
-def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_pages_carry_its_class() -> None:
+def test_the_outcome_card_s_rule_is_pinned_and_its_layout_lent_to_choices_a_page_sent() -> None:
     """The outcome card is the grade save's, and the screenshot review's save takes the same
-    pattern: its outcome page, and the success panel on a review a save leaves open."""
+    pattern: its outcome page, and the success panel on a review a save leaves open. What a
+    page sent, shown when an earlier save took its report, reuses the card for its layout
+    alone: those are the choices submitted, not proof of what the earlier save stored."""
     css = STYLESHEET.read_text(encoding="utf-8")
     carriers = sorted(
         page.name
@@ -1245,12 +1247,20 @@ def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_pages_carry_its_cl
     assert css.count(CARD_RULES) == 1
     for shared in SHARED_CARD_RULES:
         assert css.count(shared) == 1, shared
-    assert carriers == ["grade_saved.html", "import_review.html", "import_said.html"]
+    assert carriers == [
+        "grade_retry.html",
+        "grade_saved.html",
+        "import_review.html",
+        "import_said.html",
+    ]
     outcome = '<section class="panel grade-outcome" aria-labelledby="outcome-heading">'
     for name in ("grade_saved.html", "import_said.html"):
         assert (TEMPLATES / name).read_text(encoding="utf-8").count(outcome) == 1
     review = (TEMPLATES / "import_review.html").read_text(encoding="utf-8")
     assert review.count('<div class="panel grade-outcome" role="status" id="done"') == 1
+    sent = '<section class="panel grade-panel grade-outcome" aria-labelledby="sent-heading">'
+    retry = (TEMPLATES / "grade_retry.html").read_text(encoding="utf-8")
+    assert retry.count(sent) == 1
 
 
 def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> None:
