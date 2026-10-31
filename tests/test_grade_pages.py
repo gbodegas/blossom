@@ -8408,3 +8408,43 @@ def test_the_busy_check_is_shared_by_the_import_and_grade_pages() -> None:
 
     assert imports.busy_file is store_refusals.busy_file
     assert frozenset({sqlite3.SQLITE_BUSY}) == store_refusals.BUSY_CODES
+
+
+PRESS_REFUSED: Final = {
+    "a review": (REVIEW, "review_grade_report", None, 503),
+    "a check": (CHECK, "check_grade_answers", None, 503),
+    "a save before its write": (SAVE, "review_grade_report", "identity", 503),
+    "a term shown": (VIEW, "choose_view", None, 500),
+}
+"""Each press whose read or write is refused, the store call refused, the field left out of its
+form, and its answer's status."""
+
+
+@pytest.mark.parametrize("press", list(PRESS_REFUSED))
+def test_with_sign_in_on_a_press_s_answer_to_a_refused_read_is_kept_from_caches(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Signed in as a parent, each new answer is marked no-store, as the same press's ordinary
+    answer is."""
+    route, refused, left_out, status = PRESS_REFUSED[press]
+    settings = signed_in_household(tmp_path)
+    with quietly_at(settings, client="192.0.2.10", host="testserver") as browser:
+        signed_in(browser, THEIRS)
+        form: dict[str, str] = {"report_text": REPORT}
+        if route in (CHECK, SAVE):
+            form = answered(review_page(browser))
+            if left_out is not None:
+                del form[left_out]
+        if route == VIEW:
+            on_record(browser)
+            form = {"view": "current"}
+        ordinary = browser.post(route, data=form, headers=PAGE)
+        store = store_of(browser)
+        monkeypatch.setattr(store, refused, refusing_coded("SQLITE_BUSY"))
+        if route == VIEW:
+            monkeypatch.setattr(store, "grade_contexts", refusing_coded("SQLITE_BUSY"))
+        answer = browser.post(route, data=form, headers=PAGE)
+
+    assert ordinary.headers["cache-control"] == "no-store", ordinary.status_code
+    assert answer.status_code == status, answer.text[:600]
+    assert answer.headers["cache-control"] == "no-store"
