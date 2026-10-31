@@ -8365,9 +8365,9 @@ def test_a_homework_class_answer_saved_whose_page_can_t_be_read_says_it_was_save
 ) -> None:
     """The answer is written and committed; the read for the page after it is refused. The
     answer says it was saved, by the name sent, escaped as written, at 503, with a way to the
-    page that doesn't send the answer again. A fresh connection then finds one row under the
-    sent name's key: its class Biology when connecting or standing already, and no class
-    when removing."""
+    page that doesn't send the answer again. A fresh connection then finds one row in the
+    whole table of answers: the fixture's school year, the sent name's key, and Biology when
+    connecting or standing already, or no class when removing."""
     settings = open_household(tmp_path)
     name = "Lab <b>& Field</b>"
     with naming(settings, NAMES_BIOLOGY, homework=(name,)) as browser:
@@ -8398,8 +8398,7 @@ def test_a_homework_class_answer_saved_whose_page_can_t_be_read_says_it_was_save
     fresh = sqlite3.connect(database(settings))
     try:
         stored = fresh.execute(
-            f"SELECT class_id FROM {MAPPING} WHERE name_key = ?",  # noqa: S608
-            (gradebook.name_key(name),),
+            f"SELECT year_label, name_key, class_id FROM {MAPPING}"  # noqa: S608
         ).fetchall()
     finally:
         fresh.close()
@@ -8413,7 +8412,8 @@ def test_a_homework_class_answer_saved_whose_page_can_t_be_read_says_it_was_save
     assert "<b>" not in main
     assert "<form" not in main
     assert f'<a href="{GRADES}" aria-current="page">Grades</a>' in answer.text
-    assert stored == [(None if answer_is == "removing" else biology,)]
+    expected = None if answer_is == "removing" else biology
+    assert stored == [("2026-2027", gradebook.name_key(name), expected)]
 
 
 def test_the_busy_check_is_shared_by_the_import_and_grade_pages() -> None:
