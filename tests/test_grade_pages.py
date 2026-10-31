@@ -19,10 +19,10 @@ import stat
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from html import unescape
-from typing import Final
+from typing import Any, Final
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -80,6 +80,8 @@ from tests.support import (
     PLAN_DATE,
     THEIRS,
     Chain,
+    HangWatch,
+    HeldByAnother,
     answers_in,
     as_a_browser_sends,
     as_stored,
@@ -88,12 +90,15 @@ from tests.support import (
     confirm_current,
     elements_of,
     every_route,
+    every_row,
     files_in,
     fixture_settings,
     form_values,
     grade_answers,
     homework_named,
     main_of,
+    refusing,
+    refusing_coded,
     rules_reaching,
     save_grade,
     signed_in,
@@ -7224,3 +7229,327 @@ def test_a_refused_question_keeps_its_leading_line_break_on_the_page_without_the
         f'<textarea id="kept-help-question" rows="3" readonly>\n{escape(question)}</textarea>'
         in answer.text
     )
+
+
+# ------------------------------------------------------------- a file another program holds
+
+
+@dataclass(frozen=True)
+class Unshown:
+    """A grade page whose first read of the record is refused: how it is asked for, the
+    heading and sentence its answer gives, where "Try again" asks again and the ways back, by
+    the address of the household's record of each, and the tree its menu marks."""
+
+    method: str
+    address: str
+    heading: str
+    sentence: str
+    again: str
+    ways_back: tuple[tuple[str, str], ...]
+    grades: str
+
+
+UNSHOWN: Final[dict[str, Unshown]] = {
+    "Grades": Unshown(
+        "GET", GRADES, "Grades", "Grades can't be shown right now.", GRADES, (), GRADES
+    ),
+    "her Grades": Unshown(
+        "GET",
+        HER_GRADES,
+        "Grades",
+        "Grades can't be shown right now.",
+        HER_GRADES,
+        (),
+        HER_GRADES,
+    ),
+    "class details": Unshown(
+        "GET",
+        CLASS_AT,
+        "Class details",
+        "Class details can't be shown right now.",
+        CLASS_AT,
+        ((GRADES, "Back to Grades"),),
+        GRADES,
+    ),
+    "her class details": Unshown(
+        "GET",
+        HER_CLASS_AT,
+        "Class details",
+        "Class details can't be shown right now.",
+        HER_CLASS_AT,
+        ((HER_GRADES, "Back to Grades"),),
+        HER_GRADES,
+    ),
+    "asking a parent": Unshown(
+        "GET",
+        HER_ASK,
+        "Ask a parent about this result",
+        "This result can't be shown right now.",
+        HER_ASK,
+        ((HER_GRADES, "Back to Grades"),),
+        HER_GRADES,
+    ),
+    "a save's outcome": Unshown(
+        "GET",
+        SAVED,
+        "Add grade report",
+        "This save's outcome can't be shown right now.",
+        SAVED,
+        (("/parent", "Back to Family review"),),
+        GRADES,
+    ),
+    "homework class names": Unshown(
+        "GET",
+        HOMEWORK_CLASSES,
+        "Homework class names",
+        "Homework class names can't be shown right now.",
+        HOMEWORK_CLASSES,
+        (),
+        GRADES,
+    ),
+    "a result's homework": Unshown(
+        "GET",
+        RESULT_HOMEWORK,
+        "Homework for this result",
+        "This result's homework can't be shown right now.",
+        RESULT_HOMEWORK,
+        ((GRADES, "Back to Grades"),),
+        GRADES,
+    ),
+    "a search of its homework": Unshown(
+        "POST",
+        RESULT_SEARCH,
+        "Homework for this result",
+        "This result's homework can't be shown right now.",
+        RESULT_HOMEWORK,
+        ((GRADES, "Back to Grades"),),
+        GRADES,
+    ),
+}
+"""Each page S5-4a answers when the record can't be read, by the page asked for."""
+SEARCHED = {"words": "Osmosis", "page": ""}
+"""A search of a result's homework as its form sends it."""
+FIRST_READS: Final[dict[str, str]] = {
+    "Grades": "grade_contexts",
+    "her Grades": "grade_contexts",
+    "class details": "class_named",
+    "her class details": "class_named",
+    "asking a parent": "result_own",
+    "a save's outcome": "recorded_save",
+    "homework class names": "grade_contexts",
+    "a result's homework": "result_own",
+    "a search of its homework": "result_own",
+}
+"""The first read each page makes: a store method, or the route module's ``result_own``."""
+REFUSED: Final[dict[str, Callable[[], Callable[..., None]]]] = {
+    "busy": lambda: refusing_coded("SQLITE_BUSY"),
+    "an I/O error": lambda: refusing_coded("SQLITE_IOERR"),
+    "with no code": refusing,
+}
+"""Each way the file refuses a read, as a store call raises it."""
+
+
+@contextmanager
+def quietly_at(settings: Settings, **where: str) -> Iterator[TestClient]:
+    """``at``, with a failure no page catches answered as a server answers it, a bare 500,
+    rather than raised into the test."""
+    with TestClient(
+        create_app(settings),
+        follow_redirects=False,
+        headers={
+            "Host": where.get("host", LOOPBACK),
+            "Origin": f"http://{where.get('host', LOOPBACK)}",
+        },
+        client=(where.get("client", "127.0.0.1"), 50000),
+        raise_server_exceptions=False,
+    ) as browser:
+        yield browser
+
+
+def on_record(browser: TestClient) -> dict[str, str]:
+    """Wren's report saved through its review, and the IDs the pages are asked for by: its
+    save's acceptance ID, its class, its first term's place and the Osmosis result."""
+    saved = browser.post(SAVE, data=answered(review_page(browser)), headers=PAGE)
+    assert saved.status_code == 303, saved.text
+    class_id = capture_class(store_of(browser), FIRST_TERM)
+    details = browser.get(CLASS_AT.format(class_id=class_id, n=1), headers=PAGE)
+    assert details.status_code == 200, details.text
+    return {
+        "acceptance_id": saved.headers["location"].rsplit("/", 1)[1],
+        "class_id": class_id,
+        "n": "1",
+        "result_id": card_of(details.text, OSMOSIS),
+    }
+
+
+def ask_for(browser: TestClient, page: str, ids: dict[str, str]) -> Any:  # noqa: ANN401
+    """The page ``page`` names, asked for as its link or its form asks."""
+    shown = UNSHOWN[page]
+    address = shown.address.format(**ids)
+    if shown.method == "POST":
+        return browser.post(address, data=SEARCHED, headers=PAGE)
+    return browser.get(address, headers=PAGE)
+
+
+def unshown_page(answer: Any, page: str, ids: dict[str, str]) -> str:  # noqa: ANN401
+    """The page that reads no store, answering ``page`` when its record can't be read: 503,
+    titled and headed as the page, the one sentence that takes the focus with "Try again" for
+    the same page, the ways back, Grades marked in the menu, and nothing about a save or a
+    wait. Its main part."""
+    shown = UNSHOWN[page]
+    assert answer.status_code == 503, (answer.status_code, answer.text[:600])
+    assert f"<title>Blossom - {escape(shown.heading)}</title>" in answer.text
+    main = main_of(answer.text)
+    (heading,) = re.findall(r"<h1>(.*?)</h1>", main, re.S)
+    assert words(heading).replace("\xad", "") == shown.heading
+    again = shown.again.format(**ids)
+    alert = (
+        '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
+        f'{escape(shown.sentence)} <a href="{again}">Try again</a></p>'
+    )
+    assert alert in main, main[:900]
+    assert main.count('role="alert"') == 1
+    ways = re.findall(r'<p class="return"><a href="([^"]*)">([^<]*)</a></p>', main)
+    assert tuple(ways) == shown.ways_back
+    assert f'<a href="{shown.grades}" aria-current="page">Grades</a>' in answer.text
+    assert answer.text.count('aria-current="page"') == 1
+    said = words(main).lower()
+    for unsaid in ("saved", "nothing was", "not saved", "busy", "wait", "a moment"):
+        assert unsaid not in said, unsaid
+    assert "<form" not in main
+    assert "Internal Server Error" not in answer.text
+    return main
+
+
+@pytest.mark.parametrize("page", list(UNSHOWN))
+def test_a_grade_page_while_another_program_holds_the_file_says_it_can_t_be_shown(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], page: str
+) -> None:
+    """Another program holds the household's file: the page's first read waits and is
+    refused. The answer is a page that reads no store, built while the file is still held,
+    and nothing is written."""
+    settings = open_household(tmp_path)
+    with HangWatch(capsys) as watch, quietly_at(settings) as browser:
+        ids = on_record(browser)
+        assert ask_for(browser, page, ids).status_code == 200
+        before = every_row(database(settings))
+        with HeldByAnother(database(settings)):
+            answer, _ = watch.press(lambda: ask_for(browser, page, ids))
+        after = every_row(database(settings))
+
+    unshown_page(answer, page, ids)
+    assert "cache-control" not in answer.headers
+    assert after == before
+
+
+@pytest.mark.parametrize("refusal", list(REFUSED))
+@pytest.mark.parametrize("page", list(UNSHOWN))
+def test_each_way_a_grade_page_s_first_read_is_refused_answers_the_same_page(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    page: str,
+    refusal: str,
+) -> None:
+    """Busy or not, coded or not, a refused read answers the page that can't be shown, and
+    the refusal is logged by its kind alone, never by its message."""
+    with quietly_at(open_household(tmp_path)) as browser:
+        ids = on_record(browser)
+        read = FIRST_READS[page]
+        if read == "result_own":
+            monkeypatch.setattr(grade_routes, "result_own", REFUSED[refusal]())
+        else:
+            monkeypatch.setattr(store_of(browser), read, REFUSED[refusal]())
+        with caplog.at_level(logging.WARNING):
+            answer = ask_for(browser, page, ids)
+
+    unshown_page(answer, page, ids)
+    assert f"{UNSHOWN[page].heading} could not be read: OperationalError" in caplog.text
+    assert "database is locked" not in caplog.text
+
+
+@pytest.mark.parametrize("page", ["Grades", "a search of its homework"])
+def test_a_failure_on_a_grade_page_that_isn_t_the_file_s_is_still_the_server_s_error(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, page: str
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        ids = on_record(browser)
+        read = FIRST_READS[page]
+        if read == "result_own":
+            monkeypatch.setattr(grade_routes, "result_own", refusing(RuntimeError))
+        else:
+            monkeypatch.setattr(store_of(browser), read, refusing(RuntimeError))
+        with pytest.raises(RuntimeError):
+            ask_for(browser, page, ids)
+
+
+@pytest.mark.parametrize(("passphrase", "page"), [(THEIRS, "Grades"), (HERS, "her Grades")])
+def test_with_sign_in_on_a_grade_page_that_can_t_be_shown_is_kept_from_caches(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], passphrase: str, page: str
+) -> None:
+    settings = signed_in_household(tmp_path)
+    with (
+        HangWatch(capsys) as watch,
+        quietly_at(settings, client="192.0.2.10", host="testserver") as browser,
+    ):
+        signed_in(browser, passphrase)
+        before = every_row(database(settings))
+        with HeldByAnother(database(settings)):
+            answer, _ = watch.press(lambda: ask_for(browser, page, {}))
+        after = every_row(database(settings))
+
+    unshown_page(answer, page, {})
+    assert answer.headers["cache-control"] == "no-store"
+    assert after == before
+
+
+def test_a_save_s_outcome_asked_for_by_its_redirect_while_the_file_is_held_says_nothing_of_it(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The save is made and lands; another program then holds the file before the browser
+    follows the redirect. The outcome's page can't be shown, and says nothing about the save
+    either way."""
+    settings = open_household(tmp_path)
+    with HangWatch(capsys) as watch, quietly_at(settings) as browser:
+        saved = browser.post(SAVE, data=answered(review_page(browser)), headers=PAGE)
+        assert saved.status_code == 303, saved.text
+        landed = sqlite3.connect(database(settings))
+        try:
+            (reports,) = landed.execute("SELECT COUNT(*) FROM grade_reports").fetchone()
+        finally:
+            landed.close()
+        with HeldByAnother(database(settings)):
+            answer, _ = watch.press(lambda: browser.get(saved.headers["location"], headers=PAGE))
+
+    assert reports > 0
+    ids = {"acceptance_id": saved.headers["location"].rsplit("/", 1)[1]}
+    unshown_page(answer, "a save's outcome", ids)
+
+
+def test_try_again_on_class_details_that_can_t_be_shown_keeps_its_address_s_shape(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A class ID holding a question mark, read before it is checked, is written back
+    escaped, so "Try again" asks for the same page."""
+    with quietly_at(open_household(tmp_path)) as browser:
+        monkeypatch.setattr(store_of(browser), "class_named", refusing_coded("SQLITE_BUSY"))
+        answer = browser.get("/parent/grades/classes/class-a%3Fb/terms/1", headers=PAGE)
+
+    main = unshown_page(answer, "class details", {"class_id": "class-a%3Fb", "n": "1"})
+    assert 'href="/parent/grades/classes/class-a%3Fb/terms/1"' in main
+
+
+def test_a_search_whose_form_isn_t_whole_and_whose_page_can_t_be_read_answers_the_same_page(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A search sent without its page field is refused on the result's page, which reads the
+    record too. When that read is refused, the answer is the page that can't be shown."""
+    with quietly_at(open_household(tmp_path)) as browser:
+        ids = on_record(browser)
+        address = RESULT_SEARCH.format(**ids)
+        refused = browser.post(address, data={"words": "Osmosis"}, headers=PAGE)
+        monkeypatch.setattr(grade_routes, "result_own", refusing_coded("SQLITE_BUSY"))
+        answer = browser.post(address, data={"words": "Osmosis"}, headers=PAGE)
+
+    assert refused.status_code == 422, refused.text[:300]
+    unshown_page(answer, "a search of its homework", ids)
