@@ -606,6 +606,33 @@ def test_a_resumed_decision_whose_write_raises_again_cant_be_told(
     assert after == (None, None)
 
 
+def test_a_resumed_decision_that_lands_and_then_raises_is_not_this_presss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second press, the same button and the same words, resumes the decision the thread
+    holds, and its write lands and then raises: the record read again holds that choice and
+    those words, yet the decision is the first press's, so the answer says a decision is
+    recorded, never this press's, and keeps the note as typed."""
+    with a_waiting_plan() as (client, draft_id):
+        state = state_of(client)
+        real = state.drafts.record_decision
+        monkeypatch.setattr(state.drafts, "record_decision", raising(StoreBusy()))
+        press(client, draft_id, "approve", NOTE)
+
+        def landed_then_failed(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            real(*args, **kwargs)
+            refused = coded("SQLITE_IOERR")
+            raise refused
+
+        monkeypatch.setattr(state.drafts, "record_decision", landed_then_failed)
+        second = press(client, draft_id, "approve", NOTE)
+        monkeypatch.undo()
+        after = row_of(client, draft_id)
+
+    the_stand_in(second, status=503, said=A_DECISION, note=NOTE)
+    assert after == ("approved", NOTE)
+
+
 # ------------------------------------------- the checkpoint file's failures (R5, R6)
 
 
