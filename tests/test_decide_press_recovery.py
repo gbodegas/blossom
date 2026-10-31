@@ -19,6 +19,7 @@ import contextlib
 import logging
 import pathlib
 import sqlite3
+import threading
 import time
 import traceback
 from collections.abc import Callable, Iterator
@@ -761,6 +762,102 @@ def test_the_reread_waits_for_every_write_and_holds_the_lock(
     assert len(reread) == 1
     assert reread[0][0] > ended[0]
     assert reread[0][1] is True
+
+
+HELD = 10.0
+"""The most any step of the next test waits on another, so a run that never gets there fails
+rather than hangs."""
+A_WHILE = 0.5
+"""How long the decision's worker stays held after the checkpoint's failure is raised, for a
+run that would read again or let the lock go too early to do so first. A run that waits
+passes however long this is; one that acts later than this after the failure isn't caught."""
+
+
+def test_the_reread_and_the_lock_wait_for_a_worker_still_running_when_a_checkpoint_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resume's checkpoint write fails while the decision's write is held on its worker
+    thread: the record is read again, and the decision lock let go, only once that worker has
+    finished, and the answer says the decision it recorded."""
+    order: list[str] = []
+    worker_started = threading.Event()
+    failure_raised = threading.Event()
+    worker_may_finish = threading.Event()
+    too_early = threading.Event()
+    held_at_reread: list[bool] = []
+
+    def mark(step: str) -> None:
+        order.append(step)
+        if step in ("reread", "lock released") and "worker finished" not in order:
+            too_early.set()
+
+    def release_the_worker() -> None:
+        if failure_raised.wait(HELD):
+            too_early.wait(A_WHILE)
+        worker_may_finish.set()
+
+    with a_waiting_plan() as (client, draft_id):
+        state = state_of(client)
+        saver = state.checkpointer
+        real_writes = saver.aput_writes
+        real_record = state.drafts.record_decision
+        real_read_again = parent_routes.read_again
+        lock = state.decision_lock
+        real_release = lock.release
+
+        def record(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            mark("worker started")
+            worker_started.set()
+            worker_may_finish.wait(HELD)
+            result = real_record(*args, **kwargs)
+            mark("worker finished")
+            return result
+
+        async def writes(config: Any, sent: Any, task_id: str, task_path: str = "") -> None:  # noqa: ANN401
+            if [str(channel) for channel, _ in sent] == ["__resume__"]:
+                await asyncio.to_thread(worker_started.wait, HELD)
+                mark("checkpoint write failed")
+                failure_raised.set()
+                refused = coded("SQLITE_BUSY")
+                raise refused
+            await real_writes(config, sent, task_id, task_path)
+
+        async def read_again(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+            mark("reread")
+            held_at_reread.append(lock.locked())
+            await real_read_again(*args, **kwargs)
+
+        def release() -> None:
+            mark("lock released")
+            real_release()
+
+        monkeypatch.setattr(state.drafts, "record_decision", record)
+        monkeypatch.setattr(saver, "aput_writes", writes)
+        monkeypatch.setattr(parent_routes, "read_again", read_again)
+        monkeypatch.setattr(lock, "release", release)
+        releaser = threading.Thread(target=release_the_worker)
+        releaser.start()
+        try:
+            answer = press(client, draft_id)
+        finally:
+            failure_raised.set()
+            worker_may_finish.set()
+            releaser.join(HELD)
+        monkeypatch.undo()
+        after = row_of(client, draft_id)
+
+    assert not releaser.is_alive()
+    assert order == [
+        "worker started",
+        "checkpoint write failed",
+        "worker finished",
+        "reread",
+        "lock released",
+    ]
+    assert held_at_reread == [True]
+    assert not too_early.is_set()
+    the_stand_in(answer, status=503, said=APPROVED, note=None)
+    assert after == ("approved", NOTE)
 
 
 JSON_CASES: dict[str, tuple[str, Callable[[], BaseException] | None]] = {

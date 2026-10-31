@@ -1297,8 +1297,7 @@ def review_page(
     and the folds below.
 
     ``problem`` is what a form action could not do, shown once at the top with
-    the status the JSON route would have answered, so the page tells the truth
-    the API tells; ``problem_field`` names the entry field it is about, so the
+    ``status_code``; ``problem_field`` names the entry field it is about, so the
     page can mark it and put the cursor there. ``paste`` and ``entry`` are a
     draft to show again, as it was, with the section open. ``check`` is what
     one row of the assignment updates shows beyond the record, a check made
@@ -2473,8 +2472,8 @@ def refused_on_the_page(
     elsewhere: str | None = None,
     plan_answer: PlanAnswer | None = None,
 ) -> HTMLResponse:
-    """A form action the family page refused, said at its top with the status the JSON route
-    would answer, ``check`` the link to the run it names, ``help_reply`` a reply to her
+    """A form action the family page refused, said at its top with ``status_code``,
+    ``check`` the link to the run it names, ``help_reply`` a reply to her
     request as typed, and ``reason_kept`` a note about a plan as typed, tried once.
     ``plan_date_kept`` refills the plan form's date, ``offers_plan`` false leaves the plan
     form out, ``open_plan`` opens a plan, and ``elsewhere`` is the problem as its stand-in

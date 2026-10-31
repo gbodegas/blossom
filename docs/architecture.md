@@ -542,14 +542,18 @@ page, so there is one way to start a run and one way to review whichever door
 it comes through, and a failure renders the page with the same status and
 reason the API would have answered. A run interrupted on the way differs: the
 page says it with 409, and the API answers 201 with the run's record, as for
-any run that ended without a plan. The decision field admits exactly the two
+any run that ended without a plan. Store failures on the family-page decision
+are another exception: its recovery page uses 503 for a failed read before the
+write or a confirmed recording, and 500 for an uncertain outcome; the JSON
+route keeps its existing responses. The decision field admits exactly the two
 button values, and the reason is capped at `REASON_MAX_LENGTH`, five hundred
 characters, on the form and on the JSON request alike, so a longer one is
-refused at the boundary rather than stored. A decision the page refuses saves
-nothing and keeps the reason as typed, ready to send again: in its plan's box
-while that plan waits on the page with its form, marked and focused when the
-reason is what was refused, and under the problem otherwise. The problem leads
-to the box when the reason is what was refused, or when Looks good was refused
+refused at the boundary rather than stored. A decision the page refuses before
+its write begins saves nothing and keeps the reason as typed, ready to send
+again: in its plan's box while that plan waits on the page with its form,
+marked and focused when the reason is what was refused, and under the problem
+otherwise. The problem leads to the box when the reason is what was refused,
+or when Looks good was refused
 because the plan went stale. The two buttons read "Looks good"
 and "Ask for a change", and each carries an accessible name with the draft's
 evening, and its position when several wait, so the controls can be told apart
