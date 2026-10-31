@@ -4344,9 +4344,11 @@ def unavailable_page(
     again: str,
     ways_back: list[ReturnLink],
     family: bool = False,
+    nav: str | None = None,
 ) -> HTMLResponse:
     """A page that is only read, when a read for it fails: 503, what can't be shown, the same
-    address to ask for again, and the ways back; ``family`` for a page in the family's tree.
+    address to ask for again, and the ways back; ``family`` for a page in the family's tree,
+    and ``nav`` for the menu's current page where it isn't that tree's own.
     Nothing is read here, and the failure is logged by its kind alone."""
     logger.warning("%s could not be read: %s", heading, type(error).__name__)
     return templates.TemplateResponse(
@@ -4358,6 +4360,7 @@ def unavailable_page(
             "again": again,
             "ways_back": ways_back,
             "family": family,
+            "nav": nav,
             "marks": state.settings.page_marks,
         },
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

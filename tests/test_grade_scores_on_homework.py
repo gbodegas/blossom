@@ -29,6 +29,7 @@ from typing import Any, Protocol
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -141,6 +142,7 @@ from tests.support import (
     form_fields,
     grade_answers,
     household_client,
+    main_of,
     page_of,
     plan_on,
     planned,
@@ -2734,7 +2736,7 @@ def test_each_decoder_turns_only_its_own_error_into_the_named_one(
 def test_text_is_decoded_strictly_for_a_score_read_alone_and_the_connection_keeps_its_own() -> None:
     """A homework page's grade read refuses text that is not UTF-8 with the named error and
     leaves the connection its own decoding. The same read made for another page gets the
-    database's own error, as do Grades and class details."""
+    database's own error."""
     edit = EDITS["a result's title that is not UTF-8"]
     with browser() as client:
         store = store_of(client)
@@ -2744,20 +2746,102 @@ def test_text_is_decoded_strictly_for_a_score_read_alone_and_the_connection_keep
         with pytest.raises(GradeValueUndecodable) as refused:
             read_grade_facts(store, [BIOLOGY])
         decoding = store._connection.text_factory
-        others = []
-        for read in (
-            lambda: store.class_term(class_id, "T1"),
-            lambda: client.get("/student/grades", headers=PAGE_HEADERS),
-            lambda: class_details(client, class_id),
-        ):
-            with pytest.raises(sqlite3.OperationalError) as plain:
-                read()
-            others.append(type(plain.value))
+        with pytest.raises(sqlite3.OperationalError) as plain:
+            store.class_term(class_id, "T1")
 
     assert [list(year.reads) for year in sound] == [[(class_id, "T1")]]
     assert type(refused.value.__cause__) is UnicodeDecodeError
     assert decoding is text_or_refusal
-    assert others == [sqlite3.OperationalError] * 3
+    assert type(plain.value) is sqlite3.OperationalError
+
+
+def cannot_be_shown(
+    answer: "Answered", heading: str, sentence: str, again: str, ways_back: list[tuple[str, str]]
+) -> None:
+    """The page that reads no store, answering a grade page whose record can't be read: 503,
+    headed as the page, its one sentence with "Try again" at ``again``, the ways back, Grades
+    marked in its tree's menu, and no form."""
+    assert answer.status_code == 503, (answer.status_code, answer.text[:600])
+    main = main_of(answer.text)
+    (shown,) = re.findall(r"<h1>(.*?)</h1>", main, re.S)
+    assert (
+        " ".join(html.unescape(re.sub(r"<[^>]+>", " ", shown)).split()).replace("\xad", "")
+        == heading
+    )
+    assert (
+        '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
+        f'{escape(sentence)} <a href="{again}">Try again</a></p>'
+    ) in main
+    ways = re.findall(r'<p class="return"><a href="([^"]*)">([^<]*)</a></p>', main)
+    assert ways == ways_back
+    tree = "/parent" if again.startswith("/parent/") else "/student"
+    assert f'<a href="{tree}/grades" aria-current="page">Grades</a>' in answer.text
+    assert "<form" not in main
+    assert "Internal Server Error" not in answer.text
+
+
+def logged_by_kind_alone(records: list[logging.LogRecord], said: str) -> None:
+    """The application's one record of a page that can't be shown, a warning that names the
+    error's kind alone: no record holds the error's words, an authored title or a traceback,
+    and none says a grade page wasn't shown."""
+    assert [
+        (one.name, one.levelno, one.getMessage())
+        for one in records
+        if one.name.startswith("blossom")
+    ] == [("blossom.routes.student", logging.WARNING, said)]
+    for one in records:
+        message = one.getMessage()
+        assert not one.exc_info, message
+        for unsaid in ("synthetic", LOG, BIOLOGY, "wasn't shown"):
+            assert unsaid not in message, message
+
+
+def test_grades_and_class_details_over_text_that_isn_t_utf_8_answer_that_they_can_t_be_shown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """With a result's title stored as bytes that are not UTF-8, Grades and class details meet
+    the database's own error and answer the page that can't be shown, which names the error's
+    kind alone. Asking again only repeats the read, and the connection keeps its own decoding."""
+    edit = EDITS["a result's title that is not UTF-8"]
+    with browser() as client:
+        store = store_of(client)
+        class_id = with_report(client)
+        stored(store, edit.statement, *edit.binds)
+        details = f"/student/grades/classes/{class_id}/terms/1"
+        with caplog.at_level(logging.DEBUG):
+            answers = [
+                client.get(address, headers=PAGE_HEADERS)
+                for address in ("/student/grades", details)
+            ]
+            records = list(caplog.records)
+        again = client.get(details, headers=PAGE_HEADERS)
+        decoding = store._connection.text_factory
+
+    cannot_be_shown(answers[0], "Grades", "Grades can't be shown right now.", "/student/grades", [])
+    for answer in (answers[1], again):
+        cannot_be_shown(
+            answer,
+            "Class details",
+            "Class details can't be shown right now.",
+            details,
+            [("/student/grades", "Back to Grades")],
+        )
+    assert [
+        (one.name, one.levelno, one.getMessage())
+        for one in records
+        if one.name.startswith("blossom")
+    ] == [
+        ("blossom.routes.student", logging.WARNING, "Grades could not be read: OperationalError"),
+        (
+            "blossom.routes.student",
+            logging.WARNING,
+            "Class details could not be read: OperationalError",
+        ),
+    ]
+    assert not [one for one in records if one.exc_info or "UTF-8" in one.getMessage()]
+    assert not [one for one in records if BIOLOGY in one.getMessage()]
+    assert not [one for one in records if "wasn't shown" in one.getMessage()]
+    assert decoding is text_or_refusal
 
 
 @pytest.mark.parametrize("address", ADDRESSES)
@@ -6911,10 +6995,11 @@ def test_a_result_s_page_stopped_by_a_grade_failure_answers_the_generic_500_and_
     assert SYNTHETIC_CAUSE not in answer.text
 
 
-def test_an_unrelated_error_inside_a_result_s_page_is_not_caught(
+def test_a_database_error_from_her_links_on_a_result_s_page_answers_that_it_can_t_be_shown(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A database error from her links' read leaves the route as itself, with no record."""
+    """A database error from her links' read, which is not the named error, answers the page
+    that can't be shown, and its one record names the error's kind alone."""
     with browser() as client:
         store_of(client).put_on_record([homework()], {})
         class_id = with_report(client)
@@ -6925,10 +7010,18 @@ def test_an_unrelated_error_inside_a_result_s_page_is_not_caught(
             raise sqlite3.DatabaseError(msg)
 
         monkeypatch.setattr(store_of(client), "homework_links", refused)
-        with caplog.at_level(logging.DEBUG), pytest.raises(sqlite3.DatabaseError):
-            computer(client).get(RESULT_PAGE.format(result_id=log), headers=PAGE_HEADERS)
+        with caplog.at_level(logging.DEBUG):
+            answer = computer(client).get(RESULT_PAGE.format(result_id=log), headers=PAGE_HEADERS)
+            records = list(caplog.records)
 
-    assert not [one for one in caplog.records if "wasn't shown" in one.getMessage()]
+    cannot_be_shown(
+        answer,
+        "Homework for this result",
+        "This result's homework can't be shown right now.",
+        RESULT_PAGE.format(result_id=log),
+        [("/parent/grades", "Back to Grades")],
+    )
+    logged_by_kind_alone(records, "Homework for this result could not be read: DatabaseError")
 
 
 WAY_IN = re.compile(
@@ -7609,7 +7702,7 @@ def test_class_details_own_failure_comes_before_her_links_and_is_raised_as_today
     assert not [one for one in caplog.records if "wasn't shown" in one.getMessage()]
 
 
-def test_an_unrelated_error_from_her_links_on_class_details_is_raised_as_itself(
+def test_a_database_error_from_her_links_on_class_details_answers_that_it_can_t_be_shown(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     with browser() as client:
@@ -7620,10 +7713,19 @@ def test_an_unrelated_error_from_her_links_on_class_details_is_raised_as_itself(
             raise sqlite3.OperationalError(msg)
 
         monkeypatch.setattr(store_of(client), "homework_links", refused)
-        with caplog.at_level(logging.DEBUG), pytest.raises(sqlite3.OperationalError):
-            computer(client).get(f"/parent/grades/classes/{class_id}/terms/1", headers=PAGE_HEADERS)
+        details = f"/parent/grades/classes/{class_id}/terms/1"
+        with caplog.at_level(logging.DEBUG):
+            answer = computer(client).get(details, headers=PAGE_HEADERS)
+            records = list(caplog.records)
 
-    assert not [one for one in caplog.records if "wasn't shown" in one.getMessage()]
+    cannot_be_shown(
+        answer,
+        "Class details",
+        "Class details can't be shown right now.",
+        details,
+        [("/parent/grades", "Back to Grades")],
+    )
+    logged_by_kind_alone(records, "Class details could not be read: OperationalError")
 
 
 def test_a_pair_kept_apart_from_homework_not_on_record_is_said_with_no_title() -> None:
@@ -8953,12 +9055,11 @@ def test_a_search_stopped_by_a_grade_failure_answers_the_generic_500_and_one_rec
     assert after == before
 
 
-@pytest.mark.parametrize("unrelated", [sqlite3.DatabaseError, ValueError])
-def test_an_unrelated_error_inside_a_search_is_not_caught(
-    unrelated: type[Exception], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_a_value_error_inside_a_search_is_not_caught(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A database error from her links' read, or a value error that is not the named error
-    from the search's filtering, leaves the search's route as itself, with no record."""
+    """A value error that is not the named error, from the search's filtering, leaves the
+    search's route as itself, with no record."""
     with browser() as client:
         store_of(client).put_on_record([homework()], {})
         class_id = with_report(client)
@@ -8966,16 +9067,43 @@ def test_an_unrelated_error_inside_a_search_is_not_caught(
 
         def refused(*_: object, **__: object) -> None:
             msg = "synthetic"
-            raise unrelated(msg)
+            raise ValueError(msg)
 
-        if unrelated is sqlite3.DatabaseError:
-            monkeypatch.setattr(store_of(client), "homework_links", refused)
-        else:
-            monkeypatch.setattr(grades, "homework_found", refused)
-        with caplog.at_level(logging.DEBUG), pytest.raises(unrelated):
+        monkeypatch.setattr(grades, "homework_found", refused)
+        with caplog.at_level(logging.DEBUG), pytest.raises(ValueError, match="synthetic"):
             search(client, log, "log")
 
     assert not [one for one in caplog.records if "wasn't shown" in one.getMessage()]
+
+
+def test_a_database_error_from_her_links_inside_a_search_answers_that_it_can_t_be_shown(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A database error from her links' read inside a search, which is not the named error,
+    answers the result's page that can't be shown, with no search form, and its one record
+    names the error's kind alone."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+
+        def refused(*_: object, **__: object) -> None:
+            msg = "synthetic"
+            raise sqlite3.DatabaseError(msg)
+
+        monkeypatch.setattr(store_of(client), "homework_links", refused)
+        with caplog.at_level(logging.DEBUG):
+            answer = search(client, log, "log")
+            records = list(caplog.records)
+
+    cannot_be_shown(
+        answer,
+        "Homework for this result",
+        "This result's homework can't be shown right now.",
+        RESULT_PAGE.format(result_id=log),
+        [("/parent/grades", "Back to Grades")],
+    )
+    logged_by_kind_alone(records, "Homework for this result could not be read: DatabaseError")
 
 
 def test_no_record_holds_a_search_s_words(caplog: pytest.LogCaptureFixture) -> None:
