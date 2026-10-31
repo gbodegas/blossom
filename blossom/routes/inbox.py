@@ -95,6 +95,7 @@ from blossom.routes.note_links import (
     row_of,
 )
 from blossom.routes.parent import review_page
+from blossom.routes.store_refusals import RECORDS_UNREAD
 from blossom.routes.student import parent_reads, viewer_of
 from blossom.school_instructions import SubmittedChoice
 from blossom.stores.drafts import StoreBusy, WriterBusy
@@ -194,9 +195,6 @@ INSTRUCTION_FORM_UNREADABLE: Final = (
     "The answers about the school's instructions could not be read, so nothing was saved. "
     "Look at them again below."
 )
-RECORDS_UNREAD: Final = "Blossom couldn't read the household's records."
-"""Said for a press whose read of the household's records was refused, busy or not: nothing
-about a save, or about whether the text was read, or about what is shown below it."""
 UNREAD_HEADING: Final = "This can't be shown right now"
 READ_REFUSALS: Final = (sqlite3.Error, StoreBusy, WriterBusy)
 """What a read of the household's records raises when the file, or the drafts store's own

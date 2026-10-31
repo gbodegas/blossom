@@ -35,6 +35,7 @@ from blossom.household import UnreadableHouseholdSecret
 from blossom.routes.forms import FormUnreadable, fields_of, form_of
 from blossom.routes.grades import from_this_computer, grade_name_key
 from blossom.routes.navigation import week_href
+from blossom.routes.store_refusals import busy_file as busy_file
 from blossom.screenshot_page import (
     NEEDED,
     ImageName,
@@ -432,17 +433,6 @@ def issued_in_time(state: ApplicationState, issued: str | None) -> bool | None:
         return None
     now = state.real_clock.now()
     return made <= now and now - made < DRAFT_LIFETIME
-
-
-BUSY_CODES: Final = frozenset({sqlite3.SQLITE_BUSY})
-"""The primary result codes of a household file another program holds."""
-
-
-def busy_file(error: sqlite3.Error) -> bool:
-    """Whether the household's file refused as busy, by its error's primary code, as the drafts
-    store reads it. An error with no code, as one made in Python, is not busy."""
-    code = getattr(error, "sqlite_errorcode", None)
-    return isinstance(code, int) and (code & 0xFF) in BUSY_CODES
 
 
 def busy_refusal(error: Exception) -> bool:
