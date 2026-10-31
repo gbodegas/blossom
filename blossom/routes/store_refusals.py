@@ -3,9 +3,9 @@
 """How a route tells a busy household file from any other refusal of it, and what a press says
 when its read of the household's records is refused.
 
-The import pages and the grade pages both answer a refused write by whether the file was busy:
-another program held it, so nothing was written. Any other refusal, or one with no code, says
-less, since the outcome may not be known.
+The import pages, and the grade pages' choice of the term shown, answer a refused write by
+whether the file was busy: another program held it, so nothing was written. Any other refusal,
+or one with no code, says less, since the outcome may not be known.
 """
 
 import sqlite3

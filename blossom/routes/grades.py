@@ -2366,6 +2366,10 @@ def grades_page(
     )
 
 
+TRY_AGAIN_LINK: Final = "Try again"
+"""The words of the link that asks for a page again by a read."""
+
+
 def unshown(
     request: Request,
     state: ApplicationState,
@@ -2376,10 +2380,13 @@ def unshown(
     again: str | None,
     ways_back: list[ReturnLink],
     status_code: int = 503,
+    again_label: str = TRY_AGAIN_LINK,
 ) -> Response:
     """A grade page whose record can't be read as it is made: the page that reads no store,
-    503, saying it can't be shown, with ``again`` to ask for it again and the ways back, in
-    the tree it was asked for in, Grades marked in its menu."""
+    saying it can't be shown, with ``again`` to ask for it again under ``again_label`` and the
+    ways back, in the tree it was asked for in, Grades marked in its menu. 503, or a press's
+    own designed status (500, 409 or 422) when its answer's page is the one that can't be
+    read."""
     family = request.url.path.startswith(GRADES)
     return unavailable_page(
         request,
@@ -2392,11 +2399,15 @@ def unshown(
         family=family,
         nav="parent-grades" if family else "grades",
         status_code=status_code,
+        again_label=again_label,
     )
 
 
 TRY_AGAIN: Final = "Try again."
 """What a designed sentence says when it already asks for the press again."""
+SHOW_GRADES: Final = "Show Grades"
+SHOW_NAMES: Final = "Show homework class names"
+SHOW_RESULT_HOMEWORK: Final = "Show homework for this result"
 
 
 def outcome_unshown(
@@ -2408,21 +2419,24 @@ def outcome_unshown(
     said: str,
     unshown_said: str,
     again: str,
+    show: str,
     ways_back: list[ReturnLink],
     status_code: int,
 ) -> Response:
     """A press's designed answer whose page can't be read: its own sentence and status, then
-    what can't be shown, on the page that reads no store; "Try again" asks for the page again,
-    by a read, unless the sentence already says to try again."""
+    what can't be shown, on the page that reads no store, with one link that asks for the page
+    again by a read: "Try again", or ``show``, naming the page, where the sentence already
+    says to try again."""
     return unshown(
         request,
         state,
         error,
         heading=heading,
         said=f"{said} {unshown_said}",
-        again=None if said.endswith(TRY_AGAIN) else again,
+        again=again,
         ways_back=ways_back,
         status_code=status_code,
+        again_label=show if said.endswith(TRY_AGAIN) else TRY_AGAIN_LINK,
     )
 
 
@@ -2442,6 +2456,7 @@ def grades_answer(
             said=said,
             unshown_said=GRADES_UNSHOWN,
             again=GRADES if request.url.path.startswith(GRADES) else HER_GRADES,
+            show=SHOW_GRADES,
             ways_back=[],
             status_code=status_code,
         )
@@ -2697,6 +2712,7 @@ def homework_classes_answer(
             said=said,
             unshown_said=HOMEWORK_NAMES_UNSHOWN,
             again=HOMEWORK_CLASSES,
+            show=SHOW_NAMES,
             ways_back=[],
             status_code=status_code,
         )
@@ -2756,6 +2772,7 @@ async def connect_homework_class(request: Request, state: State) -> Response:
             ways_back=[],
             family=True,
             nav="parent-grades",
+            again_label=SHOW_NAMES,
         )
     listed = [key for key, _ in names_on_record(one.course for one in assignments)]
     key = name_key(name)
@@ -3844,6 +3861,7 @@ def result_answer(
             said=said,
             unshown_said=RESULT_HOMEWORK_UNSHOWN,
             again=again,
+            show=SHOW_RESULT_HOMEWORK,
             ways_back=[ReturnLink(GRADES, BACK_TO_GRADES)],
             status_code=status_code,
         )
