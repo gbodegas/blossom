@@ -32,6 +32,7 @@ import hashlib
 import ipaddress
 import logging
 import re
+import sqlite3
 from collections.abc import Callable, Collection, Iterable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
@@ -145,12 +146,15 @@ from blossom.routes.homework_scores import (
 )
 from blossom.routes.navigation import (
     CLASS_AT,
+    FAMILY_PAGE,
     GRADES,
     HER_GRADES,
     RESULT_HOMEWORK,
     RESULT_HOMEWORK_AT,
     WEEK_PAGE,
     address,
+    asked_address,
+    segment,
 )
 from blossom.routes.student import (
     FORM_SENT_OTHER_WORDS,
@@ -161,6 +165,7 @@ from blossom.routes.student import (
     ReturnLink,
     parent_reads,
     templates,
+    unavailable_page,
     viewer_of,
 )
 from blossom.stores.gradebook import (
@@ -1810,9 +1815,25 @@ def name_confirmed(recorded: RecordedSave) -> bool:
 def saved_report(acceptance_id: str, request: Request, state: State) -> Response:
     """Route 4: a recorded save's outcome, read by its acceptance ID behind the same checks as
     any family request; a page saying it isn't on record otherwise."""
-    recorded = None
-    if ACCEPTANCE_ID.fullmatch(acceptance_id):
-        recorded = state.project_state.recorded_save(acceptance_id)
+    recorded = link = None
+    try:
+        if ACCEPTANCE_ID.fullmatch(acceptance_id):
+            recorded = state.project_state.recorded_save(acceptance_id)
+        if recorded is not None:
+            link = class_link(state, recorded)
+    except sqlite3.Error as error:
+        return unshown(
+            request,
+            state,
+            error,
+            heading=ADD_GRADE_REPORT,
+            said=SAVE_OUTCOME_UNSHOWN,
+            again=asked_address(
+                SAVED_AT.format(acceptance_id=segment(acceptance_id)),
+                request.scope["query_string"],
+            ),
+            ways_back=[ReturnLink(FAMILY_PAGE, BACK_TO_FAMILY)],
+        )
     context: dict[str, object] = {"add": ADD, "marks": state.settings.page_marks}
     if recorded is None:
         return templates.TemplateResponse(
@@ -1829,7 +1850,7 @@ def saved_report(acceptance_id: str, request: Request, state: State) -> Response
             "recorded": recorded,
             "lines": outcome_lines(recorded.saved),
             "name_said": NAME_CONFIRMED if name_confirmed(recorded) else None,
-            "class_link": class_link(state, recorded),
+            "class_link": link,
             "grades": GRADES,
         },
     )
@@ -1900,6 +1921,20 @@ CONTEXT_UNKNOWN: Final = (
 )
 CLASS_NOT_ON_RECORD: Final = "Blossom has no record for this class and term."
 NO_REPORT_ADDED: Final = "No grade report added"
+
+GRADES_UNSHOWN: Final = "Grades can't be shown right now."
+CLASS_DETAILS: Final = "Class details"
+CLASS_UNSHOWN: Final = "Class details can't be shown right now."
+ADD_GRADE_REPORT: Final = "Add grade report"
+SAVE_OUTCOME_UNSHOWN: Final = "This save's outcome can't be shown right now."
+HOMEWORK_CLASS_NAMES: Final = "Homework class names"
+HOMEWORK_NAMES_UNSHOWN: Final = "Homework class names can't be shown right now."
+ASK_ABOUT_A_RESULT: Final = "Ask a parent about this result"
+RESULT_UNSHOWN: Final = "This result can't be shown right now."
+RESULT_HOMEWORK_UNSHOWN: Final = "This result's homework can't be shown right now."
+BACK_TO_GRADES: Final = "Back to Grades"
+BACK_TO_FAMILY: Final = "Back to Family review"
+"""What a grade page says when its record can't be read as it is made, by page."""
 
 
 student_router = APIRouter(prefix="/student/grades")
@@ -2106,16 +2141,60 @@ def grades_page(
     )
 
 
+def unshown(
+    request: Request,
+    state: ApplicationState,
+    error: sqlite3.Error,
+    *,
+    heading: str,
+    said: str,
+    again: str,
+    ways_back: list[ReturnLink],
+) -> Response:
+    """A grade page whose record can't be read as it is made: the page that reads no store,
+    503, saying it can't be shown, with ``again`` to ask for it again and the ways back, in
+    the tree it was asked for in, Grades marked in its menu."""
+    family = request.url.path.startswith(GRADES)
+    return unavailable_page(
+        request,
+        state,
+        error,
+        heading=heading,
+        alert=said,
+        again=again,
+        ways_back=ways_back,
+        family=family,
+        nav="parent-grades" if family else "grades",
+    )
+
+
+def grades_shown(request: Request, state: ApplicationState) -> Response:
+    """Grades, or the page saying it can't be shown when its record can't be read."""
+    try:
+        return grades_page(request, state)
+    except sqlite3.Error as error:
+        tree = GRADES if request.url.path.startswith(GRADES) else HER_GRADES
+        return unshown(
+            request,
+            state,
+            error,
+            heading="Grades",
+            said=GRADES_UNSHOWN,
+            again=asked_address(tree, request.scope["query_string"]),
+            ways_back=[],
+        )
+
+
 @student_router.get("", response_class=HTMLResponse)
 def her_grades(request: Request, state: State) -> Response:
     """Route 5: Grades, in the voice of whoever reads."""
-    return grades_page(request, state)
+    return grades_shown(request, state)
 
 
 @family_router.get("", response_class=HTMLResponse)
 def family_grades(request: Request, state: State) -> Response:
     """Route 5p: Grades in a parent's voice."""
-    return grades_page(request, state)
+    return grades_shown(request, state)
 
 
 async def chosen_view(request: Request, state: ApplicationState, base: str) -> Response:
@@ -2295,7 +2374,18 @@ def homework_classes_page(
 @family_router.get("/homework-classes", response_class=HTMLResponse)
 def homework_class_names(request: Request, state: State) -> Response:
     """Route 10: Homework class names, a parent's page, which reads nothing from its address."""
-    return homework_classes_page(request, state)
+    try:
+        return homework_classes_page(request, state)
+    except sqlite3.Error as error:
+        return unshown(
+            request,
+            state,
+            error,
+            heading=HOMEWORK_CLASS_NAMES,
+            said=HOMEWORK_NAMES_UNSHOWN,
+            again=asked_address(HOMEWORK_CLASSES, request.scope["query_string"]),
+            ways_back=[],
+        )
 
 
 @family_router.post("/homework-classes", response_class=HTMLResponse)
@@ -2502,7 +2592,21 @@ def class_page(request: Request, state: ApplicationState, class_id: str, n: str)
         "ask_at": None if family else RESULT_ASK,
         "marks": state.settings.page_marks,
     }
-    shown = class_page_read(state, class_id, n, family=family)
+    try:
+        shown = class_page_read(state, class_id, n, family=family)
+    except sqlite3.Error as error:
+        # The class's ID and place are read before either is checked, so each is escaped.
+        tree = GRADES if request.url.path.startswith(GRADES) else HER_GRADES
+        asked = CLASS_AT.format(base=tree, class_id=segment(class_id), n=segment(n))
+        return unshown(
+            request,
+            state,
+            error,
+            heading=CLASS_DETAILS,
+            said=CLASS_UNSHOWN,
+            again=asked_address(asked, request.scope["query_string"]),
+            ways_back=[ReturnLink(GRADES if family else HER_GRADES, BACK_TO_GRADES)],
+        )
     if isinstance(shown, GradeValueUndecodable):
         return grade_page_not_shown(shown)
     if shown is None:
@@ -2765,6 +2869,18 @@ def ask_about_a_result(result_id: str, request: Request, state: State) -> Respon
         shown = result_ask_read(state, result_id)
     except GradeValueUndecodable as error:
         return grade_page_not_shown(error)
+    except sqlite3.Error as error:
+        return unshown(
+            request,
+            state,
+            error,
+            heading=ASK_ABOUT_A_RESULT,
+            said=RESULT_UNSHOWN,
+            again=asked_address(
+                RESULT_ASK.format(result_id=segment(result_id)), request.scope["query_string"]
+            ),
+            ways_back=[ReturnLink(HER_GRADES, BACK_TO_GRADES)],
+        )
     if shown is None:
         return templates.TemplateResponse(
             request,
@@ -3370,6 +3486,26 @@ def homework_for_result(result_id: str, request: Request, state: State) -> Respo
         return result_page(request, state, result_id)
     except GradeValueUndecodable as error:
         return grade_page_not_shown(error)
+    except sqlite3.Error as error:
+        asked = asked_address(
+            RESULT_HOMEWORK.format(result_id=segment(result_id)), request.scope["query_string"]
+        )
+        return homework_unshown(request, state, error, asked)
+
+
+def homework_unshown(
+    request: Request, state: ApplicationState, error: sqlite3.Error, again: str
+) -> Response:
+    """A result's homework page, or its search, when its record can't be read."""
+    return unshown(
+        request,
+        state,
+        error,
+        heading=HOMEWORK_FOR_RESULT,
+        said=RESULT_HOMEWORK_UNSHOWN,
+        again=again,
+        ways_back=[ReturnLink(GRADES, BACK_TO_GRADES)],
+    )
 
 
 @family_router.post("/results/{result_id}/homework", response_class=HTMLResponse)
@@ -3447,3 +3583,7 @@ async def search_homework(result_id: str, request: Request, state: State) -> Res
         return await asyncio.to_thread(answer, search=(words, fields["page"]))
     except GradeValueUndecodable as error:
         return grade_page_not_shown(error)
+    except sqlite3.Error as error:
+        # Asked for again as the result's page: a search is a press, and its words aren't kept.
+        again = RESULT_HOMEWORK.format(result_id=segment(result_id))
+        return homework_unshown(request, state, error, again)
