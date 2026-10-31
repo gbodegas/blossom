@@ -4,8 +4,8 @@
 
 Before the graph's write begins, a failed read answers that the record couldn't be read, and
 nothing was written. Once the write has begun and raised, the record is read once more, after
-the write has ended and under the same lock. A decision recorded as consistent rows record it
-is said to be recorded, as this press's only when the press resumed nothing and its choice and
+the write has ended and under the same lock. A decision the table records consistently is
+said to be recorded, as this press's only when the press resumed nothing and its choice and
 words are the ones recorded. Every other row, and a record that can't be read again, answers
 that it can't be told: a decision the thread holds can still be recorded later, by the sweep,
 a publish or the next press. Words typed for the plan are kept, read-only, wherever they
@@ -20,6 +20,7 @@ import logging
 import pathlib
 import sqlite3
 import time
+import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -40,7 +41,9 @@ from tests.support import (
     PLAN_DATE,
     SAME_ORIGIN,
     THEIRS,
+    Statements,
     accepting,
+    after_the_failure,
     browser,
     files_in,
     fixture_week_plan,
@@ -186,20 +189,9 @@ def the_stand_in(answer: Any, *, status: int, said: str, note: str | None) -> st
     return main
 
 
-def chain_of(error: BaseException) -> list[BaseException]:
-    """Every exception ``error`` carries, as its cause or its context, and theirs: the chain a
-    server's error report shows below it, however the layers that re-raised it rewrote it."""
-    found: list[BaseException] = []
-    waiting = [error]
-    while waiting:
-        link = waiting.pop()
-        if any(link is seen for seen in found):
-            continue
-        found.append(link)
-        waiting += [nearer for nearer in (link.__cause__, link.__context__) if nearer is not None]
-        if isinstance(link, BaseExceptionGroup):
-            waiting += list(link.exceptions)
-    return found
+def reported(error: BaseException) -> str:
+    """The error as the server's report shows it, with every cause and context it prints."""
+    return "".join(traceback.format_exception(error))
 
 
 def a_record(real: DraftRecord, **changed: object) -> DraftRecord:
@@ -220,7 +212,7 @@ def sweep(client: TestClient) -> None:
     client.portal.call(sweep_saved_state, state.checkpointer, state.drafts, state.clock)  # type: ignore[union-attr]
 
 
-# --------------------------------------------------- before the write begins (R3)
+# --------------------------------------------------------- before the write begins
 
 
 @pytest.mark.parametrize(
@@ -264,17 +256,19 @@ def test_a_read_before_the_write_that_fails_says_so_and_writes_nothing(
     assert [type(error).__name__ in line for line in warnings_of(caplog)] == [True]
 
 
-def test_the_saved_review_step_that_cant_be_read_says_the_records_cant_be_read(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("code", "said"), [("SQLITE_IOERR", RECORDS_UNREAD), ("SQLITE_BUSY", TOO_SLOW)]
+)
+def test_the_saved_review_step_that_cant_be_read_says_the_record_cant_be_read(
+    code: str, said: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The thread's saved state read before the write, refused: the records sentence, 503,
-    nothing written, and the record read once."""
+    """The thread's saved state read before the write, refused: busy, the record couldn't be
+    read in time, and otherwise the records sentence, 503, nothing written, and the record
+    read once."""
     with a_waiting_plan() as (client, draft_id):
         state = state_of(client)
         gets = Counted(state.drafts.get)
-        saved = CountedAsync(
-            state.checkpointer.aget_tuple, {1: raising_async(coded("SQLITE_IOERR"))}
-        )
+        saved = CountedAsync(state.checkpointer.aget_tuple, {1: raising_async(coded(code))})
         monkeypatch.setattr(state.drafts, "get", gets)
         monkeypatch.setattr(state.checkpointer, "aget_tuple", saved)
         answer = press(client, draft_id)
@@ -282,7 +276,7 @@ def test_the_saved_review_step_that_cant_be_read_says_the_records_cant_be_read(
         after = row_of(client, draft_id)
 
     assert answer.status_code == 503, answer.text[:600]
-    assert RECORDS_UNREAD in words(main_of(answer.text))
+    assert said in words(main_of(answer.text))
     assert gets.calls == 1
     assert after == (None, None)
 
@@ -307,7 +301,7 @@ def test_a_read_that_runs_past_the_wait_before_the_write_keeps_its_answer(
     assert after == (None, None)
 
 
-# ---------------------------------------- the write raised; the record read again (R4 to R7)
+# ------------------------------------------- the write raised; the record read again
 
 WRITE_FAILURES: dict[str, Callable[[], BaseException]] = {
     "busy store": lambda: StoreBusy("database is locked"),
@@ -462,10 +456,10 @@ def test_a_reread_that_finds_no_consistent_decision_cant_be_told(
     the_stand_in(answer, status=500, said=UNKNOWN, note=NOTE)
 
 
-def test_a_note_of_only_spaces_and_no_note_show_no_note_box(
+def test_with_no_note_typed_the_answer_that_cant_tell_shows_no_note(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With nothing typed, the answer that can't tell shows no note."""
+    """With an empty note, the answer that can't tell shows no note box."""
     with a_waiting_plan() as (client, draft_id):
         monkeypatch.setattr(state_of(client).drafts, "record_decision", raising(StoreBusy()))
         answer = press(client, draft_id, reason="")
@@ -473,7 +467,7 @@ def test_a_note_of_only_spaces_and_no_note_show_no_note_box(
     the_stand_in(answer, status=500, said=UNKNOWN, note=None)
 
 
-# ---------------------------------------------------- the reread's own failures (R8)
+# --------------------------------------------------------- the reread's own failures
 
 
 @pytest.mark.parametrize(
@@ -529,11 +523,13 @@ def test_a_reread_that_fails_another_way_is_the_servers_error_after_the_write(
         with pytest.raises(kind) as caught:
             press(client, draft_id)
 
-    assert any(link is original for link in chain_of(caught.value))
+    report = reported(caught.value)
+    assert "not a store's failure" in report
+    assert "blossom.stores.drafts.StoreBusy: database is locked" in report
     assert warnings_of(caplog) == []
 
 
-# ------------------------------------ the write returned; the read after it fails (R4)
+# ---------------------------------------- the write returned; the read after it fails
 
 
 @pytest.mark.parametrize("button", ["approve", "refuse"])
@@ -633,7 +629,7 @@ def test_a_resumed_decision_that_lands_and_then_raises_is_not_this_presss(
     assert after == ("approved", NOTE)
 
 
-# ------------------------------------------- the checkpoint file's failures (R5, R6)
+# ---------------------------------------------------- the checkpoint file's failures
 
 
 def failing_checkpoint_writes(
@@ -726,7 +722,7 @@ def test_a_checkpoint_failure_before_the_decisions_write_cant_be_told(
     assert after == (None, None)
 
 
-# ------------------------------------------------------- the order of things (R1, R2)
+# ------------------------------------------------------------- the order of things
 
 
 def test_the_reread_waits_for_every_write_and_holds_the_lock(
@@ -767,20 +763,53 @@ def test_the_reread_waits_for_every_write_and_holds_the_lock(
     assert reread[0][1] is True
 
 
-def test_the_json_route_reads_the_record_once_and_raises_as_it_did(
-    monkeypatch: pytest.MonkeyPatch,
+JSON_CASES: dict[str, tuple[str, Callable[[], BaseException] | None]] = {
+    "busy store": ("the write", lambda: StoreBusy("database is locked")),
+    "busy writer": ("the write", lambda: WriterBusy("database is locked")),
+    "busy commit": ("the write", lambda: coded("SQLITE_BUSY")),
+    "unreadable write": ("the write", lambda: coded("SQLITE_IOERR")),
+    "busy read after": ("the read after", lambda: StoreBusy("database is locked")),
+    "slow read after": ("the read after", None),
+}
+"""Each failure the family page answers anew, asked through the JSON route instead."""
+
+
+@pytest.mark.parametrize("case", list(JSON_CASES))
+def test_the_json_route_answers_each_failure_as_it_did(
+    case: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The same refused write asked through the JSON route: no second read, and the store's
-    failure leaves the route as it always has."""
+    """The same failures asked through the JSON route: no second read, and each leaves the
+    route as it always has, the store's failure raised, or the read that ran past the wait
+    answered 503 with the record-too-slow words."""
+    where, failure = JSON_CASES[case]
     with a_waiting_plan() as (client, draft_id):
         state = state_of(client)
         gets = Counted(state.drafts.get)
+        if where == "the write":
+            assert failure is not None
+            error = failure()
+            monkeypatch.setattr(state.drafts, "record_decision", raising(error))
+        elif failure is not None:
+            error = failure()
+            gets.instead[2] = raising(error)
+        else:
+            monkeypatch.setattr(parent_routes, "STORE_WAIT_SECONDS", 0.2)
+            gets.instead[2] = lambda *a, **k: time.sleep(1.0)
         monkeypatch.setattr(state.drafts, "get", gets)
-        monkeypatch.setattr(state.drafts, "record_decision", raising(StoreBusy()))
-        with pytest.raises(StoreBusy):
-            client.post(APPROVALS.format(draft_id), json={"approved": True, "reason": NOTE})
+        sent = {"approved": True, "reason": NOTE}
+        if failure is None:
+            answer = client.post(APPROVALS.format(draft_id), json=sent)
+        else:
+            with pytest.raises(type(error)) as caught:
+                client.post(APPROVALS.format(draft_id), json=sent)
+            assert caught.value is error
+        monkeypatch.undo()
+        time.sleep(1.0 if failure is None else 0.0)
 
-    assert gets.calls == 1
+    assert gets.calls == (1 if where == "the write" else 2)
+    if failure is None:
+        assert answer.status_code == 503
+        assert answer.json() == {"detail": TOO_SLOW}
 
 
 def test_a_failure_of_the_write_that_isnt_a_stores_is_the_servers_error(
@@ -811,7 +840,122 @@ def test_a_failure_of_the_first_read_that_isnt_a_stores_is_the_servers_error(
             press(client, draft_id)
 
 
-# ------------------------------------------------------ a real hold of the file (9.1)
+@pytest.mark.parametrize(
+    "case",
+    [
+        "the row still waiting",
+        "the reread refused",
+        "this press's",
+        "not this press's",
+        "the read after a write that returned",
+    ],
+)
+def test_an_answer_after_the_write_reads_no_store_once_it_is_classified(
+    case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the record read again, or the read after a write that returned, has decided the
+    answer, the answer is made from what the press already holds: the family page's builder
+    and its fallbacks are never called, no statement reaches the household's file, and the
+    thread's saved state isn't read."""
+    with a_waiting_plan() as (client, draft_id):
+        state = state_of(client)
+        real = state.drafts.get(draft_id)
+        assert real is not None
+        builders = {
+            name: Counted(getattr(parent_routes, name))
+            for name in ("review_page", "reviewed_once", "refused_on_the_page")
+        }
+        for name, counted in builders.items():
+            monkeypatch.setattr(parent_routes, name, counted)
+        saved_reads_then: list[int] = []
+        real_get = state.drafts.get
+        seconds: dict[str, Callable[..., Any]] = {
+            "the row still waiting": real_get,
+            "the reread refused": raising(StoreBusy()),
+            "this press's": real_get,
+            "not this press's": lambda *a, **k: recorded(real, "approved", "other words"),
+            "the read after a write that returned": raising(StoreBusy()),
+        }
+        second = seconds[case]
+        if case in ("the row still waiting", "the reread refused", "not this press's"):
+            monkeypatch.setattr(state.drafts, "record_decision", raising(StoreBusy()))
+        elif case == "this press's":
+            real_record = state.drafts.record_decision
+
+            def landed_then_failed(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+                real_record(*args, **kwargs)
+                refused = coded("SQLITE_IOERR")
+                raise refused
+
+            monkeypatch.setattr(state.drafts, "record_decision", landed_then_failed)
+        saved = CountedAsync(state.checkpointer.aget_tuple)
+        monkeypatch.setattr(state.checkpointer, "aget_tuple", saved)
+        with Statements(state) as seen:
+
+            def deciding(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+                try:
+                    return second(*args, **kwargs)
+                finally:
+                    seen.append("FAILED HERE")
+                    saved_reads_then.append(saved.calls)
+
+            monkeypatch.setattr(state.drafts, "get", Counted(real_get, {2: deciding}))
+            answer = press(client, draft_id)
+        monkeypatch.undo()
+
+    assert answer.status_code in (500, 503), answer.text[:600]
+    assert {name: counted.calls for name, counted in builders.items()} == {
+        "review_page": 0,
+        "reviewed_once": 0,
+        "refused_on_the_page": 0,
+    }
+    assert after_the_failure(seen) == []
+    assert saved.calls == saved_reads_then[0]
+
+
+def test_a_disagreeing_press_after_a_refused_write_keeps_its_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Looks good, its write refused, leaves the decision in the thread; Ask for a change with
+    other words then finishes that decision and is told it was already approved, the existing
+    409 on the family page, with none of the new sentences."""
+    with a_waiting_plan() as (client, draft_id):
+        state = state_of(client)
+        monkeypatch.setattr(state.drafts, "record_decision", raising(StoreBusy()))
+        press(client, draft_id, "approve", NOTE)
+        monkeypatch.undo()
+        answer = press(client, draft_id, "refuse", "other words")
+        after = row_of(client, draft_id)
+
+    assert answer.status_code == 409, answer.text[:600]
+    said = words(main_of(answer.text))
+    assert f"draft '{draft_id}' was already approved" in said
+    for new in (APPROVED, ASKED_FOR_A_CHANGE, A_DECISION, UNKNOWN):
+        assert new not in said
+    assert after == ("approved", NOTE)
+
+
+def test_a_write_that_returns_with_nothing_recorded_keeps_its_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write that returns and leaves the row waiting keeps the existing 500 that says the run
+    resumed but no decision was recorded, with none of the new sentences."""
+    with a_waiting_plan() as (client, draft_id):
+        state = state_of(client)
+        monkeypatch.setattr(state.drafts, "record_decision", lambda *a, **k: None)
+        answer = press(client, draft_id)
+        monkeypatch.undo()
+        after = row_of(client, draft_id)
+
+    assert answer.status_code == 500, answer.text[:600]
+    said = words(main_of(answer.text))
+    assert f"the run resumed but no decision was recorded for '{draft_id}'" in said
+    for new in (APPROVED, ASKED_FOR_A_CHANGE, A_DECISION, UNKNOWN):
+        assert new not in said
+    assert after == (None, None)
+
+
+# ------------------------------------------------------------ a real hold of the file
 
 
 def test_a_write_whose_commit_waits_on_a_reader_cant_be_told(tmp_path: pathlib.Path) -> None:
