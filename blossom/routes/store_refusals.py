@@ -5,15 +5,18 @@ when its read of the household's records is refused.
 
 The import pages, and the grade pages' choice of the term shown, answer a refused write by
 whether the file was busy: another program held it, so nothing was written. Any other refusal,
-or one with no code, says less, since the outcome may not be known.
+or one with no code, says less, since the outcome may not be known. The decide press tells a
+refused read before its write the same way: a busy one says the record couldn't be read in
+time, and any other says the records sentence.
 """
 
 import sqlite3
 from typing import Final
 
 RECORDS_UNREAD: Final = "Blossom couldn't read the household's records."
-"""Said for a press whose read of the household's records was refused, busy or not: nothing
-about a save, or about whether the text was read, or about what is shown below it."""
+"""Said for a press whose read of the household's records was refused, busy or not, or for the
+decide press when it wasn't busy: nothing about a save, or about whether the text was read, or
+about what is shown below it."""
 BUSY_CODES: Final = frozenset({sqlite3.SQLITE_BUSY})
 """The primary result codes of a household file another program holds."""
 
