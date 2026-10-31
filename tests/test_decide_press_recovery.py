@@ -841,22 +841,22 @@ def test_a_failure_of_the_first_read_that_isnt_a_stores_is_the_servers_error(
 
 
 @pytest.mark.parametrize(
-    "case",
+    ("case", "status", "said", "note"),
     [
-        "the row still waiting",
-        "the reread refused",
-        "this press's",
-        "not this press's",
-        "the read after a write that returned",
+        ("the row still waiting", 500, UNKNOWN, NOTE),
+        ("the reread refused", 500, UNKNOWN, NOTE),
+        ("this press's", 503, APPROVED, None),
+        ("not this press's", 503, A_DECISION, NOTE),
+        ("the read after a write that returned", 503, APPROVED, None),
     ],
 )
 def test_an_answer_after_the_write_reads_no_store_once_it_is_classified(
-    case: str, monkeypatch: pytest.MonkeyPatch
+    case: str, status: int, said: str, note: str | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Once the record read again, or the read after a write that returned, has decided the
     answer, the answer is made from what the press already holds: the family page's builder
-    and its fallbacks are never called, no statement reaches the household's file, and the
-    thread's saved state isn't read."""
+    and its fallbacks are never called, no statement reaches the four connections a page
+    reads the household's file through, and the thread's saved state isn't read."""
     with a_waiting_plan() as (client, draft_id):
         state = state_of(client)
         real = state.drafts.get(draft_id)
@@ -903,7 +903,7 @@ def test_an_answer_after_the_write_reads_no_store_once_it_is_classified(
             answer = press(client, draft_id)
         monkeypatch.undo()
 
-    assert answer.status_code in (500, 503), answer.text[:600]
+    the_stand_in(answer, status=status, said=said, note=note)
     assert {name: counted.calls for name, counted in builders.items()} == {
         "review_page": 0,
         "reviewed_once": 0,
