@@ -70,6 +70,7 @@ from blossom.stores.gradebook import (
     VIEW_TABLES,
     GradeReportNotSaved,
     GradeTransactionLost,
+    HomeworkLinkResultNotOnRecord,
 )
 from blossom.stores.paths import SECRET_NAME, UnsafeCheckpointPath
 from blossom.stores.project_state import AssignmentKind
@@ -7608,6 +7609,9 @@ RECORDS_UNREAD: Final = "Blossom couldn't read the household's records."
 GRADES_UNSHOWN_SAID: Final = "Grades can't be shown right now."
 NAMES_UNSHOWN_SAID: Final = "Homework class names can't be shown right now."
 REVIEW_HEADING: Final = "Review grade report"
+SHOW_PAGE: Final = {"Grades": "Show Grades", "Homework class names": "Show homework class names"}
+"""The link that asks for a page again by a read, where its sentence already says to try
+again, by the page's heading."""
 SENT_HEADING: Final = "What this page sent"
 NO_NAMES_HERE: Final = "Names for choices from the records can't be shown here."
 
@@ -8116,21 +8120,19 @@ def designed_unshown(
     grades: str = GRADES,
 ) -> str:
     """The page a designed answer gives when its own page can't be read: its outcome sentence
-    and status, then what can't be shown, with "Try again" for ``again`` unless the outcome
-    already says to try again; the ways back, Grades marked in the menu, and no form. Its main
-    part."""
+    and status, then what can't be shown, with one link for ``again``: "Try again", or the
+    page's own "Show" link where the outcome already says to try again; the ways back, Grades
+    marked in the menu, and no form. Its main part."""
     assert answer.status_code == status, (answer.status_code, answer.text[:600])
     assert f"<title>Blossom - {escape(heading)}</title>" in answer.text
     main = main_of(answer.text)
     (shown,) = re.findall(r"<h1>(.*?)</h1>", main, re.S)
     assert words(shown).replace("\xad", "") == heading
     opening = '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
-    if "Try again." in said:
-        alert = f"{opening}{escape(f'{said} {unshown}')}</p>"
-        assert ">Try again</a>" not in main
-    else:
-        alert = f'{opening}{escape(f"{said} {unshown}")} <a href="{again}">Try again</a></p>'
+    label = SHOW_PAGE[heading] if said.endswith("Try again.") else "Try again"
+    alert = f'{opening}{escape(f"{said} {unshown}")} <a href="{again}">{label}</a></p>'
     assert alert in main, main[:900]
+    assert main.count("<a ") == len(ways_back) + 1
     ways = re.findall(r'<p class="return"><a href="([^"]*)">([^<]*)</a></p>', main)
     assert tuple(ways) == ways_back
     assert f'<a href="{grades}" aria-current="page">Grades</a>' in answer.text
@@ -8391,7 +8393,7 @@ def test_a_homework_class_answer_saved_whose_page_can_t_be_read_says_it_was_save
     sentence = f"Your answer for {name} was saved. {NAMES_UNSHOWN_SAID}"
     assert (
         '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
-        f'{escape(sentence)} <a href="{HOMEWORK_CLASSES}">Try again</a></p>'
+        f'{escape(sentence)} <a href="{HOMEWORK_CLASSES}">Show homework class names</a></p>'
     ) in main
     assert "<b>" not in main
     assert "<form" not in main
@@ -8448,3 +8450,350 @@ def test_with_sign_in_on_a_press_s_answer_to_a_refused_read_is_kept_from_caches(
     assert ordinary.headers["cache-control"] == "no-store", ordinary.status_code
     assert answer.status_code == status, answer.text[:600]
     assert answer.headers["cache-control"] == "no-store"
+
+
+def test_a_returned_save_s_retry_keeps_its_page_and_a_save_from_it_is_checked_as_any_is(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry a returned save answers, when its review can't be rebuilt, carries the page's
+    own acceptance ID and revision, its text, answers and ticks. Sent again once the file
+    reads, its save is checked as any save is: the class moved on, so the review comes back
+    and nothing is written."""
+    settings = open_household(tmp_path)
+    with quietly_at(settings) as browser:
+        first_saved(browser)
+        one_tab = retitled_and_answered(browser)
+        another_tab = as_sent(review_page(browser, RETITLED))
+        another_tab.update({"match.6": another_tab["candidates.6"], "select.6": "1"})
+        another_tab.pop("select.5", None)
+        assert browser.post(SAVE, data=another_tab, headers=PAGE).status_code == 303
+        store = store_of(browser)
+        saving, reading = store.save_grade_report, store.review_grade_report
+        made_then_refusing(
+            monkeypatch, store, "save_grade_report", "review_grade_report", refusing()
+        )
+        retry = browser.post(SAVE, data=one_tab, headers=PAGE)
+        monkeypatch.setattr(store, "save_grade_report", saving)
+        monkeypatch.setattr(store, "review_grade_report", reading)
+        sent = retried(retry, SAVE, grade_routes.BOTH_KEPT)
+        before = every_row(database(settings))
+        again = browser.post(SAVE, data=sent, headers=PAGE)
+        after = every_row(database(settings))
+
+    assert (sent["acceptance_id"], sent["revision"]) == (
+        one_tab["acceptance_id"],
+        one_tab["revision"],
+    )
+    assert again.status_code == 409, again.text[:600]
+    assert escape(grade_routes.CHANGED_WHILE_REVIEWING) in again.text
+    assert after == before
+
+
+def failing_otherwise(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, place: str
+) -> Callable[[], object]:
+    """The press ``place`` names, with a failure that isn't the file's at the read its new
+    catch covers."""
+    store = store_of(browser)
+    failure = refusing(RuntimeError)
+    if place in ("a rebuilt review after a save", "a rebuilt review after a check"):
+        form = page_saved_before(browser)
+        call = "save_grade_report" if place.endswith("save") else "check_grade_answers"
+        made_then_refusing(monkeypatch, store, call, "review_grade_report", failure)
+        route = SAVE if place.endswith("save") else CHECK
+        return lambda: browser.post(route, data=form, headers=PAGE)
+    if place == "a check":
+        form = answered(review_page(browser))
+        monkeypatch.setattr(store, "check_grade_answers", failure)
+        return lambda: browser.post(CHECK, data=form, headers=PAGE)
+    if place == "a save before its write":
+        form = answered(review_page(browser))
+        del form["identity"]
+        monkeypatch.setattr(store, "review_grade_report", failure)
+        return lambda: browser.post(SAVE, data=form, headers=PAGE)
+    if place == "the current term's answer":
+        on_record(browser)
+        monkeypatch.setattr(store, "grade_contexts", failure)
+        return lambda: browser.post(CURRENT_TERM, data={"shown": "", "term": ""}, headers=PAGE)
+    if place == "a decision's answer":
+        monkeypatch.setattr(grade_routes, "result_own", failure)
+        sent = {"homework": "", "decision": "link", "revision": "0"}
+        return lambda: browser.post(RESULT_HOMEWORK.format(result_id=RESULT_A), data=sent)
+    msg = place
+    raise AssertionError(msg)
+
+
+@pytest.mark.parametrize(
+    "place",
+    [
+        "a rebuilt review after a save",
+        "a rebuilt review after a check",
+        "a check",
+        "a save before its write",
+        "the current term's answer",
+        "a decision's answer",
+    ],
+)
+def test_a_press_s_failure_that_isn_t_the_file_s_is_still_the_server_s_error(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, place: str
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        press = failing_otherwise(browser, monkeypatch, place)
+        with pytest.raises(RuntimeError):
+            press()
+
+
+@pytest.mark.parametrize("after", ["the answer is written", "the page's read"])
+def test_a_homework_class_failure_that_isn_t_the_file_s_is_still_the_server_s_error(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, after: str
+) -> None:
+    with naming(open_household(tmp_path), NAMES_BIOLOGY, homework=("Geometry",)) as browser:
+        block, biology = a_name_s_block(browser)
+        store = store_of(browser)
+        if after == "the answer is written":
+            made_then_refusing(
+                monkeypatch,
+                store,
+                "connect_homework_class",
+                "all_assignments",
+                refusing(RuntimeError),
+            )
+            sent = sent_by(block, **{"class": biology})
+        else:
+            monkeypatch.setattr(store, "grade_contexts", refusing(RuntimeError))
+            sent = sent_by(block, **{"class": ""})
+        with pytest.raises(RuntimeError):
+            browser.post(HOMEWORK_CLASSES, data=sent, headers=PAGE)
+
+
+SIGNED_IN_ANSWERS: Final = (
+    "a page saved before, by its save",
+    "a page saved before, by its check",
+    "the current term's refusal",
+    "a homework class answer saved",
+    "a decision's own read",
+)
+"""The new answers the sign-in test above doesn't reach."""
+
+
+@pytest.mark.parametrize("answer_to", SIGNED_IN_ANSWERS)
+def test_with_sign_in_on_each_other_new_answer_is_kept_from_caches(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, answer_to: str
+) -> None:
+    """Signed in as a parent, each answer is marked no-store, as the same press's ordinary
+    answer is."""
+    settings = signed_in_household(tmp_path)
+    busy = refusing_coded("SQLITE_BUSY")
+    with quietly_at(settings, client="192.0.2.10", host="testserver") as browser:
+        signed_in(browser, THEIRS)
+        store = store_of(browser)
+        if answer_to.startswith("a page saved before"):
+            form = page_saved_before(browser)
+            route = SAVE if answer_to.endswith("save") else CHECK
+            ordinary = browser.post(CHECK, data=form, headers=PAGE)
+            call = "save_grade_report" if route == SAVE else "check_grade_answers"
+            made_then_refusing(monkeypatch, store, call, "review_grade_report", busy)
+            answer = browser.post(route, data=form, headers=PAGE)
+            status = 503
+        elif answer_to == "the current term's refusal":
+            on_record(browser)
+            sent = {"shown": "", "term": ""}
+            ordinary = browser.post(CURRENT_TERM, data=sent, headers=PAGE)
+            monkeypatch.setattr(store, "grade_contexts", busy)
+            answer = browser.post(CURRENT_TERM, data=sent, headers=PAGE)
+            status = 422
+        elif answer_to == "a homework class answer saved":
+            assert isinstance(save_grade(store, NAMES_BIOLOGY, key=SEED_KEY), GradeReportSaved)
+            store.put_on_record([homework_named("Geometry", "assignment-named-0")], {})
+            biology = capture_class(store, NAMES_BIOLOGY)
+            block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[0]
+            ordinary = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": ""}))
+            made_then_refusing(
+                monkeypatch, store, "connect_homework_class", "all_assignments", busy
+            )
+            answer = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+            status = 503
+        else:
+            address = RESULT_HOMEWORK.format(result_id=RESULT_A)
+            refused = {"homework": "", "decision": "link", "revision": "0"}
+            ordinary = browser.post(address, data=refused, headers=PAGE)
+            monkeypatch.setattr(grade_routes, "result_own", busy)
+            sent = {"homework": "assignment-1", "decision": "link", "revision": "0"}
+            answer = browser.post(address, data=sent, headers=PAGE)
+            status = 503
+
+    assert ordinary.headers["cache-control"] == "no-store", ordinary.status_code
+    assert answer.status_code == status, answer.text[:600]
+    assert answer.headers["cache-control"] == "no-store"
+
+
+MARKED: Final = REPORT.replace("| Seed Germination Log |", "| Seed <b>Log</b> & Co  |")
+"""Wren's report with a result's title holding markup and an ampersand, as a school might
+write them."""
+
+
+def test_a_page_saved_before_shows_what_was_typed_and_written_escaped(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A typed class name and a result's title that hold markup are shown as text on the page
+    of what was sent, never as markup."""
+    typed = "Bio <i>Lab</i> & Co"
+    with quietly_at(open_household(tmp_path)) as browser:
+        form = answered(review_page(browser, MARKED), class_name=typed)
+        assert browser.post(SAVE, data=unticked(form, "0"), headers=PAGE).status_code == 303
+        made_then_refusing(
+            monkeypatch,
+            store_of(browser),
+            "save_grade_report",
+            "review_grade_report",
+            refusing_coded("SQLITE_BUSY"),
+        )
+        answer = browser.post(SAVE, data=form, headers=PAGE)
+
+    assert answer.status_code == 503, answer.text[:600]
+    main = main_of(answer.text)
+    assert "Name for this class:" in words(main)
+    assert str(escape(typed)) in main
+    assert "<i>Lab</i>" not in main
+    assert str(escape("Seed <b>Log</b> & Co")) in main
+    assert "<b>Log</b>" not in main
+
+
+@pytest.mark.parametrize(
+    "press",
+    ["a check", "a save before its write", "the current term", "a homework class", "a decision"],
+)
+def test_a_press_while_another_program_holds_the_file_answers_as_decided(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], press: str
+) -> None:
+    """Held whole, each press's read or write waits and is refused: the check and the save are
+    offered again under the records sentence, the current term and the homework class keep
+    their "not saved" sentence with the page's own link, and the decision says the records
+    can't be read. Nothing is written."""
+    settings = open_household(tmp_path)
+    with HangWatch(capsys) as watch, at(settings) as browser:
+        if press == "a homework class":
+            store = store_of(browser)
+            assert isinstance(save_grade(store, NAMES_BIOLOGY, key=SEED_KEY), GradeReportSaved)
+            store.put_on_record([homework_named("Geometry", "assignment-named-0")], {})
+            biology = capture_class(store, NAMES_BIOLOGY)
+            block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[0]
+            address, sent = HOMEWORK_CLASSES, sent_by(block, **{"class": biology})
+        elif press in ("a check", "a save before its write"):
+            sent = answered(review_page(browser))
+            if press == "a save before its write":
+                del sent["identity"]
+            address = CHECK if press == "a check" else SAVE
+        elif press == "the current term":
+            on_record(browser)
+            address, sent = CURRENT_TERM, {"shown": "2026-2027 T1", "term": "2026-2027 T1"}
+        else:
+            address = RESULT_HOMEWORK.format(result_id=RESULT_A)
+            sent = {"homework": "assignment-1", "decision": "link", "revision": "0"}
+        before = every_row(database(settings))
+        with HeldByAnother(database(settings)):
+            answer, _ = watch.press(lambda: browser.post(address, data=sent, headers=PAGE))
+        after = every_row(database(settings))
+
+    assert after == before
+    if press in ("a check", "a save before its write"):
+        retried(answer, address, grade_routes.BOTH_KEPT)
+    elif press == "the current term":
+        designed_unshown(
+            answer,
+            status=500,
+            heading="Grades",
+            said=grade_routes.NOT_SAVED,
+            unshown=GRADES_UNSHOWN_SAID,
+            again=GRADES,
+        )
+    elif press == "a homework class":
+        designed_unshown(
+            answer,
+            status=500,
+            heading="Homework class names",
+            said=grade_routes.NOT_SAVED,
+            unshown=NAMES_UNSHOWN_SAID,
+            again=HOMEWORK_CLASSES,
+        )
+    else:
+        assert answer.status_code == 503, answer.text[:600]
+        assert problem_said(answer.text) == f"{RECORDS_UNREAD} Try again"
+
+
+def test_a_decision_whose_result_isn_t_on_record_and_page_can_t_be_read_says_so(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decision whose result the write finds no record of answers the result's page as it
+    reads; when that read is refused, the page that can't be shown, with no sentence of the
+    press's own."""
+    with quietly_at(open_household(tmp_path)) as browser:
+        store = store_of(browser)
+
+        def no_result(*_: object, **__: object) -> object:
+            monkeypatch.setattr(grade_routes, "result_own", refusing_coded("SQLITE_BUSY"))
+            return HomeworkLinkResultNotOnRecord()
+
+        monkeypatch.setattr(store, "decide_homework_link", no_result)
+        monkeypatch.setattr(grade_routes, "result_own", lambda *_, **__: None)
+        sent = {"homework": "assignment-1", "decision": "link", "revision": "0"}
+        answer = browser.post(RESULT_HOMEWORK.format(result_id=RESULT_A), data=sent)
+
+    assert answer.status_code == 503, answer.text[:600]
+    assert problem_said(answer.text) == (
+        "This result's homework can't be shown right now. Try again"
+    )
+
+
+def test_a_current_term_changed_meanwhile_whose_grades_can_t_be_read_keeps_its_sentence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The current term moved on since the page was read: the press keeps its sentence and its
+    409 when Grades can't then be read."""
+    with quietly_at(open_household(tmp_path)) as browser:
+        seeded(browser, FIRST_TERM, SECOND_TERM)
+        moved = {"shown": "2026-2027 T1", "term": "2026-2027 T2"}
+        assert browser.post(CURRENT_TERM, data=moved, headers=PAGE).status_code == 303
+        made_then_refusing(
+            monkeypatch,
+            store_of(browser),
+            "set_current_context",
+            "grade_contexts",
+            refusing_coded("SQLITE_BUSY"),
+        )
+        stale = {"shown": "2026-2027 T1", "term": "2026-2027 T1"}
+        answer = browser.post(CURRENT_TERM, data=stale, headers=PAGE)
+
+    designed_unshown(
+        answer,
+        status=409,
+        heading="Grades",
+        said=grade_routes.CONTEXT_CHANGED,
+        unshown=GRADES_UNSHOWN_SAID,
+        again=GRADES,
+    )
+
+
+def test_a_homework_class_name_changed_meanwhile_whose_page_can_t_be_read_keeps_its_sentence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with naming(open_household(tmp_path), NAMES_BIOLOGY, homework=("Geometry",)) as browser:
+        block, biology = a_name_s_block(browser)
+        made_then_refusing(
+            monkeypatch,
+            store_of(browser),
+            "connect_homework_class",
+            "grade_contexts",
+            refusing_coded("SQLITE_BUSY"),
+        )
+        sent = sent_by(block, **{"class": biology, "shown": biology})
+        answer = browser.post(HOMEWORK_CLASSES, data=sent, headers=PAGE)
+
+    designed_unshown(
+        answer,
+        status=409,
+        heading="Homework class names",
+        said=grade_routes.NAME_CHANGED,
+        unshown=NAMES_UNSHOWN_SAID,
+        again=HOMEWORK_CLASSES,
+    )

@@ -9235,12 +9235,11 @@ RECORDS_UNREAD = "Blossom couldn't read the household's records."
 RESULT_HOMEWORK_UNSHOWN = "This result's homework can't be shown right now."
 
 
-def a_decision_s_page(
-    answer: Answered, result_id: str, *, status: int, said: str, link: bool = True
-) -> None:
+def a_decision_s_page(answer: Answered, result_id: str, *, status: int, said: str) -> None:
     """The page a decision about a result's homework answers when the result's page can't be
-    read: ``said`` and its status, then what can't be shown, "Try again" for the result's page
-    unless ``said`` already says to try again, "Back to Grades", and no form."""
+    read: ``said`` and its status, then what can't be shown, one link to the result's page by a
+    read, "Try again" or, where ``said`` already says to try again, "Show homework for this
+    result", "Back to Grades", and no form."""
     assert answer.status_code == status, (answer.status_code, answer.text[:600])
     main = main_of(answer.text)
     (shown,) = re.findall(r"<h1>(.*?)</h1>", main, re.S)
@@ -9250,11 +9249,8 @@ def a_decision_s_page(
     again = RESULT_PAGE.format(result_id=result_id)
     opening = '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
     sentence = escape(f"{said} {RESULT_HOMEWORK_UNSHOWN}" if said != RECORDS_UNREAD else said)
-    if link:
-        assert f'{opening}{sentence} <a href="{again}">Try again</a></p>' in main, main[:900]
-    else:
-        assert f"{opening}{sentence}</p>" in main, main[:900]
-        assert ">Try again</a>" not in main
+    label = "Show homework for this result" if said.endswith("Try again.") else "Try again"
+    assert f'{opening}{sentence} <a href="{again}">{label}</a></p>' in main, main[:900]
     ways = re.findall(r'<p class="return"><a href="([^"]*)">([^<]*)</a></p>', main)
     assert ways == [("/parent/grades", "Back to Grades")]
     assert '<a href="/parent/grades" aria-current="page">Grades</a>' in answer.text
@@ -9341,4 +9337,4 @@ def test_a_decision_s_answer_whose_page_can_t_be_read_keeps_its_sentence_and_sta
         else:
             answer = pressed(client, log, revision=revision)
 
-    a_decision_s_page(answer, log, status=status, said=said, link="Try again." not in said)
+    a_decision_s_page(answer, log, status=status, said=said)
