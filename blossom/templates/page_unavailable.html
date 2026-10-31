@@ -7,15 +7,16 @@
   A page that is only read, when the record can't be read as it is made:
   the ways back the address names, the page's own heading, and what can't be
   shown, in a sentence that takes the focus as the page arrives, with the way
-  to ask for the same address again. The menu marks the page the route
-  names, where the page's own menu marks one of its own. Nothing here reads a
-  store, and nothing says what the record holds, or that anything was
-  saved, changed, or deleted.
+  to ask for the same address again unless the sentence already says to try
+  again. The menu marks the page the route names, where the page's own menu
+  marks one of its own. Nothing here reads a store, and nothing says what the
+  record holds, or that anything was saved, changed, or deleted, beyond what
+  a designed answer's own sentence says.
 #}
 {% block content %}
   {% for link in ways_back %}
     <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
   {% endfor %}
   <h1>{{ heading|heading_breaks }}</h1>
-  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ alert }} <a href="{{ again }}">Try again</a></p>
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ alert }}{% if again %} <a href="{{ again }}">Try again</a>{% endif %}</p>
 {% endblock %}
