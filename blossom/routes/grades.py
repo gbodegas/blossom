@@ -54,6 +54,7 @@ from blossom.grades.draft import (
     GradeRow,
     GradeValue,
     Presence,
+    ReportHeader,
     capture_key,
     folded,
     is_school_year,
@@ -156,6 +157,7 @@ from blossom.routes.navigation import (
     asked_address,
     segment,
 )
+from blossom.routes.store_refusals import RECORDS_UNREAD, busy_file
 from blossom.routes.student import (
     FORM_SENT_OTHER_WORDS,
     FORM_USED,
@@ -364,6 +366,8 @@ OUTCOME_UNKNOWN: Final = (
 )
 NOT_HERS: Final = 'You answered "Not hers". Nothing was saved.'
 SAVED_ELSEWHERE: Final = "This report was saved from another page or tab."
+REVIEW_GRADE_REPORT: Final = "Review grade report"
+"""The heading of a report's review, and of what the review sent when it can't be rebuilt."""
 LEFT_OUT: Final = "These results weren't part of that save:"
 NOT_ON_RECORD: Final = "This save's outcome isn't on record."
 NO_VALUES_CHANGED: Final = "No grade values changed."
@@ -558,7 +562,11 @@ async def review_report(request: Request, state: State) -> Response:
             request, "grade_review.html", {**shown, "complete": complete}
         )
 
-    return await asyncio.to_thread(reviewed)
+    try:
+        return await asyncio.to_thread(reviewed)
+    except sqlite3.Error as error:
+        logger.warning("%s could not be read: %s", ADD_GRADE_REPORT, type(error).__name__)
+        return paste_page(request, state, text=text, said=RECORDS_UNREAD, status_code=503)
 
 
 @dataclass(frozen=True)
@@ -1440,9 +1448,157 @@ def review_page(
     )
 
 
-def retry_page(request: Request, state: ApplicationState, form: ReviewForm, said: str) -> Response:
+IDENTITY_SENT: Final[Mapping[str, str]] = {
+    "confirmed": "These are her grades",
+    "hers": "Yes, this is her name",
+    "misread": "The name was misread",
+    "not_hers": "Not hers",
+}
+"""The review page's own label for each answer about the name, by the value the form sends."""
+TERM_ITEM: Final = "Term grade on this report"
+SAME_ON_RECORD: Final = "The same assignment as one on record"
+DIFFERENT: Final = "A different assignment"
+CHOOSE_EXISTING: Final = "Choose an existing assignment"
+CHOSEN_ON_RECORD: Final = "Chosen: an assignment on record"
+SAME_CLASS_ON_RECORD: Final = "It's the same class as a class on record"
+
+
+@dataclass(frozen=True)
+class SentLine:
+    """One answer a review form sent, as the page shows it: the review page's own label, and
+    after it the words the answer carries, as written, where it carries any."""
+
+    label: str
+    authored: str | None = None
+
+
+@dataclass(frozen=True)
+class SentItem:
+    """One result a review form ticked, or sent an answer for: its title, as the report wrote
+    it (``authored``) or as the review names it, and each answer it sent."""
+
+    title: str
+    authored: bool
+    answers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SentView:
+    """What a review form sent, from its fields alone: the answers about the report, the
+    results ticked to save, and the rows not ticked that sent an answer. A choice known only by
+    a record's ID is named generically, and a field not sent shows nothing."""
+
+    about: tuple[SentLine, ...]
+    ticked: tuple[SentItem, ...]
+    unticked: tuple[SentItem, ...]
+
+
+def about_sent(
+    fields: Mapping[str, str], header: ReportHeader, *, complete: bool
+) -> tuple[SentLine, ...]:
+    """The answers about the report a form sent, each by the review page's own label."""
+    lines = []
+    identity = fields.get("identity", "")
+    if identity == IdentityAnswer.SHOWN:
+        lines.append(SentLine("Shows", header.student_line))
+    elif identity in IDENTITY_SENT:
+        lines.append(SentLine(IDENTITY_SENT[identity]))
+    setup = fields.get("setup")
+    if setup == "report":
+        lines.append(SentLine("This report's:", f"{header.term_label} · {header.year_label}"))
+    elif setup == "other":
+        lines.append(SentLine("Another:"))
+        if "setup_year" in fields:
+            lines.append(SentLine("School year:", fields["setup_year"]))
+        if "setup_term" in fields:
+            lines.append(SentLine("Term:", fields["setup_term"]))
+    month = fields.get("first_month", "")
+    if month:
+        said = "Not sure yet" if month == "unsure" else MONTHS[int(month) - 1]
+        lines.append(SentLine(f"Month the {header.year_label} school year starts:", said))
+    chosen = fields.get("class")
+    if chosen == "new":
+        lines.append(SentLine("Name for this class:", fields.get("class_name", "")))
+    elif chosen:
+        lines.append(SentLine(SAME_CLASS_ON_RECORD))
+    use = fields.get("use")
+    if use == "current":
+        lines.append(
+            SentLine(
+                "Use this as the current school record"
+                if complete
+                else "Use these values where this report provides them"
+            )
+        )
+    elif use == "earlier":
+        lines.append(SentLine("Keep as an earlier report"))
+    return tuple(lines)
+
+
+def item_titles(draft: GradeReportDraft) -> list[tuple[str, bool]]:
+    """Each item's title by its place on the review page, and whether the report wrote it."""
+    categories = [(category.name.text.strip(), True) for category in draft.categories]
+    rows = [
+        (row.assignment.text.strip(), True)
+        for category in draft.categories
+        for row in category.rows
+    ]
+    term = [(TERM_ITEM, False)] if len(item_keys(draft)) > len(categories) + len(rows) else []
+    return [*term, *categories, *rows]
+
+
+def row_sent(fields: Mapping[str, str], position: int) -> tuple[str, ...]:
+    """Each answer a row sent about which assignment it is, conflicting ones included."""
+    answers = []
+    match = fields.get(f"match.{position}")
+    if match == "different":
+        answers.append(DIFFERENT)
+    elif match == "choose":
+        answers.append(CHOOSE_EXISTING)
+    elif match:
+        answers.append(SAME_ON_RECORD)
+    if fields.get(f"choose.{position}"):
+        answers.append(CHOSEN_ON_RECORD)
+    return tuple(answers)
+
+
+def sent_view(
+    fields: Mapping[str, str],
+    draft: GradeReportDraft,
+    *,
+    complete: bool,
+    text_changed: bool,
+) -> SentView:
+    """What a review form sent, read from its fields and its text alone. A form whose text
+    changed lays nothing a row sent against the rows of the text it carries."""
+    about = about_sent(fields, draft.header, complete=complete)
+    if text_changed:
+        return SentView(about, (), ())
+    first_row = positions_of(draft).first_row
+    ticked, unticked = [], []
+    for position, (title, authored) in enumerate(item_titles(draft)):
+        answers = row_sent(fields, position) if position >= first_row else ()
+        item = SentItem(title, authored, answers)
+        if fields.get(f"select.{position}") == "1":
+            ticked.append(item)
+        elif answers:
+            unticked.append(item)
+    return SentView(about, tuple(ticked), tuple(unticked))
+
+
+def retry_page(
+    request: Request,
+    state: ApplicationState,
+    form: ReviewForm,
+    said: str,
+    *,
+    status_code: int = 500,
+    check: bool = False,
+) -> Response:
     """The review form sent again as it came, under the same acceptance ID, for a save whose
-    outcome isn't known or that the record refused; the store isn't read."""
+    outcome isn't known or that the record refused, or for a press whose read before any
+    write was refused; with ``check``, offered again as a check, with no save. The store
+    isn't read."""
     return templates.TemplateResponse(
         request,
         "grade_retry.html",
@@ -1452,12 +1608,75 @@ def retry_page(request: Request, state: ApplicationState, form: ReviewForm, said
             "text": form.text,
             "fields": {name: value for name, value in form.fields.items() if name != "report_text"},
             "save": SAVE,
+            "check": CHECK if check else None,
             "edit": EDIT,
             "add": ADD,
             "marks": state.settings.page_marks,
         },
-        status_code=500,
+        status_code=status_code,
     )
+
+
+def unread_before_writing(
+    request: Request,
+    state: ApplicationState,
+    form: ReviewForm,
+    error: sqlite3.Error,
+    *,
+    check: bool,
+) -> Response:
+    """A save or a check whose read was refused before anything was written: the form kept as
+    sent, under the records sentence, offered again as the same press."""
+    logger.warning("%s could not be read: %s", REVIEW_GRADE_REPORT, type(error).__name__)
+    return retry_page(request, state, form, RECORDS_UNREAD, status_code=503, check=check)
+
+
+def saved_before_page(
+    request: Request,
+    state: ApplicationState,
+    form: ReviewForm,
+    outcome: AlreadyRecorded,
+    error: sqlite3.Error,
+) -> Response:
+    """A page whose acceptance ID a save recorded, whose review can't then be rebuilt: the
+    earlier save's notice and its link, known without a read, and what the page sent, read
+    only, with nothing to press and nothing more read."""
+    logger.warning("%s could not be read: %s", REVIEW_GRADE_REPORT, type(error).__name__)
+    return templates.TemplateResponse(
+        request,
+        "grade_retry.html",
+        {
+            "said": f"{SAVED_ELSEWHERE} {RECORDS_UNREAD}",
+            "recorded": outcome_address(outcome.saved.acceptance_id),
+            "text": form.text,
+            "sent": sent_view(
+                form.fields, form.draft, complete=form.complete, text_changed=form.text_changed
+            ),
+            "add": ADD,
+            "marks": state.settings.page_marks,
+        },
+        status_code=503,
+    )
+
+
+async def returned_or_retried(
+    request: Request,
+    state: ApplicationState,
+    form: ReviewForm,
+    answers: GradeAnswers,
+    outcome: SaveOutcome | GradeReview,
+    key: bytes,
+    *,
+    check: bool,
+) -> Response:
+    """``returned_page``, or, when the review it rebuilds can't be read, the earlier save's
+    page for a recorded acceptance ID and the press offered again for anything else."""
+    try:
+        return await asyncio.to_thread(returned_page, request, state, form, answers, outcome, key)
+    except sqlite3.Error as error:
+        if isinstance(outcome, AlreadyRecorded):
+            return saved_before_page(request, state, form, outcome, error)
+        return unread_before_writing(request, state, form, error, check=check)
 
 
 def role_of(state: ApplicationState) -> ConfirmedBy:
@@ -1704,9 +1923,12 @@ async def save_report(request: Request, state: State) -> Response:
     key = await key_or_retry(request, state, form)
     if isinstance(key, Response):
         return key
-    if form.text_changed:
-        return await asyncio.to_thread(changed_text, request, state, form, key)
-    answers = await asyncio.to_thread(refused_answers, request, state, form, key)
+    try:
+        if form.text_changed:
+            return await asyncio.to_thread(changed_text, request, state, form, key)
+        answers = await asyncio.to_thread(refused_answers, request, state, form, key)
+    except sqlite3.Error as error:
+        return unread_before_writing(request, state, form, error, check=False)
     if isinstance(answers, Response):
         return answers
     try:
@@ -1732,7 +1954,7 @@ async def save_report(request: Request, state: State) -> Response:
         return retry_page(request, state, form, NOT_SAVED)
     if isinstance(outcome, AlreadyRecorded) and not outcome.uncovered:
         return RedirectResponse(outcome_address(outcome.saved.acceptance_id), status_code=303)
-    return await asyncio.to_thread(returned_page, request, state, form, answers, outcome, key)
+    return await returned_or_retried(request, state, form, answers, outcome, key, check=False)
 
 
 @family_router.post("/add/check", response_class=HTMLResponse)
@@ -1746,24 +1968,27 @@ async def check_answers(request: Request, state: State) -> Response:
     key = await key_or_retry(request, state, form)
     if isinstance(key, Response):
         return key
-    if form.text_changed:
-        return await asyncio.to_thread(changed_text, request, state, form, key)
-    answers = await asyncio.to_thread(refused_answers, request, state, form, key)
-    if isinstance(answers, Response):
-        return answers
-    outcome = await asyncio.to_thread(
-        partial(
-            state.project_state.check_grade_answers,
-            form.draft,
-            capture_key(form.draft),
-            key=key,
-            complete=form.complete,
-            page=form.posted.page,
-            answers=answers,
-            selection=form.posted.selection,
+    try:
+        if form.text_changed:
+            return await asyncio.to_thread(changed_text, request, state, form, key)
+        answers = await asyncio.to_thread(refused_answers, request, state, form, key)
+        if isinstance(answers, Response):
+            return answers
+        outcome = await asyncio.to_thread(
+            partial(
+                state.project_state.check_grade_answers,
+                form.draft,
+                capture_key(form.draft),
+                key=key,
+                complete=form.complete,
+                page=form.posted.page,
+                answers=answers,
+                selection=form.posted.selection,
+            )
         )
-    )
-    return await asyncio.to_thread(returned_page, request, state, form, answers, outcome, key)
+    except sqlite3.Error as error:
+        return unread_before_writing(request, state, form, error, check=True)
+    return await returned_or_retried(request, state, form, answers, outcome, key, check=True)
 
 
 def counted(number: int, one: str, many: str) -> str:
@@ -2141,6 +2366,10 @@ def grades_page(
     )
 
 
+TRY_AGAIN_LINK: Final = "Try again"
+"""The words of the link that asks for a page again by a read."""
+
+
 def unshown(
     request: Request,
     state: ApplicationState,
@@ -2148,12 +2377,16 @@ def unshown(
     *,
     heading: str,
     said: str,
-    again: str,
+    again: str | None,
     ways_back: list[ReturnLink],
+    status_code: int = 503,
+    again_label: str = TRY_AGAIN_LINK,
 ) -> Response:
     """A grade page whose record can't be read as it is made: the page that reads no store,
-    503, saying it can't be shown, with ``again`` to ask for it again and the ways back, in
-    the tree it was asked for in, Grades marked in its menu."""
+    saying it can't be shown, with ``again`` to ask for it again under ``again_label`` and the
+    ways back, in the tree it was asked for in, Grades marked in its menu. 503, or a press's
+    own designed status (500, 409 or 422) when its answer's page is the one that can't be
+    read."""
     family = request.url.path.startswith(GRADES)
     return unavailable_page(
         request,
@@ -2165,7 +2398,68 @@ def unshown(
         ways_back=ways_back,
         family=family,
         nav="parent-grades" if family else "grades",
+        status_code=status_code,
+        again_label=again_label,
     )
+
+
+TRY_AGAIN: Final = "Try again."
+"""What a designed sentence says when it already asks for the press again."""
+SHOW_GRADES: Final = "Show Grades"
+SHOW_NAMES: Final = "Show homework class names"
+SHOW_RESULT_HOMEWORK: Final = "Show homework for this result"
+
+
+def outcome_unshown(
+    request: Request,
+    state: ApplicationState,
+    error: sqlite3.Error,
+    *,
+    heading: str,
+    said: str,
+    unshown_said: str,
+    again: str,
+    show: str,
+    ways_back: list[ReturnLink],
+    status_code: int,
+) -> Response:
+    """A press's designed answer whose page can't be read: its own sentence and status, then
+    what can't be shown, on the page that reads no store, with one link that asks for the page
+    again by a read: "Try again", or ``show``, naming the page, where the sentence already
+    says to try again."""
+    return unshown(
+        request,
+        state,
+        error,
+        heading=heading,
+        said=f"{said} {unshown_said}",
+        again=again,
+        ways_back=ways_back,
+        status_code=status_code,
+        again_label=show if said.endswith(TRY_AGAIN) else TRY_AGAIN_LINK,
+    )
+
+
+def grades_answer(
+    request: Request, state: ApplicationState, *, said: str, status_code: int
+) -> Response:
+    """Grades with a press's answer first, or that answer on the page that reads no store when
+    Grades can't be read."""
+    try:
+        return grades_page(request, state, said=said, status_code=status_code)
+    except sqlite3.Error as error:
+        return outcome_unshown(
+            request,
+            state,
+            error,
+            heading="Grades",
+            said=said,
+            unshown_said=GRADES_UNSHOWN,
+            again=GRADES if request.url.path.startswith(GRADES) else HER_GRADES,
+            show=SHOW_GRADES,
+            ways_back=[],
+            status_code=status_code,
+        )
 
 
 def grades_shown(request: Request, state: ApplicationState) -> Response:
@@ -2205,18 +2499,27 @@ async def chosen_view(request: Request, state: ApplicationState, base: str) -> R
     view = None if value == FOLLOW_CURRENT else term_posted(value)
     if not whole or (value != FOLLOW_CURRENT and view is None):
         return await asyncio.to_thread(
-            grades_page, request, state, said=TERM_NOT_ON_RECORD, status_code=422
+            grades_answer, request, state, said=TERM_NOT_ON_RECORD, status_code=422
         )
     try:
         async with state.decision_lock:
             await worker_to_the_end(
                 partial(state.project_state.choose_view, cast(Viewer, viewer_of(request)), view)
             )
+    except sqlite3.Error as error:
+        busy = busy_file(error)
+        logger.warning("The term shown may not have changed: %s", type(error).__name__)
+        said = TERM_SHOWN_NOT_CHANGED if busy else TERM_SHOWN_UNKNOWN
+        return await asyncio.to_thread(grades_answer, request, state, said=said, status_code=500)
     except ViewNotOnRecord:
         return await asyncio.to_thread(
-            grades_page, request, state, said=TERM_NOT_ON_RECORD, status_code=422
+            grades_answer, request, state, said=TERM_NOT_ON_RECORD, status_code=422
         )
     return RedirectResponse(base, status_code=303)
+
+
+TERM_SHOWN_NOT_CHANGED: Final = "The term shown wasn't changed. Try again."
+TERM_SHOWN_UNKNOWN: Final = "Blossom couldn't tell whether the term shown changed."
 
 
 @student_router.post("/view", response_class=HTMLResponse)
@@ -2238,7 +2541,7 @@ async def current_term(request: Request, state: State) -> Response:
     fields, whole = await fields_of(request, CONTEXT_FIELDS)
     shown = term_posted(fields.get("shown", ""))
     chosen = term_posted(fields.get("term", ""))
-    page = partial(grades_page, request, state)
+    page = partial(grades_answer, request, state)
     if not whole or shown is None or chosen is None:
         return await asyncio.to_thread(page, said=TERM_NOT_ON_RECORD, status_code=422)
     try:
@@ -2388,6 +2691,33 @@ def homework_class_names(request: Request, state: State) -> Response:
         )
 
 
+ANSWER_SAVED: Final = "Your answer for {name} was saved."
+
+
+def homework_classes_answer(
+    request: Request, state: ApplicationState, name: str, *, said: str, status_code: int
+) -> Response:
+    """Homework class names with a press's answer first at the name it was about, or that
+    answer on the page that reads no store when the names can't be read."""
+    try:
+        return homework_classes_page(
+            request, state, said=said, at=name_key(name), status_code=status_code
+        )
+    except sqlite3.Error as error:
+        return outcome_unshown(
+            request,
+            state,
+            error,
+            heading=HOMEWORK_CLASS_NAMES,
+            said=said,
+            unshown_said=HOMEWORK_NAMES_UNSHOWN,
+            again=HOMEWORK_CLASSES,
+            show=SHOW_NAMES,
+            ways_back=[],
+            status_code=status_code,
+        )
+
+
 @family_router.post("/homework-classes", response_class=HTMLResponse)
 async def connect_homework_class(request: Request, state: State) -> Response:
     """Route 11: a parent's answer that one homework class name is one class of the current
@@ -2398,7 +2728,7 @@ async def connect_homework_class(request: Request, state: State) -> Response:
     fields, whole = await fields_of(request, NAME_FIELDS)
     year, name = fields.get("year", ""), fields.get("name", "")
     shown, chosen = fields.get("shown", ""), fields.get("class", "")
-    refused = partial(homework_classes_page, request, state, at=name_key(name))
+    refused = partial(homework_classes_answer, request, state, name)
     if (
         not whole
         or not is_school_year(year)
@@ -2429,7 +2759,21 @@ async def connect_homework_class(request: Request, state: State) -> Response:
         return await asyncio.to_thread(refused, said=NOT_SAVED, status_code=500)
     if isinstance(outcome, HomeworkClassChanged | HomeworkYearNotCurrent):
         return await asyncio.to_thread(refused, said=NAME_CHANGED, status_code=409)
-    assignments = await asyncio.to_thread(store.all_assignments)
+    try:
+        assignments = await asyncio.to_thread(store.all_assignments)
+    except sqlite3.Error as error:
+        return unavailable_page(
+            request,
+            state,
+            error,
+            heading=HOMEWORK_CLASS_NAMES,
+            alert=f"{ANSWER_SAVED.format(name=name)} {HOMEWORK_NAMES_UNSHOWN}",
+            again=HOMEWORK_CLASSES,
+            ways_back=[],
+            family=True,
+            nav="parent-grades",
+            again_label=SHOW_NAMES,
+        )
     listed = [key for key, _ in names_on_record(one.course for one in assignments)]
     key = name_key(name)
     address = NAME_AT.format(n=listed.index(key) + 1) if key in listed else HOMEWORK_CLASSES
@@ -3493,6 +3837,36 @@ def homework_for_result(result_id: str, request: Request, state: State) -> Respo
         return homework_unshown(request, state, error, asked)
 
 
+def result_answer(
+    request: Request,
+    state: ApplicationState,
+    result_id: str,
+    *,
+    said: str | None = None,
+    status_code: int = 200,
+) -> Response:
+    """A result's page with a decision's answer first, or that answer on the page that reads no
+    store when the result's page can't be read."""
+    try:
+        return result_page(request, state, result_id, said=said, status_code=status_code)
+    except sqlite3.Error as error:
+        again = RESULT_HOMEWORK.format(result_id=segment(result_id))
+        if said is None:
+            return homework_unshown(request, state, error, again)
+        return outcome_unshown(
+            request,
+            state,
+            error,
+            heading=HOMEWORK_FOR_RESULT,
+            said=said,
+            unshown_said=RESULT_HOMEWORK_UNSHOWN,
+            again=again,
+            show=SHOW_RESULT_HOMEWORK,
+            ways_back=[ReturnLink(GRADES, BACK_TO_GRADES)],
+            status_code=status_code,
+        )
+
+
 def homework_unshown(
     request: Request, state: ApplicationState, error: sqlite3.Error, again: str
 ) -> Response:
@@ -3516,7 +3890,7 @@ async def decide_homework(result_id: str, request: Request, state: State) -> Res
     fields, whole = await fields_of(request, DECISION_FIELDS)
     homework, decision = fields.get("homework", "").strip(), fields.get("decision", "")
     revision = fields.get("revision", "")
-    answer = partial(result_page, request, state, result_id)
+    answer = partial(result_answer, request, state, result_id)
     store = state.project_state
 
     def owned() -> None:
@@ -3536,7 +3910,18 @@ async def decide_homework(result_id: str, request: Request, state: State) -> Res
             return await asyncio.to_thread(answer, said=CHOOSE_HOMEWORK, status_code=422)
         # A read of its own, before the write and outside its transaction: a term not among
         # its year's terms stops the press as it stops the page; no result is the write's 404.
-        await asyncio.to_thread(owned)
+        try:
+            await asyncio.to_thread(owned)
+        except sqlite3.Error as error:
+            return unshown(
+                request,
+                state,
+                error,
+                heading=HOMEWORK_FOR_RESULT,
+                said=RECORDS_UNREAD,
+                again=RESULT_HOMEWORK.format(result_id=segment(result_id)),
+                ways_back=[ReturnLink(GRADES, BACK_TO_GRADES)],
+            )
         try:
             async with state.decision_lock:
                 outcome = await worker_to_the_end(

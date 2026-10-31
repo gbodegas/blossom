@@ -70,6 +70,7 @@ from blossom.stores.gradebook import (
     VIEW_TABLES,
     GradeReportNotSaved,
     GradeTransactionLost,
+    HomeworkLinkResultNotOnRecord,
 )
 from blossom.stores.paths import SECRET_NAME, UnsafeCheckpointPath
 from blossom.stores.project_state import AssignmentKind
@@ -1230,9 +1231,11 @@ def test_the_review_s_closing_buttons_are_one_group_with_the_way_back_under_it(
     assert after.lstrip().startswith(way_back)
 
 
-def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_pages_carry_its_class() -> None:
+def test_the_outcome_card_s_rule_is_pinned_and_its_layout_lent_to_choices_a_page_sent() -> None:
     """The outcome card is the grade save's, and the screenshot review's save takes the same
-    pattern: its outcome page, and the success panel on a review a save leaves open."""
+    pattern: its outcome page, and the success panel on a review a save leaves open. What a
+    page sent, shown when an earlier save took its report, reuses the card for its layout
+    alone: those are the choices submitted, not proof of what the earlier save stored."""
     css = STYLESHEET.read_text(encoding="utf-8")
     carriers = sorted(
         page.name
@@ -1244,12 +1247,20 @@ def test_the_outcome_card_s_rule_is_pinned_and_only_the_saved_pages_carry_its_cl
     assert css.count(CARD_RULES) == 1
     for shared in SHARED_CARD_RULES:
         assert css.count(shared) == 1, shared
-    assert carriers == ["grade_saved.html", "import_review.html", "import_said.html"]
+    assert carriers == [
+        "grade_retry.html",
+        "grade_saved.html",
+        "import_review.html",
+        "import_said.html",
+    ]
     outcome = '<section class="panel grade-outcome" aria-labelledby="outcome-heading">'
     for name in ("grade_saved.html", "import_said.html"):
         assert (TEMPLATES / name).read_text(encoding="utf-8").count(outcome) == 1
     review = (TEMPLATES / "import_review.html").read_text(encoding="utf-8")
     assert review.count('<div class="panel grade-outcome" role="status" id="done"') == 1
+    sent = '<section class="panel grade-panel grade-outcome" aria-labelledby="sent-heading">'
+    retry = (TEMPLATES / "grade_retry.html").read_text(encoding="utf-8")
+    assert retry.count(sent) == 1
 
 
 def test_the_cards_of_grades_and_class_details_share_the_grade_card_rule() -> None:
@@ -7599,3 +7610,1202 @@ def test_a_search_whose_form_isn_t_whole_and_whose_page_can_t_be_read_answers_th
 
     assert refused.status_code == 422, refused.text[:300]
     unshown_page(answer, "a search of its homework", ids)
+
+
+# ------------------------------------------------------------- a press whose record can't be read
+
+RECORDS_UNREAD: Final = "Blossom couldn't read the household's records."
+"""What a press says when a read it makes before its write is refused."""
+GRADES_UNSHOWN_SAID: Final = "Grades can't be shown right now."
+NAMES_UNSHOWN_SAID: Final = "Homework class names can't be shown right now."
+REVIEW_HEADING: Final = "Review grade report"
+SHOW_PAGE: Final = {"Grades": "Show Grades", "Homework class names": "Show homework class names"}
+"""The link that asks for a page again by a read, where its sentence already says to try
+again, by the page's heading."""
+SENT_HEADING: Final = "What this page sent"
+NO_NAMES_HERE: Final = "Names for choices from the records can't be shown here."
+
+
+def made_then_refusing(
+    monkeypatch: pytest.MonkeyPatch,
+    store: object,
+    call: str,
+    read: str,
+    refusal: Callable[..., object],
+) -> None:
+    """The store's ``call`` made as it is, whatever it answers; from then on its ``read`` is
+    refused."""
+    original = getattr(store, call)
+
+    def made(*args: object, **kwargs: object) -> object:
+        try:
+            return original(*args, **kwargs)
+        finally:
+            monkeypatch.setattr(store, read, refusal)
+
+    monkeypatch.setattr(store, call, made)
+
+
+def refused_from_call(
+    count: int, original: Callable[..., object], refusal: Callable[..., None]
+) -> Callable[..., object]:
+    """``original``, answering its first ``count - 1`` calls and refusing every one after."""
+    calls: list[None] = []
+
+    def read(*args: object, **kwargs: object) -> object:
+        calls.append(None)
+        if len(calls) >= count:
+            refusal()
+        return original(*args, **kwargs)
+
+    return read
+
+
+def saves_counted(monkeypatch: pytest.MonkeyPatch, store: object) -> list[None]:
+    """Each call of the store's save of a grade report, made as it is."""
+    made: list[None] = []
+    original = store.save_grade_report  # type: ignore[attr-defined]
+
+    def counted(*args: object, **kwargs: object) -> object:
+        made.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "save_grade_report", counted)
+    return made
+
+
+def retried(answer: Any, action: str, kept: str) -> dict[str, str]:  # noqa: ANN401
+    """The retry page a press answers when a read before its write is refused: 503, the
+    records sentence with what is kept, and the form posting to ``action`` as it was sent. The
+    fields that form carries."""
+    assert answer.status_code == 503, (answer.status_code, answer.text[:600])
+    assert problem_said(answer.text) == f"{RECORDS_UNREAD} {kept}"
+    said = words(main_of(answer.text)).lower()
+    for unsaid in ("nothing was saved", "saved.", "busy", "a moment"):
+        assert unsaid not in said, unsaid
+    assert "Internal Server Error" not in answer.text
+    return whole_form(answer.text, action)
+
+
+@pytest.mark.parametrize("refusal", list(REFUSED))
+def test_a_review_whose_read_is_refused_keeps_the_pasted_text(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    refusal: str,
+) -> None:
+    """A paste read whole whose review can't be read: the paste page with the text as sent,
+    503, the records sentence, and the error's kind alone in the log."""
+    settings = open_household(tmp_path)
+    with quietly_at(settings) as browser:
+        monkeypatch.setattr(store_of(browser), "review_grade_report", REFUSED[refusal]())
+        before = every_row(database(settings))
+        with caplog.at_level(logging.WARNING):
+            answer = browser.post(REVIEW, data={"report_text": REPORT}, headers=PAGE)
+        after = every_row(database(settings))
+
+    kind = "DatabaseError" if refusal == "a database error" else "OperationalError"
+    assert answer.status_code == 503, answer.text[:600]
+    assert problem_said(answer.text) == f"{RECORDS_UNREAD} {grade_routes.TEXT_KEPT}"
+    assert whole_form(answer.text, REVIEW) == {"report_text": REPORT}
+    assert f"could not be read: {kind}" in caplog.text
+    assert "database is locked" not in caplog.text
+    assert after == before
+
+
+def test_a_review_while_another_program_holds_the_file_keeps_the_pasted_text(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = open_household(tmp_path)
+    with (
+        HangWatch(capsys) as watch,
+        quietly_at(settings) as browser,
+        HeldByAnother(database(settings)),
+    ):
+        answer, _ = watch.press(
+            lambda: browser.post(REVIEW, data={"report_text": REPORT}, headers=PAGE)
+        )
+
+    assert answer.status_code == 503, answer.text[:600]
+    assert problem_said(answer.text) == f"{RECORDS_UNREAD} {grade_routes.TEXT_KEPT}"
+    assert whole_form(answer.text, REVIEW) == {"report_text": REPORT}
+
+
+def test_a_review_whose_read_fails_another_way_is_still_the_server_s_error(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        monkeypatch.setattr(store_of(browser), "review_grade_report", refusing(RuntimeError))
+        with pytest.raises(RuntimeError):
+            browser.post(REVIEW, data={"report_text": REPORT}, headers=PAGE)
+
+
+CHANGED_TEXT: Final = REPORT.replace("| 7.0 ", "| 8.0 ")
+"""Wren's report with one cell changed, as a parent might edit the text before pressing."""
+
+
+@pytest.mark.parametrize(
+    "form_is",
+    ["answered whole", "without an answer about her name", "of a changed text"],
+)
+def test_a_check_whose_read_is_refused_keeps_what_was_sent_and_offers_only_a_check(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, form_is: str
+) -> None:
+    """Check these answers, its read refused before anything is written: the records sentence
+    at 503, the text and answers kept, the press offered again as a check with no Save, and
+    the save never made."""
+    settings = open_household(tmp_path)
+    with quietly_at(settings) as browser:
+        form = answered(review_page(browser))
+        if form_is == "without an answer about her name":
+            del form["identity"]
+        if form_is == "of a changed text":
+            form = {**form, "report_text": CHANGED_TEXT}
+        store = store_of(browser)
+        made = saves_counted(monkeypatch, store)
+        refusal = refusing_coded("SQLITE_BUSY")
+        monkeypatch.setattr(store, "review_grade_report", refusal)
+        monkeypatch.setattr(store, "check_grade_answers", refusal)
+        before = every_row(database(settings))
+        answer = browser.post(CHECK, data=form, headers=PAGE)
+        after = every_row(database(settings))
+
+    changed = form_is == "of a changed text"
+    kept = grade_routes.TEXT_KEPT_ANSWER_AGAIN if changed else grade_routes.BOTH_KEPT
+    sent = retried(answer, CHECK, kept)
+    main = main_of(answer.text)
+    assert f'action="{SAVE}"' not in main
+    assert "Save selected results" not in main
+    assert ">Check these answers</button>" in main
+    assert whole_form(answer.text, EDIT) == {"report_text": form["report_text"]}
+    if changed:
+        assert not [name for name in sent if grade_routes.by_a_row(name)]
+        assert sent["report_text"] == CHANGED_TEXT
+    else:
+        assert sent == form
+    assert made == []
+    assert after == before
+
+
+@pytest.mark.parametrize("form_is", ["without an answer about her name", "of a changed text"])
+def test_a_save_whose_read_before_its_write_is_refused_never_saves(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, form_is: str
+) -> None:
+    """A save whose form needs an answer, or whose text changed, reads the review before any
+    write. That read refused: the records sentence at 503 on the retry page, the text, answers
+    and selections kept with the stale-answer safeguards, and the save never made."""
+    settings = open_household(tmp_path)
+    with quietly_at(settings) as browser:
+        form = answered(review_page(browser))
+        if form_is == "without an answer about her name":
+            del form["identity"]
+        else:
+            form = {**form, "report_text": CHANGED_TEXT}
+        store = store_of(browser)
+        made = saves_counted(monkeypatch, store)
+        monkeypatch.setattr(store, "review_grade_report", refusing_coded("SQLITE_IOERR"))
+        before = every_row(database(settings))
+        answer = browser.post(SAVE, data=form, headers=PAGE)
+        after = every_row(database(settings))
+
+    changed = form_is == "of a changed text"
+    kept = grade_routes.TEXT_KEPT_ANSWER_AGAIN if changed else grade_routes.BOTH_KEPT
+    sent = retried(answer, SAVE, kept)
+    if changed:
+        assert not [name for name in sent if grade_routes.by_a_row(name)]
+    else:
+        assert sent == form
+    assert made == []
+    assert after == before
+
+
+def retitled_and_answered(browser: TestClient) -> dict[str, str]:
+    """The retitled report's review, its first renamed row answered as the saved result it asks
+    about and ticked."""
+    form = as_sent(review_page(browser, RETITLED))
+    form.update({"match.5": form["candidates.5"], "select.5": "1"})
+    return form
+
+
+def test_a_save_returned_for_a_changed_revision_whose_review_can_t_be_read_keeps_what_was_sent(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The save is made and writes nothing, since another tab's save of the other renamed row
+    moved the class on; the review it returns, still asking about this row, can't then be
+    rebuilt with the answer kept. The records sentence at 503, the form kept as sent."""
+    settings = open_household(tmp_path)
+    with quietly_at(settings) as browser:
+        first_saved(browser)
+        one_tab = retitled_and_answered(browser)
+        another_tab = as_sent(review_page(browser, RETITLED))
+        another_tab.update({"match.6": another_tab["candidates.6"], "select.6": "1"})
+        another_tab.pop("select.5", None)
+        assert browser.post(SAVE, data=another_tab, headers=PAGE).status_code == 303
+        made_then_refusing(
+            monkeypatch,
+            store_of(browser),
+            "save_grade_report",
+            "review_grade_report",
+            refusing_coded("SQLITE_BUSY"),
+        )
+        before = every_row(database(settings))
+        answer = browser.post(SAVE, data=one_tab, headers=PAGE)
+        after = every_row(database(settings))
+
+    assert retried(answer, SAVE, grade_routes.BOTH_KEPT) == one_tab
+    assert after == before
+
+
+def page_saved_before(browser: TestClient) -> dict[str, str]:
+    """A page whose acceptance ID a save recorded, sent again with its renamed row now answered
+    and ticked, which that save left alone."""
+    form = answered_and_ticked(browser)
+    left_alone = {
+        name: value for name, value in form.items() if name not in {"match.5", "select.5"}
+    }
+    assert browser.post(SAVE, data=left_alone, headers=PAGE).status_code == 303
+    return form
+
+
+def refused_and_then_unread(
+    monkeypatch: pytest.MonkeyPatch, store: object, refusal: Callable[..., object]
+) -> tuple[Callable[..., object], list[str]]:
+    """``refusal`` as the review's read; once it refuses, every other call of the store but its
+    closing is recorded instead of made. The read, and the calls recorded."""
+    calls_after: list[str] = []
+
+    def read(*args: object, **kwargs: object) -> object:
+        try:
+            return refusal(*args, **kwargs)
+        except sqlite3.Error:
+            for name in dir(store):
+                if name != "close" and not name.startswith("_") and callable(getattr(store, name)):
+                    monkeypatch.setattr(
+                        store, name, lambda *_, name=name, **__: calls_after.append(name)
+                    )
+            raise
+
+    return read, calls_after
+
+
+@pytest.mark.parametrize("failing", ["the review", "the answers' review"])
+@pytest.mark.parametrize("route", [CHECK, SAVE], ids=["check", "save"])
+def test_a_page_saved_before_whose_review_can_t_be_rebuilt_shows_what_it_sent(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str, failing: str
+) -> None:
+    """A page sent again under the acceptance ID another tab's save recorded, whose review
+    then can't be rebuilt, at its first read or at the read of the answers it keeps: the
+    earlier save's notice and link at 503, and what the page sent, read-only, with no form
+    and no further read."""
+    settings = open_household(tmp_path)
+    with quietly_at(settings) as browser:
+        form = page_saved_before(browser)
+        store = store_of(browser)
+        refused, reads_after = refused_and_then_unread(
+            monkeypatch,
+            store,
+            refused_from_call(
+                1 if failing == "the review" else 2,
+                store.review_grade_report,
+                refusing_coded("SQLITE_BUSY"),
+            ),
+        )
+        made_then_refusing(
+            monkeypatch,
+            store,
+            "save_grade_report" if route == SAVE else "check_grade_answers",
+            "review_grade_report",
+            refused,
+        )
+        before = every_row(database(settings))
+        answer = browser.post(route, data=form, headers=PAGE)
+        after = every_row(database(settings))
+
+    assert answer.status_code == 503, answer.text[:600]
+    assert f"<title>Blossom - {REVIEW_HEADING}</title>" in answer.text
+    main = main_of(answer.text)
+    assert problem_said(answer.text) == (
+        f"{grade_routes.SAVED_ELSEWHERE} {RECORDS_UNREAD} See what was saved"
+    )
+    earlier = SAVED.format(acceptance_id=form["acceptance_id"])
+    assert f'<a href="{earlier}">See what was saved</a>' in main
+    assert "<form" not in main
+    assert "<button" not in main
+    assert re.search(rf"<h2[^>]*>{SENT_HEADING}</h2>", main)
+    assert NO_NAMES_HERE in words(main)
+    assert re.search(r"<textarea[^>]*\breadonly\b", main)
+    assert str(escape(RETITLED)) in main
+    said = words(main)
+    assert f"Shows {FIRST_TERM.header.student_line}" in said
+    ticked = said[said.index("Results ticked to save") :]
+    assert "Zebra Field Notes The same assignment as one on record" in ticked
+    assert "Results not ticked to save" not in said
+    assert "Nothing was saved" not in said
+    assert "Save selected results" not in said
+    assert reads_after == []
+    assert after == before
+
+
+def test_a_check_of_a_page_saved_before_shows_its_unticked_answers_apart(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The renamed row answered but not ticked, checked after another tab's save, whose review
+    can't be rebuilt: the row and its answer are shown under the results not ticked, and with
+    nothing else ticked, no results are said to be ticked."""
+    settings = open_household(tmp_path)
+    with quietly_at(settings) as browser:
+        form = page_saved_before(browser)
+        del form["select.5"]
+        form["match.5"] = "different"
+        store = store_of(browser)
+        made_then_refusing(
+            monkeypatch,
+            store,
+            "check_grade_answers",
+            "review_grade_report",
+            refusing_coded("SQLITE_BUSY"),
+        )
+        answer = browser.post(CHECK, data=form, headers=PAGE)
+
+    assert answer.status_code == 503, answer.text[:600]
+    said = words(main_of(answer.text))
+    assert "Results ticked to save" not in said
+    assert "Results not ticked to save Zebra Field Notes A different assignment" in said
+
+
+RESULT_A: Final = "result-" + "a" * 32
+RESULT_B: Final = "result-" + "b" * 32
+POSITIONS: Final = grade_routes.positions_of(FIRST_TERM)
+FIRST_ROW: Final = POSITIONS.first_row
+"""The place of the report's first row on its review page."""
+ROW_TITLES: Final = [
+    row.assignment.text.strip() for category in FIRST_TERM.categories for row in category.rows
+]
+
+
+def sent(fields: dict[str, str], *, complete: bool = True, text_changed: bool = False) -> Any:  # noqa: ANN401
+    """What the page shows a review form sent, built from ``fields`` alone."""
+    return grade_routes.sent_view(fields, FIRST_TERM, complete=complete, text_changed=text_changed)
+
+
+@pytest.mark.parametrize(
+    ("identity", "label"),
+    [
+        ("confirmed", "These are her grades"),
+        ("hers", "Yes, this is her name"),
+        ("misread", "The name was misread"),
+        ("not_hers", "Not hers"),
+    ],
+)
+def test_what_was_sent_says_the_answer_about_her_name_by_the_page_s_own_label(
+    identity: str, label: str
+) -> None:
+    assert sent({"identity": identity}).about == (grade_routes.SentLine(label),)
+
+
+def test_what_was_sent_shows_the_student_line_a_page_showed() -> None:
+    assert sent({"identity": "shown"}).about == (
+        grade_routes.SentLine("Shows", FIRST_TERM.header.student_line),
+    )
+
+
+def test_what_was_sent_shows_each_answer_about_the_year_term_month_class_and_use() -> None:
+    header = FIRST_TERM.header
+    shown = sent(
+        {
+            "setup": "other",
+            "setup_year": "2027-2028",
+            "setup_term": "T2 <b>",
+            "first_month": "8",
+            "class": "new",
+            "class_name": "Bio & <i>Lab</i>",
+            "use": "earlier",
+        }
+    )
+
+    assert shown.about == (
+        grade_routes.SentLine("Another:"),
+        grade_routes.SentLine("School year:", "2027-2028"),
+        grade_routes.SentLine("Term:", "T2 <b>"),
+        grade_routes.SentLine(f"Month the {header.year_label} school year starts:", "August"),
+        grade_routes.SentLine("Name for this class:", "Bio & <i>Lab</i>"),
+        grade_routes.SentLine("Keep as an earlier report"),
+    )
+    assert (shown.ticked, shown.unticked) == ((), ())
+
+
+@pytest.mark.parametrize(
+    ("fields", "complete", "lines"),
+    [
+        ({"setup": "report"}, True, [("This report's:", "TERM · YEAR")]),
+        ({"first_month": "unsure"}, True, [("Month the YEAR school year starts:", "Not sure yet")]),
+        ({"first_month": ""}, True, []),
+        (
+            {"class": "class-" + "c" * 32 + ":3"},
+            True,
+            [("It's the same class as a class on record", None)],
+        ),
+        ({"use": "current"}, True, [("Use this as the current school record", None)]),
+        ({"use": "current"}, False, [("Use these values where this report provides them", None)]),
+        ({}, True, []),
+    ],
+)
+def test_what_was_sent_shows_an_answer_only_as_it_was_sent(
+    fields: dict[str, str], complete: bool, lines: list[tuple[str, str | None]]
+) -> None:
+    """An empty month and a field not sent show nothing, and no choice stands in for them."""
+    header = FIRST_TERM.header
+    expected = tuple(
+        grade_routes.SentLine(
+            label.replace("YEAR", header.year_label),
+            None
+            if value is None
+            else value.replace("TERM", header.term_label).replace("YEAR", header.year_label),
+        )
+        for label, value in lines
+    )
+    assert sent(fields, complete=complete).about == expected
+
+
+def test_what_was_sent_sets_ticked_results_apart_from_unticked_rows_with_answers() -> None:
+    """Ticked items under one heading with their answers, conflicting ones included; unticked
+    rows that sent an answer under the other; an unticked row with nothing sent nowhere."""
+    first, second, third = FIRST_ROW, FIRST_ROW + 1, FIRST_ROW + 2
+    shown = sent(
+        {
+            "select.0": "1",
+            f"select.{first}": "1",
+            f"match.{first}": RESULT_A,
+            f"choose.{first}": RESULT_B,
+            f"match.{second}": "different",
+            f"choose.{third}": "",
+        }
+    )
+
+    assert shown.ticked == (
+        grade_routes.SentItem("Term grade on this report", authored=False, answers=()),
+        grade_routes.SentItem(
+            ROW_TITLES[0],
+            authored=True,
+            answers=("The same assignment as one on record", "Chosen: an assignment on record"),
+        ),
+    )
+    assert shown.unticked == (
+        grade_routes.SentItem(ROW_TITLES[1], authored=True, answers=("A different assignment",)),
+    )
+
+
+def test_what_was_sent_says_a_choice_to_pick_and_its_pick_apart() -> None:
+    row = FIRST_ROW
+    shown = sent({f"select.{row}": "1", f"match.{row}": "choose"})
+
+    assert shown.ticked == (
+        grade_routes.SentItem(
+            ROW_TITLES[0], authored=True, answers=("Choose an existing assignment",)
+        ),
+    )
+
+
+def test_a_changed_text_s_form_shows_no_answer_against_its_rows() -> None:
+    """A form whose text changed is read without its rows' fields; any such field is never laid
+    against the rows of the text sent."""
+    shown = sent(
+        {"identity": "hers", f"select.{FIRST_ROW}": "1", f"match.{FIRST_ROW}": "different"},
+        text_changed=True,
+    )
+
+    assert shown.about == (grade_routes.SentLine("Yes, this is her name"),)
+    assert (shown.ticked, shown.unticked) == ((), ())
+
+
+def designed_unshown(
+    answer: Any,  # noqa: ANN401
+    *,
+    status: int,
+    heading: str,
+    said: str,
+    unshown: str,
+    again: str,
+    ways_back: tuple[tuple[str, str], ...] = (),
+    grades: str = GRADES,
+) -> str:
+    """The page a designed answer gives when its own page can't be read: its outcome sentence
+    and status, then what can't be shown, with one link for ``again``: "Try again", or the
+    page's own "Show" link where the outcome already says to try again; the ways back, Grades
+    marked in the menu, and no form. Its main part."""
+    assert answer.status_code == status, (answer.status_code, answer.text[:600])
+    assert f"<title>Blossom - {escape(heading)}</title>" in answer.text
+    main = main_of(answer.text)
+    (shown,) = re.findall(r"<h1>(.*?)</h1>", main, re.S)
+    assert words(shown).replace("\xad", "") == heading
+    opening = '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
+    label = SHOW_PAGE[heading] if said.endswith("Try again.") else "Try again"
+    alert = f'{opening}{escape(f"{said} {unshown}")} <a href="{again}">{label}</a></p>'
+    assert alert in main, main[:900]
+    assert main.count("<a ") == len(ways_back) + 1
+    ways = re.findall(r'<p class="return"><a href="([^"]*)">([^<]*)</a></p>', main)
+    assert tuple(ways) == ways_back
+    assert f'<a href="{grades}" aria-current="page">Grades</a>' in answer.text
+    assert "<form" not in main
+    assert "Internal Server Error" not in answer.text
+    return main
+
+
+@pytest.mark.parametrize(("route", "grades"), [(VIEW, GRADES), (HER_VIEW, HER_GRADES)])
+def test_a_term_shown_refused_whose_grades_can_t_be_read_keeps_its_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str, grades: str
+) -> None:
+    """A term to show that the form doesn't name is refused with 422 on Grades. When Grades
+    can't be read, the refusal keeps its sentence and status, then says Grades can't be
+    shown."""
+    with quietly_at(open_household(tmp_path)) as browser:
+        on_record(browser)
+        monkeypatch.setattr(store_of(browser), "grade_contexts", refusing_coded("SQLITE_BUSY"))
+        answer = browser.post(route, data={"view": "not a term"}, headers=PAGE)
+
+    designed_unshown(
+        answer,
+        status=422,
+        heading="Grades",
+        said=grade_routes.TERM_NOT_ON_RECORD,
+        unshown=GRADES_UNSHOWN_SAID,
+        again=grades,
+        grades=grades,
+    )
+
+
+TERM_SHOWN_NOT_CHANGED: Final = "The term shown wasn't changed. Try again."
+TERM_SHOWN_UNKNOWN: Final = "Blossom couldn't tell whether the term shown changed."
+VIEW_WRITE_REFUSALS: Final[dict[str, tuple[Callable[[], Callable[..., None]], str]]] = {
+    "busy": (lambda: refusing_coded("SQLITE_BUSY"), TERM_SHOWN_NOT_CHANGED),
+    "an I/O error": (lambda: refusing_coded("SQLITE_IOERR"), TERM_SHOWN_UNKNOWN),
+    "with no code": (refusing, TERM_SHOWN_UNKNOWN),
+    "a database error": (lambda: refusing(sqlite3.DatabaseError), TERM_SHOWN_UNKNOWN),
+}
+"""Each way the write of a term to show is refused, and what the answer says of it."""
+
+
+@pytest.mark.parametrize("refusal", list(VIEW_WRITE_REFUSALS))
+@pytest.mark.parametrize(("route", "grades"), [(VIEW, GRADES), (HER_VIEW, HER_GRADES)])
+def test_a_term_shown_whose_write_is_refused_says_whether_it_changed(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    grades: str,
+    refusal: str,
+) -> None:
+    """A busy refusal says the term shown wasn't changed; any other says Blossom couldn't tell.
+    Both are 500, on Grades as it reads, and never say choosing again is safe."""
+    refused, said = VIEW_WRITE_REFUSALS[refusal]
+    with quietly_at(open_household(tmp_path)) as browser:
+        on_record(browser)
+        monkeypatch.setattr(store_of(browser), "choose_view", refused())
+        answer = browser.post(route, data={"view": "current"}, headers=PAGE)
+
+    assert answer.status_code == 500, answer.text[:600]
+    assert problem_said(answer.text) == said
+    assert "Choosing again is safe" not in answer.text
+    assert f'<a href="{grades}" aria-current="page">Grades</a>' in answer.text
+
+
+@pytest.mark.parametrize("refusal", list(VIEW_WRITE_REFUSALS))
+def test_a_term_shown_whose_write_and_grades_are_refused_keeps_its_sentence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    refused, said = VIEW_WRITE_REFUSALS[refusal]
+    with quietly_at(open_household(tmp_path)) as browser:
+        on_record(browser)
+        store = store_of(browser)
+        monkeypatch.setattr(store, "choose_view", refused())
+        monkeypatch.setattr(store, "grade_contexts", refusing_coded("SQLITE_BUSY"))
+        answer = browser.post(VIEW, data={"view": "current"}, headers=PAGE)
+
+    designed_unshown(
+        answer,
+        status=500,
+        heading="Grades",
+        said=said,
+        unshown=GRADES_UNSHOWN_SAID,
+        again=GRADES,
+    )
+
+
+@pytest.mark.parametrize("held", ["whole", "for reading"])
+def test_a_term_shown_while_another_program_holds_the_file_says_it_wasn_t_changed(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], held: str
+) -> None:
+    """Held whole, the write's start waits and is refused busy, and Grades can't be read; held
+    for reading, the write's commit is refused busy and Grades reads. Either way the term shown
+    wasn't changed, and the row holding it reads as before."""
+    settings = open_household(tmp_path)
+    with HangWatch(capsys) as watch, quietly_at(settings) as browser:
+        on_record(browser)
+        before = every_row(database(settings))
+        with HeldByAnother(database(settings), reading=held == "for reading"):
+            answer, _ = watch.press(
+                lambda: browser.post(VIEW, data={"view": "2026-2027 T1"}, headers=PAGE)
+            )
+        after = every_row(database(settings))
+
+    if held == "whole":
+        designed_unshown(
+            answer,
+            status=500,
+            heading="Grades",
+            said=TERM_SHOWN_NOT_CHANGED,
+            unshown=GRADES_UNSHOWN_SAID,
+            again=GRADES,
+        )
+    else:
+        assert answer.status_code == 500, answer.text[:600]
+        assert problem_said(answer.text) == TERM_SHOWN_NOT_CHANGED
+    assert after == before
+
+
+def test_a_term_shown_whose_write_fails_another_way_is_still_the_server_s_error(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        on_record(browser)
+        monkeypatch.setattr(store_of(browser), "choose_view", refusing(RuntimeError))
+        with pytest.raises(RuntimeError):
+            browser.post(VIEW, data={"view": "current"}, headers=PAGE)
+
+
+CURRENT_TERM_OUTCOMES: Final[dict[str, tuple[type[Exception] | None, str, int]]] = {
+    "not on record": (None, "TERM_NOT_ON_RECORD", 422),
+    "an outcome unknown": (GradeTransactionLost, "CONTEXT_UNKNOWN", 500),
+    "not saved": (GradeReportNotSaved, "NOT_SAVED", 500),
+}
+"""Each designed answer of a choice of the current term: the error its write raises (none for
+a form that names no term), the sentence by its name, and its status."""
+
+
+@pytest.mark.parametrize("outcome", list(CURRENT_TERM_OUTCOMES))
+def test_a_current_term_answer_whose_grades_can_t_be_read_keeps_its_sentence_and_status(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    raised, name, status = CURRENT_TERM_OUTCOMES[outcome]
+    with quietly_at(open_household(tmp_path)) as browser:
+        on_record(browser)
+        store = store_of(browser)
+        sent = {"shown": "2026-2027 T1", "term": "2026-2027 T1"}
+        if raised is None:
+            sent = {"shown": "", "term": ""}
+        else:
+            failure = raised
+
+            def write(*_: object, **__: object) -> None:
+                msg = "synthetic"
+                raise failure(msg)
+
+            monkeypatch.setattr(store, "set_current_context", write)
+        monkeypatch.setattr(store, "grade_contexts", refusing_coded("SQLITE_BUSY"))
+        answer = browser.post(CURRENT_TERM, data=sent, headers=PAGE)
+
+    designed_unshown(
+        answer,
+        status=status,
+        heading="Grades",
+        said=getattr(grade_routes, name),
+        unshown=GRADES_UNSHOWN_SAID,
+        again=GRADES,
+    )
+
+
+def a_name_s_block(browser: TestClient) -> tuple[str, str]:
+    """The first homework class name's block on the page, and Biology's class ID."""
+    biology = capture_class(store_of(browser), NAMES_BIOLOGY)
+    block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[0]
+    return block, biology
+
+
+HOMEWORK_CLASS_OUTCOMES: Final[dict[str, tuple[type[Exception] | None, str, int]]] = {
+    "no class chosen": (None, "CHOOSE_A_CLASS", 422),
+    "an outcome unknown": (GradeTransactionLost, "SAVE_UNKNOWN", 500),
+    "not saved": (GradeReportNotSaved, "NOT_SAVED", 500),
+}
+"""Each designed answer of a homework class name's press: the error its write raises (none
+for a form with no class), the sentence by its name, and its status."""
+
+
+@pytest.mark.parametrize("outcome", list(HOMEWORK_CLASS_OUTCOMES))
+def test_a_homework_class_answer_whose_page_can_t_be_read_keeps_its_sentence_and_status(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    raised, name, status = HOMEWORK_CLASS_OUTCOMES[outcome]
+    with naming(open_household(tmp_path), NAMES_BIOLOGY, homework=("Geometry",)) as browser:
+        block, biology = a_name_s_block(browser)
+        store = store_of(browser)
+        sent = sent_by(block, **{"class": "" if raised is None else biology})
+        if raised is not None:
+            failure = raised
+
+            def write(*_: object, **__: object) -> None:
+                msg = "synthetic"
+                raise failure(msg)
+
+            monkeypatch.setattr(store, "connect_homework_class", write)
+        monkeypatch.setattr(store, "grade_contexts", refusing_coded("SQLITE_BUSY"))
+        answer = browser.post(HOMEWORK_CLASSES, data=sent, headers=PAGE)
+
+    designed_unshown(
+        answer,
+        status=status,
+        heading="Homework class names",
+        said=getattr(grade_routes, name),
+        unshown=NAMES_UNSHOWN_SAID,
+        again=HOMEWORK_CLASSES,
+    )
+
+
+@pytest.mark.parametrize("answer_is", ["connecting", "removing", "standing already"])
+def test_a_homework_class_answer_saved_whose_page_can_t_be_read_says_it_was_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, answer_is: str
+) -> None:
+    """The answer is written and committed; the read for the page after it is refused. The
+    answer says it was saved, by the name sent, escaped as written, at 503, with a way to the
+    page that doesn't send the answer again. A fresh connection then finds one row in the
+    whole table of answers: the fixture's school year, the sent name's key, and Biology when
+    connecting or standing already, or no class when removing."""
+    settings = open_household(tmp_path)
+    name = "Lab <b>& Field</b>"
+    with naming(settings, NAMES_BIOLOGY, homework=(name,)) as browser:
+        biology = capture_class(store_of(browser), NAMES_BIOLOGY)
+        (block,) = [
+            one
+            for one in name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+            if name_of(one) == name
+        ]
+        if answer_is in ("removing", "standing already"):
+            connected = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+            assert connected.status_code == 303
+            (block,) = [
+                one
+                for one in name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)
+                if name_of(one) == name
+            ]
+        chosen = NOT_CONNECTED_OPTION if answer_is == "removing" else biology
+        made_then_refusing(
+            monkeypatch,
+            store_of(browser),
+            "connect_homework_class",
+            "all_assignments",
+            refusing_coded("SQLITE_BUSY"),
+        )
+        answer = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": chosen}))
+
+    fresh = sqlite3.connect(database(settings))
+    try:
+        stored = fresh.execute(
+            f"SELECT year_label, name_key, class_id FROM {MAPPING}"  # noqa: S608
+        ).fetchall()
+    finally:
+        fresh.close()
+    assert answer.status_code == 503, answer.text[:600]
+    main = main_of(answer.text)
+    sentence = f"Your answer for {name} was saved. {NAMES_UNSHOWN_SAID}"
+    assert (
+        '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
+        f'{escape(sentence)} <a href="{HOMEWORK_CLASSES}">Show homework class names</a></p>'
+    ) in main
+    assert "<b>" not in main
+    assert "<form" not in main
+    assert f'<a href="{GRADES}" aria-current="page">Grades</a>' in answer.text
+    expected = None if answer_is == "removing" else biology
+    assert stored == [("2026-2027", gradebook.name_key(name), expected)]
+
+
+def test_the_busy_check_is_shared_by_the_import_and_grade_pages() -> None:
+    """One check of a busy file serves both: the import pages take it from the shared place."""
+    from blossom.routes import imports, store_refusals
+
+    assert imports.busy_file is store_refusals.busy_file
+    assert frozenset({sqlite3.SQLITE_BUSY}) == store_refusals.BUSY_CODES
+
+
+PRESS_REFUSED: Final = {
+    "a review": (REVIEW, "review_grade_report", None, 503),
+    "a check": (CHECK, "check_grade_answers", None, 503),
+    "a save before its write": (SAVE, "review_grade_report", "identity", 503),
+    "a term shown": (VIEW, "choose_view", None, 500),
+}
+"""Each press whose read or write is refused, the store call refused, the field left out of its
+form, and its answer's status."""
+
+
+@pytest.mark.parametrize("press", list(PRESS_REFUSED))
+def test_with_sign_in_on_a_press_s_answer_to_a_refused_read_is_kept_from_caches(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Signed in as a parent, each new answer is marked no-store, as the same press's ordinary
+    answer is."""
+    route, refused, left_out, status = PRESS_REFUSED[press]
+    settings = signed_in_household(tmp_path)
+    with quietly_at(settings, client="192.0.2.10", host="testserver") as browser:
+        signed_in(browser, THEIRS)
+        form: dict[str, str] = {"report_text": REPORT}
+        if route in (CHECK, SAVE):
+            form = answered(review_page(browser))
+            if left_out is not None:
+                del form[left_out]
+        if route == VIEW:
+            on_record(browser)
+            form = {"view": "current"}
+        ordinary = browser.post(route, data=form, headers=PAGE)
+        store = store_of(browser)
+        monkeypatch.setattr(store, refused, refusing_coded("SQLITE_BUSY"))
+        if route == VIEW:
+            monkeypatch.setattr(store, "grade_contexts", refusing_coded("SQLITE_BUSY"))
+        answer = browser.post(route, data=form, headers=PAGE)
+
+    assert ordinary.headers["cache-control"] == "no-store", ordinary.status_code
+    assert answer.status_code == status, answer.text[:600]
+    assert answer.headers["cache-control"] == "no-store"
+
+
+def test_a_returned_save_s_retry_keeps_its_page_and_a_save_from_it_is_checked_as_any_is(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry a returned save answers, when its review can't be rebuilt, carries the page's
+    own acceptance ID and revision, its text, answers and ticks. Sent again once the file
+    reads, its save is checked as any save is: the class moved on, so the review comes back
+    and nothing is written."""
+    settings = open_household(tmp_path)
+    with quietly_at(settings) as browser:
+        first_saved(browser)
+        one_tab = retitled_and_answered(browser)
+        another_tab = as_sent(review_page(browser, RETITLED))
+        another_tab.update({"match.6": another_tab["candidates.6"], "select.6": "1"})
+        another_tab.pop("select.5", None)
+        assert browser.post(SAVE, data=another_tab, headers=PAGE).status_code == 303
+        store = store_of(browser)
+        saving, reading = store.save_grade_report, store.review_grade_report
+        made_then_refusing(
+            monkeypatch, store, "save_grade_report", "review_grade_report", refusing()
+        )
+        retry = browser.post(SAVE, data=one_tab, headers=PAGE)
+        monkeypatch.setattr(store, "save_grade_report", saving)
+        monkeypatch.setattr(store, "review_grade_report", reading)
+        sent = retried(retry, SAVE, grade_routes.BOTH_KEPT)
+        before = every_row(database(settings))
+        again = browser.post(SAVE, data=sent, headers=PAGE)
+        after = every_row(database(settings))
+
+    assert (sent["acceptance_id"], sent["revision"]) == (
+        one_tab["acceptance_id"],
+        one_tab["revision"],
+    )
+    assert again.status_code == 409, again.text[:600]
+    assert escape(grade_routes.CHANGED_WHILE_REVIEWING) in again.text
+    assert after == before
+
+
+def failing_otherwise(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, place: str
+) -> Callable[[], object]:
+    """The press ``place`` names, with a failure that isn't the file's at the read its new
+    catch covers."""
+    store = store_of(browser)
+    failure = refusing(RuntimeError)
+    if place in ("a rebuilt review after a save", "a rebuilt review after a check"):
+        form = page_saved_before(browser)
+        call = "save_grade_report" if place.endswith("save") else "check_grade_answers"
+        made_then_refusing(monkeypatch, store, call, "review_grade_report", failure)
+        route = SAVE if place.endswith("save") else CHECK
+        return lambda: browser.post(route, data=form, headers=PAGE)
+    if place == "a check":
+        form = answered(review_page(browser))
+        monkeypatch.setattr(store, "check_grade_answers", failure)
+        return lambda: browser.post(CHECK, data=form, headers=PAGE)
+    if place == "a save before its write":
+        form = answered(review_page(browser))
+        del form["identity"]
+        monkeypatch.setattr(store, "review_grade_report", failure)
+        return lambda: browser.post(SAVE, data=form, headers=PAGE)
+    if place == "the current term's answer":
+        on_record(browser)
+        monkeypatch.setattr(store, "grade_contexts", failure)
+        return lambda: browser.post(CURRENT_TERM, data={"shown": "", "term": ""}, headers=PAGE)
+    if place == "a decision's answer":
+        monkeypatch.setattr(grade_routes, "result_own", failure)
+        sent = {"homework": "", "decision": "link", "revision": "0"}
+        return lambda: browser.post(RESULT_HOMEWORK.format(result_id=RESULT_A), data=sent)
+    msg = place
+    raise AssertionError(msg)
+
+
+@pytest.mark.parametrize(
+    "place",
+    [
+        "a rebuilt review after a save",
+        "a rebuilt review after a check",
+        "a check",
+        "a save before its write",
+        "the current term's answer",
+        "a decision's answer",
+    ],
+)
+def test_a_press_s_failure_that_isn_t_the_file_s_is_still_the_server_s_error(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, place: str
+) -> None:
+    with at(open_household(tmp_path)) as browser:
+        press = failing_otherwise(browser, monkeypatch, place)
+        with pytest.raises(RuntimeError):
+            press()
+
+
+@pytest.mark.parametrize("after", ["the answer is written", "the page's read"])
+def test_a_homework_class_failure_that_isn_t_the_file_s_is_still_the_server_s_error(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, after: str
+) -> None:
+    with naming(open_household(tmp_path), NAMES_BIOLOGY, homework=("Geometry",)) as browser:
+        block, biology = a_name_s_block(browser)
+        store = store_of(browser)
+        if after == "the answer is written":
+            made_then_refusing(
+                monkeypatch,
+                store,
+                "connect_homework_class",
+                "all_assignments",
+                refusing(RuntimeError),
+            )
+            sent = sent_by(block, **{"class": biology})
+        else:
+            monkeypatch.setattr(store, "grade_contexts", refusing(RuntimeError))
+            sent = sent_by(block, **{"class": ""})
+        with pytest.raises(RuntimeError):
+            browser.post(HOMEWORK_CLASSES, data=sent, headers=PAGE)
+
+
+SIGNED_IN_ANSWERS: Final = (
+    "a page saved before, by its save",
+    "a page saved before, by its check",
+    "the current term's refusal",
+    "a homework class answer saved",
+    "a decision's own read",
+)
+"""The new answers the sign-in test above doesn't reach."""
+
+
+@pytest.mark.parametrize("answer_to", SIGNED_IN_ANSWERS)
+def test_with_sign_in_on_each_other_new_answer_is_kept_from_caches(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, answer_to: str
+) -> None:
+    """Signed in as a parent, each answer is marked no-store, as the same press's ordinary
+    answer is."""
+    settings = signed_in_household(tmp_path)
+    busy = refusing_coded("SQLITE_BUSY")
+    with quietly_at(settings, client="192.0.2.10", host="testserver") as browser:
+        signed_in(browser, THEIRS)
+        store = store_of(browser)
+        if answer_to.startswith("a page saved before"):
+            form = page_saved_before(browser)
+            route = SAVE if answer_to.endswith("save") else CHECK
+            ordinary = browser.post(CHECK, data=form, headers=PAGE)
+            call = "save_grade_report" if route == SAVE else "check_grade_answers"
+            made_then_refusing(monkeypatch, store, call, "review_grade_report", busy)
+            answer = browser.post(route, data=form, headers=PAGE)
+            status = 503
+        elif answer_to == "the current term's refusal":
+            on_record(browser)
+            sent = {"shown": "", "term": ""}
+            ordinary = browser.post(CURRENT_TERM, data=sent, headers=PAGE)
+            monkeypatch.setattr(store, "grade_contexts", busy)
+            answer = browser.post(CURRENT_TERM, data=sent, headers=PAGE)
+            status = 422
+        elif answer_to == "a homework class answer saved":
+            assert isinstance(save_grade(store, NAMES_BIOLOGY, key=SEED_KEY), GradeReportSaved)
+            store.put_on_record([homework_named("Geometry", "assignment-named-0")], {})
+            biology = capture_class(store, NAMES_BIOLOGY)
+            block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[0]
+            ordinary = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": ""}))
+            made_then_refusing(
+                monkeypatch, store, "connect_homework_class", "all_assignments", busy
+            )
+            answer = browser.post(HOMEWORK_CLASSES, data=sent_by(block, **{"class": biology}))
+            status = 503
+        else:
+            address = RESULT_HOMEWORK.format(result_id=RESULT_A)
+            refused = {"homework": "", "decision": "link", "revision": "0"}
+            ordinary = browser.post(address, data=refused, headers=PAGE)
+            monkeypatch.setattr(grade_routes, "result_own", busy)
+            sent = {"homework": "assignment-1", "decision": "link", "revision": "0"}
+            answer = browser.post(address, data=sent, headers=PAGE)
+            status = 503
+
+    assert ordinary.headers["cache-control"] == "no-store", ordinary.status_code
+    assert answer.status_code == status, answer.text[:600]
+    assert answer.headers["cache-control"] == "no-store"
+
+
+MARKED: Final = REPORT.replace("| Seed Germination Log |", "| Seed <b>Log</b> & Co  |")
+"""Wren's report with a result's title holding markup and an ampersand, as a school might
+write them."""
+
+
+def test_a_page_saved_before_shows_what_was_typed_and_written_escaped(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A typed class name and a result's title that hold markup are shown as text on the page
+    of what was sent, never as markup."""
+    typed = "Bio <i>Lab</i> & Co"
+    with quietly_at(open_household(tmp_path)) as browser:
+        form = answered(review_page(browser, MARKED), class_name=typed)
+        assert browser.post(SAVE, data=unticked(form, "0"), headers=PAGE).status_code == 303
+        made_then_refusing(
+            monkeypatch,
+            store_of(browser),
+            "save_grade_report",
+            "review_grade_report",
+            refusing_coded("SQLITE_BUSY"),
+        )
+        answer = browser.post(SAVE, data=form, headers=PAGE)
+
+    assert answer.status_code == 503, answer.text[:600]
+    main = main_of(answer.text)
+    assert "Name for this class:" in words(main)
+    assert str(escape(typed)) in main
+    assert "<i>Lab</i>" not in main
+    assert str(escape("Seed <b>Log</b> & Co")) in main
+    assert "<b>Log</b>" not in main
+
+
+@pytest.mark.parametrize(
+    "press",
+    ["a check", "a save before its write", "the current term", "a homework class", "a decision"],
+)
+def test_a_press_while_another_program_holds_the_file_answers_as_decided(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], press: str
+) -> None:
+    """Held whole, each press's read or write waits and is refused: the check and the save are
+    offered again under the records sentence, the current term and the homework class keep
+    their "not saved" sentence with the page's own link, and the decision says the records
+    can't be read. Nothing is written."""
+    settings = open_household(tmp_path)
+    with HangWatch(capsys) as watch, at(settings) as browser:
+        if press == "a homework class":
+            store = store_of(browser)
+            assert isinstance(save_grade(store, NAMES_BIOLOGY, key=SEED_KEY), GradeReportSaved)
+            store.put_on_record([homework_named("Geometry", "assignment-named-0")], {})
+            biology = capture_class(store, NAMES_BIOLOGY)
+            block = name_blocks(browser.get(HOMEWORK_CLASSES, headers=PAGE).text)[0]
+            address, sent = HOMEWORK_CLASSES, sent_by(block, **{"class": biology})
+        elif press in ("a check", "a save before its write"):
+            sent = answered(review_page(browser))
+            if press == "a save before its write":
+                del sent["identity"]
+            address = CHECK if press == "a check" else SAVE
+        elif press == "the current term":
+            on_record(browser)
+            address, sent = CURRENT_TERM, {"shown": "2026-2027 T1", "term": "2026-2027 T1"}
+        else:
+            address = RESULT_HOMEWORK.format(result_id=RESULT_A)
+            sent = {"homework": "assignment-1", "decision": "link", "revision": "0"}
+        before = every_row(database(settings))
+        with HeldByAnother(database(settings)):
+            answer, _ = watch.press(lambda: browser.post(address, data=sent, headers=PAGE))
+        after = every_row(database(settings))
+
+    assert after == before
+    if press in ("a check", "a save before its write"):
+        retried(answer, address, grade_routes.BOTH_KEPT)
+    elif press == "the current term":
+        designed_unshown(
+            answer,
+            status=500,
+            heading="Grades",
+            said=grade_routes.NOT_SAVED,
+            unshown=GRADES_UNSHOWN_SAID,
+            again=GRADES,
+        )
+    elif press == "a homework class":
+        designed_unshown(
+            answer,
+            status=500,
+            heading="Homework class names",
+            said=grade_routes.NOT_SAVED,
+            unshown=NAMES_UNSHOWN_SAID,
+            again=HOMEWORK_CLASSES,
+        )
+    else:
+        assert answer.status_code == 503, answer.text[:600]
+        assert problem_said(answer.text) == f"{RECORDS_UNREAD} Try again"
+
+
+def test_a_decision_whose_result_isn_t_on_record_and_page_can_t_be_read_says_so(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decision whose result the write finds no record of answers the result's page as it
+    reads; when that read is refused, the page that can't be shown, with no sentence of the
+    press's own."""
+    with quietly_at(open_household(tmp_path)) as browser:
+        store = store_of(browser)
+
+        def no_result(*_: object, **__: object) -> object:
+            monkeypatch.setattr(grade_routes, "result_own", refusing_coded("SQLITE_BUSY"))
+            return HomeworkLinkResultNotOnRecord()
+
+        monkeypatch.setattr(store, "decide_homework_link", no_result)
+        monkeypatch.setattr(grade_routes, "result_own", lambda *_, **__: None)
+        sent = {"homework": "assignment-1", "decision": "link", "revision": "0"}
+        answer = browser.post(RESULT_HOMEWORK.format(result_id=RESULT_A), data=sent)
+
+    assert answer.status_code == 503, answer.text[:600]
+    assert problem_said(answer.text) == (
+        "This result's homework can't be shown right now. Try again"
+    )
+
+
+def test_a_current_term_changed_meanwhile_whose_grades_can_t_be_read_keeps_its_sentence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The current term moved on since the page was read: the press keeps its sentence and its
+    409 when Grades can't then be read."""
+    with quietly_at(open_household(tmp_path)) as browser:
+        seeded(browser, FIRST_TERM, SECOND_TERM)
+        moved = {"shown": "2026-2027 T1", "term": "2026-2027 T2"}
+        assert browser.post(CURRENT_TERM, data=moved, headers=PAGE).status_code == 303
+        made_then_refusing(
+            monkeypatch,
+            store_of(browser),
+            "set_current_context",
+            "grade_contexts",
+            refusing_coded("SQLITE_BUSY"),
+        )
+        stale = {"shown": "2026-2027 T1", "term": "2026-2027 T1"}
+        answer = browser.post(CURRENT_TERM, data=stale, headers=PAGE)
+
+    designed_unshown(
+        answer,
+        status=409,
+        heading="Grades",
+        said=grade_routes.CONTEXT_CHANGED,
+        unshown=GRADES_UNSHOWN_SAID,
+        again=GRADES,
+    )
+
+
+def test_a_homework_class_name_changed_meanwhile_whose_page_can_t_be_read_keeps_its_sentence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with naming(open_household(tmp_path), NAMES_BIOLOGY, homework=("Geometry",)) as browser:
+        block, biology = a_name_s_block(browser)
+        made_then_refusing(
+            monkeypatch,
+            store_of(browser),
+            "connect_homework_class",
+            "grade_contexts",
+            refusing_coded("SQLITE_BUSY"),
+        )
+        sent = sent_by(block, **{"class": biology, "shown": biology})
+        answer = browser.post(HOMEWORK_CLASSES, data=sent, headers=PAGE)
+
+    designed_unshown(
+        answer,
+        status=409,
+        heading="Homework class names",
+        said=grade_routes.NAME_CHANGED,
+        unshown=NAMES_UNSHOWN_SAID,
+        again=HOMEWORK_CLASSES,
+    )

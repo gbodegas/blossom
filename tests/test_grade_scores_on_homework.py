@@ -147,6 +147,8 @@ from tests.support import (
     plan_on,
     planned,
     record,
+    refusing,
+    refusing_coded,
     reported,
     save_grade,
     school_said,
@@ -9227,3 +9229,112 @@ def test_the_other_results_stay_the_same_after_decisions_and_on_every_page_of_a_
     assert [one.status_code for one in pages] == [200, 200]
     assert [others_on(one.text) for one in pages] == [before, before]
     assert other_links(pages[1].text) == [(way_in_to(then), LOG), (way_in_to(second), LOG)]
+
+
+RECORDS_UNREAD = "Blossom couldn't read the household's records."
+RESULT_HOMEWORK_UNSHOWN = "This result's homework can't be shown right now."
+
+
+def a_decision_s_page(answer: Answered, result_id: str, *, status: int, said: str) -> None:
+    """The page a decision about a result's homework answers when the result's page can't be
+    read: ``said`` and its status, then what can't be shown, one link to the result's page by a
+    read, "Try again" or, where ``said`` already says to try again, "Show homework for this
+    result", "Back to Grades", and no form."""
+    assert answer.status_code == status, (answer.status_code, answer.text[:600])
+    main = main_of(answer.text)
+    (shown,) = re.findall(r"<h1>(.*?)</h1>", main, re.S)
+    assert html.unescape(re.sub(r"<[^>]+>", "", shown)).replace("\xad", "").strip() == (
+        "Homework for this result"
+    )
+    again = RESULT_PAGE.format(result_id=result_id)
+    opening = '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
+    sentence = escape(f"{said} {RESULT_HOMEWORK_UNSHOWN}" if said != RECORDS_UNREAD else said)
+    label = "Show homework for this result" if said.endswith("Try again.") else "Try again"
+    assert f'{opening}{sentence} <a href="{again}">{label}</a></p>' in main, main[:900]
+    ways = re.findall(r'<p class="return"><a href="([^"]*)">([^<]*)</a></p>', main)
+    assert ways == [("/parent/grades", "Back to Grades")]
+    assert '<a href="/parent/grades" aria-current="page">Grades</a>' in answer.text
+    assert "<form" not in main
+
+
+def test_a_decision_whose_own_read_before_its_write_is_refused_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The press's read of the result, before its write, refused: the records sentence at
+    503, nothing written, and the way to the result's page by a read."""
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        revision = revision_of(client, log)
+        before = stored_links(client)
+        monkeypatch.setattr(grades, "result_own", refusing_coded("SQLITE_BUSY"))
+        answer = pressed(client, log, revision=revision)
+        after = stored_links(client)
+
+    a_decision_s_page(answer, log, status=503, said=RECORDS_UNREAD)
+    assert after == before
+
+
+def test_a_decision_whose_own_read_fails_another_way_is_still_the_server_s_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with browser() as client:
+        store_of(client).put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        revision = revision_of(client, log)
+        monkeypatch.setattr(grades, "result_own", refusing(RuntimeError))
+        with pytest.raises(RuntimeError):
+            pressed(client, log, revision=revision)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "status"),
+    [
+        ("no homework chosen", 422),
+        ("an outcome unknown", 500),
+        ("not saved", 500),
+        ("links changed", 409),
+    ],
+)
+def test_a_decision_s_answer_whose_page_can_t_be_read_keeps_its_sentence_and_status(
+    monkeypatch: pytest.MonkeyPatch, outcome: str, status: int
+) -> None:
+    """Each designed answer of the press, its result's page then refused: the answer's own
+    sentence and status, then what can't be shown."""
+    raised: dict[str, type[Exception]] = {
+        "an outcome unknown": GradeTransactionLost,
+        "not saved": GradeReportNotSaved,
+    }
+    said = {
+        "no homework chosen": grades.CHOOSE_HOMEWORK,
+        "an outcome unknown": grades.PRESS_UNKNOWN,
+        "not saved": grades.NOT_SAVED,
+        "links changed": grades.LINKS_CHANGED,
+    }[outcome]
+    with browser() as client:
+        store = store_of(client)
+        store.put_on_record([homework()], {})
+        class_id = with_report(client)
+        log = result_named(client, class_id, LOG)
+        revision = revision_of(client, log)
+        original: Callable[..., object] = store.decide_homework_link
+
+        def written(*args: object, **kwargs: object) -> object:
+            monkeypatch.setattr(grades, "result_own", refusing_coded("SQLITE_BUSY"))
+            if outcome in raised:
+                msg = "synthetic"
+                raise raised[outcome](msg)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(store, "decide_homework_link", written)
+        if outcome == "no homework chosen":
+            monkeypatch.setattr(grades, "result_own", refusing_coded("SQLITE_BUSY"))
+            answer = pressed(client, log, homework_id="", revision=revision)
+        elif outcome == "links changed":
+            answer = pressed(client, log, revision=str(int(revision) + 1))
+        else:
+            answer = pressed(client, log, revision=revision)
+
+    a_decision_s_page(answer, log, status=status, said=said)
