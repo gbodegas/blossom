@@ -7326,7 +7326,8 @@ UNSHOWN: Final[dict[str, Unshown]] = {
         GRADES,
     ),
 }
-"""Each page S5-4a answers when the record can't be read, by the page asked for."""
+"""Each grade page that answers this way when its record can't be read, by the page asked
+for."""
 SEARCHED = {"words": "Osmosis", "page": ""}
 """A search of a result's homework as its form sends it."""
 FIRST_READS: Final[dict[str, str]] = {
@@ -7345,8 +7346,11 @@ REFUSED: Final[dict[str, Callable[[], Callable[..., None]]]] = {
     "busy": lambda: refusing_coded("SQLITE_BUSY"),
     "an I/O error": lambda: refusing_coded("SQLITE_IOERR"),
     "with no code": refusing,
+    "a database error": lambda: refusing(sqlite3.DatabaseError),
 }
 """Each way the file refuses a read, as a store call raises it."""
+HERS_TO_READ: Final = ("her Grades", "her class details", "asking a parent")
+"""The pages she reads; a parent reads the others."""
 
 
 @contextmanager
@@ -7451,8 +7455,9 @@ def test_each_way_a_grade_page_s_first_read_is_refused_answers_the_same_page(
     page: str,
     refusal: str,
 ) -> None:
-    """Busy or not, coded or not, a refused read answers the page that can't be shown, and
-    the refusal is logged by its kind alone, never by its message."""
+    """Busy or not, coded or not, an operational error or another database error, a refused
+    read answers the page that can't be shown, and the refusal is logged by its kind alone,
+    never by its message."""
     with quietly_at(open_household(tmp_path)) as browser:
         ids = on_record(browser)
         read = FIRST_READS[page]
@@ -7463,12 +7468,27 @@ def test_each_way_a_grade_page_s_first_read_is_refused_answers_the_same_page(
         with caplog.at_level(logging.WARNING):
             answer = ask_for(browser, page, ids)
 
+    kind = "DatabaseError" if refusal == "a database error" else "OperationalError"
     unshown_page(answer, page, ids)
-    assert f"{UNSHOWN[page].heading} could not be read: OperationalError" in caplog.text
+    assert f"{UNSHOWN[page].heading} could not be read: {kind}" in caplog.text
     assert "database is locked" not in caplog.text
 
 
-@pytest.mark.parametrize("page", ["Grades", "a search of its homework"])
+def test_a_save_s_outcome_whose_class_link_can_t_be_read_answers_the_same_page(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The save is on record and its record is read; the read of its class's terms, for the
+    link to class details, is refused. The answer is the same page, which says nothing of the
+    save."""
+    with quietly_at(open_household(tmp_path)) as browser:
+        ids = on_record(browser)
+        monkeypatch.setattr(store_of(browser), "terms_of_year", refusing_coded("SQLITE_BUSY"))
+        answer = ask_for(browser, "a save's outcome", ids)
+
+    unshown_page(answer, "a save's outcome", ids)
+
+
+@pytest.mark.parametrize("page", list(UNSHOWN))
 def test_a_failure_on_a_grade_page_that_isn_t_the_file_s_is_still_the_server_s_error(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, page: str
 ) -> None:
@@ -7501,6 +7521,32 @@ def test_with_sign_in_on_a_grade_page_that_can_t_be_shown_is_kept_from_caches(
     unshown_page(answer, page, {})
     assert answer.headers["cache-control"] == "no-store"
     assert after == before
+
+
+@pytest.mark.parametrize("page", list(UNSHOWN))
+def test_with_sign_in_on_each_grade_page_that_can_t_be_shown_is_kept_from_caches_as_it_is(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, page: str
+) -> None:
+    """Signed in as the page's own reader, a page whose first read is refused is marked
+    no-store, as the same page's ordinary answer is."""
+    settings = signed_in_household(tmp_path)
+    with quietly_at(settings, client="192.0.2.10", host="testserver") as browser:
+        signed_in(browser, THEIRS)
+        ids = on_record(browser)
+        if page in HERS_TO_READ:
+            signed_in(browser, HERS)
+        ordinary = ask_for(browser, page, ids)
+        read = FIRST_READS[page]
+        if read == "result_own":
+            monkeypatch.setattr(grade_routes, "result_own", refusing_coded("SQLITE_BUSY"))
+        else:
+            monkeypatch.setattr(store_of(browser), read, refusing_coded("SQLITE_BUSY"))
+        answer = ask_for(browser, page, ids)
+
+    assert ordinary.status_code == 200, (ordinary.status_code, ordinary.text[:300])
+    assert ordinary.headers["cache-control"] == "no-store"
+    unshown_page(answer, page, ids)
+    assert answer.headers["cache-control"] == "no-store"
 
 
 def test_a_save_s_outcome_asked_for_by_its_redirect_while_the_file_is_held_says_nothing_of_it(
