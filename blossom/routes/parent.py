@@ -867,7 +867,6 @@ class DecisionTrace:
     resumed: bool = False
     returned: bool = False
     read_back: bool = False
-    read_again: bool = False
     record: DraftRecord | None = None
     unread: str | None = None
 
@@ -876,7 +875,6 @@ async def read_again(state: ApplicationState, draft_id: str, trace: DecisionTrac
     """The draft's record read once more into ``trace``, within the store's wait, after the
     decision's write raised a store's failure. A read the store refuses, or one that runs past
     the wait, leaves it unread. Any other failure isn't caught here."""
-    trace.read_again = True
     try:
         trace.record = await bounded(partial(state.drafts.get, draft_id), STORE_WAIT_SECONDS)
     except (Unfinished, *DECISION_STORE_FAILURES) as error:
@@ -2833,8 +2831,9 @@ A_DECISION_RECORDED: Final = "A decision on this plan is recorded."
 """What a decision the table holds says when it isn't known to be this press's: one the thread
 held from an earlier press, or another choice, or other words."""
 DECISION_UNKNOWN: Final = "Blossom couldn't tell whether a decision on this plan was recorded."
-"""What a decision's write that raised says when its record shows no decision recorded, or
-can't be read: a decision the thread holds can still be recorded later, so no more is said."""
+"""What a decision's write that raised says when its record shows no decision as the table
+records one, waiting, closed another way, gone or inconsistent, or can't be read again: a
+decision the thread holds can still be recorded later, so no more is said."""
 NOTE_AS_TYPED: Final = "Your note, as typed"
 """The label of a note kept on these answers, which says nothing of its being saved."""
 CHOICES: Final[Mapping[bool, str]] = {True: "approved", False: "rejected"}
