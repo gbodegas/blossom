@@ -4352,7 +4352,8 @@ def unavailable_page(
     address to ask for again, and the ways back; ``family`` for a page in the family's tree,
     and ``nav`` for the menu's current page where it isn't that tree's own. A designed answer
     whose page can't be read gives its own ``status_code``, and an ``again_label`` naming the
-    page where its own sentence already says to try again.
+    page where "Try again" would mislead: its own sentence already says to try again, or it
+    reports a write already made.
     Nothing is read here, and the failure is logged by its kind alone."""
     logger.warning("%s could not be read: %s", heading, type(error).__name__)
     return templates.TemplateResponse(
