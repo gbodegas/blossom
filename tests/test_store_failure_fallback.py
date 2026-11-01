@@ -14,24 +14,28 @@ The routes the fallback answers here are added to the application by each test, 
 real page in the inventory catches its own failures.
 """
 
+import html
 import inspect
 import logging
 import pathlib
+import re
 import sqlite3
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import cast
+from urllib.parse import urljoin
 
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from markupsafe import escape
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from blossom import app as app_module
 from blossom.app import create_app
 from blossom.dependencies import STATE_ATTRIBUTE
-from blossom.routes import store_refusals
+from blossom.routes import navigation, store_refusals
 from blossom.routes import student as student_routes
 from blossom.settings import SCREENSHOT_IMPORT_VARIABLE
 from blossom.stores.drafts import StoreBusy, WriterBusy
@@ -604,3 +608,164 @@ def test_only_the_json_routes_and_the_redirects_are_left_to_the_server() -> None
 def test_a_store_failure_with_no_route_reaches_the_server_as_itself() -> None:
     """With no route matched there is no page to answer for."""
     assert app_module.answers_a_page(None) is False
+
+
+# -------------------------------------------------------------------- the address asked for
+
+ID_PROBE = "/student/fallback-ids/{item:path}"
+IDS = {
+    "an escaped question mark": ("unit%3Fpart", "unit?part"),
+    "an escaped number sign": ("unit%23part", "unit#part"),
+    "an escaped slash": ("unit%2F3", "unit/3"),
+    "dots between escaped slashes": ("unit%2F..%2F3", "unit/../3"),
+    "all of them": ("unit%2F3%20part%3Fb%23c", "unit/3 part?b#c"),
+    "a plain id": ("plain-id", "plain-id"),
+    "a space": ("a%20b", "a b"),
+    "a letter past ASCII": ("caf%C3%A9", "café"),
+    "an escaped percent sign": ("100%25", "100%"),
+    "an escaped ampersand": ("a%26b", "a&b"),
+}
+"""Ids as a page's address carries them, and as the route receives them."""
+QUERY = "choice=one&choice=two&blank="
+"""A query with a repeated field and a blank one."""
+
+
+def fails_once(asked: list[tuple[str, str]]) -> Callable[..., Awaitable[HTMLResponse]]:
+    """A page of the assignment details' shape, noting each id and query it receives. Its first
+    call fails as the store fails; later ones answer."""
+
+    async def once(request: Request, item: str) -> HTMLResponse:
+        asked.append((item, request.scope["query_string"].decode()))
+        if len(asked) == 1:
+            raise StoreBusy
+        return HTMLResponse("shown")
+
+    return once
+
+
+def with_id_probe(client: TestClient, asked: list[tuple[str, str]]) -> TestClient:
+    """``client``'s application with such a page added."""
+    cast("FastAPI", client.app).add_api_route(
+        ID_PROBE, fails_once(asked), methods=["GET", "HEAD"], response_class=HTMLResponse
+    )
+    return client
+
+
+def without_raw_path(app: ASGIApp) -> ASGIApp:
+    """``app`` under a server that gives no ``raw_path``, which ASGI leaves optional."""
+
+    async def served(scope: Scope, receive: Receive, send: Send) -> None:
+        await app({key: value for key, value in scope.items() if key != "raw_path"}, receive, send)
+
+    return served
+
+
+def try_again_of(page: str) -> str:
+    """Where the page's Try again link goes, as a browser reads it from the page."""
+    found = re.search(r'<a href="([^"]*)">Try again</a>', page)
+    assert found is not None, page[:600]
+    return html.unescape(found.group(1))
+
+
+def followed(client: TestClient, sent: str, asked: list[tuple[str, str]]) -> str:
+    """Ask for ``sent``, which fails once, then follow the Try again link the answer gives, as a
+    browser resolves one, dot segments removed. The link, as the page wrote it."""
+    first = client.get(f"/student/fallback-ids/{sent}?{QUERY}", headers=PAGE_HEADERS)
+    store_free_page(first, status=503, heading=NOT_SHOWN, alert=f"{NOT_USED} Try again")
+    assert len(asked) == 1, "the failed request isn't made again by the application"
+    link = try_again_of(first.text)
+    resolved = urljoin(f"http://testserver/student/fallback-ids/{sent}?{QUERY}", link)
+    again = client.get(resolved, headers=PAGE_HEADERS)
+    assert again.status_code == 200, (resolved, again.text[:300])
+    return link
+
+
+@pytest.mark.parametrize("case", list(IDS))
+def test_try_again_asks_for_the_same_id_and_query(case: str, tmp_path: pathlib.Path) -> None:
+    """The link is the address as it was sent, so what an id escapes stays part of the id."""
+    sent, item = IDS[case]
+    asked: list[tuple[str, str]] = []
+    with with_id_probe(open_client(tmp_path), asked) as client:
+        link = followed(client, sent, asked)
+
+    assert link == f"/student/fallback-ids/{sent}?{QUERY}"
+    assert asked == [(item, QUERY), (item, QUERY)]
+
+
+@pytest.mark.parametrize("case", list(IDS))
+def test_try_again_is_made_from_the_route_where_the_server_gives_no_raw_path(
+    case: str, tmp_path: pathlib.Path
+) -> None:
+    """The decoded path alone has lost which slashes were the id's, so the matched route and its
+    values make the address."""
+    sent, item = IDS[case]
+    asked: list[tuple[str, str]] = []
+    probed = with_id_probe(open_client(tmp_path), asked)
+    with TestClient(
+        without_raw_path(probed.app), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        link = followed(client, sent, asked)
+
+    assert link == f"/student/fallback-ids/{sent}?{QUERY}"
+    assert asked == [(item, QUERY), (item, QUERY)]
+
+
+def test_a_page_in_a_router_makes_its_whole_address_where_the_server_gives_no_raw_path(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The application's pages sit in routers with a prefix, and the route holds it."""
+    asked: list[tuple[str, str]] = []
+    router = APIRouter(prefix="/student/fallback-router-ids")
+    router.add_api_route(
+        "/{item:path}", fails_once(asked), methods=["GET"], response_class=HTMLResponse
+    )
+    application = open_client(tmp_path).app
+    cast("FastAPI", application).include_router(router)
+    with TestClient(
+        without_raw_path(application), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        answer = client.get("/student/fallback-router-ids/unit%2F3", headers=PAGE_HEADERS)
+
+    assert answer.status_code == 503
+    assert try_again_of(answer.text) == "/student/fallback-router-ids/unit%2F3"
+    assert asked == [("unit/3", "")]
+
+
+def test_a_path_as_sent_keeps_its_escapes_and_escapes_what_an_address_cant_hold() -> None:
+    assert navigation.asked_path(b"/a%2Fb%3Fc%23d/e-f_g.h~i") == "/a%2Fb%3Fc%23d/e-f_g.h~i"
+    assert navigation.asked_path(b"/a!$&'()*+,;=:@b") == "/a!$&'()*+,;=:@b"
+    assert navigation.asked_path(b"/a b") == "/a%20b"
+    assert navigation.asked_path(b"/caf\xc3\xa9") == "/caf%C3%A9"
+    assert navigation.asked_path(b"/a\\b") == "/a%5Cb"
+    assert navigation.asked_path(b'/a"b<c>d') == "/a%22b%3Cc%3Ed"
+    assert navigation.asked_path(b"/a?b#c") == "/a%3Fb%23c"
+
+
+def test_a_head_on_such_an_address_is_503_with_no_body_marked_no_store(
+    tmp_path: pathlib.Path,
+) -> None:
+    asked: list[tuple[str, str]] = []
+    with with_id_probe(open_client(tmp_path), asked) as client:
+        answer = client.head("/student/fallback-ids/unit%2F3", headers=PAGE_HEADERS)
+
+    assert answer.status_code == 503
+    assert answer.content == b""
+    assert answer.headers.get_list("cache-control") == ["no-store"]
+    assert asked == [("unit/3", "")]
+
+
+def test_a_get_of_the_way_back_itself_offers_only_try_again(tmp_path: pathlib.Path) -> None:
+    """Family review failing as a page: the way back would be the address Try again goes to."""
+
+    async def raised() -> HTMLResponse:
+        raise StoreBusy
+
+    client = open_client(tmp_path)
+    routes = cast("FastAPI", client.app).router.routes
+    routes.insert(0, APIRoute("/parent", raised, methods=["GET"], response_class=HTMLResponse))
+    with client:
+        answer = client.get("/parent", headers=PAGE_HEADERS)
+
+    main = store_free_page(answer, status=503, heading=NOT_SHOWN, alert=f"{NOT_USED} Try again")
+    assert ways_back_of(main) == []
+    assert try_again_of(main) == "/parent"
