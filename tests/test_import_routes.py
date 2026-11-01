@@ -12615,9 +12615,9 @@ def test_a_save_whose_post_is_refused_with_nothing_on_record_redirects(
 def test_a_recorded_save_whose_post_is_refused_on_a_readable_review_keeps_its_result(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A press whose acceptance is on record has committed, so a post that no longer matches its
-    page is no reason to lose the counts and the typing. The mismatch is set by the test: no real
-    path to it with an acceptance on record is known."""
+    """A press whose acceptance is on record has committed, so a post that doesn't match its page
+    is no reason to lose the counts and the typing. The mismatch is set by the test: no real path
+    to it with an acceptance on record is known."""
 
     async def no_post(*_: object, **__: object) -> tuple[None, str]:
         return None, "save"
