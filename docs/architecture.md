@@ -371,6 +371,19 @@ an assignment's details, and her To turn in list answer 503 the same way her
 week does, with a Try again link to the same address, and never say whether a
 save or a delete the address names happened.
 
+When a route marked for HTML recovery lets a store failure escape, the
+application returns a page that reads no store. This fallback handles
+`StoreBusy` and `WriterBusy`, `sqlite3.OperationalError` without a result code,
+and `sqlite3.Error` whose primary result code is `SQLITE_BUSY`, `SQLITE_PERM`,
+`SQLITE_READONLY`, `SQLITE_IOERR`, `SQLITE_CORRUPT`, `SQLITE_FULL`,
+`SQLITE_CANTOPEN`, `SQLITE_PROTOCOL` or `SQLITE_NOTADB`. Existing
+route-specific recovery takes precedence. GET responses use 503 and offer a Try
+again link to the same address; HEAD uses the same status without a response
+body. Other methods use 500, say Blossom couldn't tell whether the request went
+through, and offer navigation without a form for repeating the request. These
+pages make no claim about saved work or retained typing. Routes and exceptions
+outside this fallback keep their existing handling.
+
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update
 component, handed a context object that says who may update, where its forms
