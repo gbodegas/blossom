@@ -476,10 +476,10 @@ def where_it_failed(error: BaseException) -> str:
 
 def noted_after_commit(error: Exception) -> None:
     """A failure while making the page of a press known to have committed. A store's is noted as
-    any is. Anything else is an unexpected error, and this is the one place in these routes that
-    keeps one from the server, since a plain error here would hide a save that happened: it goes
-    on record at error level by its type and place alone, never its words or a traceback's text,
-    and never as a busy store."""
+    any is. Anything else is an unexpected error, kept from the server only here, once the press
+    has committed, since a plain error would hide a save that happened: it goes on record at
+    error level by its type and place alone, never its words or a traceback's text, and never as
+    a busy store."""
     if isinstance(error, (sqlite3.Error, WriterBusy, *STORE_REFUSALS)):
         noted(error)
         return
@@ -2165,6 +2165,18 @@ async def saved_page(
                 return await saved_busy(request, state, draft_id, lines)
         if post is not None:
             return await partly_saved(request, state, draft_id, post, lines, read=snapshot)
+        typed = await typing_of(request)
+        if typed:
+            return saved_outcome(
+                request,
+                state,
+                lines,
+                None,
+                finished=False,
+                typed=typed,
+                typed_said=UNSHOWN_TYPED,
+                review=f"{PREFIX}/{draft_id}",
+            )
         return to_review(state, draft_id, done=lines)
     except Exception as error:
         noted_after_commit(error)

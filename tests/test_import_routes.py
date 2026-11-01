@@ -54,6 +54,7 @@ from blossom.screenshot_save import (
     Saved,
     SaveHooks,
     correction_digest,
+    save_homework,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
 from blossom.stores.drafts import StoreBusy, WriterBusy
@@ -11590,8 +11591,9 @@ def test_a_resent_save_whose_record_can_t_be_read_answers_with_the_page_it_guard
 def test_an_error_that_isn_t_the_file_s_is_still_the_server_s(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str, caller: str
 ) -> None:
-    """The rule on these routes. The one exception, a press known to have committed, is
-    ``test_an_unexpected_error_after_the_commit_keeps_the_saved_result`` and the test after it."""
+    """The rule on these routes for a press that hasn't committed. A press known to have
+    committed is ``test_an_unexpected_error_after_the_commit_keeps_the_saved_result`` and the
+    test after it."""
 
     def broken(*_: object, **__: object) -> None:
         raise RuntimeError
@@ -11974,12 +11976,12 @@ ONE_OF_TWO: Final = "Saved: 1 new assignment. 1 still needs checking."
 def coded_error(code: int, name: str) -> sqlite3.OperationalError:
     """A failure of the household's file, carrying SQLite's code as a real one does."""
     error = sqlite3.OperationalError("synthetic words")
-    error.sqlite_errorcode = code  # type: ignore[attr-defined]
-    error.sqlite_errorname = name  # type: ignore[attr-defined]
+    error.sqlite_errorcode = code
+    error.sqlite_errorname = name
     return error
 
 
-REFUSED_READS: Final = {
+REFUSED_READS: Final[dict[str, Callable[[], Exception]]] = {
     "store busy": StoreBusy,
     "writer busy": WriterBusy,
     "file busy": lambda: coded_error(sqlite3.SQLITE_BUSY, "SQLITE_BUSY"),
@@ -12003,13 +12005,13 @@ def only_inside_the_save(
 ) -> None:
     """One store method replaced only while the save runs, so what it does comes after the
     save's commit and the page's own reads are the store's."""
-    real_save = imports.save_homework
+    real_save: Callable[..., object] = save_homework
     real = getattr(drafts, name)
 
     def saving(*args: object, **kwargs: object) -> object:
         setattr(drafts, name, replacement(real))
         try:
-            return real_save(*args, **kwargs)  # type: ignore[arg-type]
+            return real_save(*args, **kwargs)
         finally:
             setattr(drafts, name, real)
 
@@ -12186,7 +12188,7 @@ def test_a_save_whose_close_committed_though_it_was_refused_answers_as_finished(
     assert "See them on her week" in shown
 
 
-UNKNOWN_READS: Final = {
+UNKNOWN_READS: Final[dict[str, Callable[[], Exception]]] = {
     **REFUSED_READS,
     "another refusal": DraftFrozen,
 }
@@ -12282,7 +12284,7 @@ def test_a_page_after_a_commit_takes_one_read_of_the_review_as_it_is(
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
         if path == "resent":
             assert send(browser, draft_id, posted).status_code == 200
-        real = drafts.snapshot
+        real: Callable[..., object] = drafts.snapshot
         calls: list[int] = []
 
         def counted_read(*args: object, **kwargs: object) -> object:
@@ -12366,9 +12368,9 @@ def test_an_unexpected_error_after_the_commit_keeps_the_saved_result(
     kind: str,
     where: str,
 ) -> None:
-    """The one exception to letting a programming error reach the server: once a press is known
-    to have committed, its answer keeps the counts, the typing and the way back, with one error
-    record by kind and place, and it isn't said or logged as a busy store."""
+    """A programming error that doesn't reach the server: once a press is known to have
+    committed, its answer keeps the counts, the typing and the way back, with one error record
+    by kind and place, and it isn't said or logged as a busy store."""
     error = lambda: UNEXPECTED_ERRORS[kind](UNEXPECTED)  # noqa: E731
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
@@ -12379,11 +12381,11 @@ def test_an_unexpected_error_after_the_commit_keeps_the_saved_result(
         if where == "its read":
             put_back = restored(drafts, "snapshot", from_the_read(drafts.snapshot, 2, error))
         else:
-            real_save = imports.save_homework
+            real_save: Callable[..., object] = save_homework
             target = {"the kept corrections": "saved_corrections", "the rows": "rows_of"}[where]
 
             def saving(*args: object, **kwargs: object) -> object:
-                done = real_save(*args, **kwargs)  # type: ignore[arg-type]
+                done = real_save(*args, **kwargs)
                 monkeypatch.setattr(imports, target, refuses(error))
                 return done
 
@@ -12441,6 +12443,37 @@ def test_an_unexpected_error_on_a_resent_press_keeps_the_saved_result(
     the_diagnostic(caplog, "ValueError")
 
 
+def test_a_resent_press_whose_post_can_t_be_read_against_the_page_keeps_its_typing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press found on record only once its first read was refused, and its post no longer
+    matching the review: nothing can be put back in the form, so the counts, the typing to copy
+    and the way back answer it, not a redirect that would lose what was typed."""
+
+    async def no_post(*_: object, **__: object) -> tuple[None, str]:
+        return None, "save"
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        first_unit, _, other = typed_on_the_row_left(page)
+        drafts = state_of(browser).import_drafts
+        posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
+        assert send(browser, draft_id, posted).status_code == 200
+        monkeypatch.setattr(imports, "review_post", no_post)
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 1, StoreBusy))
+        answer = send(browser, draft_id, posted)
+        put_back()
+        monkeypatch.undo()
+
+    the_saved_heading(answer, ONE_OF_TWO)
+    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert BACK_TO_REVIEW.format(draft_id) in answer.text
+    assert not says(answer.text, imports.REVIEW_NOT_SHOWN)
+    assert not says(answer.text, imports.PRESS_SAID["incomplete"])
+
+
 @pytest.mark.parametrize("refusal", ["store busy", "file failing"])
 def test_a_store_failure_after_the_commit_is_no_programming_error(
     tmp_path: pathlib.Path,
@@ -12455,10 +12488,10 @@ def test_a_store_failure_after_the_commit_is_no_programming_error(
         page = her_name_answered(browser, draft_id, page)
         first_unit, _, other = typed_on_the_row_left(page)
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
-        real_save = imports.save_homework
+        real_save: Callable[..., object] = save_homework
 
         def saving(*args: object, **kwargs: object) -> object:
-            done = real_save(*args, **kwargs)  # type: ignore[arg-type]
+            done = real_save(*args, **kwargs)
             monkeypatch.setattr(imports, "rows_of", refuses(REFUSED_READS[refusal]))
             return done
 
