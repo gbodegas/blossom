@@ -27,7 +27,8 @@ import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, Final
+from types import SimpleNamespace
+from typing import Any, Final, cast
 from urllib.parse import urlencode
 
 import pytest
@@ -51,6 +52,7 @@ from blossom.screenshot_save import (
     CONFIRMABLE,
     AlreadySaved,
     NotSaved,
+    ReviewState,
     Saved,
     SaveHooks,
     correction_digest,
@@ -68,7 +70,7 @@ from blossom.stores.import_drafts import (
     DraftNotFound,
     new_creation_token,
 )
-from blossom.stores.project_state import Assignment, AssignmentKind
+from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from blossom.uploads import as_new_image, prepare_image
 from tests.support import (
     ARRIVAL_CUE,
@@ -12112,6 +12114,7 @@ def test_a_save_whose_first_read_is_refused_with_rows_open_answers_as_if_the_rea
     assert ONE_OF_TWO in lines_in(DONE.search(answer.text))
     assert says(answer.text, imports.PRESS_SAID["unsaved_typing"])
     assert TYPED_ON_THE_OTHER in html.unescape(review_form(answer.text))
+    assert TYPED_BACK.findall(answer.text) == []
     assert 'value="save"' in answer.text
     assert swept.closed == 0
     assert left.closed_at is None
@@ -13180,26 +13183,34 @@ def test_a_recorded_press_whose_post_now_refuses_says_what_it_saved(
     assert "Nothing was kept or saved" not in html.unescape(again.text)
 
 
-@pytest.mark.parametrize("cards", [1, 2], ids=["its last row", "a row left open"])
+@pytest.mark.parametrize("case", ["its last row", "a row left open"])
 def test_a_second_press_refused_by_the_first_says_what_the_first_saved(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, cards: int
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     """A double press: the second finds nothing on record, the first commits, and the second's own
-    keep is refused. Its acceptance is on record by then, so it answers as a resend, with the counts
-    and the typing, and not that the review is finished or out of date."""
-    typed = "2026-10-02"
-    answer = homework_answer(cards=[homework_card()]) if cards == 1 else homework_answer()
+    keep is refused, as the review has closed or moved on. Its acceptance is on record by then, so
+    it answers as a resend, with the counts and the typing, and not that the review is finished or
+    out of date."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
-        page = her_name_answered(browser, draft_id, page)
-        unit = units_on(page)[0]
-        box = "correct:" + json.dumps([f"date:{unit}", "assigned"], separators=(",", ":"))
-        page = followed(
-            browser, send(browser, draft_id, page_post(page, "keep", typed={box: typed}))
-        )
-        posted = page_post(page, "save", tick=[unit])
+        if case == "its last row":
+            typed = "2026-10-02"
+            answer = homework_answer(cards=[homework_card()])
+            draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+            page = her_name_answered(browser, draft_id, page)
+            unit = units_on(page)[0]
+            box = "correct:" + json.dumps([f"date:{unit}", "assigned"], separators=(",", ":"))
+            page = followed(
+                browser, send(browser, draft_id, page_post(page, "keep", typed={box: typed}))
+            )
+            posted = page_post(page, "save", tick=[unit])
+        else:
+            typed = TYPED_ON_THE_OTHER
+            draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+            page = her_name_answered(browser, draft_id, page)
+            first_unit, _, other = typed_on_the_row_left(page)
+            posted = page_post(page, "save", tick=[first_unit], typed={other: typed})
         drafts = state_of(browser).import_drafts
-        real_keep = drafts.keep_answers
+        real_keep: Callable[..., object] = drafts.keep_answers
         fired: list[int] = []
 
         def after_the_first_press(*args: object, **kwargs: object) -> object:
@@ -13207,7 +13218,7 @@ def test_a_second_press_refused_by_the_first_says_what_the_first_saved(
                 fired.append(1)
                 monkeypatch.setattr(drafts, "keep_answers", real_keep)
                 assert send(browser, draft_id, posted).status_code == 200
-            return real_keep(*args, **kwargs)  # type: ignore[arg-type]
+            return real_keep(*args, **kwargs)
 
         monkeypatch.setattr(drafts, "keep_answers", after_the_first_press)
         second = send(browser, draft_id, posted)
@@ -13216,6 +13227,65 @@ def test_a_second_press_refused_by_the_first_says_what_the_first_saved(
     assert second.status_code == 200
     assert "Saved: 1 new assignment" in html.unescape(second.text)
     assert typed in html.unescape(second.text)
+
+
+@pytest.mark.parametrize(
+    ("corrections", "pairs", "held", "shown"),
+    [
+        ({"row": {"title": "T"}}, {"a": "x", "b": "y"}, {"x": "T", "y": "T"}, True),
+        ({"row": {"title": "T"}}, {"a": "x", "b": "y"}, {"x": "T", "y": "U"}, False),
+        ({"row": {"title": "T"}}, {"a": "x"}, {"x": "T"}, False),
+        ({"row": {"title": None}}, {"a": "x", "b": "y"}, {"x": "T", "y": "T"}, False),
+        ({"row": {"unknown": "T"}}, {"a": "x", "b": "y"}, {"x": "T", "y": "T"}, False),
+        ({"other": {"title": "T"}}, {"a": "x", "b": "y"}, {"x": "T", "y": "T"}, False),
+    ],
+    ids=[
+        "every piece holds it",
+        "one piece doesn't",
+        "one piece isn't this save's",
+        "a removal",
+        "a field the record doesn't say",
+        "a row of no piece",
+    ],
+)
+def test_a_row_s_correction_counts_as_stored_only_where_every_piece_holds_it(
+    monkeypatch: pytest.MonkeyPatch,
+    corrections: dict[str, dict[str, str | None]],
+    pairs: dict[str, str],
+    held: dict[str, str],
+    shown: bool,
+) -> None:
+    """A row's correction speaks for all its pieces, so every one must be this save's and hold it.
+    A row saves as one group on the page, so a row only partly this save's is checked here."""
+    pieces = [SimpleNamespace(name="a", key="row"), SimpleNamespace(name="b", key="row")]
+    on_file = {target: {"title": {text}} for target, text in held.items()}
+    monkeypatch.setattr(screenshot_save, "values_on_record", lambda *_: on_file)
+
+    found = screenshot_save.stored_corrections(
+        cast("ProjectStateStore", object()),
+        cast("ReviewState", SimpleNamespace(pieces=pieces)),
+        list(pairs.items()),
+        corrections,
+    )
+
+    assert found == ((("row", "title", "T"),) if shown else ())
+
+
+def test_a_date_s_correction_speaks_for_its_own_piece(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pieces joined on one assignment: the date it holds is stored, and the other isn't."""
+    pieces = [SimpleNamespace(name="a", key="a"), SimpleNamespace(name="b", key="b")]
+    monkeypatch.setattr(
+        screenshot_save, "values_on_record", lambda *_: {"x": {"due": {"2026-10-21"}}}
+    )
+
+    found = screenshot_save.stored_corrections(
+        cast("ProjectStateStore", object()),
+        cast("ReviewState", SimpleNamespace(pieces=pieces)),
+        [("a", "x"), ("b", "x")],
+        {"date:a": {"due": "2026-10-21"}, "date:b": {"due": "2026-10-22"}},
+    )
+
+    assert found == (("date:a", "due", "2026-10-21"),)
 
 
 @pytest.mark.parametrize("path", ["save", "resent"])
