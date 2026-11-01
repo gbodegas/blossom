@@ -1108,6 +1108,13 @@ class ProjectStateStore(
         """
         return self._lock
 
+    def transaction_open(self) -> bool:
+        """Whether this connection is inside a transaction now. With no transaction open, one that
+        was begun has ended, by a commit or by a rollback SQLite made itself, and this can't tell
+        which: a caller that owns the transaction and commits nothing early can read a rollback
+        from it."""
+        return self._connection.in_transaction
+
     @contextmanager
     def reading(self) -> Iterator[None]:
         """Hold the store and read one snapshot of the file, however many reads it takes.

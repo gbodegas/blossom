@@ -19,6 +19,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import pathlib
 import sqlite3
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, datetime
@@ -99,6 +100,23 @@ from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStat
 
 
 logger = logging.getLogger(__name__)
+
+PACKAGE: Final = pathlib.Path(__file__).resolve().parent
+"""Blossom's own code, whose lines an unexpected error's record names."""
+
+
+def where_it_failed(error: BaseException) -> str:
+    """The deepest line of Blossom's own code in ``error``'s traceback, as " at <file>:<line> in
+    <function>"; empty when there is none. Only code's names, never what it was working on."""
+    found = ""
+    step = error.__traceback__
+    while step is not None:
+        ran = step.tb_frame.f_code
+        file = pathlib.Path(ran.co_filename).resolve()
+        if file.is_relative_to(PACKAGE):
+            found = f" at {file.relative_to(PACKAGE).as_posix()}:{step.tb_lineno} in {ran.co_name}"
+        step = step.tb_next
+    return found
 
 
 class SaveHooks:
@@ -784,6 +802,11 @@ def unit_digests(state: ReviewState) -> dict[str, tuple[str, ...]]:
 # ------------------------------------------------------------------ the save
 
 
+TRANSACTION_NOT_ITS_OWN: Final = "a transaction was already open on the record's connection"
+TRANSACTION_ENDED: Final = "SQLite ended its transaction before its commit"
+"""Why a save can't be called saved, for its log line. They name no homework."""
+
+
 def save_homework(
     record: ProjectStateStore,
     drafts: ImportDraftsStore,
@@ -798,14 +821,27 @@ def save_homework(
     instant, with the household's date at it, serves every check and write of the
     transaction: a save that waited past the review's expiry is refused, and one whose checks
     passed completes even if the review expires before it commits. A failure after the commit
-    is reported in ``incomplete`` and never undoes or hides the save."""
+    is reported in ``incomplete`` and never undoes or hides the save.
+
+    This save begins and commits its own transaction, and nothing inside it commits early, so a
+    transaction open at the start isn't its own, and none open before its commit can only mean
+    SQLite has ended it. Either way nothing it wrote can be said to be saved, whatever the block
+    returned: only leaving the block commits, and a commit with no transaction open says nothing."""
     try:
-        with record.comparing_and_writing():
-            now = clock.now()
-            outcome = _homework_transaction(record, press, now, day_at(household, now), hooks)
+        with record.exclusively():
+            if record.transaction_open():
+                raise GradeTransactionLost(TRANSACTION_NOT_ITS_OWN)
+            with record.comparing_and_writing():
+                now = clock.now()
+                outcome = _homework_transaction(record, press, now, day_at(household, now), hooks)
+                if isinstance(outcome, Saved) and not record.transaction_open():
+                    raise GradeTransactionLost(TRANSACTION_ENDED)
     except (_Changed, AnswerNotAsked):
         return NotSaved("changed")
-    except (NameFormNotSaved, GradeTransactionLost):
+    except NameFormNotSaved:
+        return NotSaved("failed")
+    except GradeTransactionLost as error:
+        logger.warning("A screenshot save couldn't finish: %s", error)
         return NotSaved("failed")
     except sqlite3.OperationalError as error:
         busy = error.sqlite_errorcode in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
@@ -1008,13 +1044,20 @@ def stored_corrections(
     transaction: those whose text an assignment it wrote now holds in that field. A date
     correction speaks for its own piece. Any other speaks for its row, so every piece of the row
     must have been written and hold it. Nothing else is claimed, so what a choice left off, what
-    an earlier press wrote and a field with no match aren't here. A failure of this read costs
-    only the evidence and never the save."""
+    an earlier press wrote and a field with no match aren't here. A failure of the file is raised,
+    as any in this transaction is, since SQLite may have ended it: the save fails and rolls back.
+    Any other error here costs only the evidence, on record by its type and place."""
     targets = dict(pairs)
     try:
         held = values_on_record(record, set(targets.values()))
+    except sqlite3.Error:
+        raise
     except Exception as error:
-        logger.warning("What a save stored couldn't be read back: %s", type(error).__name__)
+        logger.error(
+            "What a save stored couldn't be read back: %s%s",
+            type(error).__name__,
+            where_it_failed(error),
+        )
         return ()
     row_pieces: dict[str, list[str]] = {}
     for piece in state.pieces:
