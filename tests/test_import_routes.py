@@ -12581,12 +12581,12 @@ def test_a_refused_post_of_another_press_redirects_though_its_acceptance_is_on_r
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
-        first_unit, _, _ = typed_on_the_row_left(page)
-        assert (
-            send(browser, draft_id, page_post(page, "save", tick=[first_unit])).status_code == 200
-        )
+        first_unit, _, other = typed_on_the_row_left(page)
+        typed = {other: TYPED_ON_THE_OTHER}
+        posted = page_post(page, "save", tick=[first_unit], typed=typed)
+        assert send(browser, draft_id, posted).status_code == 200
         monkeypatch.setattr(imports, "review_post", no_post)
-        answer = send(browser, draft_id, page_post(page, press, tick=[first_unit]))
+        answer = send(browser, draft_id, page_post(page, press, tick=[first_unit], typed=typed))
         monkeypatch.undo()
 
     assert answer.status_code == 303
