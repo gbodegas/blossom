@@ -160,6 +160,10 @@ class Saved:
     counts: tuple[int, int, int, int] = (0, 0, 0, 0)
     """Assignments added, updated and already saved by this save, and what is left to check:
     open pieces, rows waiting on their split question and "couldn't read" items."""
+    created: tuple[str, ...] = ()
+    """The pieces this save made a new assignment of, from their corrected readings, so what was
+    typed on them is stored. ``pairs`` also names pieces landed on an assignment already saved,
+    where a choice among dates or instructions can leave what was typed off it."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -878,6 +882,7 @@ def _homework_transaction(
     by_entry = {entry.dest: entry for entry in state.preview}
     added = updated = unchanged = 0
     written: list[str] = []
+    created: list[str] = []
     for chosen in ready:
         for dest, names in sorted(state.validation.destinations.items()):
             if not set(names) <= set(chosen):
@@ -887,6 +892,7 @@ def _homework_transaction(
             entry = by_entry[dest]
             if dest[0] == "new":
                 added += 1
+                created += names
             elif entry.nothing_new:
                 unchanged += 1
             else:
@@ -963,6 +969,7 @@ def _homework_transaction(
         tuple(changed),
         tuple(already),
         counts=(added, updated, unchanged, left),
+        created=tuple(created),
     )
 
 
