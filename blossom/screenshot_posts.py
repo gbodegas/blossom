@@ -445,11 +445,17 @@ def none_confirms(state: ReviewState, none_given: Iterable[str]) -> list[str]:
 
 
 def typed_back(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
-    """Each correction a post typed, by field, in the order it was posted: a box's text that
-    differs from its value with no correction as the ``read:`` field beside it names it, or for
-    a date box posted empty, the date Blossom couldn't read that was carried beside it. Read
-    from the post alone, never from the review, to give back as typed when the review can't
-    take it; a name that doesn't name a correction is passed over."""
+    """Each correction a post typed, by field and text, as ``typed_for`` finds them."""
+    return tuple((field, text) for _, field, text in typed_for(items))
+
+
+def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
+    """Each correction a post typed, by the row or piece it names, its field and its text, in the
+    order it was posted: a box's text that differs from its value with no correction as the
+    ``read:`` field beside it names it, or for a date box posted empty, the date Blossom couldn't
+    read that was carried beside it. Read from the post alone, never from the review, to give
+    back as typed when the review can't take it; a name that doesn't name a correction is passed
+    over."""
     found: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
     unchanged = {
@@ -478,7 +484,7 @@ def typed_back(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
     for subject, text in carried.items():
         if not found.get(subject, "").strip():
             found[subject] = text
-    return tuple((field, text) for (_, field), text in found.items() if text.strip())
+    return tuple((key, field, text) for (key, field), text in found.items() if text.strip())
 
 
 # ------------------------------------------------------------------ saved progress

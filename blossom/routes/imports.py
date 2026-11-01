@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import logging
+import pathlib
 import secrets
 import sqlite3
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -59,7 +60,7 @@ from blossom.screenshot_posts import (
     read_change,
     read_review,
     shape_four,
-    typed_back,
+    typed_for,
 )
 from blossom.screenshot_reading import ReadOutcome, read_screenshots
 from blossom.screenshot_review import Corrections, change_told, value_json
@@ -68,6 +69,7 @@ from blossom.screenshot_save import (
     NotSaved,
     Replayed,
     ReviewState,
+    Saved,
     SaveOutcome,
     SavePress,
     review_state,
@@ -196,6 +198,9 @@ DISCLOSED: Final = (
 
 templates = page_templates()
 logger = logging.getLogger(__name__)
+
+PACKAGE: Final = pathlib.Path(__file__).resolve().parent.parent
+"""Blossom's own code, whose lines an unexpected error's record names."""
 
 
 def image_refusal(place: int, kind: str) -> str:
@@ -455,6 +460,36 @@ def noted(error: Exception) -> None:
         logger.warning("an import page's store call failed: %s", type(error).__name__)
 
 
+def where_it_failed(error: BaseException) -> str:
+    """The deepest line of Blossom's own code in ``error``'s traceback, as " at <file>:<line> in
+    <function>"; empty when there is none. Only code's names, never what it was working on."""
+    found = ""
+    step = error.__traceback__
+    while step is not None:
+        ran = step.tb_frame.f_code
+        file = pathlib.Path(ran.co_filename).resolve()
+        if file.is_relative_to(PACKAGE):
+            found = f" at {file.relative_to(PACKAGE).as_posix()}:{step.tb_lineno} in {ran.co_name}"
+        step = step.tb_next
+    return found
+
+
+def noted_after_commit(error: Exception) -> None:
+    """A failure while making the page of a press known to have committed. A store's is noted as
+    any is. Anything else is an unexpected error, and this is the one place in these routes that
+    keeps one from the server, since a plain error here would hide a save that happened: it goes
+    on record at error level by its type and place alone, never its words or a traceback's text,
+    and never as a busy store."""
+    if isinstance(error, (sqlite3.Error, WriterBusy, *STORE_REFUSALS)):
+        noted(error)
+        return
+    logger.error(
+        "A page after a committed save failed unexpectedly: %s%s",
+        type(error).__name__,
+        where_it_failed(error),
+    )
+
+
 def upload_refusal(request: Request, state: ApplicationState, error: Exception) -> Response:
     """A store's refusal of an upload: a busy store wrote nothing, so the screenshots weren't
     added and sending them again is what works; any other refusal as a press's."""
@@ -568,19 +603,17 @@ async def gone_with_typing(
     gone: str,
     said: Sequence[str],
     status: int,
-    *,
-    saved: bool = False,
 ) -> Response:
     """A press on a review that expired, or that the sweep took away: what the press did first, if
-    anything committed, as an ended review's page says it (``ended_lines``; ``saved`` when its
-    homework committed), then why the review can't take more, and every correction the post
-    typed in a box to copy, read from the post alone.
+    anything committed, as an ended review's page says it (``ended_lines``), then why the review
+    can't take more, and every correction the post typed in a box to copy, read from the post
+    alone. A save that committed answers through ``saved_unread`` instead.
     Nothing of the review is shown, nothing is stored, and nothing more can be saved from it."""
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
-            "said": [*ended_lines(said, saved=saved), SAID[gone]],
+            "said": [*ended_lines(said, saved=False), SAID[gone]],
             "typed": await typing_of(request),
             "typed_said": TYPED_SAID,
             "marks": marks_of(state),
@@ -590,15 +623,25 @@ async def gone_with_typing(
     )
 
 
-async def typing_of(request: Request) -> list[tuple[str, str]]:
-    """Every correction a press's post typed, labeled, read from the post alone (``typed_back``),
-    to give back in boxes to copy where the review can't keep it."""
+async def typing_of(
+    request: Request, written: Iterable[tuple[str, str]] = ()
+) -> list[tuple[str, str]]:
+    """Every correction a press's post typed, labeled, read from the post alone (``typed_for``),
+    to give back in boxes to copy where the review can't keep it. A correction that names a row
+    or a piece the press's save wrote (``written``, its record's pairs) is left out, since that
+    commit stored it; with none named, every correction is given back."""
     try:
         form = await form_of(request)
     except FormUnreadable:
         return []
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
-    return [(TYPED_LABELS[field.partition(":")[0]], text) for field, text in typed_back(items)]
+    names = {name for name, _ in written}
+    rows = {name.split("|")[0] for name in names}
+    return [
+        (TYPED_LABELS[field.partition(":")[0]], text)
+        for key, field, text in typed_for(items)
+        if not (key.removeprefix("date:") in names if key.startswith("date:") else key in rows)
+    ]
 
 
 async def unshown_with_typing(
@@ -725,16 +768,18 @@ async def snapshot_keeping_typing(
     said: Sequence[str] = (),
     status: int | None = None,
     done: Sequence[str] = (),
+    written: Iterable[tuple[str, str]] = (),
 ) -> DraftSnapshot | Response:
     """The review as one read sees it after a press, or the page that says why it can't be
     shown: for a review that expired or is gone, what the press did and its typing. After a
-    save that committed (``done``, what it saved), a review the store refuses to read for a
-    busy store answers with what it saved, that the review can't be shown, the press's typing
-    and the way back to it (``saved_busy``), never that nothing was saved; one known to have
-    expired, or to be gone, says so beneath what it saved (``saved_unread``). Any other press
-    the store refuses to read for answers with its own lines and status
-    (``unshown_with_typing``). A file that refuses the read for any reason answers as a busy
-    store does."""
+    save that committed (``done``, what it saved; ``written``, its record's pairs), every answer
+    keeps what it saved and the typing. A review the store refuses to read, for any reason,
+    answers with that the review can't be shown and the way back to it (``saved_busy``), never
+    that nothing was saved; one known to have expired, or to be gone, says so beneath what it
+    saved (``saved_unread``); one found closed, as another tab can leave it, answers as a finished
+    review does (``saved_finished``). Any other press the store refuses to read for answers with
+    its own lines and status (``unshown_with_typing``). A file that refuses the read for any
+    reason answers as a busy store does."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
@@ -747,8 +792,12 @@ async def snapshot_keeping_typing(
         noted(error)
         return await unshown(request, state, draft_id, said, status, done)
     except STORE_REFUSALS as error:
+        if done:
+            return await unshown(request, state, draft_id, said, status, done)
         return await refused_keeping_typing(request, state, error, said, status)
     if snapshot.closed_at is not None:
+        if done:
+            return await saved_finished(request, state, done, said, written, closed=True)
         return said_page(request, marks_of(state), SAID["closed"], 200)
     return snapshot
 
@@ -1654,14 +1703,16 @@ async def with_typing(
     said: Sequence[str],
     status: int,
     done: Sequence[str] = (),
+    read: DraftSnapshot | None = None,
 ) -> Response:
     """A press that saved nothing, or a save that left the review open, answers with the
     review as it stands now, the corrections it typed and the groups it ticked still in the
     form, so nothing typed is lost and an answer just kept stays matched to the corrections it
     was given with. A press that posts no ticks, an offer or a found row, is ticked as a plain
     load would tick the page. A review that expired meanwhile answers with what the press did
-    and its typing to copy."""
-    after = await snapshot_keeping_typing(request, state, draft_id, said, status, done)
+    and its typing to copy. A caller that has just read the review passes that read
+    (``read``), so a later one can't answer differently."""
+    after = read or await snapshot_keeping_typing(request, state, draft_id, said, status, done)
     if isinstance(after, Response):
         return after
     lines = list(said)
@@ -1835,21 +1886,45 @@ async def outcome_page(
     if outcome.already_units:
         done.append(PRESS_SAID["already"])
     problems = [PRESS_SAID["changed"]] if outcome.changed_units else []
-    if outcome.incomplete:
-        lines = [PRESS_SAID["incomplete"], *done, *problems]
-        now = await review_state_now(state, draft_id)
-        if now == "busy":
-            notes = [PRESS_SAID["incomplete"], *problems]
-            return await saved_busy(request, state, draft_id, done, notes)
-        if now is not None:
-            return await gone_with_typing(request, state, now, lines, 200, saved=True)
-        return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
+    try:
+        return await committed_page(
+            request, state, draft_id, post, outcome, answered, done, problems
+        )
+    except Exception as error:
+        noted_after_commit(error)
+        return await saved_busy(request, state, draft_id, done, problems)
+
+
+async def committed_page(
+    request: Request,
+    state: ApplicationState,
+    draft_id: str,
+    post: ReviewPost,
+    outcome: Saved,
+    answered: bool,
+    done: list[str],
+    problems: Sequence[str],
+) -> Response:
+    """A save that committed, by what is known of its review. Where the save couldn't confirm
+    whether it finished the review (``incomplete``), one read decides, and the page takes that
+    read as it is: rows still open answer as a save that left them open; a finished review says
+    the cleanup closes it; a closed one is the finished answer; and a read that fails, or an
+    ended review, promises no cleanup, since the cleanup closes only a finished review."""
     if outcome.closed:
+        typed = await typing_of(request, outcome.pairs)
         week = await week_of(state, outcome.pairs)
-        return saved_outcome(request, state, [*done, *problems], week)
-    if answered:
+        return saved_outcome(request, state, [*done, *problems], week, typed=typed)
+    read: DraftSnapshot | None = None
+    if outcome.incomplete:
+        now = await snapshot_keeping_typing(
+            request, state, draft_id, problems, 200, done, outcome.pairs
+        )
+        if isinstance(now, Response):
+            return now
+        read = now
+    if answered and (read is None or not read.finished):
         done.append(PRESS_SAID["left_open"])
-    return await partly_saved(request, state, draft_id, post, done, problems)
+    return await partly_saved(request, state, draft_id, post, done, problems, read, outcome.pairs)
 
 
 async def week_of(state: ApplicationState, pairs: Iterable[tuple[str, str]]) -> str | None:
@@ -1913,6 +1988,39 @@ def saved_outcome(
     )
 
 
+async def saved_finished(
+    request: Request,
+    state: ApplicationState,
+    done: Sequence[str],
+    said: Sequence[str],
+    written: Iterable[tuple[str, str]],
+    *,
+    closed: bool,
+) -> Response:
+    """A save that committed, its review read as finished: what it saved, her week, and to copy
+    whatever it typed that the save didn't store (``written``, the record's pairs). A closed
+    review says it's finished. One not closed says that couldn't be confirmed and the cleanup
+    closes it, the one page that promises this, since the cleanup closes only a finished review.
+    Lines that point at the review's rows are said as a page without them says them."""
+    typed = await typing_of(request, written)
+    week = await week_of(state, written)
+    lines = ended_lines(done, saved=True)
+    if closed:
+        return saved_outcome(
+            request, state, [*lines, *ended_lines(said, saved=True)], week, typed=typed
+        )
+    rest = [shown for line in said for shown in UNSHOWN_SAID.get(line, (line,))]
+    return saved_outcome(
+        request,
+        state,
+        lines,
+        week,
+        finished=False,
+        typed=typed,
+        problems=[PRESS_SAID["incomplete"], *rest],
+    )
+
+
 async def partly_saved(
     request: Request,
     state: ApplicationState,
@@ -1920,14 +2028,21 @@ async def partly_saved(
     post: ReviewPost,
     done: list[str],
     said: Sequence[str] = (),
+    read: DraftSnapshot | None = None,
+    written: Iterable[tuple[str, str]] = (),
 ) -> Response:
     """A save that leaves the review open: the outcome in the success style, and the rows left
     open with the corrections the press typed still in the form, marked as not saved, none of
-    them stored. A review that expired since answers with the outcome and the typing to
-    copy."""
-    after = await snapshot_keeping_typing(request, state, draft_id, said, 200, done)
+    them stored. A caller that has just read the review passes that read (``read``), and the
+    page takes it as it is. A review that expired since answers with the outcome and the typing
+    to copy, and one that has finished since answers as a finished review does."""
+    after = read or await snapshot_keeping_typing(
+        request, state, draft_id, said, 200, done, written
+    )
     if isinstance(after, Response):
         return after
+    if after.finished:
+        return await saved_finished(request, state, done, said, written, closed=False)
     problems = list(said)
     try:
         kept = await saved_corrections(state, after)
@@ -1936,7 +2051,7 @@ async def partly_saved(
         return await saved_busy(request, state, draft_id, done, said)
     if unsaved_typing(after, post.corrections, kept):
         problems.append(PRESS_SAID["unsaved_typing"])
-    return await with_typing(request, state, draft_id, post, problems, 200, done)
+    return await with_typing(request, state, draft_id, post, problems, 200, done, after)
 
 
 def unsaved_typing(
@@ -2002,51 +2117,58 @@ async def saved_page(
     the way back to it (``saved_busy``), and for a review known to have expired, or to be gone,
     with that said beneath the counts as a refused press does. Counts the household's file
     refuses to read are said not to be shown, the save itself acknowledged, in the same
-    pattern (``saved_busy``); a review it refuses to read is said as for a busy store."""
+    pattern (``saved_busy``); a review it refuses to read is said as for a busy store. Its
+    acceptance on record means the press committed, so an unexpected error keeps the save's
+    result the same way (``noted_after_commit``)."""
     record = state.project_state
     try:
         student = await asyncio.to_thread(record.student_id)
         counts = await asyncio.to_thread(record.homework_counts, student, draft_id, acceptance)
-    except sqlite3.Error as error:
-        noted(error)
+    except Exception as error:
+        noted_after_commit(error)
         return await saved_busy(request, state, draft_id, [*said, COUNTS_UNSHOWN])
     lines = [*said, counted(*counts)] if counts else said
-    gone: list[str] = []
-    busy = False
     try:
-        snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
-    except (DraftExpired, DraftNotFound) as error:
-        snapshot, gone = None, [SAID[gone_by(error)]]
-    except (StoreBusy, WriterBusy, sqlite3.Error) as error:
-        noted(error)
-        snapshot, busy = None, True
-    except STORE_REFUSALS:
-        snapshot = None
-    if snapshot is None or snapshot.closed_at is not None or snapshot.finished:
-        if not counts:
-            return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
+        gone: list[str] = []
+        busy = False
         try:
-            pairs = await asyncio.to_thread(
-                record.homework_acceptance, student, draft_id, acceptance
-            )
-        except sqlite3.Error as error:
+            snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+        except (DraftExpired, DraftNotFound) as error:
+            snapshot, gone = None, [SAID[gone_by(error)]]
+        except (StoreBusy, WriterBusy, sqlite3.Error) as error:
             noted(error)
-            pairs = None
-        week = await week_of(state, pairs or ())
-        if busy:
-            return await saved_busy(request, state, draft_id, lines, [], week)
-        if snapshot is None:
-            return await saved_unread(request, state, lines, gone, week)
-        return saved_outcome(request, state, lines, week)
-    if post is None:
-        try:
-            post, _ = await review_post(request, state, snapshot)
-        except sqlite3.Error as error:
-            noted(error)
-            return await saved_busy(request, state, draft_id, lines)
-    if post is not None:
-        return await partly_saved(request, state, draft_id, post, lines)
-    return to_review(state, draft_id, done=lines)
+            snapshot, busy = None, True
+        except STORE_REFUSALS:
+            snapshot = None
+        if snapshot is None or snapshot.closed_at is not None or snapshot.finished:
+            if not counts:
+                return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
+            try:
+                pairs = await asyncio.to_thread(
+                    record.homework_acceptance, student, draft_id, acceptance
+                )
+            except sqlite3.Error as error:
+                noted(error)
+                pairs = None
+            week = await week_of(state, pairs or ())
+            if busy:
+                return await saved_busy(request, state, draft_id, lines, [], week)
+            if snapshot is None:
+                return await saved_unread(request, state, lines, gone, week)
+            typed = await typing_of(request, pairs or ())
+            return saved_outcome(request, state, lines, week, typed=typed)
+        if post is None:
+            try:
+                post, _ = await review_post(request, state, snapshot)
+            except sqlite3.Error as error:
+                noted(error)
+                return await saved_busy(request, state, draft_id, lines)
+        if post is not None:
+            return await partly_saved(request, state, draft_id, post, lines, read=snapshot)
+        return to_review(state, draft_id, done=lines)
+    except Exception as error:
+        noted_after_commit(error)
+        return await saved_busy(request, state, draft_id, lines or [COUNTS_UNSHOWN])
 
 
 # ------------------------------------------------------------------ find under another name
