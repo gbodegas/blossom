@@ -49,6 +49,7 @@ from blossom.routes.navigation import (
     WEEK_PAGE,
     address,
     asked_address,
+    asked_path,
     note_href,
     segment,
 )
@@ -181,6 +182,22 @@ def where_in_the_routes(error: BaseException, endpoint: Callable[..., object]) -
     return found
 
 
+def the_address_asked_for(request: Request, route: APIRoute) -> str:
+    """The address of this request, as the request sent it where the server gives its path as
+    sent. Where it doesn't, which ASGI allows, the matched route and its values make the path,
+    since the decoded path has lost which slashes were an id's. An id's escaped slash, question
+    mark or number sign stays escaped either way, so the address asks for the same id."""
+    raw = request.scope.get("raw_path")
+    path = (
+        asked_path(raw)
+        if isinstance(raw, bytes)
+        else route.path_format.format_map(
+            {name: segment(str(value)) for name, value in request.path_params.items()}
+        )
+    )
+    return asked_address(path, request.scope["query_string"])
+
+
 def store_failure_page(
     marks: PageMarks,
 ) -> Callable[[Request, Exception], Awaitable[HTMLResponse]]:
@@ -219,21 +236,14 @@ def store_failure_page(
             week = "Back to her week" if parent_reads(request) else "Back to my week"
             ways_back = [ReturnLink(WEEK_PAGE, week)]
         if again:
-            ways_back = [link for link in ways_back if link.href != request.url.path]
+            ways_back = [link for link in ways_back if link.href != request.scope["path"]]
         return templates.TemplateResponse(
             request,
             "page_unavailable.html",
             {
                 "heading": PAGE_NOT_SHOWN if again else ANSWER_NOT_SHOWN,
                 "alert": RECORDS_UNUSED if again else OUTCOME_UNKNOWN,
-                "again": (
-                    asked_address(
-                        "/".join(segment(part) for part in request.url.path.split("/")),
-                        request.scope["query_string"],
-                    )
-                    if again
-                    else None
-                ),
+                "again": the_address_asked_for(request, route) if again else None,
                 "again_label": "Try again",
                 "ways_back": ways_back,
                 "family": family,
