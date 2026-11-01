@@ -384,6 +384,17 @@ through, and offer navigation without a form for repeating the request. These
 pages make no claim about saved work or retained typing. Routes and exceptions
 outside this fallback keep their existing handling.
 
+A screenshot save that has committed always says so. Its answer keeps the
+counts and what was typed through whatever follows. A review read as still
+open shows its rows with the typing in their boxes; one read as finished or
+closed gives back whatever typing the save didn't store; and when the review
+can't be read, the page keeps the counts, the typing and a way back to it. The
+hourly cleanup is promised only of a review read as finished, since it closes
+no other. Once a press is known to have committed, an unexpected error while
+making its page doesn't reach the server, since a plain error would hide a save
+that happened: it is logged at error level by its type and place alone, and the
+page says only that the review can't be shown.
+
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update
 component, handed a context object that says who may update, where its forms

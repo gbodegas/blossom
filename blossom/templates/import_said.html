@@ -11,7 +11,9 @@
   be shown, then the typing and the way back to the review. A press whose open review can't be
   read says what it kept in the status style, which takes the focus, and the rest with the line
   that the review can't be shown in the problem style, which takes it when nothing was kept,
-  then the typing and the way back to the review.
+  then the typing and the way back to the review. A save whose review reads finished but not
+  closed shows its counts the same way with what it says of the cleanup in the problem style,
+  and, like a finished review's page, whatever typing it didn't store to copy.
 #}
 {% extends "base.html" %}
 {% macro typed_back(typed, typed_said) %}
