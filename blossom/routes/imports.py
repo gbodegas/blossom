@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Final, NamedTuple
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from blossom.anthropic_client import model_configured
@@ -237,7 +237,12 @@ def screenshots_here(request: Request) -> None:
         raise ScreenshotsNotHere
 
 
-router = APIRouter(prefix=PREFIX, dependencies=[Depends(screenshots_here)], include_in_schema=False)
+router = APIRouter(
+    prefix=PREFIX,
+    dependencies=[Depends(screenshots_here)],
+    include_in_schema=False,
+    default_response_class=HTMLResponse,
+)
 State = Annotated[ApplicationState, Depends(get_application_state)]
 
 

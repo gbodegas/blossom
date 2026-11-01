@@ -39,6 +39,9 @@ UNRESERVED: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 """The characters a path segment may carry as they are; every other one is escaped."""
 QUERY_KEPT: Final = frozenset({ord(kept) for kept in UNRESERVED | set("!$%&()*+,/:;=?@[\\]^`{|}")})
 """The bytes a browser sends in a query as they are; every other one is escaped."""
+PATH_KEPT: Final = frozenset({ord(kept) for kept in UNRESERVED | set("!$%&'()*+,/:;=@")})
+"""The bytes a path as sent keeps as they are: those a path may hold, an escape's ``%`` among
+them. Any other is escaped, so the address never ends early or fails to read."""
 
 Target = Literal["week", "today", "family", "to_turn_in"]
 TARGETS: Final[tuple[str, ...]] = ("week", "today", "family", "to_turn_in")
@@ -114,6 +117,13 @@ def asked_address(path: str, query: bytes) -> str:
     so the address never ends early or fails to read."""
     kept = "".join(chr(byte) if byte in QUERY_KEPT else f"%{byte:02X}" for byte in query)
     return f"{path}?{kept}" if kept else path
+
+
+def asked_path(raw: bytes) -> str:
+    """The path of an address on this site as a request sent it, so what it escapes stays
+    escaped: a slash, a question mark or a number sign inside an id is still part of the id.
+    A byte a path can't hold is escaped, which asks for the same byte."""
+    return "".join(chr(byte) if byte in PATH_KEPT else f"%{byte:02X}" for byte in raw)
 
 
 def instructions_review_href(assignment_id: str, *, result: str | None = None) -> str:
