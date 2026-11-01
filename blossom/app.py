@@ -11,14 +11,12 @@ Stores are opened by the lifespan handler, not at import, so importing this
 module has no side effects.
 """
 
-import inspect
 import logging
 import pathlib
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable
 from typing import Final
-from urllib.parse import quote
 
 import fastapi
 import starlette
@@ -27,7 +25,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 
-import blossom
 from blossom.captures import NotACaptureId, capture_id_from
 from blossom.clock import Clock
 from blossom.dependencies import create_lifespan
@@ -47,7 +44,14 @@ from blossom.routes import (
     verifier,
 )
 from blossom.routes.forms import FormUnreadable
-from blossom.routes.navigation import FAMILY_PAGE, WEEK_PAGE, address, asked_address, note_href
+from blossom.routes.navigation import (
+    FAMILY_PAGE,
+    WEEK_PAGE,
+    address,
+    asked_address,
+    note_href,
+    segment,
+)
 from blossom.routes.store_refusals import store_failure
 from blossom.routes.student import ReturnLink, parent_reads
 from blossom.settings import PageMarks, Settings, get_settings
@@ -80,10 +84,11 @@ PAGE_NOT_SHOWN: Final = "This page can't be shown right now"
 RECORDS_UNUSED: Final = "Blossom couldn't use the household's records."
 ANSWER_NOT_SHOWN: Final = "This can't be shown right now"
 OUTCOME_UNKNOWN: Final = "Blossom couldn't tell whether this went through."
-PACKAGE: Final = pathlib.Path(inspect.getfile(blossom)).resolve().parent
+PACKAGE: Final = pathlib.Path(__file__).resolve().parent
 ROUTES: Final = PACKAGE / "routes"
-FRAMEWORK: Final = tuple(
-    pathlib.Path(inspect.getfile(module)).resolve().parent for module in (starlette, fastapi)
+FRAMEWORK: Final = (
+    pathlib.Path(starlette.__file__).resolve().parent,
+    pathlib.Path(fastapi.__file__).resolve().parent,
 )
 """The web framework's own folders, where a walk inward from an endpoint stops."""
 
@@ -160,7 +165,7 @@ def where_in_the_routes(error: BaseException, endpoint: Callable[..., object]) -
     endpoint's own inward, up to the first frame of the web framework after it. A layer around
     the routes is only ever reached through the framework, so its frame, kept by an error
     raised again, is never named. Empty when there is no such frame."""
-    code = getattr(inspect.unwrap(endpoint), "__code__", None)
+    code = getattr(endpoint, "__code__", None)
     step = error.__traceback__
     while step is not None and step.tb_frame.f_code is not code:
         step = step.tb_next
@@ -222,7 +227,10 @@ def store_failure_page(
                 "heading": PAGE_NOT_SHOWN if again else ANSWER_NOT_SHOWN,
                 "alert": RECORDS_UNUSED if again else OUTCOME_UNKNOWN,
                 "again": (
-                    asked_address(quote(request.url.path), request.scope["query_string"])
+                    asked_address(
+                        "/".join(segment(part) for part in request.url.path.split("/")),
+                        request.scope["query_string"],
+                    )
                     if again
                     else None
                 ),
