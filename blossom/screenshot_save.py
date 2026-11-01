@@ -18,6 +18,7 @@ it, and a resent press replays the save by its acceptance id.
 import dataclasses
 import hashlib
 import json
+import logging
 import sqlite3
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, datetime
@@ -97,6 +98,9 @@ from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStat
 # ------------------------------------------------------------------ the seam for crash tests
 
 
+logger = logging.getLogger(__name__)
+
+
 class SaveHooks:
     """A test-only seam: each method runs at a named point of a save and does nothing. It holds
     no state and decides nothing; production never passes one."""
@@ -160,10 +164,10 @@ class Saved:
     counts: tuple[int, int, int, int] = (0, 0, 0, 0)
     """Assignments added, updated and already saved by this save, and what is left to check:
     open pieces, rows waiting on their split question and "couldn't read" items."""
-    created: tuple[str, ...] = ()
-    """The pieces this save made a new assignment of, from their corrected readings, so what was
-    typed on them is stored. ``pairs`` also names pieces landed on an assignment already saved,
-    where a choice among dates or instructions can leave what was typed off it."""
+    stored: tuple[tuple[str, str, str], ...] = ()
+    """The corrections this save can show it stored, each by its key, field and text
+    (``stored_corrections``). ``pairs`` says where pieces landed, not what they kept: a choice
+    among dates or instructions can leave what was typed off an assignment it names."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -882,7 +886,6 @@ def _homework_transaction(
     by_entry = {entry.dest: entry for entry in state.preview}
     added = updated = unchanged = 0
     written: list[str] = []
-    created: list[str] = []
     for chosen in ready:
         for dest, names in sorted(state.validation.destinations.items()):
             if not set(names) <= set(chosen):
@@ -892,7 +895,6 @@ def _homework_transaction(
             entry = by_entry[dest]
             if dest[0] == "new":
                 added += 1
-                created += names
             elif entry.nothing_new:
                 unchanged += 1
             else:
@@ -969,8 +971,66 @@ def _homework_transaction(
         tuple(changed),
         tuple(already),
         counts=(added, updated, unchanged, left),
-        created=tuple(created),
+        stored=stored_corrections(record, state, pairs, press.corrections),
     )
+
+
+def values_on_record(
+    record: ProjectStateStore, targets: Collection[str]
+) -> dict[str, dict[str, set[str]]]:
+    """What these assignments hold now, as a correction's text says it, by the field it corrects:
+    class, title, due and assigned dates, and the school instructions that apply."""
+    rows = [a for a in record.all_assignments() if a.assignment_id in targets]
+    kept = record.school_instruction_readings(a.assignment_id for a in rows).readable
+    return {
+        a.assignment_id: {
+            "course": {a.course},
+            "title": {a.title},
+            "due": {a.due_date.isoformat()} if a.due_date else set(),
+            "assigned": {a.assigned_on.isoformat()} if a.assigned_on else set(),
+            "instruction": (
+                {seen.text for seen in kept[a.assignment_id].current}
+                if a.assignment_id in kept
+                else set()
+            ),
+        }
+        for a in rows
+    }
+
+
+def stored_corrections(
+    record: ProjectStateStore,
+    state: ReviewState,
+    pairs: Sequence[tuple[str, str]],
+    corrections: Corrections,
+) -> tuple[tuple[str, str, str], ...]:
+    """The corrections this save can show it stored, read back from the record inside its
+    transaction: those whose text an assignment it wrote now holds in that field. A date
+    correction speaks for its own piece. Any other speaks for its row, so every piece of the row
+    must have been written and hold it. Nothing else is claimed, so what a choice left off, what
+    an earlier press wrote and a field with no match aren't here. A failure of this read costs
+    only the evidence and never the save."""
+    targets = dict(pairs)
+    try:
+        held = values_on_record(record, set(targets.values()))
+    except Exception as error:
+        logger.warning("What a save stored couldn't be read back: %s", type(error).__name__)
+        return ()
+    row_pieces: dict[str, list[str]] = {}
+    for piece in state.pieces:
+        row_pieces.setdefault(piece.key, []).append(piece.name)
+    found = []
+    for key, fields in corrections.items():
+        names = [key.removeprefix("date:")] if key.startswith("date:") else row_pieces.get(key, [])
+        if not names or any(name not in targets for name in names):
+            continue
+        for field, text in fields.items():
+            kind = field.partition(":")[0]
+            if text is not None and all(
+                text in held.get(targets[name], {}).get(kind, ()) for name in names
+            ):
+                found.append((key, field, text))
+    return tuple(found)
 
 
 def _open_units(

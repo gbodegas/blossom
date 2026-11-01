@@ -1,6 +1,7 @@
 {# SPDX-License-Identifier: AGPL-3.0-or-later #}
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {% extends "base.html" %}
+{% from "import_typed_back.html" import typed_back %}
 {% block title %}Blossom - Homework screenshots{% endblock %}
 {% block content %}
   <h1>Home&shy;work screen&shy;shots</h1>
@@ -27,6 +28,7 @@
       {% for line in said %}<p>{{ line }}</p>{% endfor %}
     </div>
   {% endif %}
+  {% if typed %}<section class="panel">{{ typed_back(typed, typed_said) }}</section>{% endif %}
   {#
     Each screenshot as one compact row: its thumbnail at a fixed width, its place and how it
     stands, then View screenshot and, while the review is open to changes, its Remove press on

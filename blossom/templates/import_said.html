@@ -16,15 +16,7 @@
   and, like a finished review's page, whatever typing it didn't store to copy.
 #}
 {% extends "base.html" %}
-{% macro typed_back(typed, typed_said) %}
-  <div class="typed-back">
-    <p class="note">{{ typed_said }}</p>
-    {% for label, text in typed %}
-      <label>{{ label }} <textarea rows="2" readonly>
-{{ text }}</textarea></label>
-    {% endfor %}
-  </div>
-{% endmacro %}
+{% from "import_typed_back.html" import typed_back %}
 {% block title %}Blossom - Homework screenshots{% endblock %}
 {% block content %}
   <h1>Home&shy;work screen&shy;shots</h1>

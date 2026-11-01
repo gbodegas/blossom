@@ -1,0 +1,14 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#
+  What a press typed, given back in boxes to copy.
+#}
+{% macro typed_back(typed, typed_said) %}
+  <div class="typed-back">
+    <p class="note">{{ typed_said }}</p>
+    {% for label, text in typed %}
+      <label>{{ label }} <textarea rows="2" readonly>
+{{ text }}</textarea></label>
+    {% endfor %}
+  </div>
+{% endmacro %}

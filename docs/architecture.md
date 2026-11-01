@@ -387,8 +387,10 @@ outside this fallback keep their existing handling.
 A screenshot save that has committed always says so. Its answer keeps the
 counts and what was typed through whatever follows. A review read as still
 open shows its rows with the typing in their boxes; one read as finished or
-closed gives back whatever typing the save didn't store; and when the review
-can't be read, the page keeps the counts, the typing and a way back to it. The
+closed has none to show; and when the review can't be read, the page keeps the
+counts and a way back to it. Each typed field ends in a box, in a box to copy,
+or left out because the save read that exact value back from the assignment it
+wrote, inside its own transaction. A resent press has no such evidence. The
 hourly cleanup is promised only of a review read as finished, since it closes
 no other. Once a press is known to have committed, an unexpected error while
 making its page doesn't reach the server, since a plain error would hide a save
