@@ -545,7 +545,9 @@ page says it with 409, and the API answers 201 with the run's record, as for
 any run that ended without a plan. Store failures on the family-page decision
 are another exception: its recovery page uses 503 for a failed read before the
 write or a confirmed recording, and 500 for an uncertain outcome; the JSON
-route keeps its existing responses. The decision field admits exactly the two
+route keeps its existing responses. Once the graph invocation has begun, these
+store-failure recovery pages offer a GET link, "Return to Family review", and
+no decision form. The decision field admits exactly the two
 button values, and the reason is capped at `REASON_MAX_LENGTH`, five hundred
 characters, on the form and on the JSON request alike, so a longer one is
 refused at the boundary rather than stored. A decision the page refuses before
