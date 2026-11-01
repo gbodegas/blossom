@@ -12446,9 +12446,9 @@ def test_an_unexpected_error_on_a_resent_press_keeps_the_saved_result(
 def test_a_resent_press_whose_post_can_t_be_read_against_the_page_keeps_its_typing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A press found on record only once its first read was refused, and its post no longer
-    matching the review: nothing can be put back in the form, so the counts, the typing to copy
-    and the way back answer it, not a redirect that would lose what was typed."""
+    """A press found on record only once its first read was refused, and its post not matching
+    the review: nothing can be put back in the form, so the counts, the typing to copy and the
+    way back answer it, not a redirect that would lose what was typed."""
 
     async def no_post(*_: object, **__: object) -> tuple[None, str]:
         return None, "save"
