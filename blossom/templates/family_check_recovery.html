@@ -9,9 +9,12 @@
   a parent typed, so nothing typed is lost with the failure. A refusal says
   which page can't be shown after its own words (``line``); a check, a
   reopening, or a reply the file refused says nothing was changed. Nothing
-  here reads the record, and nothing here says anything was saved. A plan
-  press's answer gives the focus to its first sentence instead, as the answer
-  built it, so a long answer arrives with its opening on the screen.
+  here reads the record. Nothing here says anything was saved, except a
+  decision on a plan that the table is known to hold, which the decide press
+  says was recorded; a decision's note it can't show as stored is labeled as
+  typed (``reason_label``). A plan press's answer gives the focus to its first
+  sentence instead, as the answer built it, so a long answer arrives with its
+  opening on the screen.
 #}
 {% block content %}
   <h1>Family review</h1>
@@ -30,7 +33,7 @@
     <textarea id="kept-reply" rows="3" readonly>{{ reply }}</textarea>
   {% endif %}
   {% if reason %}
-    <label for="kept-reason">Note about this plan (optional)</label>
+    <label for="kept-reason">{{ reason_label or "Note about this plan (optional)" }}</label>
     <textarea id="kept-reason" rows="3" readonly>{{ reason }}</textarea>
   {% endif %}
   <p class="return"><a href="/parent">Return to Family review</a></p>

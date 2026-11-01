@@ -79,6 +79,7 @@ from blossom.assignment_status import AssignmentStatus, basis_parts, statuses_fo
 from blossom.captures import what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
+from blossom.drafts import DraftStatus
 from blossom.evening import PlanUpdates, Staleness, limit_now, plan_updates, staleness
 from blossom.hand_in import NEEDS_HAND_IN
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
@@ -172,6 +173,7 @@ from blossom.routes.runs import (
     tidy_thread,
     unknown_outcome,
 )
+from blossom.routes.store_refusals import RECORDS_UNREAD, busy_file
 from blossom.routes.student import (
     FAMILY_HELP,
     HELP_SHE_ASKED_FOR,
@@ -850,6 +852,35 @@ async def read_for_the_decision[T](call: Callable[[], T]) -> T:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=RECORD_TOO_SLOW) from error
 
 
+DECISION_STORE_FAILURES: Final = (sqlite3.Error, StoreBusy, WriterBusy)
+"""The failures of a store that a decision from the family page is answered for."""
+
+
+@dataclass
+class DecisionTrace:
+    """How far a decision from the family page went, for its answer when a store fails: whether
+    the graph's write began, whether it resumed the decision the thread held, whether it
+    returned and its record was read back, and, after a write that raised, the record as read
+    once more, or the kind of failure that left it unread."""
+
+    began: bool = False
+    resumed: bool = False
+    returned: bool = False
+    read_back: bool = False
+    record: DraftRecord | None = None
+    unread: str | None = None
+
+
+async def read_again(state: ApplicationState, draft_id: str, trace: DecisionTrace) -> None:
+    """The draft's record read once more into ``trace``, within the store's wait, after the
+    decision's write raised a store's failure. A read the store refuses, or one that runs past
+    the wait, leaves it unread. Any other failure isn't caught here."""
+    try:
+        trace.record = await bounded(partial(state.drafts.get, draft_id), STORE_WAIT_SECONDS)
+    except (Unfinished, *DECISION_STORE_FAILURES) as error:
+        trace.unread = type(error).__name__
+
+
 class PlanGoneStale(HTTPException):
     """Looks good refused for a waiting plan that has stopped fitting the evening: 409, with
     the words that say why."""
@@ -859,7 +890,12 @@ class PlanGoneStale(HTTPException):
 
 
 async def decide_draft(
-    state: ApplicationState, build: PlanGraphBuilder, draft_id: str, request: DecisionRequest
+    state: ApplicationState,
+    build: PlanGraphBuilder,
+    draft_id: str,
+    request: DecisionRequest,
+    *,
+    trace: DecisionTrace | None = None,
 ) -> DecisionView:
     """The decision, from the table check to the resumed thread, under one lock.
 
@@ -878,6 +914,11 @@ async def decide_draft(
     says and whatever the evening's signal says now, since the review was
     checked against the evening when it was given; a request that disagrees
     with what stood is told so.
+
+    ``trace``, which only the family page passes, is marked as the decision goes.
+    When the graph's write raises a store's failure, the record is read once more
+    for it, once every write the run started has ended and still under the lock,
+    and the failure is then raised as it was. Without one, nothing more is read.
     """
     async with state.decision_lock:
         record = await read_for_the_decision(partial(state.drafts.get, draft_id))
@@ -919,6 +960,8 @@ async def decide_draft(
                 status.HTTP_409_CONFLICT,
                 detail=unresumable(record.plan_date, state.clock.today()),
             ) from error
+        if trace is not None:
+            trace.began, trace.resumed = True, resume is None
         try:
             await awaited_to_the_end(graph.ainvoke(resume, config=config, durability=DURABILITY))
         except (AlreadyDecided, NotPublished) as error:
@@ -930,7 +973,17 @@ async def decide_draft(
             # cleared now is left to the sweep.
             await tidy_thread(record.thread_id, state)
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except DECISION_STORE_FAILURES:
+            # The write may have landed or not, and the thread may hold the decision for
+            # the sweep or the next press: only the record, read once more, can tell.
+            if trace is not None:
+                await read_again(state, draft_id, trace)
+            raise
+        if trace is not None:
+            trace.returned = True
         decided = await read_for_the_decision(partial(state.drafts.get, draft_id))
+        if trace is not None:
+            trace.read_back = True
         # The decision is in the table; the loop is over and its state is cleared.
         await tidy_thread(record.thread_id, state)
     if decided is None or decided.waiting:
@@ -1244,8 +1297,7 @@ def review_page(
     and the folds below.
 
     ``problem`` is what a form action could not do, shown once at the top with
-    the status the JSON route would have answered, so the page tells the truth
-    the API tells; ``problem_field`` names the entry field it is about, so the
+    ``status_code``; ``problem_field`` names the entry field it is about, so the
     page can mark it and put the cursor there. ``paste`` and ``entry`` are a
     draft to show again, as it was, with the section open. ``check`` is what
     one row of the assignment updates shows beyond the record, a check made
@@ -2348,10 +2400,12 @@ def family_not_shown(
     kept: FamilyKept | None = None,
     title: str = "Family review",
     opening: tuple[str, str] | None = None,
+    reason_label: str | None = None,
 ) -> HTMLResponse:
     """The family page's stand-in, which reads no store: what happened, which page can't be
     shown when a refusal's own page is what failed, and what a parent typed. ``opening`` is a
-    plan press's answer as its first sentence, which takes the focus, and the rest."""
+    plan press's answer as its first sentence, which takes the focus, and the rest.
+    ``reason_label`` labels a kept reason in place of the plan box's own label."""
     typed = kept or FamilyKept()
     return templates.TemplateResponse(
         request,
@@ -2363,6 +2417,7 @@ def family_not_shown(
             "note": typed.note,
             "reply": typed.reply,
             "reason": typed.reason,
+            "reason_label": reason_label,
             "opening": opening,
             "marks": state.settings.page_marks,
         },
@@ -2417,8 +2472,8 @@ def refused_on_the_page(
     elsewhere: str | None = None,
     plan_answer: PlanAnswer | None = None,
 ) -> HTMLResponse:
-    """A form action the family page refused, said at its top with the status the JSON route
-    would answer, ``check`` the link to the run it names, ``help_reply`` a reply to her
+    """A form action the family page refused, said at its top with ``status_code``,
+    ``check`` the link to the run it names, ``help_reply`` a reply to her
     request as typed, and ``reason_kept`` a note about a plan as typed, tried once.
     ``plan_date_kept`` refills the plan form's date, ``offers_plan`` false leaves the plan
     form out, ``open_plan`` opens a plan, and ``elsewhere`` is the problem as its stand-in
@@ -2704,7 +2759,8 @@ async def decide_from_the_page(
     box while the plan waits there with its form, marked and focused when the words are
     what was refused, and under the problem otherwise. The problem leads to the box when
     the words are what was refused or the plan went stale. A refusal whose page can't be
-    read keeps its status, with the reason as typed, on the family page's stand-in.
+    read keeps its status, with the reason as typed, on the family page's stand-in. A
+    store's failure is answered by how far the decision went (``decision_store_answer``).
     """
     typed = FamilyKept(reason=reason)
     words = reason.strip()
@@ -2730,9 +2786,27 @@ async def decide_from_the_page(
             reason_kept=ReasonKept(draft_id, reason, at_reason=True),
         )
     decided = DecisionRequest(approved=decision == "approve", reason=words or None)
+    trace = DecisionTrace()
     try:
-        await decide_draft(state, graphs.build, draft_id, decided)
+        await decide_draft(state, graphs.build, draft_id, decided, trace=trace)
+    except DECISION_STORE_FAILURES as error:
+        return await asyncio.to_thread(
+            decision_store_answer, request, state, error, trace, decided, typed, kept
+        )
     except HTTPException as error:
+        if trace.returned and not trace.read_back:
+            # The write returned, so its decision is recorded: only the read after it ran
+            # past the store's wait.
+            return await asyncio.to_thread(
+                decision_store_answer,
+                request,
+                state,
+                error.__cause__ or error,
+                trace,
+                decided,
+                typed,
+                kept,
+            )
         if kept is not None and isinstance(error, PlanGoneStale):
             kept = ReasonKept(draft_id, reason, stale=True)
         return await asyncio.to_thread(
@@ -2745,6 +2819,116 @@ async def decide_from_the_page(
             reason_kept=kept,
         )
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
+
+
+DECISION_RECORDED: Final[Mapping[bool, str]] = {
+    True: "Your decision was recorded: this plan is approved.",
+    False: "Your decision was recorded: you asked for a change to this plan.",
+}
+"""What a decision this press made says, by its button, once the table is known to hold it."""
+A_DECISION_RECORDED: Final = "A decision on this plan is recorded."
+"""What a decision the table holds says when it isn't known to be this press's: one the thread
+held from an earlier press, or another choice, or other words."""
+DECISION_UNKNOWN: Final = "Blossom couldn't tell whether a decision on this plan was recorded."
+"""What a decision's write that raised says when its record shows no decision as the table
+records one, waiting, closed another way, gone or inconsistent, or can't be read again: a
+decision the thread holds can still be recorded later, so no more is said."""
+NOTE_AS_TYPED: Final = "Your note, as typed"
+"""The label of a note kept on these answers, which says nothing of its being saved."""
+CHOICES: Final[Mapping[bool, str]] = {True: "approved", False: "rejected"}
+"""What the table records for each button."""
+
+
+def decision_on_record(record: DraftRecord) -> bool:
+    """Whether ``record`` holds a decision as the table records one: approved with an
+    approval's status, or rejected with a draft's, published, and stamped. Anything else is
+    waiting, closed another way, or a decision its other columns don't bear out."""
+    return (
+        record.published
+        and record.decided_at is not None
+        and (record.decision, record.status)
+        in {
+            ("approved", DraftStatus.APPROVED_FOR_MANUAL_SEND),
+            ("rejected", DraftStatus.DRAFT),
+        }
+    )
+
+
+def decision_store_answer(
+    request: Request,
+    state: ApplicationState,
+    error: BaseException,
+    trace: DecisionTrace,
+    decided: DecisionRequest,
+    typed: FamilyKept,
+    kept: ReasonKept | None,
+) -> HTMLResponse:
+    """A decision whose store failed, answered by how far it went.
+
+    Before the graph's write began, nothing can have been recorded: the record couldn't be
+    read in time when the failure was busy, and the household's records couldn't be read
+    otherwise, 503, on the family page tried once. After the write returned, its decision is
+    recorded. After it raised, only the record read once more can show a decision recorded,
+    as this press's when the press resumed nothing and its choice and words are the ones
+    recorded. These are said on the stand-in, with nothing more read: a decision recorded,
+    503, or that it can't be told, 500. The note is kept as typed unless it is known to be
+    stored. One warning names the failure's kind."""
+    kind = type(error).__name__
+    if not trace.began:
+        logger.warning("a decision's record could not be read: %s", kind)
+        busy = not isinstance(error, sqlite3.Error) or busy_file(error)
+        return refused_on_the_page(
+            request,
+            state,
+            RECORD_TOO_SLOW if busy else RECORDS_UNREAD,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            typed,
+            reason_kept=kept,
+        )
+    if trace.returned:
+        logger.warning("a decision recorded could not be read back: %s", kind)
+        return decision_recorded(request, state, decided, ours=not trace.resumed, typed=typed)
+    unread = f"; its record could not be read again: {trace.unread}" if trace.unread else ""
+    logger.warning("a decision's write failed: %s%s", kind, unread)
+    record = trace.record
+    if trace.unread is None and record is not None and decision_on_record(record):
+        ours = (
+            not trace.resumed
+            and record.decision == CHOICES[decided.approved]
+            and record.reason == decided.reason
+        )
+        return decision_recorded(request, state, decided, ours=ours, typed=typed)
+    return family_not_shown(
+        request,
+        state,
+        DECISION_UNKNOWN,
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+        line=FAMILY_NOT_SHOWN,
+        kept=typed,
+        reason_label=NOTE_AS_TYPED,
+    )
+
+
+def decision_recorded(
+    request: Request,
+    state: ApplicationState,
+    decided: DecisionRequest,
+    *,
+    ours: bool,
+    typed: FamilyKept,
+) -> HTMLResponse:
+    """A decision the table holds, said on the stand-in, 503: this press's by its button, with
+    no note, since its words are stored with it; or one not known to be this press's, with the
+    note as typed."""
+    return family_not_shown(
+        request,
+        state,
+        DECISION_RECORDED[decided.approved] if ours else A_DECISION_RECORDED,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        line=FAMILY_NOT_SHOWN,
+        kept=None if ours else typed,
+        reason_label=NOTE_AS_TYPED,
+    )
 
 
 router.add_api_route(
