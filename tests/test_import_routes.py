@@ -13583,19 +13583,58 @@ def test_a_save_refuses_to_join_a_transaction_already_open(
     assert on_file == ([], 0)
 
 
+def commit_on_saved_work(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, list[tuple[str, str]]]:
+    """A row landing on saved work, a note typed as its instruction and the school's own chosen."""
+    answer = homework_answer(cards=[homework_card()])
+    draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+    page = her_name_answered(browser, draft_id, page)
+    assert send(browser, draft_id, page_post(page, "save", tick=units_on(page))).status_code == 200
+    again, page = read_review(browser, monkeypatch, (BLUE, answer))
+    if not units_on(page):
+        page = her_name_answered(browser, again, page)
+    typed = {f"correct:{box_subject(page, 'instruction:0')}": "A note of my own"}
+    asked = send(browser, again, page_post(page, "save", tick=units_on(page), typed=typed))
+    [question] = fields_named(review_form(asked.text), "answer:instructions:")
+    choice = {f"answer:instructions:{question}": json.dumps("Complete pages 12 to 14.")}
+    kept = followed(browser, send(browser, again, page_post(asked.text, "keep", choose=choice)))
+    return again, page_post(kept, "save", tick=units_on(kept))
+
+
+def commit_of_joined_pieces(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, list[tuple[str, str]]]:
+    """Two rows of one name joined on one new assignment, one of their dates chosen."""
+    draft_id, page = read_review(browser, monkeypatch, (RED, two_rows_of_one_name()))
+    page = her_name_answered(browser, draft_id, page)
+    asked, question = join_on_one_new_assignment(browser, draft_id, page, {})
+    kept = followed(
+        browser, send(browser, draft_id, page_post(asked, "keep", choose={question: "2026-10-20"}))
+    )
+    return draft_id, page_post(kept, "save", tick=units_on(kept))
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [about_to_commit_a_typed_title, commit_of_joined_pieces, commit_on_saved_work],
+    ids=["a new assignment", "joined pieces", "saved work"],
+)
 def test_a_save_begins_and_commits_one_transaction_of_its_own(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    commit: Callable[[TestClient, pytest.MonkeyPatch], tuple[str, list[tuple[str, str]]]],
 ) -> None:
     """Why no open transaction before the commit can only mean a lost one: traced on the record's
-    connection, a real save begins once, and nothing between its transaction's return and that
-    begin commits, rolls back or changes the schema."""
+    connection, the transaction a real save writes in begins once, and nothing between that begin
+    and its commit commits, rolls back or changes the schema."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, posted = about_to_commit_a_typed_title(browser, monkeypatch)
+        draft_id, posted = commit(browser, monkeypatch)
         record = state_of(browser).project_state
         seen: list[str] = []
-        real = screenshot_save._homework_transaction
+        real: Callable[..., object] = screenshot_save._homework_transaction
 
-        def traced(*args: Any, **kwargs: Any) -> object:  # noqa: ANN401
+        def traced(*args: object, **kwargs: object) -> object:
             done = real(*args, **kwargs)
             seen.append("returned")
             return done
@@ -13613,8 +13652,53 @@ def test_a_save_begins_and_commits_one_transaction_of_its_own(
         record._connection.set_trace_callback(None)
         monkeypatch.undo()
 
+    returned = seen.index("returned")
+    begun = returned - 1 - seen[returned - 1 :: -1].index("BEGIN")
     assert answer.status_code == 200
-    assert seen == ["BEGIN", "returned", "COMMIT"]
+    assert seen[begun : returned + 2] == ["BEGIN", "returned", "COMMIT"]
+
+
+@pytest.mark.parametrize("holder", ["writing", "reading"])
+def test_another_request_s_transaction_makes_a_save_wait_not_refuse(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, holder: str
+) -> None:
+    """Another thread holds the store with a transaction open as this press reaches its save, so
+    from here the connection is in a transaction that isn't this save's to refuse. The check at its
+    start is under the store's lock, so it waits for that thread, and then it commits."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        posted = page_post(page, "save", tick=units_on(page))
+        record = state_of(browser).project_state
+        started, go = threading.Event(), threading.Event()
+        open_from_here: list[bool] = []
+
+        def hold() -> None:
+            with record.comparing_and_writing() if holder == "writing" else record.reading():
+                if holder == "reading":
+                    record.all_assignments()
+                started.set()
+                go.wait(5)
+                time.sleep(0.2)
+
+        other = threading.Thread(target=hold)
+        real_save: Callable[..., object] = save_homework
+
+        def saving(*args: object, **kwargs: object) -> object:
+            other.start()
+            started.wait(5)
+            open_from_here.append(record.transaction_open())
+            go.set()
+            return real_save(*args, **kwargs)
+
+        monkeypatch.setattr(imports, "save_homework", saving)
+        pressed = send(browser, draft_id, posted)
+        other.join()
+        monkeypatch.undo()
+
+    assert open_from_here == [True]
+    assert "Saved: 1 new assignment." in page_text(pressed)
 
 
 def carried_beside_a_date_box(
@@ -13955,3 +14039,59 @@ def test_the_line_about_the_rows_below_depends_on_the_rows_shown(
 
     assert says(pressed.text, imports.PRESS_SAID["unsaved_typing"]) == (what == "shown")
     assert TYPED_BACK.findall(pressed.text) == (["Typed On B"] if what == "set aside" else [])
+
+
+def test_the_line_about_the_rows_below_keeps_its_place_among_the_press_s_lines(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real commit with a group changed and the name check failing as the rows are made: what the
+    press found, then the changes on the rows below, then what making the rows found."""
+    answer = homework_answer(
+        cards=[
+            homework_card(),
+            homework_card(
+                badge="DUE",
+                course="Science 8",
+                title="Vocab 4",
+                instruction=None,
+                footer=None,
+                y_top=360,
+                y_bottom=430,
+            ),
+            homework_card(
+                badge="DUE",
+                course="Math 8",
+                title="Set 3",
+                instruction=None,
+                footer=None,
+                y_top=450,
+                y_bottom=520,
+            ),
+        ]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        first_unit, second_unit, _ = units_on(page)
+        real_save: Callable[..., object] = save_homework
+
+        async def refused(*_: object, **__: object) -> None:
+            raise UnreadableHouseholdSecret
+
+        def saving(*args: object, **kwargs: object) -> object:
+            done = real_save(*args, **kwargs)
+            monkeypatch.setattr(imports, "grade_name_key", refused)
+            return done
+
+        monkeypatch.setattr(imports, "save_homework", saving)
+        typed = {correct_box(second_unit, "title"): "Changed title"}
+        pressed = send(
+            browser, draft_id, page_post(page, "save", tick=[first_unit, second_unit], typed=typed)
+        )
+        monkeypatch.undo()
+
+    assert lines_in(PROBLEM.search(pressed.text)) == [
+        imports.PRESS_SAID["changed"],
+        imports.PRESS_SAID["unsaved_typing"],
+        imports.SAID["no_name_check"],
+    ]
