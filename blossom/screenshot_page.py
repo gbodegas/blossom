@@ -1656,8 +1656,8 @@ def _carried(
     its choices checked as posted, "Not saved yet." on each that differs from what the record
     shows, and the conflict's sentence in its own fieldset; whether a choice has no question or
     option here; and whether one of those is more than a confirmed save took with its own rows
-    (``marks``, their pieces and row keys, which are in the fields that ask about them). A value is
-    never swapped for another. This only marks what's shown, and runs after
+    (``marks``, their pieces and row keys, which are in the fields that ask about them) or a name
+    question. A value is never swapped for another. This only marks what's shown, and runs after
     everything the page signs is worked out, so the next post meets every check as it would. The
     groups' ticks come back as posted through ``selected``, with no such note: they aren't answers
     the record holds, and beside "Save this assignment" it would read as about the homework."""

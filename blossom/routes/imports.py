@@ -1886,8 +1886,9 @@ async def with_typing(
     has changed, and carrying a choice onto a page of the new version would get it past the version
     check, so it says the page is out of date and carries none. Whatever can't carry is said,
     beside a confirmed save's counts too, with no word there of the page being out of date; only
-    what that save took with its own rows (``own``, their pieces) goes unsaid, as those are always
-    gone. A too long or cleared box's press, with no conflict, carries nothing."""
+    what that save took goes unsaid, as those are always gone: its own rows' questions and ticks
+    (``own``, their pieces), and a name question. A too long or cleared box's press, with no
+    conflict, carries nothing."""
     after = read or await snapshot_keeping_typing(
         request, state, draft_id, said, status, done, save_press=post.press == "save"
     )

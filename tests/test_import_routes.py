@@ -16762,9 +16762,9 @@ def asking(field: str, *options: tuple[str, str, bool]) -> screenshot_page.Quest
 def test_a_posted_choice_is_never_swapped_for_another(
     posted: tuple[str, ...], shown: list[bool], lost: bool
 ) -> None:
-    """No page is known to retire an option while a review stays at one version, so this runs on the
-    pass itself: a value it can't show leaves the question as the record has it, or carries the
-    rest, and is said."""
+    """Another review's Save can retire an option while this review stays at one version. This runs
+    on the pass itself, for each way a value can go: one it can't show leaves the question as the
+    record has it, or carries the rest, and is said."""
     before = asking("answer:kind:x", ("one", "One", True), ("two", "Two", False))
     _, splits, _, not_carried, _ = screenshot_page._carried(
         [], (before,), [], {"answer:kind:x": posted}, {}
@@ -17797,6 +17797,8 @@ def test_an_option_another_review_took_from_a_question_still_shown_is_said(
     block = fieldset_of(answer.text, one.question)
     assert block is not None
     assert CONFLICT_SAID in html.unescape(block)
+    posted_ticks = {value for _, value in the_conflict_on(one.page, one.question)}
+    assert posted_ticks == {v for v, shown in options_of(answer.text, one.question) if shown}
     assert held == (version, before)
 
 
@@ -17898,13 +17900,15 @@ def back_on_a_page_saved_from(
     return review, page, unit, third, third_type
 
 
+@pytest.mark.parametrize("field", ["instruction:0", "title"], ids=["instructions", "a title"])
 def test_words_typed_in_the_same_press_that_take_its_question_are_said(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
-    """Nobody else involved: instruction words typed on that card take the question she ticked."""
+    """Nobody else involved: words typed on that card take the question she ticked, instructions as
+    a question gone alone, and a title with the destination that was on file too."""
     with here(open_settings(tmp_path)) as browser:
         review, page, unit, _, _ = back_on_a_page_saved_from(browser, monkeypatch)
-        box = correct_box(review.card, "instruction:0")
+        box = correct_box(review.card, field)
         posted = page_post(page, "save", tick=[unit], typed={box: "Read chapter nine."})
         answer = send(browser, review.draft_id, with_the_conflict(posted, page, review.question))
 
@@ -17989,6 +17993,9 @@ def test_a_confirmation_cleared_on_purpose_beside_a_receipt_says_nothing(
     assert "Saved: 1 new assignment." in page_text(answer)
     assert NOT_CARRIED not in page_text(answer)
     assert options_of(answer.text, review.confirm) == [("as_read", False)]
+    block = fieldset_of(answer.text, review.confirm)
+    assert block is not None
+    assert NOT_SAVED_YET in html.unescape(block)
 
 
 def a_review_asking_her_name(
@@ -18009,17 +18016,22 @@ def a_review_asking_her_name(
 
 
 @pytest.mark.parametrize(
-    ("student", "named"),
+    ("student", "named", "left"),
     [
-        ({"name": None, "uncertain": None}, False),
-        ({"name": "Someone Else", "uncertain": None}, True),
+        ({"name": None, "uncertain": None}, False, [("confirmed", True)]),
+        ({"name": "Someone Else", "uncertain": None}, True, []),
     ],
     ids=["a name to confirm", "a name to choose"],
 )
 def test_her_name_s_question_the_save_took_says_nothing(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, student: dict[str, Any], named: bool
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    student: dict[str, Any],
+    named: bool,
+    left: list[tuple[str, bool]],
 ) -> None:
-    """With nobody else involved: answered, its rows saved, the question goes with them."""
+    """With nobody else involved, answered and its rows saved: a name to choose goes with them, and
+    a name to confirm stays, checked. Neither is a choice lost."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_review_asking_her_name(browser, monkeypatch, student)
         form = fields_named(review_form(page), "answer:name:")[0] if named else "missing"
@@ -18039,6 +18051,7 @@ def test_her_name_s_question_the_save_took_says_nothing(
 
     assert "Saved: 1 new assignment." in page_text(answer)
     assert NOT_CARRIED not in page_text(answer)
+    assert options_of(answer.text, field) == left
 
 
 def test_a_row_read_on_two_days_goes_with_its_save_and_says_nothing(
