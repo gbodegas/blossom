@@ -1247,7 +1247,6 @@ async def rows_of(
         both=frozenset(both),
         choices=choices,
         conflicted=conflicted,
-        on_record=picked(snapshot.progress),
     )
 
 

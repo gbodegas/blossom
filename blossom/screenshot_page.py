@@ -817,10 +817,6 @@ class UnitShown:
     about: str = ""
     """The unit's cards by title and place, which its repeated controls' names end with."""
     tick_label: str = ""
-    ticked_on_record: bool = False
-    """Whether saved progress alone would tick it, as a tick a refused press sent is told from."""
-    unsaved: bool = False
-    """Whether its tick is one a refused press sent and saved progress doesn't hold."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1326,7 +1322,6 @@ def rows_shown(
     both: frozenset[str] = frozenset(),
     choices: Mapping[str, tuple[str, ...]] | None = None,
     conflicted: Mapping[str, tuple[str, ...]] | None = None,
-    on_record: frozenset[str] | None = None,
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1562,11 +1557,6 @@ def rows_shown(
                 f"saving-{number}",
                 "; ".join(piece_text(places, m) for m in held),
                 SAID["tick_one"] if chosen_blocks <= 1 else SAID["tick_many"],
-                tickable
-                and (
-                    on_record is None
-                    or {state.by_name[name].key for name in unit.unit} <= on_record
-                ),
             )
         )
     shown_units = _placed(names, splits, shown_units)
@@ -1660,7 +1650,9 @@ def _carried(
     its choices checked as posted, "Not saved yet." on each that differs from what the record
     shows, and the conflict's sentence in its own fieldset; and whether a choice has no question or
     option here. A value is never swapped for another. This only marks what's shown, and runs after
-    everything the page signs is worked out, so the next post meets every check as it would."""
+    everything the page signs is worked out, so the next post meets every check as it would. The
+    groups' ticks come back as posted through ``selected``, with no such note: they aren't answers
+    the record holds, and beside "Save this assignment" it would read as about the homework."""
     if not choices:
         return list(names), tuple(splits), list(units), False
     seen: set[str] = set()
@@ -1745,7 +1737,6 @@ def _carried(
                 )
                 for block in unit.blocks
             ),
-            unsaved=unit.ticked != unit.ticked_on_record,
         )
         for unit in units
     ]

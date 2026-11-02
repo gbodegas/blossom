@@ -14957,13 +14957,14 @@ def test_a_confirmed_save_keeps_its_counts_though_a_transaction_opens_after_it_i
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
         send(browser, draft_id, posted)
         record = state_of(browser).project_state
-        real: Callable[..., object] = record.homework_counts
+        real: Callable[..., object] = record.homework_acceptance
 
-        def counting(*args: object, **kwargs: object) -> object:
+        def reading(*args: object, **kwargs: object) -> object:
+            done = real(*args, **kwargs)
             beginning(browser)
-            return real(*args, **kwargs)
+            return done
 
-        monkeypatch.setattr(record, "homework_counts", counting)
+        monkeypatch.setattr(record, "homework_acceptance", reading)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
@@ -15190,6 +15191,7 @@ def test_every_read_on_the_way_to_the_rows_checks_first(
             draft_id = a_refused_group_offering_work_on_file(browser, monkeypatch)
         record = state_of(browser).project_state
         real: Callable[..., object] = record.settled
+        real_id: Callable[[], object] = record.student_id
         inside = threading.local()
         outside: list[str] = []
         statements: list[str] = []
@@ -15201,12 +15203,20 @@ def test_every_read_on_the_way_to_the_rows_checks_first(
             finally:
                 inside.now = False
 
+        def her_id() -> object:
+            inside.now = True
+            try:
+                return real_id()
+            finally:
+                inside.now = False
+
         def seen(statement: str) -> None:
             statements.append(statement)
             if not getattr(inside, "now", False):
                 outside.append(" ".join(statement.split()))
 
         monkeypatch.setattr(record, "settled", settling)
+        monkeypatch.setattr(record, "student_id", her_id)
         record._connection.set_trace_callback(seen)
         answer = browser.get(f"/parent/imports/{draft_id}", headers=PAGE_HEADERS)
         record._connection.set_trace_callback(None)
@@ -15214,7 +15224,7 @@ def test_every_read_on_the_way_to_the_rows_checks_first(
 
     assert answer.status_code == 200
     assert statements
-    assert [s for s in outside if "grade_student" not in s] == []
+    assert outside == []
 
 
 HOLD: Final = 0.3
@@ -15832,9 +15842,13 @@ def test_a_conflict_brings_back_every_choice_and_the_next_press_keeps_them(
         block = fieldset_of(answer.text, changed)
         assert block is not None
         assert NOT_SAVED_YET in html.unescape(block)
-    untouched = fieldset_of(answer.text, review.destination)
-    assert untouched is not None
-    assert NOT_SAVED_YET not in html.unescape(untouched)
+    left_alone = next(
+        field for field in fields_of(review.page, "answer:kind:") if field != review.other_type
+    )
+    for unchanged in (review.destination, left_alone):
+        untouched = fieldset_of(answer.text, unchanged)
+        assert untouched is not None
+        assert NOT_SAVED_YET not in html.unescape(untouched)
     assert "TASK" in kinds
     assert confirms == []
     assert instructions == ["[]"]
@@ -15919,8 +15933,9 @@ def test_a_conflict_brings_back_a_no_date_box_ticked_on_the_press(
 def test_a_conflict_brings_back_the_ticks_as_posted(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
-    """One group unticked and one left ticked: each as posted, "Not saved yet." only by the one
-    that differs from the page's own."""
+    """One group unticked and one left ticked: each as posted, with no "Not saved yet." beside
+    either, since a tick isn't an answer the record holds, and the note would read as being about
+    the homework. The next press from that page keeps them as they are."""
     with here(open_settings(tmp_path)) as browser:
         review = three_groups(browser, monkeypatch)
         ticked = [unit for unit, shown in unit_ticks(review.page).items() if shown]
@@ -15932,14 +15947,20 @@ def test_a_conflict_brings_back_the_ticks_as_posted(
             add=the_conflict_on(review.page, review.question),
         )
         answer = send(browser, review.draft_id, posted)
+        question = review.question
 
     assert answer.status_code == 422
     ticks = unit_ticks(answer.text)
     assert ticks[left] is True
     assert ticks[unticked] is False
     assert NOT_CARRIED not in page_text(answer)
-    assert NOT_SAVED_YET in tick_block(answer.text, unticked)
+    assert NOT_SAVED_YET not in tick_block(answer.text, unticked)
     assert NOT_SAVED_YET not in tick_block(answer.text, left)
+    posted_next = dict.fromkeys(
+        unit for name, unit in conflict_corrected(answer.text, press, question) if name == "unit"
+    )
+    assert left in posted_next
+    assert unticked not in posted_next
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -16376,23 +16397,35 @@ def test_a_question_another_tab_s_save_took_is_said(
     assert [shown for _, shown in options_of(answer.text, review.question)] == [True, False, True]
 
 
-@pytest.mark.parametrize("press", ["save"])
+@pytest.mark.parametrize("since", ["nothing else", "another tab's answer"])
 def test_a_confirmed_save_stands_beside_a_conflict_with_no_word_against_it(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, since: str
 ) -> None:
     """The same page pressed again with a conflict: the receipt's counts, nothing saying nothing was
-    kept, and "Not saved yet." only inside the control it's about, never in the counts' panel."""
+    kept or that the page is out of date, and "Not saved yet." only inside the control it's about,
+    never in the counts' panel."""
+    press = "save"
     with here(open_settings(tmp_path)) as browser:
         review = three_groups(browser, monkeypatch)
         page = followed(browser, send(browser, review.draft_id, shown_post(review.page, "keep")))
+        other_card = review.other_type.removeprefix("answer:kind:")
         ticked = next(
             unit
             for unit, shown in unit_ticks(page).items()
-            if shown and not unit.startswith(review.card[:12])
+            if shown
+            and not unit.startswith(review.card[:12])
+            and not unit.startswith(other_card[:12])
         )
         assert "Saved: 1 new assignment." in page_text(
             send(browser, review.draft_id, page_post(page, press, tick=[ticked]))
         )
+        if since == "another tab's answer":
+            fresh = browser.get(f"/parent/imports/{review.draft_id}", headers=PAGE_HEADERS).text
+            send(
+                browser,
+                review.draft_id,
+                shown_post(fresh, "keep", choose={review.other_type: "TASK"}),
+            )
         posted = page_post(page, press, tick=[ticked])
         resend = [*posted[:-1], *the_conflict_on(page, review.question), posted[-1]]
         answer = send(browser, review.draft_id, resend)
@@ -16630,3 +16663,10 @@ def test_a_posted_choice_with_no_question_here_is_said_unless_it_was_cleared(
     _, _, _, not_carried = screenshot_page._carried([], (), [], {"answer:kind:gone": posted}, {})
 
     assert not_carried is lost
+
+
+def test_what_a_press_says_first_gives_way_on_the_narrowest_screen() -> None:
+    """Measured in Chrome at 320 pixels with text at 200%, where it keeps "instructions" whole."""
+    css = (pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css").read_text()
+
+    assert ".problem#said {\n  padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);\n}" in css

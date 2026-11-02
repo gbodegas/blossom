@@ -139,7 +139,6 @@
           {% if unit.tick %}
             <div class="choice">
               <label><input type="checkbox" name="unit" value="{{ unit.unit }}"{% if unit.ticked %} checked{% endif %}> <span>{{ unit.tick_label }}<span class="visually-hidden"> for {{ unit.about }}</span></span></label>
-              {% if unit.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
             </div>
           {% endif %}
           <div class="actions"><button type="submit" class="secondary" form="{{ unit.leave }}" aria-describedby="typing-lost">{{ words.leave }}<span class="visually-hidden"> for {{ unit.about }}</span></button></div>
