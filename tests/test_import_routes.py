@@ -16516,11 +16516,12 @@ def test_a_receipt_at_the_same_version_carries_the_choices(
     assert panel is None or NOT_SAVED_YET not in html.unescape(panel.group(0))
 
 
-def test_a_receipt_s_page_signs_the_revision_it_shows(
+def test_a_conflict_beside_a_receipt_doesn_t_get_past_another_tab_s_save_for_later(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Drawn from the record as a confirmed save's page always is, so its next Save for later goes
-    through, beside what another tab's Save for later settled since the page the press came from."""
+    """Its boxes come from the post, so what another tab saved isn't on it. It keeps the revision it
+    was posted with, so its next Save for later answers as the older page's would, and the other
+    tab's progress stands."""
     with here(open_settings(tmp_path)) as browser:
         review, posted = receipt_and_a_later_press(
             browser, monkeypatch, first_changes_an_answer=False
@@ -16534,10 +16535,13 @@ def test_a_receipt_s_page_signs_the_revision_it_shows(
         following = send(
             browser, review.draft_id, shown_post(answer.text, "later", clear=[review.question])
         )
+        held = review_row(browser, review.draft_id)
 
     assert moved[:2] == (version, revision + 1)
     assert "Saved: 1 new assignment." in page_text(answer)
-    assert imports.PRESS_SAID["later_behind"] not in page_text(following)
+    assert following.status_code == 409
+    assert imports.PRESS_SAID["later_behind"] in page_text(following)
+    assert held[1:] == moved[1:]
 
 
 def test_a_receipt_on_a_page_since_changed_says_its_choices_aren_t_shown(
