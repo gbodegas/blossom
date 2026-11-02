@@ -399,7 +399,11 @@ are both refused its transaction stays open on the record's connection, and
 whether a Save press saved can't be told from that connection. So a Save press
 that finds one, or whose acceptance read is refused, says it can't tell, with its
 typing and no rows, and the review's rows aren't made from that connection until
-the transaction ends. Nothing here repairs the connection. An instruction ticked
+the transaction ends. Nothing here repairs the connection. Another copy of a Save
+press can commit after this one's first check, so before a page that ends the press
+or says its homework wasn't saved, it asks for its receipt again: found, it answers
+with that save's result; unreadable, that it can't tell; absent, with the page as it
+was. A commit after that last look goes unseen. An instruction ticked
 beside "None of these apply" comes back on Save, Keep and Save for later with
 every choice that can still be shown, and writes nothing. It says when a choice
 can't be shown, except a question gone from the page beside a confirmed save. The
