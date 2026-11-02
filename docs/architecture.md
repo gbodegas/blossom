@@ -407,7 +407,12 @@ was. A commit after that last look goes unseen. An instruction ticked
 beside "None of these apply" comes back on Save, Keep and Save for later with
 every choice that can still be shown, and writes nothing. It says when a choice
 can't be shown, except what a confirmed save took: its own rows' questions and
-ticks, and a name question. The
+ticks, and a name question. A Save press that finds its receipt keeps nothing and
+comes back the same way, with no conflict. At another version its choices don't
+carry, and it says so if they aren't what the record holds or aren't offered, or
+if an answer it cleared is still held. One narrow exception: a question gone from
+the page whose posted choice the record still holds goes unsaid, since nothing
+tells it from one her own first copy took off the page. The
 hourly cleanup is promised only of a review read as finished, since it closes
 no other. Once a press is known to have committed, an unexpected error while
 making its page doesn't reach the server, since a plain error would hide a save

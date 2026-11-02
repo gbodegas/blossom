@@ -1863,7 +1863,7 @@ async def with_typing(
     saved: Saved | None = None,
     answered: bool = False,
     unsaved: Collection[tuple[str, str]] = (),
-    own: frozenset[str] = frozenset(),
+    own: frozenset[str] | None = None,
 ) -> Response:
     """A press that saved nothing, or a save that left the review open, answers with the
     review as it stands now, the corrections it typed and the groups it ticked still in the
@@ -1887,8 +1887,11 @@ async def with_typing(
     check, so it says the page is out of date and carries none. Whatever can't carry is said,
     beside a confirmed save's counts too, with no word there of the page being out of date; only
     what that save took goes unsaid, as those are always gone: its own rows' questions and ticks
-    (``own``, their pieces), and a name question. A too long or cleared box's press, with no
-    conflict, carries nothing."""
+    (``own``, their pieces), and a name question. A Save press resent with a confirmed receipt
+    (``own``, None on any other press) comes back the same way with no conflict, since finding its
+    receipt it keeps nothing: at the page's version its choices as posted, and at another that they
+    can't be shown if they aren't what the record holds or aren't offered (``choices_said_lost``).
+    Any other too long or cleared box's press, with no conflict, carries nothing."""
     after = read or await snapshot_keeping_typing(
         request, state, draft_id, said, status, done, save_press=post.press == "save"
     )
@@ -1897,6 +1900,7 @@ async def with_typing(
     lines = list(said)
     ticked = post.units if post.ticked else None
     current = post.version == after.version
+    carry = bool(post.conflicted) or own is not None
     if post.conflicted and not current:
         lines += [PAGE_SAID["not_carried"]] if done else [OUT_OF_DATE, PAGE_SAID["not_carried"]]
     try:
@@ -1908,11 +1912,12 @@ async def with_typing(
             typed=post.corrections,
             ticked=ticked,
             both=post.both,
-            choices=post.choices if current else None,
+            choices=post.choices if current and carry else None,
             conflicted=post.conflicted if current else None,
             revision=post.progress_revision if post.conflicted else None,
-            own=own,
+            own=own or frozenset(),
         )
+        said_lost = await choices_said_lost(state, draft_id, post, rows, own, current)
     except sqlite3.Error as error:
         noted(error)
         if isinstance(error, TransactionLeftOpen) and post.press == "save" and not done:
@@ -1924,13 +1929,17 @@ async def with_typing(
         ended = await ended_under_save(request, state, draft_id, 200, kept_lines(said))
         if ended is not None:
             return ended
-    if rows is not None and post.conflicted and current:
+    if rows is not None and carry:
         ticks_shown = {unit.unit for unit in rows.units if unit.ticked}
-        if done:
-            ticks = [u for u in post.units if not own.issuperset(u.split("+"))]
-            if rows.beyond_its_save or not ticks_shown.issuperset(ticks):
+        if own is not None:
+            pieces_shown = {name for unit in ticks_shown for name in unit.split("+")}
+            ticks = {name for unit in post.units for name in unit.split("+")} - own
+            lost = rows.beyond_its_save or not pieces_shown.issuperset(ticks)
+            if said_lost or (current and lost):
                 lines.append(PAGE_SAID["not_carried"])
-        elif rows.not_carried or not ticks_shown.issuperset(post.units):
+        elif said_lost or (
+            current and (rows.not_carried or not ticks_shown.issuperset(post.units))
+        ):
             lines.append(PAGE_SAID["not_carried"])
     shown = fields_shown(rows)
     if any((key, field) in unsaved for key, field, _ in shown):
@@ -1944,6 +1953,72 @@ async def with_typing(
     typed = await typing_of(request, saved.stored if saved else (), shown)
     told = [*done, PRESS_SAID["left_open"]] if answered else done
     return review_page(request, state, after, lines, status, rows=rows, done=told, typed=typed)
+
+
+def fields_on_the_page(rows: RowsShown) -> dict[str, set[str]]:
+    """Each answer the page's signed form asks for, with the values it offers."""
+    asked = json.loads(dict(rows.hidden)["asked"])
+    return {
+        field: set(json.loads(values)) for field, values in asked if field.startswith("answer:")
+    }
+
+
+def no_longer_offered(post: ReviewPost, rows: RowsShown) -> bool:
+    """Whether a posted choice's question is on this page without that value among its options."""
+    asked = fields_on_the_page(rows)
+    return any(
+        field in asked and not asked[field].issuperset(values)
+        for field, values in post.choices.items()
+    )
+
+
+def post_off_record(
+    post: ReviewPost, own: frozenset[str], held: Mapping[tuple[str, str], str]
+) -> bool:
+    """Whether a resent press's choices aren't what the record holds: an answer it holds otherwise
+    or not at all, or one it holds that the press left blank. A double press's mostly are what its
+    first copy kept, whatever that did to the page. Its save's own rows go with that save."""
+    for answer in post.answers:
+        if answer.names and own.issuperset(answer.names):
+            continue
+        if held.get((answer.kind, answer.subject)) != answer.value:
+            return True
+    return any(key in held for key in post.withdrawn)
+
+
+async def answers_held(state: ApplicationState, draft_id: str) -> dict[tuple[str, str], str]:
+    """This review's kept answers, from the record, by kind and subject."""
+    record = state.project_state
+    student = await asyncio.to_thread(record.student_id)
+    tables = await asyncio.to_thread(record.settled, record.draft_for_save, student, draft_id)
+    return {key: value for key, (value, _) in tables.answers.items()} if tables else {}
+
+
+async def choices_said_lost(
+    state: ApplicationState,
+    draft_id: str,
+    post: ReviewPost,
+    rows: RowsShown | None,
+    own: frozenset[str] | None,
+    current: bool,
+) -> bool:
+    """What a resend or a conflict can't show, read from the record. At the page's version, an
+    answer she cleared that the record still holds, with its question gone. At another version,
+    on a resend with no conflict, whatever isn't what the record holds, or isn't offered. One
+    exception, his ruling: a question gone whose posted choice the record still holds goes
+    unsaid, since nothing tells it from one her own first copy took off the page."""
+    if rows is None:
+        return False
+    if current:
+        if not post.withdrawn or not (post.conflicted or own is not None):
+            return False
+        held = await answers_held(state, draft_id)
+        asked = fields_on_the_page(rows)
+        return any(key in held and answer_field(*key) not in asked for key in post.withdrawn)
+    if own is None or post.conflicted:
+        return False
+    held = await answers_held(state, draft_id)
+    return post_off_record(post, own, held) or no_longer_offered(post, rows)
 
 
 async def later_press(
@@ -2010,7 +2085,8 @@ async def save_press(
         acceptance_unread(error)
         return await unknown_outcome(request, state)
     if recorded is not None:
-        return await saved_page(request, state, draft_id, post.acceptance, [], post)
+        own = frozenset(name for name, _ in recorded)
+        return await saved_page(request, state, draft_id, post.acceptance, [], post, own)
     try:
         kept = await asyncio.to_thread(
             state.import_drafts.keep_answers,
@@ -2137,7 +2213,8 @@ async def outcome_page(
         said = [*([PRESS_SAID["answers_kept"]] if answered else []), PRESS_SAID["already"]]
         return await with_typing(request, state, draft_id, post, said, 200)
     if isinstance(outcome, Replayed):
-        return await saved_page(request, state, draft_id, outcome.acceptance_id, [], post)
+        own = frozenset(name for name, _ in outcome.pairs)
+        return await saved_page(request, state, draft_id, outcome.acceptance_id, [], post, own)
     done = [counted(*outcome.counts)]
     if outcome.already_units:
         done.append(PRESS_SAID["already"])
@@ -2291,7 +2368,7 @@ async def partly_saved(
     read: DraftSnapshot | None = None,
     saved: Saved | None = None,
     answered: bool = False,
-    own: frozenset[str] = frozenset(),
+    own: frozenset[str] | None = None,
 ) -> Response:
     """A save that leaves the review open: the outcome in the success style, and the rows left
     open with the corrections the press typed still in the form, marked as not saved, none of
@@ -2378,7 +2455,7 @@ async def saved_page(
     acceptance: str,
     said: list[str],
     post: ReviewPost | None = None,
-    own: frozenset[str] = frozenset(),
+    own: frozenset[str] | None = None,
 ) -> Response:
     """A resent press with a confirmed receipt for this student, this review and this acceptance
     id, which every way here has: a read that found no transaction open, or the save's own read
@@ -2394,7 +2471,8 @@ async def saved_page(
     refuses to read are said not to be shown, the save itself acknowledged, in the same
     pattern (``saved_busy``); a review it refuses to read is said as for a busy store. Its
     acceptance on record means the press committed, so an unexpected error keeps the save's
-    result the same way (``noted_after_commit``)."""
+    result the same way (``noted_after_commit``). What that save saved (``own``, its pieces) goes
+    with it, unsaid, on the page that carries the press's choices."""
     record = state.project_state
     try:
         student = await asyncio.to_thread(record.student_id)

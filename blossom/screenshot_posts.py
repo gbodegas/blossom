@@ -108,8 +108,8 @@ class ReviewPost:
     """Each instruction question ticked beside "None of these apply", by its field, with its
     values as posted: the press is refused whole, and they go back as posted."""
     choices: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
-    """On a press with a conflict only: each signed question's posted values, a checkbox left
-    unticked among them as no values, for the page to show them as they were sent. A radio left
+    """On a Save press, or a press with a conflict: each signed question's posted values, a checkbox
+    left unticked among them as no values, for the page to show them as they were sent. A radio left
     empty isn't a choice, and isn't here."""
 
     @property
@@ -331,7 +331,9 @@ def read_review(
         needed=folded.needed,
         both=folded.both,
         conflicted=conflicted,
-        choices=_posted_choices(offered, chosen, rest) if conflicted else {},
+        choices=_posted_choices(offered, chosen, rest)
+        if conflicted or presses[0] == "save"
+        else {},
     )
 
 
