@@ -15567,7 +15567,7 @@ def test_a_conflict_with_a_correction_too_long_says_both(
     assert (value, True) in options_of(answer.text, field)
 
 
-def test_a_conflict_on_a_press_already_recorded_answers_with_its_counts(
+def test_a_conflict_on_a_press_already_recorded_keeps_its_counts(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
@@ -15584,7 +15584,7 @@ def test_a_conflict_on_a_press_already_recorded_answers_with_its_counts(
         answer = send(browser, draft_id, posted)
 
     assert "Saved:" in page_text(answer)
-    assert CONFLICT_SAID not in page_text(answer)
+    assert NOTHING_KEPT not in page_text(answer)
 
 
 def test_a_conflict_on_a_review_that_ended_doesn_t_point_at_rows_it_doesn_t_show(
@@ -15908,6 +15908,9 @@ def test_a_conflict_brings_back_a_cleared_no_date_box(
     assert options_of(answer.text, none) == [("none", False)]
     assert options_of(answer.text, confirm) == [("as_read", False)]
     assert stored is None
+    shown = html.unescape(answer.text)
+    after_the_box = shown[shown.index(none) :].split("</label>", 1)[1]
+    assert after_the_box.index(NOT_SAVED_YET) < after_the_box.index("<label")
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -16077,6 +16080,10 @@ def test_a_conflict_brings_back_a_name_and_a_split_answer(
     assert before == after
     assert ("misread", True) in options_of(answer.text, name_field)
     assert (split_value, True) in options_of(answer.text, split)
+    for changed in (name_field, split):
+        block = fieldset_of(answer.text, changed)
+        assert block is not None
+        assert NOT_SAVED_YET in html.unescape(block)
 
 
 def test_with_a_conflict_a_value_the_page_didn_t_offer_is_still_refused_whole(
@@ -16138,46 +16145,84 @@ def test_carrying_choices_changes_nothing_the_page_signs(
     assert compared == [(True, True, True)]
 
 
+def a_review_asking_her_name_and_two_days(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """A review with a name question and a row with two assigned days: the lists outside the
+    groups. Its page."""
+    one = homework_answer(cards=[homework_card()])
+    earlier, page = read_review(browser, monkeypatch, (RED, one))
+    page = her_name_answered(browser, earlier, page)
+    send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+    card = homework_card(
+        course="Art 8", title="Sketch", footer="Due (10/9/2026)", y_top=360, y_bottom=430
+    )
+    monday = homework_answer(
+        active_student={"name": "Ren", "uncertain": None},
+        headings=[{"text": "Monday 10/5/2026", "y": 150, "uncertain": None}],
+        cards=[homework_card(instruction="Complete pages 15 to 16."), card],
+    )
+    tuesday = homework_answer(
+        headings=[{"text": "Tuesday 10/6/2026", "y": 150, "uncertain": None}], cards=[card]
+    )
+    _, page = read_review(browser, monkeypatch, (BLUE, monday), (GREEN, tuesday))
+    return page
+
+
+@pytest.mark.parametrize(
+    ("fixture", "kinds"),
+    [
+        (
+            lambda browser, monkeypatch: under_an_unsure_heading(browser, monkeypatch).page,
+            {"answer:destination", "answer:confirm", "answer:instructions", "answer:kind", "none"},
+        ),
+        (a_review_asking_her_name_and_two_days, {"answer:name", "answer:split"}),
+    ],
+    ids=["what the groups ask", "what's asked outside them"],
+)
 def test_the_pass_reaches_every_signed_control(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fixture: Callable[[TestClient, pytest.MonkeyPatch], str],
+    kinds: set[str],
 ) -> None:
-    """Closed-world, by what the page signs: with every signed field but the boxes' words posted
-    empty, no control on the page is left checked but the groups' own ticks."""
+    """Closed-world, by what the page signs: every signed field but the boxes' words is flipped
+    through the pass, its ticks taken off or an unticked value ticked, and each comes out differing
+    from how the page drew it. So a kind of control the pass didn't reach would stay as drawn."""
     with here(open_settings(tmp_path)) as browser:
-        review = under_an_unsure_heading(browser, monkeypatch)
-        real: Callable[..., Any] = screenshot_page._carried
-
-        def emptied(
-            names: Sequence[Any], splits: Sequence[Any], units: object, *rest: object
-        ) -> object:
-            fields = [
-                *(q.field for q in names),
-                *(q.field for q in splits),
-                *signed_choices,
-            ]
-            return real(names, splits, units, dict.fromkeys(fields, ()), {}, *rest[2:])
-
-        form = review_form(review.page)
+        page = fixture(browser, monkeypatch)
+        form = review_form(page)
+        draft_id = re.search(r'action="/parent/imports/([0-9a-f]{32})/review"', page).group(1)  # type: ignore[union-attr]
         asked = html.unescape(
             re.search(r'name="asked" value="([^"]*)"', form).group(1)  # type: ignore[union-attr]
         )
-        signed_choices = [
+        signed = [
             field
             for field, _ in json.loads(asked)
             if not field.startswith(("correct:", "refused:"))
         ]
-        kinds = {
-            field.split(":")[0] + ":" + field.split(":")[1]
-            for field in signed_choices
-            if field.startswith("answer:")
+        before = {field: options_of(page, field) for field in signed}
+        flips = {
+            field: () if any(shown for _, shown in options) else (options[0][0],)
+            for field, options in before.items()
+            if options
         }
-        monkeypatch.setattr(screenshot_page, "_carried", emptied)
-        page = browser.get(f"/parent/imports/{review.draft_id}", headers=PAGE_HEADERS).text
+        real: Callable[..., Any] = screenshot_page._carried
+
+        def flipping(
+            names: Sequence[Any], splits: Sequence[Any], units: object, *_: object
+        ) -> object:
+            return real(names, splits, units, flips, {})
+
+        monkeypatch.setattr(screenshot_page, "_carried", flipping)
+        after = browser.get(f"/parent/imports/{draft_id}", headers=PAGE_HEADERS).text
         monkeypatch.undo()
 
-    assert {"answer:destination", "answer:confirm", "answer:instructions", "answer:kind"} <= kinds
-    assert any(field.startswith("none:") for field in signed_choices)
-    assert [name for name, _ in checked_values(review_form(page)) if name != "unit"] == []
+    assert kinds <= {
+        ":".join(field.split(":")[:2]) if field.startswith("answer:") else "none" for field in flips
+    }
+    unreached = [field for field in flips if options_of(after, field) == before[field]]
+    assert unreached == []
 
 
 # ------------------------------------------------------------------ what a choice can't carry past
@@ -16220,9 +16265,9 @@ def test_a_conflict_on_a_stale_page_carries_nothing_past_another_tab_s_answer(
 
     assert answer.status_code == 422, answer.text[:400]
     assert before == after
-    assert imports.OUT_OF_DATE in page_text(answer)
-    assert NOT_CARRIED in page_text(answer)
-    assert CONFLICT_SAID in page_text(answer)
+    text = page_text(answer)
+    assert text.index(imports.OUT_OF_DATE) < text.index(NOT_CARRIED)
+    assert CONFLICT_SAID in text
     assert options_of(answer.text, review.other_type) == [("HOMEWORK", False), ("TASK", True)]
     block = fieldset_of(answer.text, review.question)
     assert block is not None
@@ -16235,9 +16280,20 @@ def test_a_conflict_on_a_stale_page_carries_nothing_past_another_tab_s_answer(
 def later_settled_from_another_tab(
     browser: TestClient, monkeypatch: pytest.MonkeyPatch, what: str
 ) -> tuple[str, str, str]:
-    """Save for later pressed in another tab, moving the progress revision and not the version: the
-    review, the older page, and that page's question."""
-    if what == "an untick":
+    """Save for later pressed in another tab, moving the progress revision, and with plain typing
+    the version too: the review, the older page, and that page's question."""
+    if what == "typing":
+        review = three_groups(browser, monkeypatch)
+        draft_id = review.draft_id
+        page = followed(browser, send(browser, draft_id, shown_post(review.page, "keep")))
+        question = review.question
+        unit = next(
+            one
+            for one, shown in unit_ticks(page).items()
+            if shown and not one.startswith(review.card[:12])
+        )
+        other = shown_post(page, "later", typed={correct_box(unit, "title"): "Tab Two Words"})
+    elif what == "an untick":
         review = three_groups(browser, monkeypatch)
         draft_id = review.draft_id
         page = followed(browser, send(browser, draft_id, shown_post(review.page, "keep")))
@@ -16293,20 +16349,19 @@ def review_row(browser: TestClient, draft_id: str) -> tuple[int, int, str | None
     return int(version), int(revision), None if progress is None else str(progress[0])
 
 
-@pytest.mark.parametrize("what", ["an untick", "typing on a row with no answer"])
+@pytest.mark.parametrize("what", ["an untick", "typing on a row with no answer", "typing"])
 def test_a_conflict_s_page_doesn_t_get_past_another_tab_s_save_for_later(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, what: str
 ) -> None:
-    """That moves the progress revision and not the version. The page keeps the revision it was
-    posted with, so its next Save for later answers as the older page's would, and the other tab's
-    progress stands."""
+    """The page keeps the revision it was posted with, whether the version moved or not, so its next
+    Save for later answers as the older page's would, and the other tab's progress stands."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, question = later_settled_from_another_tab(browser, monkeypatch, what)
         held = review_row(browser, draft_id)
         answer = send(
             browser, draft_id, shown_post(page, "later", add=the_conflict_on(page, question))
         )
-        following = send(browser, draft_id, conflict_corrected(answer.text, "later", question))
+        following = send(browser, draft_id, shown_post(answer.text, "later", clear=[question]))
         held_after = review_row(browser, draft_id)
         plain_press = send(browser, draft_id, shown_post(page, "later"))
 
@@ -16397,48 +16452,112 @@ def test_a_question_another_tab_s_save_took_is_said(
     assert [shown for _, shown in options_of(answer.text, review.question)] == [True, False, True]
 
 
-@pytest.mark.parametrize("since", ["nothing else", "another tab's answer"])
-def test_a_confirmed_save_stands_beside_a_conflict_with_no_word_against_it(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, since: str
+def receipt_and_a_later_press(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, *, first_changes_an_answer: bool
+) -> tuple[ChoicesReview, list[tuple[str, str]]]:
+    """One tab: a page's Save of one group commits, with another card's Type changed or not. Back
+    on that page, another Type changed, a title typed and the conflict, the same press again."""
+    review = three_groups(browser, monkeypatch)
+    draft_id = review.draft_id
+    page = followed(browser, send(browser, draft_id, shown_post(review.page, "keep")))
+    other_card = review.other_type.removeprefix("answer:kind:")
+    unit, third = [
+        one
+        for one, shown in unit_ticks(page).items()
+        if shown and not one.startswith(review.card[:12]) and not one.startswith(other_card[:12])
+    ][:2]
+    third_type = next(
+        field
+        for field in fields_of(page, "answer:kind:")
+        if field.removeprefix("answer:kind:").startswith(third[:12])
+    )
+    changed = {third_type: "TASK"} if first_changes_an_answer else {}
+    first = page_post(page, "save", tick=[unit], choose=changed)
+    assert "Saved: 1 new assignment." in page_text(send(browser, draft_id, first))
+    box = next(
+        box
+        for box in fields_of(page, "correct:")
+        if json.loads(box.removeprefix("correct:"))[1] == "title"
+        and json.loads(box.removeprefix("correct:"))[0].startswith(other_card[:12])
+    )
+    posted = page_post(
+        page,
+        "save",
+        tick=[unit],
+        typed={box: A_TYPED_TITLE},
+        choose={review.other_type: "TASK", **changed},
+    )
+    return review, [*posted[:-1], *the_conflict_on(page, review.question), posted[-1]]
+
+
+def test_a_receipt_at_the_same_version_carries_the_choices(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The same page pressed again with a conflict: the receipt's counts, nothing saying nothing was
-    kept or that the page is out of date, and "Not saved yet." only inside the control it's about,
-    never in the counts' panel."""
-    press = "save"
+    """The counts stand, nothing says nothing was kept or that the page is out of date, the
+    instruction's ticks come back with the sentence in their fieldset, and "Not saved yet." is
+    beside them, never in the counts' panel."""
     with here(open_settings(tmp_path)) as browser:
-        review = three_groups(browser, monkeypatch)
-        page = followed(browser, send(browser, review.draft_id, shown_post(review.page, "keep")))
-        other_card = review.other_type.removeprefix("answer:kind:")
-        ticked = next(
-            unit
-            for unit, shown in unit_ticks(page).items()
-            if shown
-            and not unit.startswith(review.card[:12])
-            and not unit.startswith(other_card[:12])
+        review, posted = receipt_and_a_later_press(
+            browser, monkeypatch, first_changes_an_answer=False
         )
-        assert "Saved: 1 new assignment." in page_text(
-            send(browser, review.draft_id, page_post(page, press, tick=[ticked]))
-        )
-        if since == "another tab's answer":
-            fresh = browser.get(f"/parent/imports/{review.draft_id}", headers=PAGE_HEADERS).text
-            send(
-                browser,
-                review.draft_id,
-                shown_post(fresh, "keep", choose={review.other_type: "TASK"}),
-            )
-        posted = page_post(page, press, tick=[ticked])
-        resend = [*posted[:-1], *the_conflict_on(page, review.question), posted[-1]]
-        answer = send(browser, review.draft_id, resend)
+        answer = send(browser, review.draft_id, posted)
 
     text = page_text(answer)
     assert "Saved: 1 new assignment." in text
-    assert NOT_CARRIED not in text
     assert imports.OUT_OF_DATE not in text
     assert NOTHING_KEPT not in text
+    assert NOT_CARRIED not in text
     assert imports.PRESS_SAID["save_invalid"] not in text
+    block = fieldset_of(answer.text, review.question)
+    assert block is not None
+    assert CONFLICT_SAID in html.unescape(block)
+    assert NOT_SAVED_YET in html.unescape(block)
     panel = re.search(r'<section class="panel grade-outcome".*?</section>', answer.text, re.S)
-    if panel is not None:
-        assert NOT_SAVED_YET not in html.unescape(panel.group(0))
+    assert panel is None or NOT_SAVED_YET not in html.unescape(panel.group(0))
+
+
+def test_a_receipt_s_page_signs_the_revision_it_shows(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drawn from the record as a confirmed save's page always is, so its next Save for later goes
+    through, beside what another tab's Save for later settled since the page the press came from."""
+    with here(open_settings(tmp_path)) as browser:
+        review, posted = receipt_and_a_later_press(
+            browser, monkeypatch, first_changes_an_answer=False
+        )
+        now = browser.get(f"/parent/imports/{review.draft_id}", headers=PAGE_HEADERS).text
+        ticked = next(unit for unit, shown in unit_ticks(now).items() if shown)
+        version, revision, _ = review_row(browser, review.draft_id)
+        send(browser, review.draft_id, shown_post(now, "later", drop=[("unit", ticked)]))
+        moved = review_row(browser, review.draft_id)
+        answer = send(browser, review.draft_id, posted)
+        following = send(
+            browser, review.draft_id, shown_post(answer.text, "later", clear=[review.question])
+        )
+
+    assert moved[:2] == (version, revision + 1)
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert imports.PRESS_SAID["later_behind"] not in page_text(following)
+
+
+def test_a_receipt_on_a_page_since_changed_says_its_choices_aren_t_shown(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Back on the page after its own Save changed an answer, so the version moved: her choices
+    can't carry, and that's said, beside counts it doesn't contradict. It isn't "out of date" or
+    "nothing was kept", since a save is confirmed."""
+    with here(open_settings(tmp_path)) as browser:
+        review, posted = receipt_and_a_later_press(
+            browser, monkeypatch, first_changes_an_answer=True
+        )
+        answer = send(browser, review.draft_id, posted)
+
+    text = page_text(answer)
+    assert "Saved: 1 new assignment." in text
+    assert NOT_CARRIED in text
+    assert imports.OUT_OF_DATE not in text
+    assert NOTHING_KEPT not in text
+    assert A_TYPED_TITLE in html.unescape(answer.text)
 
 
 # --------------------------------------------------------- the next Save, and what it checks
@@ -16670,3 +16789,147 @@ def test_what_a_press_says_first_gives_way_on_the_narrowest_screen() -> None:
     css = (pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css").read_text()
 
     assert ".problem#said {\n  padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);\n}" in css
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_stale_page_brings_back_every_tick_as_posted(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Another tab changed an answer, so the choices don't carry, but the groups' ticks do, one
+    cleared on purpose and one left, with no note beside either, and nothing is written."""
+    with here(open_settings(tmp_path)) as browser:
+        review = three_groups(browser, monkeypatch)
+        ticked = [unit for unit, shown in unit_ticks(review.page).items() if shown]
+        send(
+            browser,
+            review.draft_id,
+            shown_post(review.page, "keep", choose={review.other_type: "TASK"}),
+        )
+        before = on_the_record(browser)
+        answer = send(
+            browser,
+            review.draft_id,
+            shown_post(
+                review.page,
+                press,
+                drop=[("unit", ticked[0])],
+                add=the_conflict_on(review.page, review.question),
+            ),
+        )
+        after = on_the_record(browser)
+
+    assert answer.status_code == 422, answer.text[:400]
+    assert before == after
+    ticks = unit_ticks(answer.text)
+    assert ticks[ticked[0]] is False
+    assert ticks[ticked[1]] is True
+    assert NOT_SAVED_YET not in tick_block(answer.text, ticked[0])
+    assert NOT_CARRIED in page_text(answer)
+    block = fieldset_of(answer.text, review.question)
+    assert block is not None
+    assert CONFLICT_SAID not in html.unescape(block)
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_only_a_choice_that_differs_carries_the_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """With only the conflict, one question is marked. A changed Type and a cleared confirmation
+    mark theirs as well, and a stored confirmation left as it is carries no note."""
+    with here(open_settings(tmp_path)) as browser:
+        review = three_groups(browser, monkeypatch)
+
+        def marked(answer: Answer) -> int:
+            blocks = re.findall(r"<fieldset.*?</fieldset>", answer.text, re.S)
+            return sum(NOT_SAVED_YET in html.unescape(block) for block in blocks)
+
+        conflict = the_conflict_on(review.page, review.question)
+        alone = send(browser, review.draft_id, shown_post(review.page, press, add=conflict))
+        with_two = send(
+            browser,
+            review.draft_id,
+            shown_post(
+                review.page,
+                press,
+                choose={review.other_type: "TASK"},
+                clear=[review.confirm],
+                add=conflict,
+            ),
+        )
+
+    assert marked(alone) == 1
+    block = fieldset_of(alone.text, review.question)
+    assert block is not None
+    assert NOT_SAVED_YET in html.unescape(block)
+    assert marked(with_two) == 3
+
+
+def test_a_changed_destination_carries_the_note_in_its_own_fieldset(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        review = a_review_of_choices(browser, monkeypatch)
+        other = next(
+            value for value, shown in options_of(review.page, review.destination) if not shown
+        )
+        answer = send(
+            browser,
+            review.draft_id,
+            shown_post(
+                review.page,
+                "keep",
+                choose={review.destination: other},
+                add=the_conflict_on(review.page, review.question),
+            ),
+        )
+
+    assert answer.status_code == 422, answer.text[:400]
+    assert (other, True) in options_of(answer.text, review.destination)
+    block = fieldset_of(answer.text, review.destination)
+    assert block is not None
+    assert NOT_SAVED_YET in html.unescape(block)
+
+
+@pytest.mark.parametrize("ending", ["expired", "closed"])
+def test_a_save_that_raises_and_leaves_its_transaction_open_can_t_tell_as_the_review_ends(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    """The rows guard can't say it here, as there are no rows to read: the check after the save
+    has to, for a save that raised as well as one that returned."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, "save", tick=[first], typed=typed_on(other))
+        student = state_of(browser).project_state.student_id()
+        drafts = state_of(browser).import_drafts
+
+        def saving(*_: object, **__: object) -> object:
+            if ending == "expired":
+                expires = drafts.snapshot(student, draft_id).expires_at
+                clock_moved_to(monkeypatch, browser, expires)
+            else:
+                discarded(browser, draft_id)
+            beginning(browser)
+            raise ValueError(UNEXPECTED)
+
+        monkeypatch.setattr(imports, "save_homework", saving)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        ending_transaction(browser)
+
+    says_it_can_t_tell(answer)
+
+
+def test_a_store_that_won_t_say_if_a_transaction_is_open_is_no_evidence_of_one(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, "save", tick=[first], typed=typed_on(other))
+        record = state_of(browser).project_state
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("failed"))
+        monkeypatch.setattr(record, "transaction_left_open", refusing_coded("SQLITE_IOERR"))
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert WASNT_SAVED in page_text(answer)
+    assert UNKNOWN_HOMEWORK not in page_text(answer)
