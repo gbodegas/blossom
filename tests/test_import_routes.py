@@ -16556,7 +16556,7 @@ def test_a_receipt_on_a_page_since_changed_says_its_choices_aren_t_shown(
 
     text = page_text(answer)
     assert "Saved: 1 new assignment." in text
-    assert NOT_CARRIED in text
+    assert text.count(NOT_CARRIED) == 1
     assert imports.OUT_OF_DATE not in text
     assert NOTHING_KEPT not in text
     assert A_TYPED_TITLE in html.unescape(answer.text)
@@ -18137,3 +18137,642 @@ def test_a_slot_no_longer_offered_beside_a_receipt_is_said(
 
     says_one_choice_can_t_show(answer)
     assert ('{"new":4}', True) not in options_of(answer.text, arts[1])
+
+
+# ------------------------------------------------------- a resend's choices, with no conflict
+
+
+def a_page_of_groups(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ChoicesReview, str, str, str, str]:
+    """A review with its answers kept, nothing saved. The review, the page, a group to save, another
+    one, and that one's Type."""
+    review = three_groups(browser, monkeypatch)
+    page = followed(browser, send(browser, review.draft_id, shown_post(review.page, "keep")))
+    other_card = review.other_type.removeprefix("answer:kind:")
+    unit, third = [
+        one
+        for one, shown in unit_ticks(page).items()
+        if shown and not one.startswith(review.card[:12]) and not one.startswith(other_card[:12])
+    ][:2]
+    third_type = next(
+        field
+        for field in fields_of(page, "answer:kind:")
+        if field.removeprefix("answer:kind:").startswith(third[:12])
+    )
+    return review, page, unit, third, third_type
+
+
+def says_nothing_of_her_choices(answer: Answer) -> None:
+    text = page_text(answer)
+    assert answer.status_code == 200, text[:400]
+    assert "Saved:" in text
+    assert NOT_CARRIED not in text
+    assert NOT_SAVED_YET not in text
+    assert imports.OUT_OF_DATE not in text
+
+
+def says_no_choice_is_lost(answer: Answer) -> None:
+    """As above, on a page that keeps its own note beside what was typed or changed there."""
+    text = page_text(answer)
+    assert answer.status_code == 200, text[:400]
+    assert "Saved:" in text
+    assert NOT_CARRIED not in text
+    assert imports.OUT_OF_DATE not in text
+
+
+def pressed_twice(browser: TestClient, draft_id: str, posted: list[tuple[str, str]]) -> Answer:
+    """A double press: the same post again, once the first has committed."""
+    first = send(browser, draft_id, posted)
+    assert "Saved:" in page_text(first), " ".join(page_text(first).split())[60:400]
+    return send(browser, draft_id, posted)
+
+
+def test_her_choice_changed_on_a_plain_resend_comes_back_and_the_next_press_keeps_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Back on the page after its Save, a Type changed, Save pressed: the receipt answers, so
+    nothing is kept, and her choice comes back as she sent it. The next press has its own
+    acceptance id."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, _, third_type = back_on_a_page_saved_from(browser, monkeypatch)
+        before = on_the_record(browser)
+        posted = page_post(page, "save", tick=[unit], choose={third_type: "TASK"})
+        answer = send(browser, review.draft_id, posted)
+        held = on_the_record(browser)
+        send(browser, review.draft_id, shown_post(answer.text, "keep"))
+        kinds = stored_kinds(browser, review.draft_id, "kind")
+
+    assert answer.status_code == 200, page_text(answer)[:400]
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert ("TASK", True) in options_of(answer.text, third_type)
+    block = fieldset_of(answer.text, third_type)
+    assert block is not None
+    assert NOT_SAVED_YET in html.unescape(block)
+    assert NOT_CARRIED not in page_text(answer)
+    assert imports.OUT_OF_DATE not in page_text(answer)
+    assert held == before
+    assert "TASK" in kinds
+
+
+def test_a_later_from_a_plain_resend_s_page_keeps_her_choice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, _, third_type = back_on_a_page_saved_from(browser, monkeypatch)
+        posted = page_post(page, "save", tick=[unit], choose={third_type: "TASK"})
+        answer = send(browser, review.draft_id, posted)
+        later = send(browser, review.draft_id, shown_post(answer.text, "later"))
+        kinds = stored_kinds(browser, review.draft_id, "kind")
+
+    assert later.status_code == 303, page_text(later)[:400]
+    assert "TASK" in kinds
+
+
+def test_a_choice_cleared_on_a_plain_resend_comes_back_cleared(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        review, page, *_ = back_on_a_page_saved_from(browser, monkeypatch)
+        answer = send(browser, review.draft_id, shown_post(page, "save", clear=[review.confirm]))
+
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert NOT_CARRIED not in page_text(answer)
+    assert options_of(answer.text, review.confirm) == [("as_read", False)]
+    block = fieldset_of(answer.text, review.confirm)
+    assert block is not None
+    assert NOT_SAVED_YET in html.unescape(block)
+
+
+def test_an_option_gone_on_a_plain_resend_is_said(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        one = a_date_asked_beside_a_new_card(browser, monkeypatch)
+        send(browser, one.draft_id, one.posted)
+        another_review_moves_the_date(browser, monkeypatch, "Due (10/12/2026)", "2026-10-12")
+        answer = send(browser, one.draft_id, one.posted)
+
+    says_one_choice_can_t_show(answer)
+    assert options_of(answer.text, one.due) == [("2026-10-12", False), ("2026-10-09", False)]
+
+
+def test_words_typed_that_take_a_question_on_a_plain_resend_are_said(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = back_on_a_page_saved_from(browser, monkeypatch)
+        word = next(value for value, _ in options_of(page, review.question) if value)
+        box = correct_box(review.card, "instruction:0")
+        posted = page_post(
+            page, "save", tick=[unit], choose={review.question: word}, typed={box: "Read nine."}
+        )
+        answer = send(browser, review.draft_id, posted)
+
+    says_one_choice_can_t_show(answer)
+    assert "Read nine." in html.unescape(answer.text)
+
+
+def test_an_identical_resend_at_one_version_marks_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = back_on_a_page_saved_from(browser, monkeypatch)
+        version = review_row(browser, review.draft_id)[0]
+        answer = send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+        same = review_row(browser, review.draft_id)[0] == version
+
+    says_nothing_of_her_choices(answer)
+    assert same
+
+
+def test_a_double_press_that_changes_a_type_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its first copy's keep moved the version, so its choices are what's stored."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, _, third_type = a_page_of_groups(browser, monkeypatch)
+        posted = page_post(page, "save", tick=[unit], choose={third_type: "TASK"})
+        answer = pressed_twice(browser, review.draft_id, posted)
+
+    says_nothing_of_her_choices(answer)
+    assert ("TASK", True) in options_of(answer.text, third_type)
+
+
+def test_a_double_press_that_clears_a_confirmation_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
+        posted = [
+            (name, value)
+            for name, value in page_post(page, "save", tick=[unit])
+            if name != review.confirm
+        ]
+        says_nothing_of_her_choices(pressed_twice(browser, review.draft_id, posted))
+
+
+def test_a_double_press_with_a_title_on_a_card_on_file_says_the_option_is_gone(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The option on file leaves with the typing. The first copy kept it, and the page doesn't
+    offer it, so the notice is true."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
+        typed = {correct_box(review.card, "title"): "A New Title"}
+        posted = page_post(page, "save", tick=[unit], typed=typed)
+        says_one_choice_can_t_show(pressed_twice(browser, review.draft_id, posted))
+
+
+def test_a_double_press_with_a_due_line_chosen_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its answer changes the piece, so the destination on record asks again, unchecked."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, due_card_and_another()))
+        page = her_name_answered(browser, draft_id, page)
+        pieces = fields_named(review_form(page), "answer:destination:")
+        field = f"answer:due_read:{pieces[0]}"
+        other = [unit for unit in unit_ticks(page) if not unit.startswith(pieces[0][:12])]
+        chosen = options_of(page, field)[0][0]
+        posted = page_post(page, "save", tick=other[:1], choose={field: chosen})
+        says_no_choice_is_lost(pressed_twice(browser, draft_id, posted))
+
+
+def test_a_double_press_that_joins_a_ticked_group_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A keep joining two groups renames their tick, which is still shown."""
+    more = [
+        homework_card(
+            course="Art 8", title="Sketch", y_top=450, y_bottom=520, instruction="Part one."
+        ),
+        homework_card(
+            course="Art 8", title="Sketch", y_top=530, y_bottom=600, instruction="Part two."
+        ),
+        homework_card(course="Music 8", title="Scales", y_top=610, y_bottom=680),
+    ]
+    with here(open_settings(tmp_path)) as browser:
+        review = a_review_of_choices(browser, monkeypatch, more)
+        arts = [
+            field
+            for field in fields_of(review.page, "answer:destination:")
+            if field != review.destination
+            and not any("existing" in value for value, _ in options_of(review.page, field))
+            and not any(shown for _, shown in options_of(review.page, field))
+        ]
+        slots = {arts[0]: '{"new":1}', arts[1]: '{"new":2}'}
+        page = followed(
+            browser, send(browser, review.draft_id, shown_post(review.page, "keep", choose=slots))
+        )
+        art_units = [
+            unit
+            for unit in unit_ticks(page)
+            if any(unit.startswith(art.removeprefix("answer:destination:")[:12]) for art in arts)
+        ]
+        other_card = review.other_type.removeprefix("answer:kind:")
+        ticked = next(
+            unit
+            for unit, shown in unit_ticks(page).items()
+            if shown
+            and unit not in art_units
+            and not unit.startswith(review.card[:12])
+            and not unit.startswith(other_card[:12])
+        )
+        posted = page_post(page, "save", tick=[ticked, *art_units], choose={arts[1]: '{"new":1}'})
+        answer = pressed_twice(browser, review.draft_id, posted)
+
+    says_nothing_of_her_choices(answer)
+
+
+def test_a_double_press_that_blocks_a_ticked_group_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A group sent to the assignment on file in the same press, so a date question now stands in
+    its way, and another group saved."""
+    with here(open_settings(tmp_path)) as browser:
+        both = [homework_card(footer="Due (10/8/2026)")]
+        earlier, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=both)))
+        page = her_name_answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        again = [
+            homework_card(footer="Due (10/9/2026)"),
+            homework_card(course="Art 8", title="Sketch", y_top=450, y_bottom=520),
+        ]
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, homework_answer(cards=again)))
+        english = next(
+            field
+            for field in fields_of(page, "answer:destination:")
+            if any("existing" in value for value, _ in options_of(page, field))
+        )
+        existing = next(value for value, _ in options_of(page, english) if "existing" in value)
+        new = next(value for value, _ in options_of(page, english) if "new" in value)
+        page = followed(
+            browser, send(browser, draft_id, shown_post(page, "keep", choose={english: new}))
+        )
+        posted = page_post(page, "save", tick=list(unit_ticks(page)), choose={english: existing})
+        answer = pressed_twice(browser, draft_id, posted)
+
+    says_nothing_of_her_choices(answer)
+
+
+def test_a_double_press_that_answers_a_split_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A split question leaves the page once answered."""
+    with here(open_settings(tmp_path)) as browser:
+        one = homework_answer(cards=[homework_card()])
+        earlier, page = read_review(browser, monkeypatch, (RED, one))
+        page = her_name_answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        card = homework_card(
+            course="Art 8", title="Sketch", footer="Due (10/9/2026)", y_top=360, y_bottom=430
+        )
+        music = homework_card(course="Music 8", title="Scales", y_top=440, y_bottom=500)
+        monday = homework_answer(
+            headings=[{"text": "Monday 10/5/2026", "y": 150, "uncertain": None}],
+            cards=[card, music],
+        )
+        tuesday = homework_answer(
+            headings=[{"text": "Tuesday 10/6/2026", "y": 150, "uncertain": None}], cards=[card]
+        )
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, monday), (GREEN, tuesday))
+        [split] = fields_of(page, "answer:split:")
+        row = split.removeprefix("answer:split:")
+        tick = [unit for unit in unit_ticks(page) if not unit.startswith(row[:12])]
+        posted = page_post(page, "save", tick=tick, choose={split: '"split"'})
+        answer = pressed_twice(browser, draft_id, posted)
+
+    says_nothing_of_her_choices(answer)
+
+
+@pytest.mark.parametrize(
+    ("student", "kept", "sent"),
+    [
+        ({"name": "Someone Else", "uncertain": None}, "hers", "hers"),
+        ({"name": "Someone Else", "uncertain": None}, "hers", "misread"),
+    ],
+    ids=["a name chosen, unchanged", "a name changed"],
+)
+def test_a_double_press_with_her_name_says_nothing(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    student: dict[str, Any],
+    kept: str,
+    sent: str,
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_review_asking_her_name(browser, monkeypatch, student)
+        field = f"answer:name:{fields_named(review_form(page), 'answer:name:')[0]}"
+        first = next(
+            one
+            for one in fields_of(page, "answer:destination:")
+            if any("existing" in value for value, _ in options_of(page, one))
+        )
+        existing = next(value for value, _ in options_of(page, first) if "existing" in value)
+        answers = {first: existing, field: kept}
+        page = followed(browser, send(browser, draft_id, shown_post(page, "keep", choose=answers)))
+        posted = page_post(page, "save", tick=list(unit_ticks(page))[-1:], choose={field: sent})
+        says_nothing_of_her_choices(pressed_twice(browser, draft_id, posted))
+
+
+def test_a_double_press_of_a_saved_row_s_own_answers_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its confirmation and Type posted, gone with it, and the version moved by another row's Type
+    in the same press."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, _, _, third_type = a_page_of_groups(browser, monkeypatch)
+        answers = {review.other_type: "HOMEWORK"}
+        page = followed(
+            browser, send(browser, review.draft_id, shown_post(page, "keep", choose=answers))
+        )
+        other_card = review.other_type.removeprefix("answer:kind:")
+        math = next(unit for unit in unit_ticks(page) if unit.startswith(other_card[:12]))
+        posted = page_post(page, "save", tick=[math], choose={third_type: "TASK"})
+        says_nothing_of_her_choices(pressed_twice(browser, review.draft_id, posted))
+
+
+def test_a_double_press_of_a_new_slot_s_date_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two new cards on one slot with two dates: a date question whose subject is the slot's."""
+    more = [
+        homework_card(
+            course="Art 8", title="Sketch", y_top=450, y_bottom=520, footer="Due (10/8/2026)"
+        ),
+        homework_card(
+            course="Art 8", title="Sketch", y_top=530, y_bottom=600, footer="Due (10/9/2026)"
+        ),
+        homework_card(course="Music 8", title="Scales", y_top=610, y_bottom=680),
+    ]
+    with here(open_settings(tmp_path)) as browser:
+        review = a_review_of_choices(browser, monkeypatch, more)
+        arts = [
+            field
+            for field in fields_of(review.page, "answer:destination:")
+            if field != review.destination
+            and not any("existing" in value for value, _ in options_of(review.page, field))
+            and not any(shown for _, shown in options_of(review.page, field))
+        ]
+        slots = dict.fromkeys(arts, '{"new":1}')
+        page = followed(
+            browser, send(browser, review.draft_id, shown_post(review.page, "keep", choose=slots))
+        )
+        due = next(field for field in fields_of(page, "answer:due:") if "new" in field)
+        other_card = review.other_type.removeprefix("answer:kind:")
+        ticked = next(
+            unit
+            for unit, shown in unit_ticks(page).items()
+            if shown
+            and not any(art.removeprefix("answer:destination:")[:12] in unit for art in arts)
+            and not unit.startswith(review.card[:12])
+            and not unit.startswith(other_card[:12])
+        )
+        posted = page_post(page, "save", tick=[ticked], choose={due: options_of(page, due)[0][0]})
+        says_nothing_of_her_choices(pressed_twice(browser, review.draft_id, posted))
+
+
+def a_page_another_tab_keeps_from(
+    browser: TestClient, review: ChoicesReview, answers: Mapping[str, str]
+) -> str:
+    """Another tab's Keep of these answers, moving the version, and the page it leaves."""
+    now = browser.get(f"/parent/imports/{review.draft_id}", headers=PAGE_HEADERS).text
+    send(browser, review.draft_id, shown_post(now, "keep", choose=answers))
+    return browser.get(f"/parent/imports/{review.draft_id}", headers=PAGE_HEADERS).text
+
+
+def test_her_choice_changed_past_another_tab_s_keep_is_said_and_not_carried(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A choice carried onto a new version would get past the version check."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, _, third_type = back_on_a_page_saved_from(browser, monkeypatch)
+        word = next(value for value, _ in options_of(page, review.question) if value)
+        a_page_another_tab_keeps_from(browser, review, {review.question: word})
+        before = on_the_record(browser)
+        posted = page_post(page, "save", tick=[unit], choose={third_type: "TASK"})
+        answer = send(browser, review.draft_id, posted)
+        held = on_the_record(browser)
+
+    says_one_choice_can_t_show(answer)
+    assert ("TASK", True) not in options_of(answer.text, third_type)
+    assert held == before
+
+
+def test_an_answer_another_tab_gave_where_she_posted_none_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A radio she left alone posts nothing, so the record's answer loses nothing of hers."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = back_on_a_page_saved_from(browser, monkeypatch)
+        a_page_another_tab_keeps_from(browser, review, {review.other_type: "TASK"})
+        answer = send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+
+    says_nothing_of_her_choices(answer)
+    assert ("TASK", True) in options_of(answer.text, review.other_type)
+
+
+def test_a_question_another_tab_answered_that_she_left_unticked_is_said(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkbox left unticked posts that it's blank, and the record holds an answer."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = back_on_a_page_saved_from(browser, monkeypatch)
+        word = next(value for value, _ in options_of(page, review.question) if value)
+        a_page_another_tab_keeps_from(browser, review, {review.question: word})
+        answer = send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+
+    says_one_choice_can_t_show(answer)
+
+
+def test_her_changed_choice_on_a_question_another_tab_s_save_took_is_said(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On no record and no page, at another version: what comparing with the record catches."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, third, third_type = back_on_a_page_saved_from(browser, monkeypatch)
+        now = a_page_another_tab_keeps_from(browser, review, {review.other_type: "TASK"})
+        send(browser, review.draft_id, page_post(now, "save", tick=[third]))
+        posted = page_post(page, "save", tick=[unit], choose={third_type: "TASK"})
+        answer = send(browser, review.draft_id, posted)
+
+    says_one_choice_can_t_show(answer)
+
+
+def answered_saved_and_then_another_review_moves_the_date(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, footer: str, day: str
+) -> tuple[SimpleNamespace, list[tuple[str, str]]]:
+    """Her first press answers the instruction question, moving the version, with the date already
+    on record. Another review then moves that date."""
+    one = a_date_asked_beside_a_new_card(browser, monkeypatch)
+    word = next(value for value, _ in options_of(one.page, one.question) if value)
+    art = next(value for name, value in one.posted if name == "unit")
+    posted = page_post(one.page, "save", tick=[art], choose={one.question: word})
+    send(browser, one.draft_id, posted)
+    another_review_moves_the_date(browser, monkeypatch, footer, day)
+    return one, posted
+
+
+def test_a_choice_the_record_holds_with_its_option_gone_at_another_version_is_said(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On record, its question still shown, and the posted date not offered. Nothing stands in for
+    it."""
+    with here(open_settings(tmp_path)) as browser:
+        one, posted = answered_saved_and_then_another_review_moves_the_date(
+            browser, monkeypatch, "Due (10/12/2026)", "2026-10-12"
+        )
+        answer = send(browser, one.draft_id, posted)
+
+    says_one_choice_can_t_show(answer)
+    assert options_of(answer.text, one.due) == [("2026-10-12", False), ("2026-10-09", False)]
+
+
+def test_a_choice_the_record_holds_with_its_question_gone_at_another_version_goes_unsaid(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """His ruling's narrow exception to saying what can't be shown: a whole question gone, whose
+    posted choice is demonstrably still on the record."""
+    with here(open_settings(tmp_path)) as browser:
+        one, posted = answered_saved_and_then_another_review_moves_the_date(
+            browser, monkeypatch, "Due (10/9/2026)", "2026-10-09"
+        )
+        held = stored_answers(browser, one.draft_id)
+        answer = send(browser, one.draft_id, posted)
+
+    says_nothing_of_her_choices(answer)
+    assert one.due not in html.unescape(answer.text)
+    assert ("due", one.due.removeprefix("answer:due:")) in held
+
+
+def test_a_cleared_answer_the_record_still_holds_at_another_version_is_said(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outside the exception: what she cleared isn't what's held, with its question on the page."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
+        word = next(value for value, _ in options_of(page, review.question) if value)
+        answers = {review.question: word}
+        page = followed(
+            browser, send(browser, review.draft_id, shown_post(page, "keep", choose=answers))
+        )
+        send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+        a_page_another_tab_keeps_from(browser, review, {review.other_type: "TASK"})
+        posted = [
+            (name, value)
+            for name, value in page_post(page, "save", tick=[unit])
+            if name != review.question
+        ]
+        answer = send(browser, review.draft_id, posted)
+
+    says_one_choice_can_t_show(answer)
+
+
+def test_a_cleared_answer_whose_question_her_typing_took_is_said_at_one_version(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outside the exception: the answer is still held, she cleared it, and words typed in the same
+    press take its question off the page."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
+        word = next(value for value, _ in options_of(page, review.question) if value)
+        answers = {review.question: word}
+        page = followed(
+            browser, send(browser, review.draft_id, shown_post(page, "keep", choose=answers))
+        )
+        send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+        version = review_row(browser, review.draft_id)[0]
+        box = correct_box(review.card, "instruction:0")
+        posted = [
+            (name, value)
+            for name, value in page_post(page, "save", tick=[unit], typed={box: "Read nine."})
+            if name != review.question
+        ]
+        answer = send(browser, review.draft_id, posted)
+        same = review_row(browser, review.draft_id)[0] == version
+
+    says_one_choice_can_t_show(answer)
+    assert same
+    assert fieldset_of(answer.text, review.question) is None
+
+
+def test_a_cleared_answer_another_tab_s_save_took_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The save took the answer too, so there's no stored answer for her blank to differ from."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
+        other_card = review.other_type.removeprefix("answer:kind:")
+        math = next(one for one in unit_ticks(page) if one.startswith(other_card[:12]))
+        send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+        now = browser.get(f"/parent/imports/{review.draft_id}", headers=PAGE_HEADERS).text
+        send(browser, review.draft_id, page_post(now, "save", tick=[math]))
+        posted = [
+            (name, value)
+            for name, value in page_post(page, "save", tick=[unit])
+            if name not in (review.confirm, f"answer:destination:{math}", review.other_type)
+        ]
+        answer = send(browser, review.draft_id, posted)
+
+    says_nothing_of_her_choices(answer)
+
+
+def test_a_copy_s_receipt_through_the_save_s_own_read_says_what_can_t_show(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This press's first check finds nothing. A copy commits, and another review moves the date,
+    before its save reads the receipt in its own transaction."""
+    with here(open_settings(tmp_path)) as browser:
+        one = a_date_asked_beside_a_new_card(browser, monkeypatch)
+        two = TwoCopies(browser, monkeypatch, one.draft_id, one.posted, [])
+        real: Callable[..., object] = save_homework
+        begun: list[bool] = []
+
+        def saving(*args: object, **kwargs: object) -> object:
+            if begun:
+                return real(*args, **kwargs)
+            begun.append(True)
+            two.the_copy_commits()
+            another_review_moves_the_date(browser, monkeypatch, "Due (10/12/2026)", "2026-10-12")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(imports, "save_homework", saving)
+        answer = send(browser, one.draft_id, one.posted)
+        monkeypatch.undo()
+
+    says_one_choice_can_t_show(answer)
+
+
+def test_a_first_press_s_own_page_carries_nothing_and_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its save's own row asked for an answer it posted, gone with the save, and that's no choice
+    lost. Only a press that finds a receipt it didn't write comes back with its choices."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
+        answer = send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+
+    says_nothing_of_her_choices(answer)
+
+
+def test_a_double_press_whose_question_left_with_its_destination_goes_unsaid(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exception with nobody else involved: the question answered and kept, the destination then
+    changed so its subject goes. Posted, on the record, and gone."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
+        word = next(value for value, _ in options_of(page, review.question) if value)
+        answers = {review.question: word}
+        page = followed(
+            browser, send(browser, review.draft_id, shown_post(page, "keep", choose=answers))
+        )
+        new = next(value for value, _ in options_of(page, review.destination) if "new" in value)
+        posted = page_post(page, "save", tick=[unit], choose={review.destination: new})
+        answer = pressed_twice(browser, review.draft_id, posted)
+        held = stored_answers(browser, review.draft_id)
+
+    says_nothing_of_her_choices(answer)
+    assert review.question not in html.unescape(answer.text)
+    assert ("instructions", review.question.split(":", 2)[2]) in held
