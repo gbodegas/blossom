@@ -2105,8 +2105,10 @@ async def outcome_page(
     homework transaction didn't commit, and a save that committed is reported as saved, in the
     success pattern, with anything after it that didn't finish. A review that expired, or is
     gone, gives the press's typing back with what it says, never in place of a save that
-    committed. A save that couldn't start or finish read no receipt of its own, so one from another
-    copy of the press answers first, and "wasn't saved" is said only with none on file."""
+    committed. A save that couldn't start or finish has no result of its own to show, and another
+    copy of the press can have saved since this one last looked, so it looks again: one found
+    answers first, and "wasn't saved" is said only when this look finds none. A commit after it goes
+    unseen."""
     if isinstance(outcome, NotSaved):
         kept = [PRESS_SAID["answers_kept"]] if answered else []
         if outcome.reason in ("absent", "expired"):

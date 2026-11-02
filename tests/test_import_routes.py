@@ -17587,6 +17587,79 @@ def test_keep_and_later_ask_for_no_receipt_before_their_last_page(
     assert "Saved:" not in page_text(answer)
 
 
+def a_later_press_another_has_passed(browser: TestClient, two: TwoCopies) -> list[tuple[str, str]]:
+    """A page another Save for later has passed, so this press comes back with the page."""
+    page = browser.get(f"/parent/imports/{two.draft_id}", headers=PAGE_HEADERS).text
+    ticked = next(unit for unit, shown in unit_ticks(page).items() if shown)
+    send(browser, two.draft_id, shown_post(page, "later", drop=[("unit", ticked)]))
+    return shown_post(page, "later")
+
+
+@pytest.mark.parametrize("ending", [review_expired, rows_refused], ids=["expired", "rows refused"])
+def test_a_later_press_behind_another_asks_for_no_receipt_before_its_last_page(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ending: Callable[[TwoCopies], None]
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        posted = a_later_press_another_has_passed(browser, two)
+        as_its_page_begins(two, functools.partial(ending, two))
+        reads = counting_receipt_reads(browser, monkeypatch)
+        answer = send(browser, two.draft_id, posted)
+        monkeypatch.undo()
+
+    assert reads.count == 0, page_text(answer)[:400]
+    assert UNKNOWN_HOMEWORK not in page_text(answer)
+
+
+def test_a_keep_whose_rows_are_refused_asks_for_no_receipt(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        drafts = state_of(browser).import_drafts
+        real: Callable[..., object] = drafts.keep_answers
+
+        def writing(*args: object, **kwargs: object) -> object:
+            wrote = real(*args, **kwargs)
+            rows_refused(two)
+            return wrote
+
+        monkeypatch.setattr(drafts, "keep_answers", writing)
+        reads = counting_receipt_reads(browser, monkeypatch)
+        page = browser.get(f"/parent/imports/{two.draft_id}", headers=PAGE_HEADERS).text
+        answer = send(browser, two.draft_id, shown_post(page, "keep"))
+        monkeypatch.undo()
+
+    assert reads.count == 0, page_text(answer)[:400]
+    assert UNKNOWN_HOMEWORK not in page_text(answer)
+
+
+@pytest.mark.parametrize("refusal", [StoreBusy, file_error], ids=["busy", "a file error"])
+def test_a_press_that_committed_says_so_with_its_review_and_receipt_reads_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: Callable[[], BaseException]
+) -> None:
+    """Its commit is known, so a refused review read and a refused receipt read can't turn that
+    into "can't tell"."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, "save", tick=[first], typed=typed_on(other))
+        record = state_of(browser).project_state
+        drafts = state_of(browser).import_drafts
+
+        def saving(*args: object, **kwargs: object) -> object:
+            saved = save_homework(*args, **kwargs)  # type: ignore[arg-type]
+            monkeypatch.setattr(drafts, "snapshot", raising(refusal))
+            monkeypatch.setattr(record, "homework_acceptance", raising(file_error))
+            return saved
+
+        monkeypatch.setattr(imports, "save_homework", saving)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert UNKNOWN_HOMEWORK not in page_text(answer)
+
+
 def test_counts_that_read_none_with_the_rows_refused_ask_for_the_receipt_once(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
