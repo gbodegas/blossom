@@ -16780,7 +16780,8 @@ def test_a_posted_choice_is_never_swapped_for_another(
 def test_a_posted_choice_with_no_question_here_is_said_unless_it_was_cleared(
     posted: tuple[str, ...], lost: bool
 ) -> None:
-    """A question that's gone and was cleared replaces nothing."""
+    """The pass counts nothing for a question that's gone and was cleared. Whether the record still
+    holds that answer is the route's to ask (``choices_said_lost``)."""
     _, _, _, not_carried, _ = screenshot_page._carried([], (), [], {"answer:kind:gone": posted}, {})
 
     assert not_carried is lost
@@ -18632,8 +18633,8 @@ def test_a_choice_the_record_holds_with_its_option_gone_at_another_version_is_sa
 def test_a_choice_the_record_holds_with_its_question_gone_at_another_version_goes_unsaid(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """His ruling's narrow exception to saying what can't be shown: a whole question gone, whose
-    posted choice is demonstrably still on the record."""
+    """A narrow exception to saying what can't be shown: a whole question gone, whose posted choice
+    is demonstrably still on the record."""
     with here(open_settings(tmp_path)) as browser:
         one, posted = answered_saved_and_then_another_review_moves_the_date(
             browser, monkeypatch, "Due (10/9/2026)", "2026-10-09"
@@ -18776,3 +18777,158 @@ def test_a_double_press_whose_question_left_with_its_destination_goes_unsaid(
     says_nothing_of_her_choices(answer)
     assert review.question not in html.unescape(answer.text)
     assert ("instructions", review.question.split(":", 2)[2]) in held
+
+
+def test_a_changed_answer_with_its_question_gone_is_said(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outside the exception: another tab changes her date, and another review settles it there, so
+    what she posted isn't what's held."""
+    with here(open_settings(tmp_path)) as browser:
+        one = a_date_asked_beside_a_new_card(browser, monkeypatch)
+        send(browser, one.draft_id, one.posted)
+        now = browser.get(f"/parent/imports/{one.draft_id}", headers=PAGE_HEADERS).text
+        send(browser, one.draft_id, shown_post(now, "keep", choose={one.due: "2026-10-09"}))
+        another_review_moves_the_date(browser, monkeypatch, "Due (10/9/2026)", "2026-10-09")
+        answer = send(browser, one.draft_id, one.posted)
+
+    says_one_choice_can_t_show(answer)
+    assert one.due not in html.unescape(answer.text)
+
+
+def test_a_cleared_answer_held_with_its_question_gone_at_another_version_is_said(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outside the exception: the cleared answer is held, and her typing took its question."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
+        word = next(value for value, _ in options_of(page, review.question) if value)
+        answers = {review.question: word}
+        page = followed(
+            browser, send(browser, review.draft_id, shown_post(page, "keep", choose=answers))
+        )
+        send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+        a_page_another_tab_keeps_from(browser, review, {review.other_type: "TASK"})
+        box = correct_box(review.card, "instruction:0")
+        posted = [
+            (name, value)
+            for name, value in page_post(page, "save", tick=[unit], typed={box: "Read nine."})
+            if name != review.question
+        ]
+        answer = send(browser, review.draft_id, posted)
+
+    says_one_choice_can_t_show(answer)
+    assert fieldset_of(answer.text, review.question) is None
+
+
+def two_instruction_questions(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, *, first_answered: bool
+) -> SimpleNamespace:
+    """Two cards on file read again with other words, and one new. The first's question answered or
+    not, its card's key, the other question for the conflict, and the new card's group."""
+    both = [homework_card(), homework_card(course="Math 8", title="Set 3", y_top=360, y_bottom=430)]
+    earlier, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=both)))
+    page = her_name_answered(browser, earlier, page)
+    send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+    again = [
+        homework_card(instruction="Complete pages 15 to 16."),
+        homework_card(
+            course="Math 8", title="Set 3", instruction="Other words.", y_top=360, y_bottom=430
+        ),
+        homework_card(course="Art 8", title="Sketch", y_top=450, y_bottom=520),
+    ]
+    draft_id, page = read_review(browser, monkeypatch, (BLUE, homework_answer(cards=again)))
+    english, math, *_ = fields_of(page, "answer:destination:")
+    choose = {
+        field: next(value for value, _ in options_of(page, field) if "existing" in value)
+        for field in (english, math)
+    }
+    page = followed(browser, send(browser, draft_id, shown_post(page, "keep", choose=choose)))
+    one, two = fields_of(page, "answer:instructions:")
+    card = english.removeprefix("answer:destination:")
+    first, other = (one, two) if card[:12] in one else (two, one)
+    if first_answered:
+        word = next(value for value, _ in options_of(page, first) if value)
+        answers = {first: word}
+        page = followed(browser, send(browser, draft_id, shown_post(page, "keep", choose=answers)))
+    art = next(unit for unit, shown in unit_ticks(page).items() if shown)
+    return SimpleNamespace(
+        draft_id=draft_id, page=page, card=card, first=first, other=other, art=art
+    )
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_conflict_with_no_receipt_says_a_cleared_answer_still_held(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        one = two_instruction_questions(browser, monkeypatch, first_answered=True)
+        before = on_the_record(browser), review_row(browser, one.draft_id)[:2]
+        box = correct_box(one.card, "instruction:0")
+        posted = [
+            (name, value)
+            for name, value in page_post(one.page, press, tick=[one.art], typed={box: "Read nine."})
+            if name != one.first
+        ]
+        answer = send(browser, one.draft_id, with_the_conflict(posted, one.page, one.other))
+        held = on_the_record(browser), review_row(browser, one.draft_id)[:2]
+
+    assert answer.status_code == 422, page_text(answer)[:400]
+    assert page_text(answer).count(NOT_CARRIED) == 1
+    assert held == before
+
+
+def test_a_conflict_with_no_receipt_says_nothing_of_a_blank_not_held(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        one = two_instruction_questions(browser, monkeypatch, first_answered=False)
+        box = correct_box(one.card, "instruction:0")
+        posted = page_post(one.page, "save", tick=[one.art], typed={box: "Read nine."})
+        answer = send(browser, one.draft_id, with_the_conflict(posted, one.page, one.other))
+
+    assert answer.status_code == 422, page_text(answer)[:400]
+    assert NOT_CARRIED not in page_text(answer)
+    assert fieldset_of(answer.text, one.first) is None
+
+
+def test_a_conflict_beside_a_receipt_says_a_cleared_answer_still_held(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        one = two_instruction_questions(browser, monkeypatch, first_answered=True)
+        send(browser, one.draft_id, page_post(one.page, "save", tick=[one.art]))
+        box = correct_box(one.card, "instruction:0")
+        posted = [
+            (name, value)
+            for name, value in page_post(
+                one.page, "save", tick=[one.art], typed={box: "Read nine."}
+            )
+            if name != one.first
+        ]
+        answer = send(browser, one.draft_id, with_the_conflict(posted, one.page, one.other))
+
+    says_one_choice_can_t_show(answer)
+
+
+def test_a_first_press_asks_the_record_for_no_answers(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank checkbox on its own page, and an older page's Save: neither has anything to ask."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
+        real: Callable[..., Awaitable[object]] = imports.answers_held
+        calls: list[bool] = []
+
+        async def counting(*args: object, **kwargs: object) -> object:
+            calls.append(True)
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(imports, "answers_held", counting)
+        send(browser, review.draft_id, page_post(page, "save", tick=[]))
+        send(browser, review.draft_id, page_post(page, "keep", tick=[unit]))
+        a_page_another_tab_keeps_from(browser, review, {review.other_type: "TASK"})
+        send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+        monkeypatch.undo()
+
+    assert calls == []

@@ -1887,11 +1887,12 @@ async def with_typing(
     check, so it says the page is out of date and carries none. Whatever can't carry is said,
     beside a confirmed save's counts too, with no word there of the page being out of date; only
     what that save took goes unsaid, as those are always gone: its own rows' questions and ticks
-    (``own``, their pieces), and a name question. A Save press resent with a confirmed receipt
-    (``own``, None on any other press) comes back the same way with no conflict, since finding its
-    receipt it keeps nothing: at the page's version its choices as posted, and at another that they
-    can't be shown if they aren't what the record holds or aren't offered (``choices_said_lost``).
-    Any other too long or cleared box's press, with no conflict, carries nothing."""
+    (``own``, their pieces), and a name question, apart from an answer she cleared that the record
+    still holds (``choices_said_lost``). A Save press that finds a confirmed receipt (``own``,
+    otherwise None) writes nothing more, and comes back the same way with no conflict: at the page's
+    version its choices as posted, and at another that they can't be shown if they aren't what the
+    record holds or aren't offered, with one exception (``choices_said_lost``). Any other too long
+    or cleared box's press, with no conflict, carries nothing."""
     after = read or await snapshot_keeping_typing(
         request, state, draft_id, said, status, done, save_press=post.press == "save"
     )
@@ -1932,9 +1933,8 @@ async def with_typing(
     if rows is not None and carry:
         ticks_shown = {unit.unit for unit in rows.units if unit.ticked}
         if own is not None:
-            pieces_shown = {name for unit in ticks_shown for name in unit.split("+")}
-            ticks = {name for unit in post.units for name in unit.split("+")} - own
-            lost = rows.beyond_its_save or not pieces_shown.issuperset(ticks)
+            ticks = [unit for unit in post.units if not own.issuperset(unit.split("+"))]
+            lost = rows.beyond_its_save or not ticks_shown.issuperset(ticks)
             if said_lost or (current and lost):
                 lines.append(PAGE_SAID["not_carried"])
         elif said_lost or (
@@ -1976,8 +1976,8 @@ def post_off_record(
     post: ReviewPost, own: frozenset[str], held: Mapping[tuple[str, str], str]
 ) -> bool:
     """Whether a resent press's choices aren't what the record holds: an answer it holds otherwise
-    or not at all, or one it holds that the press left blank. A double press's mostly are what its
-    first copy kept, whatever that did to the page. Its save's own rows go with that save."""
+    or not at all, or one it holds that the press left blank. A double press's are what its first
+    copy kept, whatever that did to the page. Its save's own rows go with that save."""
     for answer in post.answers:
         if answer.names and own.issuperset(answer.names):
             continue
@@ -2005,8 +2005,8 @@ async def choices_said_lost(
     """What a resend or a conflict can't show, read from the record. At the page's version, an
     answer she cleared that the record still holds, with its question gone. At another version,
     on a resend with no conflict, whatever isn't what the record holds, or isn't offered. One
-    exception, his ruling: a question gone whose posted choice the record still holds goes
-    unsaid, since nothing tells it from one her own first copy took off the page."""
+    exception: a question gone whose posted choice the record still holds goes unsaid, since
+    nothing tells it from one her own first copy took off the page."""
     if rows is None:
         return False
     if current:
