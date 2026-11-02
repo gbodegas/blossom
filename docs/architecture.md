@@ -401,7 +401,8 @@ that finds one, or whose acceptance read is refused, says it can't tell, with it
 typing and no rows, and the review's rows aren't made from that connection until
 the transaction ends. Nothing here repairs the connection. An instruction ticked
 beside "None of these apply" comes back on Save, Keep and Save for later with
-every choice that can still be shown, says when one can't, and writes nothing. The
+every choice that can still be shown, and writes nothing. It says when a choice
+can't be shown, except a question gone from the page beside a confirmed save. The
 hourly cleanup is promised only of a review read as finished, since it closes
 no other. Once a press is known to have committed, an unexpected error while
 making its page doesn't reach the server, since a plain error would hide a save

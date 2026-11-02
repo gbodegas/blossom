@@ -1877,7 +1877,7 @@ async def with_typing(
             both=post.both,
             choices=post.choices if current else None,
             conflicted=post.conflicted if current else None,
-            revision=post.progress_revision if post.conflicted and not done else None,
+            revision=post.progress_revision if post.conflicted else None,
         )
     except sqlite3.Error as error:
         noted(error)
