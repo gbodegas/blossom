@@ -20,6 +20,7 @@
   {% for value, label, checked in question.options %}
     <label><input type="{% if question.many or question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
   {% endfor %}
+  {% if question.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
   {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
   {% if question.fold %}<p class="helper">{{ words.correct_it }} <a href="#{{ question.fold }}">{{ words.fold }}</a></p>{% endif %}
 {% endmacro %}
@@ -73,6 +74,7 @@
     {% for choice in piece.choices %}
       <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
     {% endfor %}
+    {% if piece.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
     {% if piece.preselected %}<p class="note">{{ words.preselected }}</p>{% endif %}
     {% if piece.stale %}<p class="problem">{{ words.choose_again }}</p>{% endif %}
     {% if piece.lost %}<p class="problem">{{ piece.lost }}</p>{% endif %}
@@ -91,6 +93,7 @@
           {% for value, label, checked in question.options %}
             <label><input type="{% if question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
           {% endfor %}
+          {% if question.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
         </fieldset>
       {% endfor %}
       {% set removes = rows.names|map(attribute="remove")|sum(start=()) %}

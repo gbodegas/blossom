@@ -13,7 +13,7 @@ on the connection that holds the writer, puts the whole save in that one transac
 import json
 import sqlite3
 import threading
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, NamedTuple
@@ -86,6 +86,13 @@ class HomeworkAcceptance(NamedTuple):
     role: str
 
 
+class TransactionLeftOpen(sqlite3.OperationalError):
+    """A read outside a save found a transaction open on the record's connection, with the store's
+    lock held. Every transaction here lives wholly under that lock, so this one is no request's
+    now: a refused commit and rollback left it, and what the connection reads isn't settled. It has
+    no code, so it isn't a busy file."""
+
+
 class HomeworkSaveRecords:
     """The part of the record's store that reads a screenshot review's draft tables and writes
     its homework acceptance, inside the caller's transaction."""
@@ -108,6 +115,23 @@ class HomeworkSaveRecords:
         if row is None:
             return None
         return tuple((str(name), str(target)) for name, target in json.loads(str(row[0])))
+
+    def settled[**P, T](self, read: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
+        """What ``read`` answers, for a caller outside a save, with the check that no transaction
+        is open and the read itself under one hold of the store's lock, so another request's
+        ordinary transaction is waited for and never mistaken for one left open. It runs whole in
+        one call, so no lock is held across an ``await``, and each read checks again. A save reads
+        without it, inside its own transaction."""
+        with self._lock:
+            if self._connection.in_transaction:
+                raise TransactionLeftOpen
+            return read(*args, **kwargs)
+
+    def transaction_left_open(self) -> bool:
+        """Whether a transaction is open on this connection with the store's lock held, which is
+        waited for, so another request's ordinary one has ended by the time this looks."""
+        with self._lock:
+            return self._connection.in_transaction
 
     def homework_counts(
         self, student_id: str, draft_id: str, acceptance_id: str

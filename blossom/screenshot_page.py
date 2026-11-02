@@ -115,6 +115,10 @@ SAID: Final = {
     "assigned_hint": "Leave it empty to keep the date as read.",
     "no_assigned_given": "No assigned date was given",
     "both": "Choose an assigned date or No assigned date was given, not both.",
+    "conflict": "Choose these instructions or None of these apply, not both.",
+    "not_carried": (
+        "Some of your choices can't be shown on this page. Check the review before trying again."
+    ),
     "unreadable": "The date given was \u201c{value}\u201d, which is not a date Blossom can read.",
     "new_assignment": "New assignment.",
     "already": "Already saved. Nothing new is written.",
@@ -689,6 +693,8 @@ class PieceControl:
     """Why it asks again when its answer depended on corrections that changed since."""
     anchor: str = ""
     """Its fieldset's id on the page, by its place among the open pieces."""
+    unsaved: bool = False
+    """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -717,6 +723,8 @@ class Question:
     answered: bool = False
     """For a field the reader wasn't sure of: whether a correction in the fold answers it, as
     it does for the save, with no option checked."""
+    unsaved: bool = False
+    """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -822,6 +830,8 @@ class NameQuestion:
     """Each image "Remove only this screenshot" names, with its button's label."""
     anchor: str = ""
     """Its fieldset's id on the page, by its place among the review's questions."""
+    unsaved: bool = False
+    """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -846,6 +856,10 @@ class RowsShown:
     summary of the fold whose box was refused."""
     words: Mapping[str, str] = dataclasses.field(default_factory=lambda: dict(SAID))
     """The fixed sentences and labels the page shows beside the rows' own."""
+    not_carried: bool = False
+    """Whether a choice a refused press sent has no question or option on this page."""
+    beyond_its_save: bool = False
+    """Whether one of them is more than its confirmed save took with its own rows and her name."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1308,6 +1322,9 @@ def rows_shown(
     image_ids: Mapping[str, str] | None = None,
     href: str = "",
     both: frozenset[str] = frozenset(),
+    choices: Mapping[str, tuple[str, ...]] | None = None,
+    conflicted: Mapping[str, tuple[str, ...]] | None = None,
+    own: frozenset[str] = frozenset(),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1607,6 +1624,10 @@ def rows_shown(
     finishing.append(("check", page_check(page_key, [*finishing, ("action", "finish")])))
     forms.append(OutsideForm("finish", "finish", tuple(finishing)))
     forms.append(signed_action("not-hers", page_key, version))
+    marks = own | {state.by_name[name].key for name in own if name in state.by_name}
+    names, splits, shown_units, not_carried, beyond_its_save = _carried(
+        names, splits, shown_units, choices or {}, conflicted or {}, marks
+    )
     return RowsShown(
         tuple(names),
         splits,
@@ -1618,6 +1639,128 @@ def rows_shown(
         unread_groups,
         tuple(piece_text(places, p) for p in state.pieces if p.name in state.saved),
         _first_open(names, splits, shown_units),
+        not_carried=not_carried,
+        beyond_its_save=beyond_its_save,
+    )
+
+
+def _carried(
+    names: Sequence[NameQuestion],
+    splits: Sequence[Question],
+    units: Sequence[UnitShown],
+    choices: Mapping[str, tuple[str, ...]],
+    conflicted: Mapping[str, tuple[str, ...]],
+    marks: frozenset[str] = frozenset(),
+) -> tuple[list[NameQuestion], tuple[Question, ...], list[UnitShown], bool, bool]:
+    """Everything on the page that asks, as a refused press with an instruction conflict sent it:
+    its choices checked as posted, "Not saved yet." on each that differs from what the record
+    shows, and the conflict's sentence in its own fieldset; whether a choice has no question or
+    option here; and whether one of those is more than a confirmed save took with its own rows
+    (``marks``, their pieces and row keys, which are in the fields that ask about them) or a name
+    question. A value is never swapped for another. This only marks what's shown, and runs after
+    everything the page signs is worked out, so the next post meets every check as it would. The
+    groups' ticks come back as posted through ``selected``, with no such note: they aren't answers
+    the record holds, and beside "Save this assignment" it would read as about the homework."""
+    if not choices:
+        return list(names), tuple(splits), list(units), False, False
+    seen: set[str] = set()
+    lost: list[bool] = []
+
+    def as_posted(
+        field: str, options: tuple[tuple[str, str, bool], ...]
+    ) -> tuple[tuple[str, str, bool], ...]:
+        posted = choices[field]
+        offered = {value for value, _, _ in options}
+        seen.add(field)
+        if not offered.issuperset(posted):
+            lost.append(True)
+        if posted and offered.isdisjoint(posted):
+            return options
+        return tuple((value, label, value in posted) for value, label, _ in options)
+
+    def differs(
+        before: tuple[tuple[str, str, bool], ...], after: tuple[tuple[str, str, bool], ...]
+    ) -> bool:
+        return [checked for _, _, checked in before] != [checked for _, _, checked in after]
+
+    def question(asked: Question) -> Question:
+        if asked.field not in choices:
+            return asked
+        options = as_posted(asked.field, asked.options)
+        notes = ((SAID["conflict"], ""), *asked.notes) if asked.field in conflicted else asked.notes
+        return dataclasses.replace(
+            asked, options=options, notes=notes, unsaved=differs(asked.options, options)
+        )
+
+    def name_question(asked: NameQuestion) -> NameQuestion:
+        if asked.field not in choices:
+            return asked
+        options = as_posted(asked.field, asked.options)
+        return dataclasses.replace(asked, options=options, unsaved=differs(asked.options, options))
+
+    def control_of(card: CardShown) -> PieceControl:
+        field = answer_field("destination", card.name)
+        control = card.control
+        if field not in choices:
+            return control
+        posted = choices[field]
+        seen.add(field)
+        if not {choice.value for choice in control.choices}.issuperset(posted):
+            lost.append(True)
+            return control
+        carried = tuple(
+            dataclasses.replace(choice, checked=choice.value in posted)
+            for choice in control.choices
+        )
+        return dataclasses.replace(control, choices=carried, unsaved=carried != control.choices)
+
+    def box_of(box: Box) -> Box:
+        if box.none is None or box.none[0] not in choices:
+            return box
+        seen.add(box.none[0])
+        ticked = "none" in choices[box.none[0]]
+        if ticked == box.none[1]:
+            return box
+        return dataclasses.replace(
+            box, none=(box.none[0], ticked), mark=box.mark or SAID["not_saved_yet"]
+        )
+
+    def card_of(card: CardShown) -> CardShown:
+        return dataclasses.replace(
+            card,
+            boxes=tuple(box_of(box) for box in card.boxes),
+            checks=tuple(question(asked) for asked in card.checks),
+            type=None if card.type is None else question(card.type),
+            control=control_of(card),
+        )
+
+    carried_units = [
+        dataclasses.replace(
+            unit,
+            blocks=tuple(
+                dataclasses.replace(
+                    block,
+                    cards=tuple(card_of(card) for card in block.cards),
+                    questions=tuple(question(asked) for asked in block.questions),
+                )
+                for block in unit.blocks
+            ),
+        )
+        for unit in units
+    ]
+    carried_names = [name_question(asked) for asked in names]
+    carried_splits = tuple(question(asked) for asked in splits)
+    gone = [field for field, posted in choices.items() if posted and field not in seen]
+
+    def the_saves(field: str) -> bool:
+        return field.startswith("answer:name:") or any(mark in field for mark in marks)
+
+    return (
+        carried_names,
+        carried_splits,
+        carried_units,
+        bool(lost) or bool(gone),
+        bool(lost) or not all(the_saves(field) for field in gone),
     )
 
 

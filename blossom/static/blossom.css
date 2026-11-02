@@ -1350,6 +1350,12 @@ pre.body {
   padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);
 }
 
+/* What a screenshot review's press says at the top of its page gives way the same way, so "Choose
+   these instructions" keeps its words whole on a phone with text at 200%. */
+.problem#said {
+  padding-inline: clamp(0px, 13vw - 1rem, 0.95rem);
+}
+
 /* Each card of the family page sits in a plain section of the page or of one of its folds,
    and gives way as a homework card on her week does: on a phone with text at 200%, a word of
    a plan's rows, of a step beside the list's numbers, of a notice in a card, or of the helper
