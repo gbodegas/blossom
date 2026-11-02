@@ -104,11 +104,18 @@ class ReviewPost:
     both: tuple[str, ...] = ()
     """Each piece's dates key whose assigned date was typed beside "No assigned date was
     given": the press is refused whole, and both go back as posted."""
+    conflicted: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each instruction question ticked beside "None of these apply", by its field, with its
+    values as posted: the press is refused whole, and they go back as posted."""
+    choices: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """On a press with a conflict only: each signed question's posted values, a checkbox left
+    unticked among them as no values, for the page to show them as they were sent. A radio left
+    empty isn't a choice, and isn't here."""
 
     @property
     def refused(self) -> bool:
         """Whether the press is refused whole for a box it can't take as posted."""
-        return bool(self.too_long or self.needed or self.both)
+        return bool(self.too_long or self.needed or self.both or self.conflicted)
 
 
 WITHDRAWABLE: Final = ("answer:confirm:", "answer:instructions:", "answer:name:missing")
@@ -288,6 +295,7 @@ def read_review(
     folded = box_corrections(state, boxes, carried, none_given)
     corrections = folded.corrections
     answers = []
+    conflicted: dict[str, tuple[str, ...]] = {}
     for name, values in chosen.items():
         kind, subject = _field(name)
         if kind == "instructions":
@@ -295,7 +303,8 @@ def read_review(
             # apply" is an instruction's words as the page wrote them.
             texts = sorted({str(json.loads(v)) for v in values if v})
             if texts and "" in values:
-                raise PostRefused
+                conflicted[name] = tuple(values)
+                continue
             value = json.dumps(texts)
         elif kind == "destination":
             value = _destination(values[0])
@@ -321,7 +330,29 @@ def read_review(
         too_long=folded.too_long,
         needed=folded.needed,
         both=folded.both,
+        conflicted=conflicted,
+        choices=_posted_choices(offered, chosen, rest) if conflicted else {},
     )
+
+
+def _posted_choices(
+    offered: Mapping[str, set[str]],
+    chosen: Mapping[str, Sequence[str]],
+    rest: Sequence[tuple[str, str]],
+) -> dict[str, tuple[str, ...]]:
+    """Each signed question's values as this post sent them, each already checked against what its
+    page signed: what it chose, a checkbox answer it left unticked as none, and each "No assigned
+    date was given" box, ticked or not."""
+    ticked = {name for name, _ in rest if name.startswith("none:")}
+    return {
+        **{name: tuple(values) for name, values in chosen.items()},
+        **{name: () for name in offered if name not in chosen and name.startswith(WITHDRAWABLE)},
+        **{
+            name: ("none",) if name in ticked else ()
+            for name in offered
+            if name.startswith("none:")
+        },
+    }
 
 
 BOX_PREFIXES: Final = ("correct:", "refused:", "none:")

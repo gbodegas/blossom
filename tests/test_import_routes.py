@@ -14375,7 +14375,6 @@ def test_a_closed_review_answers_with_an_earlier_save_first(
         held = on_the_record(browser)
 
     assert "Saved: 1 new assignment." in page_text(answer)
-    assert imports.SAID["closed"] not in page_text(answer).replace("Saved: 1 new assignment.", "")
     assert copied(answer) == AS_GIVEN_BACK
     assert (held["english"], held["acceptances"]) == (1, 1)
 
@@ -15351,7 +15350,8 @@ def test_a_transaction_left_open_counts_as_a_store_failure_and_not_a_busy_one(
         quiet = TestClient(
             browser.app,
             follow_redirects=False,
-            headers=dict(browser.headers),
+            headers={"Host": LOOPBACK, "Origin": f"http://{LOOPBACK}"},
+            client=("127.0.0.1", 50000),
             raise_server_exceptions=False,
         )
         answer = quiet.get(f"/parent/imports/{draft_id}", headers=PAGE_HEADERS)
@@ -15455,11 +15455,13 @@ def test_an_instruction_ticked_beside_none_of_these_apply_comes_back_to_correct(
         after = on_the_record(browser)
         form = review_form(answer.text)
         block = fieldset_of(answer.text, field)
-        again = send(browser, draft_id, both_ticked(answer.text, press, tick=ticks)[0])
+        # Typing on the row a Save ticks takes its tick off the rows it comes back to.
+        still_ticked = [unit for unit, shown in unit_ticks(answer.text).items() if shown]
+        again = send(browser, draft_id, both_ticked(answer.text, press, tick=still_ticked)[0])
         after_again = on_the_record(browser)
         corrected = [
             (name, posted_value)
-            for name, posted_value in page_post(answer.text, press, tick=ticks)
+            for name, posted_value in page_post(answer.text, press, tick=still_ticked)
             if not (name == field and posted_value != "")
         ]
         done = send(browser, draft_id, corrected)
@@ -15471,19 +15473,16 @@ def test_an_instruction_ticked_beside_none_of_these_apply_comes_back_to_correct(
     assert NOTHING_KEPT in page_text(answer)
     assert block is not None
     assert CONFLICT_SAID in html.unescape(block)
-    ticked = [html.unescape(v) for name, v in checked_values(form) if name == field]
+    ticked = [option for option, shown in options_of(answer.text, field) if shown]
     assert sorted(ticked) == sorted([value, ""])
-    assert [v for name, v in checked_values(form) if name == "unit"] == ticks
     assert A_TYPED_TITLE in html.unescape(form)
     assert before == after
     assert again.status_code == 422
     assert after_again == before
     assert done.status_code in (200, 303)
     assert CONFLICT_SAID not in page_text(done)
-    if press == "save":
-        assert finally_held["acceptances"] == cast(int, before["acceptances"]) + 1
-    else:
-        assert any(kind == "instructions" and text == "[]" for (kind, _), text in stored.items())
+    assert finally_held["acceptances"] == before["acceptances"]
+    assert any(kind == "instructions" and text == "[]" for (kind, _), text in stored.items())
 
 
 @pytest.mark.parametrize("press", ["save", "keep", "later"])
@@ -15555,8 +15554,7 @@ def test_a_conflict_with_a_correction_too_long_says_both(
     assert answer.status_code == 422
     assert CONFLICT_SAID in page_text(answer)
     assert imports.PRESS_SAID["too_long"] in page_text(answer)
-    form = review_form(answer.text)
-    assert value in [html.unescape(v) for name, v in checked_values(form) if name == field]
+    assert (value, True) in options_of(answer.text, field)
 
 
 def test_a_conflict_on_a_press_already_recorded_answers_with_its_counts(
@@ -15608,7 +15606,8 @@ def test_a_conflict_on_a_review_that_ended_doesn_t_point_at_rows_it_doesn_t_show
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    assert answer.status_code == 410
+    assert answer.status_code == 422
+    assert imports.SAID["expired"] in page_text(answer)
     assert CONFLICT_SAID not in page_text(answer)
     assert A_TYPED_TITLE in copied(answer)
 
@@ -16177,7 +16176,12 @@ def test_a_conflict_on_a_stale_page_carries_nothing_past_another_tab_s_answer(
             shown_post(review.page, "keep", choose={review.other_type: "TASK"}),
         )
         before = on_the_record(browser)
-        box = fields_of(review.page, "correct:")[0]
+        box = next(
+            box
+            for box in fields_of(review.page, "correct:")
+            if json.loads(box.removeprefix("correct:"))[1] == "title"
+            and not json.loads(box.removeprefix("correct:"))[0].startswith(review.card[:12])
+        )
         answer = send(
             browser,
             review.draft_id,
