@@ -11107,12 +11107,12 @@ def test_a_save_that_closed_its_review_before_the_file_was_held_answers_as_desig
     assert after == (before[0] + 2, before[1] + 1)  # type: ignore[operator]
 
 
-def test_a_save_whose_answers_were_kept_before_the_file_was_held_says_so_and_saved_nothing(
+def test_a_save_whose_answers_were_kept_before_the_file_was_held_says_so_and_can_t_tell(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Save step 1 keeps the answers, then another program holds the file before the name
-    check reads her record: the answers kept, then that the homework wasn't saved because the
-    file was busy, with the typing given back, 503, never that the name couldn't be checked."""
+    """Save step 1 keeps the answers, then another program holds the file before the name check
+    reads her record. Its receipt can't be read either, so it can't tell if another copy saved: that
+    with the answers kept, the typing given back, 503, never that the name couldn't be checked."""
     with HangWatch(capsys) as watch, held_here(open_settings(tmp_path)) as browser:
         draft_id, page = review_and_page(browser, monkeypatch)
         posted = typed_post(page, "save")
@@ -11125,11 +11125,9 @@ def test_a_save_whose_answers_were_kept_before_the_file_was_held_says_so_and_sav
         answers = one_row(database_of(browser), ANSWERS)
 
     assert answer.status_code == 503, answer.text[:600]
-    assert lines_in(KEPT_BLOCK.search(answer.text)) == [imports.PRESS_SAID["answers_kept"]]
-    assert lines_in(PROBLEM_BLOCK.search(answer.text)) == [
-        imports.PRESS_SAID["busy"],
-        imports.REVIEW_NOT_SHOWN,
-    ]
+    assert says(answer.text, imports.UNKNOWN_SAID["homework"])
+    assert says(answer.text, imports.PRESS_SAID["answers_kept"])
+    assert not says(answer.text, imports.PRESS_SAID["busy"])
     assert not says(answer.text, imports.SAID["no_name_check"])
     assert TYPED_TITLE in TYPED_BACK.findall(answer.text)
     assert after == before
@@ -16936,4 +16934,679 @@ def test_a_store_that_won_t_say_if_a_transaction_is_open_is_no_evidence_of_one(
         monkeypatch.undo()
 
     assert WASNT_SAVED in page_text(answer)
+    assert UNKNOWN_HOMEWORK not in page_text(answer)
+
+
+# ------------------------------------------------------ a receipt, before a Save press's last page
+
+
+@dataclasses.dataclass
+class TwoCopies:
+    """A review, one press of it, and what a second copy of that press, with its acceptance id,
+    answered when a test let it run."""
+
+    browser: TestClient
+    monkeypatch: pytest.MonkeyPatch
+    draft_id: str
+    posted: list[tuple[str, str]]
+    answers: list[Answer]
+
+    def the_copy_commits(self) -> None:
+        self.answers.append(send(self.browser, self.draft_id, self.posted))
+
+    def nothing_else_happens(self) -> None:
+        return None
+
+
+def two_copies(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> TwoCopies:
+    """Two cards on file, read again with other words, and one new, with her answers kept and no
+    name to ask, so neither copy's keep moves the version. The press saves the new card, with what
+    was typed on the second."""
+    both = [homework_card(), homework_card(course="Math 8", title="Set 3", y_top=360, y_bottom=430)]
+    earlier, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=both)))
+    page = her_name_answered(browser, earlier, page)
+    send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+    again = [
+        homework_card(instruction="Complete pages 15 to 16."),
+        homework_card(
+            course="Math 8", title="Set 3", instruction="Other words.", y_top=360, y_bottom=430
+        ),
+        homework_card(course="Art 8", title="Sketch", y_top=450, y_bottom=520),
+    ]
+    draft_id, page = read_review(browser, monkeypatch, (BLUE, homework_answer(cards=again)))
+    first, second, *_ = fields_of(page, "answer:destination:")
+    existing = next(value for value, _ in options_of(page, first) if "existing" in value)
+    page = followed(
+        browser, send(browser, draft_id, shown_post(page, "keep", choose={first: existing}))
+    )
+    art = next(unit for unit, shown in unit_ticks(page).items() if shown)
+    typed = typed_on(second.removeprefix("answer:destination:"))
+    posted = page_post(page, "save", tick=[art], typed=typed)
+    return TwoCopies(browser, monkeypatch, draft_id, posted, [])
+
+
+def receipts_and_homework(browser: TestClient) -> tuple[int, int]:
+    """Through a connection of its own: how many receipts and assignments the file holds."""
+    fresh = sqlite3.connect(state_of(browser).settings.database_path)
+    try:
+        receipts = fresh.execute("SELECT COUNT(*) FROM grade_acceptances").fetchone()[0]
+        homework = fresh.execute("SELECT COUNT(*) FROM assignments").fetchone()[0]
+    finally:
+        fresh.close()
+    return receipts, homework
+
+
+def raising(make: Callable[[], BaseException]) -> Callable[..., Any]:
+    def answering(*_: object, **__: object) -> None:
+        raise make()
+
+    return answering
+
+
+def the_keep_refused_once(two: TwoCopies) -> None:
+    """The press's own keep refused as busy, so that it has asked for its receipt twice."""
+    drafts = state_of(two.browser).import_drafts
+    real: Callable[..., object] = drafts.keep_answers
+    refused: list[bool] = []
+
+    def keeping(*args: object, **kwargs: object) -> object:
+        if not refused:
+            refused.append(True)
+            raise StoreBusy
+        return real(*args, **kwargs)
+
+    two.monkeypatch.setattr(drafts, "keep_answers", keeping)
+
+
+def as_its_page_begins(two: TwoCopies, then: Callable[[], None]) -> None:
+    """The first time the route starts a page from the post, ``then``, on a worker thread."""
+    real: Callable[..., Awaitable[object]] = imports.with_typing
+    begun: list[bool] = []
+
+    async def beginning_page(*args: object, **kwargs: object) -> object:
+        if not begun:
+            begun.append(True)
+            await asyncio.to_thread(then)
+        return await real(*args, **kwargs)
+
+    two.monkeypatch.setattr(imports, "with_typing", beginning_page)
+
+
+def review_expired(two: TwoCopies) -> None:
+    state = state_of(two.browser)
+    student = state.project_state.student_id()
+    expires = state.import_drafts.snapshot(student, two.draft_id).expires_at
+    clock_moved_to(two.monkeypatch, two.browser, expires)
+
+
+def review_removed(two: TwoCopies) -> None:
+    swept(two.browser, two.monkeypatch, two.draft_id)
+
+
+def reads_refused(make: Callable[[], BaseException]) -> Callable[[TwoCopies], None]:
+    def refusing_reads(two: TwoCopies) -> None:
+        drafts = state_of(two.browser).import_drafts
+        two.monkeypatch.setattr(drafts, "snapshot", raising(make))
+
+    return refusing_reads
+
+
+ENDINGS: Final[dict[str, Callable[[TwoCopies], None]]] = {
+    "expired": review_expired,
+    "removed": review_removed,
+    "busy": reads_refused(StoreBusy),
+    "a file error": reads_refused(file_error),
+}
+
+
+def rows_refused(two: TwoCopies) -> None:
+    async def refused(*_: object, **__: object) -> None:
+        raise file_error()
+
+    two.monkeypatch.setattr(imports, "rows_of", refused)
+
+
+def no_rows_then(make: Callable[[], BaseException]) -> Callable[[TwoCopies], None]:
+    """No rows came back, and the review read again answers so."""
+
+    def ending(two: TwoCopies) -> None:
+        async def none(*_: object, **__: object) -> None:
+            reads_refused(make)(two)
+
+        two.monkeypatch.setattr(imports, "rows_of", none)
+
+    return ending
+
+
+def no_rows_and_still_open(two: TwoCopies) -> None:
+    async def none(*_: object, **__: object) -> None:
+        return None
+
+    two.monkeypatch.setattr(imports, "rows_of", none)
+
+
+def no_rows_and_closed(two: TwoCopies) -> None:
+    async def none(*_: object, **__: object) -> None:
+        discarded(two.browser, two.draft_id)
+
+    two.monkeypatch.setattr(imports, "rows_of", none)
+
+
+AGAIN_ENDINGS: Final[dict[str, Callable[[TwoCopies], None]]] = {
+    "expired": no_rows_then(DraftExpired),
+    "removed": no_rows_then(DraftNotFound),
+    "busy": no_rows_then(StoreBusy),
+    "a file error": no_rows_then(file_error),
+}
+
+
+def after_the_earlier_checks(ending: Callable[[TwoCopies], None]) -> Callable[..., None]:
+    """The keep refused, its check made, and as the page begins, ``landing`` and the ending."""
+
+    def arranging(two: TwoCopies, landing: Callable[[], None]) -> None:
+        the_keep_refused_once(two)
+
+        def then() -> None:
+            landing()
+            ending(two)
+
+        as_its_page_begins(two, then)
+
+    return arranging
+
+
+def at_the_names_read(make: Callable[[], BaseException]) -> Callable[..., None]:
+    def arranging(two: TwoCopies, landing: Callable[[], None]) -> None:
+        real: Callable[..., Awaitable[object]] = imports.image_names
+        refused: list[bool] = []
+
+        async def names(*args: object, **kwargs: object) -> object:
+            if refused:
+                return await real(*args, **kwargs)
+            refused.append(True)
+            await asyncio.to_thread(landing)
+            raise make()
+
+        two.monkeypatch.setattr(imports, "image_names", names)
+
+    return arranging
+
+
+def when_the_save_can_t_start(reason: str) -> Callable[..., None]:
+    def arranging(two: TwoCopies, landing: Callable[[], None]) -> None:
+        real: Callable[..., object] = save_homework
+        begun: list[bool] = []
+
+        def saving(*args: object, **kwargs: object) -> object:
+            if begun:
+                return real(*args, **kwargs)
+            begun.append(True)
+            landing()
+            return NotSaved(reason)
+
+        two.monkeypatch.setattr(imports, "save_homework", saving)
+
+    return arranging
+
+
+@dataclasses.dataclass(frozen=True)
+class LastPage:
+    """How a press reaches a page it can't go past, how many of its reads of the receipt answer
+    before that page's own, and the page's status and words when there's no receipt."""
+
+    arrange: Callable[..., None]
+    earlier: int
+    status: int
+    words: tuple[str, ...]
+
+
+LAST_PAGES: Final[dict[str, LastPage]] = {
+    "the review read, expired": LastPage(
+        after_the_earlier_checks(review_expired), 2, 503, (imports.SAID["expired"],)
+    ),
+    "the review read, removed": LastPage(
+        after_the_earlier_checks(review_removed), 2, 503, (imports.SAID["absent"],)
+    ),
+    "the review read, busy": LastPage(
+        after_the_earlier_checks(reads_refused(StoreBusy)), 2, 503, (imports.REVIEW_NOT_SHOWN,)
+    ),
+    "the review read, a file error": LastPage(
+        after_the_earlier_checks(reads_refused(file_error)), 2, 503, (imports.REVIEW_NOT_SHOWN,)
+    ),
+    "the review read, frozen": LastPage(
+        after_the_earlier_checks(reads_refused(DraftFrozen)), 2, 409, (imports.SAID["frozen"],)
+    ),
+    "no rows, frozen": LastPage(
+        after_the_earlier_checks(no_rows_then(DraftFrozen)), 2, 503, (imports.REVIEW_NOT_SHOWN,)
+    ),
+    "the rows read, a file error": LastPage(
+        after_the_earlier_checks(rows_refused), 2, 503, (imports.REVIEW_NOT_SHOWN,)
+    ),
+    "no rows, expired": LastPage(
+        after_the_earlier_checks(AGAIN_ENDINGS["expired"]), 2, 410, (imports.SAID["expired"],)
+    ),
+    "no rows, removed": LastPage(
+        after_the_earlier_checks(AGAIN_ENDINGS["removed"]), 2, 404, (imports.SAID["absent"],)
+    ),
+    "no rows, busy": LastPage(
+        after_the_earlier_checks(AGAIN_ENDINGS["busy"]), 2, 503, (imports.REVIEW_NOT_SHOWN,)
+    ),
+    "no rows, a file error": LastPage(
+        after_the_earlier_checks(AGAIN_ENDINGS["a file error"]), 2, 503, (imports.REVIEW_NOT_SHOWN,)
+    ),
+    "the names read, a file error": LastPage(
+        at_the_names_read(file_error), 1, 503, (imports.NO_HOMEWORK, imports.REVIEW_NOT_SHOWN)
+    ),
+    "the names read, busy": LastPage(at_the_names_read(busy_error), 1, 503, (WASNT_SAVED_BUSY,)),
+    "the save couldn't start, busy": LastPage(
+        when_the_save_can_t_start("busy"), 1, 503, (WASNT_SAVED_BUSY,)
+    ),
+    "the save couldn't start, failed": LastPage(
+        when_the_save_can_t_start("failed"), 1, 503, (WASNT_SAVED,)
+    ),
+}
+
+
+@pytest.mark.parametrize("where", list(LAST_PAGES))
+def test_a_copy_s_receipt_answers_before_the_last_page(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """The copy commits after this press's earlier checks, whole and for real, and the file shows
+    it. This press says so, with what it typed, and nothing that denies it."""
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        receipts, homework = receipts_and_homework(browser)
+        LAST_PAGES[where].arrange(two, two.the_copy_commits)
+        answer = send(browser, two.draft_id, two.posted)
+        monkeypatch.undo()
+        on_file = receipts_and_homework(browser)
+
+    [copy] = two.answers
+    assert "Saved: 1 new assignment." in page_text(copy)
+    assert answer.status_code == 200, page_text(answer)[:400]
+    text = page_text(answer)
+    assert "Saved: 1 new assignment." in text
+    for denied in (WASNT_SAVED, WASNT_SAVED_BUSY, imports.NO_HOMEWORK, UNKNOWN_HOMEWORK):
+        assert denied not in text
+    assert copied(answer) == AS_GIVEN_BACK
+    assert on_file == (receipts + 1, homework + 1)
+
+
+@pytest.mark.parametrize("where", list(LAST_PAGES))
+def test_no_receipt_leaves_the_last_page_as_it_was(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    page = LAST_PAGES[where]
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        on_file = receipts_and_homework(browser)
+        page.arrange(two, two.nothing_else_happens)
+        answer = send(browser, two.draft_id, two.posted)
+        monkeypatch.undo()
+        after = receipts_and_homework(browser)
+
+    assert answer.status_code == page.status, page_text(answer)[:400]
+    for words in page.words:
+        assert words in page_text(answer)
+    assert "Saved:" not in page_text(answer)
+    assert UNKNOWN_HOMEWORK not in page_text(answer)
+    assert after == on_file
+
+
+@pytest.mark.parametrize("where", list(LAST_PAGES))
+def test_a_receipt_that_can_t_be_read_before_the_last_page_can_t_tell(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """Nothing of this press was kept, so nothing says it was."""
+    page = LAST_PAGES[where]
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        on_file = receipts_and_homework(browser)
+        page.arrange(two, two.nothing_else_happens)
+        refusing_after(browser, monkeypatch, raising(file_error), page.earlier)
+        answer = send(browser, two.draft_id, two.posted)
+        monkeypatch.undo()
+        after = receipts_and_homework(browser)
+
+    says_it_can_t_tell(answer)
+    assert KEPT_LINE not in page_text(answer)
+    assert after == on_file
+
+
+@pytest.mark.parametrize(
+    "where",
+    # The sweep can't remove a review past a transaction left open on the file.
+    [where for where in LAST_PAGES if where != "the review read, removed"],
+)
+def test_a_transaction_left_open_before_the_last_page_can_t_tell(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        LAST_PAGES[where].arrange(two, functools.partial(beginning, browser))
+        answer = send(browser, two.draft_id, two.posted)
+        monkeypatch.undo()
+        ending_transaction(browser)
+
+    says_it_can_t_tell(answer)
+
+
+def kept_on_this_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> TwoCopies:
+    """A first press, whose own keep stores her answers, its save not starting."""
+    draft_id, page, first, other = two_rows(browser, monkeypatch)
+    posted = page_post(page, "save", tick=[first], typed=typed_on(other))
+    two = TwoCopies(browser, monkeypatch, draft_id, posted, [])
+    when_the_save_can_t_start("busy")(two, two.nothing_else_happens)
+    return two
+
+
+@pytest.mark.parametrize(
+    "ending",
+    [
+        *ENDINGS.values(),
+        rows_refused,
+        *AGAIN_ENDINGS.values(),
+        no_rows_and_still_open,
+        no_rows_and_closed,
+        lambda two: discarded(two.browser, two.draft_id),
+    ],
+    ids=[
+        *ENDINGS,
+        "the rows read",
+        *(f"no rows, {name}" for name in AGAIN_ENDINGS),
+        "no rows, still open",
+        "no rows, closed",
+        "closed",
+    ],
+)
+def test_the_kept_line_stays_true_at_the_read_that_can_t_be_made(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ending: Callable[[TwoCopies], None]
+) -> None:
+    """The first check and the one before the save's own page both find nothing. This press's keep
+    committed, so the page it can't get past says that, with no claim about the homework."""
+    with here(open_settings(tmp_path)) as browser:
+        two = kept_on_this_press(browser, monkeypatch)
+        as_its_page_begins(two, functools.partial(ending, two))
+        refusing_after(browser, monkeypatch, raising(file_error), 2)
+        answer = send(browser, two.draft_id, two.posted)
+        monkeypatch.undo()
+
+    says_it_can_t_tell(answer)
+    assert KEPT_LINE in page_text(answer)
+
+
+def test_the_kept_line_stays_true_when_the_save_couldn_t_start(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        two = kept_on_this_press(browser, monkeypatch)
+        refusing_after(browser, monkeypatch, raising(file_error), 1)
+        answer = send(browser, two.draft_id, two.posted)
+        monkeypatch.undo()
+
+    says_it_can_t_tell(answer)
+    assert KEPT_LINE in page_text(answer)
+
+
+def test_the_kept_line_stays_true_when_the_save_finds_the_review_closed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, "save", tick=[first], typed=typed_on(other))
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("closed"))
+        refusing_after(browser, monkeypatch, raising(file_error), 1)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    says_it_can_t_tell(answer)
+    assert KEPT_LINE in page_text(answer)
+
+
+def one_row_to_finish(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> TwoCopies:
+    draft_id, page = read_review(
+        browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
+    )
+    page = her_name_answered(browser, draft_id, page)
+    page = followed(browser, send(browser, draft_id, shown_post(page, "keep")))
+    posted = page_post(page, "save", tick=units_on(page))
+    return TwoCopies(browser, monkeypatch, draft_id, posted, [])
+
+
+@pytest.mark.parametrize("how", ["keep busy", "keep out of date", "the save couldn't start"])
+def test_a_copy_that_finishes_the_review_answers_when_no_rows_come_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """The copy finishes the review and can't close it, so this press's review reads open, with no
+    rows, and no earlier check could have seen the copy."""
+    with here(open_settings(tmp_path)) as browser:
+        two = one_row_to_finish(browser, monkeypatch)
+        drafts = state_of(browser).import_drafts
+        real_keep, real_save = drafts.keep_answers, save_homework
+
+        def then() -> None:
+            monkeypatch.setattr(drafts, "keep_answers", real_keep)
+            monkeypatch.setattr(imports, "save_homework", real_save)
+            monkeypatch.setattr(drafts, "clean_up", raising(file_error))
+            two.the_copy_commits()
+
+        as_its_page_begins(two, then)
+        if how == "keep busy":
+            monkeypatch.setattr(drafts, "keep_answers", raising(StoreBusy))
+        elif how == "keep out of date":
+            monkeypatch.setattr(drafts, "keep_answers", raising(ReviewChanged))
+        else:
+            monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("busy"))
+        answer = send(browser, two.draft_id, two.posted)
+        monkeypatch.undo()
+
+    assert answer.status_code == 200, page_text(answer)[:400]
+    assert "Saved: 1 new assignment." in page_text(answer)
+
+
+@pytest.mark.parametrize("ending", list(ENDINGS))
+def test_a_copy_that_commits_on_a_real_thread_answers_before_the_last_page(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    """Real threads, with their order held: the copy's keep moves the version, so this press's keep
+    is refused and its check finds nothing. Then the copy commits, and then the review ends."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, "save", tick=[first], typed=typed_on(other))
+        two = TwoCopies(browser, monkeypatch, draft_id, posted, [])
+        real_save: Callable[..., object] = save_homework
+        at_its_save, go_on = threading.Event(), threading.Event()
+
+        def holding(*args: object, **kwargs: object) -> object:
+            at_its_save.set()
+            assert go_on.wait(20)
+            return real_save(*args, **kwargs)
+
+        monkeypatch.setattr(imports, "save_homework", holding)
+        other_thread = threading.Thread(target=two.the_copy_commits)
+        other_thread.start()
+        assert at_its_save.wait(20)
+
+        def then() -> None:
+            go_on.set()
+            other_thread.join(20)
+            ENDINGS[ending](two)
+
+        as_its_page_begins(two, then)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    [copy] = two.answers
+    assert "Saved: 1 new assignment." in page_text(copy)
+    assert answer.status_code == 200, page_text(answer)[:400]
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert copied(answer) == AS_GIVEN_BACK
+
+
+def test_a_copy_holding_the_store_is_waited_for_not_called_busy(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real threads and no forced answer: a copy in this process parked inside its transaction. This
+    press waits on the store's lock, and reads the copy's receipt."""
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        real: Callable[..., object] = screenshot_save._homework_transaction
+        inside, go_on = threading.Event(), threading.Event()
+
+        def parked(*args: object, **kwargs: object) -> object:
+            inside.set()
+            assert go_on.wait(20)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(screenshot_save, "_homework_transaction", parked)
+        other_thread = threading.Thread(target=two.the_copy_commits)
+        other_thread.start()
+        assert inside.wait(20)
+        threading.Timer(0.2, go_on.set).start()
+        answer = send(browser, two.draft_id, two.posted)
+        other_thread.join(20)
+        monkeypatch.undo()
+
+    assert "Saved: 1 new assignment." in page_text(two.answers[0])
+    assert answer.status_code == 200, page_text(answer)[:400]
+    assert "Saved: 1 new assignment." in page_text(answer)
+
+
+def test_a_commit_after_the_last_look_goes_unseen_and_that_page_s_save_adds_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The limit: no lookup follows the page's. Its form has an acceptance id of its own, so its
+    Save isn't a replay, and it finds that group saved already."""
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        art = next(value for name, value in two.posted if name == "unit")
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("busy"))
+        denied = send(browser, two.draft_id, two.posted)
+        monkeypatch.undo()
+        two.the_copy_commits()
+        on_file = receipts_and_homework(browser)
+        again = page_post(denied.text, "save", tick=[art])
+        answer = send(browser, two.draft_id, again)
+        after = receipts_and_homework(browser)
+
+    assert WASNT_SAVED_BUSY in page_text(denied)
+    assert dict(again)["acceptance"] != dict(two.posted)["acceptance"]
+    assert imports.PRESS_SAID["already"] in page_text(answer)
+    assert after[1] == on_file[1]
+
+
+@dataclasses.dataclass
+class ReceiptReads:
+    """How many times this press asks the file for its receipt, the copy's reads left out."""
+
+    count: int = 0
+    paused: bool = False
+
+
+def counting_receipt_reads(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> ReceiptReads:
+    record = state_of(browser).project_state
+    real: Callable[..., object] = record.homework_acceptance
+    reads = ReceiptReads()
+
+    def reading(*args: object, **kwargs: object) -> object:
+        if not reads.paused:
+            reads.count += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(record, "homework_acceptance", reading)
+    return reads
+
+
+@pytest.mark.parametrize(
+    ("copy_commits", "ending", "expected"),
+    [
+        (False, review_expired, 3),
+        (False, reads_refused(file_error), 3),
+        (True, review_expired, 4),
+        (True, reads_refused(file_error), 4),
+    ],
+    ids=[
+        "no receipt, expired",
+        "no receipt, the read refused",
+        "the last check finds it, expired",
+        "the last check finds it, the read refused",
+    ],
+)
+def test_a_press_s_receipt_reads_are_counted_on_its_longest_way(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    copy_commits: bool,
+    ending: Callable[[TwoCopies], None],
+    expected: int,
+) -> None:
+    """Three checks: the first, the one before the save's own page, and the one at the page it can't
+    get past. A confirmed one reads the pairs of the same row once more."""
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        reads = counting_receipt_reads(browser, monkeypatch)
+
+        def then() -> None:
+            if copy_commits:
+                reads.paused = True
+                two.the_copy_commits()
+                reads.paused = False
+            ending(two)
+
+        as_its_page_begins(two, then)
+        at_the_names_read(busy_error)(two, two.nothing_else_happens)
+        answer = send(browser, two.draft_id, two.posted)
+        monkeypatch.undo()
+
+    assert reads.count == expected, page_text(answer)[:400]
+
+
+@pytest.mark.parametrize("press", ["keep", "later"])
+@pytest.mark.parametrize("ending", list(ENDINGS))
+def test_keep_and_later_ask_for_no_receipt_before_their_last_page(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ending: str, press: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        two = two_copies(browser, monkeypatch)
+        drafts = state_of(browser).import_drafts
+        name = "keep_answers" if press == "keep" else "save_for_later"
+        real: Callable[..., object] = getattr(drafts, name)
+
+        def writing(*args: object, **kwargs: object) -> object:
+            wrote = real(*args, **kwargs)
+            ENDINGS[ending](two)
+            return wrote
+
+        monkeypatch.setattr(drafts, name, writing)
+        reads = counting_receipt_reads(browser, monkeypatch)
+        page = browser.get(f"/parent/imports/{two.draft_id}", headers=PAGE_HEADERS).text
+        answer = send(browser, two.draft_id, shown_post(page, press))
+        monkeypatch.undo()
+
+    assert reads.count == 0, page_text(answer)[:400]
+    assert UNKNOWN_HOMEWORK not in page_text(answer)
+    assert "Saved:" not in page_text(answer)
+
+
+def test_counts_that_read_none_with_the_rows_refused_ask_for_the_receipt_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injected: the receipt found, its counts read as nothing, and the rows refused. A page with no
+    counts to say still has a confirmed save, so the way to the rows doesn't ask again."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, "save", tick=[first], typed=typed_on(other))
+        send(browser, draft_id, posted)
+        record = state_of(browser).project_state
+        monkeypatch.setattr(record, "homework_counts", lambda *_, **__: None)
+
+        async def refused(*_: object, **__: object) -> None:
+            raise file_error()
+
+        monkeypatch.setattr(imports, "rows_of", refused)
+        reads = counting_receipt_reads(browser, monkeypatch)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert reads.count == 1, page_text(answer)[:400]
+    assert imports.COUNTS_UNSHOWN in page_text(answer)
     assert UNKNOWN_HOMEWORK not in page_text(answer)
