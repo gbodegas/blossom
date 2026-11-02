@@ -406,7 +406,7 @@ with that save's result; unreadable, that it can't tell; absent, with the page a
 was. A commit after that last look goes unseen. An instruction ticked
 beside "None of these apply" comes back on Save, Keep and Save for later with
 every choice that can still be shown, and writes nothing. It says when a choice
-can't be shown, except a question gone from the page beside a confirmed save. The
+can't be shown, except what a confirmed save took with its own rows. The
 hourly cleanup is promised only of a review read as finished, since it closes
 no other. Once a press is known to have committed, an unexpected error while
 making its page doesn't reach the server, since a plain error would hide a save

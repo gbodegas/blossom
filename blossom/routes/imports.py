@@ -1226,6 +1226,7 @@ async def rows_of(
     choices: Mapping[str, tuple[str, ...]] | None = None,
     conflicted: Mapping[str, tuple[str, ...]] | None = None,
     revision: int | None = None,
+    own: frozenset[str] = frozenset(),
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1270,6 +1271,7 @@ async def rows_of(
         both=frozenset(both),
         choices=choices,
         conflicted=conflicted,
+        own=own,
     )
 
 
@@ -1861,6 +1863,7 @@ async def with_typing(
     saved: Saved | None = None,
     answered: bool = False,
     unsaved: Collection[tuple[str, str]] = (),
+    own: frozenset[str] = frozenset(),
 ) -> Response:
     """A press that saved nothing, or a save that left the review open, answers with the
     review as it stands now, the corrections it typed and the groups it ticked still in the
@@ -1882,9 +1885,9 @@ async def with_typing(
     choices as posted while the review is at the version its page showed. At another, the review
     has changed, and carrying a choice onto a page of the new version would get it past the version
     check, so it says the page is out of date and carries none. Whatever can't carry is said,
-    beside a confirmed save's counts too, with no word there of the page being out of date; a
-    question gone from a page that has a confirmed save goes unsaid, as that save's own row's are
-    always gone. A too long or cleared box's press, with no conflict, carries nothing."""
+    beside a confirmed save's counts too, with no word there of the page being out of date; only
+    what that save took with its own rows (``own``, their pieces) goes unsaid, as those are always
+    gone. A too long or cleared box's press, with no conflict, carries nothing."""
     after = read or await snapshot_keeping_typing(
         request, state, draft_id, said, status, done, save_press=post.press == "save"
     )
@@ -1907,6 +1910,7 @@ async def with_typing(
             choices=post.choices if current else None,
             conflicted=post.conflicted if current else None,
             revision=post.progress_revision if post.conflicted else None,
+            own=own,
         )
     except sqlite3.Error as error:
         noted(error)
@@ -1919,9 +1923,13 @@ async def with_typing(
         ended = await ended_under_save(request, state, draft_id, 200, kept_lines(said))
         if ended is not None:
             return ended
-    if rows is not None and post.conflicted and current and not done:
+    if rows is not None and post.conflicted and current:
         ticks_shown = {unit.unit for unit in rows.units if unit.ticked}
-        if rows.not_carried or not ticks_shown.issuperset(post.units):
+        if done:
+            ticks = [u for u in post.units if not own.issuperset(u.split("+"))]
+            if rows.beyond_its_save or not ticks_shown.issuperset(ticks):
+                lines.append(PAGE_SAID["not_carried"])
+        elif rows.not_carried or not ticks_shown.issuperset(post.units):
             lines.append(PAGE_SAID["not_carried"])
     shown = fields_shown(rows)
     if any((key, field) in unsaved for key, field, _ in shown):
@@ -2282,6 +2290,7 @@ async def partly_saved(
     read: DraftSnapshot | None = None,
     saved: Saved | None = None,
     answered: bool = False,
+    own: frozenset[str] = frozenset(),
 ) -> Response:
     """A save that leaves the review open: the outcome in the success style, and the rows left
     open with the corrections the press typed still in the form, marked as not saved, none of
@@ -2303,7 +2312,7 @@ async def partly_saved(
         return await saved_busy(request, state, draft_id, done, said)
     unsaved = unsaved_typing(after, post.corrections, kept)
     return await with_typing(
-        request, state, draft_id, post, list(said), 200, done, after, saved, answered, unsaved
+        request, state, draft_id, post, list(said), 200, done, after, saved, answered, unsaved, own
     )
 
 
@@ -2357,7 +2366,8 @@ async def replayed(
         return None
     if recorded is None:
         return None
-    return await saved_page(request, state, draft_id, acceptance, [])
+    own = frozenset(name for name, _ in recorded)
+    return await saved_page(request, state, draft_id, acceptance, [], own=own)
 
 
 async def saved_page(
@@ -2367,6 +2377,7 @@ async def saved_page(
     acceptance: str,
     said: list[str],
     post: ReviewPost | None = None,
+    own: frozenset[str] = frozenset(),
 ) -> Response:
     """A resent press with a confirmed receipt for this student, this review and this acceptance
     id, which every way here has: a read that found no transaction open, or the save's own read
@@ -2430,7 +2441,7 @@ async def saved_page(
                 return await saved_busy(request, state, draft_id, lines)
         if post is not None:
             return await partly_saved(
-                request, state, draft_id, post, lines or [COUNTS_UNSHOWN], read=snapshot
+                request, state, draft_id, post, lines or [COUNTS_UNSHOWN], read=snapshot, own=own
             )
         typed = await typing_of(request)
         if typed:

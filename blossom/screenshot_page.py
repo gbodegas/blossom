@@ -858,6 +858,8 @@ class RowsShown:
     """The fixed sentences and labels the page shows beside the rows' own."""
     not_carried: bool = False
     """Whether a choice a refused press sent has no question or option on this page."""
+    beyond_its_save: bool = False
+    """Whether one of them is more than its confirmed save took with its own rows and her name."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1322,6 +1324,7 @@ def rows_shown(
     both: frozenset[str] = frozenset(),
     choices: Mapping[str, tuple[str, ...]] | None = None,
     conflicted: Mapping[str, tuple[str, ...]] | None = None,
+    own: frozenset[str] = frozenset(),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1621,8 +1624,9 @@ def rows_shown(
     finishing.append(("check", page_check(page_key, [*finishing, ("action", "finish")])))
     forms.append(OutsideForm("finish", "finish", tuple(finishing)))
     forms.append(signed_action("not-hers", page_key, version))
-    names, splits, shown_units, not_carried = _carried(
-        names, splits, shown_units, choices or {}, conflicted or {}
+    marks = own | {state.by_name[name].key for name in own if name in state.by_name}
+    names, splits, shown_units, not_carried, beyond_its_save = _carried(
+        names, splits, shown_units, choices or {}, conflicted or {}, marks
     )
     return RowsShown(
         tuple(names),
@@ -1636,6 +1640,7 @@ def rows_shown(
         tuple(piece_text(places, p) for p in state.pieces if p.name in state.saved),
         _first_open(names, splits, shown_units),
         not_carried=not_carried,
+        beyond_its_save=beyond_its_save,
     )
 
 
@@ -1645,16 +1650,19 @@ def _carried(
     units: Sequence[UnitShown],
     choices: Mapping[str, tuple[str, ...]],
     conflicted: Mapping[str, tuple[str, ...]],
-) -> tuple[list[NameQuestion], tuple[Question, ...], list[UnitShown], bool]:
+    marks: frozenset[str] = frozenset(),
+) -> tuple[list[NameQuestion], tuple[Question, ...], list[UnitShown], bool, bool]:
     """Everything on the page that asks, as a refused press with an instruction conflict sent it:
     its choices checked as posted, "Not saved yet." on each that differs from what the record
-    shows, and the conflict's sentence in its own fieldset; and whether a choice has no question or
-    option here. A value is never swapped for another. This only marks what's shown, and runs after
+    shows, and the conflict's sentence in its own fieldset; whether a choice has no question or
+    option here; and whether one of those is more than a confirmed save took with its own rows
+    (``marks``, their pieces and row keys, which are in the fields that ask about them). A value is
+    never swapped for another. This only marks what's shown, and runs after
     everything the page signs is worked out, so the next post meets every check as it would. The
     groups' ticks come back as posted through ``selected``, with no such note: they aren't answers
     the record holds, and beside "Save this assignment" it would read as about the homework."""
     if not choices:
-        return list(names), tuple(splits), list(units), False
+        return list(names), tuple(splits), list(units), False, False
     seen: set[str] = set()
     lost: list[bool] = []
 
@@ -1742,9 +1750,18 @@ def _carried(
     ]
     carried_names = [name_question(asked) for asked in names]
     carried_splits = tuple(question(asked) for asked in splits)
-    if any(posted and field not in seen for field, posted in choices.items()):
-        lost.append(True)
-    return carried_names, carried_splits, carried_units, bool(lost)
+    gone = [field for field, posted in choices.items() if posted and field not in seen]
+
+    def the_saves(field: str) -> bool:
+        return field.startswith("answer:name:") or any(mark in field for mark in marks)
+
+    return (
+        carried_names,
+        carried_splits,
+        carried_units,
+        bool(lost) or bool(gone),
+        bool(lost) or not all(the_saves(field) for field in gone),
+    )
 
 
 def _dest_questions(
