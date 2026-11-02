@@ -396,12 +396,12 @@ the save says it's saved only if its own transaction is still open just before
 it commits. A review that ends under a Save press gives the typing back to copy,
 with an earlier confirmed save's outcome first. If a save's commit and rollback
 are both refused its transaction stays open on the record's connection, and
-whether a Save press saved can't be told from that connection. So a press that
-finds one, or whose acceptance read is refused, says it can't tell, with its
+whether a Save press saved can't be told from that connection. So a Save press
+that finds one, or whose acceptance read is refused, says it can't tell, with its
 typing and no rows, and the review's rows aren't made from that connection until
 the transaction ends. Nothing here repairs the connection. An instruction ticked
 beside "None of these apply" comes back on Save, Keep and Save for later with
-every choice as posted, for correcting, and nothing written. The
+every choice that can still be shown, says when one can't, and writes nothing. The
 hourly cleanup is promised only of a review read as finished, since it closes
 no other. Once a press is known to have committed, an unexpected error while
 making its page doesn't reach the server, since a plain error would hide a save

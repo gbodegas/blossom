@@ -1850,11 +1850,12 @@ async def with_typing(
     Save press that committed nothing also gives back what no box holds, and if its review has
     ended before its rows, says that instead of its own line, or that it can't tell if a
     transaction was left open meanwhile. A press with an instruction conflict comes back with its
-    choices as posted while the review is at the version its page showed. At another, another tab
-    has changed an answer, and carrying a choice onto a page of the new version would get it past
-    the version check, so it says the page is out of date and carries none. Whatever can't carry
-    is said, unless a save is confirmed, whose counts stand alone. A too long or cleared box's
-    press, with no conflict, carries nothing."""
+    choices as posted while the review is at the version its page showed. At another, the review
+    has changed, and carrying a choice onto a page of the new version would get it past the version
+    check, so it says the page is out of date and carries none. Whatever can't carry is said,
+    beside a confirmed save's counts too, with no word there of the page being out of date; a
+    question gone from a page that has a confirmed save goes unsaid, as that save's own row's are
+    always gone. A too long or cleared box's press, with no conflict, carries nothing."""
     after = read or await snapshot_keeping_typing(
         request, state, draft_id, said, status, done, save_press=post.press == "save"
     )
@@ -1863,8 +1864,8 @@ async def with_typing(
     lines = list(said)
     ticked = post.units if post.ticked else None
     current = post.version == after.version
-    if post.conflicted and not current and not done:
-        lines += [OUT_OF_DATE, PAGE_SAID["not_carried"]]
+    if post.conflicted and not current:
+        lines += [PAGE_SAID["not_carried"]] if done else [OUT_OF_DATE, PAGE_SAID["not_carried"]]
     try:
         rows = await rows_of(
             request,
@@ -2328,8 +2329,8 @@ async def saved_page(
 ) -> Response:
     """A resent press with a confirmed receipt for this student, this review and this acceptance
     id, which every way here has: a read that found no transaction open, or the save's own read
-    in a transaction that then committed. So its counts are committed rows, and a plain read of
-    them can't see a transaction left open since. That save's counts, and nothing
+    in a transaction that then committed. So its counts are committed rows, which no transaction
+    left open since rewrites, and a plain read of them holds. That save's counts, and nothing
     written. A review it finished says so. With the review still open, the press gets its
     typing back in the review, as the save it repeats did, its post read here when the
     caller had none. A review the store refuses to read can't say whether it finished: the
