@@ -16562,3 +16562,71 @@ def test_a_receipt_s_counts_that_can_t_be_read_after_the_save_s_own_read(
         monkeypatch.undo()
 
     assert imports.COUNTS_UNSHOWN in page_text(answer)
+
+
+def test_a_cleared_choice_is_the_first_question_still_to_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page's link to what's left to answer reads what's shown, not what's stored, and the
+    conflict's own question has its ticks, so it isn't that."""
+    with here(open_settings(tmp_path)) as browser:
+        review = a_review_of_choices(browser, monkeypatch)
+        answer = send(
+            browser,
+            review.draft_id,
+            shown_post(
+                review.page,
+                "keep",
+                clear=[review.confirm],
+                add=the_conflict_on(review.page, review.question),
+            ),
+        )
+
+    link = re.search(r'href="#([^"]+)">First question to answer', answer.text)
+    assert link is not None
+    target = re.search(
+        rf'<fieldset class="choice" id="{link.group(1)}".*?</fieldset>', answer.text, re.S
+    )
+    assert target is not None
+    assert review.confirm in html.unescape(target.group(0))
+
+
+def asking(field: str, *options: tuple[str, str, bool]) -> screenshot_page.Question:
+    return screenshot_page.Question(field, "Which?", options, many=True)
+
+
+@pytest.mark.parametrize(
+    ("posted", "shown", "lost"),
+    [
+        (("gone",), [True, False], True),
+        (("one", "gone"), [True, False], True),
+        (("two",), [False, True], False),
+        ((), [False, False], False),
+    ],
+    ids=["its only value gone", "one of two gone", "still offered", "cleared"],
+)
+def test_a_posted_choice_is_never_swapped_for_another(
+    posted: tuple[str, ...], shown: list[bool], lost: bool
+) -> None:
+    """No page is known to retire an option while a review stays at one version, so this runs on the
+    pass itself: a value it can't show leaves the question as the record has it, or carries the
+    rest, and is said."""
+    before = asking("answer:kind:x", ("one", "One", True), ("two", "Two", False))
+    _, splits, _, not_carried = screenshot_page._carried(
+        [], (before,), [], {"answer:kind:x": posted}, {}
+    )
+
+    assert [checked for _, _, checked in splits[0].options] == shown
+    assert not_carried is lost
+
+
+@pytest.mark.parametrize(
+    ("posted", "lost"), [(("value",), True), ((), False)], ids=["with a value", "cleared"]
+)
+def test_a_posted_choice_with_no_question_here_is_said_unless_it_was_cleared(
+    posted: tuple[str, ...], lost: bool
+) -> None:
+    """A question that's gone and was cleared replaces nothing."""
+    _, _, _, not_carried = screenshot_page._carried([], (), [], {"answer:kind:gone": posted}, {})
+
+    assert not_carried is lost
