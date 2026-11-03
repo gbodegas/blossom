@@ -1646,7 +1646,7 @@ class Paced:
     said_gone: bool
     """Whether the client was ever said to have gone."""
     reading_began: bool
-    """Whether anything began reading the body."""
+    """Whether a read of the body began before the answer started."""
 
 
 def press_scope(client: TestClient, path: str, headers: list[tuple[str, str | bytes]]) -> Scope:
@@ -1733,7 +1733,7 @@ def paced(
                 answer.extend(message.get("body", b""))
 
         await client.app(scope, receive, send)
-        reading_began = first_read is not None
+        reading_began = answered >= 0.0
         return Paced(status, answer.decode("utf-8"), said, answered, waiting, gone, reading_began)
 
     portal = client.portal
