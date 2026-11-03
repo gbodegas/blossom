@@ -21037,21 +21037,59 @@ def test_save_with_an_earlier_save_on_a_closed_review_keeps_its_own_reading_of_t
     assert copied(answer) == typing
 
 
+@pytest.mark.parametrize(
+    "how", ["counts refused", "counts empty", "review refused again", "page failed"]
+)
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_a_limit_an_earlier_save_with_counts_and_review_unread_keeps_save_s_reading(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+def test_a_limit_an_earlier_save_with_the_review_unread_keeps_save_s_reading_of_the_boxes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, how: str
 ) -> None:
-    """The review isn't known to have ended, so a stray space on an unchanged value gets no copy."""
+    """The first read of the review is refused, so it isn't known to have ended, and a stray space
+    on an unchanged value gets no copy on any page of the save's outcome."""
+
+    async def failing(*_: object, **__: object) -> None:
+        raise RuntimeError(how)
+
+    refused = refusing_coded("SQLITE_IOERR")
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = a_saved_row(browser, monkeypatch)
         posted = page_post(page, press, typed={correct_box(other, "title"): "Set 3 "})
-        Refusing(monkeypatch, ("review_press", "snapshot", 1, refusing_coded("SQLITE_IOERR")))
+        rules = [("review_press", "snapshot", 1, refused)]
+        if how.startswith("counts"):
+            counts_unreadable(browser, monkeypatch, how.removeprefix("counts "))
+        if how in ("counts empty", "review refused again"):
+            rules.append(("saved_page", "snapshot", 1, refused))
+        if how == "page failed":
+            monkeypatch.setattr(imports, "partly_saved", failing)
+        Refusing(monkeypatch, *rules)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert imports.REVIEW_NOT_SHOWN in page_text(answer)
+    assert copied(answer) == set()
+
+
+@pytest.mark.parametrize(("field", "sent"), WHITESPACE_ONLY_THE_EXACT_READER_FINDS)
+@pytest.mark.parametrize("error", [DraftExpired, DraftNotFound])
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_an_earlier_save_with_unreadable_counts_on_a_second_read_finding_the_review_ended(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    error: type[Exception],
+    field: str,
+    sent: str,
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, other = a_saved_row(browser, monkeypatch)
+        posted = page_post(page, press, typed={correct_box(other, field): sent})
+        no_rows_then_one_read_answers(browser, monkeypatch, refusing(error))
         counts_unreadable(browser, monkeypatch, "refused")
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert imports.COUNTS_UNSHOWN in page_text(answer)
-    assert copied(answer) == set()
+    assert copied(answer) == {sent}
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
