@@ -1637,12 +1637,16 @@ class Paced:
     text: str
     headers: dict[str, str]
     answered_after: float
-    """Seconds from the press to the start of the answer."""
+    """Seconds from the first read of the body beginning to the start of the answer, or -1.0
+    when no read came before the answer. What comes before that read isn't counted. The
+    deadline is armed just before it, so a pause between the two shortens this."""
     reads_left_waiting: int
     """Reads of the body still waiting when the application finished: none, when nothing
     goes on reading after the answer."""
     said_gone: bool
     """Whether the client was ever said to have gone."""
+    reading_began: bool
+    """Whether anything began reading the body."""
 
 
 def press_scope(client: TestClient, path: str, headers: list[tuple[str, str | bytes]]) -> Scope:
@@ -1681,7 +1685,9 @@ def paced(
 ) -> Paced:
     """Send a press straight to the application, each chunk of its body after its own pause,
     then the end of the body, nothing more with the connection kept open, or the client
-    going away. Time the answer, and count the reads still waiting when it is done."""
+    going away. Time the answer from the first read's beginning, before it waits for anything,
+    never restarted by a later read, to the start of the answer. Count the reads still waiting
+    when it is done."""
     scope = press_scope(client, path, headers)
     queue = list(steps)
 
@@ -1691,11 +1697,13 @@ def paced(
         status = 0
         said: dict[str, str] = {}
         answer = bytearray()
-        started = time.monotonic()
+        first_read: float | None = None
         answered = -1.0
 
         async def receive() -> Message:
-            nonlocal waiting, gone
+            nonlocal waiting, gone, first_read
+            if first_read is None:
+                first_read = time.monotonic()
             waiting += 1
             try:
                 if queue:
@@ -1715,7 +1723,8 @@ def paced(
             nonlocal status, answered
             if message["type"] == "http.response.start":
                 status = message["status"]
-                answered = time.monotonic() - started
+                if first_read is not None:
+                    answered = time.monotonic() - first_read
                 said.update(
                     (name.decode("latin-1"), value.decode("latin-1"))
                     for name, value in message.get("headers", [])
@@ -1724,7 +1733,8 @@ def paced(
                 answer.extend(message.get("body", b""))
 
         await client.app(scope, receive, send)
-        return Paced(status, answer.decode("utf-8"), said, answered, waiting, gone)
+        reading_began = first_read is not None
+        return Paced(status, answer.decode("utf-8"), said, answered, waiting, gone, reading_began)
 
     portal = client.portal
     assert portal is not None
@@ -1784,6 +1794,7 @@ def test_the_refusal_copy_is_given_up_at_its_deadline(
             with watched(client) as watch:
                 answer = paced(client, path, steps, headers, then=then)  # type: ignore[arg-type]
             results[name] = answer
+            assert answer.reading_began, name
             check_refused(press, answer, subject=subject, typed=typed, family=family)
             check_untouched(watch, press, subject)
             assert answer.reads_left_waiting == 0, name
