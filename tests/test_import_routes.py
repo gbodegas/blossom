@@ -20367,7 +20367,7 @@ def test_a_refused_read_after_save_for_later_commits_says_the_review_can_t_be_sh
         ("title", "Typed Words "),
     ],
 )
-def test_a_refused_read_after_the_commit_gives_back_what_the_exact_reader_finds(
+def test_a_refused_read_after_the_commit_gives_back_whitespace_as_it_was_sent(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, field: str, sent: str, code: str
 ) -> None:
     """Whitespace alone and a stray space on an unchanged value are found, so no redirect."""
@@ -20883,10 +20883,11 @@ def test_a_review_finished_at_the_write_with_no_save_of_this_page_says_it_s_clos
     says_the_review_ended(answer, 409, imports.SAID["closed"], {STRAY_TITLE})
 
 
-WHITESPACE_ONLY_THE_EXACT_READER_FINDS: Final = [("title", "Set 3 "), ("instruction:0", "   ")]
+WHITESPACE_SENT: Final = [("title", "Set 3 "), ("instruction:0", "   ")]
+"""A stray space on an unchanged value, and whitespace alone."""
 
 
-@pytest.mark.parametrize(("field", "sent"), WHITESPACE_ONLY_THE_EXACT_READER_FINDS)
+@pytest.mark.parametrize(("field", "sent"), WHITESPACE_SENT)
 @pytest.mark.parametrize("moment", ["closed before the press", "removed before the press"])
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
 def test_an_earlier_save_on_an_ended_page_gives_back_exact_whitespace(
@@ -20909,9 +20910,7 @@ def test_an_earlier_save_on_an_ended_page_gives_back_exact_whitespace(
     assert copied(answer) == {sent}
 
 
-@pytest.mark.parametrize(
-    ("field", "sent"), [*WHITESPACE_ONLY_THE_EXACT_READER_FINDS, ("title", "Typed Words ")]
-)
+@pytest.mark.parametrize(("field", "sent"), [*WHITESPACE_SENT, ("title", "Typed Words ")])
 @pytest.mark.parametrize("how", ["refused", "empty"])
 @pytest.mark.parametrize(
     "moment", ["closed before the press", "expired before the press", "removed before the press"]
@@ -20939,7 +20938,7 @@ def test_an_earlier_save_with_unreadable_counts_on_an_ended_page_gives_back_exac
     assert copied(answer) == {sent}
 
 
-@pytest.mark.parametrize(("field", "sent"), WHITESPACE_ONLY_THE_EXACT_READER_FINDS)
+@pytest.mark.parametrize(("field", "sent"), WHITESPACE_SENT)
 @pytest.mark.parametrize(
     "moment", ["closed before the press", "expired before the press", "removed before the press"]
 )
@@ -20968,7 +20967,7 @@ def test_an_earlier_save_with_the_review_read_refused_gives_back_exact_whitespac
     assert copied(answer) == {sent}
 
 
-@pytest.mark.parametrize(("field", "sent"), WHITESPACE_ONLY_THE_EXACT_READER_FINDS)
+@pytest.mark.parametrize(("field", "sent"), WHITESPACE_SENT)
 @pytest.mark.parametrize(
     ("moment", "page_that_fails"),
     [("closed before the press", "saved_finished"), ("removed before the press", "saved_unread")],
@@ -21069,7 +21068,7 @@ def test_a_limit_an_earlier_save_with_the_review_unread_keeps_save_s_reading_of_
     assert copied(answer) == set()
 
 
-@pytest.mark.parametrize(("field", "sent"), WHITESPACE_ONLY_THE_EXACT_READER_FINDS)
+@pytest.mark.parametrize(("field", "sent"), WHITESPACE_SENT)
 @pytest.mark.parametrize("error", [DraftExpired, DraftNotFound])
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
 def test_an_earlier_save_with_unreadable_counts_on_a_second_read_finding_the_review_ended(
@@ -21124,7 +21123,7 @@ def test_an_open_review_with_no_rows_to_show_asks_for_no_earlier_save(
     assert "Saved: 1 new assignment." not in page_text(answer)
 
 
-@pytest.mark.parametrize(("field", "sent"), WHITESPACE_ONLY_THE_EXACT_READER_FINDS)
+@pytest.mark.parametrize(("field", "sent"), WHITESPACE_SENT)
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
 def test_a_second_read_refused_with_no_rows_gives_back_exact_whitespace(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, field: str, sent: str
@@ -21142,7 +21141,7 @@ def test_a_second_read_refused_with_no_rows_gives_back_exact_whitespace(
     assert copied(answer) == {sent}
 
 
-# ---------------------------------------------------- what the press answers as it does, by name
+# ------------------------------------------------------------- the limits of what comes back
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
