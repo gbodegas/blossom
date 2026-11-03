@@ -13335,7 +13335,11 @@ def test_an_instruction_typed_and_not_chosen_on_saved_work_is_given_back(
             browser, again, page_post(page, "save", tick=units_on(page), typed={box: note})
         )
         [question] = fields_named(review_form(asked.text), "answer:instructions:")
-        choice = {f"answer:instructions:{question}": json.dumps("Complete pages 12 to 14.")}
+        choice = {
+            f"answer:instructions:{question}": option_for(
+                asked.text, question, "Complete pages 12 to 14."
+            )
+        }
         kept = followed(browser, send(browser, again, page_post(asked.text, "keep", choose=choice)))
         saved = send(browser, again, page_post(kept, "save", tick=units_on(kept)))
 
@@ -13584,7 +13588,11 @@ def commit_on_saved_work(
     typed = {f"correct:{box_subject(page, 'instruction:0')}": "A note of my own"}
     asked = send(browser, again, page_post(page, "save", tick=units_on(page), typed=typed))
     [question] = fields_named(review_form(asked.text), "answer:instructions:")
-    choice = {f"answer:instructions:{question}": json.dumps("Complete pages 12 to 14.")}
+    choice = {
+        f"answer:instructions:{question}": option_for(
+            asked.text, question, "Complete pages 12 to 14."
+        )
+    }
     kept = followed(browser, send(browser, again, page_post(asked.text, "keep", choose=choice)))
     return again, page_post(kept, "save", tick=units_on(kept))
 
@@ -16196,7 +16204,7 @@ def test_the_pass_reaches_every_signed_control(
         )
         signed = [
             field
-            for field, _ in json.loads(asked)
+            for field in screenshot_page.asks_read(asked)[0]
             if not field.startswith(("correct:", "refused:"))
         ]
         before = {field: options_of(page, field) for field in signed}

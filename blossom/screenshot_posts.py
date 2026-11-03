@@ -3,20 +3,29 @@
 """Reading a screenshot review's posts against what their page signed.
 
 The review form carries its answers, its boxes of corrections and ticked groups, and signs its
-hidden fields, among them every question and box it offered with the values it offered. A box
-is a correction exactly when it differs from its value with no correction, so a page posted
-untouched corrects nothing and an earlier correction left in its box is posted again. An
-offer, or a row found under another name, is a whole change of its own: a form whose every
-field is signed. A post that doesn't match what its page signed is refused whole, so nothing
-of it is kept.
+hidden fields, among them every question and box it offered with the values it offered. A kept
+instruction is offered by its row, which its words are read back from, and new words by the words
+themselves against their digest in the signed list. A box is a correction exactly when it differs
+from its value with no correction, so a page posted untouched corrects nothing and an earlier
+correction left in its box is posted again. An offer, or a row found under another name, is a whole
+change of its own: a form whose every field is signed. A post that doesn't match what its page
+signed is refused whole, so nothing of it is kept.
 """
 
 import dataclasses
 import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
-from blossom.screenshot_page import page_check, same_signature
+from blossom.screenshot_page import (
+    INSTRUCTIONS_ASKED,
+    PostRefused,
+    asks_read,
+    page_check,
+    same_signature,
+    signed_option,
+)
 from blossom.screenshot_review import (
     OLD_DATES,
     PIECE_DATES,
@@ -69,11 +78,6 @@ SIGNED: Final = ("version", "progress_revision", "acceptance", "asked", "default
 """The review form's signed fields, besides each group's ``digest:{unit}``, in its order."""
 
 
-class PostRefused(Exception):
-    """A post that doesn't match what its page signed, or asks what the page didn't: nothing of
-    it is kept."""
-
-
 @dataclasses.dataclass(frozen=True)
 class ReviewPost:
     """A review post as read: which press, the page's version, its acceptance id and saved
@@ -108,14 +112,19 @@ class ReviewPost:
     """Each instruction question ticked beside "None of these apply", by its field, with its
     values as posted: the press is refused whole, and they go back as posted."""
     choices: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
-    """On a Save press, or a press with a conflict: each signed question's posted values, a checkbox
-    left unticked among them as no values, for the page to show them as they were sent. A radio left
-    empty isn't a choice, and isn't here."""
+    """On a Save press, or a press with a conflict or a kept row that isn't on the record: each
+    signed question's posted values, a checkbox left unticked among them as no values, for the page
+    to show them as they were sent. A radio left empty isn't a choice, and isn't here."""
+    unresolved: tuple[str, ...] = ()
+    """Each instruction question, by its field, whose posted choice names a kept row that isn't on
+    the record: the press is refused whole, as a conflict is, and its typing and the choices that
+    can show go back."""
 
     @property
     def refused(self) -> bool:
-        """Whether the press is refused whole for a box it can't take as posted."""
-        return bool(self.too_long or self.needed or self.both or self.conflicted)
+        """Whether the press is refused whole for what it posted: a box it can't take as posted, a
+        choice beside "None of these apply", or a kept row that isn't on the record."""
+        return bool(self.too_long or self.needed or self.both or self.conflicted or self.unresolved)
 
 
 WITHDRAWABLE: Final = ("answer:confirm:", "answer:instructions:", "answer:name:missing")
@@ -222,17 +231,8 @@ def _field(name: str) -> tuple[str, str]:
     return parts[1], parts[2]
 
 
-def read_review(
-    items: Sequence[tuple[str, str]], page_key: bytes, state: ReviewState
-) -> ReviewPost:
-    """The review form's post: its signed fields checked, each answer one the page asked with a
-    value it offered, each box one the page offered, each ticked group one it showed. A
-    confirmation or instruction question the page asked and the press left blank is
-    withdrawn. Each box is compared with its value with no correction and kept as a
-    correction only where it differs (``box_corrections``). A date Blossom couldn't read,
-    carried back beside its empty date box, stays the box's correction until a date is chosen
-    there. A correction longer than its field takes is named in ``too_long`` and kept as typed,
-    never cut, for the page to give back."""
+def _signed_fields(items: Sequence[tuple[str, str]], page_key: bytes) -> dict[str, str]:
+    """A post's signed fields, each once and all of them there, as its page signed them."""
     signed = [(n, v) for n, v in items if n in SIGNED or n.startswith("digest:") or n == "check"]
     hidden = _single(signed)
     check = hidden.pop("check", "")
@@ -240,8 +240,90 @@ def read_review(
         raise PostRefused
     if any(n not in hidden for n in SIGNED):
         raise PostRefused
+    return hidden
+
+
+def _signed_asks(hidden: Mapping[str, str]) -> tuple[dict[str, frozenset[str]], bool]:
+    """The signed list these fields hold. A list that can't be read raises ``PostRefused``, and a
+    list past its ceiling raises ``ListTooLarge``."""
     try:
-        offered = {str(f): set(json.loads(v)) for f, v in json.loads(hidden["asked"])}
+        return asks_read(hidden["asked"])
+    except (ValueError, TypeError, KeyError, IndexError, RecursionError) as error:
+        raise PostRefused from error
+
+
+def _assignment_of(subject: str) -> str | None:
+    """The assignment an instruction question's subject names, or None for a new row's. A subject
+    no page writes is refused."""
+    try:
+        dest = json.loads(subject)[0]
+    except (ValueError, TypeError, IndexError, KeyError, RecursionError) as error:
+        raise PostRefused from error
+    if not isinstance(dest, list) or not dest:
+        raise PostRefused
+    return str(dest[1]) if dest[0] == "id" and len(dest) == 2 else None
+
+
+def kept_assignments(items: Sequence[tuple[str, str]], page_key: bytes) -> frozenset[str]:
+    """The assignments whose kept rows this post has to be read against: those of each instruction
+    question it answers that its page signed. A post its page didn't sign is refused, and a name
+    that isn't in its signed list is passed over for ``read_review`` to refuse, since a signature
+    says nothing of the names beside it. So nothing is looked up that a page didn't ask."""
+    offered, _ = _signed_asks(_signed_fields(items, page_key))
+    answered = {
+        name
+        for name, value in items
+        if value and name.startswith(INSTRUCTIONS_ASKED) and name in offered
+    }
+    found = (_assignment_of(name.removeprefix(INSTRUCTIONS_ASKED)) for name in answered)
+    return frozenset(assignment for assignment in found if assignment is not None)
+
+
+KEPT_ROW: Final = re.compile(r"k[1-9][0-9]*")
+"""A kept instruction's option, as a page writes one."""
+
+
+def _option_words(value: str, rows: Mapping[str, str]) -> str | None:
+    """An instruction option's words: new words as the value holds them, a kept row's from the
+    record, or None for a row that isn't there. A value no page writes is refused."""
+    if KEPT_ROW.fullmatch(value) is not None:
+        return rows.get(value)
+    if not value.startswith('"'):
+        raise PostRefused
+    return _wire_words(value)
+
+
+def _wire_words(value: str) -> str:
+    """The words a value holds as one JSON string, or refused for anything else."""
+    try:
+        words = json.loads(value)
+    except ValueError as error:
+        raise PostRefused from error
+    if not isinstance(words, str):
+        raise PostRefused
+    return words
+
+
+def read_review(
+    items: Sequence[tuple[str, str]],
+    page_key: bytes,
+    state: ReviewState,
+    kept: Mapping[str, Mapping[str, str]],
+) -> ReviewPost:
+    """The review form's post: its signed fields checked, each answer one the page asked with a
+    value it offered, each box one the page offered, each ticked group one it showed. A
+    confirmation or instruction question the page asked and the press left blank is
+    withdrawn. A kept instruction's option is put back in its words from ``kept``, each assignment's
+    rows by the value a page offers them with. One that isn't there is named in ``unresolved``. A
+    page of the older form posts its kept instructions' words, and those are carried as the rows
+    the page it comes back to offers. Each box is compared with its value with no correction and
+    kept as a correction only where it differs (``box_corrections``). A date Blossom couldn't read,
+    carried back beside its empty date box, stays the box's correction until a date is chosen
+    there. A correction longer than its field takes is named in ``too_long`` and kept as typed,
+    never cut, for the page to give back."""
+    hidden = _signed_fields(items, page_key)
+    offered, older = _signed_asks(hidden)
+    try:
         defaults = {str(k): str(v) for k, v in json.loads(hidden["defaults"]).items()}
     except (ValueError, TypeError, AttributeError) as error:
         raise PostRefused from error
@@ -250,7 +332,7 @@ def read_review(
         for n, v in hidden.items()
         if n.startswith("digest:")
     }
-    rest = [(n, v) for n, v in items if (n, v) not in signed]
+    rest = [(n, v) for n, v in items if n not in hidden and n != "check"]
     presses = [v for n, v in rest if n == "press"]
     if len(presses) != 1 or presses[0] not in PRESSES:
         raise PostRefused
@@ -261,6 +343,7 @@ def read_review(
     carried: dict[tuple[str, str], str] = {}
     none_given: set[str] = set()
     chosen: dict[str, list[str]] = {}
+    rows_by_words: dict[str, dict[str, str]] = {}
     for name, value in rest:
         if name in ("press", "unit") or name.startswith(READ_PREFIX):
             continue
@@ -283,11 +366,16 @@ def read_review(
                     raise PostRefused
                 boxes[(key, field)] = value
             continue
-        kind, _ = _field(name)
-        if name not in offered or value not in offered[name]:
+        kind, subject = _field(name)
+        as_signed = value if older else signed_option(name, value)
+        if name not in offered or as_signed not in offered[name]:
             raise PostRefused
         if name in chosen and kind != "instructions":
             raise PostRefused
+        if older and kind == "instructions" and value:
+            if name not in rows_by_words:
+                rows_by_words[name] = {w: row for row, w in _kept_of(subject, kept).items()}
+            value = _row_of_its_words(value, rows_by_words[name])
         chosen.setdefault(name, []).append(value)
     for name in none_confirms(state, none_given):
         if name in offered and "as_read" in offered[name]:
@@ -296,16 +384,21 @@ def read_review(
     corrections = folded.corrections
     answers = []
     conflicted: dict[str, tuple[str, ...]] = {}
+    unresolved: list[str] = []
     for name, values in chosen.items():
         kind, subject = _field(name)
         if kind == "instructions":
-            # Every value here matched an option the page signed, so each one but "none
-            # apply" is an instruction's words as the page wrote them.
-            texts = sorted({str(json.loads(v)) for v in values if v})
-            if texts and "" in values:
+            # Every value here matched an option the signed list holds. One no page writes is
+            # refused first; the rest are "none apply", a kept row, or new words as written.
+            rows = _kept_of(subject, kept)
+            texts = {_option_words(v, rows) for v in values if v}
+            if any(values) and "" in values:
                 conflicted[name] = tuple(values)
                 continue
-            value = json.dumps(texts)
+            if None in texts:
+                unresolved.append(name)
+                continue
+            value = json.dumps(sorted(text for text in texts if text is not None))
         elif kind == "destination":
             value = _destination(values[0])
         else:
@@ -332,13 +425,26 @@ def read_review(
         both=folded.both,
         conflicted=conflicted,
         choices=_posted_choices(offered, chosen, rest)
-        if conflicted or presses[0] == "save"
+        if conflicted or unresolved or presses[0] == "save"
         else {},
+        unresolved=tuple(unresolved),
     )
 
 
+def _kept_of(subject: str, kept: Mapping[str, Mapping[str, str]]) -> Mapping[str, str]:
+    """The words of the kept rows of an instruction question's assignment, by each row's option."""
+    assignment = _assignment_of(subject)
+    return {} if assignment is None else kept.get(assignment, {})
+
+
+def _row_of_its_words(value: str, rows_by_words: Mapping[str, str]) -> str:
+    """An option of the older form as the page it comes back to offers it: a kept row for its
+    words, and new words as they are."""
+    return rows_by_words.get(_wire_words(value), value)
+
+
 def _posted_choices(
-    offered: Mapping[str, set[str]],
+    offered: Mapping[str, frozenset[str]],
     chosen: Mapping[str, Sequence[str]],
     rest: Sequence[tuple[str, str]],
 ) -> dict[str, tuple[str, ...]]:
@@ -503,7 +609,7 @@ def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], .
         named = name.removeprefix(prefix)
         try:
             key, field = (str(part) for part in json.loads(named))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             continue
         if not correctable(field):
             continue

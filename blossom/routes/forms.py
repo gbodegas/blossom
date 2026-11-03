@@ -31,6 +31,9 @@ no page can show and no record keeps. Reading one raises
 framework for a route whose fields are parameters, through ``FormRoute``. The application
 answers it with one page, which reads no store. The parser's own log lines can quote the
 body it refuses, so they are kept out of the log.
+
+Every form is read within the parser's own limits but one, whose route names fixed limits of its
+own: a first read with ``form_of``'s limits, on a request ``WithinBytes`` counts.
 """
 
 import asyncio
@@ -109,12 +112,39 @@ def written(form: FormData) -> FormData:
     return form
 
 
-async def form_of(request: Request) -> FormData:
+class WithinBytes(Request):
+    """A request whose body is read only as far as ``most`` bytes as sent, counted across its
+    chunks. The chunk that passes them is the parser's refusal of a form it can't read, so the
+    application reads no further. Nothing else differs."""
+
+    def __init__(self, request: Request, most: int) -> None:
+        super().__init__(request.scope, request.receive)
+        self._most = most
+
+    async def stream(self) -> AsyncGenerator[bytes, None]:
+        """The body's chunks, as far as its bound."""
+        seen = 0
+        async for chunk in super().stream():
+            seen += len(chunk)
+            if seen > self._most:
+                msg = "the body is past its bound"
+                raise MultiPartException(msg)
+            yield chunk
+
+
+async def form_of(
+    request: Request, *, most_fields: int = 1000, most_field_bytes: int = 1024 * 1024
+) -> FormData:
     """The request's form as the parser reads it, with no file allowed, or ``FormUnreadable``
     when the parser can't, a file part among its fields included, or when the text it read
-    can't be written."""
+    can't be written. The limits count on a request's first read, and a later one gets that read's
+    form; their defaults are the parser's own."""
     try:
-        return written(await request.form(max_files=FILES_ALLOWED))
+        return written(
+            await request.form(
+                max_files=FILES_ALLOWED, max_fields=most_fields, max_part_size=most_field_bytes
+            )
+        )
     except (FormParserError, UnicodeError) as error:
         raise FormUnreadable(type(error).__name__) from error
     except HTTPException as error:
