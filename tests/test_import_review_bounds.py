@@ -2548,7 +2548,7 @@ def test_an_option_gone_with_kept_rows(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A Save resent at another version, its answers on record, its kept row still offered, and its
-    posted date no longer offered: that's said once, and nothing stands in for the date."""
+    posted date not among the options: that's said once, and nothing stands in for the date."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, _, date_question, question, posted = a_date_asked_beside_a_kept_question(
             browser, monkeypatch
