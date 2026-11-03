@@ -949,7 +949,8 @@ def asks_text(asks: Iterable[tuple[str, Sequence[str]]]) -> str:
 def asks_read(text: str) -> tuple[dict[str, frozenset[str]], bool]:
     """A signed list whose signature has passed, by question, with whether its page is of the shape
     before, whose list and instruction options hold the words themselves. ``ValueError``,
-    ``TypeError``, ``KeyError`` or ``IndexError`` for anything else."""
+    ``TypeError``, ``KeyError`` or ``IndexError`` for anything else, and ``RecursionError`` for one
+    nested too deep."""
     if text.startswith("["):
         return {str(f): frozenset(json.loads(v)) for f, v in json.loads(text)}, True
     if not text.startswith(ASKS_SHAPE):
@@ -1714,15 +1715,16 @@ def _carried(
     conflicted: Mapping[str, tuple[str, ...]],
     marks: frozenset[str] = frozenset(),
 ) -> tuple[list[NameQuestion], tuple[Question, ...], list[UnitShown], bool, bool]:
-    """Everything on the page that asks, as a refused press with an instruction conflict sent it:
-    its choices checked as posted, "Not saved yet." on each that differs from what the record
-    shows, and the conflict's sentence in its own fieldset; whether a choice has no question or
-    option here; and whether one of those is more than a confirmed save took with its own rows
-    (``marks``, their pieces and row keys, which are in the fields that ask about them) or a name
-    question. A value is never swapped for another. This only marks what's shown, and runs after
-    everything the page signs is worked out, so the next post meets every check as it would. The
-    groups' ticks come back as posted through ``selected``, with no such note: they aren't answers
-    the record holds, and beside "Save this assignment" it would read as about the homework."""
+    """Everything on the page that asks, as a refused press sent it, for an instruction conflict or
+    a kept row that isn't on the record: its choices checked as posted, "Not saved yet." on each
+    that differs from what the record shows, and the conflict's sentence in its own fieldset;
+    whether a choice has no question or option here; and whether one of those is more than a
+    confirmed save took with its own rows (``marks``, their pieces and row keys, which are in the
+    fields that ask about them) or a name question. A value is never swapped for another. This only
+    marks what's shown, and runs after everything the page signs is worked out, so the next post
+    meets every check as it would. The groups' ticks come back as posted through ``selected``, with
+    no such note: they aren't answers the record holds, and beside "Save this assignment" it would
+    read as about the homework."""
     if not choices:
         return list(names), tuple(splits), list(units), False, False
     seen: set[str] = set()

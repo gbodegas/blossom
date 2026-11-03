@@ -55,8 +55,8 @@ from tests.support import (
 MOST_FIELDS: Final = 200_000
 MOST_BYTES: Final = 139_952_128
 MOST_IN_A_FIELD: Final = 139_952_128
-"""The limits a review press is read within, as literal numbers, so a test holds a limit that
-changes rather than reading it from the code."""
+"""The limits every post to a review's route is read within, as literal numbers, so a test holds a
+limit that changes rather than reading it from the code."""
 LOOPBACK: Final = "127.0.0.1:8781"
 FORM: Final = {"content-type": "application/x-www-form-urlencoded"}
 TYPED: Final = "Typed words to keep."
@@ -488,14 +488,26 @@ def in_groups(shot: int, cards: int, group: int) -> dict[str, Any]:
     return homework_answer(cards=made)
 
 
-def her_name_answered(browser: TestClient, draft_id: str, page: str) -> str:
-    """The name question answered "hers" directly on the record, and the page after."""
-    [form] = fields_named(review_form(page), "answer:name:")
+def keep_on_record(browser: TestClient, draft_id: str, *answers: tuple[str, str, str]) -> None:
+    """These answers kept on the record directly, at the review's version: kind, subject, value."""
     student = state_of(browser).project_state.student_id()
     drafts = state_of(browser).import_drafts
     version = drafts.snapshot(student, draft_id).version
-    answer = AnswerToKeep("name", form, "hers", correction_digest(None), ())
-    drafts.keep_answers(student, draft_id, version=version, answers=[answer])
+    drafts.keep_answers(
+        student,
+        draft_id,
+        version=version,
+        answers=[
+            AnswerToKeep(kind, subject, value, correction_digest(None), ())
+            for kind, subject, value in answers
+        ],
+    )
+
+
+def her_name_answered(browser: TestClient, draft_id: str, page: str) -> str:
+    """The name question answered "hers" directly on the record, and the page after."""
+    [form] = fields_named(review_form(page), "answer:name:")
+    keep_on_record(browser, draft_id, ("name", form, "hers"))
     return browser.get(f"/parent/imports/{draft_id}").text
 
 
@@ -781,6 +793,52 @@ def every_box_at_its_limit(
     return draft_id, at_their_limits(
         every_choice(page, "keep"), "course", "title", "instruction", "due", "assigned"
     )
+
+
+def small_form_fields(form: str) -> list[tuple[str, str]]:
+    return [
+        (html.unescape(name), html.unescape(value))
+        for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', form)
+    ]
+
+
+def an_offer_s_post(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, Fields]:
+    """A row split into its two days, each kept as new homework, so its refused group offers a whole
+    change: the review's id, and that offer's post."""
+    card = homework_card(footer="Due (10/9/2026)")
+    days = [
+        homework_answer(headings=[{"text": heading, "y": 150, "uncertain": None}], cards=[card])
+        for heading in ("Monday 10/5/2026", "Tuesday 10/6/2026")
+    ]
+    first, second = images(2)
+    draft_id, page = read_review(browser, monkeypatch, (first, days[0]), (second, days[1]))
+    [row] = fields_named(review_form(page), "answer:split:")
+    keep_on_record(browser, draft_id, ("split", row, json.dumps("split")))
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    pieces = fields_named(review_form(page), "answer:destination:")
+    keep_on_record(browser, draft_id, *(("destination", piece, '{"new":1}') for piece in pieces))
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    offers = re.findall(
+        r'<form method="post" action="[^"]+/review" id="offer-[^"]+">.*?</form>', page, re.S
+    )
+    return draft_id, small_form_fields(offers[-1])
+
+
+def a_found_row_s_post(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, Fields]:
+    """A card of another name, and a saved row "Find under another name" lists for it: the review's
+    id, and the post of choosing that row."""
+    first, second = images(2)
+    one_saved_row(browser, monkeypatch, first)
+    draft_id, page = read_review(browser, monkeypatch, (second, plain(0, 1)))
+    [piece] = fields_named(review_form(page), "answer:destination:")
+    finding = browser.post(
+        f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "homework"}
+    ).text
+    choice = re.search(
+        r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
+    )
+    assert choice is not None, finding[:400]
+    return draft_id, small_form_fields(choice.group(0))
 
 
 def box_named(page: str, field: str, nth: int = 0) -> str:

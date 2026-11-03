@@ -116,9 +116,9 @@ class ReviewPost:
     """Each instruction question ticked beside "None of these apply", by its field, with its
     values as posted: the press is refused whole, and they go back as posted."""
     choices: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
-    """On a Save press, or a press with a conflict: each signed question's posted values, a checkbox
-    left unticked among them as no values, for the page to show them as they were sent. A radio left
-    empty isn't a choice, and isn't here."""
+    """On a Save press, or a press with a conflict or a kept row that isn't on the record: each
+    signed question's posted values, a checkbox left unticked among them as no values, for the page
+    to show them as they were sent. A radio left empty isn't a choice, and isn't here."""
     unresolved: tuple[str, ...] = ()
     """Each instruction question, by its field, whose posted choice names a kept row that isn't on
     the record: the press is refused whole, as a conflict is, and its typing and the choices that
@@ -250,7 +250,7 @@ def _signed_asks(hidden: Mapping[str, str]) -> tuple[dict[str, frozenset[str]], 
     """The signed list these fields hold, or refused for a list no page writes."""
     try:
         return asks_read(hidden["asked"])
-    except (ValueError, TypeError, AttributeError, KeyError, IndexError) as error:
+    except (ValueError, TypeError, KeyError, IndexError, RecursionError) as error:
         raise PostRefused from error
 
 
@@ -390,13 +390,13 @@ def read_review(
     for name, values in chosen.items():
         kind, subject = _field(name)
         if kind == "instructions":
-            # Every value here matched an option the page signed: "none apply", a kept row, or new
-            # words as the page wrote them.
+            # Every value here matched an option the signed list holds. One no page writes is
+            # refused first; the rest are "none apply", a kept row, or new words as written.
+            rows = _kept_of(subject, kept)
+            texts = {_option_words(v, rows) for v in values if v}
             if any(values) and "" in values:
                 conflicted[name] = tuple(values)
                 continue
-            rows = _kept_of(subject, kept)
-            texts = {_option_words(v, rows) for v in values if v}
             if None in texts:
                 unresolved.append(name)
                 continue
@@ -611,7 +611,7 @@ def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], .
         named = name.removeprefix(prefix)
         try:
             key, field = (str(part) for part in json.loads(named))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             continue
         if not correctable(field):
             continue

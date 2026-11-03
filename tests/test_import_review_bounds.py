@@ -5,11 +5,12 @@ form is read within.
 
 The form a page makes stays small however long the words in it are: a kept instruction travels
 by its row, new words stay in their checkbox with a digest in the signed list, and each distinct
-list of options is signed once, packed. The route reads a press within fixed limits of its own, on
-fields, on one field's bytes and on all its bytes, and every other route keeps the parser's
-defaults. Past a limit a press isn't read: it says nothing was saved, and what it typed is gone.
-Sizes here are bytes as sent, as the parser counts them, and there are no time assertions at any
-size. The largest pages run by name, in ``tests/full_scale_import_review.py``.
+list of options is signed once, packed. The route reads every post within fixed limits of its own,
+on fields, on one field's bytes and on all its bytes, an offer or a found row as much as a press,
+and every other route keeps the parser's defaults. Past a limit a post isn't read: it says nothing
+was saved, and what it typed is gone. Sizes here are bytes as sent, as the parser counts them, and
+there are no time assertions at any size. The largest pages run by name, in
+``tests/full_scale_import_review.py``.
 """
 
 import asyncio
@@ -47,8 +48,10 @@ from tests.import_review_cases import (
     Fields,
     Made,
     Presses,
+    a_found_row_s_post,
     add_kept,
     all_found_onto_one_row,
+    an_offer_s_post,
     as_a_browser_sends,
     body_with_a_paste,
     box_named,
@@ -259,8 +262,7 @@ def test_the_acceptance_list_is_whole() -> None:
 
 
 def test_the_module_that_runs_by_name_isnt_collected() -> None:
-    """Its file's name is what keeps it out of the suite and the gate's shards. It runs by name,
-    and that a run happened on a given head shows only in that run's log."""
+    """Its file's name keeps it out of a plain ``pytest``, and it runs by naming the file."""
     file = pathlib.Path(full_scale_import_review.__file__).name
     assert not fnmatch(file, "test_*.py")
     assert not fnmatch(file, "*_test.py")
@@ -907,6 +909,51 @@ def test_a_review_id_that_isnt_one_answers_404_with_no_body_read(tmp_path: pathl
     assert reads == 0
 
 
+# ------------------------------------------------------------------ an offer and a found row
+
+
+@pytest.mark.parametrize(
+    "make", [an_offer_s_post, a_found_row_s_post], ids=["an offer", "a found row"]
+)
+def test_an_offer_or_a_found_row_is_read_within_the_route_s_limits(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_reads: list[tuple[float, int]],
+    make: Callable[[TestClient, pytest.MonkeyPatch], tuple[str, Fields]],
+) -> None:
+    """It goes to the route a press goes to, and is read with the same limits. Its every field is
+    signed, so past the parser's default it is read and its signature refuses it, as a wrong
+    signature or a changed answer is refused. Past the route's limit it isn't read. The post as its
+    page wrote it is kept."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, fields = make(browser, monkeypatch)
+        beyond_the_default = [
+            *fields,
+            *((f"read:{n}", "1") for n in range(PARSERS_FIELDS + 1 - len(fields))),
+        ]
+        wrong_signature = [(n, "0" * 64 if n == "offer" else v) for n, v in fields]
+        changed_answer = [(n, '{"new":7}' if n.startswith("answer:") else v) for n, v in fields]
+        before = every_row(browser)
+        first_reads.clear()
+        refused = [
+            send(browser, draft_id, post).status_code
+            for post in (beyond_the_default, wrong_signature, changed_answer)
+        ]
+        limits = list(first_reads)
+        after = every_row(browser)
+        past = send(browser, draft_id, padded_fields(fields, MOST_FIELDS + 1))
+        kept = send(browser, draft_id, fields)
+        answers = every_row(browser)["import_draft_answers"]
+
+    assert len(beyond_the_default) == PARSERS_FIELDS + 1
+    assert refused == [303, 303, 303]
+    assert limits == [(MOST_FIELDS, MOST_IN_A_FIELD)] * 3
+    assert before == after
+    assert is_not_read(past)
+    assert kept.status_code == 200
+    assert answers != before["import_draft_answers"]
+
+
 # ------------------------------------------------------------------ a paste
 
 
@@ -1199,6 +1246,23 @@ def test_a_store_that_refuses_the_kept_read_gives_the_typing_back(
     assert before == after
 
 
+PAGE_KEY: Final = b"synthetic page key"
+
+
+def signed_by(key: bytes, asked: str, digests: int = 0) -> list[tuple[str, str]]:
+    """A review form's signed fields holding this list, and their check under this key."""
+    fields = [
+        ("version", "1"),
+        ("progress_revision", "0"),
+        ("acceptance", "a" * 32),
+        ("asked", asked),
+        ("defaults", "{}"),
+        ("identity", "[]"),
+        *((f"digest:{n}", "") for n in range(digests)),
+    ]
+    return [*fields, ("check", screenshot_page.page_check(key, fields))]
+
+
 # ------------------------------------------------------------------ what a press doesn't scan
 
 
@@ -1264,25 +1328,14 @@ def test_a_post_s_fields_arent_compared_with_its_signed_ones(
             Counted.compared += 1
             return str.__eq__(self, other)
 
-    key = b"synthetic page key"
-    fields = [
-        ("version", "1"),
-        ("progress_revision", "0"),
-        ("acceptance", "a" * 32),
-        ("asked", screenshot_page.asks_text([])),
-        ("defaults", "{}"),
-        ("identity", "[]"),
-        *((f"digest:{n}", "") for n in range(500)),
-    ]
     monkeypatch.setattr(screenshot_posts, "fold_reads", lambda _: {})
     many = 2_000
     items = [
-        *fields,
-        ("check", screenshot_page.page_check(key, fields)),
+        *signed_by(PAGE_KEY, screenshot_page.asks_text([]), digests=500),
         ("press", "keep"),
         *((Counted("read:zz"), "1") for _ in range(many)),
     ]
-    post = screenshot_posts.read_review(items, key, cast(ReviewState, None), {})
+    post = screenshot_posts.read_review(items, PAGE_KEY, cast(ReviewState, None), {})
 
     assert post.press == "keep"
     assert Counted.compared < many * 20
@@ -1459,6 +1512,266 @@ def test_signed_garbage_is_refused(
 
     assert answer.status_code == 303
     assert before == after
+
+
+# ------------------------------------------------------------------ nested too deep to read
+
+DEEP: Final = "[" * 200_000
+"""Nesting past what the JSON parser can read, as a name, a value or a whole list."""
+
+
+TOO_DEEP_LISTS: Final = {
+    "lists": packed(DEEP.encode()),
+    "objects": packed(b'{"a":' * 200_000),
+    "inside its lists": packed(b'{"lists":[' + DEEP.encode()),
+    "lists, of the older form": DEEP,
+    "inside an entry, of the older form": json.dumps([["correct:x", DEEP]]),
+}
+"""Signed lists nested past what the JSON parser can read."""
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+@pytest.mark.parametrize("deep", TOO_DEEP_LISTS)
+def test_a_list_nested_too_deep_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, deep: str, press: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        ticks = units_on(page)[1:2] if press == "save" else []
+        fields = page_post(page, press, tick=ticks)
+        before = every_row(browser)
+        answer = send(
+            browser, draft_id, signed_again(browser, draft_id, fields, TOO_DEEP_LISTS[deep])
+        )
+        after = every_row(browser)
+
+    assert answer.status_code == 303
+    assert before == after
+
+
+@pytest.mark.parametrize("deep", TOO_DEEP_LISTS)
+def test_reading_a_post_refuses_a_list_nested_too_deep(deep: str) -> None:
+    """Read directly, since in a press the lookup before it refuses these first."""
+    items = [*signed_by(PAGE_KEY, TOO_DEEP_LISTS[deep]), ("press", "keep")]
+    with pytest.raises(screenshot_posts.PostRefused):
+        screenshot_posts.read_review(items, PAGE_KEY, cast(ReviewState, None), {})
+
+
+def a_post_asking_too_deep(
+    browser: TestClient, draft_id: str, page: str, question: str, form: str
+) -> list[tuple[str, str]]:
+    """This page's post, signed with the review's key, with one thing nested past what the JSON
+    parser can read beside a list that reads."""
+    fields = page_post(page, "keep")
+    if form == "defaults":
+        changed = [(name, DEEP if name == "defaults" else value) for name, value in fields]
+        return signed_again(browser, draft_id, changed, dict(changed)["asked"])
+    if form == "an instruction option of an older list":
+        older = page_post(written_as_the_older_form(browser, draft_id, page), "keep")
+        asks = [
+            (name, json.dumps([*json.loads(values), DEEP]) if name == question else values)
+            for name, values in json.loads(dict(older)["asked"])
+        ]
+        return signed_again(browser, draft_id, ticks_of(older, question, [DEEP]), json.dumps(asks))
+    found = unpacked(dict(fields)["asked"])
+    asks_now: list[tuple[str, Sequence[str]]] = [
+        (name, found["lists"][index]) for name, index in found["asks"]
+    ]
+    if form == "a confirm question's subject":
+        name = f"answer:confirm:{DEEP}"
+        asked = screenshot_page.asks_text([*asks_now, (name, ["as_read"])])
+        return signed_again(browser, draft_id, [*fields, (name, "as_read")], asked)
+    if form == "a box's name":
+        name = f"correct:{DEEP}"
+        asked = screenshot_page.asks_text([*asks_now, (name, [])])
+        return signed_again(browser, draft_id, [*fields, (name, "typed words")], asked)
+    name = fields_of(page, "answer:destination:")[0]
+    with_it = [(n, [*values, DEEP] if n == name else values) for n, values in asks_now]
+    return signed_again(
+        browser, draft_id, ticks_of(fields, name, [DEEP]), screenshot_page.asks_text(with_it)
+    )
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "defaults",
+        "a confirm question's subject",
+        "a box's name",
+        "a destination option",
+        "an instruction option of an older list",
+    ],
+)
+def test_a_form_nested_too_deep_beside_a_list_that_reads_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, form: str
+) -> None:
+    """Each under a good signature, which only someone holding the page's key can send."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, question = with_a_kept_question(browser, monkeypatch)
+        posted = a_post_asking_too_deep(browser, draft_id, page, question, form)
+        before = every_row(browser)
+        answer = send(browser, draft_id, posted)
+        after = every_row(browser)
+
+    assert answer.status_code == 303
+    assert before == after
+
+
+@pytest.mark.parametrize(
+    "asked",
+    [
+        packed(b"5"),
+        packed(b"null"),
+        packed(b'"text"'),
+        packed(b'{"lists":null,"asks":[]}'),
+        packed(b'{"lists":[],"asks":5}'),
+        packed(b'{"lists":[[]],"asks":[5]}'),
+        packed(b'{"lists":[[]],"asks":[["a","b"]]}'),
+        "[null]",
+        "[5]",
+        '["ab"]',
+        '[["a",null]]',
+        '[[1,"5"]]',
+        '[["a","[[]]"]]',
+    ],
+)
+def test_a_list_no_page_writes_raises_only_what_reading_a_post_refuses(asked: str) -> None:
+    with pytest.raises((ValueError, TypeError, KeyError, IndexError)):
+        screenshot_page.asks_read(asked)
+
+
+# ---------------------------------------------------------- values and names no page writes
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_digest_posted_as_a_value_is_refused_beside_none_apply_too(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The signed list holds a new word's digest, and no page posts one: alone or beside "None of
+    these apply", it's a value no page writes."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, question = with_a_kept_question(browser, monkeypatch)
+        new = next(value for value, _ in worded_options(page, question) if value.startswith('"'))
+        digest = screenshot_page.signed_option(question, new)
+        posted = page_post(page, press)
+        before = every_row(browser)
+        answers = [
+            send(browser, draft_id, ticks_of(posted, question, ticks)).status_code
+            for ticks in ([digest], [digest, ""])
+        ]
+        after = every_row(browser)
+
+    assert answers == [303, 303]
+    assert before == after
+
+
+@pytest.mark.parametrize(
+    ("way", "press", "status"),
+    [("closed", "save", 200), ("busy", "keep", 503), ("absent", "save", 404)],
+)
+def test_a_field_too_deep_to_name_a_correction_is_passed_over(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, way: str, press: str, status: int
+) -> None:
+    """The pages that give typing back read it from the post alone, before anything has checked it:
+    a name that can't name a correction is passed over, and the typing beside it comes back."""
+
+    def busy(*_: object, **__: object) -> None:
+        raise StoreBusy
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        box = box_named(page, "title")
+        fields = [*page_post(page, press, typed={box: TYPED}), (f"correct:{DEEP}", "other words")]
+        drafts = state_of(browser).import_drafts
+        target = draft_id
+        if way == "closed":
+            drafts._connection.execute(
+                "UPDATE import_drafts SET closed_at = ? WHERE draft_id = ?",
+                ("2026-10-05T12:00:00+00:00", draft_id),
+            )
+            drafts._connection.commit()
+        elif way == "busy":
+            monkeypatch.setattr(drafts, "snapshot", busy)
+        else:
+            target = "a" * 32
+        answer = send(browser, target, fields)
+
+    assert answer.status_code == status
+    assert TYPED in html.unescape(answer.text)
+
+
+# ------------------------------------------------------------------ one question's rows and words
+
+
+def test_a_row_of_another_assignment_is_no_row_of_this_question(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A list signed to offer it, which only someone holding the page's key can send. The other
+    question is ticked too, so that assignment's rows are read: the row still isn't among this
+    question's, so the press is refused whole."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _ = with_a_kept_question(browser, monkeypatch, cards=2)
+        first, second = fields_of(page, "answer:instructions:")
+        theirs = next(value for value, _ in worded_options(page, second) if value.startswith("k"))
+        posted = [
+            *forged_offering(browser, draft_id, page, first, theirs),
+            (second, theirs),
+        ]
+        before = every_row(browser)
+        answer = send(browser, draft_id, posted)
+        after = every_row(browser)
+
+    assert answer.status_code == 422
+    assert page_text(answer.text).count(NOT_CARRIED) == 1
+    assert before == after
+
+
+def test_an_older_page_s_words_map_to_each_question_s_own_rows(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same words kept on two assignments are two rows: a conflict on each question comes back
+    ticked on that question's own."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _ = with_a_kept_question(browser, monkeypatch, cards=2)
+        first, second = fields_of(page, "answer:instructions:")
+        older = written_as_the_older_form(browser, draft_id, page)
+        posted = ticks_of(page_post(older, "keep"), first, [to_wire("Kept words 1."), ""])
+        posted = ticks_of(posted, second, [to_wire("Kept words 0."), ""])
+        answer = send(browser, draft_id, posted)
+
+    def ticked_words(question: str) -> list[str]:
+        ticked = dict(options_of(answer.text, question))
+        return [words for value, words in worded_options(answer.text, question) if ticked[value]]
+
+    assert answer.status_code == 422
+    assert NOT_CARRIED not in page_text(answer.text)
+    assert ticked_words(first) == ["Kept words 1.", "None of these apply"]
+    assert ticked_words(second) == ["Kept words 0.", "None of these apply"]
+
+
+def test_a_row_gone_gives_back_typing_with_no_box_on_the_page_it_comes_back_to(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another tab saved the card it typed on, so its box isn't on the page the press comes back to:
+    the typing comes back to copy."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_page_with_groups_left(browser, monkeypatch)
+        unit = units_on(page)[0]
+        box = "correct:" + json.dumps([unit, "title"], separators=(",", ":"))
+        question = next(
+            name for name in fields_of(page, "answer:instructions:") if unit not in name
+        )
+        rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
+        posted = ticks_of(page_post(page, "keep", typed={box: TYPED}), question, rows)
+        saved = send(browser, draft_id, page_post(page, "save", tick=[unit]))
+        delete_row(browser, rows[0])
+        answer = send(browser, draft_id, posted)
+        shown = in_its_box(answer.text, box)
+
+    assert saved.status_code == 200
+    assert answer.status_code == 422
+    assert shown is None
+    assert TYPED in html.unescape(answer.text)
 
 
 # ------------------------------------------------------------------ a page of the older form

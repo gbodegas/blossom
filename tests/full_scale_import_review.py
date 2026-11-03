@@ -2,12 +2,10 @@
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """An import review's presses at the largest sizes, too long for the default suite.
 
-Run by name through a test runner: this file's name keeps it out of a plain ``pytest`` and out of
-any run that collects ``test_*.py``, while ruff and mypy still check it. A test in
-``tests/test_import_review_bounds.py`` holds its shapes to the acceptance list, which says nothing
-about whether it ran, so a run is shown only by its own log, on the head it ran on. It doesn't run
-in continuous integration. It runs again on any head that changes the review's routes, its forms,
-its pages or its posts.
+Run it by naming this file: its name keeps it out of a plain ``pytest``, while ruff and mypy still
+check it. A test in ``tests/test_import_review_bounds.py`` holds its shapes to the acceptance list,
+which can't show that this module ran; only a run's own output can. It doesn't run in continuous
+integration.
 """
 
 import pathlib

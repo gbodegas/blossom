@@ -1233,11 +1233,11 @@ async def rows_of(
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
     or, when a press's typing comes back, as it sent them; None before anything is read. A press
-    with an instruction conflict comes back with its choices as posted (``choices``,
-    ``conflicted``) and signed with its own progress revision (``revision``): saving for later in
-    another tab moves that with no change of version, and a fresh one would let the next Save for
-    later overwrite that tab's progress unseen. With a transaction left open the reads refuse, so
-    rows are never made from what it holds."""
+    with an instruction conflict, or naming a kept row that isn't on the record, comes back with its
+    choices as posted (``choices``, ``conflicted``) and signed with its own progress revision
+    (``revision``): saving for later in another tab moves that with no change of version, and a
+    fresh one would let the next Save for later overwrite that tab's progress unseen. With a
+    transaction left open the reads refuse, so rows are never made from what it holds."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
@@ -1720,13 +1720,15 @@ def not_saved(outcome: NotSaved, answered: bool) -> list[str]:
 
 
 REVIEW_FORM_FIELDS: Final = 200_000
-"""The most fields a review press is read with."""
+"""The most fields a post to a review's route is read with, whichever it is: one of its three
+presses, an offer or a found row."""
 REVIEW_FORM_BYTES: Final = 139_952_128
-"""The most bytes as sent a review press is read to, all its fields together: room for 600 cards of
-180 KiB, each with every box at its limit in characters of four bytes, its new instruction as the
-same words, and the longest name its tick can carry, and 28 MiB more."""
+"""The most bytes as sent a post to a review's route is read to, all its fields together: room for
+600 cards of 180 KiB, each with every box at its limit in characters of four bytes, its new
+instruction as the same words, and the longest name its tick can carry, and 28 MiB more."""
 REVIEW_FIELD_BYTES: Final = REVIEW_FORM_BYTES
-"""The most bytes as sent one field of a review press is read with: as much as the whole press."""
+"""The most bytes as sent one field of a post to a review's route is read with: as much as the whole
+post."""
 
 
 async def kept_words(state: ApplicationState, wanted: frozenset[str]) -> dict[str, dict[str, str]]:
@@ -1748,7 +1750,7 @@ async def review_post(
 ) -> tuple[ReviewPost | None, str]:
     """The post read against what its page signed, or None when it doesn't match or the review
     has no homework to read it against, with the press it named. Kept rows are read only for a post
-    its page signed."""
+    its page signed. Anything in it nested too deep to read doesn't match either."""
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
@@ -1761,7 +1763,7 @@ async def review_post(
             return read_change(items, found.page_key, review, saved), "keep"
         kept = await kept_words(state, kept_assignments(items, found.page_key))
         return read_review(items, found.page_key, review, kept), named
-    except PostRefused:
+    except (PostRefused, RecursionError):
         return None, named
 
 
@@ -1777,8 +1779,9 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     """The review form's three presses, and an offer or a found row posted whole: Keep these
     answers, Save selected homework and Save review for later. A press with a correction
     longer than its field takes keeps and saves nothing, and answers 422 with the review and
-    its typing, that correction whole in its box. The form is read first, within its bounds, and
-    every later read of this press gets that one, so a body past them touches no store."""
+    its typing, that correction whole in its box. Whichever post this is, its form is read first,
+    within this route's limits, and every later read of it gets that one, so a body past them
+    touches no store."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     request = WithinBytes(request, REVIEW_FORM_BYTES)
@@ -1909,21 +1912,23 @@ async def with_typing(
     holding it, in the save's evidence (``saved``) or in a box to copy, and two lines are said
     here, beside them: that answers are kept on the rows left open (``answered``), and that changes
     on the rows below aren't saved yet, when a box for one (``unsaved``) is among those shown. A
-    Save press that committed nothing also gives back what no box holds, and if its review has
-    ended before its rows, says that instead of its own line, or that it can't tell if a
-    transaction was left open meanwhile. It asks for its receipt before any page that ends it, as
-    ``snapshot_keeping_typing`` does. A press with an instruction conflict comes back with its
+    Save press that committed nothing also gives back what no box holds, as does a press refused
+    with its choices, and if its review has ended before its rows, says that instead of its own
+    line, or that it can't tell if a transaction was left open meanwhile. It asks for its receipt
+    before any page that ends it, as ``snapshot_keeping_typing`` does. A press with an instruction
+    conflict, or naming a kept row that isn't on the record (``unresolved``), comes back with its
     choices as posted while the review is at the version its page showed. At another, the review
     has changed, and carrying a choice onto a page of the new version would get it past the version
     check, so it says the page is out of date and carries none. Whatever can't carry is said,
     beside a confirmed save's counts too, with no word there of the page being out of date; only
     what that save took goes unsaid, as those are always gone: its own rows' questions and ticks
     (``own``, their pieces), and a name question, apart from an answer she cleared that the record
-    still holds (``choices_said_lost``). A Save press that finds a confirmed receipt (``own``,
-    otherwise None) writes nothing more, and comes back the same way with no conflict: at the page's
-    version its choices as posted, and at another that they can't be shown if they aren't what the
-    record holds or aren't offered, with one exception (``choices_said_lost``). Any other too long
-    or cleared box's press, with no conflict, carries nothing."""
+    still holds (``choices_said_lost``). A row that isn't on the record is always said. A Save press
+    that finds a confirmed receipt (``own``, otherwise None) writes nothing more, and comes back the
+    same way with no conflict: at the page's version its choices as posted, and at another that they
+    can't be shown if they aren't what the record holds or aren't offered, with one exception
+    (``choices_said_lost``). Any other too long or cleared box's press, with no conflict, carries
+    nothing."""
     after = read or await snapshot_keeping_typing(
         request, state, draft_id, said, status, done, save_press=post.press == "save"
     )
