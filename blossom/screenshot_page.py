@@ -925,8 +925,8 @@ class PostRefused(Exception):
 
 
 class ListTooLarge(PostRefused):
-    """A post whose signed list comes to more than ``ASKS_MOST_BYTES`` once unpacked. It's refused
-    as any other is, and only the press that gets it says why."""
+    """A post whose signed list comes to more than ``ASKS_MOST_BYTES`` once unpacked. Nothing of it
+    is kept, and the press it came from has a line of its own for it."""
 
 
 def kept_ref(sequence: int) -> str:

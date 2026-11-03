@@ -109,6 +109,7 @@ NOTHING_KEPT: Final = "Nothing was kept or saved."
 NOT_CARRIED: Final = (
     "Some of your choices can't be shown on this page. Check the review before trying again."
 )
+SAYS_BOTH: Final = "Choose these instructions or None of these apply, not both."
 NOT_SAVED_YET: Final = "Not saved yet."
 A_LONG_PASTE: Final = 30 * 1024 * 1024
 """Far past the parser's 1 MiB, at much less than a paste near the byte limit costs."""
@@ -1237,6 +1238,29 @@ def test_a_press_with_one_row_gone_keeps_nothing_of_the_rest(
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_row_gone_beside_none_apply_is_answered_as_any_row_there_is(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Beside "None of these apply", a kept row that's gone is refused for saying both, and the
+    choices that can't be shown are said as well."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, question = with_a_kept_question(browser, monkeypatch)
+        rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
+        posted = page_post(page, press, tick=units_on(page))
+        delete_row(browser, rows[0])
+        before = every_row(browser)
+        answer = send(browser, draft_id, ticks_of(posted, question, [rows[0], ""]))
+        after = every_row(browser)
+
+    said = page_text(answer.text)
+    assert answer.status_code == 422
+    assert SAYS_BOTH in said
+    assert NOTHING_KEPT in said
+    assert said.count(NOT_CARRIED) == 1
+    assert before == after
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
 def test_a_store_that_refuses_the_kept_read_gives_the_typing_back(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
@@ -1612,8 +1636,86 @@ def test_a_page_past_the_ceiling_is_refused_each_time_it_s_pressed(
     assert TOO_LARGE in page_text(page)
 
 
-def test_a_list_past_the_ceiling_is_refused_as_any_post_is() -> None:
-    """Every catch that refuses a post refuses this one too, whichever read of it meets it first."""
+def an_outcome(page: str, element: str) -> str:
+    """What the page's outcome element of this id says, empty when the page has none."""
+    found = re.search(rf'<div[^>]* id="{element}"[^>]*>(.*?)</div>', page, re.DOTALL)
+    return "" if found is None else html.unescape(re.sub(r"<[^>]+>", " ", found[1]))
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_list_past_the_ceiling_is_said_as_a_problem(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The line shows in the page's problem element, and not in its panel of what was done or in its
+    note."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        ticks = units_on(page)[1:2] if press == "save" else []
+        posted = page_post(page, press, tick=ticks)
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        shown = followed(browser, send(browser, draft_id, posted))
+
+    assert 'class="problem" role="status" id="said"' in shown
+    assert TOO_LARGE in an_outcome(shown, "said")
+    assert TOO_LARGE not in an_outcome(shown, "done")
+    assert TOO_LARGE not in an_outcome(shown, "told")
+
+
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_a_press_that_isnt_a_save_gets_no_saved_result_past_the_ceiling(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Keep or Later from the page a Save was pressed from: its id has that Save's receipt, which
+    only a Save shows. It says the review is too large, and no counts."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        saved = page_post(page, "save", tick=units_on(page)[:1])
+        first = send(browser, draft_id, saved)
+        posted = page_post(page, press)
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        before = every_row(browser)
+        answer = send(browser, draft_id, posted)
+        after = every_row(browser)
+        said = page_text(followed(browser, answer))
+
+    assert first.status_code == 200
+    assert dict(posted)["acceptance"] == dict(saved)["acceptance"]
+    assert answer.status_code == 303
+    assert TOO_LARGE in said
+    assert "Saved:" not in said
+    assert before == after
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_list_of_the_older_form_doesn_t_meet_the_ceiling(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The ceiling counts what a compact list unpacks to, and an older list isn't packed, so its
+    press answers as it would with the list longer than the ceiling. The page that press comes back
+    to writes the compact list, and the next press from it is refused."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        older = written_as_the_older_form(browser, draft_id, page)
+        ticks = units_on(older)[1:2] if press == "save" else []
+        posted = page_post(older, press, tick=ticks)
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        first = send(browser, draft_id, posted)
+        returned = followed(browser, first)
+        from_it = page_post(returned, "keep")
+        again = send(browser, draft_id, from_it)
+        told = followed(browser, again)
+
+    assert dict(posted)["asked"].startswith("[")
+    assert len(dict(posted)["asked"]) > 100
+    assert first.status_code == ANSWERS[press]
+    assert TOO_LARGE not in page_text(returned)
+    assert dict(from_it)["asked"].startswith("z1.")
+    assert again.status_code == 303
+    assert TOO_LARGE in page_text(told)
+
+
+def test_a_list_past_the_ceiling_is_a_kind_of_refused_post() -> None:
+    """The class alone: what a press does with one is in the tests above."""
     assert issubclass(screenshot_page.ListTooLarge, screenshot_page.PostRefused)
 
 
@@ -2050,15 +2152,24 @@ def test_a_digest_posted_as_a_value_is_refused_beside_none_apply_too(
     assert before == after
 
 
+@pytest.mark.parametrize("prefix", ["correct:", "refused:"])
+@pytest.mark.parametrize("placed", ["before the typing", "after the typing"])
 @pytest.mark.parametrize(
     ("way", "press", "status"),
     [("closed", "save", 200), ("busy", "keep", 503), ("absent", "save", 404)],
 )
 def test_a_field_too_deep_to_name_a_correction_is_passed_over(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, way: str, press: str, status: int
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    way: str,
+    press: str,
+    status: int,
+    placed: str,
+    prefix: str,
 ) -> None:
     """The pages that give typing back read it from the post alone, before anything has checked it:
-    a name that can't name a correction is passed over, and the typing beside it comes back."""
+    a name that can't name a correction is passed over wherever it is in the post, and the typing
+    beside it comes back."""
 
     def busy(*_: object, **__: object) -> None:
         raise StoreBusy
@@ -2066,7 +2177,9 @@ def test_a_field_too_deep_to_name_a_correction_is_passed_over(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
-        fields = [*page_post(page, press, typed={box: TYPED}), (f"correct:{DEEP}", "other words")]
+        typed = page_post(page, press, typed={box: TYPED})
+        deep = (f"{prefix}{DEEP}", "other words")
+        fields = [deep, *typed] if placed == "before the typing" else [*typed, deep]
         drafts = state_of(browser).import_drafts
         target = draft_id
         if way == "closed":
@@ -2083,6 +2196,7 @@ def test_a_field_too_deep_to_name_a_correction_is_passed_over(
 
     assert answer.status_code == status
     assert TYPED in html.unescape(answer.text)
+    assert "other words" not in html.unescape(answer.text)
 
 
 # ------------------------------------------------------------------ one question's rows and words

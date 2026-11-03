@@ -122,7 +122,8 @@ class ReviewPost:
 
     @property
     def refused(self) -> bool:
-        """Whether the press is refused whole for a box it can't take as posted."""
+        """Whether the press is refused whole for what it posted: a box it can't take as posted, a
+        choice beside "None of these apply", or a kept row that isn't on the record."""
         return bool(self.too_long or self.needed or self.both or self.conflicted or self.unresolved)
 
 
@@ -243,8 +244,8 @@ def _signed_fields(items: Sequence[tuple[str, str]], page_key: bytes) -> dict[st
 
 
 def _signed_asks(hidden: Mapping[str, str]) -> tuple[dict[str, frozenset[str]], bool]:
-    """The signed list these fields hold, or refused for a list no page writes, a list past its
-    ceiling among them (``ListTooLarge``)."""
+    """The signed list these fields hold. A list that can't be read raises ``PostRefused``, and a
+    list past its ceiling raises ``ListTooLarge``."""
     try:
         return asks_read(hidden["asked"])
     except (ValueError, TypeError, KeyError, IndexError, RecursionError) as error:
