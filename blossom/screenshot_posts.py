@@ -20,6 +20,7 @@ from typing import Final, NamedTuple
 
 from blossom.screenshot_page import (
     INSTRUCTIONS_ASKED,
+    PostRefused,
     asks_read,
     page_check,
     same_signature,
@@ -75,11 +76,6 @@ ANSWER_KINDS: Final = frozenset(
 )
 SIGNED: Final = ("version", "progress_revision", "acceptance", "asked", "defaults", "identity")
 """The review form's signed fields, besides each group's ``digest:{unit}``, in its order."""
-
-
-class PostRefused(Exception):
-    """A post that doesn't match what its page signed, or asks what the page didn't: nothing of
-    it is kept."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -247,7 +243,8 @@ def _signed_fields(items: Sequence[tuple[str, str]], page_key: bytes) -> dict[st
 
 
 def _signed_asks(hidden: Mapping[str, str]) -> tuple[dict[str, frozenset[str]], bool]:
-    """The signed list these fields hold, or refused for a list no page writes."""
+    """The signed list these fields hold, or refused for a list no page writes, a list past its
+    ceiling among them (``ListTooLarge``)."""
     try:
         return asks_read(hidden["asked"])
     except (ValueError, TypeError, KeyError, IndexError, RecursionError) as error:

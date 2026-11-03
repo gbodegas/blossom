@@ -914,6 +914,19 @@ INSTRUCTIONS_ASKED: Final = "answer:instructions:"
 """What starts the name of an instruction question's field."""
 DIGEST_LENGTH: Final = 32
 """The hex characters of an instruction option's SHA-256 the signed list holds."""
+ASKS_MOST_BYTES: Final = 1_073_741_824
+"""The most a signed list may come to once unpacked. A list past it is refused whole. This limits
+the bytes unpacked, not the memory or the time it takes to read what they hold."""
+
+
+class PostRefused(Exception):
+    """A post that doesn't match what its page signed, or asks what the page didn't: nothing of
+    it is kept."""
+
+
+class ListTooLarge(PostRefused):
+    """A post whose signed list comes to more than ``ASKS_MOST_BYTES`` once unpacked. It's refused
+    as any other is, and only the press that gets it says why."""
 
 
 def kept_ref(sequence: int) -> str:
@@ -948,18 +961,26 @@ def asks_text(asks: Iterable[tuple[str, Sequence[str]]]) -> str:
 
 def asks_read(text: str) -> tuple[dict[str, frozenset[str]], bool]:
     """A signed list whose signature has passed, by question, with whether its page is of the shape
-    before, whose list and instruction options hold the words themselves. ``ValueError``,
-    ``TypeError``, ``KeyError`` or ``IndexError`` for anything else, and ``RecursionError`` for one
-    nested too deep."""
+    before, whose list and instruction options hold the words themselves. ``ListTooLarge`` for a
+    list past ``ASKS_MOST_BYTES`` as it unpacks, and nothing parses that one; a list of the shape
+    before is as long as the post that carries it. ``ValueError``, ``TypeError``, ``KeyError`` or
+    ``IndexError`` for anything else, and ``RecursionError`` for one nested too deep."""
     if text.startswith("["):
         return {str(f): frozenset(json.loads(v)) for f, v in json.loads(text)}, True
     if not text.startswith(ASKS_SHAPE):
         raise ValueError(text[: len(ASKS_SHAPE)])
     packed = text.removeprefix(ASKS_SHAPE)
+    inflating = zlib.decompressobj()
     try:
-        body = zlib.decompress(base64.urlsafe_b64decode(packed + "=" * (-len(packed) % 4)))
+        body = inflating.decompress(
+            base64.urlsafe_b64decode(packed + "=" * (-len(packed) % 4)), ASKS_MOST_BYTES + 1
+        )
     except zlib.error as error:
         raise ValueError(str(error)) from error
+    if len(body) > ASKS_MOST_BYTES:
+        raise ListTooLarge
+    if not inflating.eof or inflating.unused_data:
+        raise ValueError(text[: len(ASKS_SHAPE)])
     found = json.loads(body)
     lists = [frozenset(str(v) for v in values) for values in found["lists"]]
     return {str(name): lists[index] for name, index in found["asks"]}, False

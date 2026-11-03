@@ -55,10 +55,14 @@ from tests.support import (
 MOST_FIELDS: Final = 200_000
 MOST_BYTES: Final = 139_952_128
 MOST_IN_A_FIELD: Final = 139_952_128
+MOST_UNPACKED: Final = 1_073_741_824
 """The limits every post to a review's route is read within, as literal numbers, so a test holds a
 limit that changes rather than reading it from the code."""
 LOOPBACK: Final = "127.0.0.1:8781"
 FORM: Final = {"content-type": "application/x-www-form-urlencoded"}
+TOO_LARGE: Final = (
+    "This review is too large for Blossom to process. Nothing was kept or saved by this attempt."
+)
 TYPED: Final = "Typed words to keep."
 TYPED_INSTRUCTION: Final = "Typed words to keep. In the Instructions box."
 START: Final = date(2026, 10, 8)
@@ -1165,13 +1169,48 @@ def held_after(presses: Presses, saves: Sequence[int]) -> list[int]:
 # ------------------------------------------------------------------ what a signed form holds
 
 
-def unpacked(asked: str) -> dict[str, Any]:
-    """The signed list a page wrote, read here rather than by the code it tests."""
+def stream_of(asked: str) -> bytes:
+    """The compressed stream a signed list holds, read here rather than by the code it tests."""
     assert asked.startswith("z1."), asked[:40]
     text = asked.removeprefix("z1.")
-    body = zlib.decompress(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
-    found: dict[str, Any] = json.loads(body)
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def list_of_stream(stream: bytes) -> str:
+    """A signed list holding this stream, whatever it is."""
+    return "z1." + base64.urlsafe_b64encode(stream).decode().rstrip("=")
+
+
+def unpacked_bytes(asked: str) -> bytes:
+    return zlib.decompress(stream_of(asked))
+
+
+def unpacked(asked: str) -> dict[str, Any]:
+    """The signed list a page wrote, read here rather than by the code it tests."""
+    found: dict[str, Any] = json.loads(unpacked_bytes(asked))
     return found
+
+
+def a_list_of_exactly(asked: str, size: int) -> str:
+    """This page's signed list with one long string added, so it comes to exactly this many bytes
+    once unpacked."""
+    found = unpacked(asked)
+    lists = json.dumps(found["lists"], separators=(",", ":"))[1:-1]
+    asks = json.dumps(found["asks"], separators=(",", ":"))[1:-1]
+    head = f'{{"lists":[{lists},["'.encode()
+    tail = f'"]],"asks":[{asks}]}}'.encode()
+    packing = zlib.compressobj(9)
+    parts = [packing.compress(head)]
+    left = size - len(head) - len(tail)
+    block = b"a" * (1024 * 1024)
+    for _ in range(left // len(block)):
+        parts.append(packing.compress(block))
+    parts += [
+        packing.compress(b"a" * (left % len(block))),
+        packing.compress(tail),
+        packing.flush(),
+    ]
+    return list_of_stream(b"".join(parts))
 
 
 def signed_again(

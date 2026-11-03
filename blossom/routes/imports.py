@@ -39,6 +39,8 @@ from blossom.routes.store_refusals import busy_file as busy_file
 from blossom.screenshot_page import (
     NEEDED,
     ImageName,
+    ListTooLarge,
+    PostRefused,
     RowsShown,
     answer_field,
     change_said,
@@ -53,7 +55,6 @@ from blossom.screenshot_page import (
 from blossom.screenshot_page import SAID as PAGE_SAID
 from blossom.screenshot_posts import (
     PROGRESS_SHAPE,
-    PostRefused,
     ReviewPost,
     kept_assignments,
     progress_read,
@@ -1536,6 +1537,10 @@ PRESS_SAID: Final = {
         "and press again."
     ),
     "nothing_kept": "Nothing was kept or saved.",
+    "too_large": (
+        "This review is too large for Blossom to process. Nothing was kept or saved by this "
+        "attempt."
+    ),
     "save_invalid": (
         "Some of these questions changed before you answered, so nothing was kept or saved. "
         "Answer them again."
@@ -1750,7 +1755,8 @@ async def review_post(
 ) -> tuple[ReviewPost | None, str]:
     """The post read against what its page signed, or None when it doesn't match or the review
     has no homework to read it against, with the press it named. Kept rows are read only for a post
-    its page signed. Anything in it nested too deep to read doesn't match either."""
+    its page signed. Anything in it nested too deep to read doesn't match either. A signed list past
+    its ceiling is left for the caller to answer (``ListTooLarge``)."""
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
@@ -1763,6 +1769,8 @@ async def review_post(
             return read_change(items, found.page_key, review, saved), "keep"
         kept = await kept_words(state, kept_assignments(items, found.page_key))
         return read_review(items, found.page_key, review, kept), named
+    except ListTooLarge:
+        raise
     except (PostRefused, RecursionError):
         return None, named
 
@@ -1781,7 +1789,8 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     longer than its field takes keeps and saves nothing, and answers 422 with the review and
     its typing, that correction whole in its box. Whichever post this is, its form is read first,
     within this route's limits, and every later read of it gets that one, so a body past them
-    touches no store."""
+    touches no store. A press whose signed list is past its ceiling keeps nothing and says the
+    review is too large, unless a Save's receipt or an ended review has more to say."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     request = WithinBytes(request, REVIEW_FORM_BYTES)
@@ -1803,8 +1812,11 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             return await closed_on_save(request, state, draft_id, 200)
         closed = said_page(request, marks_of(state), SAID["closed"], 200)
         return await replayed(request, state, draft_id) or closed
+    too_large = False
     try:
         post, named = await review_post(request, state, found)
+    except ListTooLarge:
+        post, named, too_large = None, "save" if await save_pressed(request) else "keep", True
     except sqlite3.Error as error:
         noted(error)
         return await replayed(request, state, draft_id) or await unshown_unread(
@@ -1817,6 +1829,8 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         ended = await ended_under_save(request, state, draft_id, 409) if named == "save" else None
         if ended is not None:
             return ended
+        if too_large:
+            return to_review(state, draft_id, [PRESS_SAID["too_large"]])
         refused = {"save": "save_invalid", "later": "later_invalid"}.get(named, "keep_invalid")
         return to_review(state, draft_id, [PRESS_SAID[refused]])
     if post.refused:
@@ -2544,6 +2558,8 @@ async def saved_page(
         if post is None:
             try:
                 post, _ = await review_post(request, state, snapshot)
+            except ListTooLarge:
+                post = None
             except sqlite3.Error as error:
                 noted(error)
                 return await saved_busy(request, state, draft_id, lines)

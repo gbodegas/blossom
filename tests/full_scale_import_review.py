@@ -21,7 +21,10 @@ from tests.import_review_cases import (
     MOST_BYTES,
     MOST_FIELDS,
     MOST_IN_A_FIELD,
+    MOST_UNPACKED,
+    TOO_LARGE,
     TYPED,
+    a_list_of_exactly,
     all_found_onto_one_row,
     as_a_browser_sends,
     at_their_limits,
@@ -56,6 +59,7 @@ from tests.import_review_cases import (
     saved_rows,
     send,
     serving,
+    signed_again,
     the_worst_page,
     units_on,
     with_a_kept_question,
@@ -79,6 +83,8 @@ FULL_SIZE_SHAPES: Final = (
     "one card, 199,900 kept of a few characters",
 )
 """The shapes of the acceptance list the default suite is too short to press."""
+FULL_SIZE_LISTS: Final = {"at the ceiling": MOST_UNPACKED, "one byte past it": MOST_UNPACKED + 1}
+"""Signed lists of one long string, by what they come to once unpacked."""
 ANSWERS: Final = {"keep": 200, "later": 303, "save": 200}
 NOT_READ: Final = "That form could not be read, so nothing was saved."
 FORTY_TWO_MB: Final = "600 saved rows, each with 1 kept of 4,000 random CJK"
@@ -377,6 +383,35 @@ def test_a_page_whose_own_press_is_past_the_field_limit_is_not_read(
     assert NOT_READ in page_text(past.text)
     assert TYPED not in past.text
     assert before == after
+
+
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+@pytest.mark.parametrize("kind", FULL_SIZE_LISTS)
+def test_a_list_of_one_long_string(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, kind: str, press: str
+) -> None:
+    """A real page's post whose signed list comes to this much once unpacked. At the ceiling the
+    press answers as it would, with its typing in its box. One byte past it, the press says the
+    review is too large, the record is as it was, and the typing is gone."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = new_rows(browser, monkeypatch, 1, 3, plain, name=True)
+        box = box_named(page, "title")
+        ticks = units_on(page)[1:2] if press == "save" else []
+        posted = page_post(page, press, typed={box: TYPED}, tick=ticks)
+        asked = a_list_of_exactly(dict(posted)["asked"], FULL_SIZE_LISTS[kind])
+        before = every_row(browser)
+        answer = send(browser, draft_id, signed_again(browser, draft_id, posted, asked))
+        after = every_row(browser)
+        shown = followed(browser, answer)
+
+    if kind == "at the ceiling":
+        assert answer.status_code == ANSWERS[press], page_text(shown)[:300]
+        assert in_its_box(shown, box) == TYPED
+    else:
+        assert answer.status_code == 303
+        assert before == after
+        assert in_its_box(shown, box) != TYPED
+        assert TOO_LARGE in page_text(shown)
 
 
 PASTES: Final = [("a", "title"), ("&", "title"), ("a", "due")]

@@ -8,9 +8,10 @@ by its row, new words stay in their checkbox with a digest in the signed list, a
 list of options is signed once, packed. The route reads every post within fixed limits of its own,
 on fields, on one field's bytes and on all its bytes, an offer or a found row as much as a press,
 and every other route keeps the parser's defaults. Past a limit a post isn't read: it says nothing
-was saved, and what it typed is gone. Sizes here are bytes as sent, as the parser counts them, and
-there are no time assertions at any size. The largest pages run by name, in
-``tests/full_scale_import_review.py``.
+was saved, and what it typed is gone. A signed list has a ceiling of its own once unpacked, and a
+press whose list is past it is refused whole, saying the review is too large. Sizes here are bytes
+as sent, as the parser counts them, and there are no time assertions at any size. The largest pages
+run by name, in ``tests/full_scale_import_review.py``.
 """
 
 import asyncio
@@ -44,11 +45,14 @@ from tests.import_review_cases import (
     MOST_BYTES,
     MOST_FIELDS,
     MOST_IN_A_FIELD,
+    MOST_UNPACKED,
+    TOO_LARGE,
     TYPED,
     Fields,
     Made,
     Presses,
     a_found_row_s_post,
+    a_list_of_exactly,
     add_kept,
     all_found_onto_one_row,
     an_offer_s_post,
@@ -70,6 +74,7 @@ from tests.import_review_cases import (
     instructions_answered,
     kept_words_on_record,
     largest_a_page_makes,
+    list_of_stream,
     new_rows,
     on_record,
     open_settings,
@@ -86,9 +91,11 @@ from tests.import_review_cases import (
     serving,
     signed_again,
     sizes_as_sent,
+    stream_of,
     the_worst_page,
     units_on,
     unpacked,
+    unpacked_bytes,
     with_a_kept_question,
     worded_options,
     written_as_the_older_form,
@@ -258,7 +265,11 @@ def test_the_acceptance_list_is_whole() -> None:
         "test_ticks_under_the_longest_name_up_to_137_mb",
         "test_a_paste_with_room_comes_back_whole_and_can_be_pressed",
         "test_a_paste_at_the_byte_limit_comes_back_on_a_page_whose_own_press_is_past_it",
+        "test_a_list_of_one_long_string",
     }
+    assert tuple(full_scale_import_review.FULL_SIZE_LISTS) == ("at the ceiling", "one byte past it")
+    list_marks = getattr(full_scale_import_review.test_a_list_of_one_long_string, "pytestmark", [])
+    assert ("kind", full_scale_import_review.FULL_SIZE_LISTS) in [m.args for m in list_marks]
 
 
 def test_the_module_that_runs_by_name_isnt_collected() -> None:
@@ -315,6 +326,7 @@ def test_the_limits_are_these_numbers() -> None:
     assert imports.REVIEW_FORM_FIELDS == MOST_FIELDS == 200_000
     assert imports.REVIEW_FORM_BYTES == MOST_BYTES == 139_952_128
     assert imports.REVIEW_FIELD_BYTES == MOST_IN_A_FIELD == MOST_BYTES
+    assert screenshot_page.ASKS_MOST_BYTES == MOST_UNPACKED == 1_073_741_824
 
 
 # ------------------------------------------------------------------ kept instructions by their rows
@@ -1514,10 +1526,345 @@ def test_signed_garbage_is_refused(
     assert before == after
 
 
-# ------------------------------------------------------------------ nested too deep to read
+# ------------------------------------------------------------------ the signed list's ceiling
 
+INVALID: Final = {
+    "keep": imports.PRESS_SAID["keep_invalid"],
+    "later": imports.PRESS_SAID["later_invalid"],
+    "save": imports.PRESS_SAID["save_invalid"],
+}
+"""What each press says of a post that doesn't match its page, which isn't what a list past the
+ceiling is told."""
 DEEP: Final = "[" * 200_000
 """Nesting past what the JSON parser can read, as a name, a value or a whole list."""
+
+
+def times_parsed(monkeypatch: pytest.MonkeyPatch, body: bytes) -> list[bytes]:
+    """Each time the JSON parser is handed these bytes, from here on."""
+    seen: list[bytes] = []
+    real = json.loads
+
+    def noted(text: Any, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  (passed on as it is)
+        if isinstance(text, bytes) and text == body:
+            seen.append(text)
+        return real(text, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", noted)
+    return seen
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_list_at_the_ceiling_is_read_and_one_byte_past_it_is_not(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The ceiling set around this page's own list, through a real press. One byte past it the list
+    is never parsed, the press says the review is too large and nothing else of it, the record is
+    as it was, and the typing is gone. At it, the press answers as it would, with the typing in its
+    box."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        box = box_named(page, "title")
+        ticks = units_on(page)[1:2] if press == "save" else []
+        posted = page_post(page, press, typed={box: TYPED}, tick=ticks)
+        body = unpacked_bytes(dict(posted)["asked"])
+        parsed = times_parsed(monkeypatch, body)
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", len(body) - 1)
+        before = every_row(browser)
+        past = send(browser, draft_id, posted)
+        after = every_row(browser)
+        parsed_past_it = len(parsed)
+        told = followed(browser, past)
+        progress = on_record(browser, draft_id).progress
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", len(body))
+        at = send(browser, draft_id, posted)
+        shown = followed(browser, at)
+
+    assert past.status_code == 303
+    assert parsed_past_it == 0
+    assert before == after
+    assert TOO_LARGE in page_text(told)
+    assert INVALID[press] not in page_text(told)
+    assert in_its_box(told, box) != TYPED
+    assert TYPED not in progress
+    assert at.status_code == ANSWERS[press]
+    assert parsed
+    assert in_its_box(shown, box) == TYPED
+
+
+def test_a_page_past_the_ceiling_is_refused_each_time_it_s_pressed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ceiling below a page's own list: the page each press comes back to writes the same list,
+    so the next press is refused too, with the same line and the record as it was."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        before = every_row(browser)
+        statuses = []
+        for _ in range(3):
+            answer = send(browser, draft_id, page_post(page, "keep"))
+            statuses.append(answer.status_code)
+            page = followed(browser, answer)
+        after = every_row(browser)
+
+    assert statuses == [303, 303, 303]
+    assert before == after
+    assert TOO_LARGE in page_text(page)
+
+
+def test_a_list_past_the_ceiling_is_refused_as_any_post_is() -> None:
+    """Every catch that refuses a post refuses this one too, whichever read of it meets it first."""
+    assert issubclass(screenshot_page.ListTooLarge, screenshot_page.PostRefused)
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_list_that_can_t_be_read_keeps_the_words_it_had(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The sentence is for a list past the ceiling alone, not for garbage under a good signature."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        ticks = units_on(page)[1:2] if press == "save" else []
+        fields = page_post(page, press, tick=ticks)
+        answer = send(browser, draft_id, signed_again(browser, draft_id, fields, "z1.AAAA"))
+        said = page_text(followed(browser, answer))
+
+    assert answer.status_code == 303
+    assert INVALID[press] in said
+    assert TOO_LARGE not in said
+
+
+@pytest.mark.parametrize("typed", [False, True], ids=["no typing", "with typing"])
+def test_a_save_that_committed_resent_past_the_ceiling_shows_its_saved_result(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, typed: bool
+) -> None:
+    """On a review left open. Its receipt comes before anything about its list, and the read of its
+    post that comes after the receipt treats this as a post it can't show."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        box = box_named(page, "title", 1)
+        posted = page_post(
+            page, "save", tick=units_on(page)[:1], typed={box: TYPED} if typed else {}
+        )
+        first = send(browser, draft_id, posted)
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        before = every_row(browser)
+        again = send(browser, draft_id, posted)
+        after = every_row(browser)
+        shown = followed(browser, again)
+
+    said = page_text(shown)
+    assert first.status_code == 200
+    assert "Saved: 1 new assignment." in said
+    assert TOO_LARGE not in said
+    assert INVALID["save"] not in said
+    assert imports.COUNTS_UNSHOWN not in said
+    assert imports.REVIEW_NOT_SHOWN not in said
+    assert before == after
+    assert not typed or TYPED in html.unescape(shown)
+
+
+def test_a_save_that_closed_its_review_resent_past_the_ceiling_shows_its_saved_result(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        posted = page_post(page, "save", tick=units_on(page))
+        first = send(browser, draft_id, posted)
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        before = every_row(browser)
+        again = send(browser, draft_id, posted)
+        after = every_row(browser)
+        said = page_text(followed(browser, again))
+
+    assert first.status_code == 200
+    assert "Saved: 3 new assignments." in said
+    assert TOO_LARGE not in said
+    assert INVALID["save"] not in said
+    assert before == after
+
+
+def test_an_acceptance_recorded_for_another_review_gets_this_review_s_own_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A receipt counts for the review it was recorded on: past the ceiling here, it's this review
+    that is too large, and the other review's counts aren't said."""
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = a_small_page(browser, monkeypatch)
+        posted = page_post(page, "save", tick=units_on(page)[:1])
+        assert send(browser, earlier, posted).status_code == 200
+        acceptance = dict(posted)["acceptance"]
+        draft_id, page = read_review(browser, monkeypatch, (images(2)[1], plain(1, 3)))
+        fields = [
+            (name, acceptance if name == "acceptance" else value)
+            for name, value in page_post(page, "save", tick=units_on(page)[:1])
+        ]
+        signed = signed_again(browser, draft_id, fields, dict(fields)["asked"])
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        before = every_row(browser)
+        answer = send(browser, draft_id, signed)
+        after = every_row(browser)
+        said = page_text(followed(browser, answer))
+
+    assert answer.status_code == 303
+    assert TOO_LARGE in said
+    assert "Saved:" not in said
+    assert before == after
+
+
+def test_a_save_on_a_review_closed_as_its_list_is_refused_says_it_closed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review reads open when its list is refused, and has closed by the time the press looks
+    again: that's what's said, with the typing to copy, and not that the review is too large."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        box = box_named(page, "title")
+        posted = page_post(page, "save", typed={box: TYPED}, tick=units_on(page)[1:2])
+        drafts = state_of(browser).import_drafts
+        real = drafts.snapshot
+        reads = 0
+
+        def closing_before_its_second_read(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                fresh = sqlite3.connect(state_of(browser).settings.database_path)
+                try:
+                    fresh.execute(
+                        "UPDATE import_drafts SET closed_at = ? WHERE draft_id = ?",
+                        ("2026-10-05T12:00:00+00:00", draft_id),
+                    )
+                    fresh.commit()
+                finally:
+                    fresh.close()
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(drafts, "snapshot", closing_before_its_second_read)
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        answer = send(browser, draft_id, posted)
+
+    assert answer.status_code == 409
+    assert imports.SAID["closed"] in page_text(answer.text)
+    assert TOO_LARGE not in page_text(answer.text)
+    assert TYPED in html.unescape(answer.text)
+
+
+@pytest.mark.parametrize(
+    "make", [an_offer_s_post, a_found_row_s_post], ids=["an offer", "a found row"]
+)
+def test_an_offer_or_a_found_row_doesn_t_meet_the_ceiling(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make: Callable[[TestClient, pytest.MonkeyPatch], tuple[str, Fields]],
+) -> None:
+    """Neither holds a signed list, so with the ceiling below any list it's kept as ever. Given a
+    list anyway, it's a post whose fields aren't all signed, and says so."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, fields = make(browser, monkeypatch)
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 1)
+        given_a_list = [*fields, ("asked", screenshot_page.asks_text([("answer:kind:x", ["a"])]))]
+        refused = send(browser, draft_id, given_a_list)
+        refused_said = page_text(followed(browser, refused))
+        kept = send(browser, draft_id, fields)
+
+    assert refused.status_code == 303
+    assert INVALID["keep"] in refused_said
+    assert TOO_LARGE not in refused_said
+    assert kept.status_code == 200
+    assert TOO_LARGE not in page_text(kept.text)
+
+
+def test_a_list_a_few_bytes_long_at_the_ceiling_is_exactly_that_long() -> None:
+    """The long string that takes a list to the ceiling at full size, held at a small size."""
+    asked = screenshot_page.asks_text([("answer:kind:x", ["HOMEWORK", "TASK"])])
+    made = a_list_of_exactly(asked, 5_000_000)
+    assert len(unpacked_bytes(made)) == 5_000_000
+    assert screenshot_page.asks_read(made)[0]["answer:kind:x"] == frozenset({"HOMEWORK", "TASK"})
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_list_its_page_didnt_sign_is_never_unpacked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """No check, a wrong check, a short check, or the page's own check over another list."""
+    unpacking = 0
+
+    def no_unpacking(*_: object) -> None:
+        nonlocal unpacking
+        unpacking += 1
+        raise AssertionError
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        ticks = units_on(page)[1:2] if press == "save" else []
+        posted = page_post(page, press, tick=ticks)
+        another = list_of_stream(zlib.compress(b" " * (1024 * 1024)))
+        without = [field for field in posted if field[0] != "check"]
+        posts = [
+            without,
+            [*without, ("check", "0" * 64)],
+            [*without, ("check", "0")],
+            [(name, another if name == "asked" else value) for name, value in posted],
+        ]
+        before = every_row(browser)
+        monkeypatch.setattr(zlib, "decompressobj", no_unpacking)
+        answers = [send(browser, draft_id, post).status_code for post in posts]
+        after = every_row(browser)
+
+    assert answers == [303, 303, 303, 303]
+    assert unpacking == 0
+    assert before == after
+
+
+def test_a_signed_list_is_unpacked_through_the_ceiling(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What keeps the test above honest: a press its page signed does reach the unpacking."""
+    unpacking = 0
+    real = zlib.decompressobj
+
+    def counted() -> Any:  # noqa: ANN401  (zlib's own object, passed on as it is)
+        nonlocal unpacking
+        unpacking += 1
+        return real()
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        monkeypatch.setattr(zlib, "decompressobj", counted)
+        answer = send(browser, draft_id, page_post(page, "keep"))
+
+    assert answer.status_code == 200
+    assert unpacking >= 1
+
+
+STREAM_CHANGES: Final[dict[str, Callable[[bytes], bytes]]] = {
+    "cut in its body": lambda stream: stream[: len(stream) // 2],
+    "its last checksum byte gone": lambda stream: stream[:-1],
+    "its checksum gone": lambda stream: stream[:-4],
+    "its checksum wrong": lambda stream: stream[:-1] + bytes([stream[-1] ^ 1]),
+    "a trailing byte": lambda stream: stream + b"\0",
+    "a second stream after it": lambda stream: stream + zlib.compress(b"[]"),
+    "empty": lambda _: b"",
+}
+"""A real list's stream, changed in ways no page writes: whole bodies among them, so what refuses
+each is the stream's own state and not the JSON it holds."""
+
+
+@pytest.mark.parametrize("change", STREAM_CHANGES)
+def test_a_list_whose_stream_isnt_whole_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        fields = page_post(page, "keep")
+        asked = list_of_stream(STREAM_CHANGES[change](stream_of(dict(fields)["asked"])))
+        before = every_row(browser)
+        answer = send(browser, draft_id, signed_again(browser, draft_id, fields, asked))
+        after = every_row(browser)
+
+    assert answer.status_code == 303
+    assert before == after
 
 
 TOO_DEEP_LISTS: Final = {
@@ -1544,17 +1891,52 @@ def test_a_list_nested_too_deep_is_refused(
             browser, draft_id, signed_again(browser, draft_id, fields, TOO_DEEP_LISTS[deep])
         )
         after = every_row(browser)
+        said = page_text(followed(browser, answer))
 
     assert answer.status_code == 303
     assert before == after
+    assert INVALID[press] in said
+    assert TOO_LARGE not in said
 
 
-@pytest.mark.parametrize("deep", TOO_DEEP_LISTS)
-def test_reading_a_post_refuses_a_list_nested_too_deep(deep: str) -> None:
+@pytest.mark.parametrize(
+    "asked",
+    [
+        *(
+            list_of_stream(change(zlib.compress(b'{"lists":[],"asks":[]}')))
+            for change in STREAM_CHANGES.values()
+        ),
+        *TOO_DEEP_LISTS.values(),
+    ],
+    ids=[*STREAM_CHANGES, *TOO_DEEP_LISTS],
+)
+def test_reading_a_post_refuses_a_list_no_page_writes(asked: str) -> None:
     """Read directly, since in a press the lookup before it refuses these first."""
-    items = [*signed_by(PAGE_KEY, TOO_DEEP_LISTS[deep]), ("press", "keep")]
-    with pytest.raises(screenshot_posts.PostRefused):
+    items = [*signed_by(PAGE_KEY, asked), ("press", "keep")]
+    with pytest.raises(screenshot_page.PostRefused):
         screenshot_posts.read_review(items, PAGE_KEY, cast(ReviewState, None), {})
+
+
+def test_reading_a_post_its_page_didnt_sign_never_unpacks_its_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read directly, since in a press the lookup before it refuses the post first."""
+    unpacking = 0
+
+    def no_unpacking(*_: object) -> None:
+        nonlocal unpacking
+        unpacking += 1
+        raise AssertionError
+
+    monkeypatch.setattr(zlib, "decompressobj", no_unpacking)
+    asked = list_of_stream(zlib.compress(b'{"lists":[],"asks":[]}'))
+    items = [(n, "0" * 64 if n == "check" else v) for n, v in signed_by(PAGE_KEY, asked)]
+    with pytest.raises(screenshot_page.PostRefused):
+        screenshot_posts.read_review(
+            [*items, ("press", "keep")], PAGE_KEY, cast(ReviewState, None), {}
+        )
+
+    assert unpacking == 0
 
 
 def a_post_asking_too_deep(
@@ -1612,9 +1994,12 @@ def test_a_form_nested_too_deep_beside_a_list_that_reads_is_refused(
         before = every_row(browser)
         answer = send(browser, draft_id, posted)
         after = every_row(browser)
+        said = page_text(followed(browser, answer))
 
     assert answer.status_code == 303
     assert before == after
+    assert INVALID["keep"] in said
+    assert TOO_LARGE not in said
 
 
 @pytest.mark.parametrize(
