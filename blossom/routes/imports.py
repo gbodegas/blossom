@@ -32,7 +32,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from blossom.anthropic_client import model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.household import UnreadableHouseholdSecret
-from blossom.routes.forms import FormUnreadable, fields_of, form_of
+from blossom.routes.forms import FormUnreadable, WithinBytes, fields_of, form_of
 from blossom.routes.grades import from_this_computer, grade_name_key
 from blossom.routes.navigation import week_href
 from blossom.routes.store_refusals import busy_file as busy_file
@@ -42,6 +42,7 @@ from blossom.screenshot_page import (
     RowsShown,
     answer_field,
     change_said,
+    kept_ref,
     labels_for,
     page_check,
     piece_text,
@@ -54,6 +55,7 @@ from blossom.screenshot_posts import (
     PROGRESS_SHAPE,
     PostRefused,
     ReviewPost,
+    kept_assignments,
     progress_read,
     progress_text,
     read_change,
@@ -1717,11 +1719,36 @@ def not_saved(outcome: NotSaved, answered: bool) -> list[str]:
     return [*kept, wasnt_saved(outcome.reason)]
 
 
+REVIEW_FORM_FIELDS: Final = 200_000
+"""The most fields a review press is read with."""
+REVIEW_FORM_BYTES: Final = 139_952_128
+"""The most bytes as sent a review press is read to, all its fields together: room for 600 cards of
+180 KiB, each with every box at its limit in characters of four bytes, its new instruction as the
+same words, and the longest name its tick can carry, and 28 MiB more."""
+REVIEW_FIELD_BYTES: Final = REVIEW_FORM_BYTES
+"""The most bytes as sent one field of a review press is read with: as much as the whole press."""
+
+
+async def kept_words(state: ApplicationState, wanted: frozenset[str]) -> dict[str, dict[str, str]]:
+    """The words of these assignments' kept instructions, by assignment and by the value a page
+    offers each row with, from one read. A kept row's words never change, so its row names what its
+    page showed."""
+    if not wanted:
+        return {}
+    record = state.project_state
+    found = await asyncio.to_thread(record.settled, record.school_instruction_readings, wanted)
+    return {
+        name: {kept_ref(item.sequence): item.text for item in one.kept}
+        for name, one in found.readable.items()
+    }
+
+
 async def review_post(
     request: Request, state: ApplicationState, found: DraftSnapshot
 ) -> tuple[ReviewPost | None, str]:
     """The post read against what its page signed, or None when it doesn't match or the review
-    has no homework to read it against, with the press it named."""
+    has no homework to read it against, with the press it named. Kept rows are read only for a post
+    its page signed."""
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
@@ -1732,7 +1759,8 @@ async def review_post(
     try:
         if any(name == "offer" for name, _ in items):
             return read_change(items, found.page_key, review, saved), "keep"
-        return read_review(items, found.page_key, review), named
+        kept = await kept_words(state, kept_assignments(items, found.page_key))
+        return read_review(items, found.page_key, review, kept), named
     except PostRefused:
         return None, named
 
@@ -1749,9 +1777,12 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     """The review form's three presses, and an offer or a found row posted whole: Keep these
     answers, Save selected homework and Save review for later. A press with a correction
     longer than its field takes keeps and saves nothing, and answers 422 with the review and
-    its typing, that correction whole in its box."""
+    its typing, that correction whole in its box. The form is read first, within its bounds, and
+    every later read of this press gets that one, so a body past them touches no store."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
+    request = WithinBytes(request, REVIEW_FORM_BYTES)
+    await form_of(request, most_fields=REVIEW_FORM_FIELDS, most_field_bytes=REVIEW_FIELD_BYTES)
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         found = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
@@ -1901,8 +1932,9 @@ async def with_typing(
     lines = list(said)
     ticked = post.units if post.ticked else None
     current = post.version == after.version
-    carry = bool(post.conflicted) or own is not None
-    if post.conflicted and not current:
+    refused_with_choices = bool(post.conflicted or post.unresolved)
+    carry = refused_with_choices or own is not None
+    if refused_with_choices and not current:
         lines += [PAGE_SAID["not_carried"]] if done else [OUT_OF_DATE, PAGE_SAID["not_carried"]]
     try:
         rows = await rows_of(
@@ -1915,7 +1947,7 @@ async def with_typing(
             both=post.both,
             choices=post.choices if current and carry else None,
             conflicted=post.conflicted if current else None,
-            revision=post.progress_revision if post.conflicted else None,
+            revision=post.progress_revision if refused_with_choices else None,
             own=own or frozenset(),
         )
         said_lost = await choices_said_lost(state, draft_id, post, rows, own, current)
@@ -1941,11 +1973,13 @@ async def with_typing(
             current and (rows.not_carried or not ticks_shown.issuperset(post.units))
         ):
             lines.append(PAGE_SAID["not_carried"])
+    if post.unresolved and PAGE_SAID["not_carried"] not in lines:
+        lines.append(PAGE_SAID["not_carried"])
     shown = fields_shown(rows)
     if any((key, field) in unsaved for key, field, _ in shown):
         lines.insert(len(said), PRESS_SAID["unsaved_typing"])
     if not done:
-        gives_back = post.press == "save" or post.conflicted
+        gives_back = post.press == "save" or refused_with_choices
         typed = await typing_of(request, (), shown) if gives_back else []
         return review_page(request, state, after, lines, status, rows=rows, typed=typed)
     if rows is None:
@@ -1955,19 +1989,10 @@ async def with_typing(
     return review_page(request, state, after, lines, status, rows=rows, done=told, typed=typed)
 
 
-def fields_on_the_page(rows: RowsShown) -> dict[str, set[str]]:
-    """Each answer the page's signed form asks for, with the values it offers."""
-    asked = json.loads(dict(rows.hidden)["asked"])
-    return {
-        field: set(json.loads(values)) for field, values in asked if field.startswith("answer:")
-    }
-
-
 def no_longer_offered(post: ReviewPost, rows: RowsShown) -> bool:
     """Whether a posted choice's question is on this page without that value among its options."""
-    asked = fields_on_the_page(rows)
     return any(
-        field in asked and not asked[field].issuperset(values)
+        field in rows.offered and not rows.offered[field].issuperset(values)
         for field, values in post.choices.items()
     )
 
@@ -2013,8 +2038,7 @@ async def choices_said_lost(
         if not post.withdrawn or not (post.conflicted or own is not None):
             return False
         held = await answers_held(state, draft_id)
-        asked = fields_on_the_page(rows)
-        return any(key in held and answer_field(*key) not in asked for key in post.withdrawn)
+        return any(key in held and answer_field(*key) not in rows.offered for key in post.withdrawn)
     if own is None or post.conflicted:
         return False
     held = await answers_held(state, draft_id)

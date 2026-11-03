@@ -11,10 +11,12 @@ with it as Save does. Every box of "Correct what was read" holds its field's who
 value. Every sentence the review's rows can show is in this module, in one place.
 """
 
+import base64
 import dataclasses
 import hashlib
 import hmac
 import json
+import zlib
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from typing import Final
@@ -860,6 +862,8 @@ class RowsShown:
     """Whether a choice a refused press sent has no question or option on this page."""
     beyond_its_save: bool = False
     """Whether one of them is more than its confirmed save took with its own rows and her name."""
+    offered: Mapping[str, frozenset[str]] = dataclasses.field(default_factory=dict)
+    """Each answer this page's signed form asks for, with the values its controls offer."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -902,6 +906,62 @@ def same_signature(given: str, expected: str) -> bool:
 def answer_field(kind: str, subject: str) -> str:
     """The form field an answer is posted in."""
     return f"answer:{kind}:{subject}"
+
+
+ASKS_SHAPE: Final = "z1."
+"""What starts the signed list of what a page asks. A list of the shape before it starts ``[``."""
+INSTRUCTIONS_ASKED: Final = "answer:instructions:"
+"""What starts the name of an instruction question's field."""
+DIGEST_LENGTH: Final = 32
+"""The hex characters of an instruction option's SHA-256 the signed list holds."""
+
+
+def kept_ref(sequence: int) -> str:
+    """An option's value for a kept instruction: its row, at the revision its question's subject
+    names, whose words never change. It holds no words, so a kept instruction of any length costs
+    a form the same."""
+    return f"k{sequence}"
+
+
+def signed_option(field: str, value: str) -> str:
+    """An option as the signed list holds it: new words of an instruction as their digest, and
+    anything else as it is."""
+    if field.startswith(INSTRUCTIONS_ASKED) and value.startswith('"'):
+        return hashlib.sha256(value.encode()).hexdigest()[:DIGEST_LENGTH]
+    return value
+
+
+def asks_text(asks: Iterable[tuple[str, Sequence[str]]]) -> str:
+    """The signed list of what a page asks, whose size follows its questions and not its words:
+    each distinct list of options once, each question naming one, packed into characters a form
+    sends as they are."""
+    lists: dict[tuple[str, ...], int] = {}
+    named = sorted((name, tuple(values)) for name, values in asks)
+    rows = [
+        [name, lists.setdefault(tuple(signed_option(name, v) for v in values), len(lists))]
+        for name, values in named
+    ]
+    body = json.dumps({"lists": list(lists), "asks": rows}, separators=(",", ":"))
+    packed = base64.urlsafe_b64encode(zlib.compress(body.encode(), 9)).decode().rstrip("=")
+    return ASKS_SHAPE + packed
+
+
+def asks_read(text: str) -> tuple[dict[str, frozenset[str]], bool]:
+    """A signed list whose signature has passed, by question, with whether its page is of the shape
+    before, whose list and instruction options hold the words themselves. ``ValueError``,
+    ``TypeError``, ``KeyError`` or ``IndexError`` for anything else."""
+    if text.startswith("["):
+        return {str(f): frozenset(json.loads(v)) for f, v in json.loads(text)}, True
+    if not text.startswith(ASKS_SHAPE):
+        raise ValueError(text[: len(ASKS_SHAPE)])
+    packed = text.removeprefix(ASKS_SHAPE)
+    try:
+        body = zlib.decompress(base64.urlsafe_b64decode(packed + "=" * (-len(packed) % 4)))
+    except zlib.error as error:
+        raise ValueError(str(error)) from error
+    found = json.loads(body)
+    lists = [frozenset(str(v) for v in values) for values in found["lists"]]
+    return {str(name): lists[index] for name, index in found["asks"]}, False
 
 
 # ------------------------------------------------------------------ the parts
@@ -1567,35 +1627,32 @@ def rows_shown(
     splits = tuple(
         dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(splits, len(names) + 1)
     )
-    asked_fields: list[tuple[str, str]] = [
-        (q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in names
-    ] + [(q.field, json.dumps([o[0] for o in q.options], separators=(",", ":"))) for q in splits]
+    asked_fields: list[tuple[str, Sequence[str]]] = [
+        *((q.field, [o[0] for o in q.options]) for q in names),
+        *((q.field, [o[0] for o in q.options]) for q in splits),
+    ]
     for shown_unit in shown_units:
         for block in shown_unit.blocks:
             for card in block.cards:
                 asked_fields.append(
                     (
                         answer_field("destination", card.name),
-                        json.dumps([c.value for c in card.control.choices], separators=(",", ":")),
+                        [c.value for c in card.control.choices],
                     )
                 )
                 for question in (*card.checks, *((card.type,) if card.type else ())):
-                    offered = [o[0] for o in question.options]
-                    asked_fields.append(
-                        (question.field, json.dumps(offered, separators=(",", ":")))
-                    )
+                    asked_fields.append((question.field, [o[0] for o in question.options]))
                 for box in card.boxes:
-                    asked_fields.append((box.name, "[]"))
+                    asked_fields.append((box.name, ()))
                     if box.none is not None:
-                        asked_fields.append((box.none[0], json.dumps(["none"])))
+                        asked_fields.append((box.none[0], ("none",)))
             for question in block.questions:
-                offered = [o[0] for o in question.options]
-                asked_fields.append((question.field, json.dumps(offered, separators=(",", ":"))))
+                asked_fields.append((question.field, [o[0] for o in question.options]))
     hidden = [
         ("version", str(version)),
         ("progress_revision", str(progress_revision)),
         ("acceptance", acceptance),
-        ("asked", json.dumps(sorted(asked_fields), separators=(",", ":"))),
+        ("asked", asks_text(asked_fields)),
         (
             "defaults",
             json.dumps(
@@ -1641,6 +1698,11 @@ def rows_shown(
         _first_open(names, splits, shown_units),
         not_carried=not_carried,
         beyond_its_save=beyond_its_save,
+        offered={
+            field: frozenset(values)
+            for field, values in asked_fields
+            if field.startswith("answer:")
+        },
     )
 
 
@@ -1669,7 +1731,7 @@ def _carried(
     def as_posted(
         field: str, options: tuple[tuple[str, str, bool], ...]
     ) -> tuple[tuple[str, str, bool], ...]:
-        posted = choices[field]
+        posted = frozenset(choices[field])
         offered = {value for value, _, _ in options}
         seen.add(field)
         if not offered.issuperset(posted):
@@ -1792,10 +1854,14 @@ def _dest_questions(
         subject = instruction_subject(entry.dest, list(entry.pieces), change.instructions_revision)
         got = values.get(("instructions", subject))
         chosen = set(json.loads(got)) if got else set()
-        # Each instruction travels as one JSON string in ASCII, so a browser posts it back
-        # exactly, line endings included; "none apply" is the empty value.
+        # A kept instruction travels by its row. New words travel as one JSON string in ASCII, so
+        # a browser posts them back exactly, line endings included. "None apply" is the empty value.
         options = tuple(
-            (to_wire(s.text), f"\u201c{s.text}\u201d", s.text in chosen)
+            (
+                to_wire(s.text) if s.sequence is None else kept_ref(s.sequence),
+                f"\u201c{s.text}\u201d",
+                s.text in chosen,
+            )
             for s in change.instructions_shown
         )
         out.append(

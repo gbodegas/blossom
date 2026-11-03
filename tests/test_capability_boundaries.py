@@ -134,6 +134,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
         "writing the accents in a grade report's student line"
     ),
     "uuid": "standard library",
+    "zlib": "standard library; packs the list a review page signs, and reads it back in memory",
     "zoneinfo": "standard library; resolves the household zone, backed by tzdata",
 }
 
