@@ -393,9 +393,10 @@ in a box to copy, or left out because the save read that exact value back from
 the assignment it wrote, inside its own transaction. A resent press has no such
 evidence. A file error during that read fails the save and rolls it back, and
 the save says it's saved only if its own transaction is still open just before
-it commits. A review that ends under a Save press gives the typing back to copy,
-with an earlier confirmed save's outcome first. If a save's commit and rollback
-are both refused its transaction stays open on the record's connection, and
+it commits. A review that a press of the form finds ended gives the typing back
+to copy, with an earlier confirmed save's outcome first; Keep and Save for later
+give it back exactly as sent, outer whitespace included. If a save's commit and
+rollback are both refused its transaction stays open on the record's connection, and
 whether a Save press saved can't be told from that connection. So a Save press
 that finds one, or whose acceptance read is refused, says it can't tell, with its
 typing and no rows, and the review's rows aren't made from that connection until
