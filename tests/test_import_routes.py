@@ -20211,6 +20211,63 @@ def test_no_date_on_later_with_its_rows_refused_gives_back_exactly_what_was_sent
     assert 'name="correct:' not in answer.text
 
 
+SECOND_READ_REFUSALS: Final[dict[str, Callable[..., None]]] = {
+    "a refused file": refusing_coded("SQLITE_IOERR"),
+    "a busy store": refusing(StoreBusy),
+    "a busy writer": refusing(WriterBusy),
+    "another refusal": refusing(DraftFrozen),
+}
+
+
+async def no_rows_at_all(*_: object, **__: object) -> None:
+    return None
+
+
+@pytest.mark.parametrize("refusal", list(SECOND_READ_REFUSALS))
+def test_no_date_on_later_with_no_rows_and_its_next_read_refused_answers_200(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    """Save for later committed, its rows came back empty and the next read is refused: the page
+    that says the review can't be shown, with the typing exactly as sent, at the commit's 200."""
+    words = "  next Tuesday "
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, none = words_beside_a_date_box(browser, monkeypatch, 4, words)
+        posted = page_post(reopened, "later", choose=no_date_tick(none))
+        monkeypatch.setattr(imports, "rows_of", no_rows_at_all)
+        Refusing(monkeypatch, ("ended_under_press", "snapshot", 1, SECOND_READ_REFUSALS[refusal]))
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert answer.status_code == 200
+    assert said_by(answer) == [imports.REVIEW_NOT_SHOWN]
+    assert copied(answer) == {words}
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert 'name="correct:' not in answer.text
+
+
+@pytest.mark.parametrize("refusal", list(SECOND_READ_REFUSALS))
+@pytest.mark.parametrize("arrived", ["with no rows", "with a post that doesn't match"])
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+def test_a_second_read_refused_on_any_other_path_answers_503(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, arrived: str, refusal: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, press, typed=typed_on(other))
+        if arrived == "with no rows":
+            saved_elsewhere(browser, draft_id)
+            monkeypatch.setattr(imports, "rows_of", no_rows_at_all)
+        else:
+            posted = [(name, "0" if name == "version" else value) for name, value in posted]
+        Refusing(monkeypatch, ("ended_under_press", "snapshot", 1, SECOND_READ_REFUSALS[refusal]))
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert answer.status_code == 503
+    assert imports.REVIEW_NOT_SHOWN in page_text(answer)
+    assert copied(answer) == AS_GIVEN_BACK
+
+
 @pytest.mark.parametrize(
     "moment",
     ["closed after Save for later commits", "closed at the write", "closed before the press"],

@@ -666,13 +666,16 @@ async def ended_under_press(
     draft_id: str,
     closed_status: int,
     kept: Sequence[str] = (),
+    *,
+    refused_status: int = 503,
 ) -> Response | None:
     """A press that read its review open and then found no rows or no post to read: the review read
     again, so that one that has closed or gone says so with the typing, and one the store refuses to
     read says that. Each asks first for its receipt, since a copy of the page's Save can have saved
     since its last check and finished the review, which still reads open until it's closed. A Save
     press asks the same of a review that reads open; any other press saved nothing. None when the
-    review reads open and there's no receipt to answer with."""
+    review reads open and there's no receipt to answer with. A refused read answers
+    ``refused_status``."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         now = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
@@ -682,11 +685,11 @@ async def ended_under_press(
     except (StoreBusy, WriterBusy, sqlite3.Error) as error:
         noted(error)
         return await replayed(request, state, draft_id, kept) or await unshown_with_typing(
-            request, state, draft_id, [], 503, as_sent=True
+            request, state, draft_id, [], refused_status, as_sent=True
         )
     except STORE_REFUSALS:
         return await replayed(request, state, draft_id, kept) or await unshown_with_typing(
-            request, state, draft_id, [], 503, as_sent=True
+            request, state, draft_id, [], refused_status, as_sent=True
         )
     if now.closed_at is None:
         return (
@@ -2184,7 +2187,8 @@ async def later_with_words(
     """Save for later that committed with something "No assigned date was given" set aside: the rows
     as posted, signed with the revision its commit wrote (``revision``), and what was set aside to
     copy. Where this read shows another tab saved for later since, it says the page is out of date,
-    with no confirmation, and marks a posted correction only where what's stored differs."""
+    with no confirmation, and marks a posted correction only where what's stored differs. Any read
+    after this one that's refused answers at the commit's 200."""
     moved = after.progress_revision != revision
     lines = [OUT_OF_DATE] if moved else [PRESS_SAID["later"], saved_for_later_at(state)]
     try:
@@ -2202,7 +2206,7 @@ async def later_with_words(
         noted(error)
         return await unshown_with_typing(request, state, after.draft_id, [], 200, as_sent=True)
     if rows is None:
-        ended = await ended_under_press(request, state, after.draft_id, 200)
+        ended = await ended_under_press(request, state, after.draft_id, 200, refused_status=200)
         if ended is not None:
             return ended
     return review_page(
