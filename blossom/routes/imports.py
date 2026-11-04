@@ -2023,6 +2023,28 @@ async def press_refused(
     return await unshown_with_typing(request, state, draft_id, [], 503)
 
 
+async def kept_past_empty_rows(
+    state: ApplicationState, draft_id: str, notes: Sequence[str], counted: bool
+) -> Sequence[str]:
+    """What a press's own write kept (``notes``) on a receipt's page whose rows came back empty,
+    which can't tell an ending from nothing open. One more read says the tense, as the page's own
+    read does: the past tense where it says the review ended, nothing past a close with no counts
+    (``counted``), and as it stands where it reads open or is refused. A press with no line reads
+    nothing more."""
+    if not notes:
+        return notes
+    now = await review_state_now(state, draft_id)
+    if now == "busy":
+        return notes
+    if isinstance(now, str):
+        return ended_lines(notes, saved=True)
+    if now.closed_at is not None and not counted:
+        return ()
+    if now.closed_at is None and not now.finished:
+        return notes
+    return ended_lines(notes, saved=True)
+
+
 async def with_typing(
     request: Request,
     state: ApplicationState,
@@ -2039,6 +2061,7 @@ async def with_typing(
     *,
     beside_rows: Sequence[str] = (),
     notes: Sequence[str] = (),
+    counted: bool = True,
 ) -> Response:
     """A press that saved nothing, or a save that left the review open, answers with the review as
     it stands now, the corrections it typed and the groups it ticked in the form, and an answer just
@@ -2077,8 +2100,10 @@ async def with_typing(
     nothing more, and comes back the same way with no conflict: at the page's version its choices as
     posted, and at another that they can't be shown if they aren't what the record holds or aren't
     offered, with one exception (``choices_said_lost``). Any other too long or cleared box's press,
-    with no conflict, carries nothing. What a receipt's press kept itself (``notes``) goes among its
-    lines where rows are drawn, and as it stands beneath the save's result where they aren't."""
+    with no conflict, carries nothing. What a receipt's press kept itself (``notes``) goes in the
+    page's status block, ahead of "Not saved yet", where rows are drawn, and beneath the save's
+    result, outside the problem alert, where they aren't: as it stands, or if the rows came back
+    empty as one more read has it (``kept_past_empty_rows``, ``counted``)."""
     after = read or await snapshot_keeping_typing(
         request,
         state,
@@ -2164,8 +2189,9 @@ async def with_typing(
             request, state, after, lines, status, rows=rows, typed=typed, typed_said=note
         )
     if rows is None:
+        kept_line = await kept_past_empty_rows(state, draft_id, notes, counted)
         return await saved_busy(
-            request, state, draft_id, done, ended_lines(said, saved=True), notes=notes
+            request, state, draft_id, done, ended_lines(said, saved=True), notes=kept_line
         )
     typed = await typing_of(request, saved.stored if saved else (), shown)
     told = [*done, PRESS_SAID["left_open"]] if answered else done
@@ -2638,14 +2664,15 @@ async def partly_saved(
     own: frozenset[str] | None = None,
     *,
     notes: Sequence[str] = (),
+    counted: bool = True,
 ) -> Response:
     """A save that leaves the review open: the outcome in the success style, and the rows left
     open with the corrections the press typed still in the form, marked as not saved, none of
     them stored. A caller that has just read the review passes that read (``read``), and the
     page takes it as it is. A review that expired since answers with the outcome and the typing
     to copy, and one that has finished since answers as a finished review does. What a receipt's
-    press kept itself (``notes``) goes as ``with_typing`` says, or beneath the outcome if the
-    corrections can't be read."""
+    press kept itself (``notes``, with whether that save's counts could be read: ``counted``) goes
+    as ``with_typing`` says, or beneath the outcome if the corrections can't be read."""
     after = read or await snapshot_keeping_typing(
         request, state, draft_id, said, 200, done, saved, answered
     )
@@ -2674,6 +2701,7 @@ async def partly_saved(
         unsaved,
         own,
         notes=notes,
+        counted=counted,
     )
 
 
@@ -2772,11 +2800,13 @@ async def saved_page(
     gets its typing back in the review, as the save it repeats did, its post read here when the
     caller had none. With ``rows`` false, a post that reads, or whose read is refused, gets no form:
     the counts, or that they can't be shown, that the review can't be shown, and its typing to copy
-    (``saved_busy``). What this press's own write kept (``notes``) goes apart from that earlier
-    save's result on any page here: among the press's lines where rows are drawn or a redirect leads
-    to them, as a Save's own page says it, and on any other page beneath the counts, apart from the
-    problem message. It stays as the press's reads have it, and goes as an ended review's page says
-    it where this page's own read says that. With no counts and a closed read, this page's or one
+    (``saved_busy``). What this press's own write kept (``notes``) is never among that earlier
+    save's counts. Where rows are drawn, and on the review a redirect leads to, it's in the page's
+    status block of the press's lines (``said``), ahead of "Not saved yet", as a Save's own page has
+    it. On any other page it's beneath the counts in the note style, outside the problem alert. It
+    stays as the press's reads have it, and goes as an ended review's page says it where this
+    page's own read, or the read after its rows come back empty, says that
+    (``kept_past_empty_rows``). With no counts and a closed read, this page's or one
     before it in this press (``closed_seen``), it goes unsaid, since a close deletes the review's
     answers. A review the store refuses to read can't say whether it finished: the
     counts show in the success panel with no word of that, and every correction the post typed
@@ -2865,6 +2895,7 @@ async def saved_page(
                 read=snapshot,
                 own=own,
                 notes=notes,
+                counted=bool(counts),
             )
         typed = await typing_by_press(request)
         if typed:
