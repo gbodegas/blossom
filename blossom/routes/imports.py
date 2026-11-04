@@ -2049,7 +2049,7 @@ async def with_typing(
             typed, note = tick_set_aside(post, shown), UNSHOWN_TYPED
         else:
             typed, note = await typing_of(request, (), shown), TYPED_SAID
-            if post.press != "save" and post.conflicted and post.dropped:
+            if post.press != "save" and post.dropped:
                 typed += [item for item in tick_set_aside(post, shown) if item not in typed]
                 note = UNSHOWN_TYPED
         return review_page(

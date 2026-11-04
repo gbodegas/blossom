@@ -25,7 +25,7 @@ import sqlite3
 import zlib
 from collections.abc import Callable, Sequence
 from fnmatch import fnmatch
-from typing import Any, ClassVar, Final, cast
+from typing import Any, ClassVar, Final, NamedTuple, cast
 from urllib.parse import quote_plus, urlencode
 
 import pytest
@@ -1116,46 +1116,204 @@ def test_a_row_that_cant_be_resolved_is_said(
     assert in_its_box(answer.text, box) == TYPED
 
 
-@pytest.mark.parametrize("sent", ["nothing", "the date as read"])
+WORDS_CARRIED: Final = "next Tuesday"
+ANOTHER_DATE: Final = "2026-10-03"
+THE_DATE_AS_READ: Final = "the date as read"
+BESIDE_THE_WORDS: Final[dict[str, tuple[str, list[str]]]] = {
+    "an empty box": ("", []),
+    THE_DATE_AS_READ: ("", []),
+    "another date": (ANOTHER_DATE, []),
+    "another date with a stray space": (f"{ANOTHER_DATE} ", [f"{ANOTHER_DATE} "]),
+    "a five-digit year": ("12026-10-03", ["12026-10-03"]),
+    "words in the box": ("Typed Words", ["Typed Words"]),
+}
+"""What's sent in a date box beside "No assigned date" and carried words, and what comes back of it
+on Keep or Save for later, since the box doesn't hold it exactly. The date as read comes from the
+page, and comes back too."""
+
+
+class GoneRow(NamedTuple):
+    """A review asking which kept rows apply, with words in saved progress beside another card's
+    date box."""
+
+    draft_id: str
+    page: str
+    question: str
+    tick: str
+    box: str
+    as_read: str
+    rows: list[str]
+
+
+def a_row_to_lose_beside_words(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, *, words: bool = True
+) -> GoneRow:
+    draft_id, page, question = with_a_kept_question(
+        browser, monkeypatch, cards=2, again=read_again_unsure
+    )
+    student = state_of(browser).project_state.student_id()
+    drafts = state_of(browser).import_drafts
+    now = drafts.snapshot(student, draft_id)
+    tick = next(
+        name
+        for name in fields_of(page, "none:")
+        if json.loads(name.removeprefix("none:"))[0].removeprefix("date:") not in question
+    )
+    box = f"correct:{tick.removeprefix('none:')}"
+    as_read = in_its_box(page, box)
+    assert as_read not in (None, "", ANOTHER_DATE)
+    kept = json.loads(now.progress or '{"v":4,"corrected":{},"selected":[]}')
+    piece = json.loads(tick.removeprefix("none:"))[0]
+    if words:
+        kept["corrected"].setdefault(piece, {})["assigned"] = WORDS_CARRIED
+    drafts.save_progress(
+        student, draft_id, revision=now.progress_revision, progress=json.dumps(kept)
+    )
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
+    return GoneRow(draft_id, page, question, tick, box, str(as_read), rows)
+
+
+def a_tab_saves_a_class(browser: TestClient, draft_id: str, row: str) -> None:
+    """Another tab's Save for later from a fresh load, adding a class to the row."""
+    student = state_of(browser).project_state.student_id()
+    drafts = state_of(browser).import_drafts
+    now = drafts.snapshot(student, draft_id)
+    kept = json.loads(now.progress or '{"v":4,"corrected":{},"selected":[]}')
+    kept["corrected"].setdefault(row, {})["course"] = "Other Tab Course"
+    drafts.save_progress(
+        student, draft_id, revision=now.progress_revision, progress=json.dumps(kept)
+    )
+
+
+def copies_on(page: str) -> list[str]:
+    """Every box of typing given back to copy, each as often as the page draws it."""
+    return re.findall(r'<textarea rows="2" readonly>\n(.*?)</textarea>', page, re.S)
+
+
+def signed_revision(fields: Fields) -> str:
+    return dict(fields)["progress_revision"]
+
+
+@pytest.mark.parametrize("variant", list(BESIDE_THE_WORDS))
 @pytest.mark.parametrize("press", ["keep", "later"])
-def test_a_row_that_cant_be_resolved_gives_words_beside_a_date_back_under_its_own_note(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, sent: str
+def test_a_row_that_cant_be_resolved_gives_back_what_the_tick_sets_aside_under_the_neutral_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, variant: str
 ) -> None:
     """A kept row gone before the press, with "No assigned date" ticked beside words on another
-    card: the press is refused whole, and the words come back to copy under the note it gives
-    typing."""
+    card: refused whole with nothing stored. The words come back with anything sent in the box that
+    the box doesn't hold exactly, each once, and the form signs the posted revision."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page, question = with_a_kept_question(
-            browser, monkeypatch, cards=2, again=read_again_unsure
-        )
+        gone = a_row_to_lose_beside_words(browser, monkeypatch)
+        sent, back = BESIDE_THE_WORDS[variant]
+        if variant == THE_DATE_AS_READ:
+            sent, back = gone.as_read, [gone.as_read]
+        posted = page_post(gone.page, press, choose={gone.tick: "none"}, typed={gone.box: sent})
+        delete_row(browser, gone.rows[0])
+        before = every_row(browser)
+        answer = send(browser, gone.draft_id, ticks_of(posted, gone.question, gone.rows))
+        after = every_row(browser)
+
+    said = page_text(answer.text)
+    assert answer.status_code == 422, said[:300]
+    assert NOTHING_KEPT in said
+    assert said.count(NOT_CARRIED) == 1
+    assert imports.UNSHOWN_TYPED in said
+    assert imports.TYPED_SAID not in said
+    assert sorted(copies_on(answer.text)) == sorted([*back, WORDS_CARRIED])
+    assert before == after
+    assert signed_revision(page_post(answer.text, press)) == signed_revision(posted)
+
+
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_a_row_that_cant_be_resolved_beside_words_signs_the_revision_its_page_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Another tab saves for later after the page loads. The refused page signs what that page
+    signed, so the next Save for later is told, and what the other tab saved stays."""
+    with here(open_settings(tmp_path)) as browser:
+        gone = a_row_to_lose_beside_words(browser, monkeypatch)
+        posted = page_post(gone.page, press, choose={gone.tick: "none"})
+        delete_row(browser, gone.rows[0])
+        piece = json.loads(gone.tick.removeprefix("none:"))[0]
+        row = piece.removeprefix("date:")
+        a_tab_saves_a_class(browser, gone.draft_id, row)
+        answer = send(browser, gone.draft_id, ticks_of(posted, gone.question, gone.rows))
+        told = send(browser, gone.draft_id, page_post(answer.text, "later"))
         student = state_of(browser).project_state.student_id()
-        drafts = state_of(browser).import_drafts
-        now = drafts.snapshot(student, draft_id)
-        away = next(
-            name
-            for name in fields_of(page, "none:")
-            if json.loads(name.removeprefix("none:"))[0].removeprefix("date:") not in question
-        )
-        box = f"correct:{away.removeprefix('none:')}"
-        as_read = in_its_box(page, box) if sent == "the date as read" else ""
-        kept = json.loads(now.progress or '{"v":4,"corrected":{},"selected":[]}')
-        piece = json.loads(away.removeprefix("none:"))[0]
-        kept["corrected"].setdefault(piece, {})["assigned"] = "next Tuesday"
-        drafts.save_progress(
-            student, draft_id, revision=now.progress_revision, progress=json.dumps(kept)
-        )
-        page = browser.get(f"/parent/imports/{draft_id}").text
-        rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
-        posted = page_post(page, press, choose={away: "none"}, typed={box: as_read or ""})
-        delete_row(browser, rows[0])
-        answer = send(browser, draft_id, ticks_of(posted, question, rows))
+        held = state_of(browser).import_drafts.snapshot(student, gone.draft_id).progress
+
+    assert answer.status_code == 422
+    assert signed_revision(page_post(answer.text, press)) == signed_revision(posted)
+    assert told.status_code == 409, page_text(told.text)[:300]
+    assert held is not None
+    assert json.loads(held)["corrected"][row]["course"] == "Other Tab Course"
+
+
+@pytest.mark.parametrize(
+    ("words", "stray_space", "back"),
+    [
+        (False, True, ["Typed Words "]),
+        (True, False, [WORDS_CARRIED]),
+        (True, True, ["Typed Words ", WORDS_CARRIED]),
+    ],
+    ids=["no words, a stray space", "words left unticked", "words left unticked, a stray space"],
+)
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_a_row_that_cant_be_resolved_with_nothing_set_aside_keeps_its_note_and_signature(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    words: bool,
+    stray_space: bool,
+    back: list[str],
+) -> None:
+    """With nothing "No assigned date" sets aside, it gives back what no box holds under the note
+    it gives typing, signing the posted revision."""
+    with here(open_settings(tmp_path)) as browser:
+        gone = a_row_to_lose_beside_words(browser, monkeypatch, words=words)
+        typed = {box_named(gone.page, "title"): "Typed Words "} if stray_space else {}
+        posted = page_post(gone.page, press, typed=typed)
+        delete_row(browser, gone.rows[0])
+        row = json.loads(gone.tick.removeprefix("none:"))[0].removeprefix("date:")
+        a_tab_saves_a_class(browser, gone.draft_id, row)
+        answer = send(browser, gone.draft_id, ticks_of(posted, gone.question, gone.rows))
 
     said = page_text(answer.text)
     assert answer.status_code == 422, said[:300]
     assert imports.TYPED_SAID in said
     assert imports.UNSHOWN_TYPED not in said
-    copies = re.findall(r'<textarea rows="2" readonly>\n(.*?)</textarea>', answer.text, re.S)
-    assert copies == ["next Tuesday"]
+    assert sorted(copies_on(answer.text)) == sorted(back)
+    assert signed_revision(page_post(answer.text, press)) == signed_revision(posted)
+
+
+@pytest.mark.parametrize(
+    ("variant", "back"),
+    [
+        ("an empty box", [WORDS_CARRIED]),
+        (THE_DATE_AS_READ, [WORDS_CARRIED]),
+        ("another date", []),
+        ("another date with a stray space", [f"{ANOTHER_DATE} "]),
+        ("a five-digit year", ["12026-10-03"]),
+        ("words in the box", ["Typed Words"]),
+    ],
+)
+def test_save_on_a_row_that_cant_be_resolved_keeps_its_own_reading_of_the_date_box(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, variant: str, back: list[str]
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        gone = a_row_to_lose_beside_words(browser, monkeypatch)
+        sent = gone.as_read if variant == THE_DATE_AS_READ else BESIDE_THE_WORDS[variant][0]
+        posted = page_post(gone.page, "save", choose={gone.tick: "none"}, typed={gone.box: sent})
+        delete_row(browser, gone.rows[0])
+        answer = send(browser, gone.draft_id, ticks_of(posted, gone.question, gone.rows))
+
+    said = page_text(answer.text)
+    assert answer.status_code == 422, said[:300]
+    assert imports.UNSHOWN_TYPED not in said
+    assert (imports.TYPED_SAID in said) == bool(back)
+    assert copies_on(answer.text) == back
+    assert signed_revision(page_post(answer.text, "save")) == signed_revision(posted)
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
