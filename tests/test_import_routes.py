@@ -24255,6 +24255,180 @@ def test_keep_storing_an_answer_beside_empty_counts_says_nothing_of_it_past_a_re
     assert after["answers"] == []
 
 
+def test_keep_storing_an_answer_beside_empty_counts_says_nothing_of_it_when_that_page_fails(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Timing forced: its page's own read says the review closed, and the page for empty counts
+    raises what nothing expects. The page that answers in its place says nothing of the answers
+    either."""
+    real = imports.saved_busy
+    raised: list[bool] = []
+
+    async def failing_once(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if not raised:
+            raised.append(True)
+            raise RuntimeError
+        return await real(*args, **kwargs)
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _ = a_keep_storing_an_answer_beside_a_save(browser, monkeypatch)
+        counts_unreadable(browser, monkeypatch, "empty")
+        its_page_reads_the_review("closed", browser, monkeypatch, draft_id)
+        monkeypatch.setattr(imports, "saved_busy", failing_once)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        after = review_as_stored(browser, draft_id)
+
+    assert raised
+    says_the_save_with_its_counts_unread(answer)
+    assert imports.REVIEW_NOT_SHOWN in page_text(answer)
+    says_nothing_of_kept_answers(answer)
+    assert after["answers"] == []
+
+
+THE_WRITER_OF: Final = {"keep": "keep_answers", "later": "save_for_later"}
+
+
+def a_press_that_stored_nothing(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, press: str, write: str
+) -> tuple[str, list[tuple[str, str]], str]:
+    """A Keep, or a Save for later another tab has saved past, on a page one group was saved from,
+    that stores nothing, or whose write can't tell: the review, the post and its value's field."""
+    review, page, _, _, field = back_on_a_page_saved_from(browser, monkeypatch)
+    if write == "a withdrawal alone":
+        posted = shown_post(page, press, clear=[review.confirm])
+    elif write == "an uncertain write":
+        value = next(value for value, shown in options_of(page, field) if not shown)
+        posted = shown_post(page, press, choose={field: value})
+    else:
+        posted = shown_post(page, press)
+    if press == "later":
+        saved_elsewhere(browser, review.draft_id)
+    return review.draft_id, posted, field
+
+
+@pytest.mark.parametrize(
+    "read", ["closed at its next read", "closed at its first read", "expired", "removed"]
+)
+@pytest.mark.parametrize("counts", ["refused", "empty"])
+@pytest.mark.parametrize(
+    "write", ["an earlier receipt alone", "a withdrawal alone", "an uncertain write"]
+)
+@pytest.mark.parametrize("press", list(THE_WRITER_OF))
+def test_a_press_that_stored_nothing_says_nothing_of_kept_answers_beside_its_counts_past_an_end(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    write: str,
+    counts: str,
+    read: str,
+) -> None:
+    """Timing forced. The earlier save's counts can't be shown, at 200, and neither that save nor a
+    read of the end says this press kept answers."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _ = a_press_that_stored_nothing(browser, monkeypatch, press, write)
+        counts_unreadable(browser, monkeypatch, counts)
+        if read == "closed at its next read":
+            no_rows_once(monkeypatch, lambda: discarded(browser, draft_id))
+        elif read == "closed at its first read":
+            after_the_store_call(
+                browser, monkeypatch, draft_id, THE_WRITER_OF[press], ended_before_the_press
+            )
+        else:
+            rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[read])
+        if write == "an uncertain write":
+            drafts = state_of(browser).import_drafts
+            real = getattr(drafts, THE_WRITER_OF[press])
+
+            def uncertain(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+                real(*args, **kwargs)
+                refusing_coded("SQLITE_IOERR")()
+
+            monkeypatch.setattr(drafts, THE_WRITER_OF[press], uncertain)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert answer.status_code == 200
+    says_the_save_with_its_counts_unread(answer)
+    says_nothing_of_kept_answers(answer)
+    assert 'name="correct:' not in answer.text
+
+
+def a_save_storing_an_answer_beside_its_receipt(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, list[tuple[str, str]], str, str]:
+    """A Save, ticking the group left, on a page one group was saved from, that changes an answer on
+    another row. Timing forced: its first look finds no receipt. The review, the post, that answer's
+    field and value."""
+    review, page, _, third, _ = back_on_a_page_saved_from(browser, monkeypatch)
+    other = next(
+        field
+        for field in fields_of(page, "answer:kind:")
+        if not third.startswith(field.removeprefix("answer:kind:")[:12])
+        and review.card[:12] not in field
+    )
+    value = next(value for value, shown in options_of(page, other) if not shown)
+    a_receipt_unseen_at_first(browser, monkeypatch)
+    posted = shown_post(page, "save", choose={other: value}, clear=["unit"], add=[("unit", third)])
+    return review.draft_id, posted, other, value
+
+
+@pytest.mark.parametrize("own", ["read as it is", "refused"])
+@pytest.mark.parametrize("read", ["closed", "expired", "removed"])
+def test_save_storing_answers_beside_its_receipt_with_no_homework_has_no_line_past_an_end(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, read: str, own: str
+) -> None:
+    """Timing forced: its homework isn't saved, its rows come back empty, the next read says the
+    review ended, and the page's own read goes as it goes or is refused. The press stored answers,
+    and this page has no line about them."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, field, value = a_save_storing_an_answer_beside_its_receipt(
+            browser, monkeypatch
+        )
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("names"))
+        refused = ("saved_page", "snapshot", 1, refusing_coded("SQLITE_IOERR"))
+        also = [refused] if own == "refused" else []
+        if read == "closed":
+            no_rows_once(monkeypatch, lambda: discarded(browser, draft_id))
+            Refusing(monkeypatch, *also)
+        else:
+            rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[read], *also)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        after = review_as_stored(browser, draft_id)
+
+    assert answer.status_code == 200
+    assert "Saved: 1 new assignment." in page_text(answer)
+    says_nothing_of_kept_answers(answer)
+    assert holds_the_answer(after, field, value) is (read != "closed")
+
+
+@pytest.mark.parametrize("receipt", [True, False], ids=["a receipt", "no receipt"])
+def test_save_storing_answers_finding_its_homework_closed_has_no_line(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, receipt: bool
+) -> None:
+    """Timing forced: another tab discards the review as this homework fails."""
+    with here(open_settings(tmp_path)) as browser:
+        if receipt:
+            draft_id, posted, _, _ = a_save_storing_an_answer_beside_its_receipt(
+                browser, monkeypatch
+            )
+        else:
+            draft_id, page, first, other = two_rows(browser, monkeypatch)
+            posted = page_post(page, "save", tick=[first], typed=typed_on(other))
+
+        def closing(*_: object, **__: object) -> NotSaved:
+            discarded(browser, draft_id)
+            return NotSaved("closed")
+
+        monkeypatch.setattr(imports, "save_homework", closing)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert imports.SAID["closed"] in page_text(answer)
+    says_nothing_of_kept_answers(answer)
+
+
 @pytest.mark.parametrize(
     ("ending", "status", "said"),
     [

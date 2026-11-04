@@ -2756,12 +2756,10 @@ async def saved_page(
             if not busy:
                 notes = ended_lines(notes, saved=True)
             if not counts:
+                if closed:
+                    notes = ()
                 return await saved_busy(
-                    request,
-                    state,
-                    draft_id,
-                    lines or [COUNTS_UNSHOWN],
-                    notes=() if closed else notes,
+                    request, state, draft_id, lines or [COUNTS_UNSHOWN], notes=notes
                 )
             try:
                 pairs = await asyncio.to_thread(
