@@ -25350,7 +25350,7 @@ def test_save_with_nothing_ticked_reads_once_more_when_its_rows_come_back_empty(
 
     async def the_read(*args: Any) -> Any:  # noqa: ANN401
         reads.append(read)
-        now = await real(*args)
+        now: Any = await real(*args)
         if read == "finished":
             return now._replace(finished=True)
         return read if read in ("expired", "absent", "busy") else now
