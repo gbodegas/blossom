@@ -25241,6 +25241,30 @@ def test_save_with_nothing_ticked_says_its_line_beside_the_rows_a_later_look_fin
         says_nothing_of_kept_answers(answer)
 
 
+def test_save_with_nothing_ticked_says_its_line_ahead_of_what_isn_t_saved_yet(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Timing forced: a later look finds its receipt and its own read finds the review open. With a
+    title typed on a row still open, the page's lines go in the order a Save's own page has them."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, _, _, field = back_on_a_page_saved_from(browser, monkeypatch)
+        value = next(value for value, shown in options_of(page, field) if not shown)
+        title = correct_box(field.removeprefix("answer:kind:"), "title")
+        posted = shown_post(
+            page, "save", choose={field: value}, clear=["unit"], typed={title: "This Tab "}
+        )
+        a_receipt_unseen_at_first(browser, monkeypatch)
+        a_look_that_leaves_its_own_read_open(
+            "its first page read refused", browser, monkeypatch, review.draft_id
+        )
+        answer = send(browser, review.draft_id, posted)
+        monkeypatch.undo()
+
+    text = page_text(answer)
+    assert 'name="correct:' in answer.text
+    assert text.index(KEPT_SHORT) < text.index(imports.PRESS_SAID["unsaved_typing"])
+
+
 async def no_rows_to_show(*_: object, **__: object) -> None:
     """The rows come back empty."""
 
