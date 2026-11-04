@@ -1865,8 +1865,9 @@ def test_a_list_past_the_ceiling_is_said_as_a_problem(
 def test_a_press_that_isnt_a_save_gets_no_saved_result_past_the_ceiling(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
-    """Keep or Later from the page a Save was pressed from: its id has that Save's receipt, which
-    only a Save shows. It says the review is too large, and no counts."""
+    """Keep or Later from the page a Save was pressed from, with every read answered: its id has
+    that Save's receipt, which this press doesn't look for. It says the review is too large, and no
+    counts."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         saved = page_post(page, "save", tick=units_on(page)[:1])

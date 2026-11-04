@@ -76,6 +76,7 @@ from blossom.stores.import_drafts import (
 )
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from blossom.uploads import as_new_image, prepare_image
+from tests.import_review_cases import every_row
 from tests.support import (
     ARRIVAL_CUE,
     HERS,
@@ -22973,16 +22974,42 @@ def test_a_limit_a_post_past_its_ceiling_with_no_confirmed_save_redirects_whatev
 def test_a_limit_a_post_past_its_ceiling_looks_for_no_earlier_save_while_the_review_can_be_read(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
-    """A limit: Keep and Save for later only come to an earlier save's page when a read is refused.
-    With every read answered, the press says the review is too large, whatever this page saved."""
+    """A limit: with every read answered, Keep and Save for later say the review is too large and
+    don't look for an earlier save. This page's save is on file, so what the page says is no
+    evidence either way. The press writes nothing, and its typing isn't given back."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page, _, other = a_saved_row(browser, monkeypatch)
+        draft_id, page, first, other = a_saved_row(browser, monkeypatch)
         posted = page_post(page, press, typed={correct_box(other, "title"): "Typed Words"})
         monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        calls = Refusing(monkeypatch)
+        before = every_row(browser)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
-        shown = followed(browser, answer)
+        after = every_row(browser)
+        landed = browser.get(answer.headers["location"])
+        fresh = sqlite3.connect(state_of(browser).settings.database_path)
+        try:
+            result = fresh.execute(
+                "SELECT kind, added FROM grade_acceptances WHERE acceptance_id = ?",
+                (dict(posted)["acceptance"],),
+            ).fetchone()
+            titles = fresh.execute(
+                "SELECT title FROM assignments WHERE course = 'English 8'"
+            ).fetchall()
+        finally:
+            fresh.close()
 
+    text = page_text(landed)
     assert answer.status_code == 303
-    assert says(shown, imports.PRESS_SAID["too_large"])
-    assert "Typed Words" not in html.unescape(shown)
+    assert said_by(landed) == [imports.PRESS_SAID["too_large"]]
+    assert imports.SAID["frozen"] in text
+    assert "Saved Sentence Composing (screenshot 1, card 1)" in text
+    assert "Saved:" not in text
+    assert box_of(review_form(landed.text), correct_box(first, "title")) is None
+    assert first not in units_on(landed.text)
+    assert TYPED_BACK.findall(landed.text) == []
+    assert "Typed Words" not in html.unescape(landed.text)
+    assert result == ("homework_screenshot", 1)
+    assert titles == [("Sentence Composing",)]
+    assert before == after
+    assert ("replayed", "homework_acceptance") not in calls.seen
