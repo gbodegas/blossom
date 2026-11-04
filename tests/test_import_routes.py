@@ -19667,6 +19667,79 @@ def test_no_date_gives_words_back_as_they_were_kept(
     assert copied(answer) == {words}
 
 
+def with_carried_text(posted: list[tuple[str, str]], text: str) -> list[tuple[str, str]]:
+    """This post with this text in place of what the page carried beside its date box, as no page
+    sends it."""
+    return [(name, text if name.startswith("refused:") else value) for name, value in posted]
+
+
+@pytest.mark.parametrize("carried", ["   ", "\u00a0"], ids=["only spaces", "a no-break space"])
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_no_date_gives_back_whitespace_carried_beside_the_box(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, carried: str
+) -> None:
+    """Whitespace alone beside the tick comes back as it was sent, under the neutral note."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, piece, none = words_beside_a_date_box(browser, monkeypatch)
+        posted = page_post(reopened, press, choose=no_date_tick(none))
+        answer = send(browser, draft_id, with_carried_text(posted, carried))
+        held = held_corrections(browser, draft_id)
+
+    assert answer.status_code == 200
+    assert copied(answer) == {carried}
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert not says(answer.text, imports.TYPED_SAID)
+    if press == "later":
+        assert held == {piece: {"assigned": None}}
+
+
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_no_date_gives_back_spaces_sent_in_the_date_box_beside_the_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The tick empties the box, so the spaces sent in it come back with the words."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, none = words_beside_a_date_box(browser, monkeypatch)
+        box = f"correct:{box_subject(reopened, 'assigned')}"
+        answer = send(
+            browser,
+            draft_id,
+            page_post(reopened, press, choose=no_date_tick(none), typed={box: "   "}),
+        )
+
+    assert answer.status_code == 200
+    assert copied(answer) == {"   ", WORDS_BESIDE}
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert box_text(answer.text, box) == ""
+
+
+@pytest.mark.parametrize(
+    ("carried", "in_the_box", "typing"),
+    [
+        ("   ", "", set()),
+        ("\u00a0", "", set()),
+        (WORDS_BESIDE, "   ", {WORDS_BESIDE}),
+    ],
+    ids=["only spaces carried", "a no-break space carried", "spaces in the box"],
+)
+def test_save_keeps_its_own_reading_of_whitespace_beside_no_date(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    carried: str,
+    in_the_box: str,
+    typing: set[str],
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, none = words_beside_a_date_box(browser, monkeypatch)
+        box = f"correct:{box_subject(reopened, 'assigned')}"
+        posted = page_post(reopened, "save", choose=no_date_tick(none), typed={box: in_the_box})
+        answer = send(browser, draft_id, with_carried_text(posted, carried))
+
+    assert copied(answer) == typing
+    assert not says(answer.text, imports.UNSHOWN_TYPED)
+    assert says(answer.text, imports.TYPED_SAID) == bool(typing)
+
+
 @pytest.mark.parametrize(("press", "status"), [("keep", 200), ("later", 303)])
 def test_no_date_with_no_words_beside_it_changes_nothing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, status: int

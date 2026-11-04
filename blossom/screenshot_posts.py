@@ -120,7 +120,7 @@ class ReviewPost:
     the record: the press is refused whole, as a conflict is, and its typing and the choices that
     can show go back."""
     dropped: tuple[tuple[str, str, str], ...] = ()
-    """What "No assigned date was given" set aside beside words carried by a date box: any date sent
+    """What "No assigned date was given" set aside beside words carried by a date box: anything sent
     in that box and those words, by key, field and the text as sent."""
 
     @property
@@ -575,7 +575,7 @@ def box_corrections(
         for (key, field), words in carried.items()
         if field == "assigned" and key in nones and key not in both
         for text in (boxes.get((key, field), ""), words)
-        if text.strip()
+        if text
     )
     return Folded(out, tuple(sorted(too_long)), tuple(sorted(needed)), tuple(sorted(both)), dropped)
 
