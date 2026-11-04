@@ -640,9 +640,10 @@ def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], .
 
 
 def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
-    """Each box's text as it was sent, whitespace kept, unless it's empty or exactly its value with
-    no correction. A box beside carried words is drawn empty, so anything in it was typed; the words
-    come back unless a date is in that box with "No assigned date was given" unticked."""
+    """Each box's text as it was sent, whitespace kept and a box of several lines with its line
+    endings made line feeds, unless it's empty or exactly its value with no correction. A box beside
+    carried words is drawn empty, so anything in it was typed; the words come back unless a date is
+    in that box with "No assigned date was given" unticked."""
     found: dict[tuple[str, str], str] = {}
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}

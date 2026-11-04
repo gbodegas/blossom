@@ -563,7 +563,8 @@ TYPED_SAID: Final = (
 UNSHOWN_TYPED: Final = (
     "What you typed, as you sent it. Copy anything you still need before leaving this page."
 )
-"""What the boxes of typing given back say first where the review is open but can't be read."""
+"""What the boxes of typing given back say first where the review can't be shown or a save's outcome
+can't be told, and for what "No assigned date was given" set aside from an open review."""
 REVIEW_NOT_SHOWN: Final = "This review can't be shown right now."
 """What a press's page says after its own lines when the store refuses to read the review."""
 REVIEW_UNAVAILABLE: Final = "This review can't be shown right now. Try again in a moment."
@@ -720,9 +721,9 @@ async def typing_of(
 async def typing_by_press(
     request: Request, stored: Iterable[tuple[str, str, str]] = ()
 ) -> list[tuple[str, str]]:
-    """What a post gives back when its review has ended under it, or can't be read after a commit:
-    on a Save press, ``typing_of``; on Keep or Save for later, every box as it was sent, whitespace
-    included (``typed_as_sent``)."""
+    """What a post gives back when its press finds the review ended, and on a page that asks for it
+    (``as_sent``) after a later read is refused: on a Save press, ``typing_of``; on Keep or Save for
+    later, every box as it was sent, whitespace included (``typed_as_sent``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -888,10 +889,10 @@ async def snapshot_keeping_typing(
     that nothing was saved; one known to have expired, or to be gone, says so beneath what it
     saved, with that the press's answers (``answered``) were kept before it ended
     (``saved_unread``); one found closed, as another tab can leave it, answers as a finished
-    review does (``saved_finished``), and on any press that committed nothing with its typing to
+    review does (``saved_finished``), and on any press with no save committed with its typing to
     copy (``closed_on_press``). Any other press the store refuses to read for answers with
     its own lines and status (``unshown_with_typing``). A file that refuses the read for any
-    reason answers as a busy store does. A Save press that committed nothing (``save_press``) asks
+    reason answers as a busy store does. A Save press with no save committed (``save_press``) asks
     for its receipt before any page that ends it, since another copy of the press can have saved
     since its last check; a commit after that last look goes unseen."""
     try:
@@ -1821,9 +1822,9 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     its typing, that correction whole in its box. Whichever post this is, its form is read first,
     within this route's limits, and every later read of it gets that one, so a body past them
     touches no store. A press whose signed list is past its ceiling keeps nothing and says the
-    review is too large, unless a Save's receipt or an ended review has more to say. A review found
-    closed, expired or gone answers with an earlier save's outcome first, then the typing to
-    copy."""
+    review is too large, unless a Save's receipt or an ended review has more to say. A review its
+    first read finds closed, expired or gone answers with an earlier save's outcome first, then the
+    typing to copy."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     request = WithinBytes(request, REVIEW_FORM_BYTES)
@@ -1957,11 +1958,13 @@ async def with_typing(
     holding it, in the save's evidence (``saved``) or in a box to copy, and two lines are said
     here, beside them: that answers are kept on the rows left open (``answered``), and that changes
     on the rows below aren't saved yet, when a box for one (``unsaved``) is among those shown. A
-    Save press that committed nothing also gives back what no box holds, as does a press refused
-    with its choices. Keep or Save for later with words "No assigned date was given" set aside gives
-    those back (``tick_set_aside``) and signs the revision its page read. Any press that committed
-    nothing, if its review has ended before its rows, says that instead of its own line, and a Save
-    press says it can't tell if a transaction was left open meanwhile. It asks for its receipt
+    Save press with no save committed also gives back what no box holds, as does a press refused
+    with its choices. Keep or Save for later gives back what "No assigned date was given" set aside,
+    the words and anything sent in the box beside them, under ``UNSHOWN_TYPED``
+    (``tick_set_aside``), and signs the revision its page read; refused with a conflict beside words
+    set aside, it says that note over what no box holds. Any press with no save committed, if its
+    review has ended before its rows, says that instead of its own line, and a Save press says it
+    can't tell if a transaction was left open meanwhile. A Save press asks for its receipt
     before any page that ends it, as ``snapshot_keeping_typing`` does. A press with an instruction
     conflict, or naming a kept row that isn't on the record (``unresolved``), comes back with its
     choices as posted while the review is at the version its page showed. At another, the review
