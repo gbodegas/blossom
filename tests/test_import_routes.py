@@ -19950,15 +19950,14 @@ def test_no_date_gives_what_it_sets_aside_back_on_a_press_that_stored_nothing(
     assert copied(answer) == typing
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert not says(answer.text, imports.TYPED_SAID)
-    if 'name="progress_revision"' in answer.text:
-        assert int(hidden_value(answer.text, "progress_revision")) == revision
+    assert int(hidden_value(answer.text, "progress_revision")) == revision
 
 
 def test_a_resend_of_no_date_on_later_loses_nothing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The same post sent again, as a browser's reload of the page sends it: the words stay held
-    nowhere but on the page, and the second press is told it is behind."""
+    nowhere but on the page, and the second press says the page is out of date."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, piece, none = words_beside_a_date_box(browser, monkeypatch)
         posted = page_post(reopened, "later", choose=no_date_tick(none))
@@ -19967,6 +19966,7 @@ def test_a_resend_of_no_date_on_later_loses_nothing(
         again = send(browser, draft_id, posted)
 
     assert again.status_code == 409
+    assert imports.OUT_OF_DATE in page_text(again)
     assert copied(again) == {WORDS_BESIDE}
     assert held is not None
     assert held[piece] == {"assigned": None}
@@ -21578,14 +21578,22 @@ def test_a_limit_a_found_row_from_an_earlier_page_redirects_and_writes_nothing(
 def test_a_found_row_whose_card_is_still_there_meets_the_version_check(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Another screenshot removed under a valid page's small form: the press says the page is out of
+    date and writes nothing, with no typing in the post to give back."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_found_row_review(browser, monkeypatch)
         pieces = fields_named(review_form(page), "answer:destination:")
         chosen = a_found_row_choice(browser, draft_id, page, pieces[0])
         removed_images(browser, draft_id, 1)
+        before = review_as_stored(browser, draft_id)
         answer = send(browser, draft_id, chosen)
+        after = review_as_stored(browser, draft_id)
 
     assert answer.status_code == 409
+    assert imports.OUT_OF_DATE in page_text(answer)
+    assert copied(answer) == set()
+    assert before == after
+    assert not any(name.startswith("correct:") for name, _ in chosen)
 
 
 @pytest.mark.parametrize(
