@@ -22886,14 +22886,66 @@ def test_an_earlier_save_with_no_post_to_read_gives_back_the_boxes_as_sent(
     says_the_save_and_gives_the_typing_back(answer, {sent})
 
 
+def an_earlier_save_on_a_reading(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, reading: str
+) -> tuple[str, str, str]:
+    """A review of two cards past her name, the second read with this instruction text and the first
+    saved from that page: the review, the page and the first row's group."""
+    draft_id, page = a_review_reading(browser, monkeypatch, INSTRUCTION_READINGS[reading])
+    first = units_on(page)[0]
+    saved = send(browser, draft_id, page_post(page, "save", tick=[first]))
+    assert "Saved: 1 new assignment." in page_text(saved)
+    return draft_id, page, first
+
+
+@pytest.mark.parametrize("reading", ["one line", "two lines"])
 @pytest.mark.parametrize("route", NO_POST_TO_READ)
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_an_earlier_save_with_no_post_to_read_and_nothing_typed_redirects(
+def test_an_earlier_save_with_no_post_to_read_redirects_when_the_exact_reader_finds_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, route: str, reading: str
+) -> None:
+    """Nothing typed, on clean readings left alone: nothing to return, so the press redirects, and
+    the review it lands on says what was saved."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _ = an_earlier_save_on_a_reading(browser, monkeypatch, reading)
+        fields = earlier_save_past_its_post(route, page_post(page, press), monkeypatch)
+        answer = send(browser, draft_id, fields)
+        monkeypatch.undo()
+        shown = followed(browser, answer)
+
+    assert answer.status_code == 303
+    assert copied(answer) == set()
+    assert says(shown, "Saved: 1 new assignment.")
+
+
+@pytest.mark.parametrize("route", NO_POST_TO_READ)
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_an_earlier_save_with_no_post_to_read_gives_back_a_padded_reading_left_alone(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, route: str
 ) -> None:
+    """A limit: a reading with whitespace at its edge is drawn whole, and the post can't tell it
+    from a typed stray space, so the exact reader finds it, and the answer is the page with one
+    box."""
+    reading = "with outer spaces"
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page, _, _ = a_saved_row(browser, monkeypatch)
+        draft_id, page, _ = an_earlier_save_on_a_reading(browser, monkeypatch, reading)
         fields = earlier_save_past_its_post(route, page_post(page, press), monkeypatch)
+        answer = send(browser, draft_id, fields)
+        monkeypatch.undo()
+
+    says_the_save_and_gives_the_typing_back(answer, {INSTRUCTION_READINGS[reading]})
+
+
+@pytest.mark.parametrize("route", NO_POST_TO_READ)
+def test_save_with_no_post_to_read_redirects_past_a_padded_reading_left_alone(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first = an_earlier_save_on_a_reading(
+            browser, monkeypatch, "with outer spaces"
+        )
+        posted = page_post(page, "save", tick=[first])
+        fields = earlier_save_past_its_post(route, posted, monkeypatch)
         answer = send(browser, draft_id, fields)
         monkeypatch.undo()
         shown = followed(browser, answer)
