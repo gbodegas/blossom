@@ -676,7 +676,8 @@ async def ended_under_press(
     since its last check and finished the review, which still reads open until it's closed. A Save
     press asks the same of a review that reads open. No other press does: it has no save of its own
     to look for, and an earlier save of its page goes unasked. None when the review reads open and
-    no receipt was asked for or found. A refused read answers ``refused_status``."""
+    no receipt was asked for or found. A refused read answers ``refused_status``, and a receipt
+    found there gives a press other than Save a page with no rows (``rows``)."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         now = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
@@ -686,13 +687,11 @@ async def ended_under_press(
         )
     except (StoreBusy, WriterBusy, sqlite3.Error) as error:
         noted(error)
-        return await replayed(request, state, draft_id, kept) or await unshown_with_typing(
-            request, state, draft_id, [], refused_status
-        )
+        recorded = await replayed(request, state, draft_id, kept, rows=await save_pressed(request))
+        return recorded or await unshown_with_typing(request, state, draft_id, [], refused_status)
     except STORE_REFUSALS:
-        return await replayed(request, state, draft_id, kept) or await unshown_with_typing(
-            request, state, draft_id, [], refused_status
-        )
+        recorded = await replayed(request, state, draft_id, kept, rows=await save_pressed(request))
+        return recorded or await unshown_with_typing(request, state, draft_id, [], refused_status)
     if now.closed_at is None:
         return (
             await replayed(request, state, draft_id, kept) if await save_pressed(request) else None
@@ -2561,12 +2560,15 @@ async def replayed(
     state: ApplicationState,
     draft_id: str,
     kept: Sequence[str] = (),
+    *,
+    rows: bool = True,
 ) -> Response | None:
     """A press resent after its review closed: the outcome its acceptance id recorded for
     this review, when it recorded one; else None, so an id recorded for another review gets
-    this one's own answer. A Save press whose read is refused, or finds a transaction left open,
-    can't tell whether it saved, and says so, with what this press kept (``kept``). Any other press
-    has no save of its own to be unsure of, so a refused read gets it its own answer."""
+    this one's own answer. With ``rows`` false, that outcome's page shows no rows. A Save press
+    whose read is refused, or finds a transaction left open, can't tell whether it saved, and says
+    so, with what this press kept (``kept``). Any other press has no save of its own to be unsure
+    of, so a refused read gets it its own answer."""
     if not opaque(draft_id):
         return None
     form = await form_of(request)
@@ -2588,7 +2590,7 @@ async def replayed(
     if recorded is None:
         return None
     own = frozenset(name for name, _ in recorded)
-    return await saved_page(request, state, draft_id, acceptance, [], own=own)
+    return await saved_page(request, state, draft_id, acceptance, [], own=own, rows=rows)
 
 
 async def saved_page(
@@ -2599,14 +2601,18 @@ async def saved_page(
     said: list[str],
     post: ReviewPost | None = None,
     own: frozenset[str] | None = None,
+    *,
+    rows: bool = True,
 ) -> Response:
     """A resent press with a confirmed receipt for this student, this review and this acceptance
     id, which every way here has: a read that found no transaction open, or the save's own read
     in a transaction that then committed. So its counts are committed rows, which no transaction
     left open since rewrites, and a plain read of them holds. That save's counts, and nothing
-    written. A review it finished says so. With the review still open, the press gets its
-    typing back in the review, as the save it repeats did, its post read here when the
-    caller had none. A review the store refuses to read can't say whether it finished: the
+    written. A review it finished says so. With the review still open and ``rows`` true, the press
+    gets its typing back in the review, as the save it repeats did, its post read here when the
+    caller had none. With ``rows`` false, a post that reads gets no form: the counts, or that
+    they can't be shown, that the review can't be shown, and its typing to copy (``saved_busy``).
+    A review the store refuses to read can't say whether it finished: the
     counts show in the success panel with no word of that, and every correction the post typed
     is given back to copy; for a busy store, with the line that the review can't be shown and
     the way back to it (``saved_busy``), and for a review known to have expired, or to be gone,
@@ -2665,6 +2671,8 @@ async def saved_page(
             except sqlite3.Error as error:
                 noted(error)
                 return await saved_busy(request, state, draft_id, lines)
+        if post is not None and not rows:
+            return await saved_busy(request, state, draft_id, lines or [COUNTS_UNSHOWN])
         if post is not None:
             return await partly_saved(
                 request, state, draft_id, post, lines or [COUNTS_UNSHOWN], read=snapshot, own=own
