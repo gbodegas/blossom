@@ -20460,8 +20460,9 @@ def test_a_page_whose_read_shows_another_tab_saved_keeps_the_ticks_as_posted(
 def test_a_limit_another_tab_saving_after_the_page_s_read_goes_unseen_until_the_next_press(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The other tab's write lands after the read and before the rows: no read sees it, so the page
-    confirms, and the form's signature still tells the next press."""
+    """Another tab's valid save lands after this press's last successful read of the review, before
+    its rows: no read sees it, so the page confirms, and the form's signature tells the next press,
+    which keeps what that tab saved."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, piece, none = words_beside_a_date_box(browser, monkeypatch)
         row = json.loads(box_subject(reopened, "title"))[0]
@@ -20480,9 +20481,13 @@ def test_a_limit_another_tab_saving_after_the_page_s_read_goes_unseen_until_the_
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
         next_press = send(browser, draft_id, page_post(answer.text, "later"))
+        held = held_corrections(browser, draft_id)
 
     assert said_by(answer)[0] == imports.PRESS_SAID["later"]
     assert next_press.status_code == 409
+    assert imports.PRESS_SAID["later_behind"] in page_text(next_press)
+    assert held is not None
+    assert held[row]["title"] == "Other Tab Title"
 
 
 def test_keep_s_page_with_the_words_tells_the_next_save_for_later(
@@ -21490,7 +21495,8 @@ def test_a_limit_an_earlier_save_with_the_review_unread_keeps_save_s_reading_of_
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, how: str
 ) -> None:
     """The first read of the review is refused, so it isn't known to have ended, and a stray space
-    on an unchanged value gets no copy on any page of the save's outcome."""
+    on an unchanged value gets no copy: its counts refused; its counts empty or readable with the
+    read on its own page refused too; and an open review when its page fails."""
 
     async def failing(*_: object, **__: object) -> None:
         raise RuntimeError(how)
