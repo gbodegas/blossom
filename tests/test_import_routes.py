@@ -24178,17 +24178,21 @@ def test_keep_storing_an_answer_says_it_was_kept_when_the_first_read_of_its_page
     assert 'name="correct:' not in answer.text
 
 
-@pytest.mark.parametrize("ending", ["closed", "expired", "removed"])
+@pytest.mark.parametrize("ending", ["closed", "closed at its first read", "expired", "removed"])
 def test_keep_storing_an_answer_says_it_was_kept_with_its_counts_refused_past_a_read_of_the_end(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ending: str
 ) -> None:
-    """The next read knows the review ended, so its counts refused read nothing more and the page
-    says the past tense."""
+    """A read before its page's knows the review ended, so its counts refused read nothing more and
+    the page says the past tense."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, _, _ = a_keep_storing_an_answer_beside_a_save(browser, monkeypatch)
         counts_unreadable(browser, monkeypatch, "refused")
         if ending == "closed":
             no_rows_once(monkeypatch, lambda: discarded(browser, draft_id))
+        elif ending == "closed at its first read":
+            after_the_store_call(
+                browser, monkeypatch, draft_id, "keep_answers", ended_before_the_press
+            )
         else:
             rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[ending])
         answer = send(browser, draft_id, posted)
@@ -24223,6 +24227,32 @@ def test_keep_storing_an_answer_beside_empty_counts_says_by_what_its_page_read(
         says_this_keep_stored_its_answers(answer)
     else:
         says_this_keep_stored_its_answers(answer, KEPT_BEFORE_IT_ENDED)
+
+
+@pytest.mark.parametrize("route", ["its next read", "its first read"])
+def test_keep_storing_an_answer_beside_empty_counts_says_nothing_of_it_past_a_read_of_the_close(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """A read before its page's saw the close, so that page's own read refused doesn't bring the
+    line back, and a connection of its own finds the answers gone."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _ = a_keep_storing_an_answer_beside_a_save(browser, monkeypatch)
+        counts_unreadable(browser, monkeypatch, "empty")
+        if route == "its next read":
+            no_rows_once(monkeypatch, lambda: discarded(browser, draft_id))
+        else:
+            after_the_store_call(
+                browser, monkeypatch, draft_id, "keep_answers", ended_before_the_press
+            )
+        Refusing(monkeypatch, ("saved_page", "snapshot", 1, refusing_coded("SQLITE_IOERR")))
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        after = review_as_stored(browser, draft_id)
+
+    says_the_save_with_its_counts_unread(answer)
+    assert imports.REVIEW_NOT_SHOWN in page_text(answer)
+    says_nothing_of_kept_answers(answer)
+    assert after["answers"] == []
 
 
 @pytest.mark.parametrize(

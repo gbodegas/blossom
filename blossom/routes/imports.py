@@ -661,11 +661,18 @@ async def closed_on_press(
 ) -> Response:
     """A press on a review closed under it: the outcome of an earlier save of this page when one is
     confirmed, its page showing the review's rows only with ``rows``; on a Save press, that it can't
-    tell, with what it kept (``kept``), when its receipt can't be read; else what this press's own
-    write kept (``notes``), as an ended review's page says it, the closed review's words and every
-    correction to copy, with nothing that reopens the review or offers a press."""
+    tell, with what it kept (``kept``), when its receipt can't be read; else the closed review's
+    words and every correction to copy, with nothing that reopens the review or offers a press.
+    What this press's own write kept (``notes``) goes on either as an ended review's page says it,
+    apart from where ``saved_page`` leaves it unsaid."""
     return await replayed(
-        request, state, draft_id, kept, rows=rows, notes=notes
+        request,
+        state,
+        draft_id,
+        kept,
+        rows=rows,
+        notes=ended_lines(notes, saved=True),
+        closed_seen=True,
     ) or await gone_with_typing(request, state, "closed", notes, status)
 
 
@@ -730,7 +737,7 @@ async def ended_under_press(
         closed_status,
         kept,
         rows=await save_pressed(request),
-        notes=ended_lines(stored, saved=True),
+        notes=stored,
     )
 
 
@@ -2640,11 +2647,13 @@ async def replayed(
     *,
     rows: bool = True,
     notes: Sequence[str] = (),
+    closed_seen: bool = False,
 ) -> Response | None:
     """A press resent after its review closed: the outcome its acceptance id recorded for
     this review, when it recorded one; else None, so an id recorded for another review gets
     this one's own answer. With ``rows`` false, that outcome's page shows no rows, and ``notes`` go
-    on any page of it that shows none. A Save press
+    on any page of it that shows none, as ``saved_page`` says, ``closed_seen`` telling it that this
+    press has already found the review closed. A Save press
     whose read is refused, or finds a transaction left open, can't tell whether it saved, and says
     so, with what this press kept (``kept``). Any other press has no save of its own to be unsure
     of, so a refused read gets it its own answer."""
@@ -2670,7 +2679,15 @@ async def replayed(
         return None
     own = frozenset(name for name, _ in recorded)
     return await saved_page(
-        request, state, draft_id, acceptance, [], own=own, rows=rows, notes=notes
+        request,
+        state,
+        draft_id,
+        acceptance,
+        [],
+        own=own,
+        rows=rows,
+        notes=notes,
+        closed_seen=closed_seen,
     )
 
 
@@ -2685,6 +2702,7 @@ async def saved_page(
     *,
     rows: bool = True,
     notes: Sequence[str] = (),
+    closed_seen: bool = False,
 ) -> Response:
     """A resent press with a confirmed receipt for this student, this review and this acceptance
     id, which every way here has: a read that found no transaction open, or the save's own read
@@ -2697,9 +2715,9 @@ async def saved_page(
     (``saved_busy``). What this press's own write kept (``notes``) goes beneath the counts on any
     page here that shows no rows, apart from that earlier save's result and from the problem
     message: as it is where no read has said the review ended, and as an ended review's page says it
-    where this page's own read says that. With no counts and a closed read it goes unsaid, since a
-    close deletes the review's answers. A review the store refuses to read can't say whether it
-    finished: the
+    where this page's own read says that. With no counts and a closed read, this page's or one
+    before it in this press (``closed_seen``), it goes unsaid, since a close deletes the review's
+    answers. A review the store refuses to read can't say whether it finished: the
     counts show in the success panel with no word of that, and every correction the post typed
     is given back to copy; for a busy store, with the line that the review can't be shown and
     the way back to it (``saved_busy``), and for a review known to have expired, or to be gone,
@@ -2719,6 +2737,8 @@ async def saved_page(
         noted_after_commit(error)
         return await saved_busy(request, state, draft_id, [*said, COUNTS_UNSHOWN], notes=notes)
     lines = [*said, counted(*counts)] if counts else said
+    if closed_seen and not counts:
+        notes = ()
     try:
         gone: list[str] = []
         busy = False
