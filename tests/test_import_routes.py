@@ -21394,6 +21394,39 @@ def test_a_limit_typing_on_a_row_another_tab_took_is_refused_with_no_copy(
     assert copied(answer) == set()
 
 
+def row_saved_in_another_tab(browser: TestClient, draft_id: str, row: str, none: str) -> None:
+    """Another tab ticks "No assigned date" beside the row's words, saves for later and saves it."""
+    tab = browser.get(f"/parent/imports/{draft_id}").text
+    send(browser, draft_id, page_post(tab, "later", choose=no_date_tick(none)))
+    tab = browser.get(f"/parent/imports/{draft_id}").text
+    unit = next(unit for unit in units_on(tab) if row in unit)
+    saved = send(browser, draft_id, page_post(tab, "save", tick=[unit]))
+    assert "Saved: 1 new assignment." in page_text(saved)
+
+
+@pytest.mark.parametrize("how", ["set aside", "its screenshot removed", "saved"])
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_a_limit_words_beside_a_date_on_one_of_two_rows_another_tab_took_get_no_copy(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, how: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, piece, none = two_cards_with_words(browser, monkeypatch)
+        row = piece.removeprefix("date:")
+        posted = page_post(reopened, press, choose=no_date_tick(none))
+        student, drafts = student_and_drafts(browser)
+        if how == "set aside":
+            version = drafts.snapshot(student, draft_id).version
+            drafts.set_aside(student, draft_id, version=version, keys=[row])
+        elif how == "its screenshot removed":
+            removed_images(browser, draft_id, 0)
+        else:
+            row_saved_in_another_tab(browser, draft_id, row, none)
+        answer = send(browser, draft_id, posted)
+
+    assert answer.status_code == 409
+    assert copied(answer) == set()
+
+
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
 def test_a_limit_words_beside_a_date_on_a_row_another_tab_took_are_refused_with_no_copy(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
