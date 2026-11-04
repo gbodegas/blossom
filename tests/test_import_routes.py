@@ -19561,12 +19561,17 @@ def no_date_tick(none: str) -> dict[str, str]:
 
 
 def two_cards_with_words(
-    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, *, screenshots: int = 1
 ) -> tuple[str, str, list[str], str, str]:
-    """A review of two cards past her name, words carried beside the second's assigned date box: the
-    review, its page, its groups, that card's piece and the tick's subject."""
-    answer = homework_answer(cards=[homework_card(), homework_card(**A_SECOND_CARD)])
-    draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+    """A review of two cards past her name, on one screenshot or a screenshot each, words carried
+    beside the second's assigned date box: the review, its page, its groups, that card's piece and
+    the tick's subject."""
+    if screenshots == 1:
+        answer = homework_answer(cards=[homework_card(), homework_card(**A_SECOND_CARD)])
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+    else:
+        second = homework_answer(cards=[homework_card(**A_SECOND_CARD)])
+        draft_id, page = read_review(browser, monkeypatch, (RED, one_card_answer()), (BLUE, second))
     page = her_name_answered(browser, draft_id, page)
     units = units_on(page)
     pieces = [
@@ -21741,8 +21746,11 @@ def row_saved_in_another_tab(browser: TestClient, draft_id: str, row: str, none:
 def test_a_limit_words_beside_a_date_on_one_of_two_rows_another_tab_took_get_no_copy(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, how: str
 ) -> None:
+    screenshots = 2 if how == "its screenshot removed" else 1
     with here(open_settings(tmp_path)) as browser:
-        draft_id, reopened, _, piece, none = two_cards_with_words(browser, monkeypatch)
+        draft_id, reopened, _, piece, none = two_cards_with_words(
+            browser, monkeypatch, screenshots=screenshots
+        )
         row = piece.removeprefix("date:")
         posted = page_post(reopened, press, choose=no_date_tick(none))
         student, drafts = student_and_drafts(browser)
@@ -21750,13 +21758,17 @@ def test_a_limit_words_beside_a_date_on_one_of_two_rows_another_tab_took_get_no_
             version = drafts.snapshot(student, draft_id).version
             drafts.set_aside(student, draft_id, version=version, keys=[row])
         elif how == "its screenshot removed":
-            removed_images(browser, draft_id, 0)
+            removed_images(browser, draft_id, 1)
         else:
             row_saved_in_another_tab(browser, draft_id, row, none)
         answer = send(browser, draft_id, posted)
 
     assert answer.status_code == 409
     assert copied(answer) == set()
+    boxes = [json.loads(box) for box in fields_named(review_form(answer.text), "correct:")]
+    titles = [key for key, field in boxes if field == "title"]
+    assert row not in titles
+    assert len(titles) == 1
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
