@@ -400,10 +400,11 @@ its own save is what finds the review expired or removed. Keep and Save for late
 put it first only when their first read finds the review ended, or a second read
 does after finding no post or no rows to read; refused before any write, or finding
 it at the write or at the read after the write, they answer with no outcome. On
-those pages, on any page that says the review can't be shown, and beside a confirmed
-save's counts when the post can't be read against the review, Keep and Save for
-later give the typing back as sent, outer whitespace included, with a box of several
-lines showing its line endings as line feeds; an unticked valid date in a date box
+those pages, on any page that says the review can't be shown, beside a confirmed
+save's counts when the post can't be read against the review, and on Save for
+later's page when another tab has saved since its commit, Keep and Save for later
+give the typing back as sent, outer whitespace included, with a box of several lines
+showing its line endings as line feeds; an unticked valid date in a date box
 replaces the words carried beside it. If a save's commit and rollback are both
 refused its transaction stays open on the record's connection, and whether a Save
 press saved can't be told from that connection. So a Save press that finds one, or

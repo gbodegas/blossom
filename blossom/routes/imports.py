@@ -564,7 +564,8 @@ UNSHOWN_TYPED: Final = (
     "What you typed, as you sent it. Copy anything you still need before leaving this page."
 )
 """What the boxes of typing given back say first where the review can't be shown or a save's outcome
-can't be told, and for what "No assigned date was given" set aside from an open review."""
+can't be told, for what "No assigned date was given" set aside from an open review, and for a Save
+for later's typing beside a form another tab's save has moved past."""
 REVIEW_NOT_SHOWN: Final = "This review can't be shown right now."
 """What a press's page says after its own lines when the store refuses to read the review."""
 REVIEW_UNAVAILABLE: Final = "This review can't be shown right now. Try again in a moment."
@@ -726,9 +727,9 @@ async def typing_by_press(
     request: Request, stored: Iterable[tuple[str, str, str]] = ()
 ) -> list[tuple[str, str]]:
     """What a post gives back when its press finds the review ended, on every page that says it
-    can't be shown, and beside a confirmed save's counts with no post to read: on a Save press,
-    ``typing_of``; on Keep or Save for later, every box as it was sent, whitespace included
-    (``typed_as_sent``)."""
+    can't be shown, beside a confirmed save's counts with no post to read, and on Save for later's
+    page when its read shows another tab saved since its commit: on a Save press, ``typing_of``; on
+    Keep or Save for later, every box as it was sent, whitespace included (``typed_as_sent``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -1260,7 +1261,6 @@ async def rows_of(
     conflicted: Mapping[str, tuple[str, ...]] | None = None,
     revision: int | None = None,
     own: frozenset[str] = frozenset(),
-    only_posted_marks: bool = False,
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1268,8 +1268,7 @@ async def rows_of(
     with an instruction conflict, or naming a kept row that isn't on the record, comes back with its
     choices as posted (``choices``, ``conflicted``) and signed with its own progress revision
     (``revision``): saving for later in another tab moves that with no change of version, and a
-    fresh one would let the next Save for later overwrite that tab's progress unseen. With
-    ``only_posted_marks``, "Not saved yet" marks only a correction the post made. With a
+    fresh one would let the next Save for later overwrite that tab's progress unseen. With a
     transaction left open the reads refuse, so rows are never made from what it holds."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
@@ -1297,13 +1296,7 @@ async def rows_of(
         until=until_text(state, snapshot.expires_at),
         corrections=corrections,
         selected=row_keys(review, ticked) if ticked is not None else picked(snapshot.progress),
-        unsaved=frozenset()
-        if typed is None
-        else frozenset(
-            (key, field)
-            for key, field in unsaved_typing(snapshot, typed, kept)
-            if not only_posted_marks or field in typed.get(key, {})
-        ),
+        unsaved=frozenset() if typed is None else unsaved_typing(snapshot, typed, kept),
         open_keys=open_keys,
         unread=unread,
         frozen=snapshot.frozen,
@@ -2124,9 +2117,10 @@ async def later_press(
 ) -> Response:
     """Save review for later: the answers and the typed corrections, in one transaction, the
     corrections only when no other tab saved for later since the page. Once it commits, one read
-    of the review decides the answer: the redirect, a page with what "No assigned date was given"
-    set aside (``later_with_words``), or, with the review ended or its read refused, the typing to
-    copy, redirecting past a refused read only when there's nothing to give back."""
+    of the review decides the answer: the redirect, a page drawn from what's stored with what "No
+    assigned date was given" set aside (``later_with_words``), or, with the review ended or its read
+    refused, the typing to copy, redirecting past a refused read only when there's nothing to give
+    back."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         review = await state_of_review(state, found, post.corrections)
@@ -2184,23 +2178,15 @@ async def later_with_words(
     revision: int,
 ) -> Response:
     """Save for later that committed with something "No assigned date was given" set aside: the rows
-    as posted, signed with the revision its commit wrote (``revision``), and what was set aside to
-    copy. Where this read shows another tab saved for later since, it says the page is out of date,
-    with no confirmation, and marks a posted correction only where what's stored differs. Any read
-    after this one that's refused answers at the commit's 200."""
+    drawn from what this read shows stored, signed with the revision it shows, and what was set
+    aside to copy. Where that revision isn't the one its commit wrote (``revision``), another tab
+    saved for later since: it says the page is out of date, with no confirmation, and gives back all
+    the press's typing to copy, apart from the form. Any read after this one that's refused answers
+    at the commit's 200."""
     moved = after.progress_revision != revision
     lines = [OUT_OF_DATE] if moved else [PRESS_SAID["later"], saved_for_later_at(state)]
     try:
-        rows = await rows_of(
-            request,
-            state,
-            after,
-            lines,
-            typed=post.corrections,
-            ticked=post.units if post.ticked else None,
-            revision=revision,
-            only_posted_marks=True,
-        )
+        rows = await rows_of(request, state, after, lines)
     except sqlite3.Error as error:
         noted(error)
         return await unshown_with_typing(request, state, after.draft_id, [], 200)
@@ -2215,7 +2201,7 @@ async def later_with_words(
         lines,
         200,
         rows=rows,
-        typed=tick_set_aside(post),
+        typed=await typing_by_press(request) if moved else tick_set_aside(post),
         typed_said=UNSHOWN_TYPED,
     )
 
