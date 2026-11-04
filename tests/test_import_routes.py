@@ -19931,9 +19931,10 @@ def test_a_limit_the_press_after_no_date_beside_another_date_stores_as_it_does_w
     status: int,
     held_after: str | None,
 ) -> None:
-    """The refused page gives the words back to copy and holds no field for them. So the next press
-    from it, box emptied and tick kept, has no words to give back: Save for later stores no date,
-    and Keep leaves what's stored."""
+    """The refused page gives the words back as a copy, with the instruction to copy them before
+    leaving, and holds no field for them, so the next press doesn't submit them again. With the box
+    emptied and the tick kept, Save for later clears the stored words, and Keep leaves them
+    stored."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, piece, none = words_beside_a_date_box(browser, monkeypatch)
         box = correct_box(piece, "assigned")
@@ -19948,6 +19949,7 @@ def test_a_limit_the_press_after_no_date_beside_another_date_stores_as_it_does_w
         held = held_corrections(browser, draft_id)
 
     assert copied(refused) == {WORDS_BESIDE}
+    assert says(refused.text, imports.UNSHOWN_TYPED)
     assert 'name="refused:' not in refused.text
     assert answer.status_code == status
     assert copied(answer) == set()
@@ -20151,11 +20153,12 @@ def test_no_date_gives_what_it_sets_aside_back_on_a_press_that_stored_nothing(
     assert int(hidden_value(answer.text, "progress_revision")) == revision
 
 
-def test_a_resend_of_no_date_on_later_loses_nothing(
+def test_a_resend_of_no_date_on_later_says_out_of_date_and_gives_the_words_as_a_copy(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The same post sent again, as a browser's reload of the page sends it: the words stay held
-    nowhere but on the page, and the second press says the page is out of date."""
+    """The same post sent again, as a browser's reload of the page sends it: the store holds no
+    date, the words exist only as that page's copy, and the second press says the page is out of
+    date."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, piece, none = words_beside_a_date_box(browser, monkeypatch)
         posted = page_post(reopened, "later", choose=no_date_tick(none))

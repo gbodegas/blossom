@@ -395,10 +395,13 @@ evidence. A file error during that read fails the save and rolls it back, and
 the save says it's saved only if its own transaction is still open just before
 it commits. A review that a press of the form finds closed answers with an earlier
 confirmed save's outcome first, then the typing to copy. One it finds expired or
-removed gives the typing back too, with that outcome first, except on Keep or Save
-for later found at the write or at the read after it. Keep and Save for later give
-the typing back as sent, outer whitespace included, with a box of several lines
-showing its line endings as line feeds. If a save's commit and rollback are both
+removed gives the typing back too. A Save press puts that outcome first. Keep and
+Save for later put it first only when their first read finds the review ended, or a
+second read does after finding no post or no rows to read; refused before any write,
+or finding it at the write or at the read after the write, they answer with no
+outcome. Keep and Save for later give the typing back as sent, outer whitespace
+included, with a box of several lines showing its line endings as line feeds. If a
+save's commit and rollback are both
 refused its transaction stays open on the record's connection, and
 whether a Save press saved can't be told from that connection. So a Save press
 that finds one, or whose acceptance read is refused, says it can't tell, with its
