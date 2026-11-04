@@ -673,9 +673,9 @@ async def ended_under_press(
     again, so that one that has closed or gone says so with the typing, and one the store refuses to
     read says that. Each asks first for its receipt, since a copy of the page's Save can have saved
     since its last check and finished the review, which still reads open until it's closed. A Save
-    press asks the same of a review that reads open; any other press saved nothing. None when the
-    review reads open and there's no receipt to answer with. A refused read answers
-    ``refused_status``."""
+    press asks the same of a review that reads open. No other press does: it has no save of its own
+    to look for, and an earlier save of its page goes unasked. None when the review reads open and
+    no receipt was asked for or found. A refused read answers ``refused_status``."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         now = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
@@ -1830,9 +1830,10 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     its typing, that correction whole in its box. Whichever post this is, its form is read first,
     within this route's limits, and every later read of it gets that one, so a body past them
     touches no store. A press whose signed list is past its ceiling keeps nothing and says the
-    review is too large, unless a Save's receipt or an ended review has more to say. A review its
-    first read finds closed, expired or gone answers with an earlier save's outcome first, then the
-    typing to copy."""
+    review is too large, unless an ended review has more to say or, on a Save press, a receipt does;
+    Keep and Save for later don't look for a receipt while the review can be read, so that answer
+    says nothing of an earlier save. A review its first read finds closed, expired or gone answers
+    with an earlier save's outcome first, then the typing to copy."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     request = WithinBytes(request, REVIEW_FORM_BYTES)
@@ -2579,7 +2580,7 @@ async def replayed(
     this review, when it recorded one; else None, so an id recorded for another review gets
     this one's own answer. A Save press whose read is refused, or finds a transaction left open,
     can't tell whether it saved, and says so, with what this press kept (``kept``). Any other press
-    saved nothing, so it gets its own answer."""
+    has no save of its own to be unsure of, so a refused read gets it its own answer."""
     if not opaque(draft_id):
         return None
     form = await form_of(request)
