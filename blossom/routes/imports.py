@@ -2610,9 +2610,9 @@ async def saved_page(
     left open since rewrites, and a plain read of them holds. That save's counts, and nothing
     written. A review it finished says so. With the review still open and ``rows`` true, the press
     gets its typing back in the review, as the save it repeats did, its post read here when the
-    caller had none. With ``rows`` false, a post that reads gets no form: the counts, or that
-    they can't be shown, that the review can't be shown, and its typing to copy (``saved_busy``).
-    A review the store refuses to read can't say whether it finished: the
+    caller had none. With ``rows`` false, a post that reads, or whose read is refused, gets no form:
+    the counts, or that they can't be shown, that the review can't be shown, and its typing to copy
+    (``saved_busy``). A review the store refuses to read can't say whether it finished: the
     counts show in the success panel with no word of that, and every correction the post typed
     is given back to copy; for a busy store, with the line that the review can't be shown and
     the way back to it (``saved_busy``), and for a review known to have expired, or to be gone,
@@ -2670,7 +2670,9 @@ async def saved_page(
                 post = None
             except sqlite3.Error as error:
                 noted(error)
-                return await saved_busy(request, state, draft_id, lines)
+                return await saved_busy(
+                    request, state, draft_id, lines if rows else lines or [COUNTS_UNSHOWN]
+                )
         if post is not None and not rows:
             return await saved_busy(request, state, draft_id, lines or [COUNTS_UNSHOWN])
         if post is not None:

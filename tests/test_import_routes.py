@@ -23000,10 +23000,12 @@ what comes back."""
 
 
 def rows_back_past_a_refused_read(
-    monkeypatch: pytest.MonkeyPatch, refused: Callable[..., None]
+    monkeypatch: pytest.MonkeyPatch,
+    refused: Callable[..., None],
+    *also: tuple[str, str, int, Callable[..., None]],
 ) -> Refusing:
     """Timing forced: the press's rows come back empty, the next read of the review is refused, and
-    any rows asked for after that come back as they are."""
+    any rows asked for after that come back as they are. ``also`` are further refusals."""
     real: Callable[..., Awaitable[object]] = imports.rows_of
     asked: list[bool] = []
 
@@ -23014,7 +23016,7 @@ def rows_back_past_a_refused_read(
         return await real(*args, **kwargs)
 
     monkeypatch.setattr(imports, "rows_of", no_rows_at_first)
-    return Refusing(monkeypatch, ("ended_under_press", "snapshot", 1, refused))
+    return Refusing(monkeypatch, ("ended_under_press", "snapshot", 1, refused), *also)
 
 
 def a_press_beside_a_save(
@@ -23092,6 +23094,13 @@ def says_the_earlier_save_with_no_form(answer: Answer, draft_id: str, typing: li
     assert f'<a href="/parent/imports/{draft_id}">Back to the review</a>' in answer.text
     for outcome in ("Saved for later at", "saved for later", "Not saved yet", "Try again"):
         assert outcome not in text
+
+
+def says_the_save_with_its_counts_unread(answer: Answer) -> None:
+    """The counts-unavailable answer as the panel's heading, and no counts."""
+    assert imports.COUNTS_UNSHOWN in page_text(answer)
+    assert 'id="outcome-heading" tabindex="-1" autofocus>This homework was already' in answer.text
+    assert "Saved: 1 new assignment." not in page_text(answer)
 
 
 def receipt_as_stored(browser: TestClient, acceptance: str) -> list[tuple[object, ...]]:
@@ -23176,9 +23185,68 @@ def test_an_earlier_save_page_past_a_refused_read_keeps_the_save_with_its_counts
         monkeypatch.undo()
 
     says_the_earlier_save_with_no_form(answer, beside.draft_id, beside.typing)
-    assert imports.COUNTS_UNSHOWN in page_text(answer)
-    assert 'id="outcome-heading" tabindex="-1" autofocus>This homework was already' in answer.text
-    assert "Saved: 1 new assignment." not in page_text(answer)
+    says_the_save_with_its_counts_unread(answer)
+
+
+THE_PAGE_S_READ_OF_THE_POST: Final = {"keep": 2, "later": 3}
+"""Which of a press's reads of the post, past a refused read, its page's own step makes."""
+
+
+@pytest.mark.parametrize("counts", ["empty", "read"])
+@pytest.mark.parametrize("words", [True, False], ids=WORDS_OR_NONE)
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_an_earlier_save_page_past_a_refused_read_keeps_the_save_with_its_post_unread(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, words: bool, counts: str
+) -> None:
+    """The page's own read of the post refused as well: the same page, with the counts-unavailable
+    answer where the counts come back empty."""
+    refused = refusing_coded("SQLITE_IOERR")
+    post_read = ("state_of_review", "draft_for_save", THE_PAGE_S_READ_OF_THE_POST[press], refused)
+    with here(open_settings(tmp_path)) as browser:
+        beside = a_press_beside_a_save(browser, monkeypatch, press, words=words)
+        if counts == "empty":
+            counts_unreadable(browser, monkeypatch, "empty")
+        reads = rows_back_past_a_refused_read(monkeypatch, refused, post_read)
+        answer = send(browser, beside.draft_id, beside.posted)
+        monkeypatch.undo()
+
+    assert len(reads.refused) == 2
+    says_the_earlier_save_with_no_form(answer, beside.draft_id, beside.typing)
+    if counts == "empty":
+        says_the_save_with_its_counts_unread(answer)
+    else:
+        the_saved_heading(answer, "Saved: 1 new assignment. 1 still needs checking.")
+
+
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+def test_a_limit_an_earlier_save_with_empty_counts_and_its_post_unread_says_neither(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """A limit, and not what this page should do: with the first read and the read of the post
+    refused and the counts empty, there's no word of the save or that the review can't be shown,
+    only an empty alert, what the press's reader finds and the way back."""
+    refused = refusing_coded("SQLITE_IOERR")
+    with here(open_settings(tmp_path)) as browser:
+        beside = a_press_beside_a_save(browser, monkeypatch, press, words=False)
+        counts_unreadable(browser, monkeypatch, "empty")
+        reads = Refusing(
+            monkeypatch,
+            ("review_press", "snapshot", 1, refused),
+            ("state_of_review", "draft_for_save", 1, refused),
+        )
+        answer = send(browser, beside.draft_id, beside.posted)
+        monkeypatch.undo()
+
+    text = page_text(answer)
+    assert len(reads.refused) == 2
+    assert answer.status_code == 200
+    assert imports.COUNTS_UNSHOWN not in text
+    assert imports.REVIEW_NOT_SHOWN not in text
+    assert "Saved:" not in text
+    assert re.search(r'<div class="problem" role="alert" id="said"[^>]*>\s*</div>', answer.text)
+    assert copies_in_order(answer) == ([] if press == "save" else beside.typing)
+    assert 'name="correct:' not in answer.text
+    assert "Back to the review" in text
 
 
 def test_save_for_later_committing_past_a_refused_read_gives_the_typing_back_with_no_form(
