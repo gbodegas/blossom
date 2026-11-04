@@ -1230,7 +1230,7 @@ def test_a_row_that_cant_be_resolved_beside_words_signs_the_revision_its_page_re
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
     """Another tab saves for later after the page loads. The refused page signs what that page
-    signed, so the next Save for later is told, and what the other tab saved stays."""
+    signed, so the immediate next Save for later is told, and what the other tab saved stays."""
     with here(open_settings(tmp_path)) as browser:
         gone = a_row_to_lose_beside_words(browser, monkeypatch)
         posted = page_post(gone.page, press, choose={gone.tick: "none"})
