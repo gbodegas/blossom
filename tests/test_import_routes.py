@@ -19991,6 +19991,33 @@ def test_no_date_on_later_with_its_rows_refused_says_the_review_can_t_be_shown(
     assert 'name="correct:' not in answer.text
 
 
+@pytest.mark.parametrize("form", ["a stray space", "only spaces", "the date as read"])
+def test_no_date_on_later_with_its_rows_refused_gives_back_exactly_what_was_sent(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, form: str
+) -> None:
+    """Save for later committed and its rows can't be read, so the post is read as it was sent."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, piece, none = two_cards_with_words(browser, monkeypatch)
+        row = piece.removeprefix("date:")
+        box, sent = {
+            "a stray space": (correct_box(row, "title"), "Set 3 "),
+            "only spaces": (correct_box(row, "instruction:0"), "   "),
+            "the date as read": (correct_box(piece, "assigned"), READ_ASSIGNED),
+        }[form]
+        posted = page_post(reopened, "later", choose=no_date_tick(none), typed={box: sent})
+        Refusing(
+            monkeypatch, ("state_of_review", "draft_for_save", 3, refusing_coded("SQLITE_IOERR"))
+        )
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert answer.status_code == 200
+    assert said_by(answer) == [imports.REVIEW_NOT_SHOWN]
+    assert copied(answer) == {sent, WORDS_BESIDE}
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert 'name="correct:' not in answer.text
+
+
 @pytest.mark.parametrize(
     "moment",
     ["closed after Save for later commits", "closed at the write", "closed before the press"],
@@ -21004,6 +21031,26 @@ def test_an_earlier_save_with_unreadable_counts_on_an_ended_page_gives_back_exac
         posted = page_post(page, press, typed={correct_box(other, field): sent})
         arrange(browser, monkeypatch, draft_id, press)
         counts_unreadable(browser, monkeypatch, how)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert imports.COUNTS_UNSHOWN in page_text(answer)
+    assert copied(answer) == {sent}
+
+
+@pytest.mark.parametrize(("field", "sent"), WHITESPACE_SENT)
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_an_earlier_save_with_empty_counts_found_closed_after_a_refusal_gives_exact_whitespace(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, field: str, sent: str
+) -> None:
+    """The first read of the review is refused and the page's own read finds it closed, so the post
+    is read exactly."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, other = a_saved_row(browser, monkeypatch)
+        posted = page_post(page, press, typed={correct_box(other, field): sent})
+        discarded(browser, draft_id)
+        counts_unreadable(browser, monkeypatch, "empty")
+        Refusing(monkeypatch, ("review_press", "snapshot", 1, refusing_coded("SQLITE_IOERR")))
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
