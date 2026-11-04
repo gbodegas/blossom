@@ -23398,6 +23398,11 @@ KEEP_S_PAGE_WHEN: Final[dict[str, tuple[str | None, tuple[tuple[str, str, int], 
     "its own read is refused": (None, (("saved_page", "snapshot", 1),), False),
     "its read of the post is refused": (None, (("state_of_review", "draft_for_save", 2),), False),
     "its read of the post fails": (None, (), True),
+    "its counts come back empty and its own read is refused": (
+        "empty",
+        (("saved_page", "snapshot", 1),),
+        False,
+    ),
 }
 """What else goes wrong on a page past a refused read: the counts as ``counts_unreadable`` makes
 them, the further reads refused, and whether the page's read of the post fails."""
