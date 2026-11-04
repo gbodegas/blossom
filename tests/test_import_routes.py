@@ -21011,6 +21011,42 @@ def test_a_conflict_with_the_date_as_read_beside_the_words_gives_back_both(
     assert before == after
 
 
+@pytest.mark.parametrize(
+    ("sent", "typing"),
+    [
+        ("", {WORDS_BESIDE}),
+        (READ_ASSIGNED, {READ_ASSIGNED, WORDS_BESIDE}),
+        ("2026-10-03", {WORDS_BESIDE}),
+        ("12026-10-03", {"12026-10-03", WORDS_BESIDE}),
+    ],
+    ids=["an empty box", "the date as read", "another date", "a five-digit year"],
+)
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_a_limit_other_row_stray_spaces_on_refused_pages_get_no_copy_on_a_conflict(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, sent: str, typing: set[str]
+) -> None:
+    """A limit, and not what this page should do: a stray space on another row's value comes back
+    stripped in its box with no copy, as on an everyday page. The date and the words beside the tick
+    still come back exactly."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, none, other = conflict_with_words(browser, monkeypatch, words=True)
+        row = next(
+            json.loads(box)[0]
+            for box in fields_named(review_form(page), "correct:")
+            if json.loads(box)[1] == "title" and json.loads(box)[0] != other
+        )
+        title = correct_box(row, "title")
+        drawn = box_text(page, title)
+        typed = {correct_box(f"date:{other}", "assigned"): sent, title: f"{drawn} "}
+        posted, _, _ = conflict_fields(page, press, none, typed)
+        answer = send(browser, draft_id, posted)
+
+    assert answer.status_code == 422
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert copied(answer) == typing
+    assert box_text(answer.text, title) == drawn
+
+
 def test_save_s_conflict_with_the_date_as_read_beside_the_words_keeps_its_own_reading(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

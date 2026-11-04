@@ -1288,6 +1288,41 @@ def test_a_row_that_cant_be_resolved_with_nothing_set_aside_keeps_its_note_and_s
 
 
 @pytest.mark.parametrize(
+    "variant", ["an empty box", THE_DATE_AS_READ, "another date", "a five-digit year"]
+)
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_a_limit_other_row_stray_spaces_on_refused_pages_get_no_copy_beside_a_row_lost(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, variant: str
+) -> None:
+    """A limit, and not what this page should do: a stray space on another row's value comes back
+    stripped in its box with no copy, as on an everyday page. The date and the words beside the tick
+    still come back exactly."""
+    with here(open_settings(tmp_path)) as browser:
+        gone = a_row_to_lose_beside_words(browser, monkeypatch)
+        sent, back = BESIDE_THE_WORDS[variant]
+        if variant == THE_DATE_AS_READ:
+            sent, back = gone.as_read, [gone.as_read]
+        beside = json.loads(gone.tick.removeprefix("none:"))[0].removeprefix("date:")
+        title = next(
+            name
+            for name in fields_of(gone.page, "correct:")
+            if json.loads(name.removeprefix("correct:"))[1] == "title"
+            and json.loads(name.removeprefix("correct:"))[0] != beside
+        )
+        drawn = in_its_box(gone.page, title)
+        typed = {gone.box: sent, title: f"{drawn} "}
+        posted = page_post(gone.page, press, choose={gone.tick: "none"}, typed=typed)
+        delete_row(browser, gone.rows[0])
+        answer = send(browser, gone.draft_id, ticks_of(posted, gone.question, gone.rows))
+
+    said = page_text(answer.text)
+    assert answer.status_code == 422, said[:300]
+    assert imports.UNSHOWN_TYPED in said
+    assert sorted(copies_on(answer.text)) == sorted([*back, WORDS_CARRIED])
+    assert in_its_box(answer.text, title) == drawn
+
+
+@pytest.mark.parametrize(
     ("variant", "back"),
     [
         ("an empty box", [WORDS_CARRIED]),
