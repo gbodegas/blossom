@@ -1116,9 +1116,10 @@ def test_a_row_that_cant_be_resolved_is_said(
     assert in_its_box(answer.text, box) == TYPED
 
 
+@pytest.mark.parametrize("sent", ["nothing", "the date as read"])
 @pytest.mark.parametrize("press", ["keep", "later"])
 def test_a_row_that_cant_be_resolved_gives_words_beside_a_date_back_under_its_own_note(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, sent: str
 ) -> None:
     """A kept row gone before the press, with "No assigned date" ticked beside words on another
     card: the press is refused whole, and the words come back to copy under the note it gives
@@ -1135,6 +1136,8 @@ def test_a_row_that_cant_be_resolved_gives_words_beside_a_date_back_under_its_ow
             for name in fields_of(page, "none:")
             if json.loads(name.removeprefix("none:"))[0].removeprefix("date:") not in question
         )
+        box = f"correct:{away.removeprefix('none:')}"
+        as_read = in_its_box(page, box) if sent == "the date as read" else ""
         kept = json.loads(now.progress or '{"v":4,"corrected":{},"selected":[]}')
         piece = json.loads(away.removeprefix("none:"))[0]
         kept["corrected"].setdefault(piece, {})["assigned"] = "next Tuesday"
@@ -1143,7 +1146,7 @@ def test_a_row_that_cant_be_resolved_gives_words_beside_a_date_back_under_its_ow
         )
         page = browser.get(f"/parent/imports/{draft_id}").text
         rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
-        posted = page_post(page, press, choose={away: "none"})
+        posted = page_post(page, press, choose={away: "none"}, typed={box: as_read or ""})
         delete_row(browser, rows[0])
         answer = send(browser, draft_id, ticks_of(posted, question, rows))
 

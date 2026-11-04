@@ -736,9 +736,16 @@ async def typing_by_press(
     ]
 
 
-def tick_set_aside(post: ReviewPost) -> list[tuple[str, str]]:
-    """What "No assigned date was given" set aside from this post, labeled, as it was sent."""
-    return [(TYPED_LABELS[field], text) for _, field, text in post.dropped]
+def tick_set_aside(
+    post: ReviewPost, shown: Collection[tuple[str, str, str]] = ()
+) -> list[tuple[str, str]]:
+    """What "No assigned date was given" set aside or was refused beside, labeled, as it was sent,
+    apart from what a box on the page holds exactly (``shown``)."""
+    return [
+        (TYPED_LABELS[field], text)
+        for key, field, text in post.dropped
+        if (key, field, text) not in shown
+    ]
 
 
 def fields_shown(rows: RowsShown | None) -> frozenset[tuple[str, str, str]]:
@@ -1959,26 +1966,26 @@ async def with_typing(
     here, beside them: that answers are kept on the rows left open (``answered``), and that changes
     on the rows below aren't saved yet, when a box for one (``unsaved``) is among those shown. A
     Save press with no save committed also gives back what no box holds, as does a press refused
-    with its choices. Keep or Save for later gives back what "No assigned date was given" set aside,
-    the words and anything sent in the box beside them, under ``UNSHOWN_TYPED``
-    (``tick_set_aside``), and signs the revision its page read; refused with a conflict beside words
-    set aside, it says that note over what no box holds. Any press with no save committed, if its
-    review has ended before its rows, says that instead of its own line, and a Save press says it
-    can't tell if a transaction was left open meanwhile. A Save press asks for its receipt
-    before any page that ends it, as ``snapshot_keeping_typing`` does. A press with an instruction
-    conflict, or naming a kept row that isn't on the record (``unresolved``), comes back with its
-    choices as posted while the review is at the version its page showed. At another, the review
-    has changed, and carrying a choice onto a page of the new version would get it past the version
-    check, so it says the page is out of date and carries none. Whatever can't carry is said,
-    beside a confirmed save's counts too, with no word there of the page being out of date; only
-    what that save took goes unsaid, as those are always gone: its own rows' questions and ticks
-    (``own``, their pieces), and a name question, apart from an answer she cleared that the record
-    still holds (``choices_said_lost``). A row that isn't on the record is always said. A Save press
-    that finds a confirmed receipt (``own``, otherwise None) writes nothing more, and comes back the
-    same way with no conflict: at the page's version its choices as posted, and at another that they
-    can't be shown if they aren't what the record holds or aren't offered, with one exception
-    (``choices_said_lost``). Any other too long or cleared box's press, with no conflict, carries
-    nothing."""
+    with its choices. Keep or Save for later gives back what "No assigned date was given" set aside
+    or was refused beside, the words and anything sent in the box beside them, under
+    ``UNSHOWN_TYPED`` (``tick_set_aside``), and signs the revision its page read; refused with a
+    conflict beside such words, it adds them to what no box holds, under that note. Any press with
+    no save committed, if its review has ended before its rows, says that instead of its own line,
+    and a Save press says it can't tell if a transaction was left open meanwhile. A Save press asks
+    for its receipt before any page that ends it, as ``snapshot_keeping_typing`` does. A press with
+    an instruction conflict, or naming a kept row that isn't on the record (``unresolved``), comes
+    back with its choices as posted while the review is at the version its page showed. At another,
+    the review has changed, and carrying a choice onto a page of the new version would get it past
+    the version check, so it says the page is out of date and carries none. Whatever can't carry is
+    said, beside a confirmed save's counts too, with no word there of the page being out of date;
+    only what that save took goes unsaid, as those are always gone: its own rows' questions and
+    ticks (``own``, their pieces), and a name question, apart from an answer she cleared that the
+    record still holds (``choices_said_lost``). A row that isn't on the record is always said. A
+    Save press that finds a confirmed receipt (``own``, otherwise None) writes nothing more, and
+    comes back the same way with no conflict: at the page's version its choices as posted, and at
+    another that they can't be shown if they aren't what the record holds or aren't offered, with
+    one exception (``choices_said_lost``). Any other too long or cleared box's press, with no
+    conflict, carries nothing."""
     after = read or await snapshot_keeping_typing(
         request, state, draft_id, said, status, done, save_press=post.press == "save"
     )
@@ -2036,11 +2043,12 @@ async def with_typing(
         lines.insert(len(said), PRESS_SAID["unsaved_typing"])
     if not done:
         if post.press != "save" and not refused_with_choices:
-            typed, note = tick_set_aside(post), UNSHOWN_TYPED
+            typed, note = tick_set_aside(post, shown), UNSHOWN_TYPED
         else:
-            typed = await typing_of(request, (), shown)
-            neutral = post.press != "save" and post.conflicted and post.dropped
-            note = UNSHOWN_TYPED if neutral else TYPED_SAID
+            typed, note = await typing_of(request, (), shown), TYPED_SAID
+            if post.press != "save" and post.conflicted and post.dropped:
+                typed += [item for item in tick_set_aside(post, shown) if item not in typed]
+                note = UNSHOWN_TYPED
         return review_page(
             request, state, after, lines, status, rows=rows, typed=typed, typed_said=note
         )

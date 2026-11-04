@@ -120,8 +120,8 @@ class ReviewPost:
     the record: the press is refused whole, as a conflict is, and its typing and the choices that
     can show go back."""
     dropped: tuple[tuple[str, str, str], ...] = ()
-    """What "No assigned date was given" set aside beside words carried by a date box: anything sent
-    in that box and those words, by key, field and the text as sent."""
+    """What "No assigned date was given" set aside or was refused beside, with words carried by a
+    date box: anything sent in that box and those words, by key, field and the text as sent."""
 
     @property
     def refused(self) -> bool:
@@ -509,9 +509,9 @@ def box_corrections(
     refused; a cleared instruction text is its removal (``None``); a cleared assigned date is
     the date as read. "No assigned date was given" is none (``None``) where one was read, its
     box left empty or holding the date as read; beside any other date typed in the box it is
-    refused. Ticked, it wins over text Blossom couldn't read carried beside that box, which is
-    dropped, and it empties the box, so both are named to give back (``dropped``); unticked, that
-    text stays the box's correction until a date is chosen. A box the page signed for a card
+    refused. Ticked either way, text Blossom couldn't read carried beside that box is dropped, so
+    it and what was sent in the box are named to give back (``dropped``); unticked, that text
+    stays the box's correction until a date is chosen. A box the page signed for a card
     another press has since saved, or that a change of screenshots took away, is passed over, as
     the answers about it are."""
     reads = fold_reads(state)
@@ -573,7 +573,7 @@ def box_corrections(
     dropped = tuple(
         (key, field, text)
         for (key, field), words in carried.items()
-        if field == "assigned" and key in nones and key not in both
+        if field == "assigned" and key in nones
         for text in (boxes.get((key, field), ""), words)
         if text
     )

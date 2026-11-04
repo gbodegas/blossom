@@ -19835,22 +19835,215 @@ def test_a_date_typed_over_the_words_replaces_them(
         assert held == {piece: {"assigned": "2026-10-03"}}
 
 
+def words_carried_where(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, where: str
+) -> tuple[str, str, str, str, str]:
+    """A review of two cards, words carried beside the second's assigned date box, held in saved
+    progress or only on the page: the review, its page, that card's piece, the tick's subject and
+    the words."""
+    if where == "in saved progress":
+        draft_id, page, _, piece, none = two_cards_with_words(browser, monkeypatch)
+        return draft_id, page, piece, none, WORDS_BESIDE
+    draft_id, page, _, key = carried_beside_a_date_box(
+        browser, monkeypatch, SECOND_CARDS["it read an assigned date"], "typed"
+    )
+    piece = f"date:{key}"
+    return draft_id, page, piece, json.dumps([piece, "assigned"], separators=(",", ":")), CARRIED
+
+
+WHERE_WORDS_ARE: Final = ("in saved progress", "on the page only")
+BESIDE_THE_WORDS: Final[dict[str, tuple[str, str, set[str]]]] = {
+    "another date": ("2026-10-03", "2026-10-03", set()),
+    "another date with a stray space": ("2026-10-03 ", "2026-10-03", {"2026-10-03 "}),
+    "a five-digit year": ("12026-10-03", "", {"12026-10-03"}),
+    "words in the box": ("Typed Words", "", {"Typed Words"}),
+}
+"""What's sent in a date box beside "No assigned date" and carried words: the text, what the box
+then holds, and what comes back with the words, since the box doesn't hold it exactly."""
+
+
+@pytest.mark.parametrize("where", WHERE_WORDS_ARE)
+@pytest.mark.parametrize("sent", list(BESIDE_THE_WORDS))
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
 def test_no_date_beside_another_date_stays_refused(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, sent: str, where: str
+) -> None:
+    """Refused whole with nothing stored, and the carried words come back under the neutral note. A
+    date the box holds exactly needs no copy; other text in the box comes back as it was sent."""
+    text, in_the_box, typing = BESIDE_THE_WORDS[sent]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none, words = words_carried_where(browser, monkeypatch, where)
+        box = correct_box(piece, "assigned")
+        posted = page_post(page, press, choose=no_date_tick(none), typed={box: text})
+        before = review_as_stored(browser, draft_id)
+        answer = send(browser, draft_id, posted)
+        after = review_as_stored(browser, draft_id)
+
+    assert answer.status_code == 422
+    assert says(answer.text, screenshot_page.SAID["both"])
+    assert says(answer.text, NOTHING_KEPT)
+    assert copied(answer) == {*typing, words}
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert not says(answer.text, imports.TYPED_SAID)
+    assert box_text(answer.text, box) == in_the_box
+    assert before == after
+
+
+@pytest.mark.parametrize(
+    ("sent", "typing"),
+    [("2026-10-03", set()), ("12026-10-03", {"12026-10-03"})],
+    ids=["another date", "a five-digit year"],
+)
+def test_save_beside_another_date_keeps_its_own_note_and_signature(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, sent: str, typing: set[str]
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, _, none = words_beside_a_date_box(browser, monkeypatch)
+        row = json.loads(box_subject(reopened, "title"))[0]
         box = f"correct:{box_subject(reopened, 'assigned')}"
-        answer = send(
+        posted = page_post(reopened, "save", choose=no_date_tick(none), typed={box: sent})
+        other_tab_writes(browser, draft_id, lambda held: held.update({row: {"course": "Later"}}))
+        answer = send(browser, draft_id, posted)
+        stored = review_as_stored(browser, draft_id)
+
+    assert answer.status_code == 422
+    assert copied(answer) == typing
+    assert not says(answer.text, imports.UNSHOWN_TYPED)
+    assert says(answer.text, imports.TYPED_SAID) == bool(typing)
+    assert int(hidden_value(answer.text, "progress_revision")) == stored["revision"]
+
+
+@pytest.mark.parametrize(
+    ("second", "status", "held_after"),
+    [("later", 303, None), ("keep", 200, WORDS_BESIDE)],
+)
+@pytest.mark.parametrize("first", THE_TWO_PRESSES)
+def test_a_limit_the_press_after_no_date_beside_another_date_stores_as_it_does_with_no_copy(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first: str,
+    second: str,
+    status: int,
+    held_after: str | None,
+) -> None:
+    """The refused page gives the words back to copy and holds no field for them. So the next press
+    from it, box emptied and tick kept, has no words to give back: Save for later stores no date,
+    and Keep leaves what's stored."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, piece, none = words_beside_a_date_box(browser, monkeypatch)
+        box = correct_box(piece, "assigned")
+        refused = send(
             browser,
             draft_id,
-            page_post(reopened, press, choose=no_date_tick(none), typed={box: "2026-10-03"}),
+            page_post(reopened, first, choose=no_date_tick(none), typed={box: "2026-10-03"}),
         )
+        answer = send(browser, draft_id, page_post(refused.text, second, typed={box: ""}))
+        shown = followed(browser, answer)
+        fresh = browser.get(f"/parent/imports/{draft_id}").text
+        held = held_corrections(browser, draft_id)
+
+    assert copied(refused) == {WORDS_BESIDE}
+    assert 'name="refused:' not in refused.text
+    assert answer.status_code == status
+    assert copied(answer) == set()
+    assert held == {piece: {"assigned": held_after}}
+    assert WORDS_BESIDE not in html.unescape(review_form(shown))
+    assert (WORDS_BESIDE in html.unescape(review_form(fresh))) == (held_after is not None)
+
+
+def a_tab_saves_a_class(browser: TestClient, draft_id: str, row: str) -> None:
+    """Another tab's Save for later from a fresh load, adding a class to the row."""
+    student, drafts = student_and_drafts(browser)
+    now = drafts.snapshot(student, draft_id)
+    kept = json.loads(now.progress) if now.progress else {"v": 4, "corrected": {}, "selected": []}
+    kept["corrected"].setdefault(row, {})["course"] = "Other Tab Course"
+    drafts.save_progress(
+        student, draft_id, revision=now.progress_revision, progress=json.dumps(kept)
+    )
+
+
+@pytest.mark.parametrize("next_press", ["a date and no tick", "box emptied and tick kept"])
+@pytest.mark.parametrize("where", WHERE_WORDS_ARE)
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_no_date_beside_another_date_and_words_signs_the_revision_its_page_read(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    where: str,
+    next_press: str,
+) -> None:
+    """Another tab saves for later after the page loads. The refused page signs what that page
+    signed, so the next Save for later is told, and what the other tab saved stays."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none, _ = words_carried_where(browser, monkeypatch, where)
+        row = piece.removeprefix("date:")
+        box = correct_box(piece, "assigned")
+        signed = hidden_value(page, "progress_revision")
+        posted = page_post(page, press, choose=no_date_tick(none), typed={box: "2026-10-03"})
+        a_tab_saves_a_class(browser, draft_id, row)
+        answer = send(browser, draft_id, posted)
+        following = (
+            [field for field in page_post(answer.text, "later") if not field[0].startswith("none:")]
+            if next_press == "a date and no tick"
+            else page_post(answer.text, "later", typed={box: ""})
+        )
+        told = send(browser, draft_id, following)
+        held = held_corrections(browser, draft_id)
+
+    assert answer.status_code == 422
+    assert hidden_value(answer.text, "progress_revision") == signed
+    assert told.status_code == 409
+    assert held is not None
+    assert held[row]["course"] == "Other Tab Course"
+
+
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_a_limit_both_refusal_signs_current_revision(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """With no words carried, the refused page signs the revision it finds, so the next Save for
+    later goes through over what another tab saved."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, other = two_rows(browser, monkeypatch)
+        piece = f"date:{other}"
+        box = correct_box(piece, "assigned")
+        none = json.dumps([piece, "assigned"], separators=(",", ":"))
+        posted = page_post(page, press, choose=no_date_tick(none), typed={box: "2026-10-03"})
+        a_tab_saves_a_class(browser, draft_id, other)
+        answer = send(browser, draft_id, posted)
+        stored = review_as_stored(browser, draft_id)
+        following = [
+            field for field in page_post(answer.text, "later") if not field[0].startswith("none:")
+        ]
+        through = send(browser, draft_id, following)
+        held = held_corrections(browser, draft_id)
 
     assert answer.status_code == 422
     assert copied(answer) == set()
-    assert not says(answer.text, imports.UNSHOWN_TYPED)
+    assert int(hidden_value(answer.text, "progress_revision")) == stored["revision"]
+    assert through.status_code == 303
+    assert held == {piece: {"assigned": "2026-10-03"}}
+
+
+def test_a_limit_keep_too_long_signs_current_revision(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep's page for a title past its field signs the revision it finds, so the next Save for
+    later goes through over what another tab saved."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, other = two_rows(browser, monkeypatch)
+        title = correct_box(other, "title")
+        posted = page_post(page, "keep", typed={title: "x" * (TITLE_MOST + 1)})
+        a_tab_saves_a_class(browser, draft_id, other)
+        answer = send(browser, draft_id, posted)
+        stored = review_as_stored(browser, draft_id)
+        through = send(browser, draft_id, page_post(answer.text, "later", typed={title: "Set 3"}))
+        held = held_corrections(browser, draft_id)
+
+    assert answer.status_code == 422
+    assert int(hidden_value(answer.text, "progress_revision")) == stored["revision"]
+    assert through.status_code == 303
+    assert held == {}
 
 
 @pytest.mark.parametrize("card", list(SECOND_CARDS))
@@ -20725,21 +20918,97 @@ def test_a_conflict_with_words_left_unticked_keeps_its_note_and_the_words_in_the
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_a_limit_a_conflict_with_the_date_as_read_beside_the_words_gives_back_only_the_words(
+def test_a_conflict_with_the_date_as_read_beside_the_words_gives_back_both(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
-    """A press refused whole reads its boxes as Save does, so the date sent in the box doesn't come
-    back beside the words."""
+    """The tick empties the box, so the date sent in it comes back with the words, under the neutral
+    note."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, none, other = conflict_with_words(browser, monkeypatch, words=True)
         box = correct_box(f"date:{other}", "assigned")
         posted, _, _ = conflict_fields(page, press, none, {box: READ_ASSIGNED})
+        before = review_as_stored(browser, draft_id)
         answer = send(browser, draft_id, posted)
+        after = review_as_stored(browser, draft_id)
 
     assert answer.status_code == 422
     assert says(answer.text, imports.UNSHOWN_TYPED)
-    assert copied(answer) == {WORDS_BESIDE}
+    assert not says(answer.text, imports.TYPED_SAID)
+    assert copied(answer) == {READ_ASSIGNED, WORDS_BESIDE}
     assert box_text(answer.text, box) == ""
+    assert before == after
+
+
+def test_save_s_conflict_with_the_date_as_read_beside_the_words_keeps_its_own_reading(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, none, other = conflict_with_words(browser, monkeypatch, words=True)
+        box = correct_box(f"date:{other}", "assigned")
+        posted, _, _ = conflict_fields(page, "save", none, {box: READ_ASSIGNED})
+        answer = send(browser, draft_id, posted)
+
+    assert answer.status_code == 422
+    assert says(answer.text, imports.TYPED_SAID)
+    assert not says(answer.text, imports.UNSHOWN_TYPED)
+    assert copied(answer) == {WORDS_BESIDE}
+
+
+def conflict_with_words_in_saved_progress(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str, str, str]:
+    """As ``conflict_with_words``, with the words and the typing that asks the question held in
+    saved progress and the page loaded from it."""
+    draft_id, _, piece = landing_with_a_question(browser, monkeypatch)
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    other = next(
+        json.loads(box)[0]
+        for box in fields_named(review_form(page), "correct:")
+        if json.loads(box)[1] == "title" and json.loads(box)[0] != piece
+    )
+    saved_progress(
+        browser,
+        draft_id,
+        {
+            "v": 4,
+            "corrected": {
+                piece: {"instruction:0": "New words typed."},
+                f"date:{other}": {"assigned": WORDS_BESIDE},
+            },
+            "selected": [],
+        },
+    )
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    return draft_id, page, json.dumps([f"date:{other}", "assigned"], separators=(",", ":")), other
+
+
+@pytest.mark.parametrize("where", WHERE_WORDS_ARE)
+@pytest.mark.parametrize("sent", ["another date", "a five-digit year", "words in the box"])
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_a_conflict_beside_another_date_gives_back_the_earlier_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, sent: str, where: str
+) -> None:
+    """A date the box holds exactly needs no copy. Other text in the box comes back as it was sent,
+    and the words carried beside it come back with it, under the neutral note."""
+    text, _, typing = BESIDE_THE_WORDS[sent]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, none, other = (
+            conflict_with_words_in_saved_progress(browser, monkeypatch)
+            if where == "in saved progress"
+            else conflict_with_words(browser, monkeypatch, words=True)
+        )
+        box = correct_box(f"date:{other}", "assigned")
+        posted, _, _ = conflict_fields(page, press, none, {box: text})
+        before = review_as_stored(browser, draft_id)
+        answer = send(browser, draft_id, posted)
+        after = review_as_stored(browser, draft_id)
+
+    assert answer.status_code == 422
+    assert CONFLICT_SAID in page_text(answer)
+    assert copied(answer) == {*typing, WORDS_BESIDE}
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert not says(answer.text, imports.TYPED_SAID)
+    assert before == after
 
 
 # ----------------------------------------------------------- a date on a review that ended
