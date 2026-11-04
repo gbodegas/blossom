@@ -22706,8 +22706,9 @@ def next_save_for_later_overwrites(
 def test_a_limit_a_repeated_refusal_lets_the_next_save_for_later_overwrite_another_tab(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str, second: str
 ) -> None:
-    """A limit: only the immediate next Save for later is told another tab saved. The same post
-    refused again has no words left to give back, and signs the revision it finds."""
+    """A limit, one case of several rebuilt pages that can lead to this: only the immediate next
+    Save for later is told another tab saved. The same post refused again has no words left to give
+    back, and signs the revision it finds."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, row, _, signed = refused_after_another_tab_saved(
             browser, monkeypatch, first
@@ -22722,8 +22723,9 @@ def test_a_limit_a_repeated_refusal_lets_the_next_save_for_later_overwrite_anoth
 def test_a_limit_keep_from_the_refused_page_lets_the_next_save_for_later_overwrite_another_tab(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str, how: str
 ) -> None:
-    """A limit: only the immediate next Save for later is told another tab saved. Keep from the
-    refused page signs the revision it finds."""
+    """A limit, one case of several rebuilt pages that can lead to this: only the immediate next
+    Save for later is told another tab saved. Keep from the refused page signs the revision it
+    finds."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, row, box, signed = refused_after_another_tab_saved(
             browser, monkeypatch, first
@@ -22743,9 +22745,9 @@ def test_a_limit_keep_from_the_refused_page_lets_the_next_save_for_later_overwri
 def test_a_limit_a_title_too_long_lets_the_next_save_for_later_overwrite_another_tab(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str, second: str
 ) -> None:
-    """A limit: only the immediate next Save for later is told another tab saved. A title too long
-    from the refused page signs the revision it finds, and with the title put right the next Save
-    for later goes through."""
+    """A limit, one case of several rebuilt pages that can lead to this: only the immediate next
+    Save for later is told another tab saved. A title too long from the refused page signs the
+    revision it finds, and with the title put right the next Save for later goes through."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, row, _, signed = refused_after_another_tab_saved(
             browser, monkeypatch, first
@@ -22763,8 +22765,9 @@ def test_a_limit_a_title_too_long_lets_the_next_save_for_later_overwrite_another
 def test_a_limit_the_behind_page_lets_the_next_save_for_later_overwrite_another_tab(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str
 ) -> None:
-    """A limit: only the immediate next Save for later is told another tab saved. The page that
-    tells it signs the revision it finds, so the press after that goes through."""
+    """A limit, one case of several rebuilt pages that can lead to this: only the immediate next
+    Save for later is told another tab saved. The page that tells it signs the revision it finds,
+    so the press after that goes through."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, row, _, signed = refused_after_another_tab_saved(
             browser, monkeypatch, first
