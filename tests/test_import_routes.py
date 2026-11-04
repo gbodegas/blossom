@@ -23366,16 +23366,16 @@ def test_keep_withdrawing_an_answer_past_a_refused_read_says_so_apart_with_no_fo
     with here(open_settings(tmp_path)) as browser:
         review, page, _, _, _ = back_on_a_page_saved_from(browser, monkeypatch)
         posted = shown_post(page, "keep", clear=[review.confirm])
-        before = stored_kinds(browser, review.draft_id, "confirm")
+        before = review_as_stored(browser, review.draft_id)
         rows_back_past_its_next_read(monkeypatch, refusing_coded("SQLITE_IOERR"))
         answer = send(browser, review.draft_id, posted)
         monkeypatch.undo()
-        after = stored_kinds(browser, review.draft_id, "confirm")
+        after = review_as_stored(browser, review.draft_id)
 
     says_the_earlier_save_with_no_form(answer, review.draft_id, [])
     says_this_keep_stored_its_answers(answer)
-    assert before == ["as_read"]
-    assert after == []
+    assert holds_the_answer(before, review.confirm, "as_read")
+    assert not holds_the_answer(after, review.confirm, "as_read")
 
 
 def the_page_s_read_of_the_post_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -23465,12 +23465,17 @@ def test_keep_storing_answers_with_no_receipt_past_a_refused_read_answers_200_an
     assert after["answers"] != before["answers"]
 
 
-KEEP_S_THAT_STORE_NOTHING: Final = (
-    "its answers as they're kept",
-    "the page out of date",
-    "busy at its write",
-    "a box too long",
-)
+KEEP_S_THAT_STORE_NOTHING: Final[dict[str, Callable[..., None] | None]] = {
+    "its answers as they're kept": None,
+    "the page out of date": None,
+    "a busy store at its write": refusing(StoreBusy),
+    "a busy file at its write": refusing_coded("SQLITE_BUSY"),
+    "an unknown outcome at its write": refusing_coded("SQLITE_IOERR"),
+    "a box too long": None,
+}
+"""Each way a Keep goes on to find no rows having stored nothing, with what its write answers, if
+it's refused."""
+THE_ENDINGS: Final = {"expired": (410, "expired"), "removed": (404, "absent")}
 
 
 def a_keep_that_stores_nothing(
@@ -23499,32 +23504,72 @@ def a_keep_that_stores_nothing(
     return draft_id, posted
 
 
+@pytest.mark.parametrize("read", list(THE_NEXT_READ_SAYS))
 @pytest.mark.parametrize("receipt", [True, False], ids=["a receipt", "no receipt"])
-@pytest.mark.parametrize("how", KEEP_S_THAT_STORE_NOTHING)
+@pytest.mark.parametrize("how", list(KEEP_S_THAT_STORE_NOTHING))
 def test_keep_that_stored_nothing_has_no_line_about_it_and_answers_at_its_status(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, how: str, receipt: bool
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, how: str, receipt: bool, read: str
 ) -> None:
-    """An earlier save's receipt isn't this press's write. The page with a receipt answers 200 and
-    the one with none 503, and nothing is written."""
-    refused = refusing_coded("SQLITE_IOERR")
+    """An earlier save's receipt isn't this press's write. The page with a receipt answers 200, and
+    the one with none 503, or the ending's own status and words where the next read says the review
+    ended. Nothing is written."""
+    at_its_write = KEEP_S_THAT_STORE_NOTHING[how]
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted = a_keep_that_stores_nothing(browser, monkeypatch, how, receipt=receipt)
         before = review_as_stored(browser, draft_id)
-        at_its_write = ("review_press", "keep_answers", 1, refusing(StoreBusy))
-        further = [at_its_write] if how == "busy at its write" else []
-        reads = rows_back_past_its_next_read(monkeypatch, refused, *further)
+        further = (
+            [] if at_its_write is None else [("review_press", "keep_answers", 1, at_its_write)]
+        )
+        reads = rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[read], *further)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
         after = review_as_stored(browser, draft_id)
 
     text = page_text(answer)
     assert ("ended_under_press", "snapshot", 1) in reads.refused
-    assert answer.status_code == (200 if receipt else 503)
-    assert imports.REVIEW_NOT_SHOWN in text
     assert "Your answers are kept" not in text
     assert ("Saved: 1 new assignment." in text) is receipt
     assert 'name="correct:' not in answer.text
     assert after == before
+    if receipt:
+        assert answer.status_code == 200
+        assert imports.REVIEW_NOT_SHOWN in text
+    elif read in THE_ENDINGS:
+        status, said = THE_ENDINGS[read]
+        assert answer.status_code == status
+        assert imports.SAID[said] in text
+    else:
+        assert answer.status_code == 503
+        assert imports.REVIEW_NOT_SHOWN in text
+
+
+@pytest.mark.parametrize("read", ["a refused file", "another refusal"])
+@pytest.mark.parametrize(
+    "outcome", [NotSaved("failed"), AlreadySaved(())], ids=["not saved", "already saved"]
+)
+def test_save_storing_answers_with_no_homework_past_its_next_read_answers_503_with_no_line(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: object, read: str
+) -> None:
+    """Its own write stores answers, a connection of its own finds them, and it saves no homework.
+    With no receipt this page answers 503 and has no line about kept answers."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, "save", tick=[first], typed=typed_on(other))
+        before = review_as_stored(browser, draft_id)
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: outcome)
+        reads = rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[read])
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        after = review_as_stored(browser, draft_id)
+
+    text = page_text(answer)
+    assert reads.refused == [("ended_under_press", "snapshot", 1)]
+    assert answer.status_code == 503
+    assert imports.REVIEW_NOT_SHOWN in text
+    assert "Your answers are kept" not in text
+    assert copied(answer) == AS_GIVEN_BACK
+    assert 'name="correct:' not in answer.text
+    assert after["answers"] != before["answers"]
 
 
 @pytest.mark.parametrize("receipt", [True, False], ids=["a receipt", "no receipt"])
