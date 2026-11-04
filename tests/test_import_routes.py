@@ -22777,3 +22777,212 @@ def test_a_limit_the_behind_page_lets_the_next_save_for_later_overwrite_another_
         assert behind.status_code == 409
         assert imports.PRESS_SAID["later_behind"] in page_text(behind)
         next_save_for_later_overwrites(browser, draft_id, behind.text, row, signed)
+
+
+def earlier_save_past_its_post(
+    route: str, posted: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[str, str]]:
+    """Sets the press to reach an earlier save's page with no post to read, its own read finding the
+    review open: a signed list past its ceiling, or a post that doesn't match the page, with the
+    first or the next read refused. The post to send."""
+    refused = refusing_coded("SQLITE_IOERR")
+    if route == "past its ceiling":
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        Refusing(monkeypatch, ("review_press", "snapshot", 1, refused))
+        return posted
+    caller = "review_press" if route == "doesn't match, first read refused" else "ended_under_press"
+    Refusing(monkeypatch, (caller, "snapshot", 1, refused))
+    return [(name, "0" if name == "version" else value) for name, value in posted]
+
+
+NO_POST_TO_READ: Final = (
+    "past its ceiling",
+    "doesn't match, first read refused",
+    "doesn't match, next read refused",
+)
+WORDS_WITH_NO_POST_TO_READ: Final[dict[str, tuple[str, bool, set[str], set[str]]]] = {
+    "the tick, the date as read": (
+        READ_ASSIGNED,
+        True,
+        {READ_ASSIGNED, WORDS_BESIDE},
+        {WORDS_BESIDE},
+    ),
+    "the tick, another date": ("2026-10-03", True, {"2026-10-03", WORDS_BESIDE}, {"2026-10-03"}),
+    "the tick, an empty box": ("", True, {WORDS_BESIDE}, {WORDS_BESIDE}),
+    "no tick, another date": ("2026-10-03", False, {"2026-10-03"}, {"2026-10-03"}),
+    "no tick, a five-digit year": (
+        "12026-10-03",
+        False,
+        {"12026-10-03", WORDS_BESIDE},
+        {"12026-10-03"},
+    ),
+}
+"""What's sent in a date box beside carried words: the text, whether "No assigned date" is ticked,
+what comes back on Keep or Save for later, and what comes back on Save."""
+TYPING_WITH_NO_POST_TO_READ: Final[dict[str, tuple[str, str, bool]]] = {
+    "a stray space on a title": ("title", "Set 3 ", False),
+    "only spaces in an instruction": ("instruction:0", "   ", False),
+    "typed words": ("title", "Typed Words", True),
+}
+"""What's typed on a row with no words beside it: the field, the text, and whether Save gives it
+back, where Keep and Save for later always do."""
+
+
+def says_the_save_and_gives_the_typing_back(answer: Answer, typing: set[str]) -> None:
+    """The save's result and counts at 200, with the typing to copy, no form, and the way back."""
+    text = page_text(answer)
+    assert answer.status_code == 200, text[:300]
+    assert "Saved: 1 new assignment." in text
+    assert "1 still needs checking." in text
+    assert copied(answer) == typing
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert not says(answer.text, imports.TYPED_SAID)
+    assert imports.REVIEW_NOT_SHOWN not in text
+    assert 'name="correct:' not in answer.text
+    assert "Back to the review" in text
+
+
+@pytest.mark.parametrize("route", NO_POST_TO_READ)
+@pytest.mark.parametrize("case", list(WORDS_WITH_NO_POST_TO_READ))
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_an_earlier_save_with_no_post_to_read_gives_back_the_date_and_the_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str, route: str
+) -> None:
+    """Only an unticked valid date replaces the words, and it comes back exactly."""
+    text, ticked, typing, _ = WORDS_WITH_NO_POST_TO_READ[case]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none, _ = an_earlier_save_beside_words(
+            browser, monkeypatch, "in saved progress"
+        )
+        posted = page_post(
+            page,
+            press,
+            choose=no_date_tick(none) if ticked else {},
+            typed={correct_box(piece, "assigned"): text},
+        )
+        fields = earlier_save_past_its_post(route, posted, monkeypatch)
+        answer = send(browser, draft_id, fields)
+        monkeypatch.undo()
+
+    says_the_save_and_gives_the_typing_back(answer, typing)
+
+
+@pytest.mark.parametrize("route", NO_POST_TO_READ)
+@pytest.mark.parametrize("case", list(TYPING_WITH_NO_POST_TO_READ))
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_an_earlier_save_with_no_post_to_read_gives_back_the_boxes_as_sent(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str, route: str
+) -> None:
+    """A stray space and whitespace alone are found, so the answer is the page with the copy."""
+    field, sent, _ = TYPING_WITH_NO_POST_TO_READ[case]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, other = a_saved_row(browser, monkeypatch)
+        posted = page_post(page, press, typed={correct_box(other, field): sent})
+        fields = earlier_save_past_its_post(route, posted, monkeypatch)
+        answer = send(browser, draft_id, fields)
+        monkeypatch.undo()
+
+    says_the_save_and_gives_the_typing_back(answer, {sent})
+
+
+@pytest.mark.parametrize("route", NO_POST_TO_READ)
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_an_earlier_save_with_no_post_to_read_and_nothing_typed_redirects(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, route: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, _ = a_saved_row(browser, monkeypatch)
+        fields = earlier_save_past_its_post(route, page_post(page, press), monkeypatch)
+        answer = send(browser, draft_id, fields)
+        monkeypatch.undo()
+        shown = followed(browser, answer)
+
+    assert answer.status_code == 303
+    assert copied(answer) == set()
+    assert says(shown, "Saved: 1 new assignment.")
+
+
+@pytest.mark.parametrize("case", list(WORDS_WITH_NO_POST_TO_READ))
+def test_save_with_no_post_to_read_keeps_its_own_reading_of_a_date_beside_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    text, ticked, _, typing = WORDS_WITH_NO_POST_TO_READ[case]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none, _ = an_earlier_save_beside_words(
+            browser, monkeypatch, "in saved progress"
+        )
+        posted = page_post(
+            page,
+            "save",
+            choose=no_date_tick(none) if ticked else {},
+            typed={correct_box(piece, "assigned"): text},
+        )
+        fields = earlier_save_past_its_post("past its ceiling", posted, monkeypatch)
+        answer = send(browser, draft_id, fields)
+        monkeypatch.undo()
+
+    says_the_save_and_gives_the_typing_back(answer, typing)
+
+
+@pytest.mark.parametrize("case", [*TYPING_WITH_NO_POST_TO_READ, "nothing typed"])
+def test_save_with_no_post_to_read_keeps_its_own_reading_of_the_boxes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, other = a_saved_row(browser, monkeypatch)
+        field, sent, comes_back = TYPING_WITH_NO_POST_TO_READ.get(case, ("title", "", False))
+        typed = {correct_box(other, field): sent} if sent else {}
+        posted = page_post(page, "save", tick=[first], typed=typed)
+        fields = earlier_save_past_its_post("past its ceiling", posted, monkeypatch)
+        answer = send(browser, draft_id, fields)
+        monkeypatch.undo()
+
+    if comes_back:
+        says_the_save_and_gives_the_typing_back(answer, {sent})
+    else:
+        assert answer.status_code == 303
+        assert copied(answer) == set()
+
+
+@pytest.mark.parametrize(
+    ("field", "sent"),
+    [("title", "Set 3 "), ("instruction:0", "   "), ("title", "Typed Words")],
+    ids=["a stray space", "only spaces", "typed words"],
+)
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_a_limit_a_post_past_its_ceiling_with_no_confirmed_save_redirects_whatever_it_typed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, field: str, sent: str
+) -> None:
+    """A limit: with no confirmed save to answer with, the press says the review is too large, and
+    the post's typing isn't given back."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, press, typed={correct_box(other, field): sent})
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        shown = followed(browser, answer)
+
+    assert answer.status_code == 303
+    assert says(shown, imports.PRESS_SAID["too_large"])
+    assert TYPED_BACK.findall(shown) == []
+    assert "Typed Words" not in html.unescape(shown)
+
+
+@pytest.mark.parametrize("press", THE_TWO_PRESSES)
+def test_a_limit_a_post_past_its_ceiling_looks_for_no_earlier_save_while_the_review_can_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """A limit: Keep and Save for later only come to an earlier save's page when a read is refused.
+    With every read answered, the press says the review is too large, whatever this page saved."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, other = a_saved_row(browser, monkeypatch)
+        posted = page_post(page, press, typed={correct_box(other, "title"): "Typed Words"})
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        shown = followed(browser, answer)
+
+    assert answer.status_code == 303
+    assert says(shown, imports.PRESS_SAID["too_large"])
+    assert "Typed Words" not in html.unescape(shown)

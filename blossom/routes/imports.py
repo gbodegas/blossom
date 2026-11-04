@@ -725,9 +725,10 @@ async def typing_of(
 async def typing_by_press(
     request: Request, stored: Iterable[tuple[str, str, str]] = ()
 ) -> list[tuple[str, str]]:
-    """What a post gives back when its press finds the review ended, and on every page that says it
-    can't be shown: on a Save press, ``typing_of``; on Keep or Save for later, every box as it was
-    sent, whitespace included (``typed_as_sent``)."""
+    """What a post gives back when its press finds the review ended, on every page that says it
+    can't be shown, and beside a confirmed save's counts with no post to read: on a Save press,
+    ``typing_of``; on Keep or Save for later, every box as it was sent, whitespace included
+    (``typed_as_sent``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -2627,7 +2628,9 @@ async def saved_page(
     pattern (``saved_busy``); a review it refuses to read is said as for a busy store. Its
     acceptance on record means the press committed, so an unexpected error keeps the save's
     result the same way (``noted_after_commit``). What that save saved (``own``, its pieces) goes
-    with it, unsaid, on the page that carries the press's choices."""
+    with it, unsaid, on the page that carries the press's choices. With no post to read, past its
+    ceiling or not matching its page, the counts come with the typing to copy, by its press
+    (``typing_by_press``), and redirect only when there's nothing to give back."""
     record = state.project_state
     try:
         student = await asyncio.to_thread(record.student_id)
@@ -2679,7 +2682,7 @@ async def saved_page(
             return await partly_saved(
                 request, state, draft_id, post, lines or [COUNTS_UNSHOWN], read=snapshot, own=own
             )
-        typed = await typing_of(request)
+        typed = await typing_by_press(request)
         if typed:
             return saved_outcome(
                 request,
