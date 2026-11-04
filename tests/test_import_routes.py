@@ -24501,6 +24501,35 @@ def test_a_press_with_no_homework_where_a_read_says_the_end_says_it_was_kept_whe
     assert "Your answers are kept" not in page_text(answer)
 
 
+@pytest.mark.parametrize("receipt", [True, False], ids=["a receipt", "no receipt"])
+def test_save_for_later_behind_withdrawing_an_answer_alone_past_a_refused_read_has_no_line(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, receipt: bool
+) -> None:
+    """Clearing a kept answer stores nothing: no line, at 200 with a receipt and 503 with none, and
+    a connection of its own finds it gone."""
+    with here(open_settings(tmp_path)) as browser:
+        if receipt:
+            review, page, _, _, _ = back_on_a_page_saved_from(browser, monkeypatch)
+        else:
+            review = three_groups(browser, monkeypatch)
+            page = followed(
+                browser, send(browser, review.draft_id, shown_post(review.page, "keep"))
+            )
+        posted = shown_post(page, "later", clear=[review.confirm])
+        saved_elsewhere(browser, review.draft_id)
+        before = review_as_stored(browser, review.draft_id)
+        rows_back_past_its_next_read(monkeypatch, refusing_coded("SQLITE_IOERR"))
+        answer = send(browser, review.draft_id, posted)
+        monkeypatch.undo()
+        after = review_as_stored(browser, review.draft_id)
+
+    assert answer.status_code == (200 if receipt else 503)
+    assert imports.REVIEW_NOT_SHOWN in page_text(answer)
+    says_nothing_of_kept_answers(answer)
+    assert holds_the_answer(before, review.confirm, "as_read")
+    assert not holds_the_answer(after, review.confirm, "as_read")
+
+
 @pytest.mark.parametrize("read", ["a refused file", "another refusal"])
 @pytest.mark.parametrize("stored", [True, False], ids=["its answers stored", "nothing stored"])
 def test_save_for_later_behind_beside_a_receipt_says_so_only_when_it_stored(
@@ -24592,6 +24621,25 @@ def test_keep_s_ordinary_page_says_its_answers_are_kept_with_nothing_stored(
     assert answer.status_code == 200
     assert imports.PRESS_SAID["kept"] in page_text(answer)
     assert 'name="correct:' in answer.text
+
+
+def test_keep_s_ordinary_page_says_its_line_ahead_of_a_name_it_can_t_check_with_nothing_stored(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The line said only beside rows comes first, as a press's own line does, then the warning."""
+
+    async def unreadable(*args: object, **kwargs: object) -> bytes:
+        raise UnreadableHouseholdSecret
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted = a_keep_that_stores_nothing(
+            browser, monkeypatch, "its answers as they're kept", receipt=False
+        )
+        monkeypatch.setattr(imports, "grade_name_key", unreadable)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert said_by(answer) == [imports.PRESS_SAID["kept"], imports.SAID["no_name_check"]]
 
 
 def test_save_for_later_s_confirmation_says_its_answers_are_kept_with_nothing_stored(

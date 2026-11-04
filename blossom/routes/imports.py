@@ -2110,7 +2110,7 @@ async def with_typing(
         lines[:0] = beside_rows
     shown = fields_shown(rows)
     if any((key, field) in unsaved for key, field, _ in shown):
-        lines.insert(len(said) + len(beside_rows), PRESS_SAID["unsaved_typing"])
+        lines.insert(len(said), PRESS_SAID["unsaved_typing"])
     if not done:
         if post.press != "save" and not refused_with_choices:
             typed, note = tick_set_aside(post, shown), UNSHOWN_TYPED
