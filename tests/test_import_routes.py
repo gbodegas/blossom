@@ -25760,6 +25760,28 @@ def test_a_save_s_uncertain_write_says_so_with_no_earlier_save_at_the_status_it_
     says_nothing_of_kept_answers(answer)
 
 
+@pytest.mark.parametrize("unseen", [1, 2], ids=["its first look", "its first two looks"])
+@pytest.mark.parametrize("read", THE_READS_PAST_AN_UNCERTAIN_WRITE)
+@pytest.mark.parametrize("committed", [True, False], ids=["it committed", "it didn't"])
+def test_a_save_s_uncertain_write_beside_its_receipt_answers_with_that_receipt_alone(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, committed: bool, read: str, unseen: int
+) -> None:
+    """Timing forced: its first looks find no receipt, its keep can't tell, and a later look finds
+    one. Unlike Keep and Save for later, it answers with that result alone."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _, _ = a_write_that_can_t_tell(
+            browser, monkeypatch, "save", committed, read
+        )
+        for _ in range(unseen):
+            a_receipt_unseen_at_first(browser, monkeypatch)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert str(escape(imports.UNKNOWN_SAID["save"])) not in answer.text
+    says_nothing_of_kept_answers(answer)
+
+
 THE_ENDS_BEFORE_A_REFUSED_RECEIPT: Final = (
     "closed at its first page read",
     "its first page read says expired",
