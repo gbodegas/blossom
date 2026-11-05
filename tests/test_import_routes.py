@@ -27547,5 +27547,33 @@ def test_a_limit_a_refused_save_whose_first_lookup_is_refused_says_only_that_it_
     assert ("ended_under_press", "snapshot") not in calls.seen
 
 
+@pytest.mark.parametrize("read", ["refused", "closed", "expired", "removed"])
+@pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
+def test_a_limit_a_refused_save_whose_second_lookup_is_refused_says_only_that_it_can_t_tell(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str, read: str
+) -> None:
+    """A limit, as it stands: with no earlier save at its first lookup, and its second refused past
+    a refused or ended read, Save says it can't tell whether any homework was saved, and doesn't say
+    why its post was refused."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted = a_refused_post(browser, monkeypatch, "save", refusal, "none")
+        refused = refusing_coded("SQLITE_IOERR")
+        rules = [("replayed", "homework_acceptance", 2, refused)]
+        if read == "refused":
+            rules.append(("ended_under_press", "snapshot", 1, refused))
+        else:
+            ended_once_the_first_read_returns(browser, monkeypatch, draft_id, read)
+        calls = Refusing(monkeypatch, *rules)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    text = page_text(answer)
+    assert answer.status_code == 503
+    assert "Blossom couldn't tell whether any homework was saved." in text
+    assert REFUSAL_SAID[refusal] not in text
+    assert copied(answer) == AS_GIVEN_BACK
+    assert ("replayed", "homework_acceptance", 2) in calls.refused
+
+
 def test_the_reason_a_post_doesn_t_match_is_the_ceiling_s_own_second_sentence() -> None:
     assert imports.PRESS_SAID["too_large"].endswith(f" {NOTHING_BY_THIS_ATTEMPT}")
