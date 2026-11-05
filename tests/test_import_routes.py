@@ -25571,6 +25571,14 @@ THE_READS_PAST_AN_UNCERTAIN_WRITE: Final = (
 """What a read says past a write that can't tell, its rows back empty where it's the next read."""
 THE_NEXT_READ_ISN_T_REACHED: Final = "the next read isn't reached"
 """For a press whose route stops short of a next read, so that no test forces one it never makes."""
+THE_RECEIPT_S_ROWS_COME_BACK_EMPTY: Final = "its receipt's rows come back empty"
+THE_ROUTES_PAST_ITS_FIRST_LOOK: Final = (
+    THE_NEXT_READ_ISN_T_REACHED,
+    THE_RECEIPT_S_ROWS_COME_BACK_EMPTY,
+    "closed at its first page read",
+    "closed at its next read",
+)
+"""What a Save that finds its receipt at its first look past its keep goes on to meet."""
 
 
 def a_write_that_can_t_tell(
@@ -25620,6 +25628,9 @@ def a_write_that_can_t_tell(
     monkeypatch.setattr(drafts, writer, can_t_tell)
     if read == "closed at its next read":
         no_rows_once(monkeypatch, lambda: discarded(browser, review.draft_id))
+        Refusing(monkeypatch, *also)
+    elif read == THE_RECEIPT_S_ROWS_COME_BACK_EMPTY:
+        no_rows_once(monkeypatch)
         Refusing(monkeypatch, *also)
     elif read in ("closed at its first page read", THE_NEXT_READ_ISN_T_REACHED):
         Refusing(monkeypatch, *also)
@@ -25880,7 +25891,10 @@ THE_READS_PAST_ITS_FIRST_TWO_LOOKS: Final = (*THE_READS_PAST_AN_UNCERTAIN_WRITE,
 @pytest.mark.parametrize("page", ["its post read", "past the ceiling", "nothing typed"])
 @pytest.mark.parametrize(
     ("unseen", "read"),
-    [(1, THE_NEXT_READ_ISN_T_REACHED), *((2, r) for r in THE_READS_PAST_ITS_FIRST_TWO_LOOKS)],
+    [
+        *((1, r) for r in THE_ROUTES_PAST_ITS_FIRST_LOOK),
+        *((2, r) for r in THE_READS_PAST_ITS_FIRST_TWO_LOOKS),
+    ],
 )
 @pytest.mark.parametrize("committed", [True, False], ids=["it committed", "it didn't"])
 def test_a_save_s_uncertain_write_says_so_beside_its_receipt(
@@ -25933,7 +25947,10 @@ def test_a_save_s_uncertain_write_says_so_beside_its_receipt(
 @pytest.mark.parametrize("counts", ["empty", "refused"])
 @pytest.mark.parametrize(
     ("unseen", "read"),
-    [(1, THE_NEXT_READ_ISN_T_REACHED), *((2, r) for r in THE_READS_PAST_AN_UNCERTAIN_WRITE)],
+    [
+        *((1, r) for r in THE_ROUTES_PAST_ITS_FIRST_LOOK),
+        *((2, r) for r in THE_READS_PAST_AN_UNCERTAIN_WRITE),
+    ],
 )
 def test_a_save_s_uncertain_write_says_so_beside_its_receipt_s_counts_unread(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, unseen: int, read: str, counts: str
