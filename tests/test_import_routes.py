@@ -27384,10 +27384,12 @@ def ended_once_the_first_read_returns(
 def the_read_after_it(
     browser: TestClient, monkeypatch: pytest.MonkeyPatch, draft_id: str, read: str, receipt: str
 ) -> Refusing:
-    """The read after the refused post refused, answered, or finding the review ended, with the
-    receipt's lookups refused where ``receipt`` says so; every store call counted."""
+    """The read after the refused post refused by the file or as frozen, answered, or finding the
+    review ended, with the receipt's lookups refused where ``receipt`` says so; every store call
+    counted."""
     refused = refusing_coded("SQLITE_IOERR")
-    rules = [("ended_under_press", "snapshot", 1, refused)] if read == "refused" else []
+    fails = {"refused": refused, "frozen": refusing(DraftFrozen)}
+    rules = [("ended_under_press", "snapshot", 1, fails[read])] if read in fails else []
     if receipt == "lookup refused":
         rules += [("replayed", "homework_acceptance", n, refused) for n in (1, 2)]
     if read in ENDED_PAST_THE_FIRST_READ:
@@ -27403,16 +27405,22 @@ def says_nothing_more_of_a_refused_post(answer: Answer) -> None:
         assert control not in answer.text
 
 
+@pytest.mark.parametrize("read", ["refused", "frozen"])
 @pytest.mark.parametrize(("press", "receipt"), NO_RECEIPT_FOUND)
 @pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
 def test_a_refused_post_says_why_beside_a_review_that_can_t_be_shown(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, refusal: str, receipt: str
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    refusal: str,
+    receipt: str,
+    read: str,
 ) -> None:
     """The read after a refused post refused, and no earlier save found: the press's reason and that
     the review can't be shown, in that order, in the alert; the typing as sent; both ways back."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted = a_refused_post(browser, monkeypatch, press, refusal, receipt)
-        calls = the_read_after_it(browser, monkeypatch, draft_id, "refused", receipt)
+        calls = the_read_after_it(browser, monkeypatch, draft_id, read, receipt)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
@@ -27433,27 +27441,39 @@ def test_a_refused_post_says_why_beside_a_review_that_can_t_be_shown(
 
 
 @pytest.mark.parametrize(
-    ("press", "read"),
+    ("press", "read", "look"),
     [
         *(
-            (press, read)
+            (press, read, "second")
             for press in THE_TWO_PRESSES
-            for read in ["refused", "closed", "expired", "removed"]
+            for read in ["refused", "frozen", "closed", "expired", "removed"]
         ),
-        *(("save", read) for read in ["answered", "refused", "closed", "expired", "removed"]),
+        *(
+            ("save", read, look)
+            for look in ["first", "second"]
+            for read in ["answered", "refused", "frozen", "closed", "expired", "removed"]
+        ),
     ],
 )
 @pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
 def test_a_refused_post_says_why_beneath_an_earlier_save_s_result(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, refusal: str, read: str
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    refusal: str,
+    read: str,
+    look: str,
 ) -> None:
     """An earlier save of this page found: its result and counts first, as they stand, then the
     press's reason once in the note style, apart from the heading and any alert; past an ended read,
-    the ended review's words too. Save looks for it first, whatever the read after finds; Keep and
-    Save for later look only past a refused or ended read."""
+    the ended review's words too. Save looks for it first, whatever the read after finds, and again
+    after that read when its first look finds none; Keep and Save for later look only past a
+    refused or ended read."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted = a_refused_post(browser, monkeypatch, press, refusal, "found")
         calls = the_read_after_it(browser, monkeypatch, draft_id, read, "found")
+        if press == "save" and look == "second":
+            a_receipt_unseen_at_first(browser, monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
@@ -27469,8 +27489,14 @@ def test_a_refused_post_says_why_beneath_an_earlier_save_s_result(
     says_nothing_more_of_a_refused_post(answer)
     if read in ENDED_PAST_THE_FIRST_READ:
         assert ENDED_PAST_THE_FIRST_READ[read][1] in text
-    assert calls.seen[("replayed", "homework_acceptance")] == 1
-    assert calls.seen.get(("ended_under_press", "snapshot"), 0) == (0 if press == "save" else 1)
+    looks = sum(
+        n
+        for (caller, read), n in calls.seen.items()
+        if caller == "replayed" and read in ("homework_acceptance", "looking")
+    )
+    assert looks == (2 if press == "save" and look == "second" else 1)
+    second_read = calls.seen.get(("ended_under_press", "snapshot"), 0)
+    assert second_read == (0 if press == "save" and look == "first" else 1)
 
 
 @pytest.mark.parametrize(("press", "receipt"), NO_RECEIPT_FOUND)
