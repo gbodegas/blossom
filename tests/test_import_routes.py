@@ -23310,6 +23310,8 @@ def says_the_counts_and_the_review_unshown(
     assert answer.status_code == 200
     [alert] = re.findall(r'role="alert" id="said"[^>]*>(.*?)</div>', answer.text, re.S)
     assert re.findall(r"<p>(.*?)</p>", alert) == [str(escape(imports.REVIEW_NOT_SHOWN))]
+    assert page_text(answer).count(imports.REVIEW_NOT_SHOWN) == 1
+    assert page_text(answer).count(imports.COUNTS_UNSHOWN) == 1
     assert copies_in_order(answer) == list(typing)
     assert says(answer.text, imports.UNSHOWN_TYPED) == bool(typing)
     for control in ('name="correct:', 'name="refused:', 'name="progress_revision"', 'name="press"'):
@@ -25954,6 +25956,33 @@ def a_press_with_a_line_finding_an_earlier_save(
     return draft_id, posted, imports.UNKNOWN_SAID[press]
 
 
+def calls_to(monkeypatch: pytest.MonkeyPatch, owner: object, name: str) -> list[bool]:
+    """Fills with each call to this store method from here on."""
+    real: Callable[..., Any] = getattr(owner, name)
+    calls: list[bool] = []
+
+    @functools.wraps(real)
+    def counting(*args: object, **kwargs: object) -> Any:  # noqa: ANN401
+        calls.append(True)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(owner, name, counting)
+    return calls
+
+
+def reads_of_the_post(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Fills with each read of a press's post from here on."""
+    real = imports.review_post
+    reads: list[bool] = []
+
+    async def reading(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        reads.append(True)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(imports, "review_post", reading)
+    return reads
+
+
 def says_its_line_once_as_a_note(answer: Answer, line: str) -> None:
     """The press's line once, in the note style, apart from the heading and the alert."""
     assert answer.text.count(str(escape(line))) == 1
@@ -25977,11 +26006,16 @@ def test_a_press_s_line_goes_beneath_an_earlier_save_s_counts_it_can_t_show(
         no_post_to_read_after_the_first(monkeypatch, sqlite3.OperationalError("refused"))
         asked = no_read_for_the_tense(monkeypatch)
         read = reads_of_the_review(browser, monkeypatch)
+        record = state_of(browser).project_state
+        counts = calls_to(monkeypatch, record, "homework_counts")
+        looks = calls_to(monkeypatch, record, "homework_acceptance")
+        posts = reads_of_the_post(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert not asked
     assert len(read) == (2 if press == "save" else 3)
+    assert (len(counts), len(looks), len(posts)) == (1, 2 if press == "save" else 1, 2)
     says_the_counts_and_the_review_unshown(answer, draft_id, ["This Tab "])
     says_its_line_once_as_a_note(answer, line)
     assert imports.NO_HOMEWORK not in page_text(answer)
@@ -26075,6 +26109,7 @@ def test_a_press_s_line_beside_an_earlier_save_on_the_pages_around_empty_counts_
     assert copied(answer) == {"This Tab "}
     if finds == "its counts shown":
         assert "Saved: 1 new assignment." in the_outcome_heading(answer)
+        assert imports.COUNTS_UNSHOWN not in page_text(answer)
     else:
         says_the_save_with_its_counts_unread(answer)
     if finds == "its post past the ceiling":
@@ -26082,6 +26117,7 @@ def test_a_press_s_line_beside_an_earlier_save_on_the_pages_around_empty_counts_
     else:
         [alert] = re.findall(r'role="alert" id="said"[^>]*>(.*?)</div>', answer.text, re.S)
         assert re.findall(r"<p>(.*?)</p>", alert) == [str(escape(imports.REVIEW_NOT_SHOWN))]
+        assert page_text(answer).count(imports.REVIEW_NOT_SHOWN) == 1
 
 
 THE_STATUS_PAST_AN_UNCERTAIN_WRITE: Final = {
