@@ -25616,8 +25616,12 @@ def a_write_that_can_t_tell(
     monkeypatch.setattr(drafts, writer, can_t_tell)
     if read == "closed at its next read":
         no_rows_once(monkeypatch, lambda: discarded(browser, review.draft_id))
-    elif read != "closed at its first page read":
-        rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[read], *also)
+        Refusing(monkeypatch, *also)
+    elif read == "closed at its first page read":
+        Refusing(monkeypatch, *also)
+    else:
+        says = THE_NEXT_READ_SAYS.get(read, lambda *_: None)
+        rows_back_past_its_next_read(monkeypatch, says, *also)
     return review.draft_id, posted, field, value, writes
 
 
@@ -25867,7 +25871,7 @@ def test_a_save_s_uncertain_write_says_so_with_no_earlier_save_at_the_read_s_sta
 
 @pytest.mark.parametrize("page", ["its post read", "past the ceiling", "nothing typed"])
 @pytest.mark.parametrize("unseen", [1, 2], ids=["its first look", "its first two looks"])
-@pytest.mark.parametrize("read", THE_READS_PAST_AN_UNCERTAIN_WRITE)
+@pytest.mark.parametrize("read", [*THE_READS_PAST_AN_UNCERTAIN_WRITE, "the review open"])
 @pytest.mark.parametrize("committed", [True, False], ids=["it committed", "it didn't"])
 def test_a_save_s_uncertain_write_says_so_beside_its_receipt(
     tmp_path: pathlib.Path,
@@ -25989,6 +25993,110 @@ def test_a_save_s_uncertain_write_says_so_where_it_looks_for_its_receipt(
     else:
         assert answer.status_code == 503
         assert imports.UNKNOWN_SAID["homework"] in text
+    says_nothing_of_kept_answers(answer)
+
+
+THE_READS_AHEAD_OF_A_LATER_LOOK: Final = (
+    *(("its first page read", read) for read in THE_NEXT_READ_SAYS),
+    ("its first page read", "closed"),
+    *(("its next read", read) for read in THE_NEXT_READ_SAYS),
+    ("its next read", "closed"),
+    ("its next read", "the review open"),
+)
+
+
+@pytest.mark.parametrize(("where", "read"), THE_READS_AHEAD_OF_A_LATER_LOOK)
+@pytest.mark.parametrize("committed", [True, False], ids=["it committed", "it didn't"])
+def test_a_save_s_uncertain_write_says_so_where_a_later_look_for_its_receipt_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, committed: bool, where: str, read: str
+) -> None:
+    """Timing forced: its first two looks find no receipt, a read of the review answers as ``read``
+    says, and the look past that is refused. It can't tell what its homework did either, and says
+    both at 503 with its typing to copy, whichever read came first."""
+    line = imports.UNKNOWN_SAID["save"]
+    fired: list[str] = []
+
+    def firing(name: str, fail: Callable[..., None]) -> Callable[..., None]:
+        def fails(*_: object) -> None:
+            fired.append(name)
+            fail()
+
+        return fails
+
+    also = [("replayed", "looking", 2, firing("the look", refusing_coded("SQLITE_IOERR")))]
+    forced = {"its first page read": "a refused file", "its next read": read}[where]
+    if read == "closed":
+        forced = f"closed at {where}"
+    elif where == "its first page read":
+        also.append(
+            ("snapshot_keeping_typing", "snapshot", 1, firing("the read", THE_NEXT_READ_SAYS[read]))
+        )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _, writes = a_write_that_can_t_tell(
+            browser, monkeypatch, "save", committed, forced, also=also
+        )
+        a_receipt_unseen_at_first(browser, monkeypatch)
+        a_receipt_unseen_at_first(browser, monkeypatch)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    text = page_text(answer)
+    assert writes == ["save"]
+    assert fired == (
+        ["the read", "the look"]
+        if where == "its first page read" and read != "closed"
+        else ["the look"]
+    )
+    assert answer.status_code == 503
+    assert imports.UNKNOWN_SAID["homework"] in text
+    assert text.count(line) == 1
+    assert imports.NO_HOMEWORK not in text
+    assert copied(answer) == {"This Tab "}
+    says_nothing_of_kept_answers(answer)
+
+
+THE_PAGES_SAYING_BOTH_LINES: Final = {
+    ("its first page read", "a refused file"): 503,
+    ("its first page read", "expired"): 503,
+    ("its first page read", "removed"): 503,
+    ("its next read", "the review open"): 503,
+}
+"""Where a Save whose keep can't tell, with no earlier save on file, says what its homework did."""
+
+
+@pytest.mark.parametrize(("where", "read"), list(THE_PAGES_SAYING_BOTH_LINES))
+@pytest.mark.parametrize("committed", [True, False], ids=["it committed", "it didn't"])
+def test_a_save_s_uncertain_write_says_no_homework_was_saved_where_no_result_can_stand_beside_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, committed: bool, where: str, read: str
+) -> None:
+    """These pages have no earlier save's result, and say both lines with its typing to copy."""
+    fired: list[bool] = []
+
+    def fails(*_: object) -> None:
+        fired.append(True)
+        THE_NEXT_READ_SAYS[read]()
+
+    also = [("snapshot_keeping_typing", "snapshot", 1, fails)] if read in THE_NEXT_READ_SAYS else []
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _, writes = a_write_that_can_t_tell(
+            browser,
+            monkeypatch,
+            "save",
+            committed,
+            "a refused file" if also else read,
+            receipt=False,
+            also=also,
+        )
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    text = page_text(answer)
+    assert writes == ["save"]
+    assert bool(fired) is bool(also)
+    assert answer.status_code == THE_PAGES_SAYING_BOTH_LINES[where, read]
+    assert text.count(imports.UNKNOWN_SAID["save"]) == 1
+    assert text.count(imports.NO_HOMEWORK) == 1
+    assert copied(answer) == {"This Tab "}
     says_nothing_of_kept_answers(answer)
 
 
