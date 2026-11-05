@@ -25829,6 +25829,60 @@ def test_an_uncertain_write_says_so_whatever_its_earlier_save_s_page_finds(
     says_nothing_of_kept_answers(answer)
 
 
+@pytest.mark.parametrize(
+    "finds",
+    [
+        "its own read refused",
+        "its own read expired",
+        "its own read removed",
+        "its post read refused",
+        "its post read failing",
+        "its rows read refused",
+        "a transaction left open",
+        "its corrections refused",
+    ],
+)
+@pytest.mark.parametrize("committed", [True, False], ids=["it committed", "it didn't"])
+def test_a_save_s_uncertain_write_says_so_whatever_its_receipt_s_page_finds(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, committed: bool, finds: str
+) -> None:
+    """Timing forced: its first look past its keep finds its receipt, and that receipt's page finds
+    this. The sentence stays beneath that save's result, with the typing."""
+    line = imports.UNKNOWN_SAID["save"]
+    says = {"refused": "a refused file", "expired": "expired", "removed": "removed"}
+    own = finds.removeprefix("its own read ")
+    fired: list[bool] = []
+
+    def reading(*_: object) -> None:
+        fired.append(True)
+        THE_NEXT_READ_SAYS[says[own]]()
+
+    also = [("saved_page", "snapshot", 1, reading)] if own in says else []
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _, _ = a_write_that_can_t_tell(
+            browser, monkeypatch, "save", committed, THE_NEXT_READ_ISN_T_REACHED, also=also
+        )
+        a_receipt_unseen_at_first(browser, monkeypatch)
+        if finds == "its post read refused":
+            no_post_to_read_after_the_first(monkeypatch, sqlite3.OperationalError("refused"))
+        if finds == "its post read failing":
+            no_post_to_read_after_the_first(monkeypatch, RuntimeError())
+        if finds in THE_ROWS_PAGE_S_FAULTS:
+            from_its_rows_page(monkeypatch, *THE_ROWS_PAGE_S_FAULTS[finds])
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert bool(fired) is (own in says)
+    assert answer.status_code == 200
+    assert 'name="correct:' not in answer.text
+    assert "Saved: 1 new assignment." in the_outcome_heading(answer)
+    assert answer.text.count(str(escape(line))) == 1
+    assert f'<p class="note">{escape(line)}</p>' in answer.text
+    assert imports.NO_HOMEWORK not in page_text(answer)
+    assert copied(answer) == {"This Tab "}
+    says_nothing_of_kept_answers(answer)
+
+
 THE_STATUS_PAST_AN_UNCERTAIN_WRITE: Final = {
     "closed at its first page read": 200,
     "closed at its next read": 200,
