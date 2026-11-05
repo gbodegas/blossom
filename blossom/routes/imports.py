@@ -631,9 +631,10 @@ async def unknown_outcome(
     request: Request, state: ApplicationState, kept: Sequence[str] = ()
 ) -> Response:
     """A Save press whose outcome can't be established: a transaction left open on the record's
-    connection, or a refused read of its acceptance. That it can't tell; that its answers are kept,
-    only where its own keep committed (``kept``, which its caller says in the past tense once a read
-    has said the review ended); every correction to copy; and the way to Family review. It
+    connection, or a refused read of its acceptance. That it can't tell; what it knows of its
+    answers (``kept``): that they are kept, only where its own keep committed, which its caller says
+    in the past tense once a read has said the review ended, or that it can't tell that either;
+    every correction to copy; and the way to Family review. It
     claims nothing either way and shows no rows or review link, since rows rebuilt here would carry
     a new acceptance, and a Save from them wouldn't be a replay of this press."""
     return templates.TemplateResponse(
@@ -662,7 +663,8 @@ async def closed_on_press(
 ) -> Response:
     """A press on a review closed under it: the outcome of an earlier save of this page when one is
     confirmed, its page showing the review's rows only with ``rows``; on a Save press, that it can't
-    tell, with what it kept (``kept``) in the past tense, when its receipt can't be read; else the
+    tell, with what it knows of its answers (``kept``), a line it kept in the past tense, when its
+    receipt can't be read; else the
     closed review's words and every correction to copy, with nothing that reopens the review or
     offers a press.
     What this press's own write kept, or that it can't tell (``notes``), goes on either as an ended
@@ -702,9 +704,10 @@ async def ended_under_press(
     these pages, in the past tense where the read says the review ended, and a refused read with no
     receipt then answers 200. ``said_past_an_end`` is said only where the read says the review
     ended, as a press with a line of its own passes what it stored. A Save press that can't read its
-    receipt says what it kept (``kept``) in the past tense there. A press whose own write failed or
-    can't be told (``failed``) says that on every page here, at the status it answers, and beneath
-    a receipt's result, since that result doesn't settle it."""
+    receipt says what it knows of its answers (``kept``), a line it kept in the past tense there.
+    Keep's or Save for later's own failed write, or any press's that can't be told (``failed``), is
+    said on every page here, at the status it answers, and beneath a receipt's result, since that
+    result doesn't settle it."""
     stored = [PRESS_SAID["kept"]] if answered else []
     its_own = [*stored, *failed]
     at_an_end = [*its_own, *said_past_an_end]
@@ -1807,9 +1810,9 @@ def uncertain_lines(said: Iterable[str]) -> list[str]:
 
 
 OWN_FAILURE_SAID: Final = UNCERTAIN_SAID | {PRESS_SAID["keep_failed"], PRESS_SAID["later_failed"]}
-"""The lines that say Keep's or Save for later's own write failed, or can't be told. An earlier
-save's result doesn't settle any of them, so they go on beside it. Save's own busy sentence isn't
-here, as it says nothing was saved."""
+"""The lines that say Keep's or Save for later's own write failed, or that any press's can't be
+told, as Save's can't-tell line is Keep's. An earlier save's result doesn't settle any of them, so
+they go on beside it. Save's own busy sentence isn't here, as it says nothing was saved."""
 
 
 def own_failure_lines(said: Iterable[str]) -> list[str]:
@@ -2120,7 +2123,8 @@ async def with_typing(
     that note. An earlier save's page with rows gives back what no box holds under ``TYPED_SAID``.
     Any press with no save committed, if its review has ended before its rows, says that instead of
     its own line, and a Save press says it can't tell if a transaction was left open meanwhile. It
-    keeps a line saying its own write failed or can't be told (``own_failure_lines``). With
+    keeps a line saying Keep's or Save for later's own write failed, or that any press's can't be
+    told (``own_failure_lines``). With
     no save committed, ``answered`` says this press's own write stored answers, for the pages that
     show no rows (``ended_under_press``, ``snapshot_keeping_typing``), and ``beside_rows`` are lines
     said ahead of the press's own only where rows are drawn. A
@@ -2452,7 +2456,8 @@ async def save_press(
     except sqlite3.Error as error:
         noted(error)
         unknown = [UNKNOWN_SAID["save"], NO_HOMEWORK]
-        unsure = [UNKNOWN_SAID["save"]]
+        # A busy file wrote nothing, so this press has nothing to be unsure of.
+        unsure = [] if busy_file(error) else [UNKNOWN_SAID["save"]]
         return await replayed(
             request, state, draft_id, unsure, notes=unsure
         ) or await press_refused(request, state, draft_id, post, error, "save_failed", unknown)
@@ -2792,8 +2797,8 @@ async def replayed(
     on that outcome's page, as ``saved_page`` says, ``closed_seen`` telling it that this press has
     already found the review closed. A Save press
     whose read is refused, or finds a transaction left open, can't tell whether it saved, and says
-    so, with what this press kept (``kept``). Any other press has no save of its own to be unsure
-    of, so a refused read gets it its own answer."""
+    so, with what this press knows of its answers (``kept``). Any other press has no save of its own
+    to be unsure of, so a refused read gets it its own answer."""
     if not opaque(draft_id):
         return None
     form = await form_of(request)

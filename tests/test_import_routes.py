@@ -25519,6 +25519,8 @@ def test_a_page_with_no_post_says_a_press_kept_answers_only_when_its_own_write_s
         if press == "save":
             a_receipt_unseen_at_first(browser, monkeypatch)
         if write == "uncertain":
+            if press == "save":
+                a_receipt_unseen_at_first(browser, monkeypatch)
             drafts = state_of(browser).import_drafts
             writer = "save_for_later" if press == "later" else "keep_answers"
             real = getattr(drafts, writer)
@@ -25567,6 +25569,8 @@ THE_READS_PAST_AN_UNCERTAIN_WRITE: Final = (
     "removed",
 )
 """What a read says past a write that can't tell, its rows back empty where it's the next read."""
+THE_NEXT_READ_ISN_T_REACHED: Final = "the next read isn't reached"
+"""For a press whose route stops short of a next read, so that no test forces one it never makes."""
 
 
 def a_write_that_can_t_tell(
@@ -25617,7 +25621,7 @@ def a_write_that_can_t_tell(
     if read == "closed at its next read":
         no_rows_once(monkeypatch, lambda: discarded(browser, review.draft_id))
         Refusing(monkeypatch, *also)
-    elif read == "closed at its first page read":
+    elif read in ("closed at its first page read", THE_NEXT_READ_ISN_T_REACHED):
         Refusing(monkeypatch, *also)
     else:
         says = THE_NEXT_READ_SAYS.get(read, lambda *_: None)
@@ -25663,6 +25667,7 @@ THE_READS_OF_THE_REVIEW_PAST_IT: Final = {
 }
 """How many reads of the review a press's request has the store make, past a write that can't tell:
 saying so adds none. A read forced to refuse doesn't reach the store, so it isn't among them."""
+THE_READS_OF_THE_REVIEW_PAST_AN_OPEN_READ: Final = 3
 
 
 @pytest.mark.parametrize(
@@ -25869,9 +25874,14 @@ def test_a_save_s_uncertain_write_says_so_with_no_earlier_save_at_the_read_s_sta
     says_nothing_of_kept_answers(answer)
 
 
+THE_READS_PAST_ITS_FIRST_TWO_LOOKS: Final = (*THE_READS_PAST_AN_UNCERTAIN_WRITE, "the review open")
+
+
 @pytest.mark.parametrize("page", ["its post read", "past the ceiling", "nothing typed"])
-@pytest.mark.parametrize("unseen", [1, 2], ids=["its first look", "its first two looks"])
-@pytest.mark.parametrize("read", [*THE_READS_PAST_AN_UNCERTAIN_WRITE, "the review open"])
+@pytest.mark.parametrize(
+    ("unseen", "read"),
+    [(1, THE_NEXT_READ_ISN_T_REACHED), *((2, r) for r in THE_READS_PAST_ITS_FIRST_TWO_LOOKS)],
+)
 @pytest.mark.parametrize("committed", [True, False], ids=["it committed", "it didn't"])
 def test_a_save_s_uncertain_write_says_so_beside_its_receipt(
     tmp_path: pathlib.Path,
@@ -25921,8 +25931,10 @@ def test_a_save_s_uncertain_write_says_so_beside_its_receipt(
 
 
 @pytest.mark.parametrize("counts", ["empty", "refused"])
-@pytest.mark.parametrize("read", THE_READS_PAST_AN_UNCERTAIN_WRITE)
-@pytest.mark.parametrize("unseen", [1, 2], ids=["its first look", "its first two looks"])
+@pytest.mark.parametrize(
+    ("unseen", "read"),
+    [(1, THE_NEXT_READ_ISN_T_REACHED), *((2, r) for r in THE_READS_PAST_AN_UNCERTAIN_WRITE)],
+)
 def test_a_save_s_uncertain_write_says_so_beside_its_receipt_s_counts_unread(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, unseen: int, read: str, counts: str
 ) -> None:
@@ -25970,7 +25982,7 @@ def test_a_save_s_uncertain_write_says_so_where_it_looks_for_its_receipt(
             monkeypatch,
             "save",
             committed,
-            "a refused file",
+            THE_NEXT_READ_ISN_T_REACHED,
             also=also if where == "its receipt read refused" else [],
         )
         a_receipt_unseen_at_first(browser, monkeypatch)
@@ -25986,10 +25998,10 @@ def test_a_save_s_uncertain_write_says_so_where_it_looks_for_its_receipt(
     text = page_text(answer)
     assert bool(fired) is (where == "its receipt read refused")
     assert text.count(line) == 1
+    assert imports.NO_HOMEWORK not in text
     if where == "its rows read refused":
         assert answer.status_code == 200
         assert "Saved: 1 new assignment." in text
-        assert imports.NO_HOMEWORK not in text
     else:
         assert answer.status_code == 503
         assert imports.UNKNOWN_SAID["homework"] in text
@@ -26024,7 +26036,7 @@ def test_a_save_s_uncertain_write_says_so_where_a_later_look_for_its_receipt_is_
         return fails
 
     also = [("replayed", "looking", 2, firing("the look", refusing_coded("SQLITE_IOERR")))]
-    forced = {"its first page read": "a refused file", "its next read": read}[where]
+    forced = {"its first page read": THE_NEXT_READ_ISN_T_REACHED, "its next read": read}[where]
     if read == "closed":
         forced = f"closed at {where}"
     elif where == "its first page read":
@@ -26083,7 +26095,7 @@ def test_a_save_s_uncertain_write_says_no_homework_was_saved_where_no_result_can
             monkeypatch,
             "save",
             committed,
-            "a refused file" if also else read,
+            THE_NEXT_READ_ISN_T_REACHED if also else read,
             receipt=False,
             also=also,
         )
@@ -26102,6 +26114,7 @@ def test_a_save_s_uncertain_write_says_no_homework_was_saved_where_no_result_can
 
 THE_BUSY_REFUSALS: Final[dict[str, Callable[[], None]]] = {
     "a busy store": refusing(StoreBusy),
+    "a busy writer": refusing(WriterBusy),
     "a busy file": refusing_coded("SQLITE_BUSY"),
 }
 THE_READS_PAST_A_BUSY_WRITE: Final = THE_READS_PAST_AN_UNCERTAIN_WRITE[1:]
@@ -26250,11 +26263,11 @@ def test_a_busy_write_found_closed_at_its_first_page_read_has_no_line_of_it(
 
 @pytest.mark.parametrize("read", THE_READS_PAST_A_BUSY_WRITE)
 @pytest.mark.parametrize("receipt", [True, False], ids=["an earlier save", "no earlier save"])
-def test_a_save_s_busy_write_says_nothing_of_it_past_an_ended_read(
+def test_a_save_s_busy_write_says_nothing_of_it_past_its_next_read(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, receipt: bool, read: str
 ) -> None:
-    """Timing forced: past its first looks. Its own sentence says nothing was saved, and it isn't
-    said on these pages."""
+    """Timing forced: past its first looks, whether that read ends the review or is refused. Its own
+    sentence says nothing was saved, and it isn't said on these pages."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, _, _, _ = a_write_that_can_t_tell(
             browser,
@@ -26273,6 +26286,114 @@ def test_a_save_s_busy_write_says_nothing_of_it_past_an_ended_read(
 
     assert "couldn't be kept" not in page_text(answer)
     says_nothing_of_kept_answers(answer)
+
+
+@pytest.mark.parametrize(
+    "found", ["an earlier save", "a refused look", "a refused look with no earlier save"]
+)
+@pytest.mark.parametrize("busy", list(THE_BUSY_REFUSALS))
+def test_a_save_s_busy_write_says_nothing_of_it_at_its_first_look(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, busy: str, found: str
+) -> None:
+    """Timing forced: its first look past its keep. Nothing was written, so it has nothing to be
+    unsure of. An earlier save's result stands alone, and a refused look says only that it can't
+    tell what its homework did."""
+    fired: list[bool] = []
+
+    def refused(*_: object) -> None:
+        fired.append(True)
+        refusing_coded("SQLITE_IOERR")()
+
+    refuses_it = found != "an earlier save"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _, writes = a_write_that_can_t_tell(
+            browser,
+            monkeypatch,
+            "save",
+            False,
+            THE_NEXT_READ_ISN_T_REACHED,
+            receipt=found != "a refused look with no earlier save",
+            also=[("replayed", "looking", 1, refused)] if refuses_it else [],
+            fails=THE_BUSY_REFUSALS[busy],
+        )
+        a_receipt_unseen_at_first(browser, monkeypatch)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        shown = followed(browser, answer)
+
+    reads = html.unescape(shown)
+    assert writes == ["save"]
+    assert bool(fired) is refuses_it
+    assert imports.UNKNOWN_SAID["save"] not in reads
+    assert imports.NO_HOMEWORK not in reads
+    says_nothing_of_kept_answers(answer)
+    if refuses_it:
+        assert answer.status_code == 503
+        assert imports.UNKNOWN_SAID["homework"] in reads
+        assert copied(answer) == {"This Tab "}
+    else:
+        assert "Saved: 1 new assignment." in reads
+
+
+@pytest.mark.parametrize("own", ["expired", "removed", "a refused file"])
+@pytest.mark.parametrize("press", list(THE_WRITER_OF))
+def test_a_busy_write_says_try_again_only_while_its_earlier_save_s_page_finds_no_ending(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, own: str
+) -> None:
+    """Timing forced: its next read is refused, which keeps the instruction, and the earlier save's
+    page then makes its own read, which drops it where it says the review ended."""
+    fired: list[bool] = []
+
+    def reading(*_: object) -> None:
+        fired.append(True)
+        THE_NEXT_READ_SAYS[own]()
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _, _ = a_write_that_can_t_tell(
+            browser,
+            monkeypatch,
+            press,
+            False,
+            "a refused file",
+            also=[("saved_page", "snapshot", 1, reading)],
+            fails=THE_BUSY_REFUSALS["a busy file"],
+        )
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    text = page_text(answer)
+    assert fired == [True]
+    assert answer.status_code == 200
+    assert text.count(the_busy_line(press, own)) == 1
+    assert ("Try again." in text) is (own == "a refused file")
+    assert copied(answer) == {"This Tab "}
+
+
+@pytest.mark.parametrize("fault", ["can't tell", "a busy file"])
+@pytest.mark.parametrize("press", list(THE_WRITER_OF))
+def test_a_press_whose_write_failed_reads_no_more_past_a_read_finding_its_review_open(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, fault: str
+) -> None:
+    """Timing forced: its rows come back empty and the next read says the review is open. Saying
+    what its write did adds no read of the review and none for a tense."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _, writes = a_write_that_can_t_tell(
+            browser,
+            monkeypatch,
+            press,
+            False,
+            "the review open",
+            receipt=False,
+            fails=THE_BUSY_REFUSALS["a busy file"] if fault == "a busy file" else None,
+        )
+        read_again = reads_of_the_review(browser, monkeypatch)
+        asked = no_read_for_the_tense(monkeypatch)
+        send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert writes == [press]
+    assert len(read_again) == THE_READS_OF_THE_REVIEW_PAST_AN_OPEN_READ
+    assert not asked
 
 
 THE_ENDS_BEFORE_A_REFUSED_RECEIPT: Final = (
