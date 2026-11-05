@@ -691,6 +691,7 @@ async def ended_under_press(
     answered: bool = False,
     said_past_an_end: Sequence[str] = (),
     failed: Sequence[str] = (),
+    refusal: Sequence[str] = (),
 ) -> Response | None:
     """A press that read its review open and then found no rows or no post to read: the review read
     again, so that one that has closed or gone says so with the typing, and one the store refuses to
@@ -707,9 +708,11 @@ async def ended_under_press(
     receipt says what it knows of its answers (``kept``), a line it kept in the past tense there.
     Keep's or Save for later's own failed write, or any press's that can't be told (``failed``), is
     said on every page here, at the status it answers, and beneath a receipt's result, since that
-    result doesn't settle it."""
+    result doesn't settle it. Why a press's post was refused (``refusal``) is said the same way, but
+    not where a Save can't tell whether it saved, since it isn't among what it knows of its
+    answers."""
     stored = [PRESS_SAID["kept"]] if answered else []
-    its_own = [*stored, *failed]
+    its_own = [*stored, *failed, *refusal]
     at_an_end = [*its_own, *said_past_an_end]
     its_kept = [*kept, *failed]
     try:
@@ -1644,6 +1647,9 @@ OUT_OF_DATE: Final = "This page is out of date. Check the review before trying a
 """What Keep these answers, Save selected homework and Save review for later say when the
 review moved on since the page, or when another tab saved for later since this press's own
 commit."""
+NOTHING_BY_THIS_ATTEMPT: Final = "Nothing was kept or saved by this attempt."
+"""A press whose post doesn't match its page, where the review it would go back to can't be shown,
+has ended, or sits beside an earlier save: nothing says why the post doesn't match."""
 PRESS_SAID: Final = {
     "kept": (
         "Your answers are kept. Corrections you typed aren't; use Save review for later to "
@@ -1659,10 +1665,7 @@ PRESS_SAID: Final = {
         "and press again."
     ),
     "nothing_kept": "Nothing was kept or saved.",
-    "too_large": (
-        "This review is too large for Blossom to process. Nothing was kept or saved by this "
-        "attempt."
-    ),
+    "too_large": f"This review is too large for Blossom to process. {NOTHING_BY_THIS_ATTEMPT}",
     "save_invalid": (
         "Some of these questions changed before you answered, so nothing was kept or saved. "
         "Answer them again."
@@ -1941,10 +1944,12 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     its typing, that correction whole in its box. Whichever post this is, its form is read first,
     within this route's limits, and every later read of it gets that one, so a body past them
     touches no store. A press whose signed list is past its ceiling keeps nothing and says the
-    review is too large, unless an ended review has more to say or, on a Save press, a receipt does;
-    Keep and Save for later don't look for a receipt while the review can be read, so that answer
-    says nothing of an earlier save. A review its first read finds closed, expired or gone answers
-    with an earlier save's outcome first, then the typing to copy."""
+    review is too large, and one whose post doesn't match its page says so; where the review can't
+    be shown or has ended, or, on a Save press, a receipt answers, that reason is said beside them,
+    beneath a receipt's result, a mismatch's as nothing kept or saved by this attempt, since nothing
+    says why. Keep and Save for later don't look for a receipt while the review can be read, so that
+    answer says nothing of an earlier save. A review its first read finds closed, expired or gone
+    answers with an earlier save's outcome first, then the typing to copy."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     request = WithinBytes(request, REVIEW_FORM_BYTES)
@@ -1974,10 +1979,13 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             request, state, draft_id, error
         )
     if post is None:
-        recorded = await replayed(request, state, draft_id) if named == "save" else None
+        refusal = [PRESS_SAID["too_large"] if too_large else NOTHING_BY_THIS_ATTEMPT]
+        recorded = (
+            await replayed(request, state, draft_id, notes=refusal) if named == "save" else None
+        )
         if recorded is not None:
             return recorded
-        ended = await ended_under_press(request, state, draft_id, 409)
+        ended = await ended_under_press(request, state, draft_id, 409, refusal=refusal)
         if ended is not None:
             return ended
         if too_large:

@@ -27308,3 +27308,244 @@ def test_a_limit_a_post_past_its_ceiling_looks_for_no_earlier_save_while_the_rev
     assert titles == [("Sentence Composing",)]
     assert before == after
     assert ("replayed", "homework_acceptance") not in calls.seen
+
+
+# --------------------------------------------- a refused post's reason past the read after it
+
+NOTHING_BY_THIS_ATTEMPT: Final = "Nothing was kept or saved by this attempt."
+"""What a press whose post doesn't match its page says where the review can't be shown, beside an
+earlier save, or on an ended review: nothing says why it doesn't match."""
+REFUSAL_SAID: Final = {
+    "past its ceiling": imports.PRESS_SAID["too_large"],
+    "not matching its page": NOTHING_BY_THIS_ATTEMPT,
+}
+ENDED_PAST_THE_FIRST_READ: Final = {
+    "closed": (409, imports.SAID["closed"]),
+    "expired": (410, imports.SAID["expired"]),
+    "removed": (404, imports.SAID["absent"]),
+}
+NEVER_SAID_PAST_A_REFUSED_POST: Final = (
+    "questions changed",
+    "Answer them again.",
+    "Try again.",
+    "Save again.",
+)
+NO_RECEIPT_FOUND: Final = [
+    ("keep", "none"),
+    ("keep", "lookup refused"),
+    ("later", "none"),
+    ("later", "lookup refused"),
+    ("save", "none"),
+]
+
+
+def a_refused_post(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, press: str, refusal: str, receipt: str
+) -> tuple[str, list[tuple[str, str]]]:
+    """A review of two rows, saved from its page first unless ``receipt`` is "none", and this
+    press's post from that page, with typing on the row left open, set to be refused: its signed
+    list past the ceiling, or a signed field changed. The review and the post."""
+    draft_id, page, first, other = two_rows(browser, monkeypatch)
+    if receipt != "none":
+        saved = send(browser, draft_id, page_post(page, "save", tick=[first]))
+        assert "Saved: 1 new assignment." in page_text(saved)
+    posted = page_post(page, press, typed=typed_on(other))
+    if refusal == "past its ceiling":
+        monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
+        return draft_id, posted
+    return draft_id, [(name, "0" if name == "version" else value) for name, value in posted]
+
+
+def ended_once_the_first_read_returns(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, draft_id: str, how: str
+) -> None:
+    """The review closed, past its expiry, or swept away, as soon as the press's first read of it
+    returns, so that every later read finds it so."""
+    student, drafts = student_and_drafts(browser)
+    expires_at = drafts.snapshot(student, draft_id).expires_at
+    real: Callable[..., Awaitable[object]] = imports.state_of_review
+    done: list[bool] = []
+
+    async def then_ended(*args: object, **kwargs: object) -> object:
+        answer = await real(*args, **kwargs)
+        if not done:
+            done.append(True)
+            if how == "closed":
+                discarded(browser, draft_id)
+            elif how == "expired":
+                clock_moved_to(monkeypatch, browser, expires_at + timedelta(seconds=1))
+            else:
+                swept(browser, monkeypatch, draft_id)
+        return answer
+
+    monkeypatch.setattr(imports, "state_of_review", then_ended)
+
+
+def the_read_after_it(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, draft_id: str, read: str, receipt: str
+) -> Refusing:
+    """The read after the refused post refused, answered, or finding the review ended, with the
+    receipt's lookups refused where ``receipt`` says so; every store call counted."""
+    refused = refusing_coded("SQLITE_IOERR")
+    rules = [("ended_under_press", "snapshot", 1, refused)] if read == "refused" else []
+    if receipt == "lookup refused":
+        rules += [("replayed", "homework_acceptance", n, refused) for n in (1, 2)]
+    if read in ENDED_PAST_THE_FIRST_READ:
+        ended_once_the_first_read_returns(browser, monkeypatch, draft_id, read)
+    return Refusing(monkeypatch, *rules)
+
+
+def says_nothing_more_of_a_refused_post(answer: Answer) -> None:
+    """No cause the refusal doesn't establish, and nothing that asks for the press again."""
+    for words in NEVER_SAID_PAST_A_REFUSED_POST:
+        assert words not in page_text(answer), words
+    for control in ('name="correct:', 'name="refused:', 'name="progress_revision"', 'name="press"'):
+        assert control not in answer.text
+
+
+@pytest.mark.parametrize(("press", "receipt"), NO_RECEIPT_FOUND)
+@pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
+def test_a_refused_post_says_why_beside_a_review_that_can_t_be_shown(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, refusal: str, receipt: str
+) -> None:
+    """The read after a refused post refused, and no earlier save found: the press's reason and that
+    the review can't be shown, in that order, in the alert; the typing as sent; both ways back."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted = a_refused_post(browser, monkeypatch, press, refusal, receipt)
+        calls = the_read_after_it(browser, monkeypatch, draft_id, "refused", receipt)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    line = REFUSAL_SAID[refusal]
+    assert answer.status_code == 503
+    [alert] = re.findall(r'role="alert" id="said"[^>]*>(.*?)</div>', answer.text, re.S)
+    assert re.findall(r"<p>(.*?)</p>", alert) == [
+        str(escape(line)),
+        str(escape(imports.REVIEW_NOT_SHOWN)),
+    ]
+    assert answer.text.count(str(escape(line))) == 1
+    assert copied(answer) == AS_GIVEN_BACK
+    says_nothing_more_of_a_refused_post(answer)
+    assert f'<a href="/parent/imports/{draft_id}">Back to the review</a>' in answer.text
+    assert '<a href="/parent">Back to Family review</a>' in answer.text
+    assert calls.seen[("ended_under_press", "snapshot")] == 1
+    assert calls.seen[("replayed", "homework_acceptance")] == (2 if press == "save" else 1)
+
+
+@pytest.mark.parametrize(
+    ("press", "read"),
+    [
+        *(
+            (press, read)
+            for press in THE_TWO_PRESSES
+            for read in ["refused", "closed", "expired", "removed"]
+        ),
+        *(("save", read) for read in ["answered", "refused", "closed", "expired", "removed"]),
+    ],
+)
+@pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
+def test_a_refused_post_says_why_beneath_an_earlier_save_s_result(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, refusal: str, read: str
+) -> None:
+    """An earlier save of this page found: its result and counts first, as they stand, then the
+    press's reason once in the note style, apart from the heading and any alert; past an ended read,
+    the ended review's words too. Save looks for it first, whatever the read after finds; Keep and
+    Save for later look only past a refused or ended read."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted = a_refused_post(browser, monkeypatch, press, refusal, "found")
+        calls = the_read_after_it(browser, monkeypatch, draft_id, read, "found")
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    line = REFUSAL_SAID[refusal]
+    text = page_text(answer)
+    assert answer.status_code == 200, text[:300]
+    assert "Saved: 1 new assignment. 1 still needs checking." in text
+    assert text.index("Saved: 1 new assignment.") < text.index(line)
+    says_its_line_once_as_a_note(answer, line)
+    assert "by this attempt" in line
+    assert line not in "".join(re.findall(r'role="alert"[^>]*>(.*?)</div>', answer.text, re.S))
+    assert copied(answer) == AS_GIVEN_BACK
+    says_nothing_more_of_a_refused_post(answer)
+    if read in ENDED_PAST_THE_FIRST_READ:
+        assert ENDED_PAST_THE_FIRST_READ[read][1] in text
+    assert calls.seen[("replayed", "homework_acceptance")] == 1
+    assert calls.seen.get(("ended_under_press", "snapshot"), 0) == (0 if press == "save" else 1)
+
+
+@pytest.mark.parametrize(("press", "receipt"), NO_RECEIPT_FOUND)
+@pytest.mark.parametrize("ended", list(ENDED_PAST_THE_FIRST_READ))
+@pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
+def test_a_refused_post_says_why_on_a_review_that_ended_past_its_first_read(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    refusal: str,
+    ended: str,
+    receipt: str,
+) -> None:
+    """The review closed, expired or swept away after the press's first read, and no earlier save
+    found: the press's reason first, then the ended review's own words, at the status that review
+    answers, the typing as sent, and only the way out."""
+    status, words = ENDED_PAST_THE_FIRST_READ[ended]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted = a_refused_post(browser, monkeypatch, press, refusal, receipt)
+        calls = the_read_after_it(browser, monkeypatch, draft_id, ended, receipt)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    line = REFUSAL_SAID[refusal]
+    says_the_review_ended(answer, status, words, AS_GIVEN_BACK)
+    said = [html.unescape(p) for p in re.findall(r"<p[^>]*>(.*?)</p>", answer.text)]
+    assert said[said.index(line) + 1] == words
+    assert answer.text.count(str(escape(line))) == 1
+    says_nothing_more_of_a_refused_post(answer)
+    assert calls.seen[("ended_under_press", "snapshot")] == 1
+    assert calls.seen[("replayed", "homework_acceptance")] == (2 if press == "save" else 1)
+
+
+@pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+def test_a_refused_post_on_a_review_that_can_be_read_redirects_with_its_line_as_it_stands(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, refusal: str
+) -> None:
+    """Every read answered and no earlier save: the press redirects to the review, which says the
+    line it always has."""
+    invalid = {"keep": "keep_invalid", "later": "later_invalid", "save": "save_invalid"}[press]
+    said = {"past its ceiling": "too_large", "not matching its page": invalid}[refusal]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted = a_refused_post(browser, monkeypatch, press, refusal, "none")
+        calls = the_read_after_it(browser, monkeypatch, draft_id, "answered", "none")
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        landed = browser.get(answer.headers["location"])
+
+    assert answer.status_code == 303
+    assert said_by(landed) == [imports.PRESS_SAID[said]]
+    assert calls.seen[("ended_under_press", "snapshot")] == 1
+
+
+@pytest.mark.parametrize("read", ["answered", "refused", "closed", "expired", "removed"])
+@pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
+def test_a_limit_a_refused_save_whose_first_lookup_is_refused_says_only_that_it_can_t_tell(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str, read: str
+) -> None:
+    """A limit, as it stands: Save's own first lookup refused answers that it can't tell whether any
+    homework was saved, and doesn't say why its post was refused."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted = a_refused_post(browser, monkeypatch, "save", refusal, "lookup refused")
+        calls = the_read_after_it(browser, monkeypatch, draft_id, read, "lookup refused")
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    text = page_text(answer)
+    assert answer.status_code == 503
+    assert "Blossom couldn't tell whether any homework was saved." in text
+    assert REFUSAL_SAID[refusal] not in text
+    assert copied(answer) == AS_GIVEN_BACK
+    assert calls.seen[("replayed", "homework_acceptance")] == 1
+    assert ("ended_under_press", "snapshot") not in calls.seen
+
+
+def test_the_reason_a_post_doesn_t_match_is_the_ceiling_s_own_second_sentence() -> None:
+    assert imports.PRESS_SAID["too_large"].endswith(f" {NOTHING_BY_THIS_ATTEMPT}")
