@@ -1976,8 +1976,9 @@ def test_a_list_that_can_t_be_read_keeps_the_words_it_had(
 def test_a_save_that_committed_resent_past_the_ceiling_shows_its_saved_result(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, typed: bool
 ) -> None:
-    """On a review left open. Its receipt comes before anything about its list, and the read of its
-    post that comes after the receipt treats this as a post it can't show."""
+    """On a review left open. Its receipt's result comes first and stands, and the read of its post
+    that comes after the receipt treats this as a post it can't show; that this attempt's list was
+    too large is said once, beneath that result."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title", 1)
@@ -1994,7 +1995,8 @@ def test_a_save_that_committed_resent_past_the_ceiling_shows_its_saved_result(
     said = page_text(shown)
     assert first.status_code == 200
     assert "Saved: 1 new assignment." in said
-    assert TOO_LARGE not in said
+    assert said.count(TOO_LARGE) == 1
+    assert said.index("Saved: 1 new assignment.") < said.index(TOO_LARGE)
     assert INVALID["save"] not in said
     assert imports.COUNTS_UNSHOWN not in said
     assert imports.REVIEW_NOT_SHOWN not in said
@@ -2054,7 +2056,7 @@ def test_a_save_on_a_review_closed_as_its_list_is_refused_says_it_closed(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The review reads open when its list is refused, and has closed by the time the press looks
-    again: that's what's said, with the typing to copy, and not that the review is too large."""
+    again: that the review is too large, then that it has closed, with the typing to copy."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
@@ -2082,9 +2084,10 @@ def test_a_save_on_a_review_closed_as_its_list_is_refused_says_it_closed(
         monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
         answer = send(browser, draft_id, posted)
 
+    said = page_text(answer.text)
     assert answer.status_code == 409
-    assert imports.SAID["closed"] in page_text(answer.text)
-    assert TOO_LARGE not in page_text(answer.text)
+    assert said.count(TOO_LARGE) == 1
+    assert said.index(TOO_LARGE) < said.index(imports.SAID["closed"])
     assert TYPED in html.unescape(answer.text)
 
 
