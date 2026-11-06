@@ -2329,8 +2329,8 @@ async def later_press(
     notice when that read shows a newer revision, with every box it typed given back as sent either
     way, after one more read, which answers instead if it finds the review ended or is refused; or,
     with the review ended or its read refused, the typing to copy, redirecting past a refused read
-    only when there's nothing to give back. A read saying the review ended says the answers were kept before it did only when
-    this write stored some."""
+    only when there's nothing to give back. A read saying the review ended says the answers were
+    kept before it did only when this write stored some."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         review = await state_of_review(state, found, post.corrections)
