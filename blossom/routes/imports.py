@@ -708,13 +708,13 @@ async def ended_under_press(
     receipt says what it knows of its answers (``kept``), a line it kept in the past tense there.
     Keep's or Save for later's own failed write, or any press's that can't be told (``failed``), is
     said on every page here, at the status it answers, and beneath a receipt's result, since that
-    result doesn't settle it. Why a press's post was refused (``refusal``) is said the same way, but
-    not where a Save can't tell whether it saved, since it isn't among what it knows of its
-    answers."""
+    result doesn't settle it. Why a press's post was refused (``refusal``) is said the same way, and
+    beside a Save's can't-tell answer too, since a refused lookup doesn't show there's no earlier
+    save."""
     stored = [PRESS_SAID["kept"]] if answered else []
     its_own = [*stored, *failed, *refusal]
     at_an_end = [*its_own, *said_past_an_end]
-    its_kept = [*kept, *failed]
+    its_kept = [*kept, *failed, *refusal]
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         now = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
@@ -1945,11 +1945,12 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     within this route's limits, and every later read of it gets that one, so a body past them
     touches no store. A press whose signed list is past its ceiling keeps nothing and says the
     review is too large, and one whose post doesn't match its page says so; where the review can't
-    be shown or has ended, or, on a Save press, a receipt answers, that reason is said beside them,
-    beneath a receipt's result, a mismatch's as nothing kept or saved by this attempt, since nothing
-    says why. Keep and Save for later don't look for a receipt while the review can be read, so that
-    answer says nothing of an earlier save. A review its first read finds closed, expired or gone
-    answers with an earlier save's outcome first, then the typing to copy."""
+    be shown or has ended, or, on a Save press, a receipt answers or can't be read, that reason is
+    said beside them, beneath a receipt's result, a mismatch's as nothing kept or saved by this
+    attempt, since nothing says why. Keep and Save for later don't look for a receipt while the
+    review can be read, so that answer says nothing of an earlier save. A review its first read
+    finds closed, expired or gone answers with an earlier save's outcome first, then the typing to
+    copy."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     request = WithinBytes(request, REVIEW_FORM_BYTES)
@@ -1981,7 +1982,9 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
     if post is None:
         refusal = [PRESS_SAID["too_large"] if too_large else NOTHING_BY_THIS_ATTEMPT]
         recorded = (
-            await replayed(request, state, draft_id, notes=refusal) if named == "save" else None
+            await replayed(request, state, draft_id, refusal, notes=refusal)
+            if named == "save"
+            else None
         )
         if recorded is not None:
             return recorded

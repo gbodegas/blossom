@@ -26307,6 +26307,8 @@ def test_a_save_s_uncertain_write_says_so_where_it_looks_for_its_receipt(
     assert bool(fired) is (where == "its receipt read refused")
     assert text.count(line) == 1
     assert imports.NO_HOMEWORK not in text
+    assert imports.NOTHING_BY_THIS_ATTEMPT not in text
+    assert imports.PRESS_SAID["too_large"] not in text
     if where == "its rows read refused":
         assert answer.status_code == 200
         assert "Saved: 1 new assignment." in text
@@ -27551,54 +27553,65 @@ def test_a_refused_post_on_a_review_that_can_be_read_redirects_with_its_line_as_
     assert calls.seen[("ended_under_press", "snapshot")] == 1
 
 
-@pytest.mark.parametrize("read", ["answered", "refused", "closed", "expired", "removed"])
+def says_it_can_t_tell_and_why_its_post_was_refused(answer: Answer, line: str) -> None:
+    """At 503: that it can't tell whether any homework was saved, first and as the alert, then the
+    press's reason once, the typing as sent, and only the way to Family review."""
+    assert answer.status_code == 503
+    said = [html.unescape(p) for p in re.findall(r"<p[^>]*>(.*?)</p>", answer.text)]
+    assert said[said.index(UNKNOWN_HOMEWORK) + 1] == line
+    assert re.search(
+        rf'<p class="problem" role="alert"[^>]*>{re.escape(str(escape(UNKNOWN_HOMEWORK)))}</p>',
+        answer.text,
+    )
+    assert answer.text.count(str(escape(line))) == 1
+    assert copied(answer) == AS_GIVEN_BACK
+    says_nothing_more_of_a_refused_post(answer)
+    assert "Back to the review" not in page_text(answer)
+    assert '<a href="/parent">Back to Family review</a>' in answer.text
+
+
+@pytest.mark.parametrize("read", ["answered", "refused", "frozen", "closed", "expired", "removed"])
 @pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
-def test_a_limit_a_refused_save_whose_first_lookup_is_refused_says_only_that_it_can_t_tell(
+def test_a_refused_save_whose_first_lookup_is_refused_says_why_beside_that_it_can_t_tell(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str, read: str
 ) -> None:
-    """A limit, as it stands: Save's own first lookup refused answers that it can't tell whether any
-    homework was saved, and doesn't say why its post was refused."""
+    """Save's own first lookup refused: a refused lookup doesn't show there's no earlier save, so it
+    can't tell whether any homework was saved, and beside that, why this attempt kept nothing."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted = a_refused_post(browser, monkeypatch, "save", refusal, "lookup refused")
         calls = the_read_after_it(browser, monkeypatch, draft_id, read, "lookup refused")
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    text = page_text(answer)
-    assert answer.status_code == 503
-    assert "Blossom couldn't tell whether any homework was saved." in text
-    assert REFUSAL_SAID[refusal] not in text
-    assert copied(answer) == AS_GIVEN_BACK
+    says_it_can_t_tell_and_why_its_post_was_refused(answer, REFUSAL_SAID[refusal])
     assert calls.seen[("replayed", "homework_acceptance")] == 1
     assert ("ended_under_press", "snapshot") not in calls.seen
 
 
-@pytest.mark.parametrize("read", ["refused", "closed", "expired", "removed"])
+@pytest.mark.parametrize("read", ["refused", "frozen", "closed", "expired", "removed"])
 @pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
-def test_a_limit_a_refused_save_whose_second_lookup_is_refused_says_only_that_it_can_t_tell(
+def test_a_refused_save_whose_later_lookup_is_refused_says_why_beside_that_it_can_t_tell(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str, read: str
 ) -> None:
-    """A limit, as it stands: with no earlier save at its first lookup, and its second refused past
-    a refused or ended read, Save says it can't tell whether any homework was saved, and doesn't say
-    why its post was refused."""
+    """No earlier save at its first lookup, and its second refused past a refused or ended read:
+    that it can't tell whether any homework was saved, and beside that, why this attempt kept
+    nothing."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted = a_refused_post(browser, monkeypatch, "save", refusal, "none")
         refused = refusing_coded("SQLITE_IOERR")
         rules = [("replayed", "homework_acceptance", 2, refused)]
-        if read == "refused":
-            rules.append(("ended_under_press", "snapshot", 1, refused))
+        if read in ("refused", "frozen"):
+            fails = refused if read == "refused" else refusing(DraftFrozen)
+            rules.append(("ended_under_press", "snapshot", 1, fails))
         else:
             ended_once_the_first_read_returns(browser, monkeypatch, draft_id, read)
         calls = Refusing(monkeypatch, *rules)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    text = page_text(answer)
-    assert answer.status_code == 503
-    assert "Blossom couldn't tell whether any homework was saved." in text
-    assert REFUSAL_SAID[refusal] not in text
-    assert copied(answer) == AS_GIVEN_BACK
+    says_it_can_t_tell_and_why_its_post_was_refused(answer, REFUSAL_SAID[refusal])
     assert ("replayed", "homework_acceptance", 2) in calls.refused
+    assert calls.seen[("ended_under_press", "snapshot")] == 1
 
 
 def test_the_reason_a_post_doesn_t_match_is_the_ceiling_s_own_second_sentence() -> None:
