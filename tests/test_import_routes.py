@@ -1508,7 +1508,9 @@ def test_save_for_later_keeps_the_typed_corrections_and_a_page_behind_keeps_its_
     assert behind.status_code == 409
     assert says(behind.text, imports.PRESS_SAID["answers_kept"])
     assert says(behind.text, imports.PRESS_SAID["later_behind"])
-    assert 'value="Sentence Craft"' in behind.text
+    assert says(behind.text, imports.OUT_OF_DATE)
+    assert 'value="Sentence Craft"' not in behind.text
+    assert copied(behind) == {"Sentence Craft"}
     assert kept == progress
 
 
@@ -16374,21 +16376,23 @@ def review_row(browser: TestClient, draft_id: str) -> tuple[int, int, str | None
 def test_a_conflict_s_page_doesn_t_get_past_another_tab_s_save_for_later(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, what: str
 ) -> None:
-    """The page keeps the revision it was posted with, whether the version moved or not, so its next
-    Save for later answers as the older page's would, and the other tab's progress stands."""
+    """Behind another tab's Save for later, whether the version moved or not, the page draws no
+    form: it says its choices can't be shown and that it's out of date, the first page's next Save
+    for later is refused, and the other tab's progress stands."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, question = later_settled_from_another_tab(browser, monkeypatch, what)
         held = review_row(browser, draft_id)
         answer = send(
             browser, draft_id, shown_post(page, "later", add=the_conflict_on(page, question))
         )
-        following = send(browser, draft_id, shown_post(answer.text, "later", clear=[question]))
         held_after = review_row(browser, draft_id)
         plain_press = send(browser, draft_id, shown_post(page, "later"))
 
     assert answer.status_code == 422, answer.text[:400]
-    assert following.status_code == 409
-    assert imports.PRESS_SAID["later_behind"] in page_text(following)
+    assert 'name="press"' not in answer.text
+    assert signed_revisions(answer.text) == []
+    assert screenshot_page.SAID["not_carried"] in page_text(answer)
+    assert imports.OUT_OF_DATE in page_text(answer)
     assert held_after[1:] == held[1:]
     assert plain_press.status_code == 409
 
@@ -16540,9 +16544,9 @@ def test_a_receipt_at_the_same_version_carries_the_choices(
 def test_a_conflict_beside_a_receipt_doesn_t_get_past_another_tab_s_save_for_later(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Its boxes come from the post, so what another tab saved isn't on it. It keeps the revision it
-    was posted with, so its next Save for later answers as the older page's would, and the other
-    tab's progress stands."""
+    """Its boxes come from the post, so what another tab saved isn't on it. Behind that tab's Save
+    for later, it gives the earlier save's result first, then that its choices can't be shown and
+    that the page is out of date, with no form, and the other tab's progress stands."""
     with here(open_settings(tmp_path)) as browser:
         review, posted = receipt_and_a_later_press(
             browser, monkeypatch, first_changes_an_answer=False
@@ -16553,15 +16557,15 @@ def test_a_conflict_beside_a_receipt_doesn_t_get_past_another_tab_s_save_for_lat
         send(browser, review.draft_id, shown_post(now, "later", drop=[("unit", ticked)]))
         moved = review_row(browser, review.draft_id)
         answer = send(browser, review.draft_id, posted)
-        following = send(
-            browser, review.draft_id, shown_post(answer.text, "later", clear=[review.question])
-        )
         held = review_row(browser, review.draft_id)
 
+    text = page_text(answer)
     assert moved[:2] == (version, revision + 1)
-    assert "Saved: 1 new assignment." in page_text(answer)
-    assert following.status_code == 409
-    assert imports.PRESS_SAID["later_behind"] in page_text(following)
+    assert "Saved: 1 new assignment." in text
+    assert text.index("Saved: 1 new assignment.") < text.index(imports.OUT_OF_DATE)
+    assert screenshot_page.SAID["not_carried"] in text
+    assert 'name="press"' not in answer.text
+    assert signed_revisions(answer.text) == []
     assert held[1:] == moved[1:]
 
 
@@ -19931,13 +19935,16 @@ def test_save_beside_another_date_keeps_its_own_note_and_signature(
         posted = page_post(reopened, "save", choose=no_date_tick(none), typed={box: sent})
         other_tab_writes(browser, draft_id, lambda held: held.update({row: {"course": "Later"}}))
         answer = send(browser, draft_id, posted)
-        stored = review_as_stored(browser, draft_id)
+        stored = held_corrections(browser, draft_id)
 
     assert answer.status_code == 422
-    assert copied(answer) == typing
-    assert not says(answer.text, imports.UNSHOWN_TYPED)
-    assert says(answer.text, imports.TYPED_SAID) == bool(typing)
-    assert int(hidden_value(answer.text, "progress_revision")) == stored["revision"]
+    assert stored is not None
+    assert copied(answer) == {sent} | typing
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert says(answer.text, imports.OUT_OF_DATE)
+    assert says(answer.text, screenshot_page.SAID["not_carried"])
+    assert signed_revisions(answer.text) == []
+    assert stored[row] == {"course": "Later"}
 
 
 @pytest.mark.parametrize(
@@ -20001,37 +20008,39 @@ def test_no_date_beside_another_date_and_words_signs_the_revision_its_page_read(
     where: str,
     next_press: str,
 ) -> None:
-    """Another tab saves for later after the page loads. The refused page signs what that page
-    signed, so the immediate next Save for later is told, and what the other tab saved stays."""
+    """Another tab saves for later after the page loads. The refused page draws no form and signs
+    nothing, the next Save for later from the page that loaded is told, and what the other tab
+    saved stays."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, piece, none, _ = words_carried_where(browser, monkeypatch, where)
         row = piece.removeprefix("date:")
         box = correct_box(piece, "assigned")
-        signed = hidden_value(page, "progress_revision")
         posted = page_post(page, press, choose=no_date_tick(none), typed={box: "2026-10-03"})
         a_tab_saves_a_class(browser, draft_id, row)
         answer = send(browser, draft_id, posted)
         following = (
-            [field for field in page_post(answer.text, "later") if not field[0].startswith("none:")]
+            page_post(page, "later", typed={box: "2026-10-03"})
             if next_press == "a date and no tick"
-            else page_post(answer.text, "later", typed={box: ""})
+            else page_post(page, "later", choose=no_date_tick(none), typed={box: ""})
         )
         told = send(browser, draft_id, following)
         held = held_corrections(browser, draft_id)
 
     assert answer.status_code == 422
-    assert hidden_value(answer.text, "progress_revision") == signed
+    assert signed_revisions(answer.text) == []
+    assert 'name="press"' not in answer.text
     assert told.status_code == 409
     assert held is not None
     assert held[row]["course"] == "Other Tab Course"
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_a_limit_both_refusal_signs_current_revision(
+def test_a_both_refusal_behind_another_tab_draws_no_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
-    """With no words carried, the refused page signs the revision it finds, so the next Save for
-    later goes through over what another tab saved."""
+    """With no words carried, the refused page behind another tab's Save for later draws no form:
+    the date to copy, that its choices can't be shown and that it's out of date. The other tab's
+    class stands."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
         piece = f"date:{other}"
@@ -20040,39 +20049,37 @@ def test_a_limit_both_refusal_signs_current_revision(
         posted = page_post(page, press, choose=no_date_tick(none), typed={box: "2026-10-03"})
         a_tab_saves_a_class(browser, draft_id, other)
         answer = send(browser, draft_id, posted)
-        stored = review_as_stored(browser, draft_id)
-        following = [
-            field for field in page_post(answer.text, "later") if not field[0].startswith("none:")
-        ]
-        through = send(browser, draft_id, following)
         held = held_corrections(browser, draft_id)
 
     assert answer.status_code == 422
-    assert copied(answer) == set()
-    assert int(hidden_value(answer.text, "progress_revision")) == stored["revision"]
-    assert through.status_code == 303
-    assert held == {piece: {"assigned": "2026-10-03"}}
+    assert copied(answer) == {"2026-10-03"}
+    assert signed_revisions(answer.text) == []
+    assert 'name="press"' not in answer.text
+    assert screenshot_page.SAID["not_carried"] in page_text(answer)
+    assert imports.OUT_OF_DATE in page_text(answer)
+    assert held == {other: {"course": "Other Tab Course"}}
 
 
-def test_a_limit_keep_too_long_signs_current_revision(
+def test_keep_too_long_behind_another_tab_draws_no_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Keep's page for a title past its field signs the revision it finds, so the next Save for
-    later goes through over what another tab saved."""
+    """Keep's page for a title past its field, behind another tab's Save for later, draws no form:
+    the title to copy and that it's out of date. The other tab's class stands."""
+    too_long = "x" * (TITLE_MOST + 1)
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
         title = correct_box(other, "title")
-        posted = page_post(page, "keep", typed={title: "x" * (TITLE_MOST + 1)})
+        posted = page_post(page, "keep", typed={title: too_long})
         a_tab_saves_a_class(browser, draft_id, other)
         answer = send(browser, draft_id, posted)
-        stored = review_as_stored(browser, draft_id)
-        through = send(browser, draft_id, page_post(answer.text, "later", typed={title: "Set 3"}))
         held = held_corrections(browser, draft_id)
 
     assert answer.status_code == 422
-    assert int(hidden_value(answer.text, "progress_revision")) == stored["revision"]
-    assert through.status_code == 303
-    assert held == {}
+    assert copied(answer) == {too_long}
+    assert signed_revisions(answer.text) == []
+    assert 'name="press"' not in answer.text
+    assert imports.OUT_OF_DATE in page_text(answer)
+    assert held == {other: {"course": "Other Tab Course"}}
 
 
 @pytest.mark.parametrize("card", list(SECOND_CARDS))
@@ -20113,20 +20120,22 @@ def test_no_date_on_each_shape_of_card(
 def test_save_s_page_with_words_beside_a_date_keeps_its_own_note_and_signature(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every typed field by Save's own reading, under its own note, and the current revision on what
-    it rebuilds, with another tab's Save for later since the page."""
+    """Behind another tab's Save for later since the page: every typed field to copy, that the page
+    is out of date, and no form; the other tab's class stands."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, _, none = words_beside_a_date_box(browser, monkeypatch)
         row = json.loads(box_subject(reopened, "title"))[0]
         posted = page_post(reopened, "save", choose=no_date_tick(none))
         other_tab_writes(browser, draft_id, lambda held: held.update({row: {"course": "Later"}}))
         answer = send(browser, draft_id, posted)
-        stored = review_as_stored(browser, draft_id)
+        stored = held_corrections(browser, draft_id)
 
     assert copied(answer) == {WORDS_BESIDE}
-    assert says(answer.text, imports.TYPED_SAID)
-    assert not says(answer.text, imports.UNSHOWN_TYPED)
-    assert int(hidden_value(answer.text, "progress_revision")) == stored["revision"]
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert says(answer.text, imports.OUT_OF_DATE)
+    assert signed_revisions(answer.text) == []
+    assert stored is not None
+    assert stored[row] == {"course": "Later"}
 
 
 @pytest.mark.parametrize(
@@ -20145,7 +20154,8 @@ def test_no_date_gives_what_it_sets_aside_back_on_a_press_that_stored_nothing(
     typing: set[str],
 ) -> None:
     """Whatever else the press found wrong: the words and any date beside them to copy, the neutral
-    note, and the revision the press read on what it rebuilds."""
+    note, and the revision the press read on what it rebuilds, or, behind another tab's Save for
+    later, no form and the out-of-date notice."""
     if (press, line) == ("keep", "behind"):
         pytest.skip("only Save for later can be behind")
     with here(open_settings(tmp_path)) as browser:
@@ -20176,7 +20186,11 @@ def test_no_date_gives_what_it_sets_aside_back_on_a_press_that_stored_nothing(
     assert copied(answer) == typing
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert not says(answer.text, imports.TYPED_SAID)
-    assert int(hidden_value(answer.text, "progress_revision")) == revision
+    if line == "behind":
+        assert says(answer.text, imports.OUT_OF_DATE)
+        assert signed_revisions(answer.text) == []
+    else:
+        assert int(hidden_value(answer.text, "progress_revision")) == revision
 
 
 def test_a_resend_of_no_date_on_later_says_out_of_date_and_gives_the_words_as_a_copy(
@@ -20756,8 +20770,9 @@ def test_the_commit_s_page_draws_no_form_and_gives_every_box_back(
     """Save for later that committed with words set aside: no form and nothing signed, every box it
     typed as sent, to copy, and both ways back; the copy is no claim that it's stored. Its
     confirmation, in the status style, takes the focus; where its read shows another tab saved
-    since, the out-of-date notice alone does, in the problem style. Past the commit's read it reads
-    only the review's state, to see whether the review has ended."""
+    since, that this attempt saved the review for later does, then the out-of-date notice in the
+    problem style. Past the commit's read it reads only the review's state, to see whether the
+    review has ended."""
     with here(open_settings(tmp_path)) as browser:
         commit = a_commit_to_overtake(browser, monkeypatch)
         posted = commit.posted
@@ -20782,13 +20797,13 @@ def test_the_commit_s_page_draws_no_form_and_gives_every_box_back(
     assert f'<a href="/parent/imports/{commit.draft_id}">Back to the review</a>' in answer.text
     assert '<a href="/parent">Back to Family review</a>' in answer.text
     if moved:
+        [kept] = re.findall(r'role="status" id="kept"[^>]*>(.*?)</div>', answer.text, re.S)
+        assert re.findall(r"<p[^>]*>(.*?)</p>", kept) == [str(escape(imports.THIS_ATTEMPT_SAVED))]
         [alert] = re.findall(r'role="alert" id="said"[^>]*>(.*?)</div>', answer.text, re.S)
         assert re.findall(r"<p>(.*?)</p>", alert) == [str(escape(imports.OUT_OF_DATE))]
         assert imports.PRESS_SAID["later"] not in text
-        assert 'id="kept"' not in answer.text
-        assert focused(answer.text) == [
-            '<div class="problem" role="alert" id="said" tabindex="-1" autofocus>'
-        ]
+        assert "Saved for later at" not in text
+        assert focused(answer.text) == ['<div role="status" id="kept" tabindex="-1" autofocus>']
     else:
         assert 'role="alert"' not in answer.text
         [kept] = re.findall(r'role="status" id="kept"[^>]*>(.*?)</div>', answer.text, re.S)
@@ -20873,9 +20888,9 @@ def test_a_page_whose_read_shows_another_tab_saved_gives_all_its_typing_on_its_o
 def test_keep_s_page_with_the_words_tells_the_next_save_for_later(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Another tab saved for later after this page opened. Keep's page with the words signs what
-    this page signed, so the immediate next Save for later is told, and what the other tab saved
-    stays."""
+    """Another tab saved for later after this page opened. Keep's page with the words draws no form,
+    gives the words back and says the page is out of date; the next Save for later from the page
+    that opened is refused as out of date, and what the other tab saved stays."""
 
     def adds_a_class(browser: TestClient, draft_id: str, row: str) -> None:
         kept = {"v": 4, "corrected": {row: {"course": "Other Tab Course"}}, "selected": []}
@@ -20890,21 +20905,23 @@ def test_keep_s_page_with_the_words_tells_the_next_save_for_later(
         adds_a_class(browser, draft_id, row)
         answer = send(browser, draft_id, posted)
         before = held_corrections(browser, draft_id)
-        next_press = send(browser, draft_id, page_post(answer.text, "later"))
+        next_press = send(browser, draft_id, page_post(reopened, "later"))
         after = held_corrections(browser, draft_id)
 
     assert answer.status_code == 200
     assert copied(answer) == {WORDS_BESIDE}
+    assert signed_revisions(answer.text) == []
+    assert imports.OUT_OF_DATE in page_text(answer)
     assert next_press.status_code == 409
-    assert imports.PRESS_SAID["later_behind"] in page_text(next_press)
+    assert imports.OUT_OF_DATE in page_text(next_press)
     assert after == before == {row: {"course": "Other Tab Course"}}
 
 
-def test_a_limit_keep_with_no_words_lets_the_next_save_for_later_overwrite_unseen(
+def test_keep_with_no_words_behind_another_tab_draws_no_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With no words set aside, Keep's page signs the current revision, so the next press goes
-    through over what another tab saved."""
+    """With no words set aside, Keep's page behind another tab's Save for later draws no form and
+    says it's out of date, and what that tab saved stands."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
         posted = page_post(page, "keep")
@@ -20913,11 +20930,13 @@ def test_a_limit_keep_with_no_words_lets_the_next_save_for_later_overwrite_unsee
         revision = drafts.snapshot(student, draft_id).progress_revision
         drafts.save_progress(student, draft_id, revision=revision, progress=json.dumps(kept))
         answer = send(browser, draft_id, posted)
-        next_press = send(browser, draft_id, page_post(answer.text, "later"))
         after = held_corrections(browser, draft_id)
 
-    assert next_press.status_code == 303
-    assert after == {}
+    assert answer.status_code == 200
+    assert signed_revisions(answer.text) == []
+    assert 'name="press"' not in answer.text
+    assert imports.OUT_OF_DATE in page_text(answer)
+    assert after == {other: {"course": "Other Tab Course"}}
 
 
 def test_another_tab_s_keep_after_the_commit_leaves_the_next_press_free(
@@ -20969,9 +20988,10 @@ def a_later_change_after_the_commit(
 def test_a_later_change_that_replaces_the_text_is_what_the_redirect_shows(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A limit. This tab's Save for later committed, then a tab that loaded afterward made a valid
-    later change to the same field. The press redirects under its confirmation, the later change is
-    stored and shown, and this tab's text is on no page."""
+    """This tab's Save for later committed, then a tab that loaded afterward made a valid later
+    change to the same field, seen by the read after the commit. The press says this attempt saved
+    the review for later, then that the page is out of date, with this tab's text to copy and no
+    form; the later change is stored."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
         before = int(hidden_value(page, "progress_revision"))
@@ -20981,14 +21001,16 @@ def test_a_later_change_that_replaces_the_text_is_what_the_redirect_shows(
         )
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
-        shown = followed(browser, answer)
         held = held_corrections(browser, draft_id)
         stored = review_as_stored(browser, draft_id)
 
-    assert answer.status_code == 303
-    assert says(shown, imports.PRESS_SAID["later"])
-    assert box_text(shown, correct_box(other, "title")) == "Later Change"
-    assert "This Tab" not in html.unescape(shown)
+    page_now = recovery_of(answer)
+    assert answer.status_code == 200
+    assert page_now.kept == [imports.THIS_ATTEMPT_SAVED]
+    assert page_now.said == [imports.OUT_OF_DATE]
+    assert imports.PRESS_SAID["later"] not in page_text(answer)
+    assert page_now.copies == ["This Tab"]
+    assert not page_now.form
     assert held == {other: {"title": "Later Change"}}
     assert stored["revision"] == before + 2
 
@@ -20997,8 +21019,8 @@ def test_a_later_change_that_adds_to_the_text_leaves_it_stored_and_shown(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """This tab's Save for later committed, then a tab that loaded afterward made a valid later
-    change to another field. The press redirects under its confirmation, and both are stored and
-    shown."""
+    change to another field, seen by the read after the commit. The press says this attempt saved
+    the review for later, then that the page is out of date, and both are stored."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
         before = int(hidden_value(page, "progress_revision"))
@@ -21008,14 +21030,15 @@ def test_a_later_change_that_adds_to_the_text_leaves_it_stored_and_shown(
         )
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
-        shown = followed(browser, answer)
         held = held_corrections(browser, draft_id)
         stored = review_as_stored(browser, draft_id)
 
-    assert answer.status_code == 303
-    assert says(shown, imports.PRESS_SAID["later"])
-    assert box_text(shown, correct_box(other, "title")) == "This Tab"
-    assert box_text(shown, correct_box(other, "course")) == "Later Course"
+    page_now = recovery_of(answer)
+    assert answer.status_code == 200
+    assert page_now.kept == [imports.THIS_ATTEMPT_SAVED]
+    assert page_now.said == [imports.OUT_OF_DATE]
+    assert page_now.copies == ["This Tab"]
+    assert not page_now.form
     assert held == {other: {"title": "This Tab", "course": "Later Course"}}
     assert stored["revision"] == before + 2
 
@@ -22170,6 +22193,8 @@ def test_a_limit_an_altered_post_on_an_open_review_redirects_with_its_typing_los
 def test_a_limit_typing_on_a_row_another_tab_took_is_refused_with_no_copy(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, how: str
 ) -> None:
+    """A limit where rows are still drawn: typing on a row another tab took gets no copy. With its
+    only screenshot removed, no rows are left, and every box comes back to copy."""
     typed_words = "Words On A Row That Went"
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, _ = two_rows(browser, monkeypatch)
@@ -22188,8 +22213,12 @@ def test_a_limit_typing_on_a_row_another_tab_took_is_refused_with_no_copy(
 
     assert answer.status_code == 409
     assert imports.OUT_OF_DATE in page_text(answer)
-    assert typed_words not in html.unescape(answer.text)
-    assert copied(answer) == set()
+    if how == "its screenshot removed":
+        assert copied(answer) == {typed_words}
+        assert 'name="press"' not in answer.text
+    else:
+        assert typed_words not in html.unescape(answer.text)
+        assert copied(answer) == set()
 
 
 def row_saved_in_another_tab(browser: TestClient, draft_id: str, row: str, none: str) -> None:
@@ -22207,6 +22236,8 @@ def row_saved_in_another_tab(browser: TestClient, draft_id: str, row: str, none:
 def test_a_limit_words_beside_a_date_on_one_of_two_rows_another_tab_took_get_no_copy(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, how: str
 ) -> None:
+    """A limit while the page isn't behind: words beside a date on a row another tab took get no
+    copy. Behind that tab's Save for later, the page draws no form and gives the words back."""
     screenshots = 2 if how == "its screenshot removed" else 1
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, _, piece, none = two_cards_with_words(
@@ -22225,6 +22256,11 @@ def test_a_limit_words_beside_a_date_on_one_of_two_rows_another_tab_took_get_no_
         answer = send(browser, draft_id, posted)
 
     assert answer.status_code == 409
+    if how == "saved":
+        assert copied(answer) == {WORDS_BESIDE}
+        assert imports.OUT_OF_DATE in page_text(answer)
+        assert 'name="press"' not in answer.text
+        return
     assert copied(answer) == set()
     boxes = [json.loads(box) for box in fields_named(review_form(answer.text), "correct:")]
     titles = [key for key, field in boxes if field == "title"]
@@ -22233,9 +22269,11 @@ def test_a_limit_words_beside_a_date_on_one_of_two_rows_another_tab_took_get_no_
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_a_limit_words_beside_a_date_on_a_row_another_tab_took_are_refused_with_no_copy(
+def test_words_beside_a_date_on_a_row_another_tab_took_are_refused_and_copied(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
+    """With the row's only screenshot removed, no rows are left: the press is refused, and the
+    words come back to copy with no form."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, _, none = words_beside_a_date_box(browser, monkeypatch)
         posted = page_post(reopened, press, choose=no_date_tick(none))
@@ -22245,7 +22283,8 @@ def test_a_limit_words_beside_a_date_on_a_row_another_tab_took_are_refused_with_
         answer = send(browser, draft_id, posted)
 
     assert answer.status_code == 409
-    assert copied(answer) == set()
+    assert copied(answer) == {WORDS_BESIDE}
+    assert 'name="press"' not in answer.text
 
 
 def an_offer_post(
@@ -24938,7 +24977,8 @@ def test_save_with_nothing_ticked_finding_its_receipt_says_so_where_it_can_t_sho
 def test_save_for_later_behind_says_answers_are_kept_beside_its_rows_only_when_it_stored(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, stored: bool
 ) -> None:
-    """Its own 409, and that its corrections weren't saved for later."""
+    """Its own 409, that its corrections weren't saved for later and that the page is out of date,
+    with no form in place of the rows."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, _ = behind_or_nothing_ticked(
             browser, monkeypatch, "Save for later, behind", stored=stored
@@ -24948,7 +24988,8 @@ def test_save_for_later_behind_says_answers_are_kept_beside_its_rows_only_when_i
     assert answer.status_code == 409
     assert imports.PRESS_SAID["later_behind"] in page_text(answer)
     assert (imports.PRESS_SAID["answers_kept"] in page_text(answer)) is stored
-    assert 'name="correct:' in answer.text
+    assert imports.OUT_OF_DATE in page_text(answer)
+    assert 'name="correct:' not in answer.text
 
 
 # ---------------------------------------------- what a page says with no store or close behind it
@@ -26993,121 +27034,116 @@ def test_keep_says_its_answers_are_kept_for_the_same_values_under_a_changed_dige
 
 def refused_after_another_tab_saved(
     browser: TestClient, monkeypatch: pytest.MonkeyPatch, first: str
-) -> tuple[str, str, str, str, int]:
+) -> tuple[str, str, str, str, str]:
     """Words in saved progress beside a date box, another tab's class saved after the page loads,
-    and this press refused with the tick beside another date, signing its page's revision: the
-    review, the refused page, the row, the date box and that revision."""
+    and this press refused with the tick beside another date, behind that save, so its page draws
+    no form and signs nothing: the review, the page that loaded, the row, the date box and the
+    tick."""
     draft_id, page, _, piece, none = two_cards_with_words(browser, monkeypatch)
     row = piece.removeprefix("date:")
     box = correct_box(piece, "assigned")
-    signed = int(hidden_value(page, "progress_revision"))
     posted = page_post(page, first, choose=no_date_tick(none), typed={box: "2026-10-03"})
     a_tab_saves_a_class(browser, draft_id, row)
     refused = send(browser, draft_id, posted)
     assert refused.status_code == 422
-    assert int(hidden_value(refused.text, "progress_revision")) == signed
-    return draft_id, refused.text, row, box, signed
+    assert signed_revisions(refused.text) == []
+    assert imports.OUT_OF_DATE in page_text(refused)
+    return draft_id, page, row, box, none
 
 
 def with_the_no_date_tick_off(fields: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return [field for field in fields if not field[0].startswith("none:")]
 
 
-def next_save_for_later_overwrites(
+def next_save_for_later_is_refused(
     browser: TestClient,
     draft_id: str,
+    answer: Answer,
     page: str,
     row: str,
-    signed: int,
     typed: Mapping[str, str] | None = None,
 ) -> None:
-    """This page signs the revision it finds, one past the refused page's, so the next Save for
-    later goes through and another tab's class is gone, by a connection of its own."""
-    assert int(hidden_value(page, "progress_revision")) == signed + 1
+    """This press's page draws no form and signs nothing, so the next Save for later can only come
+    from the page that loaded, which is refused, and another tab's class stands, by a connection of
+    its own."""
+    assert signed_revisions(answer.text) == []
+    assert 'name="press"' not in answer.text
     fields = with_the_no_date_tick_off(page_post(page, "later", typed=typed))
-    answer = send(browser, draft_id, fields)
+    told = send(browser, draft_id, fields)
     held = held_corrections(browser, draft_id)
-    assert answer.status_code == 303
+    assert told.status_code == 409
     assert held is not None
-    assert "course" not in held.get(row, {})
+    assert held[row]["course"] == "Other Tab Course"
 
 
 @pytest.mark.parametrize("second", THE_TWO_PRESSES)
 @pytest.mark.parametrize("first", THE_TWO_PRESSES)
-def test_a_limit_a_repeated_refusal_lets_the_next_save_for_later_overwrite_another_tab(
+def test_a_repeated_refusal_leaves_another_tab_s_class_standing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str, second: str
 ) -> None:
-    """A limit, one case of several rebuilt pages that can lead to this: only the immediate next
-    Save for later is told another tab saved. The same post refused again has no words left to give
-    back, and signs the revision it finds."""
+    """The same post from the page that loaded, refused again behind another tab's Save for later,
+    draws no form either, and the next Save for later is refused."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page, row, _, signed = refused_after_another_tab_saved(
+        draft_id, page, row, box, none = refused_after_another_tab_saved(
             browser, monkeypatch, first
         )
-        again = send(browser, draft_id, page_post(page, second))
+        posted = page_post(page, second, choose=no_date_tick(none), typed={box: "2026-10-03"})
+        again = send(browser, draft_id, posted)
         assert again.status_code == 422
-        next_save_for_later_overwrites(browser, draft_id, again.text, row, signed)
+        next_save_for_later_is_refused(browser, draft_id, again, page, row)
 
 
 @pytest.mark.parametrize("how", ["box emptied, tick kept", "tick off, date kept"])
 @pytest.mark.parametrize("first", THE_TWO_PRESSES)
-def test_a_limit_keep_from_the_refused_page_lets_the_next_save_for_later_overwrite_another_tab(
+def test_keep_after_the_refused_page_leaves_another_tab_s_class_standing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str, how: str
 ) -> None:
-    """A limit, one case of several rebuilt pages that can lead to this: only the immediate next
-    Save for later is told another tab saved. Keep from the refused page signs the revision it
-    finds."""
+    """Keep from the page that loaded, after the refused page, draws no form behind another tab's
+    Save for later, and the next Save for later is refused."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page, row, box, signed = refused_after_another_tab_saved(
-            browser, monkeypatch, first
-        )
+        draft_id, page, row, box, _ = refused_after_another_tab_saved(browser, monkeypatch, first)
         fields = (
             page_post(page, "keep", typed={box: ""})
             if how == "box emptied, tick kept"
-            else with_the_no_date_tick_off(page_post(page, "keep"))
+            else with_the_no_date_tick_off(page_post(page, "keep", typed={box: "2026-10-03"}))
         )
         kept = send(browser, draft_id, fields)
         assert kept.status_code == 200
-        next_save_for_later_overwrites(browser, draft_id, kept.text, row, signed)
+        next_save_for_later_is_refused(browser, draft_id, kept, page, row)
 
 
 @pytest.mark.parametrize("second", THE_TWO_PRESSES)
 @pytest.mark.parametrize("first", THE_TWO_PRESSES)
-def test_a_limit_a_title_too_long_lets_the_next_save_for_later_overwrite_another_tab(
+def test_a_title_too_long_after_the_refused_page_leaves_another_tab_s_class_standing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str, second: str
 ) -> None:
-    """A limit, one case of several rebuilt pages that can lead to this: only the immediate next
-    Save for later is told another tab saved. A title too long from the refused page signs the
-    revision it finds, and with the title put right the next Save for later goes through."""
+    """A title too long from the page that loaded, after the refused page, draws no form behind
+    another tab's Save for later, and with the title put right the next Save for later is
+    refused."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page, row, _, signed = refused_after_another_tab_saved(
-            browser, monkeypatch, first
-        )
+        draft_id, page, row, _, _ = refused_after_another_tab_saved(browser, monkeypatch, first)
         title = correct_box(row, "title")
         drawn = box_text(page, title)
         too_long = {title: "x" * (TITLE_MOST + 1)}
         fields = with_the_no_date_tick_off(page_post(page, second, typed=too_long))
         refused = send(browser, draft_id, fields)
         assert refused.status_code == 422
-        next_save_for_later_overwrites(browser, draft_id, refused.text, row, signed, {title: drawn})
+        next_save_for_later_is_refused(browser, draft_id, refused, page, row, {title: drawn})
 
 
 @pytest.mark.parametrize("first", THE_TWO_PRESSES)
-def test_a_limit_the_behind_page_lets_the_next_save_for_later_overwrite_another_tab(
+def test_the_behind_page_after_the_refused_page_leaves_another_tab_s_class_standing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str
 ) -> None:
-    """A limit, one case of several rebuilt pages that can lead to this: only the immediate next
-    Save for later is told another tab saved. The page that tells it signs the revision it finds,
-    so the press after that goes through."""
+    """Save for later from the page that loaded, after the refused page, says its corrections
+    weren't saved for later, with no form, and the press after it is refused too."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page, row, _, signed = refused_after_another_tab_saved(
-            browser, monkeypatch, first
-        )
+        draft_id, page, row, _, _ = refused_after_another_tab_saved(browser, monkeypatch, first)
         fields = with_the_no_date_tick_off(page_post(page, "later"))
         behind = send(browser, draft_id, fields)
         assert behind.status_code == 409
         assert imports.PRESS_SAID["later_behind"] in page_text(behind)
-        next_save_for_later_overwrites(browser, draft_id, behind.text, row, signed)
+        next_save_for_later_is_refused(browser, draft_id, behind, page, row)
 
 
 def earlier_save_past_its_post(

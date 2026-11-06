@@ -1226,11 +1226,12 @@ def test_a_row_that_cant_be_resolved_gives_back_what_the_tick_sets_aside_under_t
 
 
 @pytest.mark.parametrize("press", ["keep", "later"])
-def test_a_row_that_cant_be_resolved_beside_words_signs_the_revision_its_page_read(
+def test_a_row_that_cant_be_resolved_beside_words_behind_draws_no_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
-    """Another tab saves for later after the page loads. The refused page signs what that page
-    signed, so the immediate next Save for later is told, and what the other tab saved stays."""
+    """Another tab saves for later after the page loads. The refused page draws no form and signs
+    nothing, says its choices can't be shown and that it's out of date, and what the other tab
+    saved stays."""
     with here(open_settings(tmp_path)) as browser:
         gone = a_row_to_lose_beside_words(browser, monkeypatch)
         posted = page_post(gone.page, press, choose={gone.tick: "none"})
@@ -1239,13 +1240,15 @@ def test_a_row_that_cant_be_resolved_beside_words_signs_the_revision_its_page_re
         row = piece.removeprefix("date:")
         a_tab_saves_a_class(browser, gone.draft_id, row)
         answer = send(browser, gone.draft_id, ticks_of(posted, gone.question, gone.rows))
-        told = send(browser, gone.draft_id, page_post(answer.text, "later"))
         student = state_of(browser).project_state.student_id()
         held = state_of(browser).import_drafts.snapshot(student, gone.draft_id).progress
 
+    said = page_text(answer.text)
     assert answer.status_code == 422
-    assert signed_revision(page_post(answer.text, press)) == signed_revision(posted)
-    assert told.status_code == 409, page_text(told.text)[:300]
+    assert 'name="progress_revision"' not in answer.text
+    assert 'name="press"' not in answer.text
+    assert said.count(NOT_CARRIED) == 1
+    assert imports.OUT_OF_DATE in said
     assert held is not None
     assert json.loads(held)["corrected"][row]["course"] == "Other Tab Course"
 
@@ -1260,7 +1263,7 @@ def test_a_row_that_cant_be_resolved_beside_words_signs_the_revision_its_page_re
     ids=["no words, a stray space", "words left unticked", "words left unticked, a stray space"],
 )
 @pytest.mark.parametrize("press", ["keep", "later"])
-def test_a_row_that_cant_be_resolved_with_nothing_set_aside_keeps_its_note_and_signature(
+def test_a_row_that_cant_be_resolved_with_nothing_set_aside_behind_draws_no_form(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     press: str,
@@ -1268,8 +1271,9 @@ def test_a_row_that_cant_be_resolved_with_nothing_set_aside_keeps_its_note_and_s
     stray_space: bool,
     back: list[str],
 ) -> None:
-    """With nothing "No assigned date" sets aside, it gives back what no box holds under the note
-    it gives typing, signing the posted revision."""
+    """With nothing "No assigned date" sets aside, behind another tab's Save for later: no form,
+    every box it typed to copy under the note for typing nothing stores, and the out-of-date
+    notice."""
     with here(open_settings(tmp_path)) as browser:
         gone = a_row_to_lose_beside_words(browser, monkeypatch, words=words)
         typed = {box_named(gone.page, "title"): "Typed Words "} if stray_space else {}
@@ -1281,10 +1285,11 @@ def test_a_row_that_cant_be_resolved_with_nothing_set_aside_keeps_its_note_and_s
 
     said = page_text(answer.text)
     assert answer.status_code == 422, said[:300]
-    assert imports.TYPED_SAID in said
-    assert imports.UNSHOWN_TYPED not in said
+    assert imports.UNSHOWN_TYPED in said
+    assert imports.TYPED_SAID not in said
     assert sorted(copies_on(answer.text)) == sorted(back)
-    assert signed_revision(page_post(answer.text, press)) == signed_revision(posted)
+    assert imports.OUT_OF_DATE in said
+    assert 'name="progress_revision"' not in answer.text
 
 
 @pytest.mark.parametrize(
@@ -1409,11 +1414,12 @@ def test_a_row_that_cant_be_resolved_with_no_rows_left_to_show_is_said(
     assert page_text(answer.text).count(NOT_CARRIED) == 1
 
 
-def test_a_refused_row_keeps_the_revision_it_was_posted_with(
+def test_a_refused_row_behind_another_tab_s_save_for_later_draws_no_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Save for later in another tab moves the revision with no change of version. A page signed
-    with the newer one would let its next Save for later overwrite that tab's progress unseen."""
+    with the newer one would let its next Save for later overwrite that tab's progress unseen, so
+    the refused page draws no form and signs nothing."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, question = with_a_kept_question(browser, monkeypatch)
         rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
@@ -1427,7 +1433,9 @@ def test_a_refused_row_keeps_the_revision_it_was_posted_with(
     signed = dict(posted)["progress_revision"]
     assert dict(page_post(now, "keep"))["progress_revision"] != signed
     assert answer.status_code == 422
-    assert dict(page_post(answer.text, "keep"))["progress_revision"] == signed
+    assert 'name="progress_revision"' not in answer.text
+    assert page_text(answer.text).count(NOT_CARRIED) == 1
+    assert imports.OUT_OF_DATE in page_text(answer.text)
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
