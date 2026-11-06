@@ -393,31 +393,54 @@ in a box to copy, or left out because the save read that exact value back from
 the assignment it wrote, inside its own transaction. A resent press has no such
 evidence. A file error during that read fails the save and rolls it back, and
 the save says it's saved only if its own transaction is still open just before
-it commits. A review that ends under a Save press gives the typing back to copy,
-with an earlier confirmed save's outcome first. If a save's commit and rollback
-are both refused its transaction stays open on the record's connection, and
-whether a Save press saved can't be told from that connection. So a Save press
-that finds one, or whose acceptance read is refused, says it can't tell, with its
-typing and no rows, and the review's rows aren't made from that connection until
-the transaction ends. Nothing here repairs the connection. Another copy of a Save
-press can commit after this one's first check, so before a page that ends the press
-or says its homework wasn't saved, it asks for its receipt again: found, it answers
-with that save's result; unreadable, that it can't tell; absent, with the page as it
-was. A commit after that last look goes unseen. An instruction ticked
-beside "None of these apply" comes back on Save, Keep and Save for later with
-every choice that can still be shown, and writes nothing. It says when a choice
-can't be shown, except what a confirmed save took: its own rows' questions and
-ticks, and a name question. A Save press that finds its receipt writes nothing more
-and comes back the same way, with no conflict. At another version its choices don't
-carry, and it says so if they aren't what the record holds or aren't offered, or
-if an answer it cleared is still held. One narrow exception there: a question gone
-from the page whose posted choice the record still holds goes unsaid, since nothing
-tells it from one her own first copy took off the page. The
-hourly cleanup is promised only of a review read as finished, since it closes
-no other. Once a press is known to have committed, an unexpected error while
-making its page doesn't reach the server, since a plain error would hide a save
-that happened: it is logged at error level by its type and place alone, and the
-page says only that the review can't be shown.
+it commits. A review that a press of the form finds closed answers with an earlier
+confirmed save's outcome first, then the typing to copy. One it finds expired or
+removed gives the typing back too. A Save press puts that outcome first, except when
+its own save is what finds the review expired or removed. Keep and Save for later
+put a confirmed earlier save's outcome first wherever they find the review closed:
+at their first read, at their write, at the read after it, at a second read after
+finding no post or no rows, or at the read Save for later's commit page makes to
+see whether the review has ended. Finding it expired or removed, they put that
+outcome first only at their first read, at that second read, or at that read of
+the commit page; at their write, or at Save for later's read after its commit, they
+give the typing back with no outcome. Their first read and their read of the post, when refused, look for the
+receipt too and put a confirmed save's outcome first; a refusal of the read each
+press makes just before its write doesn't look. The outcome comes only from a
+receipt the lookup confirms: a lookup that's refused shows none on a Keep or Save
+for later page, and a Save press says it can't tell. On those pages, on any page
+that says the review can't be shown, beside a confirmed save's counts when the post
+can't be read against the review, and on Save for later's page after a commit that
+set words aside, whether or not another tab has saved since, Keep and Save for later
+give the typing back as sent, outer whitespace included, with a box of several lines
+showing its line endings as line feeds; an unticked valid date in a date box
+replaces the words carried beside it. That Save for later page draws no form: its
+confirmation, or, when its read shows a newer revision, the out-of-date notice, with
+every box back either way. Drawing no form, it leaves the next form to a load of
+the review; it reads the review once more only to see whether it has ended, and
+past a refused or ended answer there looks for the receipt. If a save's commit
+and rollback are both refused its transaction stays open on the record's
+connection, and whether a Save
+press saved can't be told from that connection. So a Save press that finds one, or
+whose acceptance read is refused, says it can't tell, with its typing and no rows,
+and the review's rows aren't made from that connection until the transaction ends.
+Nothing here repairs the connection. Another copy of a Save press can commit after
+this one's first check, so before a page that ends the press or says its homework
+wasn't saved, it asks for its receipt again: found, it answers with that save's
+result; unreadable, that it can't tell; absent, with the page as it was. A commit
+after that last look goes unseen. An instruction ticked beside "None of these apply"
+comes back on Save, Keep and Save for later with every choice that can still be
+shown, and writes nothing. It says when a choice can't be shown, except what a
+confirmed save took: its own rows' questions and ticks, and a name question. A Save
+press that finds its receipt writes nothing more and comes back the same way, with
+no conflict. At another version its choices don't carry, and it says so if they
+aren't what the record holds or aren't offered, or if an answer it cleared is still
+held. One narrow exception there: a question gone from the page whose posted choice
+the record still holds goes unsaid, since nothing tells it from one her own first
+copy took off the page. The hourly cleanup is promised only of a review read as
+finished, since it closes no other. Once a press is known to have committed, an
+unexpected error while making its page doesn't reach the server, since a plain error
+would hide a save that happened: it is logged at error level by its type and place
+alone, and the page says only that the review can't be shown.
 
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update

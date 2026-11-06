@@ -11,7 +11,10 @@
   be shown, then the typing and the way back to the review. A press whose open review can't be
   read says what it kept in the status style, which takes the focus, and the rest with the line
   that the review can't be shown in the problem style, which takes it when nothing was kept,
-  then the typing and the way back to the review. A save whose review reads finished but not
+  then the typing and the way back to the review. A Save for later that committed with words set
+  aside is drawn the same way, with no form: its confirmation in the status style, or, where its
+  read shows another tab saved since, the out-of-date notice alone in the problem style, and no
+  problem style when there's nothing to say in it. A save whose review reads finished but not
   closed shows its counts the same way with what it says of the cleanup in the problem style,
   and, like a finished review's page, whatever typing it didn't store to copy.
 #}
@@ -47,9 +50,11 @@
         {% for line in kept %}<p class="note">{{ line }}</p>{% endfor %}
       </div>
     {% endif %}
-    <div class="problem" role="alert" id="said" tabindex="-1"{{ lands(request, not kept) }}>
-      {% for line in said %}<p>{{ line }}</p>{% endfor %}
-    </div>
+    {% if said %}
+      <div class="problem" role="alert" id="said" tabindex="-1"{{ lands(request, not kept) }}>
+        {% for line in said %}<p>{{ line }}</p>{% endfor %}
+      </div>
+    {% endif %}
     {% if typed %}{{ typed_back(typed, typed_said) }}{% endif %}
     <p class="return"><a href="{{ review }}">Back to the review</a></p>
     <p class="return"><a href="/parent">Back to Family review</a></p>

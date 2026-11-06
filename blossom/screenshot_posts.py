@@ -119,6 +119,9 @@ class ReviewPost:
     """Each instruction question, by its field, whose posted choice names a kept row that isn't on
     the record: the press is refused whole, as a conflict is, and its typing and the choices that
     can show go back."""
+    dropped: tuple[tuple[str, str, str], ...] = ()
+    """What "No assigned date was given" set aside or was refused beside, with words carried by a
+    date box: anything sent in that box and those words, by key, field and the text as sent."""
 
     @property
     def refused(self) -> bool:
@@ -428,6 +431,7 @@ def read_review(
         if conflicted or unresolved or presses[0] == "save"
         else {},
         unresolved=tuple(unresolved),
+        dropped=folded.dropped,
     )
 
 
@@ -490,6 +494,7 @@ class Folded(NamedTuple):
     too_long: tuple[tuple[str, str], ...]
     needed: tuple[tuple[str, str], ...]
     both: tuple[str, ...]
+    dropped: tuple[tuple[str, str, str], ...]
 
 
 def box_corrections(
@@ -504,10 +509,11 @@ def box_corrections(
     refused; a cleared instruction text is its removal (``None``); a cleared assigned date is
     the date as read. "No assigned date was given" is none (``None``) where one was read, its
     box left empty or holding the date as read; beside any other date typed in the box it is
-    refused. Ticked, it wins over text Blossom couldn't read carried beside an empty box, which
-    is dropped; unticked, that text stays the box's correction until a date is chosen. A box the
-    page signed for a card another press has since saved, or that a change of screenshots took
-    away, is passed over, as the answers about it are."""
+    refused. Ticked either way, text Blossom couldn't read carried beside that box is dropped, so
+    it and what was sent in the box are named to give back (``dropped``); unticked, that text
+    stays the box's correction until a date is chosen. A box the page signed for a card
+    another press has since saved, or that a change of screenshots took away, is passed over, as
+    the answers about it are."""
     reads = fold_reads(state)
     nones = set(none_given)
     out: dict[str, dict[str, str | None]] = {}
@@ -564,7 +570,14 @@ def box_corrections(
     for key in nones:
         if (key, "assigned") not in boxes and reads[(key, "assigned")] is not None:
             keep(key, "assigned", None)
-    return Folded(out, tuple(sorted(too_long)), tuple(sorted(needed)), tuple(sorted(both)))
+    dropped = tuple(
+        (key, field, text)
+        for (key, field), words in carried.items()
+        if field == "assigned" and key in nones
+        for text in (boxes.get((key, field), ""), words)
+        if text
+    )
+    return Folded(out, tuple(sorted(too_long)), tuple(sorted(needed)), tuple(sorted(both)), dropped)
 
 
 def none_confirms(state: ReviewState, none_given: Iterable[str]) -> list[str]:
@@ -624,6 +637,55 @@ def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], .
         if not found.get(subject, "").strip():
             found[subject] = text
     return tuple((key, field, text) for (key, field), text in found.items() if text.strip())
+
+
+def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
+    """Each box's text as it was sent, whitespace kept and a box of several lines with its line
+    endings made line feeds, unless it's empty or exactly its value with no correction. A box beside
+    carried words is drawn empty, so anything in it was typed; the words come back unless a date is
+    in that box with "No assigned date was given" unticked."""
+    found: dict[tuple[str, str], str] = {}
+    boxes: dict[tuple[str, str], str] = {}
+    carried: dict[tuple[str, str], str] = {}
+    ticked: set[tuple[str, str]] = set()
+    unchanged = {
+        name.removeprefix(READ_PREFIX): value
+        for name, value in items
+        if name.startswith(READ_PREFIX)
+    }
+    for name, value in items:
+        prefix = next((p for p in ("correct:", "refused:", "none:") if name.startswith(p)), None)
+        if prefix is None:
+            continue
+        named = name.removeprefix(prefix)
+        try:
+            key, field = (str(part) for part in json.loads(named))
+        except (ValueError, TypeError, RecursionError):
+            continue
+        if prefix == "none:":
+            ticked.add((key, field))
+            continue
+        if not correctable(field):
+            continue
+        text = correction_text(field, value)
+        if prefix == "refused:":
+            carried.setdefault((key, field), text)
+            continue
+        boxes.setdefault((key, field), text)
+        if text and not (text == canonical(text) and unchanged.get(named) == read_digest(text)):
+            found.setdefault((key, field), text)
+    typed = [(key, field, text) for (key, field), text in found.items()]
+    typed += [
+        (key, field, text)
+        for (key, field), text in boxes.items()
+        if text and (key, field) in carried and (key, field) not in found
+    ]
+    typed += [
+        (key, field, text)
+        for (key, field), text in carried.items()
+        if text and ((key, field) in ticked or typed_day(boxes.get((key, field), "")) is None)
+    ]
+    return tuple(typed)
 
 
 # ------------------------------------------------------------------ saved progress
