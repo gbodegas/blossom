@@ -2373,7 +2373,7 @@ async def later_press(
                 request, state, found.draft_id, 200, rows=False, notes=stored
             )
         elif post.dropped:
-            return await later_with_words(request, state, now, post, done.progress_revision, stored)
+            return await later_with_words(request, state, now, done.progress_revision, stored)
         return to_review(state, found.draft_id, [PRESS_SAID["later"], saved_for_later_at(state)])
     answered = done.answers.stored > 0
     said = [*([PRESS_SAID["answers_kept"]] if answered else []), PRESS_SAID["later_behind"]]
@@ -2384,39 +2384,52 @@ async def later_with_words(
     request: Request,
     state: ApplicationState,
     after: DraftSnapshot,
-    post: ReviewPost,
     revision: int,
     stored: Sequence[str] = (),
 ) -> Response:
-    """Save for later that committed with something "No assigned date was given" set aside: the rows
-    drawn from what this read shows stored, signed with the revision it shows, and what was set
-    aside to copy. Where that revision isn't the one its commit wrote (``revision``), another tab
-    saved for later since: it says the page is out of date, with no confirmation, and gives back all
-    the press's typing to copy, apart from the form. Any read after this one that's refused answers
-    at the commit's 200, and one saying the review ended says what this write stored (``stored``),
-    in the past tense."""
-    moved = after.progress_revision != revision
-    lines = [OUT_OF_DATE] if moved else [PRESS_SAID["later"], saved_for_later_at(state)]
-    try:
-        rows = await rows_of(request, state, after, lines)
-    except sqlite3.Error as error:
-        noted(error)
-        return await unshown_with_typing(request, state, after.draft_id, [], 200)
-    if rows is None:
-        ended = await ended_under_press(
-            request, state, after.draft_id, 200, refused_status=200, said_past_an_end=stored
-        )
-        if ended is not None:
-            return ended
-    return review_page(
+    """Save for later that committed with something "No assigned date was given" set aside: no form,
+    since another tab can save after any read here and a form from it would carry a revision that
+    sends this press's boxes over that save. It says what it did, gives back every correction it
+    typed, as sent, to copy, and the ways back, so the next form comes from a load of the review.
+    Where its read's revision isn't the one its commit wrote (``revision``), another tab saved for
+    later since, and it says the page is out of date in place of the confirmation. It reads the
+    review once more only to see whether it has ended: a refused read answers at the commit's 200,
+    and one saying the review ended says what this write stored (``stored``), in the past tense."""
+    ended = await ended_under_press(
+        request, state, after.draft_id, 200, refused_status=200, said_past_an_end=stored
+    )
+    if ended is not None:
+        return ended
+    if after.progress_revision != revision:
+        return await saved_for_later_with_typing(request, state, after.draft_id, [], [OUT_OF_DATE])
+    lines = [PRESS_SAID["later"], saved_for_later_at(state)]
+    return await saved_for_later_with_typing(request, state, after.draft_id, lines, [])
+
+
+async def saved_for_later_with_typing(
+    request: Request,
+    state: ApplicationState,
+    draft_id: str,
+    kept: Sequence[str],
+    said: Sequence[str],
+) -> Response:
+    """A Save for later's commit page, with no form: what it says in the status style (``kept``) or
+    the problem style (``said``), every correction it typed, as sent, to copy, by its press
+    (``typing_by_press``), and the ways back to the review and to Family review. It reads no store,
+    signs nothing, and offers nothing that repeats the press."""
+    return templates.TemplateResponse(
         request,
-        state,
-        after,
-        lines,
-        200,
-        rows=rows,
-        typed=await typing_by_press(request) if moved else tick_set_aside(post),
-        typed_said=UNSHOWN_TYPED,
+        "import_said.html",
+        {
+            "kept": list(kept),
+            "said": list(said),
+            "typed": await typing_by_press(request),
+            "typed_said": UNSHOWN_TYPED,
+            "review": f"{PREFIX}/{draft_id}",
+            "marks": marks_of(state),
+            "page": "parent",
+        },
+        status_code=200,
     )
 
 
