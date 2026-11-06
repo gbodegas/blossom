@@ -9392,6 +9392,7 @@ def test_a_committed_save_with_a_changed_group_never_says_no_homework_when_its_r
         "a" * 32,
         (),
         ("first",),
+        progress_revision=0,
         changed_units=("second",),
         incomplete=() if path == "review left open" else ("close",),
         counts=(1, 0, 0, 1),
@@ -9483,6 +9484,7 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
                 "a" * 32,
                 (),
                 ("first",),
+                progress_revision=0,
                 changed_units=("second",),
                 already_units=("third",),
                 incomplete=("close",) if case == "close unconfirmed" else (),
@@ -12354,6 +12356,7 @@ def test_the_finished_page_gives_back_only_the_typing_the_save_did_not_write(
                 "a" * 32,
                 pairs,
                 (first_unit,),
+                progress_revision=0,
                 closed=True,
                 counts=(1, 0, 0, 0),
                 stored=((json.loads(mine.removeprefix("correct:"))[0], "title", "Worded Anew"),),
@@ -17913,10 +17916,10 @@ def test_an_instruction_question_another_review_settled_is_said(
 
 
 def back_on_a_page_saved_from(
-    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, *, own_page: bool = False
 ) -> tuple[ChoicesReview, str, str, str, str]:
-    """One page, whose Save of one group committed. The review, the page, that group, another one,
-    and that one's Type."""
+    """One page, whose Save of one group committed. The review, the page (with ``own_page``, the one
+    that Save answered with), that group, another one, and that one's Type."""
     review = three_groups(browser, monkeypatch)
     page = followed(browser, send(browser, review.draft_id, shown_post(review.page, "keep")))
     other_card = review.other_type.removeprefix("answer:kind:")
@@ -17930,9 +17933,9 @@ def back_on_a_page_saved_from(
         for field in fields_of(page, "answer:kind:")
         if field.removeprefix("answer:kind:").startswith(third[:12])
     )
-    first = page_post(page, "save", tick=[unit])
-    assert "Saved: 1 new assignment." in page_text(send(browser, review.draft_id, first))
-    return review, page, unit, third, third_type
+    saved = send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+    assert "Saved: 1 new assignment." in page_text(saved)
+    return review, saved.text if own_page else page, unit, third, third_type
 
 
 @pytest.mark.parametrize("field", ["instruction:0", "title"], ids=["instructions", "a title"])
@@ -17978,7 +17981,7 @@ def test_a_tick_the_rows_can_t_show_beside_a_receipt_is_said(
     says_one_choice_can_t_show(answer)
 
 
-def test_a_tick_still_shown_beside_a_receipt_says_nothing(
+def test_a_tick_still_shown_beside_a_receipt_says_the_conflict_isn_t_carried(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
@@ -17995,7 +17998,7 @@ def test_a_tick_still_shown_beside_a_receipt_says_nothing(
     [(False, ["2026-10-08"]), (True, [])],
     ids=["the question as it was", "its options changed"],
 )
-def test_a_date_left_unanswered_beside_a_receipt_says_nothing(
+def test_a_date_left_unanswered_beside_a_receipt_says_the_conflict_isn_t_carried(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, date_moves: bool, shown: list[str]
 ) -> None:
     """A radio sent with nothing isn't a choice, so there's none to lose; behind the save it
@@ -18012,7 +18015,7 @@ def test_a_date_left_unanswered_beside_a_receipt_says_nothing(
     a_conflict_behind_its_own_save(answer)
 
 
-def test_a_confirmation_cleared_on_purpose_beside_a_receipt_says_nothing(
+def test_a_confirmation_cleared_on_purpose_beside_a_receipt_says_the_conflict_isn_t_carried(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Unticked on purpose, it adds nothing; behind the save it repeats, the page draws no form, so
@@ -18053,7 +18056,7 @@ def a_review_asking_her_name(
     ],
     ids=["a name to confirm", "a name to choose"],
 )
-def test_her_name_s_question_the_save_took_says_nothing(
+def test_her_name_s_question_the_save_took_says_the_conflict_isn_t_carried(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     student: dict[str, Any],
@@ -18084,7 +18087,7 @@ def test_her_name_s_question_the_save_took_says_nothing(
     a_conflict_behind_its_own_save(answer)
 
 
-def test_a_row_read_on_two_days_goes_with_its_save_and_says_nothing(
+def test_a_row_read_on_two_days_goes_with_its_save_and_says_the_conflict_isn_t_carried(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Split in two, it asks its Type by a row key that neither piece is named. The row saved, that
@@ -18245,56 +18248,76 @@ def pressed_twice(browser: TestClient, draft_id: str, posted: list[tuple[str, st
     return send(browser, draft_id, posted)
 
 
-def test_her_choice_changed_on_a_plain_resend_comes_back_and_the_next_press_keeps_it(
+def test_her_choice_changed_on_a_plain_resend_is_said_not_carried_and_isn_t_kept(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Back on the page after its Save, a Type changed, Save pressed: the receipt answers, so
-    nothing is kept, and her choice comes back as she sent it. The next press has its own
-    acceptance id."""
+    nothing is kept, and with no form her choice can't be shown, said once. The next press, from
+    a fresh load, carries nothing of it."""
     with here(open_settings(tmp_path)) as browser:
         review, page, unit, _, third_type = back_on_a_page_saved_from(browser, monkeypatch)
         before = on_the_record(browser)
         posted = page_post(page, "save", tick=[unit], choose={third_type: "TASK"})
         answer = send(browser, review.draft_id, posted)
         held = on_the_record(browser)
-        send(browser, review.draft_id, shown_post(answer.text, "keep"))
+        kept = send(browser, review.draft_id, shown_post(loaded(browser, review.draft_id), "keep"))
         kinds = stored_kinds(browser, review.draft_id, "kind")
 
     assert answer.status_code == 200, page_text(answer)[:400]
     assert "Saved: 1 new assignment." in page_text(answer)
-    assert ("TASK", True) in options_of(answer.text, third_type)
-    block = fieldset_of(answer.text, third_type)
-    assert block is not None
-    assert NOT_SAVED_YET in html.unescape(block)
-    assert NOT_CARRIED not in page_text(answer)
-    assert imports.OUT_OF_DATE not in page_text(answer)
+    assert page_text(answer).count(NOT_CARRIED) == 1
+    behind_its_own_save(answer)
     assert held == before
-    assert "TASK" in kinds
+    assert kept.status_code == 200, page_text(kept)[:400]
+    assert "TASK" not in kinds
 
 
-def test_a_later_from_a_plain_resend_s_page_keeps_her_choice(
+def test_a_later_after_a_plain_resend_carries_nothing_of_her_choice(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Her changed choice is said not carried on the resend's page with no form, and the Save for
+    later from a fresh load commits without it."""
     with here(open_settings(tmp_path)) as browser:
         review, page, unit, _, third_type = back_on_a_page_saved_from(browser, monkeypatch)
         posted = page_post(page, "save", tick=[unit], choose={third_type: "TASK"})
         answer = send(browser, review.draft_id, posted)
-        later = send(browser, review.draft_id, shown_post(answer.text, "later"))
+        later = send(
+            browser, review.draft_id, shown_post(loaded(browser, review.draft_id), "later")
+        )
         kinds = stored_kinds(browser, review.draft_id, "kind")
 
+    assert page_text(answer).count(NOT_CARRIED) == 1
+    assert not recovery_of(answer).form
     assert later.status_code == 303, page_text(later)[:400]
-    assert "TASK" in kinds
+    assert "TASK" not in kinds
 
 
-def test_a_choice_cleared_on_a_plain_resend_says_nothing_with_no_form(
+def test_a_plain_resend_whose_choices_are_on_the_record_says_none_is_lost(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The same Save sent again with nothing changed: no form, and no line that a choice can't be
+    shown."""
+    with here(open_settings(tmp_path)) as browser:
+        review, page, unit, _, _ = back_on_a_page_saved_from(browser, monkeypatch)
+        answer = send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
+
+    assert answer.status_code == 200, page_text(answer)[:400]
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert NOT_CARRIED not in page_text(answer)
+    behind_its_own_save(answer)
+
+
+def test_a_choice_cleared_on_a_plain_resend_is_said_not_carried_with_no_form(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record still holds the answer she cleared, and the page has no form to carry the
+    clearing, so that's said once."""
     with here(open_settings(tmp_path)) as browser:
         review, page, *_ = back_on_a_page_saved_from(browser, monkeypatch)
         answer = send(browser, review.draft_id, shown_post(page, "save", clear=[review.confirm]))
 
     assert "Saved: 1 new assignment." in page_text(answer)
-    assert NOT_CARRIED not in page_text(answer)
+    assert page_text(answer).count(NOT_CARRIED) == 1
     behind_its_own_save(answer)
 
 
@@ -23262,6 +23285,37 @@ def a_press_that_can_commit(
     )
 
 
+def a_later_from_the_save_s_own_page(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, *, words: bool
+) -> PressBesideASave:
+    """A Save for later from the page one group's Save answered with, which signs the revision that
+    Save raised the review to, so the press commits. That page carries no receipt of its own. Its
+    title is typed, and with carried words, "No assigned date" is ticked."""
+    draft_id, page, units, piece, none = two_cards_with_words(browser, monkeypatch)
+    row = piece.removeprefix("date:") if words else units[0]
+    if not words:
+        saved_progress(browser, draft_id, {"v": 4, "corrected": {}, "selected": []})
+        page = browser.get(f"/parent/imports/{draft_id}").text
+    tick = no_date_tick(none) if words else {}
+    send(browser, draft_id, page_post(page, "keep", choose=tick))
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    revision = cast(int, review_as_stored(browser, draft_id)["revision"])
+    unit = next(unit for unit in units_on(page) if row not in unit)
+    saved = send(browser, draft_id, page_post(page, "save", tick=[unit]))
+    assert "Saved: 1 new assignment." in page_text(saved)
+    assert review_as_stored(browser, draft_id)["revision"] == revision + 1
+    assert signed_revisions(saved.text) == [str(revision + 1)]
+    return PressBesideASave(
+        draft_id=draft_id,
+        row=row,
+        piece=piece,
+        posted=page_post(
+            saved.text, "later", choose=tick, typed={correct_box(row, "title"): "This Tab "}
+        ),
+        typing=["This Tab ", WORDS_BESIDE] if words else ["This Tab "],
+    )
+
+
 def says_the_earlier_save_with_no_form(answer: Answer, draft_id: str, typing: list[str]) -> None:
     """That the review can't be shown, the press's typing exactly under the neutral note, nothing to
     edit or press, the way back, and none of Save for later's own lines."""
@@ -23276,6 +23330,20 @@ def says_the_earlier_save_with_no_form(answer: Answer, draft_id: str, typing: li
     assert f'<a href="/parent/imports/{draft_id}">Back to the review</a>' in answer.text
     for outcome in ("Saved for later at", "saved for later", "Not saved yet", "Try again"):
         assert outcome not in text
+
+
+def says_the_end_past_its_commit(
+    answer: Answer, draft_id: str, read: str, typing: list[str]
+) -> None:
+    """A committed press's page past a next read that ended or was refused, from a page with no
+    receipt: the ending's own status and words, or that the review can't be shown, the typing to
+    copy, and no saved counts."""
+    if read in THE_ENDINGS or read == "closed":
+        status, words = THE_ENDINGS.get(read, (200, "closed"))
+        says_the_review_ended(answer, status, imports.SAID[words], set(typing))
+    else:
+        says_the_earlier_save_with_no_form(answer, draft_id, typing)
+    assert "Saved:" not in page_text(answer)
 
 
 def the_outcome_heading(answer: Answer) -> str:
@@ -23499,10 +23567,10 @@ def test_an_earlier_save_with_empty_counts_and_its_post_unread_says_so(
 def test_save_for_later_committing_past_its_next_read_gives_the_typing_back_with_no_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, read: str
 ) -> None:
-    """Here the press itself commits, on the earlier save's page, and a connection of its own holds
-    what it wrote. Its page has no line about kept answers."""
+    """Here the press itself commits, on the page the earlier save answered with, and a connection
+    of its own holds what it wrote. Its page has no line about kept answers."""
     with here(open_settings(tmp_path)) as browser:
-        beside = a_press_that_can_commit(browser, monkeypatch, "later", words=True)
+        beside = a_later_from_the_save_s_own_page(browser, monkeypatch, words=True)
         before = review_as_stored(browser, beside.draft_id)
         rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[read])
         answer = send(browser, beside.draft_id, beside.posted)
@@ -23510,8 +23578,7 @@ def test_save_for_later_committing_past_its_next_read_gives_the_typing_back_with
         after = review_as_stored(browser, beside.draft_id)
         held = held_corrections(browser, beside.draft_id)
 
-    says_the_earlier_save_with_no_form(answer, beside.draft_id, beside.typing)
-    the_saved_heading(answer, "Saved: 1 new assignment. 1 still needs checking.")
+    says_the_end_past_its_commit(answer, beside.draft_id, read, beside.typing)
     assert "Your answers are kept" not in page_text(answer)
     assert after["revision"] == cast(int, before["revision"]) + 1
     assert held is not None
@@ -24146,9 +24213,10 @@ def test_save_for_later_committing_past_a_read_saying_closed_gives_the_typing_ba
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: bool
 ) -> None:
     """Timing forced: the read after its commit says the review closed, and the page's own read
-    finds it open. A connection of its own holds what it wrote."""
+    finds it open. Its page is the one the earlier save answered with. A connection of its own
+    holds what it wrote."""
     with here(open_settings(tmp_path)) as browser:
-        beside = a_press_that_can_commit(browser, monkeypatch, "later", words=words)
+        beside = a_later_from_the_save_s_own_page(browser, monkeypatch, words=words)
         before = review_as_stored(browser, beside.draft_id)
         armed = a_read_says_once(browser, monkeypatch, closed_at=READ_CLOSED)
         arming = ending_once_at("review_state_now", lambda *_: armed.append(True))
@@ -24158,8 +24226,7 @@ def test_save_for_later_committing_past_a_read_saying_closed_gives_the_typing_ba
         after = review_as_stored(browser, beside.draft_id)
         held = held_corrections(browser, beside.draft_id)
 
-    says_the_earlier_save_with_no_form(answer, beside.draft_id, beside.typing)
-    the_saved_heading(answer, "Saved: 1 new assignment. 1 still needs checking.")
+    says_the_end_past_its_commit(answer, beside.draft_id, "closed", beside.typing)
     assert after["revision"] == cast(int, before["revision"]) + 1
     assert held is not None
     assert held[beside.row]["title"] == "This Tab"
@@ -24179,7 +24246,7 @@ def test_another_tab_s_save_stands_past_a_read_saying_closed_after_save_for_late
     the review closed, and the page's own read finds it open. A connection of its own finds that
     tab's save, past any press from the fresh load."""
     with here(open_settings(tmp_path)) as browser:
-        beside = a_press_that_can_commit(browser, monkeypatch, "later", words=words)
+        beside = a_later_from_the_save_s_own_page(browser, monkeypatch, words=words)
         draft_id = beside.draft_id
         after_the_store_call(
             browser,
@@ -25084,13 +25151,20 @@ LATER_WRITES: Final = ("its answers stored", "nothing stored", "a withdrawal alo
 
 
 def a_later_that_commits(
-    browser: TestClient, monkeypatch: pytest.MonkeyPatch, write: str, *, receipt: bool
+    browser: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    write: str,
+    *,
+    receipt: bool,
+    own_page: bool = False,
 ) -> tuple[str, list[tuple[str, str]], str, str]:
     """A Save for later that commits, with an earlier save of its page or with none, that changes an
     answer, stores nothing or only clears one: the review, the post, that answer's field and
-    value."""
+    value. With ``own_page``, its page is the one that save answered with, carrying no receipt."""
     if receipt:
-        review, page, _, _, field = back_on_a_page_saved_from(browser, monkeypatch)
+        review, page, _, _, field = back_on_a_page_saved_from(
+            browser, monkeypatch, own_page=own_page
+        )
     else:
         review = three_groups(browser, monkeypatch)
         page = followed(browser, send(browser, review.draft_id, shown_post(review.page, "keep")))
@@ -25118,16 +25192,18 @@ def the_read_after_its_commit(
 
 
 @pytest.mark.parametrize("read", ["closed", "expired", "removed"])
-@pytest.mark.parametrize("receipt", [True, False], ids=["a receipt", "no receipt"])
+@pytest.mark.parametrize("saved", [True, False], ids=["after a save", "no save"])
 @pytest.mark.parametrize("write", LATER_WRITES)
 def test_save_for_later_past_a_read_of_the_end_says_its_answers_were_kept_only_when_it_stored(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, write: str, receipt: bool, read: str
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, write: str, saved: bool, read: str
 ) -> None:
-    """At the commit's 200 with no form. A closed read with a receipt says that earlier save's
-    counts, apart from this press's line. Past no other read does it say its corrections are saved
-    for later."""
+    """At the commit's 200 with no form. From the page an earlier save answered with, which carries
+    no receipt, it says none of that save's counts. Past no read does it say its corrections are
+    saved for later."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, posted, _, _ = a_later_that_commits(browser, monkeypatch, write, receipt=receipt)
+        draft_id, posted, _, _ = a_later_that_commits(
+            browser, monkeypatch, write, receipt=saved, own_page=True
+        )
         the_read_after_its_commit(read, browser, monkeypatch, draft_id)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
@@ -25141,9 +25217,7 @@ def test_save_for_later_past_a_read_of_the_end_says_its_answers_were_kept_only_w
         assert "Your answers are kept" not in text
     else:
         says_nothing_of_kept_answers(answer)
-    if receipt and read == "closed":
-        the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
-        assert KEPT_BEFORE_IT_ENDED not in the_outcome_heading(answer)
+    assert "Saved:" not in text
 
 
 @pytest.mark.parametrize("counts", ["refused", "empty"])
@@ -25208,11 +25282,12 @@ def test_save_for_later_whose_write_can_t_tell_says_nothing_of_kept_answers_past
 def test_save_for_later_with_words_set_aside_says_its_answers_were_kept_past_a_read_of_the_end(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, stored: bool, read: str
 ) -> None:
-    """Timing forced: it commits with "No assigned date" setting words aside, and the read after its
-    own says the review ended. The past tense only when it stored answers. A refused read says
-    nothing of them, since it can't say the review ended."""
+    """Timing forced: it commits with "No assigned date" setting words aside, from the page an
+    earlier save answered with, and the read after its own says the review ended, at the ending's
+    own status. The past tense only when it stored answers. A refused read says nothing of them,
+    since it can't say the review ended."""
     with here(open_settings(tmp_path)) as browser:
-        beside = a_press_that_can_commit(browser, monkeypatch, "later", words=True)
+        beside = a_later_from_the_save_s_own_page(browser, monkeypatch, words=True)
         page = browser.get(f"/parent/imports/{beside.draft_id}").text
         field = next(field for field in fields_of(page, "answer:kind:") if beside.row in field)
         value = next(value for value, shown in options_of(page, field) if not shown)
@@ -25229,7 +25304,8 @@ def test_save_for_later_with_words_set_aside_says_its_answers_were_kept_past_a_r
         after = review_as_stored(browser, beside.draft_id)
 
     text = page_text(answer)
-    assert answer.status_code == 200
+    assert answer.status_code == THE_ENDINGS.get(read, (200, ""))[0]
+    assert "Saved:" not in text
     assert 'name="correct:' not in answer.text
     assert copied(answer) == set(beside.typing)
     if read != "closed":
@@ -26239,7 +26315,8 @@ def test_a_press_s_line_beside_an_earlier_save_on_the_pages_around_empty_counts_
 ) -> None:
     """The same press with one thing different. Each page keeps the earlier save's answer, the
     press's own line apart from it, and what it already said of the review. None draws a form:
-    Save's page with its post read is behind that save's own raise of the revision."""
+    Save's page with its post read is behind that save's own raise of the revision, and says once
+    that an answer it posted and didn't store can't be shown."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, line = a_press_with_a_line_finding_an_earlier_save(
             browser, monkeypatch, press, write
@@ -26273,8 +26350,9 @@ def test_a_press_s_line_beside_an_earlier_save_on_the_pages_around_empty_counts_
     else:
         behind = finds == "its post read" and press == "save"
         alone = imports.OUT_OF_DATE if behind else imports.REVIEW_NOT_SHOWN
+        lost = [NOT_CARRIED] if behind and write == "it can't tell, not committed" else []
         [alert] = re.findall(r'role="alert" id="said"[^>]*>(.*?)</div>', answer.text, re.S)
-        assert re.findall(r"<p>(.*?)</p>", alert) == [str(escape(alone))]
+        assert re.findall(r"<p>(.*?)</p>", alert) == [str(escape(said)) for said in [*lost, alone]]
         assert page_text(answer).count(alone) == 1
 
 
@@ -27939,8 +28017,9 @@ def test_a_save_of_one_row_after_another_page_s_correction_to_another_is_refused
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Real presses: a page loaded, another page's Save for later corrects the second row, which
-    moves the version and the revision, then a Save of the first row from the first page. It's
-    refused with no form, and the other correction stands."""
+    moves the version and the revision, then a Save of the first row from the first page. Keeping
+    its answers refuses it by the version, saying only that the page is out of date, with no form,
+    and the other correction stands."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, _, row, other = settled_review(browser, monkeypatch)
         mine = loaded(browser, draft_id)
@@ -27955,7 +28034,7 @@ def test_a_save_of_one_row_after_another_page_s_correction_to_another_is_refused
     assert answer.status_code == 409
     assert saved == []
     assert not page.form
-    assert page.said == [imports.NO_HOMEWORK, imports.OUT_OF_DATE]
+    assert page.said == [imports.OUT_OF_DATE]
     assert held is not None
     assert held[other]["course"] == "Other Tab Course"
 

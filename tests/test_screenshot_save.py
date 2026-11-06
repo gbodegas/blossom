@@ -196,10 +196,11 @@ def press_of(
     """The press a page made now would send, for every unit or the ones named."""
     state = state_of(house, draft_id)
     digests = unit_digests(state)
+    snapshot = house.drafts.snapshot(house.student, draft_id)
     return SavePress(
         house.student,
         draft_id,
-        house.drafts.snapshot(house.student, draft_id).version,
+        snapshot.version,
         acceptance,
         tuple(units if units is not None else sorted(digests)),
         digests,
@@ -207,6 +208,7 @@ def press_of(
         {},
         dict.fromkeys((c.sha256 for p in state.pieces for c in p.cards), ("matches", None)),
         NAME_KEY,
+        snapshot.progress_revision,
     )
 
 
@@ -776,9 +778,13 @@ def test_a_fresh_press_after_a_lost_response_writes_nothing_twice(house: House) 
     assert isinstance(save(house, first), Saved)
     before = world(house)
 
-    fresh = dataclasses.replace(first, acceptance_id="c" * 32)
+    fresh = dataclasses.replace(
+        first, acceptance_id="c" * 32, progress_revision=revision_of(house, draft_id)
+    )
+    behind_press = dataclasses.replace(first, acceptance_id="d" * 32)
 
     assert save(house, fresh) == AlreadySaved((quiz,))
+    assert save(house, behind_press) == NotSaved("behind")
     assert world(house) == before
 
 
@@ -933,7 +939,7 @@ def test_two_presses_of_one_review_serialize_and_the_second_writes_nothing_twice
         release.set()
         thread.join(timeout=30)
         assert isinstance(result[0], Saved)
-        assert save(house, second, record=other) == AlreadySaved(second.units)
+        assert save(house, second, record=other) == NotSaved("behind")
     finally:
         other.close()
     assert len(acceptances(house)) == 1
@@ -1120,10 +1126,11 @@ def answered_press(
         for u in state.validation.units
         if rows is None or any(state.by_name[n].key in rows for n in u.unit)
     )
+    snapshot = house.drafts.snapshot(house.student, draft_id)
     return SavePress(
         house.student,
         draft_id,
-        house.drafts.snapshot(house.student, draft_id).version,
+        snapshot.version,
         acceptance,
         tuple(chosen),
         digests,
@@ -1131,6 +1138,7 @@ def answered_press(
         {key: dict(fields) for key, fields in corrections.items()},
         dict.fromkeys((c.sha256 for p in state.pieces for c in p.cards), ("matches", None)),
         NAME_KEY,
+        snapshot.progress_revision,
     )
 
 
@@ -2313,7 +2321,8 @@ def test_a_committed_save_raises_the_review_s_revision_by_one_and_returns_it(hou
 
 def test_a_save_that_writes_nothing_leaves_the_review_s_revision(house: House) -> None:
     """Direct ``save_homework`` store calls standing in for Save presses, after one group's save: a
-    replay of its acceptance, that group again and a stale version each leave the revision."""
+    replay of its acceptance, that group again and a stale version at the stored revision each
+    leave the revision."""
     draft_id = two_row_review(house)
     press = press_of(house, draft_id, units=sorted(unit_digests(state_of(house, draft_id)))[:1])
     assert isinstance(save(house, press), Saved)
@@ -2321,7 +2330,10 @@ def test_a_save_that_writes_nothing_leaves_the_review_s_revision(house: House) -
 
     replayed = save(house, press)
     again = save(house, press_of(house, draft_id, acceptance="b" * 32, units=press.units))
-    stale = save(house, dataclasses.replace(press, acceptance_id="c" * 32, version=0))
+    stale = save(
+        house,
+        dataclasses.replace(press, acceptance_id="c" * 32, version=0, progress_revision=after_it),
+    )
 
     assert isinstance(replayed, Replayed)
     assert isinstance(again, AlreadySaved)

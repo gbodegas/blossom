@@ -1895,11 +1895,12 @@ def not_saved(outcome: NotSaved, answered: bool) -> list[str]:
 
 
 def out_of_date_save(said: Iterable[str]) -> list[str]:
-    """A Save refused as out of date, as its page with no form says it: answers it kept apart,
-    then that no homework was saved by this attempt, then that the page is out of date."""
+    """A Save its homework transaction refused by the version, as its page with no form says it:
+    answers it kept apart, then that no homework was saved by this attempt, then that the page is
+    out of date. A Save refused at keeping its answers keeps its own line."""
     out: list[str] = []
     for line in said:
-        out += [NO_HOMEWORK, OUT_OF_DATE] if line in (OUT_OF_DATE, wasnt_saved("stale")) else [line]
+        out += [NO_HOMEWORK, OUT_OF_DATE] if line == wasnt_saved("stale") else [line]
     return list(dict.fromkeys(out))
 
 
@@ -2186,13 +2187,14 @@ async def with_typing(
     she cleared that the record still holds (``choices_said_lost``). A row that isn't on the record
     is always said. A Save press that finds a confirmed receipt (``own``, otherwise None) writes
     nothing more, and comes back the same way with no conflict: at the page's version its choices as
-    posted, and at another that they can't be shown if they aren't what the record holds or aren't
-    offered, with one exception (``choices_said_lost``). Any other too long or cleared box's press,
-    with no conflict, carries nothing. What a receipt's press kept itself (``notes``) goes in the
-    page's status block, ahead of "Not saved yet", where rows are drawn, and beneath the save's
-    result, outside the problem alert, where they aren't: as it stands, or if the rows came back
-    empty as one more read has it (``kept_past_empty_rows``, ``counted``). Rows that come back
-    empty with the review open draw no form, and give every box back to copy.
+    posted, and at another, or past the page's revision, that they can't be shown if they aren't
+    what the record holds or aren't offered, with one exception (``choices_said_lost``). Any other
+    too long or cleared box's press, with no conflict, carries nothing. What a receipt's press kept
+    itself (``notes``) goes in the page's status block, ahead of "Not saved yet", where rows are
+    drawn, and beneath the save's result, outside the problem alert, where they aren't: as it
+    stands, or if the rows came back empty as one more read has it (``kept_past_empty_rows``,
+    ``counted``). Rows that come back empty with the review open draw no form, and give every box
+    back to copy.
     The form signs the revision its content was typed against: the post's; for an offer or a found
     row, that of the read that filled its boxes (``found``); after a save that committed, the one
     its own transaction raised the review to (``saved``). Where the review's stored revision is
@@ -2213,7 +2215,7 @@ async def with_typing(
         return after
     if found is not None and not post.ticked:
         revision = found.progress_revision
-    elif saved is not None and saved.progress_revision is not None:
+    elif saved is not None:
         revision = saved.progress_revision
     else:
         revision = post.progress_revision
@@ -2242,7 +2244,9 @@ async def with_typing(
             revision=revision,
             own=own or frozenset(),
         )
-        said_lost = await choices_said_lost(state, draft_id, post, rows, own, current)
+        said_lost = await choices_said_lost(
+            state, draft_id, post, rows, own, current and not behind
+        )
     except sqlite3.Error as error:
         noted(error)
         unsure = uncertain_lines(said)
@@ -2427,11 +2431,12 @@ async def choices_said_lost(
     own: frozenset[str] | None,
     current: bool,
 ) -> bool:
-    """What a resend or a conflict can't show, read from the record. At the page's version, an
-    answer she cleared that the record still holds, with its question gone. At another version,
-    on a resend with no conflict, whatever isn't what the record holds, or isn't offered. One
-    exception: a question gone whose posted choice the record still holds goes unsaid, since
-    nothing tells it from one her own first copy took off the page."""
+    """What a resend or a conflict can't show, read from the record. On a page whose form carries
+    its choices (``current``), an answer she cleared that the record still holds, with its question
+    gone. At another version, or past the page's revision, on a resend with no conflict, whatever
+    isn't what the record holds, or isn't offered. One exception: a question gone whose posted
+    choice the record still holds goes unsaid, since nothing tells it from one her own first copy
+    took off the page."""
     if rows is None:
         return False
     if current:
@@ -2656,8 +2661,8 @@ async def save_press(
         post.corrections,
         {image.sha256: (image.status, image.form) for image in named[1]},
         named[0],
-        role_of(state),
-        post.progress_revision,
+        progress_revision=post.progress_revision,
+        role=role_of(state),
     )
     try:
         outcome = await asyncio.to_thread(

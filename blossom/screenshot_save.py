@@ -164,10 +164,10 @@ class SavePress:
     keyed form, which keys the stored answer to the name question."""
     name_key: bytes
     """The key name forms are made under, for "Yes, this is her name" to add the keyed form."""
-    role: str = "parent"
-    progress_revision: int | None = None
+    progress_revision: int
     """The review's progress revision the page's post was typed against; a save compares it with
-    the stored one. None compares no revision."""
+    the stored one."""
+    role: str = "parent"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -178,6 +178,8 @@ class Saved:
     acceptance_id: str
     pairs: tuple[tuple[str, str], ...]
     saved_units: tuple[str, ...]
+    progress_revision: int
+    """The review's progress revision this save's own transaction raised it to."""
     changed_units: tuple[str, ...] = ()
     already_units: tuple[str, ...] = ()
     closed: bool = False
@@ -189,8 +191,6 @@ class Saved:
     """The corrections this save can show it stored, each by its key, field and text
     (``stored_corrections``). ``pairs`` says where pieces landed, not what they kept: a choice
     among dates or instructions can leave what was typed off an assignment it names."""
-    progress_revision: int | None = None
-    """The review's progress revision this save's own transaction raised it to."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -883,7 +883,7 @@ def _homework_transaction(
         return NotSaved("closed")
     if now >= tables.expires_at:
         return NotSaved("expired")
-    if press.progress_revision is not None and tables.progress_revision != press.progress_revision:
+    if tables.progress_revision != press.progress_revision:
         return NotSaved("behind")
     if tables.version != press.version:
         return NotSaved("stale")
@@ -1018,11 +1018,11 @@ def _homework_transaction(
         press.acceptance_id,
         tuple(pairs),
         tuple(unit_name(u) for u in ready),
-        tuple(changed),
-        tuple(already),
+        progress_revision=tables.progress_revision + 1,
+        changed_units=tuple(changed),
+        already_units=tuple(already),
         counts=(added, updated, unchanged, left),
         stored=stored_corrections(record, state, pairs, press.corrections),
-        progress_revision=tables.progress_revision + 1,
     )
 
 

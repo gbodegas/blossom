@@ -2705,30 +2705,31 @@ def a_page_with_groups_left(browser: TestClient, monkeypatch: pytest.MonkeyPatch
     return draft_id, page
 
 
-def test_a_resend_carries_kept_rows(
+def test_a_resend_behind_its_save_says_its_counts_with_no_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A plain resend of a Save shows its counts with the kept rows ticked and no sentence, and one
-    with a kept row unticked shows that as not saved yet, writing nothing."""
+    """A plain resend of a Save shows its counts with no form and no sentence about its choices,
+    and one with a kept row unticked says that choice can't be shown, writing nothing."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_page_with_groups_left(browser, monkeypatch)
         fields = [field for field in every_choice(page, "save") if field[0] != "unit"]
         fields.append(("unit", units_on(page)[0]))
         first = send(browser, draft_id, fields)
+        question = fields_of(first.text, "answer:instructions:")[0]
+        row = next(value for value, _ in options_of(first.text, question) if value.startswith("k"))
         again = send(browser, draft_id, fields)
-        question = fields_of(again.text, "answer:instructions:")[0]
-        row = next(value for value, _ in options_of(again.text, question) if value.startswith("k"))
         before = every_row(browser)
         changed = send(browser, draft_id, [f for f in fields if f != (question, row)])
         after = every_row(browser)
 
     assert first.status_code == 200
-    assert "1 updated." in page_text(again.text)
-    assert NOT_CARRIED not in page_text(again.text)
-    assert all(ticked for value, ticked in options_of(again.text, question) if value)
-    assert NOT_SAVED_YET in page_text(changed.text)
-    assert not dict(options_of(changed.text, question))[row]
-    assert NOT_CARRIED not in page_text(changed.text)
+    assert all(ticked for value, ticked in options_of(first.text, question) if value)
+    for resent, lost in ((again, 0), (changed, 1)):
+        assert resent.status_code == 200
+        assert "1 updated." in page_text(resent.text)
+        assert imports.OUT_OF_DATE in page_text(resent.text)
+        assert 'name="press"' not in resent.text
+        assert page_text(resent.text).count(NOT_CARRIED) == lost
     assert before == after
 
 
