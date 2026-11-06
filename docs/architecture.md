@@ -397,16 +397,29 @@ it commits. A review that a press of the form finds closed answers with an earli
 confirmed save's outcome first, then the typing to copy. One it finds expired or
 removed gives the typing back too. A Save press puts that outcome first, except when
 its own save is what finds the review expired or removed. Keep and Save for later
-put it first only when their first read finds the review ended, or a second read
-does after finding no post or no rows to read; refused before any write, or finding
-it at the write or at the read after the write, they answer with no outcome. On
-those pages, on any page that says the review can't be shown, beside a confirmed
-save's counts when the post can't be read against the review, and on Save for
-later's page when another tab has saved since its commit, Keep and Save for later
+put a confirmed earlier save's outcome first wherever they find the review closed:
+at their first read, at their write, at the read after it, at a second read after
+finding no post or no rows, or at the read Save for later's commit page makes to
+see whether the review has ended. Finding it expired or removed, they put that
+outcome first only at their first read, at that second read, or at that read of
+the commit page; at their write, or at Save for later's read after its commit, they
+give the typing back with no outcome. Their first read and their read of the post, when refused, look for the
+receipt too and put a confirmed save's outcome first; a refusal of the read each
+press makes just before its write doesn't look. The outcome comes only from a
+receipt the lookup confirms: a lookup that's refused shows none on a Keep or Save
+for later page, and a Save press says it can't tell. On those pages, on any page
+that says the review can't be shown, beside a confirmed save's counts when the post
+can't be read against the review, and on Save for later's page after a commit that
+set words aside, whether or not another tab has saved since, Keep and Save for later
 give the typing back as sent, outer whitespace included, with a box of several lines
 showing its line endings as line feeds; an unticked valid date in a date box
-replaces the words carried beside it. If a save's commit and rollback are both
-refused its transaction stays open on the record's connection, and whether a Save
+replaces the words carried beside it. That Save for later page draws no form: its
+confirmation, or, when its read shows a newer revision, the out-of-date notice, with
+every box back either way. Drawing no form, it leaves the next form to a load of
+the review; it reads the review once more only to see whether it has ended, and
+past a refused or ended answer there looks for the receipt. If a save's commit
+and rollback are both refused its transaction stays open on the record's
+connection, and whether a Save
 press saved can't be told from that connection. So a Save press that finds one, or
 whose acceptance read is refused, says it can't tell, with its typing and no rows,
 and the review's rows aren't made from that connection until the transaction ends.

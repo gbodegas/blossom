@@ -564,8 +564,9 @@ UNSHOWN_TYPED: Final = (
     "What you typed, as you sent it. Copy anything you still need before leaving this page."
 )
 """What the boxes of typing given back say first where the review can't be shown or a save's outcome
-can't be told, for what "No assigned date was given" set aside from an open review, and for a Save
-for later's typing beside a form another tab's save has moved past."""
+can't be told, beside a confirmed save's counts with no post to read, for what "No assigned date
+was given" set aside from an open review, and on Save for later's page after a commit that set
+words aside, whether or not another tab saved since."""
 REVIEW_NOT_SHOWN: Final = "This review can't be shown right now."
 """What a press's page says after its own lines when the store refuses to read the review."""
 REVIEW_UNAVAILABLE: Final = "This review can't be shown right now. Try again in a moment."
@@ -786,8 +787,9 @@ async def typing_by_press(
 ) -> list[tuple[str, str]]:
     """What a post gives back when its press finds the review ended, on every page that says it
     can't be shown, beside a confirmed save's counts with no post to read, and on Save for later's
-    page when its read shows another tab saved since its commit: on a Save press, ``typing_of``; on
-    Keep or Save for later, every box as it was sent, whitespace included (``typed_as_sent``)."""
+    page after a commit that set words aside, whether or not its read shows another tab saved
+    since: on a Save press, ``typing_of``; on Keep or Save for later, every box as it was sent,
+    whitespace included (``typed_as_sent``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -2322,11 +2324,13 @@ async def later_press(
 ) -> Response:
     """Save review for later: the answers and the typed corrections, in one transaction, the
     corrections only when no other tab saved for later since the page. Once it commits, one read
-    of the review decides the answer: the redirect, a page drawn from what's stored with what "No
-    assigned date was given" set aside (``later_with_words``), or, with the review ended or its read
-    refused, the typing to copy, redirecting past a refused read only when there's nothing to give
-    back. A read saying the review ended says the answers were kept before it did only when this
-    write stored some."""
+    of the review decides the answer: the redirect; where it set something "No assigned date was
+    given" aside, a page with no form (``later_with_words``), its confirmation, or the out-of-date
+    notice when that read shows a newer revision, with every box it typed given back as sent either
+    way, after one more read, which answers instead if it finds the review ended or is refused; or,
+    with the review ended or its read refused, the typing to copy, redirecting past a refused read
+    only when there's nothing to give back. A read saying the review ended says the answers were kept before it did only when
+    this write stored some."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         review = await state_of_review(state, found, post.corrections)
