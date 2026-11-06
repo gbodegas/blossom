@@ -2872,3 +2872,37 @@ def test_an_answer_cleared_with_its_question_gone_is_said(
     assert first not in fields_of(answer.text, "answer:instructions:")
     assert page_text(answer.text).count(NOT_CARRIED) == 1
     assert in_its_box(answer.text, box) == TYPED
+
+
+@pytest.mark.parametrize("behind", [True, False], ids=["behind", "not behind"])
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_a_row_that_cant_be_resolved_draws_no_form_only_when_behind(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, behind: bool
+) -> None:
+    """A kept row deleted by direct SQL before the press, after ``save_progress`` (a store call
+    standing in for another page's Save for later) or not. Behind: no form, the typing to copy and
+    the not-carried line. Not behind: the typing in its box and the form signing the post's."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, question = with_a_kept_question(browser, monkeypatch)
+        box = box_named(page, "instruction")
+        rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
+        posted = page_post(page, press, typed={box: TYPED}, tick=units_on(page))
+        delete_row(browser, rows[0])
+        if behind:
+            a_tab_saves_a_class(browser, draft_id, json.loads(box.removeprefix("correct:"))[0])
+        before = every_row(browser)
+        answer = send(browser, draft_id, ticks_of(posted, question, rows))
+        after = every_row(browser)
+
+    said = page_text(answer.text)
+    assert answer.status_code == 422, said[:300]
+    assert said.count(NOT_CARRIED) == 1
+    if behind:
+        assert 'name="progress_revision"' not in answer.text
+        assert 'name="press"' not in answer.text
+        assert TYPED in [html.unescape(copy) for copy in copies_on(answer.text)]
+        assert imports.OUT_OF_DATE in said
+    else:
+        assert before == after
+        assert in_its_box(answer.text, box) == TYPED
+        assert signed_revision(page_post(answer.text, press)) == signed_revision(posted)

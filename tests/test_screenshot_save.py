@@ -2287,3 +2287,38 @@ def test_a_card_s_source_line_says_the_title_as_read(house: House) -> None:
     assert card_shown.read_as == "read as Reading Log"
     [own] = [c for u in page_of(house, plain).units for b in u.blocks for c in b.cards]
     assert own.read_as is None
+
+
+def revision_of(house: House, draft_id: str) -> int:
+    return house.drafts.snapshot(house.student, draft_id).progress_revision
+
+
+def test_a_committed_save_raises_the_review_s_revision_by_one_and_returns_it(house: House) -> None:
+    """A direct ``save_homework`` store call standing in for a Save press: the committed save
+    raises the review's progress revision by one and carries the new revision in its outcome."""
+    draft_id = two_row_review(house)
+    before = revision_of(house, draft_id)
+
+    outcome = save(house, press_of(house, draft_id))
+
+    assert isinstance(outcome, Saved)
+    assert revision_of(house, draft_id) == before + 1
+    assert getattr(outcome, "progress_revision", None) == before + 1
+
+
+def test_a_save_that_writes_nothing_leaves_the_review_s_revision(house: House) -> None:
+    """Direct ``save_homework`` store calls standing in for Save presses, after one group's save: a
+    replay of its acceptance, that group again and a stale version each leave the revision."""
+    draft_id = two_row_review(house)
+    press = press_of(house, draft_id, units=sorted(unit_digests(state_of(house, draft_id)))[:1])
+    assert isinstance(save(house, press), Saved)
+    after_it = revision_of(house, draft_id)
+
+    replayed = save(house, press)
+    again = save(house, press_of(house, draft_id, acceptance="b" * 32, units=press.units))
+    stale = save(house, dataclasses.replace(press, acceptance_id="c" * 32, version=0))
+
+    assert isinstance(replayed, Replayed)
+    assert isinstance(again, AlreadySaved)
+    assert stale == NotSaved("stale")
+    assert revision_of(house, draft_id) == after_it
