@@ -2795,21 +2795,19 @@ def test_an_option_gone_with_kept_rows(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A Save resent at another version, its answers on record, its kept row still offered, and its
-    posted date not among the options: that's said once, and nothing stands in for the date."""
+    posted date not among the options: that's said once, and nothing stands in for the date. The
+    page, drawn before the save it repeats, is behind that save's own raise of the revision, so it
+    draws no form and says it's out of date."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, _, date_question, question, posted = a_date_asked_beside_a_kept_question(
-            browser, monkeypatch
-        )
+        draft_id, _, _, _, posted = a_date_asked_beside_a_kept_question(browser, monkeypatch)
         another_review_moves_the_date(browser, monkeypatch)
         answer = send(browser, draft_id, posted)
 
     said = page_text(answer.text)
     assert answer.status_code == 200
     assert said.count(NOT_CARRIED) == 1
-    assert ("2026-10-08", True) not in options_of(answer.text, date_question)
-    assert any(
-        value.startswith("k") and ticked for value, ticked in options_of(answer.text, question)
-    )
+    assert not has_review_form(answer.text)
+    assert said.index(NOT_CARRIED) < said.index(imports.OUT_OF_DATE)
 
 
 def two_kept_questions(

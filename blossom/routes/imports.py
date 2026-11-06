@@ -1889,7 +1889,18 @@ def not_saved(outcome: NotSaved, answered: bool) -> list[str]:
         return [PRESS_SAID["changed_by_answers"] if answered else PRESS_SAID["changed"]]
     if outcome.reason in ("busy", "failed"):
         return [*kept, PRESS_SAID[outcome.reason]]
+    if outcome.reason == "behind":
+        return [*kept, NO_HOMEWORK, OUT_OF_DATE]
     return [*kept, wasnt_saved(outcome.reason)]
+
+
+def out_of_date_save(said: Iterable[str]) -> list[str]:
+    """A Save refused as out of date, as its page with no form says it: answers it kept apart,
+    then that no homework was saved by this attempt, then that the page is out of date."""
+    out: list[str] = []
+    for line in said:
+        out += [NO_HOMEWORK, OUT_OF_DATE] if line in (OUT_OF_DATE, wasnt_saved("stale")) else [line]
+    return list(dict.fromkeys(out))
 
 
 REVIEW_FORM_FIELDS: Final = 200_000
@@ -2182,10 +2193,12 @@ async def with_typing(
     result, outside the problem alert, where they aren't: as it stands, or if the rows came back
     empty as one more read has it (``kept_past_empty_rows``, ``counted``). Rows that come back
     empty with the review open draw no form, and give every box back to copy.
-    The form signs the revision its content was typed against: the post's, or, for an offer or a
-    found row, that of the read that filled its boxes (``found``). Where the review's stored
-    revision is another, the page draws no form, says its choices can't be shown where it posted
-    any, and says it's out of date (``no_form_with_typing``)."""
+    The form signs the revision its content was typed against: the post's; for an offer or a found
+    row, that of the read that filled its boxes (``found``); after a save that committed, the one
+    its own transaction raised the review to (``saved``). Where the review's stored revision is
+    another, the page draws no form, says its choices can't be shown where it posted any, and says
+    it's out of date (``no_form_with_typing``), a Save with nothing saved as ``out_of_date_save``
+    says it."""
     after = read or await snapshot_keeping_typing(
         request,
         state,
@@ -2198,10 +2211,15 @@ async def with_typing(
     )
     if isinstance(after, Response):
         return after
-    revision = (
-        found.progress_revision if found is not None and not post.ticked else post.progress_revision
-    )
+    if found is not None and not post.ticked:
+        revision = found.progress_revision
+    elif saved is not None and saved.progress_revision is not None:
+        revision = saved.progress_revision
+    else:
+        revision = post.progress_revision
     behind = after.progress_revision != revision
+    if behind and post.press == "save" and not done:
+        said = out_of_date_save(said)
     lines = [*said, *notes]
     ticked = post.units if post.ticked else None
     current = post.version == after.version
@@ -2639,6 +2657,7 @@ async def save_press(
         {image.sha256: (image.status, image.form) for image in named[1]},
         named[0],
         role_of(state),
+        post.progress_revision,
     )
     try:
         outcome = await asyncio.to_thread(

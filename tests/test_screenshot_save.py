@@ -508,19 +508,23 @@ SITES: tuple[tuple[int, str], ...] = (
     (sqlite3.SQLITE_INSERT, "school_instructions"),
     (sqlite3.SQLITE_INSERT, "intake_decisions"),
     (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+    (sqlite3.SQLITE_UPDATE, "import_drafts"),
     (sqlite3.SQLITE_DELETE, "import_draft_answers"),
 )
 """The write sites of a save of a new slot and a found row of another name: what the record
-writes, the decision, the acceptance and the answer deletes."""
+writes, the decision, the acceptance, the raise of the review's progress revision and the answer
+deletes."""
 INSTRUCTION_SITES: tuple[tuple[int, str], ...] = (
     (sqlite3.SQLITE_UPDATE, "assignments"),
     (sqlite3.SQLITE_INSERT, "school_instructions"),
     (sqlite3.SQLITE_UPDATE, "school_instructions"),
     (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+    (sqlite3.SQLITE_UPDATE, "import_drafts"),
     (sqlite3.SQLITE_DELETE, "import_draft_answers"),
 )
 """The write sites of a save onto an existing assignment with an answered instruction question:
-the new instruction, the earlier one kept as history, the acceptance and the answer deletes."""
+the new instruction, the earlier one kept as history, the acceptance, the raise of the review's
+progress revision and the answer deletes."""
 WREN_FORM: Final = name_form(NAME_KEY, "Wren")
 """The keyed form of the student line the synthetic screenshots carry."""
 
@@ -569,6 +573,7 @@ ALL_SITES = frozenset(
         (sqlite3.SQLITE_UPDATE, "school_instructions"),
         (sqlite3.SQLITE_INSERT, "intake_decisions"),
         (sqlite3.SQLITE_INSERT, "grade_acceptances"),
+        (sqlite3.SQLITE_UPDATE, "import_drafts"),
         (sqlite3.SQLITE_DELETE, "import_draft_answers"),
         (sqlite3.SQLITE_INSERT, "grade_name_forms"),
         (sqlite3.SQLITE_UPDATE, "grade_student"),
