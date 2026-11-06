@@ -27673,14 +27673,14 @@ def test_a_refused_save_whose_first_lookup_is_refused_says_why_beside_that_it_ca
     assert ("ended_under_press", "snapshot") not in calls.seen
 
 
-@pytest.mark.parametrize("read", ["refused", "frozen", "closed", "expired", "removed"])
+@pytest.mark.parametrize("read", ["answered", "refused", "frozen", "closed", "expired", "removed"])
 @pytest.mark.parametrize("refusal", list(REFUSAL_SAID))
 def test_a_refused_save_whose_later_lookup_is_refused_says_why_beside_that_it_can_t_tell(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str, read: str
 ) -> None:
-    """No earlier save at its first lookup, and its second refused past a refused or ended read:
-    that it can't tell whether any homework was saved, and beside that, why this attempt kept
-    nothing."""
+    """No earlier save at its first lookup, and its second refused past a read that found the
+    review open, was refused, or found it ended: that it can't tell whether any homework was saved,
+    and beside that, why this attempt kept nothing."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted = a_refused_post(browser, monkeypatch, "save", refusal, "none")
         refused = refusing_coded("SQLITE_IOERR")
@@ -27688,7 +27688,7 @@ def test_a_refused_save_whose_later_lookup_is_refused_says_why_beside_that_it_ca
         if read in ("refused", "frozen"):
             fails = refused if read == "refused" else refusing(DraftFrozen)
             rules.append(("ended_under_press", "snapshot", 1, fails))
-        else:
+        elif read != "answered":
             ended_once_the_first_read_returns(browser, monkeypatch, draft_id, read)
         calls = Refusing(monkeypatch, *rules)
         answer = send(browser, draft_id, posted)
