@@ -2220,8 +2220,7 @@ async def with_typing(
     else:
         revision = post.progress_revision
     behind = after.progress_revision != revision
-    if behind and post.press == "save" and not done:
-        said = out_of_date_save(said)
+    pressed = out_of_date_save(said) if behind and post.press == "save" and not done else said
     lines = [*said, *notes]
     ticked = post.units if post.ticked else None
     current = post.version == after.version
@@ -2282,7 +2281,7 @@ async def with_typing(
         if post.unresolved or (behind and with_choices):
             unshown_lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
         return await no_form_with_typing(
-            request, state, draft_id, [*said, *unshown_lines], status, notes=notes, behind=behind
+            request, state, draft_id, [*pressed, *unshown_lines], status, notes=notes, behind=behind
         )
     if rows is not None and carry:
         ticks_shown = {unit.unit for unit in rows.units if unit.ticked}
@@ -2311,7 +2310,7 @@ async def with_typing(
             request,
             state,
             draft_id,
-            [*beside_rows, *said, *carried],
+            [*beside_rows, *pressed, *carried],
             status,
             told,
             notes=notes,

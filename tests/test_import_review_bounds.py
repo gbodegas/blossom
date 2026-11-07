@@ -2795,10 +2795,9 @@ def another_review_moves_the_date(browser: TestClient, monkeypatch: pytest.Monke
 def test_an_option_gone_with_kept_rows(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A Save resent at another version, its answers on record, its kept row still offered, and its
-    posted date not among the options: that's said once, and nothing stands in for the date. The
-    page, drawn before the save it repeats, is behind that save's own raise of the revision, so it
-    draws no form and says it's out of date."""
+    """A Save resent at another version, its answers on record, its kept row still offered, its
+    posted date not among the options: said once, with nothing in the date's place. Drawn before
+    the save it repeats, the page is behind that save's own raise: no form, and out of date."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, _, _, _, posted = a_date_asked_beside_a_kept_question(browser, monkeypatch)
         another_review_moves_the_date(browser, monkeypatch)
@@ -2913,3 +2912,86 @@ def test_a_row_that_cant_be_resolved_draws_no_form_only_when_behind(
         assert before == after
         assert in_its_box(answer.text, box) == TYPED
         assert signed_revision(page_post(answer.text, press)) == signed_revision(posted)
+
+
+CHAINED_CHANGES: Final = {
+    "an addition": ("course", "Other Tab Course"),
+    "a replacement": ("title", "Other Tab Title"),
+}
+"""Another page's change to a row in a chain: a class added, or its title replaced."""
+
+
+def another_page_changes(browser: TestClient, draft_id: str, row: str, change: str) -> None:
+    """``save_progress``, a direct store call standing in for another page's Save for later of a
+    class added to the row or its title replaced (``CHAINED_CHANGES``)."""
+    field, value = CHAINED_CHANGES[change]
+    student = state_of(browser).project_state.student_id()
+    drafts = state_of(browser).import_drafts
+    now = drafts.snapshot(student, draft_id)
+    kept = json.loads(now.progress or '{"v":4,"corrected":{},"selected":[]}')
+    kept["corrected"].setdefault(row, {})[field] = value
+    drafts.save_progress(
+        student, draft_id, revision=now.progress_revision, progress=json.dumps(kept)
+    )
+
+
+def held_on(browser: TestClient, draft_id: str, row: str) -> dict[str, str]:
+    """Saved progress's corrections on the row, by a connection of its own."""
+    fresh = sqlite3.connect(state_of(browser).settings.database_path)
+    try:
+        found = fresh.execute(
+            "SELECT progress FROM import_draft_progress WHERE draft_id = ?", (draft_id,)
+        ).fetchone()
+    finally:
+        fresh.close()
+    return {} if found is None else dict(json.loads(found[0])["corrected"].get(row, {}))
+
+
+def next_post(browser: TestClient, draft_id: str, page: str, press: str) -> list[tuple[str, str]]:
+    """A press's post from this page where it draws a form, else from the review loaded again by
+    its "Back to the review" link, with no "No assigned date" tick or instruction answer."""
+    if 'name="progress_revision"' not in page and (
+        f'<a href="/parent/imports/{draft_id}">Back to the review</a>' in page
+    ):
+        page = browser.get(f"/parent/imports/{draft_id}").text
+    return [
+        field
+        for field in page_post(page, press)
+        if not field[0].startswith(("none:", "answer:instructions:"))
+    ]
+
+
+@pytest.mark.parametrize("change", list(CHAINED_CHANGES))
+@pytest.mark.parametrize("when", ["before the first press", "once the first page is drawn"])
+@pytest.mark.parametrize("then", ["Save for later", "Keep, then Save for later"])
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_another_page_s_change_stands_through_a_chain_from_the_unresolved_row_page(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    then: str,
+    when: str,
+    change: str,
+) -> None:
+    """A kept row deleted by direct SQL, then real presses after ``another_page_changes``: refused
+    for that row, then Save for later, or Keep then Save for later. The other page's change
+    stands."""
+    with here(open_settings(tmp_path)) as browser:
+        gone = a_row_to_lose_beside_words(browser, monkeypatch)
+        row = json.loads(gone.tick.removeprefix("none:"))[0].removeprefix("date:")
+        posted = page_post(gone.page, press, choose={gone.tick: "none"})
+        delete_row(browser, gone.rows[0])
+        if when == "before the first press":
+            another_page_changes(browser, gone.draft_id, row, change)
+        page = send(browser, gone.draft_id, ticks_of(posted, gone.question, gone.rows)).text
+        if when == "once the first page is drawn":
+            another_page_changes(browser, gone.draft_id, row, change)
+        if then.startswith("Keep"):
+            page = send(
+                browser, gone.draft_id, next_post(browser, gone.draft_id, page, "keep")
+            ).text
+        send(browser, gone.draft_id, next_post(browser, gone.draft_id, page, "later"))
+        held = held_on(browser, gone.draft_id, row)
+
+    field, value = CHAINED_CHANGES[change]
+    assert held.get(field) == value

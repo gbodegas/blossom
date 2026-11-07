@@ -42,6 +42,7 @@ from blossom.screenshot_save import (
     unit_digests,
 )
 from blossom.screenshots import homework_reading, homework_rows
+from blossom.stores import homework_saves
 from blossom.stores.import_drafts import (
     AnswerToKeep,
     ImportDraftsStore,
@@ -603,6 +604,28 @@ def test_a_full_save_writes_exactly_the_named_statements(house: House, shape: st
 
     assert isinstance(outcome, Saved)
     assert seen == set(expected)
+
+
+WRITER_STATEMENTS: Final = 82
+"""The statements a committed save of the two-row review runs in its writer transaction."""
+
+
+def test_a_committed_save_reads_nothing_more_to_raise_the_revision(house: House) -> None:
+    """Traced on the record's connection: the raise of the review's progress revision is the one
+    statement of the writer transaction that names it, with no read of it before."""
+    draft_id = two_row_review(house)
+    press = press_of(house, draft_id, "6" * 32)
+    trace: list[str] = []
+    house.record._connection.set_trace_callback(trace.append)
+    outcome = save(house, press)
+    house.record._connection.set_trace_callback(None)
+    begin = next(i for i, sql in enumerate(trace) if sql.upper().startswith("BEGIN"))
+    writer = trace[begin : trace.index("COMMIT", begin) + 1]
+
+    assert isinstance(outcome, Saved)
+    named = [sql for sql in writer if "progress_revision" in sql]
+    assert named == [homework_saves.RAISE_PROGRESS_REVISION.replace("?", f"'{draft_id}'")]
+    assert len(writer) == WRITER_STATEMENTS
 
 
 def test_the_closed_list_is_every_shapes_sites() -> None:
