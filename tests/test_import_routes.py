@@ -28902,6 +28902,7 @@ NO_DATE_BEHIND: Final[dict[str, bool]] = {
     "ticked, saved progress holding nothing for the row": True,
     "ticked, no saved progress": True,
     "ticked as saved progress holds": False,
+    "nothing ticked, saved progress holding a tick for the row": True,
     "nothing ticked, the box as read": False,
     "nothing ticked, the box as read, no saved progress": False,
     "the saved row's stored tick": False,
@@ -28959,7 +28960,10 @@ def test_a_press_behind_says_a_no_date_choice_it_can_t_carry_and_stores_nothing(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, other = two_rows(browser, monkeypatch)
         open_piece, saved_piece = date_pieces(page, other)
-        if case == "ticked as saved progress holds":
+        if case in (
+            "ticked as saved progress holds",
+            "nothing ticked, saved progress holding a tick for the row",
+        ):
             later_with_no_date_on(browser, draft_id, open_piece)
         elif case == "the saved row's stored tick":
             later_with_no_date_on(browser, draft_id, saved_piece)
@@ -28989,6 +28993,7 @@ def test_a_press_behind_says_a_no_date_choice_it_can_t_carry_and_stores_nothing(
         assert held is not None
         stored = {
             "ticked as saved progress holds": open_piece,
+            "nothing ticked, saved progress holding a tick for the row": open_piece,
             "the saved row's stored tick": saved_piece,
         }.get(case)
         assert {key: held[key] for key in (open_piece, saved_piece) if key in held} == (
