@@ -2225,9 +2225,10 @@ async def with_typing(
     The form signs the revision its content was typed against: the post's; for an offer or a found
     row, that of the read that filled its boxes (``found``); after a save that committed, the one
     its own transaction raised the review to (``saved``). Where the review's stored revision is
-    another, the page draws no form, says its choices can't be shown where it posted any, or where
-    its post's "No assigned date was given" on a row left open isn't what the saved progress its
-    rows were drawn from holds (``tick_unlike_progress``), and says it's out of date
+    another, the page draws no form, says its choices can't be shown where it posted any (words a
+    tick set aside aren't one), or where its post's "No assigned date was given" on a row left open
+    isn't what the saved progress its rows were drawn from holds (``tick_unlike_progress``) or has
+    no correction to compare with it (``tick_beyond_progress``), and says it's out of date
     (``no_form_with_typing``), a Save with nothing saved as ``out_of_date_save`` says it."""
     after = read or await snapshot_keeping_typing(
         request,
@@ -2323,7 +2324,7 @@ async def with_typing(
             lines.append(PAGE_SAID["not_carried"])
     if post.unresolved and PAGE_SAID["not_carried"] not in lines:
         lines.append(PAGE_SAID["not_carried"])
-    uncarried = with_choices or PAGE_SAID["not_carried"] in lines
+    uncarried = refused_with_choices or bool(post.both) or PAGE_SAID["not_carried"] in lines
     if rows is not None:
         lines[:0] = beside_rows
     shown = fields_shown(rows)
@@ -2331,6 +2332,7 @@ async def with_typing(
         lines.insert(len(said) + len(notes), PRESS_SAID["unsaved_typing"])
     if behind and rows is not None:
         unlike = tick_unlike_progress(after, post.corrections, rows.progress)
+        unlike = unlike or tick_beyond_progress(after, post)
         carried = [PAGE_SAID["not_carried"]] if uncarried or unlike else []
         told = [*done, PRESS_SAID["left_open"]] if done and answered else done
         return await no_form_with_typing(
@@ -2972,6 +2974,17 @@ def tick_unlike_progress(snapshot: DraftSnapshot, typed: Corrections, kept: Corr
         and key.removeprefix("date:").split("|")[0] in still
         and ticked(typed, key) != ticked(kept, key)
         for key in {*typed, *kept}
+    )
+
+
+def tick_beyond_progress(snapshot: DraftSnapshot, post: ReviewPost) -> bool:
+    """Whether "No assigned date was given" set words aside on a row still open with no correction
+    to none for saved progress to match, as where it answers a day heading that read no date."""
+    still = {row.key for row in snapshot.rows if row.state == "open"}
+    return any(
+        key.removeprefix("date:").split("|")[0] in still
+        and post.corrections.get(key, {}).get("assigned", "") is not None
+        for key, _, _ in post.dropped
     )
 
 
