@@ -627,6 +627,8 @@ class ReviewState:
     entries: Mapping[str, list[ListEntry]]
     preview: tuple[PreviewEntry, ...]
     asked: Mapping[tuple[str, ...], Change | None]
+    held: Mapping[tuple[str, str], str]
+    """The draft's kept answers by kind and subject, each as its tables store it."""
     rework: "Rework" = dataclasses.field(default=lambda _: (Validation((), {}), ()), compare=False)
     """The checks and preview another mapping of these pieces would have, as an offer shows it,
     against the same record and answers."""
@@ -793,6 +795,7 @@ def review_state(
         listed,
         shown,
         asked,
+        {key: value for key, (value, _) in tables.answers.items()},
         rework,
     )
 

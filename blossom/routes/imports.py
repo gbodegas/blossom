@@ -662,6 +662,7 @@ async def closed_on_press(
     *,
     rows: bool = True,
     notes: Sequence[str] = (),
+    beside_a_receipt: Sequence[str] = (),
 ) -> Response:
     """A press on a review closed under it: the outcome of an earlier save of this page when one is
     confirmed, its page showing the review's rows only with ``rows``; on a Save press, that it can't
@@ -670,14 +671,15 @@ async def closed_on_press(
     closed review's words and every correction to copy, with nothing that reopens the review or
     offers a press.
     What this press's own write kept, or that it can't tell (``notes``), goes on either as an ended
-    review's page says it, apart from where ``saved_page`` leaves a kept line unsaid."""
+    review's page says it, apart from where ``saved_page`` leaves a kept line unsaid; a refusal of
+    its own (``beside_a_receipt``) goes on beneath an earlier save's outcome only."""
     return await replayed(
         request,
         state,
         draft_id,
         ended_lines(kept, saved=True),
         rows=rows,
-        notes=ended_lines(notes, saved=True),
+        notes=[*ended_lines(notes, saved=True), *beside_a_receipt],
         closed_seen=True,
     ) or await gone_with_typing(request, state, "closed", notes, status)
 
@@ -694,6 +696,7 @@ async def ended_under_press(
     said_past_an_end: Sequence[str] = (),
     failed: Sequence[str] = (),
     refusal: Sequence[str] = (),
+    beside_a_receipt: Sequence[str] = (),
 ) -> Response | None:
     """A press that read its review open and then found no rows or no post to read: the review read
     again, so that one that has closed or gone says so with the typing, and one the store refuses to
@@ -712,7 +715,8 @@ async def ended_under_press(
     said on every page here, at the status it answers, and beneath a receipt's result, since that
     result doesn't settle it. Why a press's post was refused (``refusal``) is said the same way, and
     beside a Save's can't-tell answer too, since a refused lookup doesn't show there's no earlier
-    save."""
+    save. Save for later's refusal as behind (``beside_a_receipt``) goes beneath a receipt's result
+    only, after the rest."""
     stored = [PRESS_SAID["kept"]] if answered else []
     its_own = [*stored, *failed, *refusal]
     at_an_end = [*its_own, *said_past_an_end]
@@ -727,19 +731,29 @@ async def ended_under_press(
             draft_id,
             ended_lines(its_kept, saved=True),
             rows=await save_pressed(request),
-            notes=ended_lines(at_an_end, saved=True),
+            notes=[*ended_lines(at_an_end, saved=True), *beside_a_receipt],
         )
         return recorded or await refused_keeping_typing(request, state, error, at_an_end)
     except (StoreBusy, WriterBusy, sqlite3.Error) as error:
         noted(error)
         recorded = await replayed(
-            request, state, draft_id, its_kept, rows=await save_pressed(request), notes=its_own
+            request,
+            state,
+            draft_id,
+            its_kept,
+            rows=await save_pressed(request),
+            notes=[*its_own, *beside_a_receipt],
         )
         status = 200 if answered else refused_status
         return recorded or await unshown_with_typing(request, state, draft_id, its_own, status)
     except STORE_REFUSALS:
         recorded = await replayed(
-            request, state, draft_id, its_kept, rows=await save_pressed(request), notes=its_own
+            request,
+            state,
+            draft_id,
+            its_kept,
+            rows=await save_pressed(request),
+            notes=[*its_own, *beside_a_receipt],
         )
         status = 200 if answered else refused_status
         return recorded or await unshown_with_typing(request, state, draft_id, its_own, status)
@@ -757,6 +771,7 @@ async def ended_under_press(
         its_kept,
         rows=await save_pressed(request),
         notes=at_an_end,
+        beside_a_receipt=beside_a_receipt,
     )
 
 
@@ -1028,6 +1043,7 @@ async def snapshot_keeping_typing(
             press_kept,
             rows=save_press,
             notes=own_line,
+            beside_a_receipt=behind_lines(said),
         )
     return snapshot
 
@@ -1837,6 +1853,12 @@ def own_failure_lines(said: Iterable[str]) -> list[str]:
     return [line for line in said if line in OWN_FAILURE_SAID]
 
 
+def behind_lines(said: Iterable[str]) -> list[str]:
+    """Of a press's lines, Save for later's refusal as behind, which an earlier save's result
+    doesn't settle either, so it goes on beneath that result."""
+    return [line for line in said if line == PRESS_SAID["later_behind"]]
+
+
 CONFIRMED_SAID: Final = KEPT_SAID | {PRESS_SAID["kept_before_ended"], PRESS_SAID["later"]}
 """The lines that say a press kept answers, in either tense."""
 
@@ -2243,9 +2265,7 @@ async def with_typing(
             revision=revision,
             own=own or frozenset(),
         )
-        said_lost = await choices_said_lost(
-            state, draft_id, post, rows, own, current and not behind
-        )
+        said_lost = await choices_said_lost(state, draft_id, post, rows, own, current, behind)
     except sqlite3.Error as error:
         noted(error)
         unsure = uncertain_lines(said)
@@ -2274,6 +2294,7 @@ async def with_typing(
             kept_lines(said),
             answered=answered,
             failed=own_failure_lines(said),
+            beside_a_receipt=behind_lines(said),
         )
         if ended is not None:
             return ended
@@ -2429,23 +2450,24 @@ async def choices_said_lost(
     rows: RowsShown | None,
     own: frozenset[str] | None,
     current: bool,
+    behind: bool,
 ) -> bool:
     """What a resend or a conflict can't show, read from the record. On a page whose form carries
-    its choices (``current``), an answer she cleared that the record still holds, with its question
-    gone. At another version, or past the page's revision, on a resend with no conflict, whatever
-    isn't what the record holds, or isn't offered. One exception: a question gone whose posted
-    choice the record still holds goes unsaid, since nothing tells it from one her own first copy
-    took off the page."""
+    its choices (``current``, not ``behind``), an answer she cleared that the record still holds,
+    with its question gone. At another version, or past the page's revision, on a resend with no
+    conflict, whatever isn't what the record holds (past the revision with none cleared, as the
+    rows' own read holds it), or isn't offered. One exception: a question gone whose posted choice
+    the record still holds goes unsaid, since nothing tells it from one her first copy took off."""
     if rows is None:
         return False
-    if current:
+    if current and not behind:
         if not post.withdrawn or not (post.conflicted or own is not None):
             return False
-        held = await answers_held(state, draft_id)
+        held: Mapping[tuple[str, str], str] = await answers_held(state, draft_id)
         return any(key in held and answer_field(*key) not in rows.offered for key in post.withdrawn)
     if own is None or post.conflicted:
         return False
-    held = await answers_held(state, draft_id)
+    held = rows.held if current and not post.withdrawn else await answers_held(state, draft_id)
     return post_off_record(post, own, held) or no_longer_offered(post, rows)
 
 
@@ -2818,7 +2840,9 @@ def saved_outcome(
     Where whether it finished isn't known (``finished`` false), it isn't said, what else the
     press said (``notes``) is, and the corrections the post typed (``typed``) are given back to
     copy. ``problems`` are said beneath, in the problem style, with no focus of their own, and
-    ``review`` adds the way back to the review."""
+    ``review`` adds the way back to the review. A refused Save for later's line in ``notes`` says
+    the typing is still here only beside a copy (``typing_here``)."""
+    notes = typing_here(notes, typed)
     return templates.TemplateResponse(
         request,
         "import_said.html",

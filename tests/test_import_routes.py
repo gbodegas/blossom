@@ -18309,6 +18309,44 @@ def test_a_plain_resend_whose_choices_are_on_the_record_says_none_is_lost(
     behind_its_own_save(answer)
 
 
+THE_READS_OF_A_PLAIN_RESEND: Final = {
+    "an answer left blank in its post": {"draft_for_save": 3, "student_id": 6},
+    "no answer left blank in its post": {"draft_for_save": 2, "student_id": 5},
+}
+"""The record's reads a plain resend of a committed Save makes at its page's version, by whether
+its post leaves an answer blank, which the record is read again for."""
+
+
+@pytest.mark.parametrize("setup", list(THE_READS_OF_A_PLAIN_RESEND))
+def test_a_plain_resend_reads_the_review_s_tables_no_more_than_its_page_needs(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, setup: str
+) -> None:
+    """Real presses: a Save that leaves the version alone, then the same post again. Its receipt
+    page, behind that Save, finds nothing lost, from the rows' own read where nothing is blank."""
+    with here(open_settings(tmp_path)) as browser:
+        if setup == "an answer left blank in its post":
+            review, page, unit, _, _ = back_on_a_page_saved_from(browser, monkeypatch)
+            draft_id, posted = review.draft_id, page_post(page, "save", tick=[unit])
+        else:
+            draft_id, page, unit, _ = two_rows(browser, monkeypatch)
+            followed(browser, send(browser, draft_id, page_post(page, "keep")))
+            posted = page_post(loaded(browser, draft_id), "save", tick=[unit])
+            assert "Saved: 1 new assignment." in page_text(send(browser, draft_id, posted))
+        version = review_as_stored(browser, draft_id)["version"]
+        record = state_of(browser).project_state
+        names = ("draft_for_save", "student_id")
+        reads = {name: calls_to(monkeypatch, record, name) for name in names}
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert [value for name, value in posted if name == "version"] == [str(version)]
+    assert {name: len(calls) for name, calls in reads.items()} == THE_READS_OF_A_PLAIN_RESEND[setup]
+    assert answer.status_code == 200, page_text(answer)[:400]
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert NOT_CARRIED not in page_text(answer)
+    behind_its_own_save(answer)
+
+
 def test_a_choice_cleared_on_a_plain_resend_is_said_not_carried_with_no_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -23318,10 +23356,15 @@ def a_later_from_the_save_s_own_page(
     )
 
 
-def says_the_earlier_save_with_no_form(answer: Answer, draft_id: str, typing: list[str]) -> None:
+def says_the_earlier_save_with_no_form(
+    answer: Answer, draft_id: str, typing: list[str], *, refused: str | None = None
+) -> None:
     """That the review can't be shown, the press's typing exactly under the neutral note, nothing to
-    edit or press, the way back, and none of Save for later's own lines."""
+    edit or press, the way back, and no Save for later line but its refusal beneath the save."""
     text = page_text(answer)
+    if refused is not None:
+        says_the_refusal_beneath_the_earlier_save(answer, refused)
+        text = text.replace(refused, "")
     assert answer.status_code == 200, text[:300]
     assert imports.REVIEW_NOT_SHOWN in text
     assert copies_in_order(answer) == typing
@@ -23486,6 +23529,102 @@ def test_an_earlier_save_page_past_its_next_read_keeps_the_save_with_its_counts_
 
     says_the_earlier_save_with_no_form(answer, beside.draft_id, beside.typing)
     says_the_save_with_its_counts_unread(answer)
+
+
+THE_READS_BEFORE_A_RECEIPT: Final = (
+    "its first read closed",
+    *(f"rows back empty, then {read}" for read in (*THE_NEXT_READ_SAYS, "closed")),
+)
+"""Each read past which a press whose rows can't be drawn finds its page's earlier save."""
+LATER_REFUSED_HERE: Final = f"{imports.PRESS_SAID['later_behind']} {imports.TYPING_STILL_HERE}"
+
+
+def to_the_receipt_past(browser: TestClient, monkeypatch: pytest.MonkeyPatch, way: str) -> None:
+    """Timing forced: the press's way to its page's earlier save, as ``THE_READS_BEFORE_A_RECEIPT``
+    names it, each close standing as a read that finds the review closed once, writing nothing."""
+    if way == "its first read closed":
+        armed = a_read_says_once(browser, monkeypatch, closed_at=READ_CLOSED)
+        drafts = state_of(browser).import_drafts
+        real: Callable[..., object] = drafts.save_for_later
+
+        def then_closed(*args: object, **kwargs: object) -> object:
+            done = real(*args, **kwargs)
+            armed.append(True)
+            return done
+
+        monkeypatch.setattr(drafts, "save_for_later", then_closed)
+    elif way.endswith("closed"):
+        armed = a_read_says_once(browser, monkeypatch, closed_at=READ_CLOSED)
+        no_rows_once(monkeypatch, lambda: armed.append(True))
+    else:
+        rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[way.rpartition(", then ")[2]])
+
+
+def says_the_refusal_beneath_the_earlier_save(answer: Answer, line: str) -> None:
+    """The press's line once, in the note style, after the counts heading and outside both the
+    result's own lines and the alert."""
+    says_its_line_once_as_a_note(answer, line)
+    note = f'<p class="note">{escape(line)}</p>'
+    assert answer.text.index('id="outcome-heading"') < answer.text.index(note)
+    for alert in re.findall(r'role="alert"[^>]*>(.*?)</div>', answer.text, re.S):
+        assert str(escape(line)) not in alert
+
+
+@pytest.mark.parametrize("way", THE_READS_BEFORE_A_RECEIPT)
+@pytest.mark.parametrize("words", [True, False], ids=WORDS_OR_NONE)
+def test_a_later_refused_behind_its_page_s_save_says_so_beneath_that_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: bool, way: str
+) -> None:
+    """Real presses: answers kept, one group saved from that page, then Save for later from it,
+    which its write refuses as behind that Save. Timing forced past that write to the Save's
+    receipt: its counts, status, copies and links, and the line beneath them."""
+    with here(open_settings(tmp_path)) as browser:
+        beside = a_press_that_can_commit(browser, monkeypatch, "later", words=words)
+        before = review_as_stored(browser, beside.draft_id)
+        to_the_receipt_past(browser, monkeypatch, way)
+        answer = send(browser, beside.draft_id, beside.posted)
+        monkeypatch.undo()
+        after = review_as_stored(browser, beside.draft_id)
+
+    page = recovery_of(answer)
+    assert answer.status_code == 200, page_text(answer)[:400]
+    assert "Saved: 1 new assignment. 1 still needs checking." in the_outcome_heading(answer)
+    says_the_refusal_beneath_the_earlier_save(answer, LATER_REFUSED_HERE)
+    assert copies_in_order(answer) == beside.typing
+    assert not page.form
+    assert page.links == ["Back to the review", "Back to Family review"]
+    assert after["revision"] == before["revision"]
+
+
+@pytest.mark.parametrize(
+    "press", ["a Save resend", "a busy Save for later", "an uncertain Save for later"]
+)
+def test_a_receipt_page_no_refused_later_reaches_says_nothing_of_one(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The earlier save's page reached another way: a Save sent again from that page, Save for later
+    whose write was busy, or whose write can't be told. Timing forced past the write."""
+    with here(open_settings(tmp_path)) as browser:
+        if press == "an uncertain Save for later":
+            draft_id, posted, _ = a_press_with_a_line_finding_an_earlier_save(
+                browser, monkeypatch, "later", "it can't tell, not committed"
+            )
+        else:
+            beside = a_press_that_can_commit(browser, monkeypatch, "later", words=False)
+            draft_id, posted = beside.draft_id, beside.posted
+            if press == "a Save resend":
+                posted = [(n, "save" if n == "press" else v) for n, v in posted]
+            else:
+                monkeypatch.setattr(
+                    state_of(browser).import_drafts, "save_for_later", refusing(StoreBusy)
+                )
+                rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS["a refused file"])
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert answer.status_code == 200, page_text(answer)[:400]
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert imports.PRESS_SAID["later_behind"] not in page_text(answer)
 
 
 THE_PAGE_S_READ_OF_THE_POST: Final = {"keep": 2, "later": 3}
@@ -25019,8 +25158,8 @@ def test_save_for_later_behind_withdrawing_an_answer_alone_past_a_refused_read_h
 def test_save_for_later_behind_beside_a_receipt_says_so_only_when_it_stored(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, stored: bool, read: str
 ) -> None:
-    """The earlier save's counts at 200 either way. Keep's line in full is this press's own, and a
-    connection of its own finds the answer."""
+    """The earlier save's counts at 200 either way, this press's refusal beneath them with no copy
+    to keep. Keep's line in full is this press's own, and a connection of its own finds it."""
     with here(open_settings(tmp_path)) as browser:
         review, page, _, _, field = back_on_a_page_saved_from(browser, monkeypatch)
         value = next(value for value, shown in options_of(page, field) if not shown)
@@ -25031,7 +25170,8 @@ def test_save_for_later_behind_beside_a_receipt_says_so_only_when_it_stored(
         monkeypatch.undo()
         after = review_as_stored(browser, review.draft_id)
 
-    says_the_earlier_save_with_no_form(answer, review.draft_id, [])
+    later_behind = imports.PRESS_SAID["later_behind"]
+    says_the_earlier_save_with_no_form(answer, review.draft_id, [], refused=later_behind)
     the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
     assert holds_the_answer(after, field, value) is stored
     if stored:
@@ -29119,6 +29259,34 @@ def test_a_save_refused_as_stale_and_left_behind_keeps_its_line_where_no_rows_ar
         assert answer.status_code == 410
         assert imports.wasnt_saved("stale") not in text
         assert imports.SAID["expired"] in text
+
+
+def test_a_save_refused_as_stale_and_left_behind_with_rows_back_empty_says_the_refused_save_lines(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Timing forced by ``a_stale_save_left_behind`` and its rows coming back empty with the review
+    open. No form; its kept answers, no homework saved, the out-of-date notice, the copy, both
+    links, at the stale page's status."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, row, other = settled_review(browser, monkeypatch)
+        mine = loaded(browser, draft_id)
+        outcomes = a_stale_save_left_behind(browser, monkeypatch, draft_id)
+        no_rows_once(monkeypatch)
+        typed = {correct_box(other, "title"): "Y Typed"}
+        answer = send(browser, draft_id, page_post(mine, "save", tick=[row], typed=typed))
+        monkeypatch.undo()
+        saved = saved_from_the_review(browser)
+
+    page = recovery_of(answer)
+    assert outcomes == [NotSaved("stale")]
+    assert answer.status_code == 409
+    assert saved == []
+    assert not page.form
+    assert page.kept == [imports.PRESS_SAID["answers_kept"]]
+    assert page.said == [imports.NO_HOMEWORK, imports.OUT_OF_DATE]
+    assert imports.wasnt_saved("stale") not in page_text(answer)
+    assert page.copies == ["Y Typed"]
+    assert page.links == ["Back to the review", "Back to Family review"]
 
 
 @pytest.mark.parametrize("ending", ["closed", "past its end"])

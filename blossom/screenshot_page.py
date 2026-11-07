@@ -864,6 +864,8 @@ class RowsShown:
     """Whether one of them is more than its confirmed save took with its own rows and her name."""
     offered: Mapping[str, frozenset[str]] = dataclasses.field(default_factory=dict)
     """Each answer this page's signed form asks for, with the values its controls offer."""
+    held: Mapping[tuple[str, str], str] = dataclasses.field(kw_only=True)
+    """The review's kept answers as the read these rows come from found them (``ReviewState``)."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1725,6 +1727,7 @@ def rows_shown(
             for field, values in asked_fields
             if field.startswith("answer:")
         },
+        held=state.held,
     )
 
 
