@@ -63,6 +63,7 @@ from blossom.screenshot_posts import (
     read_review,
     shape_four,
     typed_as_sent,
+    typed_beside_words,
     typed_for,
 )
 from blossom.screenshot_reading import ReadOutcome, read_screenshots
@@ -779,12 +780,15 @@ async def typing_of(
     request: Request,
     stored: Iterable[tuple[str, str, str]] = (),
     shown: Collection[tuple[str, str, str]] = (),
+    *,
+    beside_words: bool = False,
 ) -> list[tuple[str, str]]:
     """Every correction a press's post typed, labeled, read from the post alone (``typed_for``),
     to give back as it was sent, in boxes to copy, where the review can't keep it. A correction is
     left out only when a box on the page holds that exact text (``shown``), or when its save shows
     it stored that exact text in that field (``stored``, the outcome's own evidence). An empty box
-    or a hidden field beside it isn't either, whatever was ticked."""
+    or a hidden field beside it isn't either, whatever was ticked. With ``beside_words``, a date box
+    beside carried words comes back as ``typed_beside_words`` gives it."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -793,26 +797,26 @@ async def typing_of(
     evidence = set(stored)
     return [
         (TYPED_LABELS[field.partition(":")[0]], text)
-        for key, field, text in typed_for(items)
+        for key, field, text in (typed_beside_words if beside_words else typed_for)(items)
         if (key, field, text) not in evidence and (key, field, text) not in shown
     ]
 
 
 async def typing_by_press(
-    request: Request, stored: Iterable[tuple[str, str, str]] = ()
+    request: Request, stored: Iterable[tuple[str, str, str]] = (), *, beside_words: bool = False
 ) -> list[tuple[str, str]]:
     """What a post gives back when its press finds the review ended, on every page that says it
     can't be shown, beside a confirmed save's counts with no post to read, and on Save for later's
     page after a commit that set words aside, whether or not its read shows another tab saved
-    since: on a Save press, ``typing_of``; on Keep or Save for later, every box as it was sent,
-    whitespace included (``typed_as_sent``)."""
+    since: on a Save press, ``typing_of``, with ``beside_words`` passed on; on Keep or Save for
+    later, every box as it was sent, whitespace included (``typed_as_sent``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
         return []
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     if next((value for name, value in items if name == "press"), "") == "save":
-        return await typing_of(request, stored)
+        return await typing_of(request, stored, beside_words=beside_words)
     return [
         (TYPED_LABELS[field.partition(":")[0]], text) for _, field, text in typed_as_sent(items)
     ]
@@ -2171,6 +2175,7 @@ async def with_typing(
     notes: Sequence[str] = (),
     counted: bool = True,
     found: DraftSnapshot | None = None,
+    tick_not_kept: bool = False,
 ) -> Response:
     """A press that saved nothing, or a save that left the review open, answers with the review as
     it stands now, the corrections it typed and the groups it ticked in the form, and an answer just
@@ -2220,9 +2225,10 @@ async def with_typing(
     The form signs the revision its content was typed against: the post's; for an offer or a found
     row, that of the read that filled its boxes (``found``); after a save that committed, the one
     its own transaction raised the review to (``saved``). Where the review's stored revision is
-    another, the page draws no form, says its choices can't be shown where it posted any, and says
-    it's out of date (``no_form_with_typing``), a Save with nothing saved as ``out_of_date_save``
-    says it."""
+    another, the page draws no form, says its choices can't be shown where it posted any, or where
+    a confirmed save's post has a "No assigned date was given" saved progress doesn't hold on a row
+    left open (``tick_not_kept``), and says it's out of date (``no_form_with_typing``), a Save with
+    nothing saved as ``out_of_date_save`` says it."""
     after = read or await snapshot_keeping_typing(
         request,
         state,
@@ -2317,9 +2323,8 @@ async def with_typing(
             lines.append(PAGE_SAID["not_carried"])
     if post.unresolved and PAGE_SAID["not_carried"] not in lines:
         lines.append(PAGE_SAID["not_carried"])
-    carried = (
-        [PAGE_SAID["not_carried"]] if with_choices or PAGE_SAID["not_carried"] in lines else []
-    )
+    uncarried = with_choices or tick_not_kept or PAGE_SAID["not_carried"] in lines
+    carried = [PAGE_SAID["not_carried"]] if uncarried else []
     if rows is not None:
         lines[:0] = beside_rows
     shown = fields_shown(rows)
@@ -2371,8 +2376,9 @@ async def no_form_with_typing(
 ) -> Response:
     """A press's page with no form: an earlier save's result first (``done``), the press's lines,
     kept answers and ``notes`` apart from the rest, the out-of-date notice where the review's stored
-    revision isn't its content's (``behind``), every box it typed to copy, and the ways back."""
-    typed = await typing_by_press(request)
+    revision isn't its content's (``behind``), every box it typed to copy, a Save's date beside
+    carried words among them (``typed_beside_words``), and the ways back."""
+    typed = await typing_by_press(request, beside_words=True)
     lines = [
         shown
         for line in typing_here(said, typed)
@@ -2948,6 +2954,23 @@ async def partly_saved(
         own,
         notes=notes,
         counted=counted,
+        tick_not_kept=tick_unlike_progress(after, post.corrections, kept),
+    )
+
+
+def tick_unlike_progress(snapshot: DraftSnapshot, typed: Corrections, kept: Corrections) -> bool:
+    """Whether a post's "No assigned date was given" on a row still open differs from saved
+    progress (``kept``): ticked where it holds a date or nothing, unticked where it holds that."""
+    still = {row.key for row in snapshot.rows if row.state == "open"}
+
+    def ticked(given: Corrections, key: str) -> bool:
+        return "assigned" in given.get(key, {}) and given[key]["assigned"] is None
+
+    return any(
+        key.startswith("date:")
+        and key.removeprefix("date:").split("|")[0] in still
+        and ticked(typed, key) != ticked(kept, key)
+        for key in {*typed, *kept}
     )
 
 

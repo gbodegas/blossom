@@ -688,6 +688,33 @@ def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str
     return tuple(typed)
 
 
+def typed_beside_words(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
+    """As ``typed_for``, with a date box beside carried words as ``typed_as_sent`` gives it back:
+    what was sent in that box, even the date as read, and the words unless a date is in it with "No
+    assigned date was given" unticked."""
+    carried: set[tuple[str, str]] = set()
+    for name, _ in items:
+        if not name.startswith("refused:"):
+            continue
+        try:
+            key, field = (str(part) for part in json.loads(name.removeprefix("refused:")))
+        except (ValueError, TypeError, RecursionError):
+            continue
+        carried.add((key, field))
+    beside: dict[tuple[str, str], list[str]] = {}
+    for key, field, text in typed_as_sent(items):
+        if (key, field) in carried and text.strip():
+            beside.setdefault((key, field), []).append(text)
+    typed: list[tuple[str, str, str]] = []
+    for key, field, text in typed_for(items):
+        if (key, field) not in carried:
+            typed.append((key, field, text))
+        elif (key, field) in beside:
+            typed += [(key, field, sent) for sent in beside.pop((key, field))]
+    typed += [(key, field, sent) for (key, field), texts in beside.items() for sent in texts]
+    return tuple(typed)
+
+
 # ------------------------------------------------------------------ saved progress
 
 PROGRESS_KEYS: Final = frozenset({"v", "corrected", "selected"})
