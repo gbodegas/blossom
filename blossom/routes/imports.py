@@ -1424,6 +1424,7 @@ async def rows_of(
         choices=choices,
         conflicted=conflicted,
         own=own,
+        progress=kept,
     )
 
 
@@ -2175,7 +2176,6 @@ async def with_typing(
     notes: Sequence[str] = (),
     counted: bool = True,
     found: DraftSnapshot | None = None,
-    tick_not_kept: bool = False,
 ) -> Response:
     """A press that saved nothing, or a save that left the review open, answers with the review as
     it stands now, the corrections it typed and the groups it ticked in the form, and an answer just
@@ -2226,9 +2226,9 @@ async def with_typing(
     row, that of the read that filled its boxes (``found``); after a save that committed, the one
     its own transaction raised the review to (``saved``). Where the review's stored revision is
     another, the page draws no form, says its choices can't be shown where it posted any, or where
-    a confirmed save's post has a "No assigned date was given" saved progress doesn't hold on a row
-    left open (``tick_not_kept``), and says it's out of date (``no_form_with_typing``), a Save with
-    nothing saved as ``out_of_date_save`` says it."""
+    its post's "No assigned date was given" on a row left open isn't what the saved progress its
+    rows were drawn from holds (``tick_unlike_progress``), and says it's out of date
+    (``no_form_with_typing``), a Save with nothing saved as ``out_of_date_save`` says it."""
     after = read or await snapshot_keeping_typing(
         request,
         state,
@@ -2323,14 +2323,15 @@ async def with_typing(
             lines.append(PAGE_SAID["not_carried"])
     if post.unresolved and PAGE_SAID["not_carried"] not in lines:
         lines.append(PAGE_SAID["not_carried"])
-    uncarried = with_choices or tick_not_kept or PAGE_SAID["not_carried"] in lines
-    carried = [PAGE_SAID["not_carried"]] if uncarried else []
+    uncarried = with_choices or PAGE_SAID["not_carried"] in lines
     if rows is not None:
         lines[:0] = beside_rows
     shown = fields_shown(rows)
     if any((key, field) in unsaved for key, field, _ in shown):
         lines.insert(len(said) + len(notes), PRESS_SAID["unsaved_typing"])
     if behind and rows is not None:
+        unlike = tick_unlike_progress(after, post.corrections, rows.progress)
+        carried = [PAGE_SAID["not_carried"]] if uncarried or unlike else []
         told = [*done, PRESS_SAID["left_open"]] if done and answered else done
         return await no_form_with_typing(
             request,
@@ -2954,13 +2955,13 @@ async def partly_saved(
         own,
         notes=notes,
         counted=counted,
-        tick_not_kept=tick_unlike_progress(after, post.corrections, kept),
     )
 
 
 def tick_unlike_progress(snapshot: DraftSnapshot, typed: Corrections, kept: Corrections) -> bool:
     """Whether a post's "No assigned date was given" on a row still open differs from saved
-    progress (``kept``): ticked where it holds a date or nothing, unticked where it holds that."""
+    progress (``kept``, as the page's rows read it): ticked where it holds a date or nothing, or no
+    progress is saved, unticked where it holds that."""
     still = {row.key for row in snapshot.rows if row.state == "open"}
 
     def ticked(given: Corrections, key: str) -> bool:
