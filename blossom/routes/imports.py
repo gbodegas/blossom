@@ -3000,14 +3000,16 @@ def tick_beyond_progress(
 ) -> bool:
     """Whether "No assigned date was given" set words aside on a row still open with no correction
     to none, unless it answers a day heading's confirmation the answers read (``held``, None where
-    none were) hold as posted, with no date in saved progress (``kept``) beside it."""
+    none were) hold as posted, beside saved progress absent or readable with no date for it."""
     still = {row.key for row in snapshot.rows if row.state == "open"}
     posted = {(answer.kind, answer.subject): answer.value for answer in post.answers}
+    readable = snapshot.progress is None or progress_read(snapshot.progress) is not None
 
     def confirmed(key: str) -> bool:
         asked = ("confirm", confirm_subject(key.removeprefix("date:"), "heading"))
         return (
-            held is not None
+            readable
+            and held is not None
             and asked in posted
             and held.get(asked) == posted[asked]
             and "assigned" not in kept.get(key, {})
