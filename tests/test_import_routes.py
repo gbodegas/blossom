@@ -29644,21 +29644,21 @@ def test_a_press_behind_with_every_image_removed_says_nothing_of_a_confirmation(
     assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_NO_LIST_LEFT[press]
 
 
-PROGRESS_BESIDE_A_CONFIRMATION: Final[dict[str, tuple[bool, bool]]] = {
-    "absent": (False, False),
-    "shape 4, another piece's date and a title and due line on this one": (False, False),
-    "shape 4, an assigned date on this piece": (True, True),
-    "shape 3, a title and due line on this piece's row": (False, True),
-    "shape 3, a day heading on this piece's row, its due date": (False, True),
-    "text that isn't JSON": (True, True),
-    "shape 2": (True, True),
-    "shape 5": (True, True),
-    "shape true": (True, True),
-    "shape 4, an entry it doesn't hold on the other piece": (True, True),
+PROGRESS_BESIDE_A_CONFIRMATION: Final[dict[str, tuple[bool, bool, bool]]] = {
+    "absent": (False, False, False),
+    "shape 4, another piece's date and a title and due line on this one": (False, False, False),
+    "shape 4, an assigned date on this piece": (True, True, True),
+    "shape 3, a title and due line on this piece's row": (False, True, False),
+    "shape 3, a day heading on this piece's row, its due date": (False, True, False),
+    "text that isn't JSON": (True, True, True),
+    "shape 2": (True, True, True),
+    "shape 5": (True, True, True),
+    "shape true": (True, True, True),
+    "shape 4, an entry it doesn't hold on the other piece": (True, True, True),
 }
 """Saved progress beside a press behind whose "No assigned date was given" answers a confirmation
-the answers read hold as posted, and whether the page says its choices can't be shown, with its
-rows drawn and with them back empty."""
+the answers read hold as posted, and whether the page says its choices can't be shown, by its rows
+as ``ROWS_BESIDE_A_CONFIRMATION`` lists them: drawn, forced back empty, set aside."""
 
 
 def progress_beside_a_confirmation(case: str, piece: str, other: str) -> str | None:
@@ -29787,8 +29787,8 @@ def test_a_press_behind_matches_a_confirmation_only_beside_progress_absent_or_re
 
     text = page_text(answer)
     found = recovery_of(answer)
-    drawn, empty = PROGRESS_BESIDE_A_CONFIRMATION[case]
-    said = (drawn if rows == "drawn" else empty) if confirmation == "held as posted" else True
+    paths = zip(ROWS_BESIDE_A_CONFIRMATION, PROGRESS_BESIDE_A_CONFIRMATION[case], strict=True)
+    said = dict(paths)[rows] if confirmation == "held as posted" else True
     expected = dict(ROWS_BESIDE_A_CONFIRMATION[rows][press])
     if case.startswith("shape 3"):
         expected = {name: count + SHAPE_THREE_READS[rows] for name, count in expected.items()}
@@ -29805,6 +29805,132 @@ def test_a_press_behind_matches_a_confirmation_only_beside_progress_absent_or_re
     if said:
         assert text.index(NOT_CARRIED) < text.index(imports.OUT_OF_DATE)
     assert {name: len(calls) for name, calls in reads.items()} == expected
+
+
+NO_DATE_TICKS_BESIDE_SHAPE_THREE: Final[dict[str, bool]] = {
+    "the other card as read": False,
+    "the other card ticked, which that progress doesn't hold": True,
+}
+"""A press behind whose rows were set aside before their read, beside saved progress of shape 3
+with corrections and a confirmation the answers read hold as posted, by its "No assigned date was
+given" on the other card, and whether the page says its choices can't be shown."""
+
+
+@pytest.mark.parametrize("case", list(NO_DATE_TICKS_BESIDE_SHAPE_THREE))
+@pytest.mark.parametrize(
+    "progress", [case for case in PROGRESS_BESIDE_A_CONFIRMATION if case.startswith("shape 3")]
+)
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_press_behind_whose_rows_were_set_aside_compares_its_ticks_with_shape_three(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, progress: str, case: str
+) -> None:
+    """Real presses after another page's Save for later with the tick; progress of shape 3, an
+    unread image and every open row set aside just before the rows' read (timing forced), by store
+    calls. Its ticks are compared with the progress that read worked out."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
+        other = the_other_date_piece(page, piece)
+        student, drafts = student_and_drafts(browser)
+        confirmation_saved_for_later(browser, draft_id, piece)
+        stored = progress_beside_a_confirmation(progress, piece, other)
+        progress_left_as(browser, draft_id, stored)
+        drafts.add_images(student, draft_id, [as_new_image(prepare_image(BLUE))])
+        choose, typed = no_date_tick(none), dict[str, str]()
+        if case != "the other card as read":
+            more, typed = no_date_on(page, other)
+            choose = {**choose, **more}
+        tick = units_on(page)[:1] if press == "save" else []
+        posted = page_post(page, press, tick=tick, choose=choose, typed=typed)
+        record = state_of(browser).project_state
+        reads = {
+            name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
+        }
+
+        def set_aside() -> None:
+            now = drafts.snapshot(student, draft_id)
+            keys = [row.key for row in now.rows if row.state == "open"]
+            assert not drafts.set_aside(student, draft_id, version=now.version, keys=keys).closed
+
+        returned = before_the_rows_read(monkeypatch, set_aside)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        left = drafts.snapshot(student, draft_id)
+
+    text = page_text(answer)
+    found = recovery_of(answer)
+    added = SHAPE_THREE_READS["set aside before their read"]
+    expected = {name: count + added for name, count in READS_WITH_ROWS_SET_ASIDE[press].items()}
+    assert returned == [None]
+    assert left.closed_at is None
+    assert left.progress == stored
+    assert not [row for row in left.rows if row.state == "open"]
+    assert answer.status_code == 409, text[:400]
+    assert not found.form
+    assert found.copies == [WORDS_BESIDE]
+    assert imports.OUT_OF_DATE in text
+    assert {name: len(calls) for name, calls in reads.items()} == expected
+    assert text.count(NOT_CARRIED) == int(NO_DATE_TICKS_BESIDE_SHAPE_THREE[case])
+
+
+def the_rows_read_finds_no_review(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Forced: the review read inside ``rows_of`` makes its reads, then answers that there's no
+    such review; what each call of ``rows_of`` returns is kept in the list given back."""
+    real_rows: Callable[..., Awaitable[object]] = imports.rows_of
+    real_state: Callable[..., Awaitable[object]] = imports.state_of_review
+    inside: list[bool] = []
+    returned: list[object] = []
+
+    async def rows(*args: object, **kwargs: object) -> object:
+        inside.append(True)
+        try:
+            found = await real_rows(*args, **kwargs)
+        finally:
+            inside.pop()
+        returned.append(found)
+        return found
+
+    async def state(*args: object, **kwargs: object) -> object:
+        found = await real_state(*args, **kwargs)
+        return None if inside else found
+
+    monkeypatch.setattr(imports, "rows_of", rows)
+    monkeypatch.setattr(imports, "state_of_review", state)
+    return returned
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_press_behind_whose_rows_read_finds_no_review_takes_no_earlier_answers_for_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Real presses after another page's Save for later with the tick, which the press's first read
+    holds as posted; the rows' own read then answers that there's no review (forced). The page
+    says once that its choices can't be shown, as no answers were read there."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
+        confirmation_saved_for_later(browser, draft_id, piece)
+        before = review_as_stored(browser, draft_id)
+        tick = units_on(page)[:1] if press == "save" else []
+        posted = page_post(page, press, tick=tick, choose=no_date_tick(none))
+        record = state_of(browser).project_state
+        reads = {
+            name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
+        }
+        returned = the_rows_read_finds_no_review(monkeypatch)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        after = review_as_stored(browser, draft_id)
+
+    text = page_text(answer)
+    found = recovery_of(answer)
+    assert returned == [None]
+    assert answer.status_code == 409, text[:400]
+    assert not found.form
+    assert found.copies == [WORDS_BESIDE]
+    assert imports.OUT_OF_DATE in text
+    assert after == before
+    assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_ROWS_SET_ASIDE[press]
+    assert text.count(NOT_CARRIED) == 1
+    assert text.index(NOT_CARRIED) < text.index(imports.OUT_OF_DATE)
 
 
 @pytest.mark.parametrize("committed", [True, False], ids=["committed", "not committed"])
