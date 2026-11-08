@@ -29644,6 +29644,169 @@ def test_a_press_behind_with_every_image_removed_says_nothing_of_a_confirmation(
     assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_NO_LIST_LEFT[press]
 
 
+PROGRESS_BESIDE_A_CONFIRMATION: Final[dict[str, tuple[bool, bool]]] = {
+    "absent": (False, False),
+    "shape 4, another piece's date and a title and due line on this one": (False, False),
+    "shape 4, an assigned date on this piece": (True, True),
+    "shape 3, a title and due line on this piece's row": (False, True),
+    "shape 3, a day heading on this piece's row, its due date": (False, True),
+    "text that isn't JSON": (True, True),
+    "shape 2": (True, True),
+    "shape 5": (True, True),
+    "shape true": (True, True),
+    "shape 4, an entry it doesn't hold on the other piece": (True, True),
+}
+"""Saved progress beside a press behind whose "No assigned date was given" answers a confirmation
+the answers read hold as posted, and whether the page says its choices can't be shown, with its
+rows drawn and with them back empty."""
+
+
+def progress_beside_a_confirmation(case: str, piece: str, other: str) -> str | None:
+    """Saved progress as stored text for a case, from this card's dates key (``piece``) and the
+    other card's (``other``); None for no progress at all."""
+    row = piece.removeprefix("date:").split("|")[0]
+    shaped: dict[str, tuple[object, dict[str, dict[str, str]]]] = {
+        "shape 4, another piece's date and a title and due line on this one": (
+            4,
+            {
+                other: {"assigned": "Wednesday"},
+                row: {"title": "Reading log"},
+                piece: {"due": "Friday"},
+            },
+        ),
+        "shape 4, an assigned date on this piece": (4, {piece: {"assigned": "Wednesday"}}),
+        "shape 3, a title and due line on this piece's row": (
+            3,
+            {row: {"title": "Reading log", "footer": "Due Friday"}},
+        ),
+        "shape 3, a day heading on this piece's row, its due date": (
+            3,
+            {row: {"heading": "Wednesday"}},
+        ),
+        "shape 2": (2, {}),
+        "shape 5": (5, {}),
+        "shape true": (True, {}),
+        "shape 4, an entry it doesn't hold on the other piece": (4, {other: {"heading": "Monday"}}),
+    }
+    if case == "absent":
+        return None
+    if case == "text that isn't JSON":
+        return '{"v": 4, "corrected": {'
+    shape, corrected = shaped[case]
+    return json.dumps({"v": shape, "corrected": corrected, "selected": []})
+
+
+def progress_left_as(browser: TestClient, draft_id: str, text: str | None) -> None:
+    """Store-call fixtures: saved progress written as this text by ``save_progress``, or with None
+    its row deleted from the file directly, as a review no Save for later has stored leaves it."""
+    student, drafts = student_and_drafts(browser)
+    if text is not None:
+        revision = drafts.snapshot(student, draft_id).progress_revision
+        drafts.save_progress(student, draft_id, revision=revision, progress=text)
+        return
+    fresh = sqlite3.connect(state_of(browser).settings.database_path)
+    try:
+        with fresh:
+            fresh.execute("DELETE FROM import_draft_progress WHERE draft_id = ?", (draft_id,))
+    finally:
+        fresh.close()
+
+
+ROWS_BESIDE_A_CONFIRMATION: Final[dict[str, dict[str, dict[str, int]]]] = {
+    "drawn": READS_BEHIND,
+    "back empty": READS_WITH_ROWS_EMPTY,
+    "set aside before their read": READS_WITH_ROWS_SET_ASIDE,
+}
+"""How a press behind beside a confirmation gets its rows: drawn; forced back empty
+(``no_rows_once``); or read with every open row set aside just before (real exit (b) open)."""
+SHAPE_THREE_READS: Final[dict[str, int]] = {
+    "drawn": 2,
+    "back empty": 1,
+    "set aside before their read": 2,
+}
+"""The further reads of the record, of each kind, a press behind makes beside saved progress of
+shape 3 with corrections, by its rows, as measured before absent and unread progress were told
+apart."""
+
+
+@pytest.mark.parametrize("confirmation", ["held as posted", "not held"])
+@pytest.mark.parametrize("case", list(PROGRESS_BESIDE_A_CONFIRMATION))
+@pytest.mark.parametrize("rows", list(ROWS_BESIDE_A_CONFIRMATION))
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_press_behind_matches_a_confirmation_only_beside_progress_absent_or_read(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    rows: str,
+    case: str,
+    confirmation: str,
+) -> None:
+    """Real presses after another page's Save for later with the tick, or without it, then saved
+    progress set by store-call fixtures (``progress_left_as``), rows got as the rows table says. A
+    held confirmation is silent only beside progress absent or readable."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
+        other = the_other_date_piece(page, piece)
+        student, drafts = student_and_drafts(browser)
+        set_aside_here = rows == "set aside before their read"
+        if confirmation == "held as posted":
+            confirmation_saved_for_later(browser, draft_id, piece)
+        elif set_aside_here:
+            no_confirmation_and_no_date_saved(browser, draft_id)
+        else:
+            [row] = [unit for unit in units_on(page) if unit not in piece]
+            fresh = loaded(browser, draft_id)
+            saved = send(browser, draft_id, page_post(fresh, "save", tick=[row]))
+            assert "Saved: 1 new assignment." in page_text(saved)
+        stored = progress_beside_a_confirmation(case, piece, other)
+        progress_left_as(browser, draft_id, stored)
+        if set_aside_here:
+            drafts.add_images(student, draft_id, [as_new_image(prepare_image(BLUE))])
+        confirms = [key for key in stored_answers(browser, draft_id) if key[0] == "confirm"]
+        before = review_as_stored(browser, draft_id)
+        tick = units_on(page)[:1] if press == "save" else []
+        posted = page_post(page, press, tick=tick, choose=no_date_tick(none))
+        record = state_of(browser).project_state
+        reads = {
+            name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
+        }
+
+        def set_aside() -> None:
+            now = drafts.snapshot(student, draft_id)
+            keys = [row.key for row in now.rows if row.state == "open"]
+            assert not drafts.set_aside(student, draft_id, version=now.version, keys=keys).closed
+
+        returned: list[object] = [None]
+        if rows == "back empty":
+            no_rows_once(monkeypatch)
+        elif set_aside_here:
+            returned = before_the_rows_read(monkeypatch, set_aside)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        after = review_as_stored(browser, draft_id)
+
+    text = page_text(answer)
+    found = recovery_of(answer)
+    drawn, empty = PROGRESS_BESIDE_A_CONFIRMATION[case]
+    said = (drawn if rows == "drawn" else empty) if confirmation == "held as posted" else True
+    expected = dict(ROWS_BESIDE_A_CONFIRMATION[rows][press])
+    if case.startswith("shape 3"):
+        expected = {name: count + SHAPE_THREE_READS[rows] for name, count in expected.items()}
+    assert bool(confirms) == (confirmation == "held as posted")
+    assert before["progress"] == (None if stored is None else (stored,))
+    assert returned == [None]
+    assert answer.status_code == 409, text[:400]
+    assert not found.form
+    assert found.copies == [WORDS_BESIDE]
+    assert imports.OUT_OF_DATE in text
+    assert after["progress"] == before["progress"]
+    assert after == before or set_aside_here
+    assert text.count(NOT_CARRIED) == int(said)
+    if said:
+        assert text.index(NOT_CARRIED) < text.index(imports.OUT_OF_DATE)
+    assert {name: len(calls) for name, calls in reads.items()} == expected
+
+
 @pytest.mark.parametrize("committed", [True, False], ids=["committed", "not committed"])
 def test_a_save_for_later_that_can_t_tell_never_says_this_attempt_saved(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, committed: bool
