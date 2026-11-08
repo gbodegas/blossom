@@ -700,6 +700,7 @@ async def ended_under_press(
     failed: Sequence[str] = (),
     refusal: Sequence[str] = (),
     beside_a_receipt: Sequence[str] = (),
+    read_again: list[DraftSnapshot] | None = None,
 ) -> Response | None:
     """A press that read its review open and then found no rows or no post to read: the review read
     again, so that one that has closed or gone says so with the typing, and one the store refuses to
@@ -719,7 +720,7 @@ async def ended_under_press(
     result doesn't settle it. Why a press's post was refused (``refusal``) is said the same way, and
     beside a Save's can't-tell answer too, since a refused lookup doesn't show there's no earlier
     save. Save for later's refusal as behind (``beside_a_receipt``) goes beneath a receipt's result
-    only, after the rest."""
+    only, after the rest. Where it gives None, the snapshot it read goes in ``read_again``."""
     stored = [PRESS_SAID["kept"]] if answered else []
     its_own = [*stored, *failed, *refusal]
     at_an_end = [*its_own, *said_past_an_end]
@@ -761,11 +762,14 @@ async def ended_under_press(
         status = 200 if answered else refused_status
         return recorded or await unshown_with_typing(request, state, draft_id, its_own, status)
     if now.closed_at is None:
-        return (
+        recorded = (
             await replayed(request, state, draft_id, its_kept, notes=its_own)
             if await save_pressed(request)
             else None
         )
+        if recorded is None and read_again is not None:
+            read_again.append(now)
+        return recorded
     return await closed_on_press(
         request,
         state,
@@ -2272,6 +2276,7 @@ async def with_typing(
     if refused_with_choices and not current:
         lines += [PAGE_SAID["not_carried"]] if done else [OUT_OF_DATE, PAGE_SAID["not_carried"]]
     answers_read: list[tuple[Mapping[tuple[str, str], str], Corrections] | None] = []
+    answers_said_lost: list[Mapping[tuple[str, str], str]] = []
     try:
         rows = await rows_of(
             request,
@@ -2287,7 +2292,9 @@ async def with_typing(
             own=own or frozenset(),
             answers_read=answers_read,
         )
-        said_lost = await choices_said_lost(state, draft_id, post, rows, own, current, behind)
+        said_lost = await choices_said_lost(
+            state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost
+        )
     except sqlite3.Error as error:
         noted(error)
         unsure = uncertain_lines(said)
@@ -2308,6 +2315,7 @@ async def with_typing(
         )
         return recorded or await unshown(request, state, draft_id, said, status, done, notes=notes)
     if rows is None and not done:
+        read_again: list[DraftSnapshot] = []
         ended = await ended_under_press(
             request,
             state,
@@ -2317,13 +2325,15 @@ async def with_typing(
             answered=answered,
             failed=own_failure_lines(said),
             beside_a_receipt=behind_lines(said),
+            read_again=read_again,
         )
         if ended is not None:
             return ended
         unshown_lines = lines[len(said) + len(notes) :]
         held, progress = (answers_read[-1] or (None, None)) if answers_read else (post.held, None)
+        newer = read_again[-1] if read_again else None
         if post.unresolved or (
-            behind and (with_choices or words_beside_unlike(after, post, held, progress))
+            behind and (with_choices or words_beside_unlike(after, post, held, progress, newer))
         ):
             unshown_lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
         return await no_form_with_typing(
@@ -2350,7 +2360,8 @@ async def with_typing(
         lines.insert(len(said) + len(notes), PRESS_SAID["unsaved_typing"])
     if behind and rows is not None:
         unlike = tick_unlike_progress(after, post.corrections, rows.progress)
-        unlike = unlike or tick_beyond_progress(after, post, rows.progress, rows.held)
+        latest = answers_said_lost[-1] if answers_said_lost else rows.held
+        unlike = unlike or tick_beyond_progress(after, post, rows.progress, latest)
         carried = [PAGE_SAID["not_carried"]] if uncarried or unlike else []
         told = [*done, PRESS_SAID["left_open"]] if done and answered else done
         return await no_form_with_typing(
@@ -2478,13 +2489,15 @@ async def choices_said_lost(
     own: frozenset[str] | None,
     current: bool,
     behind: bool,
+    answers_read: list[Mapping[tuple[str, str], str]] | None = None,
 ) -> bool:
     """What a resend or a conflict can't show, read from the record. On a page whose form carries
     its choices (``current``, not ``behind``), an answer she cleared that the record still holds,
     with its question gone. At another version, or past the page's revision, on a resend with no
     conflict, whatever isn't what the record holds (past the revision with none cleared, as the
     rows' own read holds it), or isn't offered. One exception: a question gone whose posted choice
-    the record still holds goes unsaid, since nothing tells it from one her first copy took off."""
+    the record still holds goes unsaid, since nothing tells it from one her first copy took off.
+    Past the page's version or revision, the answers its own read finds go in ``answers_read``."""
     if rows is None:
         return False
     if current and not behind:
@@ -2494,7 +2507,12 @@ async def choices_said_lost(
         return any(key in held and answer_field(*key) not in rows.offered for key in post.withdrawn)
     if own is None or post.conflicted:
         return False
-    held = rows.held if current and not post.withdrawn else await answers_held(state, draft_id)
+    if current and not post.withdrawn:
+        held = rows.held
+    else:
+        held = await answers_held(state, draft_id)
+        if answers_read is not None:
+            answers_read.append(held)
     return post_off_record(post, own, held) or no_longer_offered(post, rows)
 
 
@@ -3001,13 +3019,16 @@ def tick_beyond_progress(
     post: ReviewPost,
     kept: Corrections,
     held: Mapping[tuple[str, str], str] | None,
+    source: DraftSnapshot | None = None,
+    proven: Collection[str] | None = None,
 ) -> bool:
     """Whether "No assigned date was given" set words aside on a row still open with no correction
-    to none, unless it answers a day heading's confirmation the answers read (``held``, None if none
-    were) hold as posted, beside saved progress absent or readable with no assigned date for it."""
+    to none, unless it answers a day heading's confirmation ``held`` holds as posted, on a piece in
+    ``proven`` if given, beside ``source``'s or the snapshot's progress absent or read, no date."""
     still = {row.key for row in snapshot.rows if row.state == "open"}
     posted = {(answer.kind, answer.subject): answer.value for answer in post.answers}
-    readable = snapshot.progress is None or progress_read(snapshot.progress) is not None
+    text = (snapshot if source is None else source).progress
+    readable = text is None or progress_read(text) is not None
 
     def confirmed(key: str) -> bool:
         asked = ("confirm", confirm_subject(key.removeprefix("date:"), "heading"))
@@ -3016,6 +3037,7 @@ def tick_beyond_progress(
             and held is not None
             and asked in posted
             and held.get(asked) == posted[asked]
+            and (proven is None or key in proven)
             and "assigned" not in kept.get(key, {})
         )
 
@@ -3032,18 +3054,52 @@ def words_beside_unlike(
     post: ReviewPost,
     held: Mapping[tuple[str, str], str] | None,
     progress: Corrections | None,
+    newer: DraftSnapshot | None = None,
 ) -> bool:
     """Whether a post that set words aside holds a "No assigned date was given" choice the answers
-    read (``held``) or its snapshot's saved progress don't hold, or has none there to compare with:
-    that progress as the rows' read worked it out (``progress``), else ``progress_in_hand``."""
+    read (``held``) or saved progress don't hold, or has none to compare with: a later read's
+    (``newer``) if made, else its snapshot's as the rows' read worked it out (``progress``)."""
     if not post.dropped:
         return False
-    kept = progress_in_hand(snapshot) if progress is None else progress
+    if newer is None:
+        kept = progress_in_hand(snapshot) if progress is None else progress
+    else:
+        kept = progress_in_hand(newer)
+        if kept is None:
+            proofs = shape_three_for_its_piece(snapshot, newer, post, progress)
+            return tick_unlike_progress(
+                snapshot, post.corrections, ticks_of_shape_three()
+            ) or tick_beyond_progress(snapshot, post, proofs, held, newer, proven=proofs)
     return (
         kept is None
         or tick_unlike_progress(snapshot, post.corrections, kept)
-        or tick_beyond_progress(snapshot, post, kept, held)
+        or tick_beyond_progress(snapshot, post, kept, held, newer)
     )
+
+
+def ticks_of_shape_three() -> Corrections:
+    """The "No assigned date was given" choices valid shape 3 progress holds or gives: none, as
+    ``_kept`` refuses a null there and ``shape_four`` gives ``box_corrections`` no tick to keep."""
+    return {}
+
+
+def shape_three_for_its_piece(
+    snapshot: DraftSnapshot, newer: DraftSnapshot, post: ReviewPost, converted: Corrections | None
+) -> Corrections:
+    """The rows' read's conversion of shape 3 progress (``converted``) for a later read's, piece
+    by piece: each day heading's confirmation posted on a piece read with no assigned date, both
+    reads holding the same progress text and readings, gets its own piece's; none otherwise."""
+    if converted is None or newer.progress != snapshot.progress:
+        return {}
+    if newer.readings != snapshot.readings:
+        return {}
+    posted = {(answer.kind, answer.subject) for answer in post.answers}
+    return {
+        key: converted.get(key, {})
+        for key, _, _ in post.dropped
+        if ("confirm", confirm_subject(key.removeprefix("date:"), "heading")) in posted
+        and post.corrections.get(key, {}).get("assigned", "") is not None
+    }
 
 
 def progress_in_hand(snapshot: DraftSnapshot) -> Corrections | None:
