@@ -122,6 +122,9 @@ class ReviewPost:
     dropped: tuple[tuple[str, str, str], ...] = ()
     """What "No assigned date was given" set aside or was refused beside, with words carried by a
     date box: anything sent in that box and those words, by key, field and the text as sent."""
+    held: Mapping[tuple[str, str], str] | None = None
+    """The answers the review held, by kind and subject, at the press's latest read of it before
+    its write; None where it made none."""
 
     @property
     def refused(self) -> bool:

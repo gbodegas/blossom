@@ -15,6 +15,7 @@ said once on the review, from a short signed note kept in a cookie for that revi
 
 import asyncio
 import base64
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -1380,6 +1381,7 @@ async def rows_of(
     conflicted: Mapping[str, tuple[str, ...]] | None = None,
     revision: int | None = None,
     own: frozenset[str] = frozenset(),
+    answers_read: list[Mapping[tuple[str, str], str] | None] | None = None,
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1388,12 +1390,15 @@ async def rows_of(
     choices as posted (``choices``, ``conflicted``) and signed with its own progress revision
     (``revision``): saving for later in another tab moves that with no change of version, and a
     fresh one would let the next Save for later overwrite that tab's progress unseen. With a
-    transaction left open the reads refuse, so rows are never made from what it holds."""
+    transaction left open the reads refuse, so rows are never made from what it holds. What its read
+    of the review finds the answers to be, None with no review, goes in ``answers_read``."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
     corrections = kept if typed is None else typed
     review = await state_of_review(state, snapshot, corrections)
+    if answers_read is not None:
+        answers_read.append(None if review is None else review.held)
     open_keys = [row.key for row in snapshot.rows if row.state == "open"]
     items_open = any(not row.readable and row.state == "open" for row in snapshot.rows)
     if review is None or (not review.open and not review.asking and not items_open):
@@ -1974,9 +1979,11 @@ async def review_post(
         return None, named
     try:
         if any(name == "offer" for name, _ in items):
-            return read_change(items, found.page_key, review, saved), "keep"
+            post = read_change(items, found.page_key, review, saved)
+            return dataclasses.replace(post, held=review.held), "keep"
         kept = await kept_words(state, kept_assignments(items, found.page_key))
-        return read_review(items, found.page_key, review, kept), named
+        post = read_review(items, found.page_key, review, kept)
+        return dataclasses.replace(post, held=review.held), named
     except ListTooLarge:
         raise
     except (PostRefused, RecursionError):
@@ -2223,7 +2230,8 @@ async def with_typing(
     stands, or if the rows came back empty as one more read has it (``kept_past_empty_rows``,
     ``counted``). Rows that come back empty with the review open draw no form, and give every box
     back to copy; behind, beside words a tick set aside, they say its choices can't be shown only
-    where the saved progress of the review's own read differs (``words_beside_unlike``).
+    where the saved progress of the review's own read, or the answers the press's latest read of
+    the review holds, differ (``words_beside_unlike``).
     The form signs the revision its content was typed against: the post's; for an offer or a found
     row, that of the read that filled its boxes (``found``); after a save that committed, the one
     its own transaction raised the review to (``saved``). Where the review's stored revision is
@@ -2261,6 +2269,7 @@ async def with_typing(
     carry = refused_with_choices or own is not None
     if refused_with_choices and not current:
         lines += [PAGE_SAID["not_carried"]] if done else [OUT_OF_DATE, PAGE_SAID["not_carried"]]
+    answers_read: list[Mapping[tuple[str, str], str] | None] = []
     try:
         rows = await rows_of(
             request,
@@ -2274,6 +2283,7 @@ async def with_typing(
             conflicted=post.conflicted if current else None,
             revision=revision,
             own=own or frozenset(),
+            answers_read=answers_read,
         )
         said_lost = await choices_said_lost(state, draft_id, post, rows, own, current, behind)
     except sqlite3.Error as error:
@@ -2309,7 +2319,8 @@ async def with_typing(
         if ended is not None:
             return ended
         unshown_lines = lines[len(said) + len(notes) :]
-        if post.unresolved or (behind and (with_choices or words_beside_unlike(after, post))):
+        held = answers_read[-1] if answers_read else post.held
+        if post.unresolved or (behind and (with_choices or words_beside_unlike(after, post, held))):
             unshown_lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
         return await no_form_with_typing(
             request, state, draft_id, [*pressed, *unshown_lines], status, notes=notes, behind=behind
@@ -2503,6 +2514,7 @@ async def later_press(
     except sqlite3.Error as error:
         noted(error)
         return await press_refused(request, state, found.draft_id, post, error, "later_failed")
+    post = dataclasses.replace(post, held=None if review is None else review.held)
     ticked = row_keys(review, post.units) if review is not None else frozenset()
     progress = progress_text(post.corrections, ticked)
     try:
@@ -3009,16 +3021,19 @@ def tick_beyond_progress(
     )
 
 
-def words_beside_unlike(snapshot: DraftSnapshot, post: ReviewPost) -> bool:
+def words_beside_unlike(
+    snapshot: DraftSnapshot, post: ReviewPost, held: Mapping[tuple[str, str], str] | None
+) -> bool:
     """Whether a post that set words aside holds a "No assigned date was given" choice the saved
-    progress of its snapshot doesn't (``progress_in_hand``), or has none there to compare with."""
+    progress of its snapshot (``progress_in_hand``) or the answers read (``held``) don't hold, or
+    has none there to compare with."""
     if not post.dropped:
         return False
     kept = progress_in_hand(snapshot)
     return (
         kept is None
         or tick_unlike_progress(snapshot, post.corrections, kept)
-        or tick_beyond_progress(snapshot, post, kept, None)
+        or tick_beyond_progress(snapshot, post, kept, held)
     )
 
 
