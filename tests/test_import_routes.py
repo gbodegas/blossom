@@ -29098,9 +29098,8 @@ def test_a_press_behind_says_words_beside_a_no_date_choice_only_with_a_choice_it
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
 ) -> None:
     """Real presses: a page carrying words beside a date box, another page's Save for later or Save
-    of that row, then a press from the first page with "No assigned date was given" there. The words
-    come back as a copy either way; the choices are said not carried, once, only where one differs
-    on a row left open."""
+    of that row, then a press with "No assigned date was given" there. The words come back as a
+    copy; the choices are said not carried, once, only where one differs on a row left open."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, units, piece, none = two_cards_with_words(browser, monkeypatch)
         if case == "the tick saved progress doesn't hold":
@@ -29218,10 +29217,9 @@ def a_confirmation_beside_words(
 def test_a_press_behind_says_a_no_date_confirmation_beside_words_saved_progress_doesn_t_hold(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
-    """Real presses: a page carrying words beside the date box of a card read with no date, another
-    page's Save for later with nothing ticked, then a press with "No assigned date was given" there.
-    It answers a confirmation and corrects nothing, so no correction to none matches saved
-    progress, which holds the words: the choices are said not carried, once."""
+    """Real presses: words beside the date box of a card read with no date, another page's Save for
+    later with nothing ticked, then a press with "No assigned date was given" there, which answers a
+    confirmation and corrects nothing; saved progress holds the words: said not carried, once."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
         assert other_page_saves_for_later(browser, draft_id).status_code == 303
@@ -29242,6 +29240,91 @@ def test_a_press_behind_says_a_no_date_confirmation_beside_words_saved_progress_
     assert after == before
     assert text.count(NOT_CARRIED) == 1
     assert text.index(NOT_CARRIED) < text.index(imports.OUT_OF_DATE)
+
+
+def confirmation_saved_for_later(browser: TestClient, draft_id: str, piece: str) -> None:
+    """Save for later pressed on a page loaded now, with "No assigned date was given" on this
+    piece, which answers its day heading's confirmation: the answer is kept as read, and saved
+    progress holds no date for the piece."""
+    page = loaded(browser, draft_id)
+    choose, typed = no_date_on(page, piece)
+    later = send(browser, draft_id, page_post(page, "later", choose=choose, typed=typed))
+    assert later.status_code == 200, page_text(later)[:400]
+    heading = json.dumps([piece.removeprefix("date:"), "heading"], separators=(",", ":"))
+    assert stored_answers(browser, draft_id)[("confirm", heading)] == "as_read"
+    assert piece not in (held_corrections(browser, draft_id) or {})
+
+
+CONFIRMATION_BESIDE_WORDS_BEHIND: Final[dict[str, bool]] = {
+    "the confirmation the answers read hold": False,
+    "no confirmation the answers read hold, no date saved": True,
+    "the confirmation the answers read hold, the words saved beside it": True,
+    "the confirmation the answers read hold, beside the other card's tick they don't": True,
+}
+"""A press behind, from a page carrying words beside a card read with no date under an unsure day
+heading, by its "No assigned date was given" there against the answers and saved progress its rows
+read, and whether the page says its choices can't be shown."""
+
+
+@pytest.mark.parametrize("case", list(CONFIRMATION_BESIDE_WORDS_BEHIND))
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_press_behind_says_a_no_date_confirmation_beside_words_only_where_the_answers_differ(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
+) -> None:
+    """Real presses after another page's Save for later with the tick or Save of the other card,
+    and progress placed by a store-call fixture (``saved_progress``) where named. Said not carried,
+    once, unless the answers read hold the tick's confirmation as posted and progress no date."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
+        if case.startswith("no confirmation"):
+            [row] = [unit for unit in units_on(page) if unit not in piece]
+            other = loaded(browser, draft_id)
+            saved = send(browser, draft_id, page_post(other, "save", tick=[row]))
+            assert "Saved: 1 new assignment." in page_text(saved)
+            saved_progress(browser, draft_id, {"v": 4, "corrected": {}, "selected": []})
+            assert not [key for key in stored_answers(browser, draft_id) if key[0] == "confirm"]
+        else:
+            confirmation_saved_for_later(browser, draft_id, piece)
+        if case.endswith("the words saved beside it"):
+            words = {"v": 4, "corrected": {piece: {"assigned": WORDS_BESIDE}}, "selected": []}
+            saved_progress(browser, draft_id, words)
+        assert (piece in (held_corrections(browser, draft_id) or {})) == case.endswith("beside it")
+        before = (
+            revision_held(browser, draft_id),
+            held_corrections(browser, draft_id),
+            stored_answers(browser, draft_id),
+        )
+        choose, typed = no_date_tick(none), dict[str, str]()
+        if case.endswith("they don't"):
+            more, typed = no_date_on(page, the_other_date_piece(page, piece))
+            choose = {**choose, **more}
+        tick = units_on(page)[:1] if press == "save" else []
+        posted = page_post(page, press, tick=tick, choose=choose, typed=typed)
+        record = state_of(browser).project_state
+        reads = {
+            name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
+        }
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        after = (
+            revision_held(browser, draft_id),
+            held_corrections(browser, draft_id),
+            stored_answers(browser, draft_id),
+        )
+
+    text = page_text(answer)
+    found = recovery_of(answer)
+    assert answer.status_code == 409, text[:400]
+    assert not found.form
+    assert found.copies == [WORDS_BESIDE]
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert {name: len(calls) for name, calls in reads.items()} == READS_BEHIND[press]
+    assert after == before
+    assert found.links == ["Back to the review", "Back to Family review"]
+    assert imports.OUT_OF_DATE in text
+    assert text.count(NOT_CARRIED) == int(CONFIRMATION_BESIDE_WORDS_BEHIND[case])
+    if CONFIRMATION_BESIDE_WORDS_BEHIND[case]:
+        assert text.index(NOT_CARRIED) < text.index(imports.OUT_OF_DATE)
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -29271,10 +29354,21 @@ def test_a_press_behind_says_a_conflict_beside_words_and_a_no_date_choice_saved_
 
 NO_DATE_WITH_ROWS_EMPTY_BEHIND: Final[dict[str, bool]] = {
     "a lone tick": False,
-    "the tick saved progress holds, beside carried words": True,
+    "the tick saved progress holds, beside carried words": False,
+    "the tick saved progress doesn't hold, beside carried words": True,
+    "the tick on the row another page saved, beside carried words": False,
+    "a confirmation beside carried words, with no answers read": True,
 }
 """A press behind whose rows come back empty, by its "No assigned date was given", and whether
-the page says its choices can't be shown, as that path has it with no rows to compare with."""
+the page says its choices can't be shown: beside carried words, by the saved progress its review's
+read holds, with no answers read; a lone tick, as that path has it with no rows to compare with."""
+READS_WITH_ROWS_EMPTY: Final[dict[str, dict[str, int]]] = {
+    "save": {"draft_for_save": 1, "student_id": 7},
+    "keep": {"draft_for_save": 1, "student_id": 5},
+    "later": {"draft_for_save": 2, "student_id": 6},
+}
+"""The reads of the record each press behind makes with its rows back empty, as measured before
+the no-date choice beside carried words was compared there."""
 
 
 @pytest.mark.parametrize("case", list(NO_DATE_WITH_ROWS_EMPTY_BEHIND))
@@ -29282,22 +29376,46 @@ the page says its choices can't be shown, as that path has it with no rows to co
 def test_a_press_behind_with_its_rows_back_empty_says_a_no_date_choice_as_that_path_does(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
 ) -> None:
-    """Real presses after another page's Save for later, with the rows forced empty by a hook on
-    ``rows_of`` (``no_rows_once``). A lone tick isn't said; one beside carried words is, once."""
+    """Real presses after another page's Save for later or Save, with the rows forced empty by a
+    hook on ``rows_of`` (``no_rows_once``). A lone tick isn't said; one beside carried words is,
+    once, where saved progress doesn't hold it on a row left open or no answer is read to match."""
     with here(open_settings(tmp_path)) as browser:
         if case == "a lone tick":
             draft_id, page, first, other = two_rows(browser, monkeypatch)
             piece, _ = date_pieces(page, other)
             assert other_page_saves_for_later(browser, draft_id).status_code == 303
             choose, typed = no_date_on(page, piece)
+        elif case.startswith("a confirmation"):
+            draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
+            first = units_on(page)[0]
+            confirmation_saved_for_later(browser, draft_id, piece)
+            choose, typed = no_date_tick(none), {}
         else:
             draft_id, page, units, piece, none = two_cards_with_words(browser, monkeypatch)
             first = units[0]
-            no_date_saved_for_later(browser, draft_id, piece)
+            if case.startswith("the tick saved progress holds"):
+                no_date_saved_for_later(browser, draft_id, piece)
+            elif case.startswith("the tick saved progress doesn't"):
+                assert other_page_saves_for_later(browser, draft_id).status_code == 303
+            else:
+                other = loaded(browser, draft_id)
+                saving, cleared = no_date_on(other, piece)
+                [row] = [unit for unit in units if unit in piece]
+                asked = send(
+                    browser,
+                    draft_id,
+                    page_post(other, "save", tick=[row], choose=saving, typed=cleared),
+                )
+                saved = send(browser, draft_id, page_post(asked.text, "save", tick=[row]))
+                assert "Saved: 1 new assignment." in page_text(saved)
             choose, typed = no_date_tick(none), {}
         tick = [first] if press == "save" else []
         posted = page_post(page, press, tick=tick, choose=choose, typed=typed)
         before = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
+        record = state_of(browser).project_state
+        reads = {
+            name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
+        }
         no_rows_once(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
@@ -29309,6 +29427,9 @@ def test_a_press_behind_with_its_rows_back_empty_says_a_no_date_choice_as_that_p
     assert imports.OUT_OF_DATE in text
     assert after == before
     assert text.count(NOT_CARRIED) == int(NO_DATE_WITH_ROWS_EMPTY_BEHIND[case])
+    if case != "a lone tick":
+        assert recovery_of(answer).copies == [WORDS_BESIDE]
+    assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_ROWS_EMPTY[press]
 
 
 @pytest.mark.parametrize("committed", [True, False], ids=["committed", "not committed"])
