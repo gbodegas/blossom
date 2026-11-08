@@ -3,11 +3,12 @@
 """The homework screenshot save's reads and writes of a review's draft tables, on the record
 store's own connection.
 
-A save of homework from a screenshot review is one transaction: the review's version, answers,
-readings and earlier acceptances are read, the homework is written, and the acceptance and the
-answer deletes land, all inside the caller's ``comparing_and_writing`` block. The draft store
-and the record store share the household file, so reading and writing the draft's tables here,
-on the connection that holds the writer, puts the whole save in that one transaction.
+A save of homework from a screenshot review is one transaction: the review's version, progress
+revision, answers, readings and earlier acceptances are read, the homework is written, and the
+acceptance, the raise of the review's progress revision and the answer deletes land, all inside
+the caller's ``comparing_and_writing`` block. The draft store and the record store share the
+household file, so reading and writing the draft's tables here, on the connection that holds the
+writer, puts the whole save in that one transaction.
 """
 
 import json
@@ -40,6 +41,10 @@ COUNTS_RECORDED: Final = (
 )
 """A homework acceptance's pairs and counts, as hers and this review's: by its id, its kind,
 her student id and the draft id it was recorded for."""
+RAISE_PROGRESS_REVISION: Final = (
+    "UPDATE import_drafts SET progress_revision = progress_revision + 1 WHERE draft_id = ?"
+)
+"""A committed save's one raise of its review's progress revision."""
 
 
 class DraftForSave(NamedTuple):
@@ -48,6 +53,8 @@ class DraftForSave(NamedTuple):
     draft_id: str
     student_id: str
     version: int
+    progress_revision: int
+    """The revision of the review's saved progress, which a page signs and a save compares."""
     expires_at: datetime
     closed_at: datetime | None
     readings: tuple["StoredReading", ...]
@@ -210,6 +217,7 @@ class HomeworkSaveRecords:
             draft_id,
             student_id,
             int(fields["version"]),
+            int(fields["progress_revision"]),
             moment(fields["expires_at"]),
             None if closed is None else moment(closed),
             readings,
@@ -253,6 +261,12 @@ class HomeworkSaveRecords:
                     acceptance.confirmed,
                 ),
             )
+
+    def raise_progress_revision(self, draft_id: str) -> None:
+        """Raise the review's progress revision by one, in the caller's transaction, as Save
+        review for later's commit does."""
+        with self._lock, self._writing():
+            self._connection.execute(RAISE_PROGRESS_REVISION, (draft_id,))
 
     def drop_saved_answers(self, draft_id: str, answers: Collection[tuple[str, str]]) -> int:
         """Delete the saved pieces' answers, in the caller's transaction; how many went."""

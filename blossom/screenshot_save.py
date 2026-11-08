@@ -164,6 +164,9 @@ class SavePress:
     keyed form, which keys the stored answer to the name question."""
     name_key: bytes
     """The key name forms are made under, for "Yes, this is her name" to add the keyed form."""
+    progress_revision: int
+    """The review's progress revision the page's post was typed against; a save compares it with
+    the stored one."""
     role: str = "parent"
 
 
@@ -175,6 +178,8 @@ class Saved:
     acceptance_id: str
     pairs: tuple[tuple[str, str], ...]
     saved_units: tuple[str, ...]
+    progress_revision: int
+    """The review's progress revision this save's own transaction raised it to."""
     changed_units: tuple[str, ...] = ()
     already_units: tuple[str, ...] = ()
     closed: bool = False
@@ -208,7 +213,8 @@ class NotSaved:
     """The homework transaction didn't commit, so nothing of the homework was written."""
 
     reason: str
-    """``absent``, ``closed``, ``expired``, ``stale``, ``gate``, ``open`` (a pressed unit still
+    """``absent``, ``closed``, ``expired``, ``behind`` (the review's progress revision isn't the
+    page's), ``stale``, ``gate``, ``open`` (a pressed unit still
     has a question, a field to confirm or the name question to answer), ``names`` (pressed units
     from screenshots whose names need different answers), ``changed``, ``busy`` or
     ``failed``."""
@@ -621,6 +627,8 @@ class ReviewState:
     entries: Mapping[str, list[ListEntry]]
     preview: tuple[PreviewEntry, ...]
     asked: Mapping[tuple[str, ...], Change | None]
+    held: Mapping[tuple[str, str], str]
+    """The draft's kept answers by kind and subject, each as its tables store it."""
     rework: "Rework" = dataclasses.field(default=lambda _: (Validation((), {}), ()), compare=False)
     """The checks and preview another mapping of these pieces would have, as an offer shows it,
     against the same record and answers."""
@@ -787,6 +795,7 @@ def review_state(
         listed,
         shown,
         asked,
+        {key: value for key, (value, _) in tables.answers.items()},
         rework,
     )
 
@@ -864,8 +873,9 @@ def save_homework(
 def _homework_transaction(
     record: ProjectStateStore, press: SavePress, now: datetime, today: date, hooks: SaveHooks
 ) -> SaveOutcome:
-    """Inside the writer's transaction: a recorded acceptance id first, the draft's checks, the
-    comparison, then the homework, its decisions, the acceptance and the answer deletes."""
+    """Inside the writer's transaction: a recorded acceptance id first, the draft's checks, its
+    revision and version against the page's, the comparison, then the homework, its decisions, the
+    acceptance, one raise of the review's progress revision and the answer deletes."""
     recorded = record.homework_acceptance(press.student_id, press.draft_id, press.acceptance_id)
     if recorded is not None:
         return Replayed(press.acceptance_id, recorded)
@@ -876,6 +886,8 @@ def _homework_transaction(
         return NotSaved("closed")
     if now >= tables.expires_at:
         return NotSaved("expired")
+    if tables.progress_revision != press.progress_revision:
+        return NotSaved("behind")
     if tables.version != press.version:
         return NotSaved("stale")
     if tables.unread:
@@ -999,13 +1011,19 @@ def _homework_transaction(
         ),
         now,
     )
+    # Before the last write, and only inside the transaction: a write with none open would begin
+    # another, which would commit the raise alone.
+    if not record.transaction_open():
+        raise GradeTransactionLost(TRANSACTION_ENDED)
+    record.raise_progress_revision(press.draft_id)
     record.drop_saved_answers(press.draft_id, consumed)
     return Saved(
         press.acceptance_id,
         tuple(pairs),
         tuple(unit_name(u) for u in ready),
-        tuple(changed),
-        tuple(already),
+        progress_revision=tables.progress_revision + 1,
+        changed_units=tuple(changed),
+        already_units=tuple(already),
         counts=(added, updated, unchanged, left),
         stored=stored_corrections(record, state, pairs, press.corrections),
     )

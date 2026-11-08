@@ -864,6 +864,11 @@ class RowsShown:
     """Whether one of them is more than its confirmed save took with its own rows and her name."""
     offered: Mapping[str, frozenset[str]] = dataclasses.field(default_factory=dict)
     """Each answer this page's signed form asks for, with the values its controls offer."""
+    held: Mapping[tuple[str, str], str] = dataclasses.field(kw_only=True)
+    """The review's kept answers as the read these rows come from found them (``ReviewState``)."""
+    progress: Corrections = dataclasses.field(default_factory=dict, kw_only=True)
+    """The corrections the saved progress of the read these rows come from keeps, as a press
+    posts them."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1407,6 +1412,7 @@ def rows_shown(
     choices: Mapping[str, tuple[str, ...]] | None = None,
     conflicted: Mapping[str, tuple[str, ...]] | None = None,
     own: frozenset[str] = frozenset(),
+    progress: Corrections | None = None,
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1725,6 +1731,8 @@ def rows_shown(
             for field, values in asked_fields
             if field.startswith("answer:")
         },
+        held=state.held,
+        progress={} if progress is None else progress,
     )
 
 
