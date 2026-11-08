@@ -76,6 +76,7 @@ from blossom.screenshot_save import (
     Saved,
     SaveOutcome,
     SavePress,
+    confirm_subject,
     review_state,
     save_homework,
     student_line,
@@ -2221,14 +2222,16 @@ async def with_typing(
     drawn, and beneath the save's result, outside the problem alert, where they aren't: as it
     stands, or if the rows came back empty as one more read has it (``kept_past_empty_rows``,
     ``counted``). Rows that come back empty with the review open draw no form, and give every box
-    back to copy.
+    back to copy; behind, beside words a tick set aside, they say its choices can't be shown only
+    where the saved progress of the review's own read differs (``words_beside_unlike``).
     The form signs the revision its content was typed against: the post's; for an offer or a found
     row, that of the read that filled its boxes (``found``); after a save that committed, the one
     its own transaction raised the review to (``saved``). Where the review's stored revision is
     another, the page draws no form, says its choices can't be shown where it posted any (words a
     tick set aside aren't one), or where its post's "No assigned date was given" on a row left open
     isn't what the saved progress its rows were drawn from holds (``tick_unlike_progress``) or has
-    no correction to compare with it (``tick_beyond_progress``), and says it's out of date
+    no correction to compare with it, and answers no confirmation the answers they read hold
+    (``tick_beyond_progress``), and says it's out of date
     (``no_form_with_typing``), a Save with nothing saved as ``out_of_date_save`` says it."""
     after = read or await snapshot_keeping_typing(
         request,
@@ -2254,7 +2257,7 @@ async def with_typing(
     ticked = post.units if post.ticked else None
     current = post.version == after.version
     refused_with_choices = bool(post.conflicted or post.unresolved)
-    with_choices = refused_with_choices or bool(post.both or post.dropped)
+    with_choices = refused_with_choices or bool(post.both)
     carry = refused_with_choices or own is not None
     if refused_with_choices and not current:
         lines += [PAGE_SAID["not_carried"]] if done else [OUT_OF_DATE, PAGE_SAID["not_carried"]]
@@ -2306,7 +2309,7 @@ async def with_typing(
         if ended is not None:
             return ended
         unshown_lines = lines[len(said) + len(notes) :]
-        if post.unresolved or (behind and with_choices):
+        if post.unresolved or (behind and (with_choices or words_beside_unlike(after, post))):
             unshown_lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
         return await no_form_with_typing(
             request, state, draft_id, [*pressed, *unshown_lines], status, notes=notes, behind=behind
@@ -2324,7 +2327,7 @@ async def with_typing(
             lines.append(PAGE_SAID["not_carried"])
     if post.unresolved and PAGE_SAID["not_carried"] not in lines:
         lines.append(PAGE_SAID["not_carried"])
-    uncarried = refused_with_choices or bool(post.both) or PAGE_SAID["not_carried"] in lines
+    uncarried = with_choices or PAGE_SAID["not_carried"] in lines
     if rows is not None:
         lines[:0] = beside_rows
     shown = fields_shown(rows)
@@ -2332,7 +2335,7 @@ async def with_typing(
         lines.insert(len(said) + len(notes), PRESS_SAID["unsaved_typing"])
     if behind and rows is not None:
         unlike = tick_unlike_progress(after, post.corrections, rows.progress)
-        unlike = unlike or tick_beyond_progress(after, post)
+        unlike = unlike or tick_beyond_progress(after, post, rows.progress, rows.held)
         carried = [PAGE_SAID["not_carried"]] if uncarried or unlike else []
         told = [*done, PRESS_SAID["left_open"]] if done and answered else done
         return await no_form_with_typing(
@@ -2977,15 +2980,55 @@ def tick_unlike_progress(snapshot: DraftSnapshot, typed: Corrections, kept: Corr
     )
 
 
-def tick_beyond_progress(snapshot: DraftSnapshot, post: ReviewPost) -> bool:
+def tick_beyond_progress(
+    snapshot: DraftSnapshot,
+    post: ReviewPost,
+    kept: Corrections,
+    held: Mapping[tuple[str, str], str] | None,
+) -> bool:
     """Whether "No assigned date was given" set words aside on a row still open with no correction
-    to none for saved progress to match, as where it answers a day heading that read no date."""
+    to none, unless it answers a day heading's confirmation the answers read (``held``, None where
+    none were) hold as posted, with no date in saved progress (``kept``) beside it."""
     still = {row.key for row in snapshot.rows if row.state == "open"}
+    posted = {(answer.kind, answer.subject): answer.value for answer in post.answers}
+
+    def confirmed(key: str) -> bool:
+        asked = ("confirm", confirm_subject(key.removeprefix("date:"), "heading"))
+        return (
+            held is not None
+            and asked in posted
+            and held.get(asked) == posted[asked]
+            and "assigned" not in kept.get(key, {})
+        )
+
     return any(
         key.removeprefix("date:").split("|")[0] in still
         and post.corrections.get(key, {}).get("assigned", "") is not None
+        and not confirmed(key)
         for key, _, _ in post.dropped
     )
+
+
+def words_beside_unlike(snapshot: DraftSnapshot, post: ReviewPost) -> bool:
+    """Whether a post that set words aside holds a "No assigned date was given" choice the saved
+    progress of its snapshot doesn't (``progress_in_hand``), or has none there to compare with."""
+    if not post.dropped:
+        return False
+    kept = progress_in_hand(snapshot)
+    return (
+        kept is None
+        or tick_unlike_progress(snapshot, post.corrections, kept)
+        or tick_beyond_progress(snapshot, post, kept, None)
+    )
+
+
+def progress_in_hand(snapshot: DraftSnapshot) -> Corrections | None:
+    """The corrections saved progress keeps, as ``saved_corrections`` gives them, from the
+    snapshot's own text with no read: None for progress of shape 3 with corrections."""
+    read = progress_read(snapshot.progress)
+    if read is None:
+        return {}
+    return read.corrected if read.shape == PROGRESS_SHAPE or not read.corrected else None
 
 
 def unsaved_typing(
