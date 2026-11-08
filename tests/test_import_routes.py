@@ -29276,7 +29276,7 @@ read, and whether the page says its choices can't be shown."""
 
 @pytest.mark.parametrize("case", list(CONFIRMATION_BESIDE_WORDS_BEHIND))
 @pytest.mark.parametrize("press", THE_PRESSES)
-def test_a_press_behind_says_a_no_date_confirmation_beside_words_only_where_the_answers_differ(
+def test_a_press_behind_compares_a_no_date_confirmation_beside_words_with_answers_and_progress(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
 ) -> None:
     """Real presses after another page's Save for later with the tick or Save of the other card,
@@ -29904,7 +29904,7 @@ def test_a_press_behind_whose_rows_read_finds_no_review_takes_no_earlier_answers
 ) -> None:
     """Real presses after another page's Save for later with the tick, which the press's first read
     holds as posted; the rows' own read then answers that there's no review (forced). The page
-    says once that its choices can't be shown, as no answers were read there."""
+    says once that its choices can't be shown, as that read found no review and so no answers."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
         confirmation_saved_for_later(browser, draft_id, piece)

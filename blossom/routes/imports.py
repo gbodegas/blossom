@@ -2230,16 +2230,17 @@ async def with_typing(
     drawn, and beneath the save's result, outside the problem alert, where they aren't: as it
     stands, or if the rows came back empty as one more read has it (``kept_past_empty_rows``,
     ``counted``). Rows that come back empty with the review open draw no form, and give every box
-    back to copy; behind, beside words a tick set aside, they say its choices can't be shown only
-    where the saved progress of the review's own read, or the answers the press's latest read of
-    the review holds, differ (``words_beside_unlike``).
+    back to copy; behind, beside words a tick set aside, they say its choices can't be shown where
+    the saved progress of the review's own read, or the answers the press's latest read of the
+    review holds, differ from them or can't be compared with them (``words_beside_unlike``).
     The form signs the revision its content was typed against: the post's; for an offer or a found
     row, that of the read that filled its boxes (``found``); after a save that committed, the one
     its own transaction raised the review to (``saved``). Where the review's stored revision is
     another, the page draws no form, says its choices can't be shown where it posted any (words a
     tick set aside aren't one), or where its post's "No assigned date was given" on a row left open
     isn't what the saved progress its rows were drawn from holds (``tick_unlike_progress``) or has
-    no correction to compare with it, and answers no confirmation the answers they read hold
+    no correction to compare with it, and answers no confirmation the answers they read hold as
+    posted, beside saved progress absent or readable with no assigned date for it
     (``tick_beyond_progress``), and says it's out of date
     (``no_form_with_typing``), a Save with nothing saved as ``out_of_date_save`` says it."""
     after = read or await snapshot_keeping_typing(
