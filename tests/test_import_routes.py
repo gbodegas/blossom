@@ -29255,6 +29255,14 @@ def confirmation_saved_for_later(browser: TestClient, draft_id: str, piece: str)
     assert piece not in (held_corrections(browser, draft_id) or {})
 
 
+def no_confirmation_and_no_date_saved(browser: TestClient, draft_id: str) -> None:
+    """Another page's Save for later with nothing ticked, then saved progress emptied by a
+    store-call fixture (``saved_progress``): no confirmation is stored and no date saved for it."""
+    assert other_page_saves_for_later(browser, draft_id).status_code == 303
+    saved_progress(browser, draft_id, {"v": 4, "corrected": {}, "selected": []})
+    assert not [key for key in stored_answers(browser, draft_id) if key[0] == "confirm"]
+
+
 CONFIRMATION_BESIDE_WORDS_BEHIND: Final[dict[str, bool]] = {
     "the confirmation the answers read hold": False,
     "no confirmation the answers read hold, no date saved": True,
@@ -29357,11 +29365,12 @@ NO_DATE_WITH_ROWS_EMPTY_BEHIND: Final[dict[str, bool]] = {
     "the tick saved progress holds, beside carried words": False,
     "the tick saved progress doesn't hold, beside carried words": True,
     "the tick on the row another page saved, beside carried words": False,
-    "a confirmation beside carried words, with no answers read": True,
+    "a confirmation the answers it read hold, beside carried words": False,
+    "a confirmation the answers it read don't hold, no date saved, beside carried words": True,
 }
 """A press behind whose rows come back empty, by its "No assigned date was given", and whether
 the page says its choices can't be shown: beside carried words, by the saved progress its review's
-read holds, with no answers read; a lone tick, as that path has it with no rows to compare with."""
+read holds and the answers the press read; a lone tick, as that path has it with no rows."""
 READS_WITH_ROWS_EMPTY: Final[dict[str, dict[str, int]]] = {
     "save": {"draft_for_save": 1, "student_id": 7},
     "keep": {"draft_for_save": 1, "student_id": 5},
@@ -29376,9 +29385,9 @@ the no-date choice beside carried words was compared there."""
 def test_a_press_behind_with_its_rows_back_empty_says_a_no_date_choice_as_that_path_does(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
 ) -> None:
-    """Real presses after another page's Save for later or Save, with the rows forced empty by a
-    hook on ``rows_of`` (``no_rows_once``). A lone tick isn't said; one beside carried words is,
-    once, where saved progress doesn't hold it on a row left open or no answer is read to match."""
+    """Real presses after another page's Save for later or Save, progress emptied by a store-call
+    fixture where named, the rows forced empty (``no_rows_once``). A lone tick isn't said; one
+    beside carried words is, once, where progress or the answers the press read don't hold it."""
     with here(open_settings(tmp_path)) as browser:
         if case == "a lone tick":
             draft_id, page, first, other = two_rows(browser, monkeypatch)
@@ -29388,7 +29397,10 @@ def test_a_press_behind_with_its_rows_back_empty_says_a_no_date_choice_as_that_p
         elif case.startswith("a confirmation"):
             draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
             first = units_on(page)[0]
-            confirmation_saved_for_later(browser, draft_id, piece)
+            if "don't hold" in case:
+                no_confirmation_and_no_date_saved(browser, draft_id)
+            else:
+                confirmation_saved_for_later(browser, draft_id, piece)
             choose, typed = no_date_tick(none), {}
         else:
             draft_id, page, units, piece, none = two_cards_with_words(browser, monkeypatch)
@@ -29430,6 +29442,206 @@ def test_a_press_behind_with_its_rows_back_empty_says_a_no_date_choice_as_that_p
     if case != "a lone tick":
         assert recovery_of(answer).copies == [WORDS_BESIDE]
     assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_ROWS_EMPTY[press]
+
+
+def take_back_confirmation(
+    drafts: ImportDraftsStore, student: str, draft_id: str, piece: str
+) -> None:
+    """A store call taking back this piece's day-heading confirmation at the review's version, as
+    another tab's Keep with that box left unticked does."""
+    heading = json.dumps([piece.removeprefix("date:"), "heading"], separators=(",", ":"))
+    version = drafts.snapshot(student, draft_id).version
+    kept = drafts.keep_answers(
+        student, draft_id, version=version, answers=[], withdrawn=[("confirm", heading)]
+    )
+    assert kept.version > version
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_press_behind_with_its_rows_back_empty_compares_a_confirmation_with_its_last_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Real presses after another page's Save for later with the tick; the confirmation taken back
+    by a store call just before the press's last read of the review (timing forced), the rows forced
+    empty (``no_rows_once``). Save for later reads twice, Save and Keep once: said, once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
+        confirmation_saved_for_later(browser, draft_id, piece)
+        drafts = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        last = 2 if press == "later" else 1
+        real: Callable[..., Awaitable[object]] = imports.state_of_review
+        read_of_review: list[bool] = []
+
+        async def taken_back_before_the_last(*args: object, **kwargs: object) -> object:
+            read_of_review.append(True)
+            if len(read_of_review) == last:
+                take_back_confirmation(drafts, student, draft_id, piece)
+            return await real(*args, **kwargs)
+
+        tick = units_on(page)[:1] if press == "save" else []
+        posted = page_post(page, press, tick=tick, choose=no_date_tick(none))
+        record = state_of(browser).project_state
+        reads = {
+            name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
+        }
+        monkeypatch.setattr(imports, "state_of_review", taken_back_before_the_last)
+        no_rows_once(monkeypatch)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        confirms = [key for key in stored_answers(browser, draft_id) if key[0] == "confirm"]
+
+    text = page_text(answer)
+    assert len(read_of_review) == last
+    assert confirms == []
+    assert answer.status_code == 409, text[:400]
+    assert not recovery_of(answer).form
+    assert recovery_of(answer).copies == [WORDS_BESIDE]
+    assert imports.OUT_OF_DATE in text
+    assert text.count(NOT_CARRIED) == 1
+    assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_ROWS_EMPTY[press]
+
+
+def before_the_rows_read(monkeypatch: pytest.MonkeyPatch, then: Callable[[], None]) -> list[object]:
+    """Timing forced: ``then`` runs once inside ``rows_of``, just before its read of the review;
+    what each call of ``rows_of`` returns is kept in the list given back."""
+    real_rows: Callable[..., Awaitable[object]] = imports.rows_of
+    real_state: Callable[..., Awaitable[object]] = imports.state_of_review
+    inside: list[bool] = []
+    ran: list[bool] = []
+    returned: list[object] = []
+
+    async def rows(*args: object, **kwargs: object) -> object:
+        inside.append(True)
+        try:
+            found = await real_rows(*args, **kwargs)
+        finally:
+            inside.pop()
+        returned.append(found)
+        return found
+
+    async def state(*args: object, **kwargs: object) -> object:
+        if inside and not ran:
+            ran.append(True)
+            then()
+        return await real_state(*args, **kwargs)
+
+    monkeypatch.setattr(imports, "rows_of", rows)
+    monkeypatch.setattr(imports, "state_of_review", state)
+    return returned
+
+
+CONFIRMATION_WITH_ROWS_SET_ASIDE_BEHIND: Final[dict[str, bool]] = {
+    "the confirmation the answers read hold": False,
+    "no confirmation the answers read hold, no date saved": True,
+    "the confirmation taken back just before the rows' read": True,
+}
+"""A press behind whose rows' own read finds the review open with nothing left to show, by the
+confirmation its "No assigned date was given" answers, and whether the page says its choices can't
+be shown."""
+READS_WITH_ROWS_SET_ASIDE: Final[dict[str, dict[str, int]]] = {
+    "save": {"draft_for_save": 2, "student_id": 8},
+    "keep": {"draft_for_save": 2, "student_id": 6},
+    "later": {"draft_for_save": 3, "student_id": 7},
+}
+"""The reads of the record each press behind makes when its rows' read finds nothing left open, as
+measured before the answers that read holds were compared there."""
+
+
+@pytest.mark.parametrize("case", list(CONFIRMATION_WITH_ROWS_SET_ASIDE_BEHIND))
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_press_behind_whose_rows_were_set_aside_compares_a_confirmation_with_their_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
+) -> None:
+    """Real presses; an unread image added, then every open row set aside just before the rows' read
+    (timing forced), by store calls, so ``rows_of`` reads the review open and returns None. Said
+    once, unless the answers that read holds are the tick's confirmation as posted."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
+        if case.startswith("no confirmation"):
+            no_confirmation_and_no_date_saved(browser, draft_id)
+        else:
+            confirmation_saved_for_later(browser, draft_id, piece)
+        drafts = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        drafts.add_images(student, draft_id, [as_new_image(prepare_image(BLUE))])
+
+        def set_aside() -> None:
+            if case.startswith("the confirmation taken back"):
+                take_back_confirmation(drafts, student, draft_id, piece)
+            now = drafts.snapshot(student, draft_id)
+            keys = [row.key for row in now.rows if row.state == "open"]
+            assert not drafts.set_aside(student, draft_id, version=now.version, keys=keys).closed
+
+        tick = units_on(page)[:1] if press == "save" else []
+        posted = page_post(page, press, tick=tick, choose=no_date_tick(none))
+        record = state_of(browser).project_state
+        reads = {
+            name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
+        }
+        returned = before_the_rows_read(monkeypatch, set_aside)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+        left = drafts.snapshot(student, draft_id)
+
+    text = page_text(answer)
+    found = recovery_of(answer)
+    assert returned == [None]
+    assert left.closed_at is None
+    assert not [row for row in left.rows if row.state == "open"]
+    assert answer.status_code == 409, text[:400]
+    assert not found.form
+    assert found.copies == [WORDS_BESIDE]
+    assert imports.OUT_OF_DATE in text
+    assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_ROWS_SET_ASIDE[press]
+    assert text.count(NOT_CARRIED) == int(CONFIRMATION_WITH_ROWS_SET_ASIDE_BEHIND[case])
+
+
+READS_WITH_NO_LIST_LEFT: Final[dict[str, dict[str, int]]] = {
+    "save": {"draft_for_save": 1, "student_id": 7},
+    "keep": {"draft_for_save": 1, "student_id": 5},
+    "later": {"draft_for_save": 2, "student_id": 6},
+}
+"""The reads of the record each press behind makes once every image is gone, as measured before
+the answers already read were compared on rows back empty."""
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_press_behind_with_every_image_removed_says_nothing_of_a_confirmation(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Real presses after another page's Save for later with the tick, every image then removed by
+    store calls (``remove_image``): with no homework list left, ``rows_of`` reads nothing and
+    returns None, and the page draws no form and says nothing of a choice it can't show."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
+        confirmation_saved_for_later(browser, draft_id, piece)
+        drafts = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        for image in drafts.snapshot(student, draft_id).images:
+            drafts.remove_image(student, draft_id, image.image_id)
+        left = drafts.snapshot(student, draft_id)
+        tick = units_on(page)[:1] if press == "save" else []
+        posted = page_post(page, press, tick=tick, choose=no_date_tick(none))
+        record = state_of(browser).project_state
+        reads = {
+            name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
+        }
+        returned = before_the_rows_read(monkeypatch, lambda: None)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    text = page_text(answer)
+    found = recovery_of(answer)
+    assert left.closed_at is None
+    assert not left.readings
+    assert returned == [None]
+    assert answer.status_code == 409, text[:400]
+    assert not found.form
+    assert found.copies == [WORDS_BESIDE]
+    assert imports.OUT_OF_DATE in text
+    assert NOT_CARRIED not in text
+    assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_NO_LIST_LEFT[press]
 
 
 @pytest.mark.parametrize("committed", [True, False], ids=["committed", "not committed"])
