@@ -1381,7 +1381,7 @@ async def rows_of(
     conflicted: Mapping[str, tuple[str, ...]] | None = None,
     revision: int | None = None,
     own: frozenset[str] = frozenset(),
-    answers_read: list[Mapping[tuple[str, str], str] | None] | None = None,
+    answers_read: list[tuple[Mapping[tuple[str, str], str], Corrections] | None] | None = None,
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1391,14 +1391,15 @@ async def rows_of(
     (``revision``): saving for later in another tab moves that with no change of version, and a
     fresh one would let the next Save for later overwrite that tab's progress unseen. With a
     transaction left open the reads refuse, so rows are never made from what it holds. What its read
-    of the review finds the answers to be, None with no review, goes in ``answers_read``."""
+    of the review finds the answers to be, with the corrections saved progress keeps as worked out
+    here, goes in ``answers_read``, None with no review."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
     corrections = kept if typed is None else typed
     review = await state_of_review(state, snapshot, corrections)
     if answers_read is not None:
-        answers_read.append(None if review is None else review.held)
+        answers_read.append(None if review is None else (review.held, kept))
     open_keys = [row.key for row in snapshot.rows if row.state == "open"]
     items_open = any(not row.readable and row.state == "open" for row in snapshot.rows)
     if review is None or (not review.open and not review.asking and not items_open):
@@ -2269,7 +2270,7 @@ async def with_typing(
     carry = refused_with_choices or own is not None
     if refused_with_choices and not current:
         lines += [PAGE_SAID["not_carried"]] if done else [OUT_OF_DATE, PAGE_SAID["not_carried"]]
-    answers_read: list[Mapping[tuple[str, str], str] | None] = []
+    answers_read: list[tuple[Mapping[tuple[str, str], str], Corrections] | None] = []
     try:
         rows = await rows_of(
             request,
@@ -2319,8 +2320,10 @@ async def with_typing(
         if ended is not None:
             return ended
         unshown_lines = lines[len(said) + len(notes) :]
-        held = answers_read[-1] if answers_read else post.held
-        if post.unresolved or (behind and (with_choices or words_beside_unlike(after, post, held))):
+        held, progress = (answers_read[-1] or (None, None)) if answers_read else (post.held, None)
+        if post.unresolved or (
+            behind and (with_choices or words_beside_unlike(after, post, held, progress))
+        ):
             unshown_lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
         return await no_form_with_typing(
             request, state, draft_id, [*pressed, *unshown_lines], status, notes=notes, behind=behind
@@ -2999,8 +3002,8 @@ def tick_beyond_progress(
     held: Mapping[tuple[str, str], str] | None,
 ) -> bool:
     """Whether "No assigned date was given" set words aside on a row still open with no correction
-    to none, unless it answers a day heading's confirmation the answers read (``held``, None where
-    none were) hold as posted, beside saved progress absent or readable with no date for it."""
+    to none, unless it answers a day heading's confirmation the answers read (``held``, None if none
+    were) hold as posted, beside saved progress absent or readable with no assigned date for it."""
     still = {row.key for row in snapshot.rows if row.state == "open"}
     posted = {(answer.kind, answer.subject): answer.value for answer in post.answers}
     readable = snapshot.progress is None or progress_read(snapshot.progress) is not None
@@ -3024,14 +3027,17 @@ def tick_beyond_progress(
 
 
 def words_beside_unlike(
-    snapshot: DraftSnapshot, post: ReviewPost, held: Mapping[tuple[str, str], str] | None
+    snapshot: DraftSnapshot,
+    post: ReviewPost,
+    held: Mapping[tuple[str, str], str] | None,
+    progress: Corrections | None,
 ) -> bool:
-    """Whether a post that set words aside holds a "No assigned date was given" choice the saved
-    progress of its snapshot (``progress_in_hand``) or the answers read (``held``) don't hold, or
-    has none there to compare with."""
+    """Whether a post that set words aside holds a "No assigned date was given" choice the answers
+    read (``held``) or its snapshot's saved progress don't hold, or has none there to compare with:
+    that progress as the rows' read worked it out (``progress``), else ``progress_in_hand``."""
     if not post.dropped:
         return False
-    kept = progress_in_hand(snapshot)
+    kept = progress_in_hand(snapshot) if progress is None else progress
     return (
         kept is None
         or tick_unlike_progress(snapshot, post.corrections, kept)
