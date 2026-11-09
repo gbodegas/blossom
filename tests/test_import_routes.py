@@ -33200,12 +33200,12 @@ def test_a_set_aside_row_s_409_form_resent_unchanged_signs_the_stored_version(
 
 
 @pytest.mark.parametrize("ending", ["no name check", "not saved, busy"])
-def test_a_save_s_page_after_its_own_keeping_draws_the_kept_name_and_says_nothing_of_it(
+def test_a_save_s_page_after_its_own_keeping_draws_the_kept_name_unless_names_can_t_be_checked(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ending: str
 ) -> None:
-    """A store call answering no name check, or the homework save answering busy, after a Save that
-    kept the name answered "misread": the form signs the stored version, draws no other name, and
-    says nothing of choices."""
+    """A Save keeps the name answered "misread", then a store call answers no name check to both of
+    the press's name checks, or the homework save answers busy: the form signs the stored version
+    and draws that name checked, or with no name check no name question and the warning."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, _, _, _ = two_groups(browser, monkeypatch)
         choose = name_misread(page)
@@ -33226,8 +33226,13 @@ def test_a_save_s_page_after_its_own_keeping_draws_the_kept_name_and_says_nothin
     assert answer.status_code == (500 if ending == "no name check" else 503)
     assert [value for (kind, _), value in stored.items() if kind == "name"] == ["misread"]
     assert dict(page_post(answer.text, "save"))["version"] == str(version)
-    names = [v for n, v in checked_values(review_form(answer.text)) if n.startswith("answer:name:")]
-    assert set(names) <= {"misread"}
+    form = review_form(answer.text)
+    if ending == "no name check":
+        assert 'name="answer:name:' not in form
+        assert says(answer.text, imports.SAID["no_name_check"])
+    else:
+        names = [v for n, v in checked_values(form) if n.startswith("answer:name:")]
+        assert names == ["misread"]
     assert screenshot_page.SAID["not_carried"] not in page_text(answer)
 
 
