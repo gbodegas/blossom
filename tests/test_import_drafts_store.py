@@ -1989,7 +1989,7 @@ def test_a_keep_names_the_answer_it_dropped_and_not_the_one_it_kept(world: World
 
     assert (kept.version, kept.stored, kept.dropped) == (version + 1, 1, 1)
     assert set(kept_answers(world, draft_id)) == {SECOND_ROW}
-    assert kept.dropped_keys == frozenset({FIRST_ROW})  # type: ignore[attr-defined]
+    assert kept.dropped_keys == frozenset({FIRST_ROW})
 
 
 def test_a_keep_names_the_answer_it_dropped_when_the_other_is_kept(world: World) -> None:
@@ -1998,7 +1998,7 @@ def test_a_keep_names_the_answer_it_dropped_when_the_other_is_kept(world: World)
 
     assert (kept.version, kept.stored, kept.dropped) == (version + 1, 1, 1)
     assert set(kept_answers(world, draft_id)) == {FIRST_ROW}
-    assert kept.dropped_keys == frozenset({SECOND_ROW})  # type: ignore[attr-defined]
+    assert kept.dropped_keys == frozenset({SECOND_ROW})
 
 
 def test_a_keep_that_drops_nothing_returns_an_empty_known_set(world: World) -> None:
@@ -2007,7 +2007,7 @@ def test_a_keep_that_drops_nothing_returns_an_empty_known_set(world: World) -> N
 
     assert (kept.version, kept.stored, kept.dropped) == (version + 1, 2, 0)
     assert set(kept_answers(world, draft_id)) == {FIRST_ROW, SECOND_ROW}
-    assert kept.dropped_keys == frozenset()  # type: ignore[attr-defined]
+    assert kept.dropped_keys == frozenset()
 
 
 def test_save_for_later_carries_the_keys_its_keep_dropped(world: World) -> None:
@@ -2029,7 +2029,7 @@ def test_save_for_later_carries_the_keys_its_keep_dropped(world: World) -> None:
 
     assert (done.answers.stored, done.answers.dropped) == (1, 1)
     assert set(kept_answers(world, draft_id)) == {SECOND_ROW}
-    assert done.answers.dropped_keys == frozenset({FIRST_ROW})  # type: ignore[attr-defined]
+    assert done.answers.dropped_keys == frozenset({FIRST_ROW})
 
 
 def test_a_result_built_without_dropped_keys_is_unknown() -> None:
@@ -2037,8 +2037,8 @@ def test_a_result_built_without_dropped_keys_is_unknown() -> None:
     and Save for later's result carries it as built."""
     built = AnswersKept(1, 0, 0)
 
-    assert built.dropped_keys is None  # type: ignore[attr-defined]
-    assert SavedForLater(built, True, 2).answers.dropped_keys is None  # type: ignore[attr-defined]
+    assert built.dropped_keys is None
+    assert SavedForLater(built, True, 2).answers.dropped_keys is None
 
 
 def test_a_failed_keep_returns_no_result_and_keeps_nothing(world: World) -> None:

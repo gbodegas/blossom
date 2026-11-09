@@ -309,12 +309,14 @@ class AnswerToKeep(NamedTuple):
 
 class AnswersKept(NamedTuple):
     """What keeping a press's answers did: the version after, how many answers it stored, how
-    many it dropped as already saved, and how many it withdrew."""
+    many it dropped as already saved, how many it withdrew, and the kind and subject of each
+    one it dropped (None where those aren't known)."""
 
     version: int
     stored: int
     dropped: int
     withdrawn: int = 0
+    dropped_keys: frozenset[tuple[str, str]] | None = None
 
 
 class SavedForLater(NamedTuple):
@@ -1041,9 +1043,11 @@ class ImportDraftsStore:
         }
         changed: dict[tuple[str, str], tuple[str, str]] = {}
         dropped = 0
+        dropped_keys: set[tuple[str, str]] = set()
         for answer in answers:
             if answer.names and all(name in saved for name in answer.names):
                 dropped += 1
+                dropped_keys.add((answer.kind, answer.subject))
                 continue
             if kept.get((answer.kind, answer.subject)) != (answer.value, answer.digest):
                 changed[(answer.kind, answer.subject)] = (answer.value, answer.digest)
@@ -1056,7 +1060,9 @@ class ImportDraftsStore:
         )
         if changed or gone:
             self._connection.execute(RAISE_VERSION, (draft_id,))
-        return AnswersKept(self._version(draft_id), len(changed), dropped, len(gone))
+        return AnswersKept(
+            self._version(draft_id), len(changed), dropped, len(gone), frozenset(dropped_keys)
+        )
 
     def discard_rest(
         self,

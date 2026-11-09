@@ -97,6 +97,7 @@ from blossom.stores.import_drafts import (
     MOST_IMAGES_PRESENT,
     TOKEN_SHAPE,
     Added,
+    AnswersKept,
     AttemptUnderWay,
     Closing,
     DraftClosed,
@@ -2277,6 +2278,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         answered=answered,
         beside_rows=[] if answered else [PRESS_SAID["kept"]],
         found=found,
+        own_write=kept,
     )
 
 
@@ -2354,6 +2356,7 @@ async def with_typing(
     notes: Sequence[str] = (),
     counted: bool = True,
     found: DraftSnapshot | None = None,
+    own_write: AnswersKept | None = None,
 ) -> Response:
     """A press that saved nothing, or a save that left the review open, answers with the review as
     it stands now, the corrections it typed and the groups it ticked in the form, and an answer just
@@ -2407,7 +2410,9 @@ async def with_typing(
     ``counted``). Rows that come back empty with the review open draw no form, and give every box
     back to copy; behind, beside words a tick set aside, they say its choices can't be shown where
     the saved progress of the review's own read, or the answers the press's latest read of the
-    review holds, differ from them or can't be compared with them (``words_beside_unlike``).
+    review holds, differ from them or can't be compared with them (``words_beside_unlike``). With
+    no read after its write, those answers are this press's own write's result (``own_write``,
+    given only after it returned) as ``written_answers`` gives them, else its read before the press.
     The form signs the revision its content was typed against: the post's; for an offer or a found
     row, that of the read that filled its boxes (``found``); after a save that committed, the one
     its own transaction raised the review to (``saved``). Where the review's stored revision is
@@ -2513,7 +2518,12 @@ async def with_typing(
         if ended is not None:
             return ended
         unshown_lines = lines[len(said) + len(notes) :]
-        held, progress = (answers_read[-1] or (None, None)) if answers_read else (post.held, None)
+        if answers_read:
+            held, progress = answers_read[-1] or (None, None)
+        elif own_write is not None:
+            held, progress = written_answers(post, own_write), None
+        else:
+            held, progress = post.held, None
         newer = read_again[-1] if read_again else None
         if post.unresolved or (
             behind and (with_choices or words_beside_unlike(after, post, held, progress, newer))
@@ -2811,7 +2821,9 @@ async def later_press(
         return to_review(state, found.draft_id, [PRESS_SAID["later"], saved_for_later_at(state)])
     answered = done.answers.stored > 0
     said = [*([PRESS_SAID["answers_kept"]] if answered else []), PRESS_SAID["later_behind"]]
-    return await with_typing(request, state, found.draft_id, post, said, 409, answered=answered)
+    return await with_typing(
+        request, state, found.draft_id, post, said, 409, answered=answered, own_write=done.answers
+    )
 
 
 def kept_for_later(
@@ -2955,7 +2967,9 @@ async def save_press(
     kept_said = [PRESS_SAID["answers_kept"]] if answered else []
     if not post.units:
         said = [*kept_said, PRESS_SAID["none_chosen"]]
-        return await with_typing(request, state, draft_id, post, said, 200, answered=answered)
+        return await with_typing(
+            request, state, draft_id, post, said, 200, answered=answered, own_write=kept
+        )
     try:
         named = await image_names(request, state, found)
     except TransactionLeftOpen as error:
@@ -2965,7 +2979,9 @@ async def save_press(
         noted(error)
         # The answers are kept and this press's homework transaction never began.
         if busy_file(error):
-            return await outcome_page(request, state, draft_id, NotSaved("busy"), answered, post)
+            return await outcome_page(
+                request, state, draft_id, NotSaved("busy"), answered, post, own_write=kept
+            )
         said = [*kept_said, NO_HOMEWORK]
         answer = await replayed(request, state, draft_id, kept_said)
         return answer or await unshown_with_typing(
@@ -2973,7 +2989,7 @@ async def save_press(
         )
     if named is None:
         said = [*kept_said, SAID["no_name_check"]]
-        return await with_typing(request, state, draft_id, post, said, 500)
+        return await with_typing(request, state, draft_id, post, said, 500, own_write=kept)
     press = SavePress(
         student,
         draft_id,
@@ -3003,7 +3019,7 @@ async def save_press(
     if isinstance(outcome, NotSaved) and await left_open(state):
         noted(TransactionLeftOpen())
         return await unknown_outcome(request, state, kept_said)
-    return await outcome_page(request, state, draft_id, outcome, answered, post)
+    return await outcome_page(request, state, draft_id, outcome, answered, post, own_write=kept)
 
 
 async def left_open(state: ApplicationState) -> bool:
@@ -3023,6 +3039,8 @@ async def outcome_page(
     outcome: SaveOutcome,
     answered: bool,
     post: ReviewPost,
+    *,
+    own_write: AnswersKept | None = None,
 ) -> Response:
     """What a Save press answers with, by what committed: "nothing was saved" only when the
     homework transaction didn't commit, and a save that committed is reported as saved, in the
@@ -3045,11 +3063,17 @@ async def outcome_page(
                 return recorded
         status = 503 if outcome.reason in ("busy", "failed") else 409
         return await with_typing(
-            request, state, draft_id, post, not_saved(outcome, answered), status
+            request,
+            state,
+            draft_id,
+            post,
+            not_saved(outcome, answered),
+            status,
+            own_write=own_write,
         )
     if isinstance(outcome, AlreadySaved):
         said = [*([PRESS_SAID["answers_kept"]] if answered else []), PRESS_SAID["already"]]
-        return await with_typing(request, state, draft_id, post, said, 200)
+        return await with_typing(request, state, draft_id, post, said, 200, own_write=own_write)
     if isinstance(outcome, Replayed):
         own = frozenset(name for name, _ in outcome.pairs)
         return await saved_page(request, state, draft_id, outcome.acceptance_id, [], post, own)
@@ -3281,9 +3305,9 @@ def tick_beyond_progress(
     source: DraftSnapshot | None = None,
     proven: Collection[str] | None = None,
 ) -> bool:
-    """Whether "No assigned date was given" set words aside on a row still open with no correction
-    to none, unless it answers a day heading's confirmation ``held`` holds as posted, on a piece in
-    ``proven`` if given, beside ``source``'s or the snapshot's progress absent or read, no date."""
+    """Whether "No assigned date was given" was ticked or set words aside on an open row with no
+    correction to none, unless it answers a day heading's confirmation ``held`` holds as posted, in
+    ``proven`` if given, by ``source``'s or the snapshot's progress absent or read, no date."""
     still = {row.key for row in snapshot.rows if row.state == "open"}
     posted = {(answer.kind, answer.subject): answer.value for answer in post.answers}
     text = (snapshot if source is None else source).progress
@@ -3304,7 +3328,7 @@ def tick_beyond_progress(
         key.removeprefix("date:").split("|")[0] in still
         and post.corrections.get(key, {}).get("assigned", "") is not None
         and not confirmed(key)
-        for key, _, _ in post.dropped
+        for key in no_date_keys(post)
     )
 
 
@@ -3319,7 +3343,7 @@ def words_beside_unlike(
     choice the answers read (``held``) or saved progress don't hold, or has none to compare with: a
     later read's (``newer``) if made, else its snapshot's as the rows' read worked it out
     (``progress``)."""
-    if not post.dropped and not no_date_ticked(post.corrections):
+    if not no_date_keys(post) and not no_date_ticked(post.corrections):
         return False
     if newer is None:
         kept = progress_in_hand(snapshot) if progress is None else progress
@@ -3345,6 +3369,29 @@ def no_date_ticked(typed: Corrections) -> bool:
     )
 
 
+def no_date_keys(post: ReviewPost) -> tuple[str, ...]:
+    """Each piece's dates key where this post's "No assigned date was given" set something aside
+    or was ticked, a lone tick confirming a day heading included."""
+    ticked = (
+        str(json.loads(field.removeprefix("none:"))[0])
+        for field, values in post.choices.items()
+        if field.startswith("none:") and values == ("none",)
+    )
+    return tuple(dict.fromkeys([*(key for key, _, _ in post.dropped), *ticked]))
+
+
+def written_answers(post: ReviewPost, kept: AnswersKept) -> dict[tuple[str, str], str] | None:
+    """The answers a press's committed write holds as posted: each one it posted whose key the
+    write didn't drop; None where the write's dropped keys aren't known."""
+    if kept.dropped_keys is None:
+        return None
+    return {
+        (a.kind, a.subject): a.value
+        for a in post.answers
+        if (a.kind, a.subject) not in kept.dropped_keys
+    }
+
+
 def ticks_of_shape_three() -> Corrections:
     """The "No assigned date was given" choices valid shape 3 progress holds or gives: none, as
     ``_kept`` refuses a null there and ``shape_four`` gives ``box_corrections`` no tick to keep."""
@@ -3364,7 +3411,7 @@ def shape_three_for_its_piece(
     posted = {(answer.kind, answer.subject) for answer in post.answers}
     return {
         key: converted.get(key, {})
-        for key, _, _ in post.dropped
+        for key in no_date_keys(post)
         if ("confirm", confirm_subject(key.removeprefix("date:"), "heading")) in posted
         and post.corrections.get(key, {}).get("assigned", "") is not None
     }
