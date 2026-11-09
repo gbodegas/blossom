@@ -3009,8 +3009,8 @@ async def committed_page(
     read as it is: rows still open answer as a save that left them open; a finished review says
     the cleanup closes it; a closed one is the finished answer; and a read that fails, or an
     ended review, promises no cleanup, since the cleanup closes only a finished review. A closed
-    review's copies leave out only text this save's own evidence shows it stored exactly in that
-    field (``Saved.stored``, read back inside its transaction, a date by its own piece)."""
+    review's copies leave out only text an assignment this save wrote holds exactly in that field,
+    as read back inside its transaction (``Saved.stored``; a date by its own piece)."""
     if outcome.closed:
         typed = await typing_of(request, outcome.stored, as_sent=True, beside_words=True)
         week = await week_of(state, outcome.pairs)
