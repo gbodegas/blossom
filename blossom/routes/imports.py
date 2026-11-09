@@ -891,21 +891,6 @@ def fields_shown(rows: RowsShown | None) -> frozenset[tuple[str, str, str]]:
     )
 
 
-def words_carried(rows: RowsShown | None) -> frozenset[tuple[str, str, str]]:
-    """The words each date box of these rows carries back beside it, by key, field and text."""
-    if rows is None:
-        return frozenset()
-    return frozenset(
-        (str(key), str(field), box.carried[1])
-        for unit in rows.units
-        for block in unit.blocks
-        for card in block.cards
-        for box in card.boxes
-        if box.carried is not None
-        for key, field in [json.loads(box.subject)]
-    )
-
-
 def boxes_as_sent(rows: RowsShown, items: Sequence[tuple[str, str]]) -> RowsShown:
     """These rows with each text box whose value equals, once canonical, what the post sent in it
     holding the text as sent, line endings made line feeds where its box has several lines."""
@@ -2517,10 +2502,7 @@ async def with_typing(
     if moved and not refused_with_choices and rows is not None and choices_unlike(post, rows):
         lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
     if not done:
-        beside = (
-            frozenset() if post.press == "save" or refused_with_choices else words_carried(rows)
-        )
-        typed = await typing_by_press(request, shown=shown | beside, as_sent=True, every_press=True)
+        typed = await typing_by_press(request, shown=shown, as_sent=True, every_press=True)
         note = TYPED_SAID
         if post.press != "save" and post.dropped:
             typed += [item for item in tick_set_aside(request, post, shown) if item not in typed]

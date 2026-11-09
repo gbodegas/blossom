@@ -19942,6 +19942,8 @@ def test_no_date_beside_the_date_as_read_with_no_words_beside_it_changes_nothing
 def test_words_left_unticked_stay_in_the_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
+    """The words stay in the form's hidden field and in saved progress. No box holds them, so Keep's
+    page gives them back to copy too; Save for later, keeping them, redirects."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, piece, _ = words_beside_a_date_box(browser, monkeypatch)
         answer = send(browser, draft_id, page_post(reopened, press))
@@ -19949,7 +19951,7 @@ def test_words_left_unticked_stay_in_the_form(
         held = held_corrections(browser, draft_id)
 
     assert answer.status_code == (200 if press == "keep" else 303)
-    assert copied(answer) == set()
+    assert copied(answer) == ({WORDS_BESIDE} if press == "keep" else set())
     assert WORDS_BESIDE in html.unescape(review_form(shown))
     assert held == {piece: {"assigned": WORDS_BESIDE}}
 
@@ -20195,7 +20197,8 @@ def test_no_date_on_each_shape_of_card(
 ) -> None:
     """Words beside a date box, by each route that reaches it, on a card that read an assigned date
     and one that read none. Saved progress of shape 3 on a card that read none puts the words beside
-    its due box, so the tick drops nothing and they stay in the form."""
+    its due box, so the tick drops nothing and they stay in the form's hidden field, given back to
+    copy on Keep's page, since no box holds them."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, key = carried_beside_a_date_box(
             browser, monkeypatch, SECOND_CARDS[card], how
@@ -20211,7 +20214,7 @@ def test_no_date_on_each_shape_of_card(
     form = html.unescape(review_form(shown))
     if (how, card) == ("old saved progress", "it read none"):
         assert answer.status_code == (200 if press == "keep" else 303)
-        assert copied(answer) == set()
+        assert copied(answer) == ({CARRIED} if press == "keep" else set())
         assert CARRIED in form
         assert '"due"]' in form[: form.index(CARRIED)].rsplit("refused:", 1)[1]
         return
@@ -33982,6 +33985,7 @@ def test_a_split_row_s_title_copied_from_a_page_behind_is_named_by_its_first_dra
     assert not recovery_of(answer).form
     day = "Sentence Composing (screenshot 1, card 1, assigned Mon 10/5)"
     assert labeled == [(f"Title for {day}", "Set 3 typed")]
+
 
 # ---------------------------------------- carried words on Keep's and Save for later's form pages
 
