@@ -1028,7 +1028,7 @@ def _homework_transaction(
         changed_units=tuple(changed),
         already_units=tuple(already),
         counts=(added, updated, unchanged, left),
-        stored=stored_corrections(record, state, pairs, press.corrections),
+        stored=stored_corrections(record, state, pairs, press.corrections, as_read=True),
     )
 
 
@@ -1060,12 +1060,15 @@ def stored_corrections(
     state: ReviewState,
     pairs: Sequence[tuple[str, str]],
     corrections: Corrections,
+    *,
+    as_read: bool = False,
 ) -> tuple[tuple[str, str, str], ...]:
     """The corrections this save can show it stored, read back from the record inside its
     transaction: those whose text an assignment it wrote now holds in that field. A date
-    correction speaks for its own piece. Any other speaks for its row, so every piece of the row
-    must have been written and hold it. Nothing else is claimed, so what a choice left off, what
-    an earlier press wrote and a field with no match aren't here. A failure of the file is raised,
+    correction speaks for its own piece, as does, with ``as_read``, a date left as read on a piece
+    it wrote (``dates_left_as_read``). Any other speaks for its row, so every piece of the row must
+    have been written and hold it. Nothing else is claimed, so what a choice left off, what an
+    earlier press wrote and a field with no match aren't here. A failure of the file is raised,
     as any in this transaction is, since SQLite may have ended it: the save fails and rolls back.
     Any other error here costs only the evidence, on record by its type and place."""
     targets = dict(pairs)
@@ -1094,7 +1097,31 @@ def stored_corrections(
                 text in held.get(targets[name], {}).get(kind, ()) for name in names
             ):
                 found.append((key, field, text))
+    if as_read:
+        found += dates_left_as_read(state, targets, corrections, held)
     return tuple(found)
+
+
+def dates_left_as_read(
+    state: ReviewState,
+    targets: Mapping[str, str],
+    corrections: Corrections,
+    held: Mapping[str, Mapping[str, Collection[str]]],
+) -> list[tuple[str, str, str]]:
+    """Each date a piece this save wrote kept as read, with no correction posted for it, where the
+    assignment it wrote (``targets``) holds it (``held``): by its dates key, field and the text a
+    date box posts."""
+    found = []
+    for piece in state.pieces:
+        key = dates_key(piece.name)
+        if piece.name not in targets or piece.as_read is None:
+            continue
+        for field, day in (("due", piece.as_read.due), ("assigned", piece.as_read.assigned)):
+            if day is None or field in corrections.get(key, {}):
+                continue
+            if day.isoformat() in held.get(targets[piece.name], {}).get(field, ()):
+                found.append((key, field, day.isoformat()))
+    return found
 
 
 def _open_units(

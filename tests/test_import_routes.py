@@ -21654,10 +21654,10 @@ def test_an_ended_page_gives_back_the_date_sent_and_the_words_beside_it(
 @pytest.mark.parametrize(
     ("case", "typing"),
     [
-        ("the date as read", {WORDS_BESIDE}),
-        ("the date as read, ticked", {WORDS_BESIDE}),
+        ("the date as read", {READ_ASSIGNED}),
+        ("the date as read, ticked", {READ_ASSIGNED, WORDS_BESIDE}),
         ("another date", {"2026-10-03"}),
-        ("another date, ticked", {"2026-10-03"}),
+        ("another date, ticked", {"2026-10-03", WORDS_BESIDE}),
         ("no date, ticked", {WORDS_BESIDE}),
     ],
 )
@@ -22849,12 +22849,12 @@ def test_save_with_a_refused_read_keeps_its_own_reading_of_the_boxes(
 
 
 @pytest.mark.parametrize(
-    ("sent", "ticked", "typing"),
+    ("sent", "ticked", "typing", "after_its_own_read"),
     [
-        (READ_ASSIGNED, True, {WORDS_BESIDE}),
-        ("2026-10-03", True, {"2026-10-03"}),
-        ("12026-10-03", True, {"12026-10-03"}),
-        ("2026-10-03", False, {"2026-10-03"}),
+        (READ_ASSIGNED, True, {WORDS_BESIDE}, {READ_ASSIGNED, WORDS_BESIDE}),
+        ("2026-10-03", True, {"2026-10-03"}, {"2026-10-03", WORDS_BESIDE}),
+        ("12026-10-03", True, {"12026-10-03"}, {"12026-10-03", WORDS_BESIDE}),
+        ("2026-10-03", False, {"2026-10-03"}, {"2026-10-03"}),
     ],
     ids=["the date as read, ticked", "another date, ticked", "a five-digit year", "unticked"],
 )
@@ -22870,7 +22870,10 @@ def test_save_with_a_refused_read_keeps_its_own_reading_of_a_date_beside_words(
     sent: str,
     ticked: bool,
     typing: set[str],
+    after_its_own_read: set[str],
 ) -> None:
+    """A Save's first read refused gives today's copies; past its own read of an earlier save, the
+    date box comes back as sent, and the words where the box holds no date or the tick is on."""
     refused = refusing_coded("SQLITE_IOERR")
     with here(open_settings(tmp_path)) as browser:
         if read == "its own read":
@@ -22899,7 +22902,7 @@ def test_save_with_a_refused_read_keeps_its_own_reading_of_a_date_beside_words(
 
     assert answer.status_code == status
     assert imports.REVIEW_NOT_SHOWN in page_text(answer)
-    assert copied(answer) == typing
+    assert copied(answer) == (after_its_own_read if read == "its own read" else typing)
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
@@ -27433,16 +27436,21 @@ WORDS_WITH_NO_POST_TO_READ: Final[dict[str, tuple[str, bool, set[str], set[str]]
         READ_ASSIGNED,
         True,
         {READ_ASSIGNED, WORDS_BESIDE},
-        {WORDS_BESIDE},
+        {READ_ASSIGNED, WORDS_BESIDE},
     ),
-    "the tick, another date": ("2026-10-03", True, {"2026-10-03", WORDS_BESIDE}, {"2026-10-03"}),
+    "the tick, another date": (
+        "2026-10-03",
+        True,
+        {"2026-10-03", WORDS_BESIDE},
+        {"2026-10-03", WORDS_BESIDE},
+    ),
     "the tick, an empty box": ("", True, {WORDS_BESIDE}, {WORDS_BESIDE}),
     "no tick, another date": ("2026-10-03", False, {"2026-10-03"}, {"2026-10-03"}),
     "no tick, a five-digit year": (
         "12026-10-03",
         False,
         {"12026-10-03", WORDS_BESIDE},
-        {"12026-10-03"},
+        {"12026-10-03", WORDS_BESIDE},
     ),
 }
 """What's sent in a date box beside carried words: the text, whether "No assigned date" is ticked,
@@ -29363,7 +29371,7 @@ def test_a_press_behind_says_a_conflict_beside_words_and_a_no_date_choice_saved_
 
 
 NO_DATE_WITH_ROWS_EMPTY_BEHIND: Final[dict[str, bool]] = {
-    "a lone tick": False,
+    "a lone tick": True,
     "the tick saved progress holds, beside carried words": False,
     "the tick saved progress doesn't hold, beside carried words": True,
     "the tick on the row another page saved, beside carried words": False,
@@ -29371,8 +29379,8 @@ NO_DATE_WITH_ROWS_EMPTY_BEHIND: Final[dict[str, bool]] = {
     "a confirmation the answers it read don't hold, no date saved, beside carried words": True,
 }
 """A press behind whose rows come back empty, by its "No assigned date was given", and whether
-the page says its choices can't be shown: beside carried words, by the saved progress its review's
-read holds and the answers the press read; a lone tick, as that path has it with no rows."""
+the page says its choices can't be shown: by the saved progress its review's read holds and, beside
+carried words, the answers the press read. The lone tick's other page saved progress without it."""
 READS_WITH_ROWS_EMPTY: Final[dict[str, dict[str, int]]] = {
     "save": {"draft_for_save": 1, "student_id": 7},
     "keep": {"draft_for_save": 1, "student_id": 5},
@@ -29388,8 +29396,9 @@ def test_a_press_behind_with_its_rows_back_empty_says_a_no_date_choice_as_that_p
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
 ) -> None:
     """Real presses after another page's Save for later or Save, progress emptied by a store-call
-    fixture where named, the rows forced empty (``no_rows_once``). A lone tick isn't said; one
-    beside carried words is, once, where progress or the answers the press read don't hold it."""
+    fixture where named, the rows forced empty (``no_rows_once``). A lone tick is said, once, where
+    progress doesn't hold it; one beside carried words, where progress or the answers the press
+    read don't."""
     with here(open_settings(tmp_path)) as browser:
         if case == "a lone tick":
             draft_id, page, first, other = two_rows(browser, monkeypatch)

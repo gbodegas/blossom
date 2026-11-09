@@ -622,7 +622,7 @@ async def gone_with_typing(
     post alone by its press (``typing_by_press``). A save that committed answers through
     ``saved_unread`` instead.
     Nothing of the review is shown, nothing is stored, and nothing more can be saved from it."""
-    typed = await typing_by_press(request, as_sent=True)
+    typed = await typing_by_press(request, as_sent=True, beside_words=True)
     return templates.TemplateResponse(
         request,
         "import_said.html",
@@ -652,7 +652,7 @@ async def unknown_outcome(
         "import_said.html",
         {
             "said": [UNKNOWN_SAID["homework"], *kept],
-            "typed": await typing_of(request, as_sent=True),
+            "typed": await typing_of(request, as_sent=True, beside_words=True),
             "typed_said": UNSHOWN_TYPED,
             "marks": marks_of(state),
             "page": "parent",
@@ -975,8 +975,8 @@ async def unshown_with_typing(
     kept or failed to keep, its kept answers apart from the rest, then that the review can't be
     shown, every correction it typed given back to copy, by its press (``typing_by_press``), and the
     way back to the review. It reads no store and offers nothing that repeats the press; its status
-    is the press's own. ``as_sent`` goes to ``typing_by_press``."""
-    typed = await typing_by_press(request, as_sent=as_sent)
+    is the press's own. ``as_sent`` goes to ``typing_by_press``, with the words-aware reading."""
+    typed = await typing_by_press(request, as_sent=as_sent, beside_words=as_sent)
     lines = [
         shown for line in typing_here(said, typed) for shown in UNSHOWN_SAID.get(line, (line,))
     ]
@@ -1012,7 +1012,7 @@ async def saved_unread(
     success panel whose heading takes the focus, with what else the press said beneath it and
     no word that the review is finished, since that isn't known, and every correction the press
     typed given back to copy, by its press (``typing_by_press``)."""
-    typed = await typing_by_press(request, as_sent=True)
+    typed = await typing_by_press(request, as_sent=True, beside_words=True)
     return saved_outcome(request, state, done, week, finished=False, typed=typed, notes=said)
 
 
@@ -1031,7 +1031,8 @@ async def saved_busy(
     success panel, whose heading takes the focus, with ``notes`` beneath it; then, in the problem
     style, what else the press said as a page without the rows says it (``UNSHOWN_SAID``) and that
     the review can't be shown; every correction it typed given back to copy, by its press
-    (``typing_by_press``, with ``as_sent``); and the way back to the review."""
+    (``typing_by_press``, with ``as_sent`` and then the words-aware reading); and the way back to
+    the review."""
     lines = [shown for line in said for shown in UNSHOWN_SAID.get(line, (line,))]
     return saved_outcome(
         request,
@@ -1039,7 +1040,7 @@ async def saved_busy(
         done,
         week,
         finished=False,
-        typed=await typing_by_press(request, as_sent=as_sent),
+        typed=await typing_by_press(request, as_sent=as_sent, beside_words=as_sent),
         notes=notes,
         problems=[*lines, REVIEW_NOT_SHOWN],
         typed_said=UNSHOWN_TYPED,
@@ -2531,7 +2532,9 @@ async def with_typing(
         return await saved_busy(
             request, state, draft_id, done, ended_lines(said, saved=True), notes=kept_line
         )
-    typed = await typing_of(request, saved.stored if saved else (), shown, as_sent=True)
+    typed = await typing_of(
+        request, saved.stored if saved else (), shown, as_sent=True, beside_words=True
+    )
     told = [*done, PRESS_SAID["left_open"]] if answered else done
     return review_page(request, state, after, lines, status, rows=rows, done=told, typed=typed)
 
@@ -2966,9 +2969,11 @@ async def committed_page(
     whether it finished the review (``incomplete``), one read decides, and the page takes that
     read as it is: rows still open answer as a save that left them open; a finished review says
     the cleanup closes it; a closed one is the finished answer; and a read that fails, or an
-    ended review, promises no cleanup, since the cleanup closes only a finished review."""
+    ended review, promises no cleanup, since the cleanup closes only a finished review. A closed
+    review's copies leave out only text this save's own evidence shows it stored exactly in that
+    field (``Saved.stored``, read back inside its transaction, a date by its own piece)."""
     if outcome.closed:
-        typed = await typing_of(request, outcome.stored, as_sent=True)
+        typed = await typing_of(request, outcome.stored, as_sent=True, beside_words=True)
         week = await week_of(state, outcome.pairs)
         return saved_outcome(request, state, [*done, *problems], week, typed=typed)
     read: DraftSnapshot | None = None
@@ -3067,7 +3072,7 @@ async def saved_finished(
     closes it, the one page that promises this, since the cleanup closes only a finished review.
     Lines that point at the review's rows are said as an ended review's page says them, since a
     finished review has none left to check. ``notes`` go beneath the counts, on either."""
-    typed = await typing_by_press(request, stored, as_sent=True)
+    typed = await typing_by_press(request, stored, as_sent=True, beside_words=True)
     week = await week_of(state, pairs)
     lines = ended_lines(done, saved=True)
     if closed:
@@ -3199,10 +3204,11 @@ def words_beside_unlike(
     progress: Corrections | None,
     newer: DraftSnapshot | None = None,
 ) -> bool:
-    """Whether a post that set words aside holds a "No assigned date was given" choice the answers
-    read (``held``) or saved progress don't hold, or has none to compare with: a later read's
-    (``newer``) if made, else its snapshot's as the rows' read worked it out (``progress``)."""
-    if not post.dropped:
+    """Whether a post that set words aside, or ticked "No assigned date was given" alone, holds a
+    choice the answers read (``held``) or saved progress don't hold, or has none to compare with: a
+    later read's (``newer``) if made, else its snapshot's as the rows' read worked it out
+    (``progress``)."""
+    if not post.dropped and not no_date_ticked(post.corrections):
         return False
     if newer is None:
         kept = progress_in_hand(snapshot) if progress is None else progress
@@ -3217,6 +3223,14 @@ def words_beside_unlike(
         kept is None
         or tick_unlike_progress(snapshot, post.corrections, kept)
         or tick_beyond_progress(snapshot, post, kept, held, newer)
+    )
+
+
+def no_date_ticked(typed: Corrections) -> bool:
+    """Whether these corrections tick "No assigned date was given" on any piece."""
+    return any(
+        key.startswith("date:") and "assigned" in fields and fields["assigned"] is None
+        for key, fields in typed.items()
     )
 
 
@@ -3448,7 +3462,7 @@ async def saved_page(
                 notes=notes,
                 counted=bool(counts),
             )
-        typed = await typing_by_press(request, as_sent=True)
+        typed = await typing_by_press(request, as_sent=True, beside_words=True)
         if typed:
             return saved_outcome(
                 request,
