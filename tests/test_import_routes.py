@@ -34126,3 +34126,43 @@ def test_a_copy_names_the_card_as_the_returned_form_names_it(
     assert set(named) == {f"{RETYPED_NOW} (screenshot 1, card 1)"}
     labeled = {text: label for label, text in copies_with_labels(answer)}
     assert labeled[WORDS_BESIDE] == f"Assigned date for {RETYPED_NOW} (screenshot 1, card 1)"
+
+
+def test_a_save_leaving_a_row_open_names_a_copy_by_the_title_its_post_retyped(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real presses past a store call carrying words beside the second card's date box: a Save of
+    the first group only, retyping the second row's title. The words come back named by that card
+    as the returned form draws it, with the retyped title."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, units, _, _ = two_cards_with_words(browser, monkeypatch)
+        titles = [
+            "correct:" + subject
+            for subject in fields_named(review_form(page), "correct:")
+            if json.loads(subject)[1] == "title"
+        ]
+        typed = {titles[-1]: RETYPED_NOW}
+        answer = send(browser, draft_id, page_post(page, "save", tick=units[:1], typed=typed))
+
+    assert answer.status_code == 200
+    assert copies_with_labels(answer) == [
+        (f"Assigned date for {RETYPED_NOW} (screenshot 1, card 2)", WORDS_BESIDE)
+    ]
+
+
+def test_words_a_tick_set_aside_come_back_once_named_by_the_title_the_post_retyped(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real presses past a store call carrying words beside a date box: Keep with "No assigned date
+    was given" ticked and the row's title retyped. The words come back once, named by the card as
+    the returned form draws it, with the retyped title."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, none = words_beside_a_date_box(browser, monkeypatch)
+        title = correct_box(json.loads(box_subject(reopened, "title"))[0], "title")
+        posted = page_post(reopened, "keep", typed={title: RETYPED_NOW}, choose=no_date_tick(none))
+        answer = send(browser, draft_id, posted)
+
+    assert answer.status_code == 200
+    assert copies_with_labels(answer) == [
+        (f"Assigned date for {RETYPED_NOW} (screenshot 1, card 1)", WORDS_BESIDE)
+    ]
