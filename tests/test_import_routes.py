@@ -32173,6 +32173,38 @@ def test_a_save_of_every_group_storing_the_date_typed_beside_carried_words_copie
     assert typed not in copied(answer)
 
 
+def test_a_save_of_every_group_without_its_stored_evidence_gives_back_the_date_typed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injected error only (reading back what the save stored fails, which costs only that
+    evidence); supported reachability is unestablished. A Save ticking both groups, with the date as
+    read typed beside the second card's carried words, stores that date and closes the review, but
+    with no evidence of its own for that card the date comes back to copy, and the words don't."""
+
+    def unreadable(*_: object, **__: object) -> None:
+        raise RuntimeError(INJECTED_ONLY)
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, units, piece, _ = two_cards_with_words(browser, monkeypatch)
+        typed = the_date_as_read(browser, draft_id, piece)
+        monkeypatch.setattr(screenshot_save, "values_on_record", unreadable)
+        answer = send(
+            browser,
+            draft_id,
+            page_post(page, "save", tick=units, typed={correct_box(piece, "assigned"): typed}),
+        )
+        monkeypatch.undo()
+        stored = {
+            work.title: work.assigned_on
+            for work in state_of(browser).project_state.all_assignments()
+        }
+
+    assert answer.status_code == 200
+    assert str(stored["Set 3"]) == typed
+    assert typed in copied(answer)
+    assert WORDS_BESIDE not in copied(answer)
+
+
 @pytest.mark.parametrize("press", ["keep", "later"])
 def test_keep_and_save_for_later_past_a_discard_give_a_date_typed_beside_words_back_as_today(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
