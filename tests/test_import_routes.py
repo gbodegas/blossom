@@ -33987,7 +33987,7 @@ def test_a_split_row_s_title_copied_from_a_page_behind_is_named_by_its_first_dra
     assert labeled == [(f"Title for {day}", "Set 3 typed")]
 
 
-# ---------------------------------------- carried words on Keep's and Save for later's form pages
+# --------------------------------------------- carried words on a form page before any save
 
 CARRIED_TOO_LONG: Final = "w" * (screenshot_review.field_most("assigned") + 1)
 
@@ -34004,15 +34004,19 @@ def carried_fields(page: str) -> list[str]:
 
 @pytest.mark.parametrize(
     ("press", "route", "status"),
-    [("keep", "unchanged", 200), ("keep", "refused", 422), ("later", "refused", 422)],
+    [
+        ("keep", "unchanged", 200),
+        ("keep", "refused", 422),
+        ("later", "refused", 422),
+        ("save", "refused", 422),
+    ],
 )
-def test_carried_words_no_field_holds_come_back_to_copy_on_keep_and_save_for_later(
+def test_carried_words_no_field_holds_come_back_to_copy_on_a_form_page_before_any_save(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, route: str, status: int
 ) -> None:
     """Real presses past a store call for saved progress carrying words beside a date box: Keep
-    posted unchanged, or either press refused for a title past its limit. The words show only in
-    the sentence beneath the box and the hidden field that posts them back, so they come back to
-    copy, and the hidden field still carries them."""
+    posted unchanged, or any press refused for a title past its limit. Shown only beneath the box
+    and in the hidden field that posts them back, which still carries them, the words come back."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, _, _ = words_beside_a_date_box(browser, monkeypatch)
         title = correct_box(json.loads(box_subject(reopened, "title"))[0], "title")
