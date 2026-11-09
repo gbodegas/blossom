@@ -33635,3 +33635,239 @@ def test_supported_typing_on_a_fresh_form_is_never_refused_as_an_unmatched_post(
         ) == (200, True)
     else:
         assert answer.status_code == 200
+
+
+# ------------------------------------------------- what the refused and taken pages hold back
+
+
+def test_save_for_later_gives_back_only_the_spaced_box_beside_one_it_kept_as_typed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real presses: Save for later from the open review with outer spaces typed in one row's title
+    and another class typed plainly. Only the title comes back to copy; the class was kept as
+    typed."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, left, boxes, _ = two_groups(browser, monkeypatch)
+        typed = {boxes["title"]: SPACED_TITLE, boxes["course"]: "English 8"}
+        answer = send(browser, draft_id, page_post(page, "later", tick=[first, left], typed=typed))
+
+    shown = recovery_of(answer)
+    assert answer.status_code == 200
+    assert not shown.form
+    assert [as_lf(copy) for copy in shown.copies] == [SPACED_TITLE]
+
+
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_keep_and_save_for_later_closed_at_their_write_with_no_save_before_copy_as_today(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """A store call refusing the press's write as closed, with no save before it, after the post
+    was read against its page: the date as read typed beside carried words comes back with today's
+    label, and the words don't."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, units, piece, _ = two_cards_with_words(browser, monkeypatch)
+        typed = the_date_as_read(browser, draft_id, piece)
+        drafts = state_of(browser).import_drafts
+        write = "keep_answers" if press == "keep" else "save_for_later"
+        monkeypatch.setattr(drafts, write, busy_store(DraftClosed))
+        answer = send(
+            browser,
+            draft_id,
+            page_post(page, press, tick=[units[0]], typed={correct_box(piece, "assigned"): typed}),
+        )
+        monkeypatch.undo()
+
+    assert copies_with_labels(answer) == [("Assigned date", typed)]
+    assert WORDS_BESIDE not in copied(answer)
+
+
+def record_reads_of_the_review(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Fills with each time a press works the review's state out from the record, from here on."""
+    real = imports.state_of_review
+    reads: list[bool] = []
+
+    async def reading(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        reads.append(True)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(imports, "state_of_review", reading)
+    return reads
+
+
+# How many times each changed page works the review's state out from the record, as today.
+CHANGED_PAGE_RECORD_READS: Final = {
+    "keep on the open review": 2,
+    "refused at the page's version, keep": 2,
+    "refused at the page's version, later": 2,
+    "refused at the page's version, save": 2,
+    "its write refused busy, keep": 2,
+    "its write refused busy, later": 3,
+    "its write refused busy, save": 2,
+}
+
+
+@pytest.mark.parametrize("case", list(CHANGED_PAGE_RECORD_READS))
+def test_a_changed_page_works_the_review_out_from_the_record_as_often_as_today(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Real presses, or forced timing for a write refused busy: outer spaces typed on one row. The
+    page labels its copies and draws its boxes with no more reads of the record than today."""
+    press = "keep" if case == "keep on the open review" else case.rpartition(" ")[2]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, left, boxes, mine = two_groups(browser, monkeypatch)
+        typed = spaced(boxes)
+        ticks = [first]
+        if case == "keep on the open review":
+            ticks = [first, left]
+        elif case.startswith("refused at"):
+            typed = {mine: "x" * (TITLE_MOST + 1), **typed}
+        else:
+            drafts = state_of(browser).import_drafts
+            write = "save_for_later" if press == "later" else "keep_answers"
+            monkeypatch.setattr(drafts, write, busy_store(StoreBusy))
+        reads = record_reads_of_the_review(monkeypatch)
+        send(browser, draft_id, page_post(page, press, tick=ticks, typed=typed))
+        monkeypatch.undo()
+
+    assert len(reads) == CHANGED_PAGE_RECORD_READS[case], len(reads)
+
+
+def test_a_date_left_as_read_is_evidence_only_where_the_written_assignment_holds_it() -> None:
+    """Helper level (no route established): a date a save left as read counts as stored only where
+    the assignment it wrote holds that date, never on the save's word alone."""
+    day = date(2026, 10, 5)
+    piece = SimpleNamespace(name="p1", as_read=SimpleNamespace(due=None, assigned=day))
+    state = cast(ReviewState, SimpleNamespace(pieces=[piece]))
+    held = screenshot_save.dates_left_as_read(
+        state, {"p1": "a1"}, {}, {"a1": {"assigned": {day.isoformat()}}}
+    )
+    other = screenshot_save.dates_left_as_read(
+        state, {"p1": "a1"}, {}, {"a1": {"assigned": {"2026-10-06"}}}
+    )
+
+    assert held == [(screenshot_review.dates_key("p1"), "assigned", day.isoformat())]
+    assert other == []
+
+
+def test_save_for_later_counts_an_instruction_read_with_crlf_as_kept_with_lf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Helper level (no route established: a reading holding a carriage return): an instruction
+    read with CR LF line breaks counts as kept with LF ones, the form a resend posts."""
+    monkeypatch.setattr(imports, "fold_reads", lambda review: {})
+    read = SimpleNamespace(course="Math 8", title="Set 3", texts=("Read\r\npages 4-5",))
+    review = cast(ReviewState, SimpleNamespace(open=[SimpleNamespace(key="k1", as_read=read)]))
+    kept = imports.kept_for_later(review, {})
+
+    assert ("k1", "instruction:0", "Read\npages 4-5") in kept
+    assert ("k1", "instruction:0", "Read\r\npages 4-5") not in kept
+
+
+def box_value(rows: Any, name: str) -> str | None:  # noqa: ANN401
+    """The value the drawn rows give the box of this name, or None with no such box."""
+    for unit in rows.units:
+        for block in unit.blocks:
+            for card in block.cards:
+                for box in card.boxes:
+                    if box.name == name:
+                        return str(box.value)
+    return None
+
+
+def test_a_box_whose_post_isn_t_its_drawn_value_once_canonical_keeps_the_drawn_value(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Helper level (no route established), on rows a real Keep drew: a box takes the text sent in
+    it only where that equals its drawn value once canonical, and otherwise keeps its value."""
+    real = imports.boxes_as_sent
+    drawn: list[Any] = []
+
+    def keeping(rows: Any, items: Sequence[tuple[str, str]]) -> Any:  # noqa: ANN401
+        drawn.append(rows)
+        return real(rows, items)
+
+    monkeypatch.setattr(imports, "boxes_as_sent", keeping)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, _, boxes, _ = two_groups(browser, monkeypatch)
+        typed = {boxes["title"]: "Set 3 typed"}
+        answer = send(browser, draft_id, page_post(page, "keep", tick=[first], typed=typed))
+    title = boxes["title"]
+    rows = drawn[-1]
+
+    assert answer.status_code == 200
+    assert box_value(rows, title) == "Set 3 typed"
+    assert box_value(real(rows, [(title, "  Set 3 typed ")]), title) == "  Set 3 typed "
+    assert box_value(real(rows, [(title, "Set 4 typed")]), title) == "Set 3 typed"
+
+
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+def test_a_refusal_at_the_page_s_version_behind_carries_no_choices_as_today(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """A store call standing in for another page's Save for later puts the page behind; then real
+    presses: a saved row chosen for a card whose title is retyped off it, the other title past its
+    limit. The 422 page behind draws no form and says nothing of the choices, as today."""
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([A_SAVED_SET_3])
+        reading = homework_answer(cards=[homework_card(), homework_card(**A_SECOND_CARD)])
+        draft_id, page = read_review(browser, monkeypatch, (RED, reading))
+        page = her_name_answered(browser, draft_id, page)
+        first_title, second_title = (f"correct:{box_subject(page, 'title', n)}" for n in range(2))
+        key = json.loads(second_title.removeprefix("correct:"))[0]
+        [piece] = [
+            subject
+            for subject in fields_named(review_form(page), "answer:destination:")
+            if key in subject
+        ]
+        offered = json.dumps({"existing": A_SAVED_SET_3.assignment_id}, separators=(",", ":"))
+        typed = {first_title: "x" * (TITLE_MOST + 1), second_title: "Quiz 9"}
+        choose = {f"answer:destination:{piece}": offered}
+        saved_progress(browser, draft_id, {"v": 4, "corrected": {}, "selected": []})
+        answer = send(
+            browser,
+            draft_id,
+            page_post(page, press, tick=units_on(page), typed=typed, choose=choose),
+        )
+
+    assert answer.status_code == 422
+    assert not recovery_of(answer).form
+    assert not says(answer.text, screenshot_page.SAID["not_carried"])
+
+
+def test_a_found_row_refused_busy_at_its_page_s_version_names_no_choice_as_unselected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forced timing: a row chosen on the find page, then that choice posted with its write refused
+    busy at the page's own version. The 503 names no card's choice as unselected, a line only the
+    out-of-date page says."""
+    other_work = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([other_work])
+        draft_id, page, _, _, _, _ = two_groups(browser, monkeypatch)
+        piece = fields_named(review_form(page), "answer:destination:")[0]
+        found = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
+        )
+        chosen = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', found.text, re.S
+        )
+        assert chosen is not None
+        fields = [
+            (html.unescape(name), html.unescape(value))
+            for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', chosen.group(0))
+        ]
+        monkeypatch.setattr(state_of(browser).import_drafts, "keep_answers", busy_store(StoreBusy))
+        answer = send(browser, draft_id, fields)
+        monkeypatch.undo()
+
+    assert answer.status_code == 503
+    assert "selected on this page" not in page_text(answer)
