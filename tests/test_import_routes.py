@@ -13009,7 +13009,8 @@ def test_a_partial_save_gives_back_a_date_left_off_saved_work_beside_the_rows(
 ) -> None:
     """A real commit with no failure: a row landing on saved work, a date typed on it and the saved
     date chosen, another row left open. The date is on no assignment and in no box, so the page
-    gives it back to copy; its resend, behind the save's own raise, draws no form and does too."""
+    gives it back to copy under the neutral note; its resend, behind the save's own raise, draws no
+    form and does too."""
     typed = "2026-10-09"
     with here(open_settings(tmp_path)) as browser:
         again, page, piece = landing_beside_an_open_row(browser, monkeypatch)
@@ -13031,7 +13032,8 @@ def test_a_partial_save_gives_back_a_date_left_off_saved_work_beside_the_rows(
     assert lines_in(DONE.search(answer.text))
     assert 'value="save"' in answer.text
     assert TYPED_BACK.findall(answer.text) == [typed]
-    assert says(answer.text, TYPED_SAID)
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert not says(answer.text, TYPED_SAID)
 
 
 def test_joined_pieces_beside_an_open_row_give_back_the_date_not_chosen(

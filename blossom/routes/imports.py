@@ -2345,7 +2345,7 @@ async def with_typing(
     later adds what "No assigned date was given" set aside or was refused beside, the words and
     anything sent in the box beside them, under ``UNSHOWN_TYPED`` (``tick_set_aside``), and signs
     the revision its page read. An earlier save's page with rows gives back what no box holds under
-    ``TYPED_SAID``, labeled the same way.
+    ``UNSHOWN_TYPED`` too, labeled the same way.
     Any press with no save committed, if its review has ended before its rows, says that instead of
     its own line, and a Save press says it can't tell if a transaction was left open meanwhile. It
     keeps a line saying Keep's or Save for later's own write failed, or that any press's can't be
@@ -2556,7 +2556,17 @@ async def with_typing(
         request, saved.stored if saved else (), shown, as_sent=True, beside_words=True, drawn=drawn
     )
     told = [*done, PRESS_SAID["left_open"]] if answered else done
-    return review_page(request, state, after, lines, status, rows=rows, done=told, typed=typed)
+    return review_page(
+        request,
+        state,
+        after,
+        lines,
+        status,
+        rows=rows,
+        done=told,
+        typed=typed,
+        typed_said=UNSHOWN_TYPED,
+    )
 
 
 async def no_form_with_typing(
