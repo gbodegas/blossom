@@ -1778,20 +1778,22 @@ def _unselected(
     units: Sequence[UnitShown],
     named: Mapping[str, str],
 ) -> tuple[str, ...]:
-    """A line for each destination in ``named``, by piece, that its card's control doesn't show
+    """A line for each destination in ``named``, by piece, that no control on the page shows
     selected: with the label its choice shows, or names a saved row found under another name, and
-    with none otherwise. A card the page doesn't show says that some choices can't be shown."""
+    with none otherwise. A card the review doesn't know says that some choices can't be shown."""
     controls = {
         card.name: card.control for unit in units for block in unit.blocks for card in block.cards
     }
     out: list[str] = []
     for name, value in named.items():
-        control = controls.get(name)
         piece = state.by_name.get(name)
-        if control is None or piece is None:
+        if piece is None:
             out.append(SAID["not_carried"])
             continue
-        choices = {_destination_text(choice.value): choice for choice in control.choices}
+        control = controls.get(name)
+        choices = (
+            {} if control is None else {_destination_text(c.value): c for c in control.choices}
+        )
         shown = choices.get(value)
         if shown is not None and shown.checked:
             continue

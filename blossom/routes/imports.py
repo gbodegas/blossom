@@ -821,25 +821,32 @@ async def typing_of(
     beside_words: bool = False,
     as_sent: bool = False,
     drawn: Mapping[str, str] | None = None,
+    undrawn_beside_words: bool = False,
 ) -> list[tuple[str, str]]:
     """Every correction a press's post typed, labeled, read from the post alone (``typed_for``),
     to give back as it was sent, in boxes to copy, where the review can't keep it. A correction is
     left out only when a box on the page holds that exact text (``shown``), or when its save shows
     it stored that exact text in that field (``stored``, the outcome's own evidence). An empty box
     or a hidden field beside it isn't either, whatever was ticked. With ``beside_words``, a date box
-    beside carried words comes back as ``typed_beside_words`` gives it; with ``as_sent``, each text
-    exactly as sent (``exact``), labeled by its card (``copy_label``, with ``drawn``)."""
+    beside carried words comes back as ``typed_beside_words`` gives it, and with
+    ``undrawn_beside_words`` one no box in ``shown`` draws; with ``as_sent``, each text exactly as
+    sent (``exact``), labeled by its card (``copy_label``, with ``drawn``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
         return []
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     evidence = set(stored)
+    if beside_words:
+        typed = typed_beside_words(items, exact=as_sent)
+    elif undrawn_beside_words:
+        boxes = {(key, field) for key, field, _ in shown}
+        typed = typed_beside_words(items, exact=as_sent, drawn=boxes)
+    else:
+        typed = typed_for(items, exact=as_sent)
     return [
         (copy_label(request, key, field, by_card=as_sent, drawn=drawn), text)
-        for key, field, text in (typed_beside_words if beside_words else typed_for)(
-            items, exact=as_sent
-        )
+        for key, field, text in typed
         if (key, field, text) not in evidence and (key, field, text) not in shown
     ]
 
@@ -853,14 +860,16 @@ async def typing_by_press(
     as_sent: bool = False,
     every_press: bool = False,
     drawn: Mapping[str, str] | None = None,
+    undrawn_beside_words: bool = False,
+    unchanged_too: bool = False,
 ) -> list[tuple[str, str]]:
     """What a post gives back when its press finds the review ended, on every page that says it
     can't be shown, beside a confirmed save's counts with no post to read, and on Save for later's
     page after a commit that set words aside, whether or not its read shows another tab saved
-    since: on a Save press, ``typing_of``, with ``beside_words`` and ``as_sent`` passed on; on Keep
-    or Save for later, every box as it was sent, whitespace included (``typed_as_sent``), labeled by
-    its card with ``every_press`` (``drawn`` as ``copy_label`` takes it). Text a box on the page
-    holds exactly (``shown``) is left out."""
+    since: on a Save press, ``typing_of``, with ``beside_words``, ``undrawn_beside_words`` and
+    ``as_sent`` passed on; on Keep or Save for later, every box as it was sent, whitespace included
+    (``typed_as_sent``, with ``unchanged_too``), labeled by its card with ``every_press`` (``drawn``
+    as ``copy_label`` takes it). Text a box on the page holds exactly (``shown``) is left out."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -868,11 +877,17 @@ async def typing_by_press(
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     if next((value for name, value in items if name == "press"), "") == "save":
         return await typing_of(
-            request, stored, shown, beside_words=beside_words, as_sent=as_sent, drawn=drawn
+            request,
+            stored,
+            shown,
+            beside_words=beside_words,
+            as_sent=as_sent,
+            drawn=drawn,
+            undrawn_beside_words=undrawn_beside_words,
         )
     return [
         (copy_label(request, key, field, by_card=every_press, drawn=drawn), text)
-        for key, field, text in typed_as_sent(items)
+        for key, field, text in typed_as_sent(items, unchanged_too=unchanged_too)
         if (key, field, text) not in shown
     ]
 
@@ -958,8 +973,9 @@ def boxes_as_sent(rows: RowsShown, items: Sequence[tuple[str, str]]) -> RowsShow
 
 
 def choices_unlike(post: ReviewPost, rows: RowsShown) -> bool:
-    """Whether a choice the post sent isn't what these rows show checked: its question isn't on the
-    page, or other values are checked there."""
+    """Whether a choice the post sent isn't what these rows show checked or, off the page, doesn't
+    match the answer read for this response: that answer wins over the signed default, which counts
+    only where the read holds none, and an empty choice counts only where it withdraws one."""
     shown: dict[str, frozenset[str]] = {}
     asked = [(q.field, q.options) for q in rows.names]
     asked += [(q.field, q.options) for q in rows.splits]
@@ -976,7 +992,21 @@ def choices_unlike(post: ReviewPost, rows: RowsShown) -> bool:
                         shown[box.none[0]] = frozenset({"none"} if box.none[1] else ())
     for field, options in asked:
         shown[field] = frozenset(value for value, _, checked in options if checked)
-    return any(shown.get(field) != frozenset(values) for field, values in post.choices.items())
+    withdrew = {answer_field(*key) for key in post.withdrawn if key in rows.held}
+    posted = {answer_field(a.kind, a.subject): a for a in post.answers}
+
+    def unlike(field: str, values: tuple[str, ...]) -> bool:
+        if field in shown:
+            return shown[field] != frozenset(values)
+        if not values:
+            return field in withdrew
+        answer = posted.get(field)
+        if answer is not None and (answer.kind, answer.subject) in rows.held:
+            return rows.held[(answer.kind, answer.subject)] != answer.value
+        piece = field.removeprefix(answer_field("destination", ""))
+        return piece == field or values != (post.defaults.get(piece),)
+
+    return any(unlike(field, values) for field, values in post.choices.items())
 
 
 async def unshown_with_typing(
@@ -2537,7 +2567,12 @@ async def with_typing(
     drawn = {} if rows is None else cards_drawn(rows)
     if not done:
         typed = await typing_by_press(
-            request, shown=shown, as_sent=True, every_press=True, drawn=drawn
+            request,
+            shown=shown,
+            as_sent=True,
+            every_press=True,
+            drawn=drawn,
+            undrawn_beside_words=True,
         )
         note = TYPED_SAID if refused_with_choices else UNSHOWN_TYPED
         if post.press != "save" and post.dropped:
@@ -2665,18 +2700,24 @@ async def choices_said_lost(
     behind: bool,
     answers_read: list[Mapping[tuple[str, str], str]] | None = None,
 ) -> bool:
-    """What a resend or a conflict can't show, read from the record. On a page whose form carries
-    its choices (``current``, not ``behind``), an answer she cleared that the record still holds,
-    with its question gone. At another version, or past the page's revision, on a resend with no
-    conflict, whatever isn't what the record holds (past the revision with none cleared, as the
-    rows' own read holds it), or isn't offered. One exception: a question gone whose posted choice
-    the record still holds goes unsaid, since nothing tells it from one her first copy took off.
-    Past the page's version or revision, the answers its own read finds go in ``answers_read``."""
+    """What a resend, a conflict or a refused press can't show. On a page whose form carries its
+    choices (``current``, not ``behind``), an answer she cleared that the rows' read holds (beside a
+    conflict or a resend, the record), with its question gone. At another version, or past the
+    page's revision, on a resend with no conflict, whatever isn't what the record holds (past the
+    revision with none cleared, as the rows' own read holds it), or isn't offered. One exception: a
+    question gone whose posted choice the record still holds goes unsaid, since nothing tells it
+    from one her first copy took off. Past the page's version or revision, the answers its own read
+    finds go in ``answers_read``."""
     if rows is None:
         return False
     if current and not behind:
-        if not post.withdrawn or not (post.conflicted or own is not None):
+        if not post.withdrawn:
             return False
+        if not (post.conflicted or own is not None):
+            return any(
+                key in rows.held and answer_field(*key) not in rows.offered
+                for key in post.withdrawn
+            )
         held: Mapping[tuple[str, str], str] = await answers_held(state, draft_id)
         return any(key in held and answer_field(*key) not in rows.offered for key in post.withdrawn)
     if own is None or post.conflicted:
@@ -2760,7 +2801,9 @@ async def later_press(
                 request, state, found.draft_id, [THIS_ATTEMPT_SAVED], [OUT_OF_DATE]
             )
         kept = frozenset() if review is None else kept_for_later(review, post.corrections)
-        if kept and await typing_by_press(request, shown=kept, every_press=True):
+        if kept and await typing_by_press(
+            request, shown=kept, every_press=True, unchanged_too=True
+        ):
             lines = [THIS_ATTEMPT_SAVED, saved_for_later_at(state)]
             return await saved_for_later_with_typing(
                 request, state, found.draft_id, lines, [], kept_as=kept
@@ -2838,7 +2881,7 @@ async def saved_for_later_with_typing(
     typed = (
         await typing_by_press(request)
         if kept_as is None
-        else await typing_by_press(request, shown=kept_as, every_press=True)
+        else await typing_by_press(request, shown=kept_as, every_press=True, unchanged_too=True)
     )
     return templates.TemplateResponse(
         request,

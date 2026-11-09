@@ -15,7 +15,7 @@ signed is refused whole, so nothing of it is kept.
 import dataclasses
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from blossom.screenshot_page import (
@@ -643,11 +643,14 @@ def typed_for(
     return tuple(typed for typed in kept if (typed[2] if exact else typed[2].strip()))
 
 
-def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
+def typed_as_sent(
+    items: Sequence[tuple[str, str]], *, unchanged_too: bool = False
+) -> tuple[tuple[str, str, str], ...]:
     """Each box's text as it was sent, whitespace kept and a box of several lines with its line
-    endings made line feeds, unless it's empty or exactly its value with no correction. A box beside
-    carried words is drawn empty, so anything in it was typed; the words come back unless a date is
-    in that box with "No assigned date was given" unticked."""
+    endings made line feeds, unless it's empty or exactly its value with no correction (kept for a
+    class, title or instructions box with ``unchanged_too``). A box beside carried words is drawn
+    empty, so anything in it was typed; the words come back unless a date is in that box with "No
+    assigned date was given" unticked."""
     found: dict[tuple[str, str], str] = {}
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
@@ -676,7 +679,11 @@ def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str
             carried.setdefault((key, field), text)
             continue
         boxes.setdefault((key, field), text)
-        if text and not (text == canonical(text) and unchanged.get(named) == read_digest(text)):
+        worded = field in ROW_FIELDS or field.startswith("instruction:")
+        if text and (
+            (unchanged_too and worded)
+            or not (text == canonical(text) and unchanged.get(named) == read_digest(text))
+        ):
             found.setdefault((key, field), text)
     typed = [(key, field, text) for (key, field), text in found.items()]
     typed += [
@@ -693,11 +700,14 @@ def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str
 
 
 def typed_beside_words(
-    items: Sequence[tuple[str, str]], *, exact: bool = False
+    items: Sequence[tuple[str, str]],
+    *,
+    exact: bool = False,
+    drawn: Collection[tuple[str, str]] = (),
 ) -> tuple[tuple[str, str, str], ...]:
-    """As ``typed_for``, with a date box beside carried words as ``typed_as_sent`` gives it back:
-    what was sent in that box, even the date as read, and the words unless a date is in it with "No
-    assigned date was given" unticked; ``exact`` as ``typed_for`` takes it."""
+    """As ``typed_for`` (``exact`` as it takes it), with a date box beside carried words that isn't
+    ``drawn`` given back as ``typed_as_sent`` gives it: what was sent in it, even the date as read,
+    and the words unless a date is in it with "No assigned date was given" unticked."""
     carried: set[tuple[str, str]] = set()
     for name, _ in items:
         if not name.startswith("refused:"):
@@ -706,7 +716,8 @@ def typed_beside_words(
             key, field = (str(part) for part in json.loads(name.removeprefix("refused:")))
         except (ValueError, TypeError, RecursionError):
             continue
-        carried.add((key, field))
+        if (key, field) not in drawn:
+            carried.add((key, field))
     beside: dict[tuple[str, str], list[str]] = {}
     for key, field, text in typed_as_sent(items):
         if (key, field) in carried and text.strip():

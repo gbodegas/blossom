@@ -34889,6 +34889,37 @@ def test_save_for_later_with_each_reading_left_alone_redirects(
     assert copies_with_labels(answer) == []
 
 
+def test_save_for_later_gives_back_unpadded_instructions_and_not_a_date_ticked_as_none(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real presses: a padded reading posted without its padding beside a card whose date as read
+    stays in its box under "No assigned date was given". Only the instructions come back to copy,
+    and the no-date choice is stored."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_review_reading(
+            browser, monkeypatch, INSTRUCTION_READINGS["with outer spaces"]
+        )
+        box = correct_box(json.loads(box_subject(page, "instruction:0", 1))[0], "instruction:0")
+        date_box = f"correct:{box_subject(page, 'assigned')}"
+        posted = page_post(
+            page, "later", choose={none_given(page): "none"}, typed={box: "Do pages 1 to 2."}
+        )
+        answer = send(browser, draft_id, posted)
+        held = held_corrections(browser, draft_id)
+
+    text = page_text(answer)
+    assert box_text(page, date_box) == READ_ASSIGNED
+    assert answer.status_code == 200, answer.headers.get("location")
+    assert not recovery_of(answer).form
+    assert imports.THIS_ATTEMPT_SAVED in text
+    assert "Saved for later at " in text
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert copies_with_labels(answer) == [
+        ("Instructions for Set 3 (screenshot 1, card 2)", "Do pages 1 to 2.")
+    ]
+    assert held == {json.loads(date_box.removeprefix("correct:"))[0]: {"assigned": None}}
+
+
 # ------------------------------------------ a held answer cleared, its question off the page
 
 WRITE_OF_THE_PRESS: Final = {
