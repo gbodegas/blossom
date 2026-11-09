@@ -34166,3 +34166,24 @@ def test_words_a_tick_set_aside_come_back_once_named_by_the_title_the_post_retyp
     assert copies_with_labels(answer) == [
         (f"Assigned date for {RETYPED_NOW} (screenshot 1, card 1)", WORDS_BESIDE)
     ]
+
+
+def test_carried_words_on_the_committed_form_sit_under_the_neutral_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real presses past a store call for saved progress carrying words beside the second card's
+    empty date box: a Save of the first group leaves that row open. Saved progress still holds the
+    words; they come back to copy, labeled by the card the form draws, under the neutral note."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, units, piece, _ = two_cards_with_words(browser, monkeypatch)
+        answer = send(browser, draft_id, page_post(page, "save", tick=units[:1]))
+        held = held_corrections(browser, draft_id)
+
+    named = re.findall(r'visually-hidden"> for ([^<]*)</span>', review_form(answer.text))
+    labeled = {text: label for label, text in copies_with_labels(answer)}
+    assert answer.status_code == 200
+    assert 'value="save"' in answer.text
+    assert held == {piece: {"assigned": WORDS_BESIDE}}
+    assert labeled[WORDS_BESIDE].removeprefix("Assigned date for ") in named
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert not says(answer.text, imports.TYPED_SAID)
