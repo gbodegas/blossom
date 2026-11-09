@@ -33422,3 +33422,160 @@ def test_a_follow_up_keep_after_another_page_s_keep_stores_what_it_stores_today(
         }
     else:
         assert after[(kind, subject)][1] != before[(kind, subject)][1]
+
+
+# -------------------------------- a stale choice with no label, the default kept, supported typing
+
+
+def test_a_stale_found_row_whose_saved_row_left_the_record_names_its_card_without_a_label(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real presses, then a forced state: a row chosen on the find page, another page's Keep, then
+    that choice posted, with the found row left out of every review state worked out after the post
+    is read. With no label established, the 409 names the card alone. Ordinary-route reachability
+    is unestablished: no production step takes a saved row off the record."""
+    other_work = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([other_work])
+        draft_id, page, first, left, _, _ = two_groups(browser, monkeypatch)
+        piece = fields_named(review_form(page), "answer:destination:")[0]
+        found = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
+        )
+        chosen = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', found.text, re.S
+        )
+        assert chosen is not None
+        fields = [
+            (html.unescape(name), html.unescape(value))
+            for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', chosen.group(0))
+        ]
+        fresh = loaded(browser, draft_id)
+        other = send(browser, draft_id, page_post(fresh, "keep", tick=[first, left]))
+        assert other.status_code == 200
+        real_post, real_state = imports.review_post, screenshot_save.review_state
+        read: list[bool] = []
+
+        async def post_read(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            got = await real_post(*args, **kwargs)
+            read.append(True)
+            return got
+
+        def without_the_found_row(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            got = real_state(*args, **kwargs)
+            if not read:
+                return got
+            rows = {key: row for key, row in got.rows.items() if key != other_work.assignment_id}
+            return dataclasses.replace(got, rows=rows)
+
+        monkeypatch.setattr(imports, "review_post", post_read)
+        monkeypatch.setattr(imports, "review_state", without_the_found_row)
+        answer = send(browser, draft_id, fields)
+        monkeypatch.undo()
+
+    assert answer.status_code == 409
+    assert imports.OUT_OF_DATE in page_text(answer)
+    assert says(answer.text, FOUND_ROW_NOT_SELECTED_UNLABELED)
+    assert not says(answer.text, FOUND_ROW_NOT_SELECTED)
+
+
+# The line that names the card alone, where no destination label is established.
+FOUND_ROW_NOT_SELECTED_UNLABELED: Final = (
+    "Your choice for Sentence Composing (screenshot 1, card 1) isn't selected on this page."
+)
+
+
+def destinations_added(
+    before: Mapping[tuple[str, str], tuple[str, str]],
+    after: Mapping[tuple[str, str], tuple[str, str]],
+) -> set[tuple[str, str, str]]:
+    """The destination answers on file after that weren't before: (subject, value, digest)."""
+    return {
+        (subject, value, digest)
+        for (kind, subject), (value, digest) in after.items()
+        if kind == "destination" and (kind, subject) not in before
+    }
+
+
+def test_a_follow_up_keep_adds_the_default_destination_a_plain_load_s_keep_adds(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real presses, a card read under two days, another page's Keep splitting it: in one review
+    this page's Keep answers 409 and that form is kept unchanged; in another, from the same state,
+    a plain load is kept unchanged. Both add the same destinations by subject, value and digest."""
+    added: dict[str, set[tuple[str, str, str]]] = {}
+    for route in ("the follow-up", "a plain load"):
+        with here(open_settings(tmp_path / route.replace(" ", "-"))) as browser:
+            draft_id, page, field = follow_up_review(
+                browser, monkeypatch, "a card read under two days"
+            )
+            fresh = loaded(browser, draft_id)
+            value = unchecked_value(fresh, field)
+            other = page_post(fresh, "keep", tick=ticked_on(fresh), choose={field: value})
+            assert send(browser, draft_id, other).status_code == 200
+            before = answers_on_file(browser, draft_id)
+            if route == "the follow-up":
+                refused = send(browser, draft_id, page_post(page, "keep", tick=ticked_on(page)))
+                assert refused.status_code == 409
+                shown = refused.text
+            else:
+                shown = loaded(browser, draft_id)
+            kept = send(browser, draft_id, page_post(shown, "keep", tick=ticked_on(shown)))
+            assert kept.status_code == 200
+            added[route] = destinations_added(before, answers_on_file(browser, draft_id))
+
+    assert added["the follow-up"]
+    assert added["the follow-up"] == added["a plain load"]
+
+
+# Supported typing within the limits, one box at a time on a freshly emitted form.
+SUPPORTED_TYPING: Final[dict[str, tuple[str, str]]] = {
+    "a title with outer spaces": ("title", "  Typed words  "),
+    "a class with outer spaces": ("course", " Math 8 "),
+    "an instruction with a trailing line break": ("instruction", "Read pages 4-5\n"),
+    "another date": ("assigned", "2026-10-07"),
+    "a corrected title": ("title", "Set 3 retyped"),
+}
+
+
+@pytest.mark.parametrize("press", ["keep", "later", "save"])
+@pytest.mark.parametrize("typing", list(SUPPORTED_TYPING))
+def test_supported_typing_on_a_fresh_form_is_never_refused_as_an_unmatched_post(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, typing: str
+) -> None:
+    """Real presses: a two-card review loaded fresh, one box of the second row typed as named, the
+    form otherwise as emitted. No press is refused as a post that doesn't match its page: Keep and
+    Save answer 200, and Save for later saves the review, by redirect or by its page of copies."""
+    field, text = SUPPORTED_TYPING[typing]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, _, _, boxes, _ = two_groups(browser, monkeypatch)
+        fresh = loaded(browser, draft_id)
+        if field == "assigned":
+            box = [
+                "correct:" + subject
+                for subject in fields_named(review_form(fresh), "correct:")
+                if json.loads(subject)[1] == "assigned"
+            ][-1]
+        else:
+            box = boxes[field]
+        answer = send(browser, draft_id, page_post(fresh, press, typed={box: text}))
+        shown = followed(browser, answer)
+
+    for refusal in ("keep_invalid", "later_invalid", "save_invalid", "too_large"):
+        assert not says(shown, imports.PRESS_SAID[refusal])
+    if press == "later":
+        assert (answer.status_code, says(shown, imports.PRESS_SAID["later"])) == (303, True) or (
+            answer.status_code,
+            says(shown, imports.THIS_ATTEMPT_SAVED),
+        ) == (200, True)
+    else:
+        assert answer.status_code == 200
