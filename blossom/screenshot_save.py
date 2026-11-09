@@ -632,6 +632,8 @@ class ReviewState:
     rework: "Rework" = dataclasses.field(default=lambda _: (Validation((), {}), ()), compare=False)
     """The checks and preview another mapping of these pieces would have, as an offer shows it,
     against the same record and answers."""
+    every_row: tuple[ScreenshotRow, ...] = dataclasses.field(default=(), compare=False)
+    """Every row of the review, those set aside included, read only to name what a press typed."""
 
     @property
     def by_name(self) -> dict[str, Piece]:
@@ -682,7 +684,7 @@ def review_state(
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
     }
     due_read = {subject: value for (kind, subject), value in values.items() if kind == "due_read"}
-    pieces, asking, _ = pieces_from(
+    pieces, asking, every_row = pieces_from(
         tables.readings, split, tables.discards, now, corrections, due_read
     )
     by_name = {p.name: p for p in pieces}
@@ -797,6 +799,7 @@ def review_state(
         asked,
         {key: value for key, (value, _) in tables.answers.items()},
         rework,
+        tuple(every_row),
     )
 
 

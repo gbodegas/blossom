@@ -112,9 +112,8 @@ class ReviewPost:
     """Each instruction question ticked beside "None of these apply", by its field, with its
     values as posted: the press is refused whole, and they go back as posted."""
     choices: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
-    """On a Save press, or a press with a conflict or a kept row that isn't on the record: each
-    signed question's posted values, a checkbox left unticked among them as no values, for the page
-    to show them as they were sent. A radio left empty isn't a choice, and isn't here."""
+    """Each signed question's posted values, a checkbox left unticked among them as no values, for
+    the page to show them as they were sent. A radio left empty isn't a choice, and isn't here."""
     unresolved: tuple[str, ...] = ()
     """Each instruction question, by its field, whose posted choice names a kept row that isn't on
     the record: the press is refused whole, as a conflict is, and its typing and the choices that
@@ -430,9 +429,7 @@ def read_review(
         needed=folded.needed,
         both=folded.both,
         conflicted=conflicted,
-        choices=_posted_choices(offered, chosen, rest)
-        if conflicted or unresolved or presses[0] == "save"
-        else {},
+        choices=_posted_choices(offered, chosen, rest),
         unresolved=tuple(unresolved),
         dropped=folded.dropped,
     )
@@ -604,13 +601,16 @@ def typed_back(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
     return tuple((field, text) for _, field, text in typed_for(items))
 
 
-def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
+def typed_for(
+    items: Sequence[tuple[str, str]], *, exact: bool = False
+) -> tuple[tuple[str, str, str], ...]:
     """Each correction a post typed, by the row or piece it names, its field and its text, in the
     order it was posted: a box's text that differs from its value with no correction as the
     ``read:`` field beside it names it, or for a date box posted empty, the date Blossom couldn't
     read that was carried beside it. Read from the post alone, never from the review, to give
     back as typed when the review can't take it; a name that doesn't name a correction is passed
-    over."""
+    over. With ``exact``, whitespace counts: a box is passed over only when it is exactly its value
+    with no correction, and whitespace-only text comes back, as ``typed_as_sent`` reads them."""
     found: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
     unchanged = {
@@ -631,7 +631,7 @@ def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], .
             continue
         text = correction_text(field, value)
         if prefix == "correct:":
-            if unchanged.get(named) == read_digest(text):
+            if unchanged.get(named) == read_digest(text) and (not exact or text == canonical(text)):
                 continue
             found.setdefault((key, field), text)
         else:
@@ -639,7 +639,8 @@ def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], .
     for subject, text in carried.items():
         if not found.get(subject, "").strip():
             found[subject] = text
-    return tuple((key, field, text) for (key, field), text in found.items() if text.strip())
+    kept = [(key, field, text) for (key, field), text in found.items()]
+    return tuple(typed for typed in kept if (typed[2] if exact else typed[2].strip()))
 
 
 def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
@@ -691,10 +692,12 @@ def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str
     return tuple(typed)
 
 
-def typed_beside_words(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
+def typed_beside_words(
+    items: Sequence[tuple[str, str]], *, exact: bool = False
+) -> tuple[tuple[str, str, str], ...]:
     """As ``typed_for``, with a date box beside carried words as ``typed_as_sent`` gives it back:
     what was sent in that box, even the date as read, and the words unless a date is in it with "No
-    assigned date was given" unticked."""
+    assigned date was given" unticked; ``exact`` as ``typed_for`` takes it."""
     carried: set[tuple[str, str]] = set()
     for name, _ in items:
         if not name.startswith("refused:"):
@@ -709,7 +712,7 @@ def typed_beside_words(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str
         if (key, field) in carried and text.strip():
             beside.setdefault((key, field), []).append(text)
     typed: list[tuple[str, str, str]] = []
-    for key, field, text in typed_for(items):
+    for key, field, text in typed_for(items, exact=exact):
         if (key, field) not in carried:
             typed.append((key, field, text))
         elif (key, field) in beside:

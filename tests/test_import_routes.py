@@ -7086,7 +7086,8 @@ def test_an_untouched_empty_instructions_box_answers_nothing_and_saves_nothing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The empty Instructions box left as it is, or holding only spaces: no correction is kept
-    or saved for later, the question stays to answer, and the card isn't saved."""
+    or saved for later, the question stays to answer, and the card isn't saved. The page the press
+    answers with holds the spaces as sent."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, box, _ = wordless_review(browser, monkeypatch)
         before = assignment_count(browser)
@@ -7103,9 +7104,9 @@ def test_an_untouched_empty_instructions_box_answers_nothing_and_saves_nothing(
         after = assignment_count(browser)
 
     unsure = screenshot_page.OPEN_NAMES["confirm"]
-    for shown in (kept, spaces, later_page):
+    for shown, in_the_box in ((kept, ""), (spaces, "  \n "), (later_page, "")):
         assert says(shown, f"Still to answer: {unsure}.")
-        assert box_of(review_form(shown), box)[1] == ""  # type: ignore[index]
+        assert box_of(review_form(shown), box)[1] == in_the_box  # type: ignore[index]
         assert not says(shown, screenshot_page.SAID["not_saved_yet"])
     assert held == {}
     assert says(refused, REFUSED_OPEN)
@@ -13842,11 +13843,11 @@ def test_a_rendered_field_holding_the_exact_text_needs_no_copy(
     assert says(answer.text, imports.PRESS_SAID["unsaved_typing"])
 
 
-def test_a_stray_space_is_kept_as_sent_and_the_changes_line_stays(
+def test_a_stray_space_stays_in_its_box_as_sent_and_the_changes_line_stays(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The box shows the text without its stray space and line break, so it doesn't hold what was
-    sent, and that comes back as it was sent. The row is still shown, so the line about it stays."""
+    """Each box holds the text as sent, its stray space and line break included, so nothing comes
+    back to copy. The row is still shown, so the line about it stays."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(
             browser,
@@ -13869,10 +13870,9 @@ def test_a_stray_space_is_kept_as_sent_and_the_changes_line_stays(
         }
         answer = send(browser, draft_id, page_post(page, "save", tick=[first], typed=typed))
 
-    assert sorted(html.unescape(text) for text in TYPED_BACK.findall(answer.text)) == [
-        "Line one.\n",
-        "Spaced ",
-    ]
+    assert TYPED_BACK.findall(answer.text) == []
+    assert drawn_value(answer.text, correct_box(key, "title")) == "Spaced "
+    assert as_lf(drawn_text(answer.text, correct_box(key, "instruction:0"))) == "Line one.\n"
     assert says(answer.text, imports.PRESS_SAID["unsaved_typing"])
 
 
@@ -19573,12 +19573,12 @@ def test_a_box_of_a_card_read_with_no_words_on_a_closed_review(
 SAVE_GIVES_BACK: Final[dict[str, str | None]] = {
     "leading spaces": "  Typed Words",
     "trailing space": "Typed Words ",
-    "only spaces": None,
-    "stray space on an unchanged value": None,
-    "no-break space on an unchanged value": None,
-    "instruction, unchanged with a final line break": None,
+    "only spaces": "   ",
+    "stray space on an unchanged value": "Set 3 ",
+    "no-break space on an unchanged value": "Set 3\u00a0",
+    "instruction, unchanged with a final line break": f"{READ_INSTRUCTION}\n",
     "instruction, final line break": "Typed words.\n",
-    "instruction, only line breaks": None,
+    "instruction, only line breaks": "\n\n",
 }
 """What a Save press on an ended review gives back of each way a box can be sent."""
 
@@ -19604,16 +19604,18 @@ def test_save_on_an_ended_review_keeps_its_own_reading_of_the_boxes(
 
 
 @pytest.mark.parametrize("read", list(INSTRUCTION_READINGS))
-def test_save_on_a_closed_review_gives_no_box_for_any_reading_left_alone(
+def test_save_on_a_closed_review_gives_back_only_a_padded_reading_left_alone(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, read: str
 ) -> None:
+    """A clean reading left alone gives nothing back. A limit, as on Keep and Save for later: a
+    reading with whitespace at its edge can't be told from a typed stray space, so it comes back."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_review_reading(browser, monkeypatch, INSTRUCTION_READINGS[read])
         posted = page_post(page, "save")
         discarded(browser, draft_id)
         answer = send(browser, draft_id, posted)
 
-    assert copied(answer) == set()
+    assert copied(answer) == ({INSTRUCTION_READINGS[read]} if read in PADDED_READINGS else set())
 
 
 @pytest.mark.parametrize(
@@ -19627,11 +19629,11 @@ def test_save_on_a_closed_review_gives_no_box_for_any_reading_left_alone(
     ],
 )
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_an_everyday_press_on_an_open_review_answers_with_its_box_stripped(
+def test_an_everyday_press_on_an_open_review_answers_with_its_box_as_sent(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, sent: str, in_the_box: str
 ) -> None:
-    """A limit: outer whitespace on an ordinary press comes back stripped in its box, with no copy
-    and with Save for later's redirect."""
+    """Outer whitespace on an ordinary press: Keep's page holds the box as sent, with no copy; Save
+    for later redirects, and the page it leads to holds what was saved, stripped."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
         box = correct_box(other, "title")
@@ -19642,7 +19644,7 @@ def test_an_everyday_press_on_an_open_review_answers_with_its_box_stripped(
     assert copied(answer) == set()
     assert not says(answer.text, imports.UNSHOWN_TYPED)
     assert not says(answer.text, imports.TYPED_SAID)
-    assert box_text(shown, box) == in_the_box
+    assert box_text(shown, box) == (sent if press == "keep" else in_the_box)
 
 
 # ------------------------------------------------- "No assigned date" beside words it sets aside
@@ -19710,7 +19712,7 @@ def test_no_date_on_keep_gives_the_words_back_under_the_neutral_note(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, shape: int
 ) -> None:
     """The answers are kept, the tick stands, the words it set aside come back to copy, and a stray
-    space typed on another box stays as an everyday press leaves it."""
+    space typed on another box stays in that box as sent."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, piece, none = words_beside_a_date_box(browser, monkeypatch, shape)
         title = correct_box(json.loads(box_subject(reopened, "title"))[0], "title")
@@ -19730,7 +19732,7 @@ def test_no_date_on_keep_gives_the_words_back_under_the_neutral_note(
     assert WORDS_BESIDE not in html.unescape(form)
     tick = escape(f"none:{none}")
     assert f'name="{tick}" value="none" checked' in form
-    assert box_text(answer.text, title) == "Typed Words"
+    assert box_text(answer.text, title) == "Typed Words "
     if shape == 4:
         assert held == {piece: {"assigned": WORDS_BESIDE}}
 
@@ -19837,8 +19839,8 @@ def test_no_date_gives_back_spaces_sent_in_the_date_box_beside_the_words(
 @pytest.mark.parametrize(
     ("carried", "in_the_box", "typing"),
     [
-        ("   ", "", set()),
-        ("\u00a0", "", set()),
+        ("   ", "", {"   "}),
+        ("\u00a0", "", {"\u00a0"}),
         (WORDS_BESIDE, "   ", {WORDS_BESIDE}),
     ],
     ids=["only spaces carried", "a no-break space carried", "spaces in the box"],
@@ -21420,7 +21422,8 @@ def test_a_conflict_that_sets_words_aside_gives_them_back_under_the_neutral_note
     assert CONFLICT_SAID in page_text(answer)
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert not says(answer.text, imports.TYPED_SAID)
-    assert copied(answer) == {WORDS_BESIDE, "Typed Words "}
+    assert copied(answer) == {WORDS_BESIDE}
+    assert box_text(answer.text, correct_box(other, "title")) == "Typed Words "
     assert before == after
     assert hidden_value(answer.text, "progress_revision") == signed
     shown = [option for option, ticked in options_of(answer.text, question) if ticked]
@@ -21440,11 +21443,12 @@ def test_save_s_conflict_that_sets_words_aside_keeps_its_own_note(
     assert answer.status_code == 422
     assert says(answer.text, imports.TYPED_SAID)
     assert not says(answer.text, imports.UNSHOWN_TYPED)
-    assert copied(answer) == {WORDS_BESIDE, "Typed Words "}
+    assert copied(answer) == {WORDS_BESIDE}
+    assert box_text(answer.text, correct_box(other, "title")) == "Typed Words "
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_a_conflict_that_sets_no_words_aside_keeps_its_note(
+def test_a_conflict_that_sets_no_words_aside_holds_its_typing_in_its_box(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
@@ -21455,9 +21459,10 @@ def test_a_conflict_that_sets_no_words_aside_keeps_its_note(
         answer = send(browser, draft_id, posted)
 
     assert answer.status_code == 422
-    assert says(answer.text, imports.TYPED_SAID)
+    assert copied(answer) == set()
+    assert not says(answer.text, imports.TYPED_SAID)
     assert not says(answer.text, imports.UNSHOWN_TYPED)
-    assert copied(answer) == {"Typed Words "}
+    assert box_text(answer.text, correct_box(other, "title")) == "Typed Words "
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
@@ -21509,12 +21514,11 @@ def test_a_conflict_with_the_date_as_read_beside_the_words_gives_back_both(
     ids=["an empty box", "the date as read", "another date", "a five-digit year"],
 )
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_a_limit_other_row_stray_spaces_on_refused_pages_get_no_copy_on_a_conflict(
+def test_another_row_s_stray_space_stays_in_its_box_on_a_conflict(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, sent: str, typing: set[str]
 ) -> None:
-    """A limit, and not what this page should do: a stray space on another row's value comes back
-    stripped in its box with no copy, as on an everyday page. The date and the words beside the tick
-    still come back exactly."""
+    """A stray space on another row's value stays in its box as sent, with no copy. The date and
+    the words beside the tick still come back exactly."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, none, other = conflict_with_words(browser, monkeypatch, words=True)
         row = next(
@@ -21531,7 +21535,7 @@ def test_a_limit_other_row_stray_spaces_on_refused_pages_get_no_copy_on_a_confli
     assert answer.status_code == 422
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert copied(answer) == typing
-    assert box_text(answer.text, title) == drawn
+    assert box_text(answer.text, title) == f"{drawn} "
 
 
 def test_save_s_conflict_with_the_date_as_read_beside_the_words_keeps_its_own_reading(
@@ -21987,8 +21991,8 @@ def test_an_earlier_save_whose_page_fails_on_an_ended_review_gives_back_exact_wh
 @pytest.mark.parametrize(
     ("field", "sent", "typing"),
     [
-        ("title", "Set 3 ", set()),
-        ("instruction:0", "   ", set()),
+        ("title", "Set 3 ", {"Set 3 "}),
+        ("instruction:0", "   ", {"   "}),
         ("title", "Typed Words ", {"Typed Words "}),
     ],
 )
@@ -22281,10 +22285,10 @@ def test_a_limit_an_altered_post_on_an_open_review_redirects_with_its_typing_los
 
 @pytest.mark.parametrize("how", ["saved", "set aside", "its screenshot removed"])
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_a_limit_typing_on_a_row_another_tab_took_is_refused_with_no_copy(
+def test_typing_on_a_row_another_tab_took_comes_back_to_copy(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, how: str
 ) -> None:
-    """A limit where rows are still drawn: typing on a row another tab set aside gets no copy. With
+    """Typing on a row another tab set aside comes back to copy while the other rows are drawn. With
     its only screenshot removed, no rows are left, and every box comes back to copy; behind another
     tab's committed Save, the page draws no form and does the same."""
     typed_words = "Words On A Row That Went"
@@ -22305,12 +22309,11 @@ def test_a_limit_typing_on_a_row_another_tab_took_is_refused_with_no_copy(
 
     assert answer.status_code == 409
     assert imports.OUT_OF_DATE in page_text(answer)
+    assert copied(answer) == {typed_words}
     if how in ("its screenshot removed", "saved"):
-        assert copied(answer) == {typed_words}
         assert 'name="press"' not in answer.text
     else:
-        assert typed_words not in html.unescape(answer.text)
-        assert copied(answer) == set()
+        assert typed_words not in html.unescape(review_form(answer.text))
 
 
 def row_saved_in_another_tab(browser: TestClient, draft_id: str, row: str, none: str) -> None:
@@ -22325,11 +22328,11 @@ def row_saved_in_another_tab(browser: TestClient, draft_id: str, row: str, none:
 
 @pytest.mark.parametrize("how", ["set aside", "its screenshot removed", "saved"])
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
-def test_a_limit_words_beside_a_date_on_one_of_two_rows_another_tab_took_get_no_copy(
+def test_words_beside_a_date_on_one_of_two_rows_another_tab_took_come_back_to_copy(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, how: str
 ) -> None:
-    """A limit while the page isn't behind: words beside a date on a row another tab took get no
-    copy. Behind that tab's Save for later, the page draws no form and gives the words back."""
+    """Words beside a date on a row another tab took come back to copy while the other row is drawn.
+    Behind that tab's Save for later, the page draws no form and gives the words back."""
     screenshots = 2 if how == "its screenshot removed" else 1
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, _, piece, none = two_cards_with_words(
@@ -22353,7 +22356,7 @@ def test_a_limit_words_beside_a_date_on_one_of_two_rows_another_tab_took_get_no_
         assert imports.OUT_OF_DATE in page_text(answer)
         assert 'name="press"' not in answer.text
         return
-    assert copied(answer) == set()
+    assert copied(answer) == {WORDS_BESIDE}
     boxes = [json.loads(box) for box in fields_named(review_form(answer.text), "correct:")]
     titles = [key for key, field in boxes if field == "title"]
     assert row not in titles
@@ -22842,7 +22845,7 @@ def test_save_with_a_refused_read_keeps_its_own_reading_of_the_boxes(
 
     assert answer.status_code == status
     assert imports.REVIEW_NOT_SHOWN in page_text(answer)
-    assert copied(answer) == typing
+    assert copied(answer) == ({sent} if read == "its own read" else typing)
 
 
 @pytest.mark.parametrize(
@@ -23710,9 +23713,7 @@ def test_an_earlier_save_with_empty_counts_and_its_post_unread_says_so(
 
     assert len(reads.refused) == 2
     assert len(read) == 1
-    says_the_counts_and_the_review_unshown(
-        answer, beside.draft_id, [] if press == "save" else beside.typing
-    )
+    says_the_counts_and_the_review_unshown(answer, beside.draft_id, beside.typing)
     says_nothing_of_kept_answers(answer)
 
 
@@ -27447,12 +27448,12 @@ WORDS_WITH_NO_POST_TO_READ: Final[dict[str, tuple[str, bool, set[str], set[str]]
 """What's sent in a date box beside carried words: the text, whether "No assigned date" is ticked,
 what comes back on Keep or Save for later, and what comes back on Save."""
 TYPING_WITH_NO_POST_TO_READ: Final[dict[str, tuple[str, str, bool]]] = {
-    "a stray space on a title": ("title", "Set 3 ", False),
-    "only spaces in an instruction": ("instruction:0", "   ", False),
+    "a stray space on a title": ("title", "Set 3 ", True),
+    "only spaces in an instruction": ("instruction:0", "   ", True),
     "typed words": ("title", "Typed Words", True),
 }
 """What's typed on a row with no words beside it: the field, the text, and whether Save gives it
-back, where Keep and Save for later always do."""
+back, as Keep and Save for later do."""
 
 
 def says_the_save_and_gives_the_typing_back(answer: Answer, typing: set[str]) -> None:
@@ -27563,9 +27564,11 @@ def test_an_earlier_save_with_no_post_to_read_gives_back_a_padded_reading_left_a
 
 
 @pytest.mark.parametrize("route", NO_POST_TO_READ)
-def test_save_with_no_post_to_read_redirects_past_a_padded_reading_left_alone(
+def test_save_with_no_post_to_read_gives_back_a_padded_reading_left_alone(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str
 ) -> None:
+    """A limit, as on Keep and Save for later: a padded reading left alone needs its exact copy, so
+    the page answers 200 with it instead of redirecting."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first = an_earlier_save_on_a_reading(
             browser, monkeypatch, "with outer spaces"
@@ -27574,11 +27577,8 @@ def test_save_with_no_post_to_read_redirects_past_a_padded_reading_left_alone(
         fields = earlier_save_past_its_post(route, posted, monkeypatch)
         answer = send(browser, draft_id, fields)
         monkeypatch.undo()
-        shown = followed(browser, answer)
 
-    assert answer.status_code == 303
-    assert copied(answer) == set()
-    assert says(shown, "Saved: 1 new assignment.")
+    says_the_save_and_gives_the_typing_back(answer, {INSTRUCTION_READINGS["with outer spaces"]})
 
 
 @pytest.mark.parametrize("case", list(WORDS_WITH_NO_POST_TO_READ))
@@ -27607,6 +27607,8 @@ def test_save_with_no_post_to_read_keeps_its_own_reading_of_a_date_beside_words(
 def test_save_with_no_post_to_read_keeps_its_own_reading_of_the_boxes(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
+    """Each box sent with text comes back exactly on a 200 page; with nothing typed, nothing needs
+    returning, and the press still redirects."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, other = a_saved_row(browser, monkeypatch)
         field, sent, comes_back = TYPING_WITH_NO_POST_TO_READ.get(case, ("title", "", False))
@@ -32348,17 +32350,23 @@ def test_a_save_leaving_a_row_open_draws_its_boxes_with_their_outer_whitespace_a
 def test_a_save_storing_a_spaced_row_gives_back_its_title_class_and_instructions_exactly(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Real presses: Keep with outer spaces and line breaks typed on one row, then from a fresh load
-    a Save of every group with the same typing; the row stores stripped text, so each comes back."""
+    """Real presses: Save for later with outer spaces and line breaks typed on one row, then from a
+    fresh load, which offers both groups, a Save of both with the same typing. The row stores
+    stripped text, so each box comes back exactly."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, left, boxes, _ = two_groups(browser, monkeypatch)
-        send(browser, draft_id, page_post(page, "keep", tick=[first, left], typed=spaced(boxes)))
+        later = page_post(page, "later", tick=[first, left], typed=spaced(boxes))
+        assert send(browser, draft_id, later).status_code == 303
         page = loaded(browser, draft_id)
+        assert {first, left} <= set(units_on(page))
         answer = send(
-            browser, draft_id, page_post(page, "save", tick=units_on(page), typed=spaced(boxes))
+            browser, draft_id, page_post(page, "save", tick=[first, left], typed=spaced(boxes))
         )
+        works = state_of(browser).project_state.all_assignments()
+        stored = {work.title: work.course for work in works}
 
     assert answer.status_code == 200
+    assert stored.get(SPACED_TITLE.strip()) == SPACED_CLASS.strip()
     copies = {as_lf(text) for text in copied(answer)}
     assert {SPACED_TITLE, SPACED_CLASS, SPACED_LINES} <= copies, sorted(copies)
 

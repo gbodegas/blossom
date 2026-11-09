@@ -121,6 +121,8 @@ SAID: Final = {
     "not_carried": (
         "Some of your choices can't be shown on this page. Check the review before trying again."
     ),
+    "not_selected": "Your choice for {card} isn't selected on this page.",
+    "not_selected_as": 'Your choice for {card} isn\'t selected on this page: "{destination}".',
     "unreadable": "The date given was \u201c{value}\u201d, which is not a date Blossom can read.",
     "new_assignment": "New assignment.",
     "already": "Already saved. Nothing new is written.",
@@ -234,6 +236,26 @@ def piece_text(places: Mapping[str, int], piece: Piece) -> str:
     where = "; ".join(card_text(places, c) for c in piece.cards) or "a card"
     day = f", assigned {day_text(piece.assigned)}" if piece.split and piece.assigned else ""
     return f"{piece.title} ({where}{day})"
+
+
+def cards_named(state: ReviewState, places: Mapping[str, int]) -> dict[str, str]:
+    """Each key a post names a box by, with the card the form draws that box for: a piece's dates
+    by the piece, a row's text by its first card on the page, a row set aside by its title and
+    places."""
+
+    def drawn_first(piece: Piece) -> tuple[bool, int, int, str]:
+        cards = [(places.get(c.sha256, 0), c.place) for c in piece.cards] or [(0, 0)]
+        return (piece.name in state.saved, *min(cards), piece.name)
+
+    out = {
+        row.key: f"{row.reading.title} ("
+        + ("; ".join(card_text(places, c) for c in row.sources) or "a card")
+        + ")"
+        for row in state.every_row
+    }
+    for piece in sorted(state.pieces, key=drawn_first, reverse=True):
+        out[piece.key] = out[dates_key(piece.name)] = piece_text(places, piece)
+    return out
 
 
 def change_said(told: ChangeTold) -> list[str]:
@@ -869,6 +891,9 @@ class RowsShown:
     progress: Corrections = dataclasses.field(default_factory=dict, kw_only=True)
     """The corrections the saved progress of the read these rows come from keeps, as a press
     posts them."""
+    unselected: tuple[str, ...] = dataclasses.field(default=(), kw_only=True)
+    """For each destination posted beside them (``destinations``) that no control shows selected,
+    the line naming its card, and the destination's label where the page establishes one."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1413,6 +1438,7 @@ def rows_shown(
     conflicted: Mapping[str, tuple[str, ...]] | None = None,
     own: frozenset[str] = frozenset(),
     progress: Corrections | None = None,
+    destinations: Mapping[str, str] | None = None,
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1733,7 +1759,56 @@ def rows_shown(
         },
         held=state.held,
         progress={} if progress is None else progress,
+        unselected=_unselected(state, places, labels, shown_units, destinations or {}),
     )
+
+
+def _destination_text(value: str) -> str:
+    """A destination as the answers table stores it, or the text unchanged when it isn't one."""
+    try:
+        return value_json(value_of(value))
+    except (ValueError, TypeError, RecursionError):
+        return value
+
+
+def _unselected(
+    state: ReviewState,
+    places: Mapping[str, int],
+    labels: Mapping[str, str],
+    units: Sequence[UnitShown],
+    named: Mapping[str, str],
+) -> tuple[str, ...]:
+    """A line for each destination in ``named``, by piece, that its card's control doesn't show
+    selected: with the label its choice shows, or names a saved row found under another name, and
+    with none otherwise. A card the page doesn't show says that some choices can't be shown."""
+    controls = {
+        card.name: card.control for unit in units for block in unit.blocks for card in block.cards
+    }
+    out: list[str] = []
+    for name, value in named.items():
+        control = controls.get(name)
+        piece = state.by_name.get(name)
+        if control is None or piece is None:
+            out.append(SAID["not_carried"])
+            continue
+        choices = {_destination_text(choice.value): choice for choice in control.choices}
+        shown = choices.get(value)
+        if shown is not None and shown.checked:
+            continue
+        label = None if shown is None else shown.label
+        if label is None:
+            chosen = value_of(value) if value.startswith("{") else {}
+            target = str(chosen.get("found", ""))
+            if target in state.rows:
+                holder = labels.get(target) or labels_for(list(state.rows.values()))[target]
+                label = f"Found under another name: {holder}"
+        card = piece_text(places, piece)
+        out.append(
+            SAID["not_selected"].format(card=card)
+            if label is None
+            else SAID["not_selected_as"].format(card=card, destination=label)
+        )
+    return tuple(dict.fromkeys(out))
 
 
 def _carried(

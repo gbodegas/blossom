@@ -15,6 +15,7 @@ said once on the review, from a short signed note kept in a cookie for that revi
 
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import hashlib
 import hmac
@@ -39,11 +40,13 @@ from blossom.routes.navigation import week_href
 from blossom.routes.store_refusals import busy_file as busy_file
 from blossom.screenshot_page import (
     NEEDED,
+    Box,
     ImageName,
     ListTooLarge,
     PostRefused,
     RowsShown,
     answer_field,
+    cards_named,
     change_said,
     kept_ref,
     labels_for,
@@ -77,7 +80,9 @@ from blossom.screenshot_save import (
     Saved,
     SaveOutcome,
     SavePress,
+    canonical,
     confirm_subject,
+    correction_text,
     review_state,
     save_homework,
     student_line,
@@ -617,7 +622,7 @@ async def gone_with_typing(
     post alone by its press (``typing_by_press``). A save that committed answers through
     ``saved_unread`` instead.
     Nothing of the review is shown, nothing is stored, and nothing more can be saved from it."""
-    typed = await typing_by_press(request)
+    typed = await typing_by_press(request, as_sent=True)
     return templates.TemplateResponse(
         request,
         "import_said.html",
@@ -647,7 +652,7 @@ async def unknown_outcome(
         "import_said.html",
         {
             "said": [UNKNOWN_SAID["homework"], *kept],
-            "typed": await typing_of(request),
+            "typed": await typing_of(request, as_sent=True),
             "typed_said": UNSHOWN_TYPED,
             "marks": marks_of(state),
             "page": "parent",
@@ -749,7 +754,9 @@ async def ended_under_press(
             notes=[*its_own, *beside_a_receipt],
         )
         status = 200 if answered else refused_status
-        return recorded or await unshown_with_typing(request, state, draft_id, its_own, status)
+        return recorded or await unshown_with_typing(
+            request, state, draft_id, its_own, status, as_sent=True
+        )
     except STORE_REFUSALS:
         recorded = await replayed(
             request,
@@ -760,7 +767,9 @@ async def ended_under_press(
             notes=[*its_own, *beside_a_receipt],
         )
         status = 200 if answered else refused_status
-        return recorded or await unshown_with_typing(request, state, draft_id, its_own, status)
+        return recorded or await unshown_with_typing(
+            request, state, draft_id, its_own, status, as_sent=True
+        )
     if now.closed_at is None:
         recorded = (
             await replayed(request, state, draft_id, its_kept, notes=its_own)
@@ -782,19 +791,32 @@ async def ended_under_press(
     )
 
 
+def copy_label(request: Request, key: str, field: str, *, by_card: bool) -> str:
+    """How a copy of a box is labeled: by its field, and with ``by_card`` for its card too, as the
+    review state its press's post was read against names it (``cards_named``), where one was."""
+    label = TYPED_LABELS[field.partition(":")[0]]
+    cards: Mapping[str, str] = getattr(request.state, "typed_cards", None) or {}
+    if not by_card:
+        return label
+    card = cards.get(key) or cards.get(key.removeprefix("date:").partition("|")[0])
+    return label if card is None else f"{label} for {card}"
+
+
 async def typing_of(
     request: Request,
     stored: Iterable[tuple[str, str, str]] = (),
     shown: Collection[tuple[str, str, str]] = (),
     *,
     beside_words: bool = False,
+    as_sent: bool = False,
 ) -> list[tuple[str, str]]:
     """Every correction a press's post typed, labeled, read from the post alone (``typed_for``),
     to give back as it was sent, in boxes to copy, where the review can't keep it. A correction is
     left out only when a box on the page holds that exact text (``shown``), or when its save shows
     it stored that exact text in that field (``stored``, the outcome's own evidence). An empty box
     or a hidden field beside it isn't either, whatever was ticked. With ``beside_words``, a date box
-    beside carried words comes back as ``typed_beside_words`` gives it."""
+    beside carried words comes back as ``typed_beside_words`` gives it; with ``as_sent``, each text
+    exactly as sent (``exact``), labeled by its card (``copy_label``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -802,39 +824,50 @@ async def typing_of(
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     evidence = set(stored)
     return [
-        (TYPED_LABELS[field.partition(":")[0]], text)
-        for key, field, text in (typed_beside_words if beside_words else typed_for)(items)
+        (copy_label(request, key, field, by_card=as_sent), text)
+        for key, field, text in (typed_beside_words if beside_words else typed_for)(
+            items, exact=as_sent
+        )
         if (key, field, text) not in evidence and (key, field, text) not in shown
     ]
 
 
 async def typing_by_press(
-    request: Request, stored: Iterable[tuple[str, str, str]] = (), *, beside_words: bool = False
+    request: Request,
+    stored: Iterable[tuple[str, str, str]] = (),
+    shown: Collection[tuple[str, str, str]] = (),
+    *,
+    beside_words: bool = False,
+    as_sent: bool = False,
+    every_press: bool = False,
 ) -> list[tuple[str, str]]:
     """What a post gives back when its press finds the review ended, on every page that says it
     can't be shown, beside a confirmed save's counts with no post to read, and on Save for later's
     page after a commit that set words aside, whether or not its read shows another tab saved
-    since: on a Save press, ``typing_of``, with ``beside_words`` passed on; on Keep or Save for
-    later, every box as it was sent, whitespace included (``typed_as_sent``)."""
+    since: on a Save press, ``typing_of``, with ``beside_words`` and ``as_sent`` passed on; on Keep
+    or Save for later, every box as it was sent, whitespace included (``typed_as_sent``), labeled by
+    its card with ``every_press``. Text a box on the page holds exactly (``shown``) is left out."""
     try:
         form = await form_of(request)
     except FormUnreadable:
         return []
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     if next((value for name, value in items if name == "press"), "") == "save":
-        return await typing_of(request, stored, beside_words=beside_words)
+        return await typing_of(request, stored, shown, beside_words=beside_words, as_sent=as_sent)
     return [
-        (TYPED_LABELS[field.partition(":")[0]], text) for _, field, text in typed_as_sent(items)
+        (copy_label(request, key, field, by_card=every_press), text)
+        for key, field, text in typed_as_sent(items)
+        if (key, field, text) not in shown
     ]
 
 
 def tick_set_aside(
-    post: ReviewPost, shown: Collection[tuple[str, str, str]] = ()
+    request: Request, post: ReviewPost, shown: Collection[tuple[str, str, str]] = ()
 ) -> list[tuple[str, str]]:
-    """What "No assigned date was given" set aside or was refused beside, labeled, as it was sent,
-    apart from what a box on the page holds exactly (``shown``)."""
+    """What "No assigned date was given" set aside or was refused beside, labeled by its card, as
+    it was sent, apart from what a box on the page holds exactly (``shown``)."""
     return [
-        (TYPED_LABELS[field], text)
+        (copy_label(request, key, field, by_card=True), text)
         for key, field, text in post.dropped
         if (key, field, text) not in shown
     ]
@@ -842,7 +875,8 @@ def tick_set_aside(
 
 def fields_shown(rows: RowsShown | None) -> frozenset[tuple[str, str, str]]:
     """Each correction box these rows show, by the key and field a post names it with and the text
-    it holds. With no rows, none."""
+    it holds, apart from a one-line box holding a line break, which its control drops. With no
+    rows, none."""
     if rows is None:
         return frozenset()
     return frozenset(
@@ -852,7 +886,80 @@ def fields_shown(rows: RowsShown | None) -> frozenset[tuple[str, str, str]]:
         for card in block.cards
         for box in card.boxes
         for key, field in [json.loads(box.subject)]
+        if box.kind != "text" or not {"\n", "\r"} & set(box.value)
     )
+
+
+def words_carried(rows: RowsShown | None) -> frozenset[tuple[str, str, str]]:
+    """The words each date box of these rows carries back beside it, by key, field and text."""
+    if rows is None:
+        return frozenset()
+    return frozenset(
+        (str(key), str(field), box.carried[1])
+        for unit in rows.units
+        for block in unit.blocks
+        for card in block.cards
+        for box in card.boxes
+        if box.carried is not None
+        for key, field in [json.loads(box.subject)]
+    )
+
+
+def boxes_as_sent(rows: RowsShown, items: Sequence[tuple[str, str]]) -> RowsShown:
+    """These rows with each text box whose value equals, once canonical, what the post sent in it
+    holding the text as sent, line endings made line feeds where its box has several lines."""
+    sent = {name: value for name, value in reversed(items) if name.startswith("correct:")}
+
+    def box_of(box: Box) -> Box:
+        if box.kind == "date" or box.name not in sent:
+            return box
+        field = str(json.loads(box.subject)[1])
+        text = correction_text(field, sent[box.name])
+        if canonical(text) != canonical(box.value):
+            return box
+        return dataclasses.replace(box, value=text)
+
+    return dataclasses.replace(
+        rows,
+        units=tuple(
+            dataclasses.replace(
+                unit,
+                blocks=tuple(
+                    dataclasses.replace(
+                        block,
+                        cards=tuple(
+                            dataclasses.replace(card, boxes=tuple(box_of(b) for b in card.boxes))
+                            for card in block.cards
+                        ),
+                    )
+                    for block in unit.blocks
+                ),
+            )
+            for unit in rows.units
+        ),
+    )
+
+
+def choices_unlike(post: ReviewPost, rows: RowsShown) -> bool:
+    """Whether a choice the post sent isn't what these rows show checked: its question isn't on the
+    page, or other values are checked there."""
+    shown: dict[str, frozenset[str]] = {}
+    asked = [(q.field, q.options) for q in rows.names]
+    asked += [(q.field, q.options) for q in rows.splits]
+    for unit in rows.units:
+        for block in unit.blocks:
+            asked += [(q.field, q.options) for q in block.questions]
+            for card in block.cards:
+                kinds = [*card.checks, *([] if card.type is None else [card.type])]
+                asked += [(q.field, q.options) for q in kinds]
+                field = answer_field("destination", card.name)
+                shown[field] = frozenset(c.value for c in card.control.choices if c.checked)
+                for box in card.boxes:
+                    if box.none is not None:
+                        shown[box.none[0]] = frozenset({"none"} if box.none[1] else ())
+    for field, options in asked:
+        shown[field] = frozenset(value for value, _, checked in options if checked)
+    return any(shown.get(field) != frozenset(values) for field, values in post.choices.items())
 
 
 async def unshown_with_typing(
@@ -861,13 +968,15 @@ async def unshown_with_typing(
     draft_id: str,
     said: Sequence[str],
     status: int,
+    *,
+    as_sent: bool = False,
 ) -> Response:
     """A press whose review the store refuses to read: the press's own lines, which say what it
     kept or failed to keep, its kept answers apart from the rest, then that the review can't be
     shown, every correction it typed given back to copy, by its press (``typing_by_press``), and the
     way back to the review. It reads no store and offers nothing that repeats the press; its status
-    is the press's own."""
-    typed = await typing_by_press(request)
+    is the press's own. ``as_sent`` goes to ``typing_by_press``."""
+    typed = await typing_by_press(request, as_sent=as_sent)
     lines = [
         shown for line in typing_here(said, typed) for shown in UNSHOWN_SAID.get(line, (line,))
     ]
@@ -903,7 +1012,7 @@ async def saved_unread(
     success panel whose heading takes the focus, with what else the press said beneath it and
     no word that the review is finished, since that isn't known, and every correction the press
     typed given back to copy, by its press (``typing_by_press``)."""
-    typed = await typing_by_press(request)
+    typed = await typing_by_press(request, as_sent=True)
     return saved_outcome(request, state, done, week, finished=False, typed=typed, notes=said)
 
 
@@ -916,12 +1025,13 @@ async def saved_busy(
     week: str | None = None,
     *,
     notes: Sequence[str] = (),
+    as_sent: bool = False,
 ) -> Response:
     """A save that committed whose review the store refuses to read: what it saved in the
     success panel, whose heading takes the focus, with ``notes`` beneath it; then, in the problem
     style, what else the press said as a page without the rows says it (``UNSHOWN_SAID``) and that
     the review can't be shown; every correction it typed given back to copy, by its press
-    (``typing_by_press``); and the way back to the review."""
+    (``typing_by_press``, with ``as_sent``); and the way back to the review."""
     lines = [shown for line in said for shown in UNSHOWN_SAID.get(line, (line,))]
     return saved_outcome(
         request,
@@ -929,7 +1039,7 @@ async def saved_busy(
         done,
         week,
         finished=False,
-        typed=await typing_by_press(request),
+        typed=await typing_by_press(request, as_sent=as_sent),
         notes=notes,
         problems=[*lines, REVIEW_NOT_SHOWN],
         typed_said=UNSHOWN_TYPED,
@@ -1072,8 +1182,8 @@ async def unshown(
     ``notes`` beneath it (``saved_busy``); else its own lines and status
     (``unshown_with_typing``)."""
     if done:
-        return await saved_busy(request, state, draft_id, done, said, notes=notes)
-    return await unshown_with_typing(request, state, draft_id, said, status or 503)
+        return await saved_busy(request, state, draft_id, done, said, notes=notes, as_sent=True)
+    return await unshown_with_typing(request, state, draft_id, said, status or 503, as_sent=True)
 
 
 STORE_REFUSALS: Final = (
@@ -1386,6 +1496,7 @@ async def rows_of(
     revision: int | None = None,
     own: frozenset[str] = frozenset(),
     answers_read: list[tuple[Mapping[tuple[str, str], str], Corrections] | None] | None = None,
+    destinations: Mapping[str, str] | None = None,
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1396,7 +1507,8 @@ async def rows_of(
     fresh one would let the next Save for later overwrite that tab's progress unseen. With a
     transaction left open the reads refuse, so rows are never made from what it holds. What its read
     of the review finds the answers to be, with the corrections saved progress keeps as worked out
-    here, goes in ``answers_read``, None with no review."""
+    here, goes in ``answers_read``, None with no review. Destinations an offer or a found row posted
+    (``destinations``) the rows don't select are said (``RowsShown.unselected``)."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
@@ -1436,6 +1548,7 @@ async def rows_of(
         conflicted=conflicted,
         own=own,
         progress=kept,
+        destinations=destinations,
     )
 
 
@@ -1974,7 +2087,8 @@ async def review_post(
     """The post read against what its page signed, or None when it doesn't match or the review
     has no homework to read it against, with the press it named. Kept rows are read only for a post
     its page signed. Anything in it nested too deep to read doesn't match either. A signed list past
-    its ceiling is left for the caller to answer (``ListTooLarge``)."""
+    its ceiling is left for the caller to answer (``ListTooLarge``). A post that matches leaves the
+    cards its boxes are drawn for on the request alone, to label its copies (``copy_label``)."""
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
@@ -1982,12 +2096,15 @@ async def review_post(
     review = await state_of_review(state, found, saved)
     if review is None:
         return None, named
+    places = {image.sha256: index + 1 for index, image in enumerate(found.images)}
     try:
         if any(name == "offer" for name, _ in items):
             post = read_change(items, found.page_key, review, saved)
+            request.state.typed_cards = cards_named(review, places)
             return dataclasses.replace(post, held=review.held), "keep"
         kept = await kept_words(state, kept_assignments(items, found.page_key))
         post = read_review(items, found.page_key, review, kept)
+        request.state.typed_cards = cards_named(review, places)
         return dataclasses.replace(post, held=review.held), named
     except ListTooLarge:
         raise
@@ -2203,12 +2320,12 @@ async def with_typing(
     in a box holding it, in the save's evidence (``saved``) or in a box to copy, and two lines are
     said here, beside them: that answers are kept on the rows left open (``answered``), and that
     changes on the rows below aren't saved yet, when a box for one (``unsaved``) is among those
-    shown. A Save press with no save committed also gives back what no box holds, as does a press
-    refused with its choices. With no earlier save to answer with, Keep or Save for later gives back
-    what "No assigned date was given" set aside or was refused beside, the words and anything sent
-    in the box beside them, under ``UNSHOWN_TYPED`` (``tick_set_aside``), and signs the revision its
-    page read; refused with its choices beside such words, it adds them to what no box holds, under
-    that note. An earlier save's page with rows gives back what no box holds under ``TYPED_SAID``.
+    shown. Each box holds the text its post sent where that equals its value once canonical
+    (``boxes_as_sent``). Any press with no save committed gives back each box as sent that no box
+    holds exactly (``typing_by_press``), labeled by its card; Keep or Save for later adds what "No
+    assigned date was given" set aside or was refused beside, the words and anything sent in the box
+    beside them, under ``UNSHOWN_TYPED`` (``tick_set_aside``), and signs the revision its page read.
+    An earlier save's page with rows gives back what no box holds under ``TYPED_SAID``.
     Any press with no save committed, if its review has ended before its rows, says that instead of
     its own line, and a Save press says it can't tell if a transaction was left open meanwhile. It
     keeps a line saying Keep's or Save for later's own write failed, or that any press's can't be
@@ -2229,8 +2346,12 @@ async def with_typing(
     nothing more, and comes back the same way with no conflict: at the page's version its choices as
     posted, and at another, or past the page's revision, that they can't be shown if they aren't
     what the record holds or aren't offered, with one exception (``choices_said_lost``). Any other
-    too long or cleared box's press, with no conflict, carries nothing. What a receipt's press kept
-    itself (``notes``) goes in the page's status block, ahead of "Not saved yet", where rows are
+    press refused at its page's version and revision, by a too long or cleared box (422) or a busy
+    write (503), comes back with its choices as posted too; at another version, it carries none and
+    says they can't be shown where one it posted isn't what the page shows (``choices_unlike``). An
+    offer's or a found row's destination the page doesn't select is named, out of date
+    (``RowsShown.unselected``). What a receipt's press kept itself (``notes``) goes in the page's
+    status block, ahead of "Not saved yet", where rows are
     drawn, and beneath the save's result, outside the problem alert, where they aren't: as it
     stands, or if the rows came back empty as one more read has it (``kept_past_empty_rows``,
     ``counted``). Rows that come back empty with the review open draw no form, and give every box
@@ -2272,7 +2393,10 @@ async def with_typing(
     current = post.version == after.version
     refused_with_choices = bool(post.conflicted or post.unresolved)
     with_choices = refused_with_choices or bool(post.both)
-    carry = refused_with_choices or own is not None
+    carry = (
+        refused_with_choices or own is not None or (current and not behind and status in (422, 503))
+    )
+    stale = found is not None and not post.ticked and not current
     if refused_with_choices and not current:
         lines += [PAGE_SAID["not_carried"]] if done else [OUT_OF_DATE, PAGE_SAID["not_carried"]]
     answers_read: list[tuple[Mapping[tuple[str, str], str], Corrections] | None] = []
@@ -2291,6 +2415,9 @@ async def with_typing(
             revision=revision,
             own=own or frozenset(),
             answers_read=answers_read,
+            destinations={a.subject: a.value for a in post.answers if a.kind == "destination"}
+            if stale
+            else None,
         )
         said_lost = await choices_said_lost(
             state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost
@@ -2314,6 +2441,12 @@ async def with_typing(
             else None
         )
         return recorded or await unshown(request, state, draft_id, said, status, done, notes=notes)
+    if rows is not None:
+        lines[len(said) + len(notes) : len(said) + len(notes)] = rows.unselected
+        with contextlib.suppress(FormUnreadable):
+            form = await form_of(request)
+            sent = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
+            rows = boxes_as_sent(rows, sent)
     if rows is None and not done:
         read_again: list[DraftSnapshot] = []
         ended = await ended_under_press(
@@ -2347,7 +2480,11 @@ async def with_typing(
             if said_lost or (current and lost):
                 lines.append(PAGE_SAID["not_carried"])
         elif said_lost or (
-            current and (rows.not_carried or not ticks_shown.issuperset(post.units))
+            current
+            and (
+                rows.not_carried
+                or (refused_with_choices and not ticks_shown.issuperset(post.units))
+            )
         ):
             lines.append(PAGE_SAID["not_carried"])
     if post.unresolved and PAGE_SAID["not_carried"] not in lines:
@@ -2374,14 +2511,18 @@ async def with_typing(
             notes=notes,
             behind=True,
         )
+    moved = not current and status in (409, 422, 503) and own is None
+    if moved and not refused_with_choices and rows is not None and choices_unlike(post, rows):
+        lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
     if not done:
-        if post.press != "save" and not refused_with_choices:
-            typed, note = tick_set_aside(post, shown), UNSHOWN_TYPED
-        else:
-            typed, note = await typing_of(request, (), shown), TYPED_SAID
-            if post.press != "save" and post.dropped:
-                typed += [item for item in tick_set_aside(post, shown) if item not in typed]
-                note = UNSHOWN_TYPED
+        beside = (
+            frozenset() if post.press == "save" or refused_with_choices else words_carried(rows)
+        )
+        typed = await typing_by_press(request, shown=shown | beside, as_sent=True, every_press=True)
+        note = TYPED_SAID
+        if post.press != "save" and post.dropped:
+            typed += [item for item in tick_set_aside(request, post, shown) if item not in typed]
+            note = UNSHOWN_TYPED
         return review_page(
             request, state, after, lines, status, rows=rows, typed=typed, typed_said=note
         )
@@ -2390,7 +2531,7 @@ async def with_typing(
         return await saved_busy(
             request, state, draft_id, done, ended_lines(said, saved=True), notes=kept_line
         )
-    typed = await typing_of(request, saved.stored if saved else (), shown)
+    typed = await typing_of(request, saved.stored if saved else (), shown, as_sent=True)
     told = [*done, PRESS_SAID["left_open"]] if answered else done
     return review_page(request, state, after, lines, status, rows=rows, done=told, typed=typed)
 
@@ -2410,7 +2551,7 @@ async def no_form_with_typing(
     kept answers and ``notes`` apart from the rest, the out-of-date notice where the review's stored
     revision isn't its content's (``behind``), every box it typed to copy, a Save's date beside
     carried words among them (``typed_beside_words``), and the ways back."""
-    typed = await typing_by_press(request, beside_words=True)
+    typed = await typing_by_press(request, beside_words=True, as_sent=True, every_press=True)
     lines = [
         shown
         for line in typing_here(said, typed)
@@ -2713,7 +2854,9 @@ async def save_press(
             return await outcome_page(request, state, draft_id, NotSaved("busy"), answered, post)
         said = [*kept_said, NO_HOMEWORK]
         answer = await replayed(request, state, draft_id, kept_said)
-        return answer or await unshown_with_typing(request, state, draft_id, said, 503)
+        return answer or await unshown_with_typing(
+            request, state, draft_id, said, 503, as_sent=True
+        )
     if named is None:
         said = [*kept_said, SAID["no_name_check"]]
         return await with_typing(request, state, draft_id, post, said, 500)
@@ -2806,7 +2949,7 @@ async def outcome_page(
         )
     except Exception as error:
         noted_after_commit(error)
-        return await saved_busy(request, state, draft_id, done, problems)
+        return await saved_busy(request, state, draft_id, done, problems, as_sent=True)
 
 
 async def committed_page(
@@ -2825,7 +2968,7 @@ async def committed_page(
     the cleanup closes it; a closed one is the finished answer; and a read that fails, or an
     ended review, promises no cleanup, since the cleanup closes only a finished review."""
     if outcome.closed:
-        typed = await typing_of(request, outcome.stored)
+        typed = await typing_of(request, outcome.stored, as_sent=True)
         week = await week_of(state, outcome.pairs)
         return saved_outcome(request, state, [*done, *problems], week, typed=typed)
     read: DraftSnapshot | None = None
@@ -2924,7 +3067,7 @@ async def saved_finished(
     closes it, the one page that promises this, since the cleanup closes only a finished review.
     Lines that point at the review's rows are said as an ended review's page says them, since a
     finished review has none left to check. ``notes`` go beneath the counts, on either."""
-    typed = await typing_by_press(request, stored)
+    typed = await typing_by_press(request, stored, as_sent=True)
     week = await week_of(state, pairs)
     lines = ended_lines(done, saved=True)
     if closed:
@@ -2977,7 +3120,7 @@ async def partly_saved(
         kept = await saved_corrections(state, after)
     except sqlite3.Error as error:
         noted(error)
-        return await saved_busy(request, state, draft_id, done, said, notes=notes)
+        return await saved_busy(request, state, draft_id, done, said, notes=notes, as_sent=True)
     unsaved = unsaved_typing(after, post.corrections, kept)
     return await with_typing(
         request,
@@ -3234,7 +3377,9 @@ async def saved_page(
         counts = await asyncio.to_thread(record.homework_counts, student, draft_id, acceptance)
     except Exception as error:
         noted_after_commit(error)
-        return await saved_busy(request, state, draft_id, [*said, COUNTS_UNSHOWN], notes=notes)
+        return await saved_busy(
+            request, state, draft_id, [*said, COUNTS_UNSHOWN], notes=notes, as_sent=True
+        )
     lines = [*said, counted(*counts)] if counts else said
     if closed_seen and not counts:
         notes = unconfirmed_lines(notes)
@@ -3258,7 +3403,7 @@ async def saved_page(
                 if closed:
                     notes = unconfirmed_lines(notes)
                 return await saved_busy(
-                    request, state, draft_id, lines or [COUNTS_UNSHOWN], notes=notes
+                    request, state, draft_id, lines or [COUNTS_UNSHOWN], notes=notes, as_sent=True
                 )
             try:
                 pairs = await asyncio.to_thread(
@@ -3273,7 +3418,9 @@ async def saved_page(
                 )
             week = await week_of(state, pairs or ())
             if busy:
-                return await saved_busy(request, state, draft_id, lines, [], week, notes=notes)
+                return await saved_busy(
+                    request, state, draft_id, lines, [], week, notes=notes, as_sent=True
+                )
             return await saved_unread(request, state, lines, [*notes, *gone], week)
         if post is None:
             try:
@@ -3283,7 +3430,7 @@ async def saved_page(
             except sqlite3.Error as error:
                 noted(error)
                 return await saved_busy(
-                    request, state, draft_id, lines or [COUNTS_UNSHOWN], notes=notes
+                    request, state, draft_id, lines or [COUNTS_UNSHOWN], notes=notes, as_sent=True
                 )
         if post is not None and not rows:
             return await saved_busy(
@@ -3301,7 +3448,7 @@ async def saved_page(
                 notes=notes,
                 counted=bool(counts),
             )
-        typed = await typing_by_press(request)
+        typed = await typing_by_press(request, as_sent=True)
         if typed:
             return saved_outcome(
                 request,
@@ -3317,7 +3464,9 @@ async def saved_page(
         return to_review(state, draft_id, notes, done=lines or [COUNTS_UNSHOWN])
     except Exception as error:
         noted_after_commit(error)
-        return await saved_busy(request, state, draft_id, lines or [COUNTS_UNSHOWN], notes=notes)
+        return await saved_busy(
+            request, state, draft_id, lines or [COUNTS_UNSHOWN], notes=notes, as_sent=True
+        )
 
 
 # ------------------------------------------------------------------ find under another name

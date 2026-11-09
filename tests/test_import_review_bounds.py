@@ -1296,12 +1296,11 @@ def test_a_row_that_cant_be_resolved_with_nothing_set_aside_behind_draws_no_form
     "variant", ["an empty box", THE_DATE_AS_READ, "another date", "a five-digit year"]
 )
 @pytest.mark.parametrize("press", ["keep", "later"])
-def test_a_limit_other_row_stray_spaces_on_refused_pages_get_no_copy_beside_a_row_lost(
+def test_another_row_s_stray_space_stays_in_its_box_beside_a_row_lost(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, variant: str
 ) -> None:
-    """A limit, and not what this page should do: a stray space on another row's value comes back
-    stripped in its box with no copy, as on an everyday page. The date and the words beside the tick
-    still come back exactly."""
+    """A stray space on another row's value stays in its box as sent, with no copy. The date and
+    the words beside the tick still come back exactly."""
     with here(open_settings(tmp_path)) as browser:
         gone = a_row_to_lose_beside_words(browser, monkeypatch)
         sent, back = BESIDE_THE_WORDS[variant]
@@ -1324,7 +1323,7 @@ def test_a_limit_other_row_stray_spaces_on_refused_pages_get_no_copy_beside_a_ro
     assert answer.status_code == 422, said[:300]
     assert imports.UNSHOWN_TYPED in said
     assert sorted(copies_on(answer.text)) == sorted([*back, WORDS_CARRIED])
-    assert in_its_box(answer.text, title) == drawn
+    assert in_its_box(answer.text, title) == f"{drawn} "
 
 
 @pytest.mark.parametrize(
