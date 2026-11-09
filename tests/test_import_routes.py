@@ -19870,8 +19870,8 @@ def test_save_keeps_its_own_reading_of_whitespace_beside_no_date(
         answer = send(browser, draft_id, with_carried_text(posted, carried))
 
     assert copied(answer) == typing
-    assert not says(answer.text, imports.UNSHOWN_TYPED)
-    assert says(answer.text, imports.TYPED_SAID) == bool(typing)
+    assert says(answer.text, imports.UNSHOWN_TYPED) == bool(typing)
+    assert not says(answer.text, imports.TYPED_SAID)
 
 
 @pytest.mark.parametrize(("press", "status"), [("keep", 200), ("later", 303)])
@@ -34067,6 +34067,7 @@ def test_a_date_typed_beside_carried_words_on_a_refused_page_replaces_them_with_
     assert drawn_value(answer.text, box) == ANOTHER_DATE
     assert WORDS_BESIDE not in copied(answer)
     assert ANOTHER_DATE not in copied(answer)
+
 
 # ---------------------------------------------- the copy note and the card a copy's label names
 

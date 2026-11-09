@@ -792,14 +792,24 @@ async def ended_under_press(
     )
 
 
-def copy_label(request: Request, key: str, field: str, *, by_card: bool) -> str:
+def copy_label(
+    request: Request,
+    key: str,
+    field: str,
+    *,
+    by_card: bool,
+    drawn: Mapping[str, str] | None = None,
+) -> str:
     """How a copy of a box is labeled: by its field, and with ``by_card`` for its card too, as the
-    review state its press's post was read against names it (``cards_named``), where one was."""
+    returned form names the card its box is drawn on (``drawn``), else as the review state its
+    press's post was read against names it (``cards_named``), where one was."""
     label = TYPED_LABELS[field.partition(":")[0]]
     cards: Mapping[str, str] = getattr(request.state, "typed_cards", None) or {}
     if not by_card:
         return label
-    card = cards.get(key) or cards.get(key.removeprefix("date:").partition("|")[0])
+    card = (drawn or {}).get(key)
+    if card is None:
+        card = cards.get(key) or cards.get(key.removeprefix("date:").partition("|")[0])
     return label if card is None else f"{label} for {card}"
 
 
@@ -810,6 +820,7 @@ async def typing_of(
     *,
     beside_words: bool = False,
     as_sent: bool = False,
+    drawn: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """Every correction a press's post typed, labeled, read from the post alone (``typed_for``),
     to give back as it was sent, in boxes to copy, where the review can't keep it. A correction is
@@ -817,7 +828,7 @@ async def typing_of(
     it stored that exact text in that field (``stored``, the outcome's own evidence). An empty box
     or a hidden field beside it isn't either, whatever was ticked. With ``beside_words``, a date box
     beside carried words comes back as ``typed_beside_words`` gives it; with ``as_sent``, each text
-    exactly as sent (``exact``), labeled by its card (``copy_label``)."""
+    exactly as sent (``exact``), labeled by its card (``copy_label``, with ``drawn``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -825,7 +836,7 @@ async def typing_of(
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     evidence = set(stored)
     return [
-        (copy_label(request, key, field, by_card=as_sent), text)
+        (copy_label(request, key, field, by_card=as_sent, drawn=drawn), text)
         for key, field, text in (typed_beside_words if beside_words else typed_for)(
             items, exact=as_sent
         )
@@ -841,34 +852,42 @@ async def typing_by_press(
     beside_words: bool = False,
     as_sent: bool = False,
     every_press: bool = False,
+    drawn: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """What a post gives back when its press finds the review ended, on every page that says it
     can't be shown, beside a confirmed save's counts with no post to read, and on Save for later's
     page after a commit that set words aside, whether or not its read shows another tab saved
     since: on a Save press, ``typing_of``, with ``beside_words`` and ``as_sent`` passed on; on Keep
     or Save for later, every box as it was sent, whitespace included (``typed_as_sent``), labeled by
-    its card with ``every_press``. Text a box on the page holds exactly (``shown``) is left out."""
+    its card with ``every_press`` (``drawn`` as ``copy_label`` takes it). Text a box on the page
+    holds exactly (``shown``) is left out."""
     try:
         form = await form_of(request)
     except FormUnreadable:
         return []
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     if next((value for name, value in items if name == "press"), "") == "save":
-        return await typing_of(request, stored, shown, beside_words=beside_words, as_sent=as_sent)
+        return await typing_of(
+            request, stored, shown, beside_words=beside_words, as_sent=as_sent, drawn=drawn
+        )
     return [
-        (copy_label(request, key, field, by_card=every_press), text)
+        (copy_label(request, key, field, by_card=every_press, drawn=drawn), text)
         for key, field, text in typed_as_sent(items)
         if (key, field, text) not in shown
     ]
 
 
 def tick_set_aside(
-    request: Request, post: ReviewPost, shown: Collection[tuple[str, str, str]] = ()
+    request: Request,
+    post: ReviewPost,
+    shown: Collection[tuple[str, str, str]] = (),
+    drawn: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
-    """What "No assigned date was given" set aside or was refused beside, labeled by its card, as
-    it was sent, apart from what a box on the page holds exactly (``shown``)."""
+    """What "No assigned date was given" set aside or was refused beside, labeled by its card
+    (``drawn`` as ``copy_label`` takes it), as it was sent, apart from what a box on the page holds
+    exactly (``shown``)."""
     return [
-        (copy_label(request, key, field, by_card=True), text)
+        (copy_label(request, key, field, by_card=True, drawn=drawn), text)
         for key, field, text in post.dropped
         if (key, field, text) not in shown
     ]
@@ -889,6 +908,18 @@ def fields_shown(rows: RowsShown | None) -> frozenset[tuple[str, str, str]]:
         for key, field in [json.loads(box.subject)]
         if box.kind != "text" or not {"\n", "\r"} & set(box.value)
     )
+
+
+def cards_drawn(rows: RowsShown) -> dict[str, str]:
+    """Each key a box of these rows is posted by, with the accessible name of the card it is drawn
+    on, as the form words it."""
+    drawn: dict[str, str] = {}
+    for unit in rows.units:
+        for block in unit.blocks:
+            for card in block.cards:
+                for box in card.boxes:
+                    drawn.setdefault(str(json.loads(box.subject)[0]), card.about)
+    return drawn
 
 
 def boxes_as_sent(rows: RowsShown, items: Sequence[tuple[str, str]]) -> RowsShown:
@@ -2309,10 +2340,12 @@ async def with_typing(
     changes on the rows below aren't saved yet, when a box for one (``unsaved``) is among those
     shown. Each box holds the text its post sent where that equals its value once canonical
     (``boxes_as_sent``). Any press with no save committed gives back each box as sent that no box
-    holds exactly (``typing_by_press``), labeled by its card; Keep or Save for later adds what "No
-    assigned date was given" set aside or was refused beside, the words and anything sent in the box
-    beside them, under ``UNSHOWN_TYPED`` (``tick_set_aside``), and signs the revision its page read.
-    An earlier save's page with rows gives back what no box holds under ``TYPED_SAID``.
+    holds exactly (``typing_by_press``), labeled by the card the form draws it on (``cards_drawn``),
+    under ``UNSHOWN_TYPED``, ``TYPED_SAID`` on a press refused with its choices; Keep or Save for
+    later adds what "No assigned date was given" set aside or was refused beside, the words and
+    anything sent in the box beside them, under ``UNSHOWN_TYPED`` (``tick_set_aside``), and signs
+    the revision its page read. An earlier save's page with rows gives back what no box holds under
+    ``TYPED_SAID``, labeled the same way.
     Any press with no save committed, if its review has ended before its rows, says that instead of
     its own line, and a Save press says it can't tell if a transaction was left open meanwhile. It
     keeps a line saying Keep's or Save for later's own write failed, or that any press's can't be
@@ -2501,11 +2534,15 @@ async def with_typing(
     moved = not current and status in (409, 422, 503) and own is None
     if moved and not refused_with_choices and rows is not None and choices_unlike(post, rows):
         lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
+    drawn = {} if rows is None else cards_drawn(rows)
     if not done:
-        typed = await typing_by_press(request, shown=shown, as_sent=True, every_press=True)
-        note = TYPED_SAID
+        typed = await typing_by_press(
+            request, shown=shown, as_sent=True, every_press=True, drawn=drawn
+        )
+        note = TYPED_SAID if refused_with_choices else UNSHOWN_TYPED
         if post.press != "save" and post.dropped:
-            typed += [item for item in tick_set_aside(request, post, shown) if item not in typed]
+            set_aside = tick_set_aside(request, post, shown, drawn)
+            typed += [item for item in set_aside if item not in typed]
             note = UNSHOWN_TYPED
         return review_page(
             request, state, after, lines, status, rows=rows, typed=typed, typed_said=note
@@ -2516,7 +2553,7 @@ async def with_typing(
             request, state, draft_id, done, ended_lines(said, saved=True), notes=kept_line
         )
     typed = await typing_of(
-        request, saved.stored if saved else (), shown, as_sent=True, beside_words=True
+        request, saved.stored if saved else (), shown, as_sent=True, beside_words=True, drawn=drawn
     )
     told = [*done, PRESS_SAID["left_open"]] if answered else done
     return review_page(request, state, after, lines, status, rows=rows, done=told, typed=typed)
