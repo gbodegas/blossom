@@ -84,6 +84,7 @@ from blossom.screenshot_save import (
     confirm_subject,
     correction_text,
     fold_reads,
+    read_digest,
     review_state,
     save_homework,
     student_line,
@@ -973,10 +974,14 @@ def boxes_as_sent(rows: RowsShown, items: Sequence[tuple[str, str]]) -> RowsShow
     )
 
 
-def choices_unlike(post: ReviewPost, rows: RowsShown) -> bool:
+def choices_unlike(post: ReviewPost, rows: RowsShown, no_date_read: Collection[str] = ()) -> bool:
     """Whether a choice the post sent isn't what these rows show checked or, off the page, doesn't
     match the answer read for this response: that answer wins over the signed default, which counts
-    only where the read holds none, and an empty choice counts only where it withdraws one."""
+    only where the read holds none, and an empty choice counts only where it withdraws one. A "No
+    assigned date was given" tick off the page matches only where the post carries its piece's day
+    heading confirmation, these rows' read holds that answer with the same text, the box's subject
+    is in ``no_date_read`` (the post's ``read:`` field beside it is an empty reading's digest), and
+    these rows' progress holds no assigned date for the piece."""
     shown: dict[str, frozenset[str]] = {}
     asked = [(q.field, q.options) for q in rows.names]
     asked += [(q.field, q.options) for q in rows.splits]
@@ -1004,6 +1009,17 @@ def choices_unlike(post: ReviewPost, rows: RowsShown) -> bool:
         answer = posted.get(field)
         if answer is not None and (answer.kind, answer.subject) in rows.held:
             return rows.held[(answer.kind, answer.subject)] != answer.value
+        if field.startswith("none:"):
+            subject = field.removeprefix("none:")
+            key = str(json.loads(subject)[0])
+            heading = ("confirm", confirm_subject(key.removeprefix("date:"), "heading"))
+            confirmation = posted.get(answer_field(*heading))
+            return not (
+                confirmation is not None
+                and rows.held.get(heading) == confirmation.value
+                and subject in no_date_read
+                and "assigned" not in rows.progress.get(key, {})
+            )
         piece = field.removeprefix(answer_field("destination", ""))
         return piece == field or values != (post.defaults.get(piece),)
 
@@ -2496,6 +2512,7 @@ async def with_typing(
             else None
         )
         return recorded or await unshown(request, state, draft_id, said, status, done, notes=notes)
+    sent: list[tuple[str, str]] = []
     if rows is not None:
         lines[len(said) + len(notes) : len(said) + len(notes)] = rows.unselected
         with contextlib.suppress(FormUnreadable):
@@ -2572,7 +2589,16 @@ async def with_typing(
             behind=True,
         )
     moved = not current and status in (409, 422, 503) and own is None
-    if moved and not refused_with_choices and rows is not None and choices_unlike(post, rows):
+    reads = {name: value for name, value in sent if name.startswith("read:")}
+    no_date_read = {
+        name.removeprefix("read:") for name, value in reads.items() if value == read_digest("")
+    }
+    if (
+        moved
+        and not refused_with_choices
+        and rows is not None
+        and choices_unlike(post, rows, no_date_read)
+    ):
         lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
     drawn = {} if rows is None else cards_drawn(rows)
     if not done:
