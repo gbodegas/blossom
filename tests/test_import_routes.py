@@ -35589,3 +35589,252 @@ def test_a_lone_tick_whose_own_write_s_result_is_built_without_dropped_keys_is_s
 
     assert answer.status_code == LONE_TICK_BEHIND["its own write's dropped keys unknown"][press][0]
     assert page_text(answer).count(NOT_CARRIED) == 1
+
+
+# --------------------------- "No assigned date was given" on a row the returned form doesn't draw
+
+AN_UNSURE_DAY_WITH_A_DATE: Final = {"text": "Monday 10/5/2026", "y": 150, "uncertain": "faint"}
+"""A day heading read unsure with a date, which "Confirm as read" answers."""
+A_SECOND_UNSURE_DAY: Final = (
+    {"text": "Tuesday", "y": 350, "uncertain": "faint"},
+    {
+        "course": "Science 8",
+        "title": "Lab Notes",
+        "footer": "Due (10/9/2026)",
+        "y_top": 370,
+        "y_bottom": 450,
+    },
+)
+"""A second day heading read unsure and with no date, and its card."""
+
+
+class TickOnALeftRow(NamedTuple):
+    """A review, the page to press, the "No assigned date was given" subject on the row another
+    page left unsaved, the day heading's confirmation that subject's piece asks for, and a group a
+    Save can tick."""
+
+    draft_id: str
+    page: str
+    none: str
+    confirmation: tuple[str, str]
+    first: str
+
+
+def a_no_date_tick_on_a_row_another_page_left(
+    browser: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    held: bool = True,
+    third: bool = False,
+    dated: bool = False,
+) -> TickOnALeftRow:
+    """Real presses: three cards, the second and third under unsure day headings (the second's
+    read with a date where ``dated``). Where ``held``, a Keep with the second's tick, or with its
+    heading confirmed as read where ``dated``; then another page leaves its row or the third's."""
+    heading, card = A_DAY_ABOVE_THE_HEADING
+    tuesday, under_tuesday = A_SECOND_UNSURE_DAY
+    monday = AN_UNSURE_DAY_WITH_A_DATE if dated else UNSURE_DAY_WITH_NO_DATE
+    reading = homework_answer(
+        headings=[heading, monday, tuesday],
+        cards=[
+            homework_card(**card),
+            homework_card(footer="Due (10/8/2026)"),
+            homework_card(**under_tuesday),
+        ],
+    )
+    draft_id, page = read_review(browser, monkeypatch, (RED, reading))
+    page = her_name_answered(browser, draft_id, page)
+    nones = fields_named(review_form(page), "none:")
+
+    def confirmation_of(none: str) -> tuple[str, str]:
+        piece = str(json.loads(none)[0]).removeprefix("date:")
+        return "confirm", json.dumps([piece, "heading"], separators=(",", ":"))
+
+    if held:
+        confirm = "answer:{}:{}".format(*confirmation_of(nones[1]))
+        choose = {confirm: "as_read"} if dated else no_date_tick(nones[1])
+        page = followed(browser, send(browser, draft_id, page_post(page, "keep", choose=choose)))
+    target = 2 if third else 1
+    row = json.loads(box_subject(page, "title", target))[0]
+    fresh = loaded(browser, draft_id)
+    press_outside(browser, fresh, leave_form_holding(fresh, row))
+    return TickOnALeftRow(
+        draft_id, page, nones[target], confirmation_of(nones[target]), units_on(page)[0]
+    )
+
+
+def answer_kept_before_the_rows_read(
+    monkeypatch: pytest.MonkeyPatch,
+    browser: TestClient,
+    draft_id: str,
+    answer: tuple[str, str, str],
+) -> None:
+    """Forced timing: a store call keeps this answer after the press's first read and before its
+    rows' read."""
+    real: Callable[..., Awaitable[object]] = imports.rows_of
+    asked: list[bool] = []
+
+    async def rows_of(*args: object, **kwargs: object) -> object:
+        if not asked:
+            asked.append(True)
+            keep(browser, draft_id, answer)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(imports, "rows_of", rows_of)
+
+
+def rows_read_holding_an_assigned_date(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+    """Forced store answer only: the rows' read works out progress that holds an assigned date
+    for this dates key."""
+    real: Callable[..., Awaitable[screenshot_page.RowsShown | None]] = imports.rows_of
+
+    async def rows_of(*args: object, **kwargs: object) -> screenshot_page.RowsShown | None:
+        rows = await real(*args, **kwargs)
+        if rows is None:
+            return rows
+        progress = {**rows.progress, key: {"assigned": "2026-10-07"}}
+        return dataclasses.replace(rows, progress=progress)
+
+    monkeypatch.setattr(imports, "rows_of", rows_of)
+
+
+def another_kind_chosen(page: str) -> dict[str, str]:
+    """An option the page doesn't draw checked, chosen for its last kind-of-work question."""
+    field = "answer:kind:" + fields_named(review_form(page), "answer:kind:")[-1]
+    return {
+        field: next(value for value, checked in options_of(page, field) if value and not checked)
+    }
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_no_date_tick_whose_confirmation_is_read_as_posted_on_a_left_row_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Real presses: a Keep ticks "No assigned date was given" under an unsure day heading that
+    read no date, another page leaves that row's group unsaved, and this page presses unchanged.
+    The rows' read holds the heading's confirmation as posted: nothing is said."""
+    with here(open_settings(tmp_path)) as browser:
+        found = a_no_date_tick_on_a_row_another_page_left(browser, monkeypatch)
+        posted = page_post(found.page, press, tick=[found.first] if press == "save" else [])
+        answer, reads, states = pressed_with_its_reads(browser, monkeypatch, found.draft_id, posted)
+
+    assert reads == LEFT_ROW_READS[press]
+    assert states == ["discarded", "open", "open"]
+    assert copies_with_labels(answer) == []
+    a_form_out_of_date_saying(answer, 0)
+
+
+NO_DATE_TICK_SAID: Final = [
+    "held with other text",
+    "not held",
+    "held for another piece only",
+    "held and matching beside another choice the form doesn't show",
+    "a dated unsure heading",
+    "progress holding an assigned date",
+    "superseded by a later read",
+]
+"""Cases where a "No assigned date was given" tick on a row another page left unsaved, or a choice
+beside it, is said."""
+
+
+@pytest.mark.parametrize("case", NO_DATE_TICK_SAID)
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_no_date_tick_on_a_left_row_without_all_its_evidence_is_said_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
+) -> None:
+    """Real presses, past what a case names. "Other text" is a store call standing in for another
+    page; "superseded" is forced timing; "progress holding" is a forced store answer only, its
+    reach by supported presses not established. The line once."""
+    with here(open_settings(tmp_path)) as browser:
+        found = a_no_date_tick_on_a_row_another_page_left(
+            browser,
+            monkeypatch,
+            held=case != "not held",
+            third=case == "held for another piece only",
+            dated=case == "a dated unsure heading",
+        )
+        choose: dict[str, str] = {}
+        if case in ("not held", "held for another piece only", "a dated unsure heading"):
+            choose = no_date_tick(found.none)
+        elif case == "held with other text":
+            keep(browser, found.draft_id, (*found.confirmation, "as_read_differs"))
+        elif case.endswith("the form doesn't show"):
+            choose = another_kind_chosen(found.page)
+        elif case == "progress holding an assigned date":
+            rows_read_holding_an_assigned_date(monkeypatch, str(json.loads(found.none)[0]))
+        else:
+            differing = (*found.confirmation, "as_read_differs")
+            answer_kept_before_the_rows_read(monkeypatch, browser, found.draft_id, differing)
+        tick = [found.first] if press == "save" else []
+        posted = page_post(found.page, press, choose=choose, tick=tick)
+        answer, reads, states = pressed_with_its_reads(browser, monkeypatch, found.draft_id, posted)
+
+    if case == "not held":
+        assert reads == LEFT_ROW_READS[press]
+        assert copies_with_labels(answer) == []
+    assert states == ["discarded", "open", "open"]
+    a_form_out_of_date_saying(answer, 1)
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_no_date_tick_whose_confirmation_is_kept_before_the_rows_read_says_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Real presses, then a store call standing in for another page takes the heading's
+    confirmation back; forced timing: a store call keeps it again as posted before the rows'
+    read. The rows' read holds it though the press's first read doesn't: nothing is said."""
+    with here(open_settings(tmp_path)) as browser:
+        found = a_no_date_tick_on_a_row_another_page_left(browser, monkeypatch)
+        withdraw_the_heading_confirmation(browser, found.draft_id)
+        as_posted = (*found.confirmation, "as_read")
+        answer_kept_before_the_rows_read(monkeypatch, browser, found.draft_id, as_posted)
+        posted = page_post(found.page, press, tick=[found.first] if press == "save" else [])
+        answer = send(browser, found.draft_id, posted)
+        monkeypatch.undo()
+
+    a_form_out_of_date_saying(answer, 0)
+
+
+ALONE_WITHOUT_ITS_CONFIRMATION: Final = [
+    "none read",
+    "another piece's read only",
+    "its own read with other text",
+]
+"""What a rows' read holds where a "No assigned date was given" tick is compared alone."""
+
+
+@pytest.mark.parametrize("case", ALONE_WITHOUT_ITS_CONFIRMATION)
+def test_a_no_date_tick_compared_alone_without_its_confirmation_read_as_posted_counts_as_unlike(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Real presses up to the comparison. Forced store answer only, with the post's choices cut to
+    the tick, its reach by supported presses not established: the rows' read holds no confirmation
+    for the tick's piece, another piece's as posted and no other, or its own with other text."""
+    other = case == "another piece's read only"
+    alone: list[bool] = []
+    others_held: list[int] = []
+    with here(open_settings(tmp_path)) as browser:
+        found = a_no_date_tick_on_a_row_another_page_left(browser, monkeypatch, third=other)
+        real: Callable[..., bool] = imports.choices_unlike
+
+        def compared(
+            post: screenshot_posts.ReviewPost, rows: screenshot_page.RowsShown, *more: object
+        ) -> bool:
+            ticks = {field: sent for field, sent in post.choices.items() if field == found_tick}
+            held = {key: text for key, text in rows.held.items() if key != found.confirmation}
+            if case == "its own read with other text":
+                held[found.confirmation] = "as_read_differs"
+            confirmations = [a for a in post.answers if a.kind == "confirm"]
+            others_held.append(sum(held.get((a.kind, a.subject)) == a.value for a in confirmations))
+            forced = dataclasses.replace(rows, held=held)
+            alone.append(real(dataclasses.replace(post, choices=ticks), forced, *more))
+            return real(post, rows, *more)
+
+        found_tick = f"none:{found.none}"
+        monkeypatch.setattr(imports, "choices_unlike", compared)
+        choose = no_date_tick(found.none) if other else {}
+        send(browser, found.draft_id, page_post(found.page, "keep", choose=choose))
+        monkeypatch.undo()
+
+    assert others_held == [int(other)]
+    assert alone == [True]
