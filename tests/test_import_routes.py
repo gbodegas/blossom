@@ -34067,3 +34067,61 @@ def test_a_date_typed_beside_carried_words_on_a_refused_page_replaces_them_with_
     assert drawn_value(answer.text, box) == ANOTHER_DATE
     assert WORDS_BESIDE not in copied(answer)
     assert ANOTHER_DATE not in copied(answer)
+
+# ---------------------------------------------- the copy note and the card a copy's label names
+
+RETYPED_KEPT: Final = "Retyped Title Kept"
+RETYPED_NOW: Final = "Newer Title Typed"
+
+
+@pytest.mark.parametrize(
+    ("press", "route", "status"),
+    [
+        ("keep", "unchanged", 200),
+        ("keep", "refused", 422),
+        ("later", "refused", 422),
+        ("save", "refused", 422),
+    ],
+)
+def test_carried_words_given_back_on_a_form_page_sit_under_the_neutral_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, route: str, status: int
+) -> None:
+    """Real presses past a store call for saved progress carrying words beside a date box, which
+    saved progress still holds after the press: the words come back to copy under the neutral
+    note, never one saying the review can't keep them."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, piece, _ = words_beside_a_date_box(browser, monkeypatch)
+        title = correct_box(json.loads(box_subject(reopened, "title"))[0], "title")
+        typed = {title: "x" * (TITLE_MOST + 1)} if route == "refused" else {}
+        answer = send(browser, draft_id, page_post(reopened, press, typed=typed))
+        held = held_corrections(browser, draft_id)
+
+    assert answer.status_code == status
+    assert held == {piece: {"assigned": WORDS_BESIDE}}
+    assert WORDS_BESIDE in copied(answer)
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    assert not says(answer.text, imports.TYPED_SAID)
+
+
+def test_a_copy_names_the_card_as_the_returned_form_names_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real presses past a store call for saved progress holding a corrected title and words beside
+    the date box: Keep with the title typed again. The words' copy names the card as the returned
+    form's date box does, by the title the form draws."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, one_card_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        piece = json.loads(box_subject(page, "assigned"))[0]
+        row = json.loads(box_subject(page, "title"))[0]
+        progress = {piece: {"assigned": WORDS_BESIDE}, row: {"title": RETYPED_KEPT}}
+        saved_progress(browser, draft_id, {"v": 4, "corrected": progress, "selected": []})
+        page = loaded(browser, draft_id)
+        typed = {correct_box(row, "title"): RETYPED_NOW}
+        answer = send(browser, draft_id, page_post(page, "keep", typed=typed))
+
+    named = re.findall(r'visually-hidden"> for ([^<]*)</span>', review_form(answer.text))
+    assert answer.status_code == 200
+    assert set(named) == {f"{RETYPED_NOW} (screenshot 1, card 1)"}
+    labeled = {text: label for label, text in copies_with_labels(answer)}
+    assert labeled[WORDS_BESIDE] == f"Assigned date for {RETYPED_NOW} (screenshot 1, card 1)"
