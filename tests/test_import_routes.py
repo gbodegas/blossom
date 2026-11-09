@@ -35838,3 +35838,73 @@ def test_a_no_date_tick_compared_alone_without_its_confirmation_read_as_posted_c
 
     assert others_held == [int(other)]
     assert alone == [True]
+
+
+WORDS_CARRIED_BESIDE_THE_TICK: Final = [
+    ("Assigned date for Sentence Composing (screenshot 1, card 2)", CARRIED)
+]
+"""The one copy a press gives for words carried for the second card's assigned date."""
+
+
+def with_words_carried(posted: Sequence[tuple[str, str]], none: str) -> list[tuple[str, str]]:
+    """The post plus a carried-words field for this assigned date: a field no page sends beside
+    its "No assigned date was given" tick."""
+    return [*posted, (f"refused:{none}", CARRIED)]
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_no_date_tick_with_its_confirmation_read_as_posted_says_nothing_beside_carried_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Crafted post, its reach by supported presses not established: the post of a tick whose
+    confirmation the rows' read holds as posted on a left row, plus a carried-words field for
+    that date. The words come back as one exact copy and nothing is said."""
+    with here(open_settings(tmp_path)) as browser:
+        found = a_no_date_tick_on_a_row_another_page_left(browser, monkeypatch)
+        posted = page_post(found.page, press, tick=[found.first] if press == "save" else [])
+        posted = with_words_carried(posted, found.none)
+        answer, reads, states = pressed_with_its_reads(browser, monkeypatch, found.draft_id, posted)
+
+    assert reads == LEFT_ROW_READS[press]
+    assert states == ["discarded", "open", "open"]
+    assert copies_with_labels(answer) == WORDS_CARRIED_BESIDE_THE_TICK
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    a_form_out_of_date_saying(answer, 0)
+
+
+WORDS_CARRIED_AND_SAID: Final = [
+    "not held",
+    "held with other text",
+    "held and matching beside another choice the form doesn't show",
+]
+"""Cases of `NO_DATE_TICK_SAID` posted with words carried beside the tick."""
+
+
+@pytest.mark.parametrize("case", WORDS_CARRIED_AND_SAID)
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_no_date_tick_without_all_its_evidence_is_said_once_beside_carried_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
+) -> None:
+    """Crafted post, its reach by supported presses not established: the carried-words field
+    where the confirmation isn't held, holds other text (a store call standing in for another
+    page), or matches beside another choice the form doesn't show. The same copy, the line once."""
+    with here(open_settings(tmp_path)) as browser:
+        found = a_no_date_tick_on_a_row_another_page_left(
+            browser, monkeypatch, held=case != "not held"
+        )
+        choose: dict[str, str] = {}
+        if case == "not held":
+            choose = no_date_tick(found.none)
+        elif case == "held with other text":
+            keep(browser, found.draft_id, (*found.confirmation, "as_read_differs"))
+        else:
+            choose = another_kind_chosen(found.page)
+        tick = [found.first] if press == "save" else []
+        posted = page_post(found.page, press, choose=choose, tick=tick)
+        posted = with_words_carried(posted, found.none)
+        answer, _, states = pressed_with_its_reads(browser, monkeypatch, found.draft_id, posted)
+
+    assert states == ["discarded", "open", "open"]
+    assert copies_with_labels(answer) == WORDS_CARRIED_BESIDE_THE_TICK
+    assert says(answer.text, imports.UNSHOWN_TYPED)
+    a_form_out_of_date_saying(answer, 1)
