@@ -33982,3 +33982,80 @@ def test_a_split_row_s_title_copied_from_a_page_behind_is_named_by_its_first_dra
     assert not recovery_of(answer).form
     day = "Sentence Composing (screenshot 1, card 1, assigned Mon 10/5)"
     assert labeled == [(f"Title for {day}", "Set 3 typed")]
+
+# ---------------------------------------- carried words on Keep's and Save for later's form pages
+
+CARRIED_TOO_LONG: Final = "w" * (screenshot_review.field_most("assigned") + 1)
+
+
+def carried_fields(page: str) -> list[str]:
+    """The text each hidden field carrying a date back as typed holds on the page's form."""
+    return [
+        html.unescape(value)
+        for value in re.findall(
+            r'<input type="hidden" name="refused:[^"]+" value="([^"]*)"', review_form(page)
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("press", "route", "status"),
+    [("keep", "unchanged", 200), ("keep", "refused", 422), ("later", "refused", 422)],
+)
+def test_carried_words_no_field_holds_come_back_to_copy_on_keep_and_save_for_later(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, route: str, status: int
+) -> None:
+    """Real presses past a store call for saved progress carrying words beside a date box: Keep
+    posted unchanged, or either press refused for a title past its limit. The words show only in
+    the sentence beneath the box and the hidden field that posts them back, so they come back to
+    copy, and the hidden field still carries them."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, _ = words_beside_a_date_box(browser, monkeypatch)
+        title = correct_box(json.loads(box_subject(reopened, "title"))[0], "title")
+        typed = {title: "x" * (TITLE_MOST + 1)} if route == "refused" else {}
+        answer = send(browser, draft_id, page_post(reopened, press, typed=typed))
+
+    assert answer.status_code == status
+    assert drawn_value(answer.text, f"correct:{box_subject(reopened, 'assigned')}") == ""
+    assert carried_fields(answer.text) == [WORDS_BESIDE]
+    assert WORDS_BESIDE in copied(answer)
+
+
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_overlength_words_kept_only_in_a_hidden_field_come_back_to_copy(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Real presses: words past the date box's limit typed in it refuse the press. They remain only
+    in the hidden field that posts them back, not in any box or sentence, so they come back to copy
+    exactly."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, _ = words_beside_a_date_box(browser, monkeypatch)
+        box = f"correct:{box_subject(reopened, 'assigned')}"
+        answer = send(browser, draft_id, page_post(reopened, press, typed={box: CARRIED_TOO_LONG}))
+
+    assert answer.status_code == 422
+    assert drawn_value(answer.text, box) == ""
+    sentences = re.sub(r"<textarea[^>]*>.*?</textarea>|<input[^>]*>", "", answer.text, flags=re.S)
+    assert CARRIED_TOO_LONG not in sentences
+    assert carried_fields(answer.text) == [CARRIED_TOO_LONG]
+    assert CARRIED_TOO_LONG in copied(answer)
+
+
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_a_date_typed_beside_carried_words_on_a_refused_page_replaces_them_with_no_copy(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Real presses past a store call for carried words: a readable date typed in their box, the
+    press refused for a title past its limit. The date stays in its box and replaces the words,
+    so neither comes back to copy."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, _ = words_beside_a_date_box(browser, monkeypatch)
+        box = f"correct:{box_subject(reopened, 'assigned')}"
+        title = correct_box(json.loads(box_subject(reopened, "title"))[0], "title")
+        typed = {box: ANOTHER_DATE, title: "x" * (TITLE_MOST + 1)}
+        answer = send(browser, draft_id, page_post(reopened, press, typed=typed))
+
+    assert answer.status_code == 422
+    assert drawn_value(answer.text, box) == ANOTHER_DATE
+    assert WORDS_BESIDE not in copied(answer)
+    assert ANOTHER_DATE not in copied(answer)
