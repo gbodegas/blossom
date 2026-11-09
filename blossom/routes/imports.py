@@ -83,6 +83,7 @@ from blossom.screenshot_save import (
     canonical,
     confirm_subject,
     correction_text,
+    fold_reads,
     review_state,
     save_homework,
     student_line,
@@ -2668,8 +2669,11 @@ async def later_press(
     of the review decides the answer: the redirect; where it set something "No assigned date was
     given" aside, a page with no form (``later_with_words``) and its confirmation; and where that
     read shows a revision other than the one its commit wrote, a page with no form saying this
-    attempt saved the review for later, then the out-of-date notice. Each page with no form gives
-    every box it typed back as sent, the one with words after one more read, which answers instead
+    attempt saved the review for later, then the out-of-date notice. Where none of those holds and
+    a box was sent other than as the save kept it (``kept_for_later``), in place of the redirect, a
+    page with no form saying this attempt saved it and when, giving back only those boxes. Each
+    other page with no form gives every box it typed back as sent, the one with words after one
+    more read, which answers instead
     if it finds the review ended or is refused; or, with the review ended or its read refused, the
     typing to copy, redirecting past a refused read only when there's nothing to give back. A read
     saying the review ended says the answers were kept before it did only when this write stored
@@ -2726,10 +2730,37 @@ async def later_press(
             return await saved_for_later_with_typing(
                 request, state, found.draft_id, [THIS_ATTEMPT_SAVED], [OUT_OF_DATE]
             )
+        kept = frozenset() if review is None else kept_for_later(review, post.corrections)
+        if kept and await typing_by_press(request, shown=kept, every_press=True):
+            lines = [THIS_ATTEMPT_SAVED, saved_for_later_at(state)]
+            return await saved_for_later_with_typing(
+                request, state, found.draft_id, lines, [], kept_as=kept
+            )
         return to_review(state, found.draft_id, [PRESS_SAID["later"], saved_for_later_at(state)])
     answered = done.answers.stored > 0
     said = [*([PRESS_SAID["answers_kept"]] if answered else []), PRESS_SAID["later_behind"]]
     return await with_typing(request, state, found.draft_id, post, said, 409, answered=answered)
+
+
+def kept_for_later(
+    review: ReviewState, corrections: Corrections
+) -> frozenset[tuple[str, str, str]]:
+    """Each box as a Save for later keeps it, by key, field and text: the correction it wrote, a
+    removal as an empty box, else its value with no correction as the page draws it, line endings
+    made line feeds."""
+    drawn = {subject: value or "" for subject, value in fold_reads(review).items()}
+    for piece in review.open:
+        read = piece.as_read
+        if read is None:
+            continue
+        drawn[(piece.key, "course")] = read.course
+        drawn[(piece.key, "title")] = read.title
+        for index, text in enumerate(read.texts):
+            drawn[(piece.key, f"instruction:{index}")] = correction_text("instruction:0", text)
+    for key, fields in corrections.items():
+        for field, saved in fields.items():
+            drawn[(key, field)] = "" if saved is None else saved
+    return frozenset((key, field, text) for (key, field), text in drawn.items())
 
 
 async def later_with_words(
@@ -2767,18 +2798,26 @@ async def saved_for_later_with_typing(
     draft_id: str,
     kept: Sequence[str],
     said: Sequence[str],
+    *,
+    kept_as: Collection[tuple[str, str, str]] | None = None,
 ) -> Response:
     """A Save for later's commit page, with no form: what it says in the status style (``kept``) or
     the problem style (``said``), every correction it typed, as sent, to copy, by its press
-    (``typing_by_press``), and the ways back to the review and to Family review. It reads no store,
+    (``typing_by_press``), and the ways back to the review and to Family review. With ``kept_as``,
+    only each box sent other than as the save kept it, labeled by its card. It reads no store,
     signs nothing, and offers nothing that repeats the press."""
+    typed = (
+        await typing_by_press(request)
+        if kept_as is None
+        else await typing_by_press(request, shown=kept_as, every_press=True)
+    )
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
             "kept": list(kept),
             "said": list(said),
-            "typed": await typing_by_press(request),
+            "typed": typed,
             "typed_said": UNSHOWN_TYPED,
             "review": f"{PREFIX}/{draft_id}",
             "marks": marks_of(state),

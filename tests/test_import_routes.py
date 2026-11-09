@@ -6702,8 +6702,12 @@ def progress_after(browser: TestClient, draft_id: str) -> dict[str, dict[str, st
 
 
 def later(browser: TestClient, draft_id: str, page: str, **typed: str) -> str:
-    """Save review for later from this page, its boxes as given by name, and the page after."""
+    """Save review for later from this page, its boxes as given by name, and the review after: by
+    its redirect, or loaded again where the press gives back boxes it didn't keep as sent."""
     sent = send(browser, draft_id, page_post(page, "later", typed=typed))
+    if sent.status_code == 200:
+        assert says(sent.text, imports.THIS_ATTEMPT_SAVED), sent.text
+        return loaded(browser, draft_id)
     assert sent.status_code == 303, sent.text
     return browser.get(sent.headers["location"]).text
 
@@ -19632,14 +19636,21 @@ def test_save_on_a_closed_review_gives_back_only_a_padded_reading_left_alone(
 def test_an_everyday_press_on_an_open_review_answers_with_its_box_as_sent(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, sent: str, in_the_box: str
 ) -> None:
-    """Outer whitespace on an ordinary press: Keep's page holds the box as sent, with no copy; Save
-    for later redirects, and the page it leads to holds what was saved, stripped."""
+    """Outer whitespace on an ordinary press: Keep's page holds the box as sent, with no copy. Save
+    for later keeps it stripped, so its page gives the box back to copy as sent; with nothing to
+    give back, it redirects to the page holding what was saved."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
         box = correct_box(other, "title")
         answer = send(browser, draft_id, page_post(page, press, typed={box: sent}))
         shown = followed(browser, answer)
 
+    if press == "later" and sent != in_the_box:
+        assert answer.status_code == 200
+        assert copied(answer) == {sent}
+        assert says(answer.text, imports.UNSHOWN_TYPED)
+        assert 'name="correct:' not in answer.text
+        return
     assert answer.status_code == (200 if press == "keep" else 303)
     assert copied(answer) == set()
     assert not says(answer.text, imports.UNSHOWN_TYPED)
@@ -21347,11 +21358,12 @@ def test_the_refused_read_after_the_commit_adds_no_store_call(
     }
 
 
-def test_a_limit_a_close_after_the_last_read_redirects_with_the_typing_on_no_page(
+def test_a_limit_a_close_after_the_last_read_answers_as_on_an_open_review(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Save for later commits, its read sees the review open, and the close lands after that: the
-    press redirects, the review says it's finished, and nothing gives the typing back."""
+    """A limit: Save for later commits, its read sees the review open, and the close lands after
+    that, unseen: the press answers as on an open review, giving back the typing it didn't keep as
+    sent on a page with no form, and the review then says it's finished."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
         posted = page_post(page, "later", typed=typed_on(other))
@@ -21365,9 +21377,12 @@ def test_a_limit_a_close_after_the_last_read_redirects_with_the_typing_on_no_pag
         monkeypatch.setattr(imports, "review_state_now", then_closed)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
-        shown = followed(browser, answer)
+        shown = loaded(browser, draft_id)
 
-    assert answer.status_code == 303
+    assert answer.status_code == 200
+    assert says(answer.text, imports.THIS_ATTEMPT_SAVED)
+    assert copied(answer) == AS_GIVEN_BACK
+    assert 'name="correct:' not in answer.text
     assert says(shown, imports.SAID["closed"])
     assert STRAY_TITLE.strip() not in html.unescape(shown)
 
@@ -32397,7 +32412,7 @@ def test_a_save_storing_a_spaced_row_gives_back_its_title_class_and_instructions
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, left, boxes, _ = two_groups(browser, monkeypatch)
         later = page_post(page, "later", tick=[first, left], typed=spaced(boxes))
-        assert send(browser, draft_id, later).status_code == 303
+        assert send(browser, draft_id, later).status_code == 200
         page = loaded(browser, draft_id)
         assert {first, left} <= set(units_on(page))
         answer = send(
