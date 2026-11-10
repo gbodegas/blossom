@@ -6615,7 +6615,8 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
         expires_after, progress = stored_row(browser, draft_id)
 
     assert says(answer, imports.SAID["expired"])
-    assert sorted(copyable(answer)) == sorted([TYPED_WORDS, TYPED_DATE])
+    assert TYPED_WORDS in owed_texts(posted)
+    assert sorted(copyable(answer)) == sorted([*owed_in_order(posted), TYPED_DATE])
     assert says(answer, TYPED_SAID)
     assert expires_after == stored_before[0]
     committed = moment == "after it commits"
@@ -6666,7 +6667,8 @@ def test_a_press_on_an_expired_or_removed_review_lands_on_what_it_says(
 
     assert answer.status_code == (410 if gone == "expired" else 404)
     assert says(answer.text, imports.SAID["expired" if gone == "expired" else "absent"])
-    assert sorted(copyable(answer.text)) == sorted([TYPED_WORDS, TYPED_DATE])
+    assert TYPED_WORDS in owed_texts(posted)
+    assert sorted(copyable(answer.text)) == sorted([*owed_in_order(posted), TYPED_DATE])
     assert focused(answer.text) == ['<p class="problem" role="alert" tabindex="-1" autofocus>']
     assert after == before
 
@@ -6687,7 +6689,8 @@ def test_a_press_on_a_review_the_sweep_removed_after_expiry_gives_back_what_was_
     assert swept.expired == 1
     assert answer.status_code == 404
     assert says(answer.text, imports.SAID["absent"])
-    assert sorted(copyable(answer.text)) == sorted([TYPED_WORDS, TYPED_DATE])
+    assert TYPED_WORDS in owed_texts(keeping)
+    assert sorted(copyable(answer.text)) == sorted([*owed_in_order(keeping), TYPED_DATE])
     assert left == (None, None)
 
 
@@ -8162,7 +8165,7 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
     assert not says(again.text, imports.SAID["closed"])
     assert not says(again.text, imports.SAID["expired"])
     assert not says(again.text, imports.SAID["absent"])
-    assert TYPED_BACK.findall(again.text) == ["Chains Guide Six"]
+    assert TYPED_BACK.findall(again.text) == owed_in_order(posted)
     a_resend_behind_its_save(healthy, counts[0], ["Chains Guide Six"])
     assert not says(healthy.text, imports.SAID["closed"])
 
@@ -8234,9 +8237,12 @@ def test_a_read_refused_after_a_save_committed_says_what_it_saved_and_gives_the_
     endings = {DraftExpired: "expired", DraftNotFound: "absent"}
     for error, ending in endings.items():
         assert says(shown.group(1), imports.SAID[ending]) == (busy is error)
-    assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    left_open = json.loads(other.removeprefix("correct:"))[0]
+    owed_now = [t for k, _, t in owed(posted) if path == "replay" or k == left_open]
+    assert "Chains Guide Six" in owed_now
+    assert TYPED_BACK.findall(answer.text) == owed_now
     assert refused == before + (1 if path == "save" else 0)
-    a_resend_behind_its_save(again, counts, ["Chains Guide Six"])
+    a_resend_behind_its_save(again, counts, owed_in_order(posted))
     assert after == refused
 
 
@@ -8353,7 +8359,8 @@ def test_keep_these_answers_whose_review_can_t_be_read_says_they_are_kept_and_gi
     assert says(answer.text, imports.PRESS_SAID["kept"])
     assert says(answer.text, imports.REVIEW_NOT_SHOWN)
     assert says(answer.text, imports.UNSHOWN_TYPED)
-    assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    assert "Chains Guide Six" in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert focused(answer.text) == KEPT_STATUS
     kept_block, problem = KEPT_BLOCK.search(answer.text), PROBLEM_BLOCK.search(answer.text)
@@ -8522,7 +8529,8 @@ def test_answers_that_couldn_t_be_kept_are_said_unkept_when_the_review_can_t_be_
     assert says(answer.text, imports.REVIEW_NOT_SHOWN)
     assert not says(answer.text, imports.PRESS_SAID["answers_kept"])
     assert not says(answer.text, imports.SAID["busy"])
-    assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    assert "Chains Guide Six" in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert KEPT_BLOCK.search(answer.text) is None
     assert focused(answer.text) == [
         '<div class="problem" role="alert" id="said" tabindex="-1" autofocus>'
@@ -8577,7 +8585,8 @@ def test_a_refused_press_says_its_own_refusal_when_its_review_can_t_be_read(
     assert answer.status_code == status
     assert says(answer.text, line)
     assert says(answer.text, imports.REVIEW_NOT_SHOWN)
-    assert TYPED_BACK.findall(answer.text) == [title_text]
+    assert title_text in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert not says(answer.text, imports.SAID["busy"])
 
 
@@ -8725,7 +8734,8 @@ def test_a_press_that_wrote_nothing_while_the_file_was_busy_says_nothing_changed
         address = f"/parent/imports/{draft_id}/{path.format(image=image)}"
         put_back = restored(drafts, method, busy_store(StoreBusy))
         if route == "review":
-            answer = send(browser, draft_id, page_post(page, "keep", typed={title: "Craft"}))
+            posted = page_post(page, "keep", typed={title: "Craft"})
+            answer = send(browser, draft_id, posted)
         elif route == "image":
             answer = browser.get(address)
         else:
@@ -8738,7 +8748,8 @@ def test_a_press_that_wrote_nothing_while_the_file_was_busy_says_nothing_changed
     assert not says(answer.text, imports.SAID["busy"])
     assert after == before
     if route == "review":
-        assert TYPED_BACK.findall(answer.text) == ["Craft"]
+        assert "Craft" in owed_in_order(posted)
+        assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
         assert BACK_TO_REVIEW.format(draft_id) in answer.text
 
 
@@ -9540,7 +9551,8 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
     assert says(answer.text, changed) == (case in ("a group changed", "close unconfirmed"))
     assert not says(answer.text, imports.PRESS_SAID["incomplete"])
     assert not says(answer.text, imports.PRESS_SAID["left_open"])
-    assert TYPED_BACK.findall(answer.text) == ["Chains Guide Six"]
+    assert "Chains Guide Six" in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert not says(answer.text, TYPED_SAID)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
@@ -9697,7 +9709,8 @@ def test_a_save_whose_review_ended_after_its_answers_were_kept_says_what_was_kep
     assert says(answer.text, imports.PRESS_SAID["kept_then_ended"]) == answered
     assert not says(answer.text, imports.PRESS_SAID["answers_kept"])
     assert says(answer.text, imports.SAID[ending])
-    assert TYPED_BACK.findall(answer.text) == (["Chains"] if answered else [])
+    assert not answered or "Chains" in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
 
 
 def test_an_unsure_field_corrected_in_the_fold_isn_t_the_first_question(
@@ -12245,7 +12258,10 @@ def test_a_save_whose_follow_up_read_fails_promises_no_cleanup(
     shown = the_saved_heading(answer, ONE_OF_TWO)
     assert not says(answer.text, imports.PRESS_SAID["incomplete"])
     assert lines_in(PROBLEM_BLOCK.search(shown)) == [imports.REVIEW_NOT_SHOWN]
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    left_open = json.loads(other.removeprefix("correct:"))[0]
+    owed_now = [t for k, _, t in owed(posted) if k == left_open]
+    assert TYPED_ON_THE_OTHER in owed_now
+    assert TYPED_BACK.findall(answer.text) == owed_now
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert not says(answer.text, imports.PRESS_SAID["left_open"])
@@ -12271,7 +12287,10 @@ def test_a_save_whose_review_has_ended_promises_no_cleanup(
     shown = the_saved_heading(answer, ONE_OF_TWO)
     assert not says(answer.text, imports.PRESS_SAID["incomplete"])
     assert says(shown, imports.SAID["expired" if ending is DraftExpired else "absent"])
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    left_open = json.loads(other.removeprefix("correct:"))[0]
+    owed_now = [t for k, _, t in owed(posted) if k == left_open]
+    assert TYPED_ON_THE_OTHER in owed_now
+    assert TYPED_BACK.findall(answer.text) == owed_now
     assert not says(answer.text, imports.PRESS_SAID["left_open"])
     assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
 
@@ -12475,7 +12494,10 @@ def test_an_unexpected_error_after_the_commit_keeps_the_saved_result(
 
     shown = the_saved_heading(answer, ONE_OF_TWO)
     assert lines_in(PROBLEM_BLOCK.search(shown)) == [imports.REVIEW_NOT_SHOWN]
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    left_open = json.loads(other.removeprefix("correct:"))[0]
+    owed_now = [t for k, _, t in owed(posted) if k == left_open]
+    assert TYPED_ON_THE_OTHER in owed_now
+    assert TYPED_BACK.findall(answer.text) == owed_now
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert UNEXPECTED not in answer.text
     assert not says(answer.text, imports.PRESS_SAID["incomplete"])
@@ -12515,7 +12537,8 @@ def test_an_unexpected_error_on_a_resent_press_keeps_the_saved_result(
     assert answer.status_code == 200
     assert OUTCOME.search(answer.text) is not None
     assert says(answer.text, imports.COUNTS_UNSHOWN if where == "homework_counts" else ONE_OF_TWO)
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     the_diagnostic(caplog, "ValueError")
 
@@ -12539,7 +12562,8 @@ def test_a_resent_press_whose_read_gets_another_refusal_keeps_the_way_back(
 
     shown = the_saved_heading(answer, ONE_OF_TWO)
     assert lines_in(PROBLEM_BLOCK.search(shown)) == [imports.REVIEW_NOT_SHOWN]
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert not says(answer.text, imports.PRESS_SAID["incomplete"])
@@ -12575,7 +12599,8 @@ def test_a_press_resent_after_a_refused_close_says_what_the_first_said(
         assert "See them on her week" in shown
         assert not says(page_shown.text, imports.SAID["closed"])
         assert BACK_TO_REVIEW.format(draft_id) not in page_shown.text
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert swept.closed == 1
 
 
@@ -12655,7 +12680,8 @@ def test_a_recorded_save_whose_post_is_refused_on_a_readable_review_keeps_its_re
         monkeypatch.undo()
 
     the_saved_heading(answer, ONE_OF_TWO)
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
 
 
@@ -12725,7 +12751,8 @@ def test_a_resent_press_whose_post_can_t_be_read_against_the_page_keeps_its_typi
         monkeypatch.undo()
 
     the_saved_heading(answer, ONE_OF_TWO)
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert not says(answer.text, imports.REVIEW_NOT_SHOWN)
@@ -12803,7 +12830,10 @@ def test_a_store_failure_after_the_commit_is_no_programming_error(
         monkeypatch.undo()
 
     the_saved_heading(answer, ONE_OF_TWO)
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    left_open = json.loads(other.removeprefix("correct:"))[0]
+    owed_now = [t for k, _, t in owed(posted) if k == left_open]
+    assert TYPED_ON_THE_OTHER in owed_now
+    assert TYPED_BACK.findall(answer.text) == owed_now
     assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
@@ -12952,7 +12982,8 @@ def test_a_review_closed_for_real_before_its_rows_are_read_keeps_the_saved_resul
     assert closed is not None
     shown = the_saved_heading(answer, ONE_OF_TWO)
     assert lines_in(PROBLEM_BLOCK.search(shown)) == [imports.REVIEW_NOT_SHOWN]
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
@@ -13023,7 +13054,8 @@ def test_a_save_whose_evidence_can_t_be_read_still_commits_and_gives_everything_
     assert "Worded Anew" in titles
     assert answer.status_code == 200
     assert says(answer.text, imports.counted(1, 0, 0, 0))
-    assert TYPED_BACK.findall(answer.text) == ["Worded Anew"]
+    assert "Worded Anew" in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert UNEXPECTED not in answer.text
 
 
@@ -13382,7 +13414,8 @@ def test_a_review_discarded_before_the_page_s_read_gives_the_typing_back(
 
     shown = the_saved_heading(answer, ONE_OF_TWO)
     assert says(shown, imports.SAID["closed"])
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert not says(answer.text, imports.PRESS_SAID["left_open"])
     assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
 
@@ -13469,7 +13502,8 @@ def test_a_resent_press_with_no_counts_on_record_is_no_programming_error(
 
     assert answer.status_code == 200
     assert says(answer.text, imports.COUNTS_UNSHOWN)
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
@@ -13617,7 +13651,8 @@ def test_an_unexpected_error_in_the_read_back_costs_only_the_evidence(
 
     assert saved == (["Worded Anew"], 1)
     assert "Saved: 1 new assignment." in page_text(answer)
-    assert TYPED_BACK.findall(answer.text) == ["Worded Anew"]
+    assert "Worded Anew" in owed_in_order(posted)
+    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     the_diagnostic(caplog, "ValueError")
 
 
@@ -19586,9 +19621,8 @@ def test_two_padded_readings_left_alone_come_back_as_two_boxes(
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    says_the_review_ended(
-        answer, status, imports.SAID[words], {"  Do pages 1 to 2. ", "Draw it.\n"}
-    )
+    assert {"  Do pages 1 to 2. ", "Draw it.\n"} <= owed_texts(posted)
+    says_the_review_ended(answer, status, imports.SAID[words], owed_texts(posted))
     assert says(answer.text, imports.TYPED_SAID)
 
 
@@ -19655,7 +19689,8 @@ def test_an_earlier_correction_in_its_box_comes_back(
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    assert copied(answer) == {"Kept Words"}
+    assert "Kept Words" in owed_texts(posted)
+    assert copied(answer) == owed_texts(posted)
 
 
 @pytest.mark.parametrize(
@@ -20408,7 +20443,7 @@ def test_no_date_gives_what_it_sets_aside_back_on_a_press_that_stored_nothing(
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    assert copied(answer) == typing
+    assert copied(answer) == typing | owed_texts(posted, returned=boxes_returned(answer))
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert not says(answer.text, imports.TYPED_SAID)
     if line == "behind":
@@ -20433,7 +20468,7 @@ def test_a_resend_of_no_date_on_later_says_out_of_date_and_gives_the_words_as_a_
 
     assert again.status_code == 409
     assert imports.OUT_OF_DATE in page_text(again)
-    assert copied(again) == {WORDS_BESIDE}
+    assert copied(again) == {WORDS_BESIDE} | owed_texts(posted)
     assert held is not None
     assert held[piece] == {"assigned": None}
 
@@ -22109,9 +22144,11 @@ def test_a_review_finished_at_the_write_with_no_save_of_this_page_says_it_s_clos
             saved = send(browser, draft_id, page_post(tab, "save", tick=[unit]))
         assert "Saved: 1 new assignment." in page_text(saved)
         typed = {correct_box(unit, "title"): STRAY_TITLE}
-        answer = send(browser, draft_id, page_post(page, press, typed=typed))
+        posted = page_post(page, press, typed=typed)
+        answer = send(browser, draft_id, posted)
 
-    says_the_review_ended(answer, 409, imports.SAID["closed"], {STRAY_TITLE})
+    assert STRAY_TITLE in owed_texts(posted)
+    says_the_review_ended(answer, 409, imports.SAID["closed"], owed_texts(posted))
 
 
 WHITESPACE_SENT: Final = [("title", "Set 3 "), ("instruction:0", "   ")]
@@ -22636,14 +22673,18 @@ def test_words_beside_a_date_on_one_of_two_rows_another_tab_took_come_back_to_co
 
     assert answer.status_code == 409
     if how == "saved":
-        assert copied(answer) == {WORDS_BESIDE}
+        assert copied(answer) == {WORDS_BESIDE} | owed_texts(
+            posted, returned=boxes_returned(answer)
+        )
         assert imports.OUT_OF_DATE in page_text(answer)
         assert 'name="press"' not in answer.text
         return
     if how == "its screenshot removed":
         assert copies_with_labels(answer) == A_REMOVED_ROW_S_BOXES
     else:
-        assert copied(answer) == {WORDS_BESIDE}
+        assert copied(answer) == {WORDS_BESIDE} | owed_texts(
+            posted, returned=boxes_returned(answer)
+        )
     boxes = [json.loads(box) for box in fields_named(review_form(answer.text), "correct:")]
     titles = [key for key, field in boxes if field == "title"]
     assert row not in titles
@@ -23197,7 +23238,8 @@ def test_save_with_a_refused_read_keeps_its_own_reading_of_a_date_beside_words(
 
     assert answer.status_code == status
     assert imports.REVIEW_NOT_SHOWN in page_text(answer)
-    assert copied(answer) == (after_its_own_read if read == "its own read" else typing)
+    back = after_its_own_read if read == "its own read" else typing
+    assert copied(answer) == back | owed_texts(posted)
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
@@ -23399,7 +23441,8 @@ def test_a_review_ended_at_the_read_after_a_commit_keeps_its_status_and_the_comm
         imports.SAID[words],
         imports.TYPED_SAID,
     ]
-    assert copied(answer) == {READ_ASSIGNED, WORDS_BESIDE, "Set 3 "}
+    unproved = set() if route == "Save for later committed" else owed_texts(posted)
+    assert copied(answer) == {READ_ASSIGNED, WORDS_BESIDE, "Set 3 "} | unproved
     assert after["version"] == cast(int, before["version"]) + 1
     assert held is not None
     if route == "Save for later committed":
@@ -23502,7 +23545,7 @@ def test_the_earlier_save_page_behind_its_save_gives_a_stray_space_back(
 
     assert answer.status_code == 200
     assert "Saved: 1 new assignment." in page_text(answer)
-    assert copied(answer) == {"Set 3 "}
+    assert copied(answer) == owed_texts(posted)
     assert not recovery_of(answer).form
     assert imports.OUT_OF_DATE in page_text(answer)
 
@@ -23584,15 +23627,42 @@ def rows_back_past_its_next_read(
     return Refusing(monkeypatch, ("ended_under_press", "snapshot", 1, read), *also)
 
 
+def copies_beside_words(
+    copies: Sequence[str],
+    posted: Sequence[tuple[str, str]],
+    words: Sequence[str],
+    dates: Collection[str] = (),
+) -> bool:
+    """Whether a page with no form and no save evidence gives back these copies beside carried
+    words. Keep and Save for later read the post with ``typed_as_sent``, which lists the boxes in
+    posted order and the carried words last, so the order is compared. Save reads it with
+    ``typed_for`` or ``typed_beside_words``, which put the words in place of their date box where
+    that box is typed, so only which copies come back is compared."""
+    expected = in_reader_order(posted, dates, words)
+    if dict(posted).get("press") == "save":
+        return sorted(copies) == sorted(expected)
+    return list(copies) == expected
+
+
+def split_typing(
+    posted: Sequence[tuple[str, str]], typing: Sequence[str]
+) -> tuple[list[str], list[str]]:
+    """A test's list of copies split into those a box of the post holds (date boxes among them)
+    and the words carried, which no box holds."""
+    held = {value for name, value in posted if name.startswith("correct:")}
+    return [t for t in typing if t in held], [t for t in typing if t not in held]
+
+
 def in_reader_order(
     posted: Sequence[tuple[str, str]],
     dates: Collection[str] = (),
     words: Sequence[str] = (),
+    returned: Collection[tuple[str, str, str]] = (),
 ) -> list[str]:
     """What a page with no form and no save evidence gives back, in the order its reader finds it:
-    each Class, Title and Instructions box ``owed`` names and each date box sent with one of these
-    texts, in posted order, then the words carried."""
-    texts = {(key, field): text for key, field, text in owed(posted)}
+    each Class, Title and Instructions box ``owed`` names (less those ``returned``) and each date
+    box sent with one of these texts, in posted order, then the words carried."""
+    texts = {(key, field): text for key, field, text in owed(posted, returned=returned)}
     out: list[str] = []
     for name, value in posted:
         if not name.startswith("correct:"):
@@ -23934,7 +24004,10 @@ def test_a_later_refused_behind_its_page_s_save_says_so_beneath_that_save(
     assert answer.status_code == 200, page_text(answer)[:400]
     assert "Saved: 1 new assignment. 1 still needs checking." in the_outcome_heading(answer)
     says_the_refusal_beneath_the_earlier_save(answer, LATER_REFUSED_HERE)
-    assert copies_in_order(answer) == beside.typing
+    carried = [WORDS_BESIDE] if words else []
+    assert copies_in_order(answer) == in_reader_order(
+        beside.posted, (), carried, boxes_returned(answer)
+    )
     assert not page.form
     assert page.links == ["Back to the review", "Back to Family review"]
     assert after["revision"] == before["revision"]
@@ -24109,7 +24182,8 @@ def test_keep_storing_an_answer_past_its_next_read_says_so_apart_with_no_form(
         monkeypatch.undo()
         after = review_as_stored(browser, draft_id)
 
-    says_the_earlier_save_with_no_form(answer, draft_id, [text] if text else [])
+    assert not text or text in in_reader_order(posted)
+    says_the_earlier_save_with_no_form(answer, draft_id, in_reader_order(posted))
     the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
     says_this_keep_stored_its_answers(answer, KEPT_BEFORE_IT_ENDED if read in THE_ENDINGS else None)
     assert after["version"] == cast(int, before["version"]) + 1
@@ -24131,7 +24205,7 @@ def test_keep_withdrawing_an_answer_alone_past_a_refused_read_has_no_line(
         monkeypatch.undo()
         after = review_as_stored(browser, review.draft_id)
 
-    says_the_earlier_save_with_no_form(answer, review.draft_id, [])
+    says_the_earlier_save_with_no_form(answer, review.draft_id, in_reader_order(posted))
     says_nothing_of_kept_answers(answer)
     assert holds_the_answer(before, review.confirm, "as_read")
     assert not holds_the_answer(after, review.confirm, "as_read")
@@ -24150,7 +24224,7 @@ def test_keep_storing_an_answer_and_withdrawing_another_past_a_refused_read_says
         monkeypatch.undo()
         after = review_as_stored(browser, review.draft_id)
 
-    says_the_earlier_save_with_no_form(answer, review.draft_id, [])
+    says_the_earlier_save_with_no_form(answer, review.draft_id, in_reader_order(posted))
     says_this_keep_stored_its_answers(answer)
     assert holds_the_answer(after, field, value)
     assert not holds_the_answer(after, review.confirm, "as_read")
@@ -24206,7 +24280,7 @@ def test_keep_storing_an_answer_says_so_on_each_way_its_page_can_t_show_the_revi
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    says_the_earlier_save_with_no_form(answer, draft_id, [])
+    says_the_earlier_save_with_no_form(answer, draft_id, in_reader_order(posted))
     says_this_keep_stored_its_answers(answer)
     if counts is not None:
         says_the_save_with_its_counts_unread(answer)
@@ -24235,7 +24309,8 @@ def test_keep_storing_answers_with_no_receipt_past_a_refused_read_answers_200_an
     says_this_keep_stored_its_answers(answer)
     assert said_by(answer) == [imports.REVIEW_NOT_SHOWN]
     assert focused(answer.text) == ['<div role="status" id="kept" tabindex="-1" autofocus>']
-    assert copies_in_order(answer) == [STRAY_TITLE, "Line one.\nLine  two. "]
+    assert STRAY_TITLE in in_reader_order(posted)
+    assert copies_in_order(answer) == in_reader_order(posted)
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert "Saved:" not in text
     assert imports.COUNTS_UNSHOWN not in text
@@ -24878,7 +24953,8 @@ def test_keep_storing_an_answer_says_it_was_kept_on_a_page_that_read_the_review_
     assert f'<p class="note">{escape(KEPT_BEFORE_IT_ENDED)}</p>' in answer.text
     assert answer.text.count(str(escape(KEPT_BEFORE_IT_ENDED))) == 1
     assert "Your answers are kept" not in text
-    assert copies_in_order(answer) == ["This Tab "]
+    assert "This Tab " in in_reader_order(posted)
+    assert copies_in_order(answer) == in_reader_order(posted)
     assert 'name="correct:' not in answer.text
 
 
@@ -24898,7 +24974,7 @@ def test_keep_storing_an_answer_says_it_was_kept_when_its_ended_page_fails(
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    says_the_earlier_save_with_no_form(answer, draft_id, [])
+    says_the_earlier_save_with_no_form(answer, draft_id, in_reader_order(posted))
     says_this_keep_stored_its_answers(answer, KEPT_BEFORE_IT_ENDED)
 
 
@@ -25424,7 +25500,8 @@ def test_a_press_with_no_homework_past_a_refused_read_answers_as_keep_when_it_st
         after = review_as_stored(browser, draft_id)
 
     assert said_by(answer)[-1:] == [imports.REVIEW_NOT_SHOWN]
-    assert copies_in_order(answer) == typing
+    held, carried = split_typing(posted, typing)
+    assert copies_beside_words(copies_in_order(answer), posted, carried, held)
     assert 'name="correct:' not in answer.text
     assert (after["answers"] != before["answers"]) is stored
     if stored:
@@ -25515,7 +25592,9 @@ def test_save_for_later_behind_beside_a_receipt_says_so_only_when_it_stored(
         after = review_as_stored(browser, review.draft_id)
 
     later_behind = imports.PRESS_SAID["later_behind"]
-    says_the_earlier_save_with_no_form(answer, review.draft_id, [], refused=later_behind)
+    says_the_earlier_save_with_no_form(
+        answer, review.draft_id, in_reader_order(posted), refused=later_behind
+    )
     the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
     assert holds_the_answer(after, field, value) is stored
     if stored:
@@ -28607,7 +28686,8 @@ def test_a_resent_save_gives_back_its_typing_with_no_form_and_moves_nothing(
         imports.OUT_OF_DATE
     )
     assert says(answer.text, imports.UNSHOWN_TYPED)
-    assert sorted(page.copies) == ["This Tab Title", "Y Typed"]
+    assert {"This Tab Title", "Y Typed"} <= set(page.copies)
+    assert sorted(page.copies) == sorted(owed_in_order(posted))
     assert page.links == ["Back to the review", "Back to Family review"]
     assert resent_at == saved_at
 
@@ -28999,14 +29079,16 @@ def test_keep_whose_rows_come_back_empty_gives_back_every_box(
             correct_box(other, "title"): "Y Typed",
         }
         no_rows_once(monkeypatch)
-        answer = send(browser, draft_id, page_post(settled, "keep", typed=typed))
+        posted = page_post(settled, "keep", typed=typed)
+        answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     page = recovery_of(answer)
     assert answer.status_code == 200
     assert not page.form
     assert imports.PRESS_SAID["kept"] in page_text(answer)
-    assert sorted(page.copies) == ["This Tab Title", "Y Typed"]
+    assert {"This Tab Title", "Y Typed"} <= set(page.copies)
+    assert sorted(page.copies) == sorted(owed_in_order(posted))
     assert says(answer.text, imports.UNSHOWN_TYPED)
 
 
@@ -29144,7 +29226,8 @@ def test_a_save_page_with_no_form_gives_back_the_date_typed_beside_carried_words
     found = recovery_of(answer)
     assert answer.status_code == (refused or SAVE_PAGES_BESIDE_WORDS[where]), page_text(answer)
     assert not found.form
-    assert sorted(found.copies) == sorted(copies)
+    owed_now = [t for t in owed_in_order(posted) if t not in copies]
+    assert sorted(found.copies) == sorted([*copies, *owed_now])
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert imports.OUT_OF_DATE in page_text(answer)
     assert found.links == ["Back to the review", "Back to Family review"]
@@ -29460,9 +29543,7 @@ def test_a_press_behind_says_words_beside_a_no_date_choice_only_with_a_choice_it
     found = recovery_of(answer)
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert sorted(found.copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert {name: len(calls) for name, calls in reads.items()} == READS_BEHIND[press]
     assert after == before
@@ -29508,9 +29589,7 @@ def test_a_resend_says_words_beside_a_no_date_choice_only_with_a_choice_it_can_t
     assert answer.status_code == 200, text[:400]
     assert "Saved: 1 new assignment." in text
     behind_its_own_save(answer)
-    assert sorted(recovery_of(answer).copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(recovery_of(answer).copies, posted, [WORDS_BESIDE])
     assert text.count(NOT_CARRIED) == int(WORDS_BESIDE_NO_DATE_ON_A_RESEND[case])
     if WORDS_BESIDE_NO_DATE_ON_A_RESEND[case]:
         assert text.index("Saved:") < text.index(NOT_CARRIED) < text.index(imports.OUT_OF_DATE)
@@ -29567,9 +29646,7 @@ def test_a_press_behind_says_a_no_date_confirmation_beside_words_saved_progress_
     assert confirms == []
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert sorted(found.copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert after == before
     assert text.count(NOT_CARRIED) == 1
     assert text.index(NOT_CARRIED) < text.index(imports.OUT_OF_DATE)
@@ -29657,9 +29734,7 @@ def test_a_press_behind_compares_a_no_date_confirmation_beside_words_with_answer
     found = recovery_of(answer)
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert sorted(found.copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert {name: len(calls) for name, calls in reads.items()} == READS_BEHIND[press]
     assert after == before
@@ -29776,9 +29851,7 @@ def test_a_press_behind_with_its_rows_back_empty_says_a_no_date_choice_as_that_p
     assert after == before
     assert text.count(NOT_CARRIED) == int(NO_DATE_WITH_ROWS_EMPTY_BEHIND[case])
     if case != "a lone tick":
-        assert sorted(recovery_of(answer).copies) == sorted(
-            [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-        )
+        assert copies_beside_words(recovery_of(answer).copies, posted, [WORDS_BESIDE])
     assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_ROWS_EMPTY[press]
 
 
@@ -29834,9 +29907,7 @@ def test_a_press_behind_with_its_rows_back_empty_compares_a_confirmation_with_it
     assert confirms == []
     assert answer.status_code == 409, text[:400]
     assert not recovery_of(answer).form
-    assert sorted(recovery_of(answer).copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(recovery_of(answer).copies, posted, [WORDS_BESIDE])
     assert imports.OUT_OF_DATE in text
     assert text.count(NOT_CARRIED) == 1
     assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_ROWS_EMPTY[press]
@@ -29931,9 +30002,7 @@ def test_a_press_behind_whose_rows_were_set_aside_compares_a_confirmation_with_t
     assert not [row for row in left.rows if row.state == "open"]
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert sorted(found.copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert imports.OUT_OF_DATE in text
     assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_ROWS_SET_ASIDE[press]
     assert text.count(NOT_CARRIED) == int(CONFIRMATION_WITH_ROWS_SET_ASIDE_BEHIND[case])
@@ -29980,9 +30049,7 @@ def test_a_press_behind_with_every_image_removed_says_nothing_of_a_confirmation(
     assert returned == [None]
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert sorted(found.copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert imports.OUT_OF_DATE in text
     assert NOT_CARRIED not in text
     assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_NO_LIST_LEFT[press]
@@ -30141,9 +30208,7 @@ def test_a_press_behind_matches_a_confirmation_only_beside_progress_absent_or_re
     assert returned == [None]
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert sorted(found.copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert imports.OUT_OF_DATE in text
     assert after["progress"] == before["progress"]
     assert after == before or set_aside_here
@@ -30212,9 +30277,7 @@ def test_a_press_behind_whose_rows_were_set_aside_compares_its_ticks_with_shape_
     assert not [row for row in left.rows if row.state == "open"]
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert sorted(found.copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert imports.OUT_OF_DATE in text
     assert {name: len(calls) for name, calls in reads.items()} == expected
     assert text.count(NOT_CARRIED) == int(NO_DATE_TICKS_BESIDE_SHAPE_THREE[case])
@@ -30273,9 +30336,7 @@ def test_a_press_behind_whose_rows_read_finds_no_review_takes_no_earlier_answers
     assert returned == [None]
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert sorted(found.copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert imports.OUT_OF_DATE in text
     assert after == before
     assert {name: len(calls) for name, calls in reads.items()} == READS_WITH_ROWS_SET_ASIDE[press]
@@ -30406,9 +30467,7 @@ def test_a_save_sent_again_compares_a_confirmation_with_the_latest_answers_read(
     assert len(answers_reads) == 1
     assert answer.status_code == 200, text[:400]
     assert not found.form
-    assert sorted(found.copies) == sorted(
-        [*owed_in_order(posted, returned=boxes_returned(answer)), WORDS_BESIDE]
-    )
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert {key: value for key, value in after.items() if key != "answers"} == {
         key: value for key, value in before.items() if key != "answers"
     }
@@ -30520,6 +30579,7 @@ def a_press_beside_progress_read_again(
     other_readings: bool = False,
     other_due: str | None = None,
     other_tick: bool = False,
+    sent: list[tuple[str, str]] | None = None,
 ) -> tuple[Answer, dict[str, int], list[object]]:
     """Real presses, store calls and forced timing: rows set aside just before their read beside an
     unread image, or forced back empty (``no_rows_once``), progress then changed; other readings,
@@ -30561,6 +30621,8 @@ def a_press_beside_progress_read_again(
         more, cleared = no_date_on(page, other)
         choose, typed = {**choose, **more}, {**typed, **cleared}
     posted = page_post(page, press, tick=tick, choose=choose, typed=typed)
+    if sent is not None:
+        sent.extend(posted)
     record = state_of(browser).project_state
     reads = {name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")}
     returned: list[object] = [None]
@@ -30626,8 +30688,9 @@ def test_a_press_behind_with_rows_back_empty_compares_with_the_progress_read_las
     ):
         pytest.skip("shape 3 the same with rows set aside is its own test")
     with here(open_settings(tmp_path)) as browser:
+        posted: list[tuple[str, str]] = []
         answer, reads, returned = a_press_beside_progress_read_again(
-            browser, monkeypatch, press, path, confirmation, (first, later)
+            browser, monkeypatch, press, path, confirmation, (first, later), sent=posted
         )
 
     text = page_text(answer)
@@ -30635,7 +30698,7 @@ def test_a_press_behind_with_rows_back_empty_compares_with_the_progress_read_las
     assert returned == [None]
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert found.copies == [WORDS_BESIDE]
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE])
     assert imports.OUT_OF_DATE in text
     assert reads == reads_beside(path, press, first)
     assert text.count(NOT_CARRIED) == int(said[PROGRESS_PATHS.index(path)])
@@ -30653,6 +30716,7 @@ def test_a_press_with_rows_set_aside_beside_the_same_shape_three_keeps_the_rows_
     """Rows set aside before their read: real presses, store calls and forced timing as
     ``a_press_beside_progress_read_again`` says, shape 3 progress the same at both reads."""
     with here(open_settings(tmp_path)) as browser:
+        posted: list[tuple[str, str]] = []
         answer, reads, returned = a_press_beside_progress_read_again(
             browser,
             monkeypatch,
@@ -30660,13 +30724,14 @@ def test_a_press_with_rows_set_aside_beside_the_same_shape_three_keeps_the_rows_
             "rows set aside before their read",
             True,
             (SHAPE_THREE, SHAPE_THREE),
+            sent=posted,
         )
 
     text = page_text(answer)
     assert returned == [None]
     assert answer.status_code == 409, text[:400]
     assert not recovery_of(answer).form
-    assert recovery_of(answer).copies == [WORDS_BESIDE]
+    assert copies_beside_words(recovery_of(answer).copies, posted, [WORDS_BESIDE])
     assert reads == reads_beside("rows set aside before their read", press, SHAPE_THREE)
     assert text.count(NOT_CARRIED) == int(SAME_SHAPE_THREE_WITH_ROWS_SET_ASIDE_SAID)
 
@@ -30678,6 +30743,7 @@ def test_a_press_with_rows_set_aside_keeps_a_confirmation_past_another_card_s_du
     """Rows set aside, the same shape 3 at both reads, the other card's due date typed: the
     confirmation's own proof stands, and that due date doesn't take it away, so nothing is said."""
     with here(open_settings(tmp_path)) as browser:
+        posted: list[tuple[str, str]] = []
         answer, reads, returned = a_press_beside_progress_read_again(
             browser,
             monkeypatch,
@@ -30686,13 +30752,17 @@ def test_a_press_with_rows_set_aside_keeps_a_confirmation_past_another_card_s_du
             True,
             (SHAPE_THREE, SHAPE_THREE),
             other_due="Friday",
+            sent=posted,
         )
 
     text = page_text(answer)
     assert returned == [None]
     assert answer.status_code == 409, text[:400]
     assert not recovery_of(answer).form
-    assert recovery_of(answer).copies == ["Friday", WORDS_BESIDE]
+    assert "Friday" in recovery_of(answer).copies
+    assert sorted(recovery_of(answer).copies) == sorted(
+        [*owed_in_order(posted), "Friday", WORDS_BESIDE]
+    )
     assert reads == reads_beside("rows set aside before their read", press, SHAPE_THREE)
     assert NOT_CARRIED not in text
 
@@ -30873,7 +30943,7 @@ def test_a_press_with_rows_set_aside_proves_each_confirmation_beside_shape_three
     assert left.progress == stored
     assert answer.status_code == 409, text[:400]
     assert not found.form
-    assert found.copies == [WORDS_BESIDE, WORDS_BESIDE]
+    assert copies_beside_words(found.copies, posted, [WORDS_BESIDE, WORDS_BESIDE])
     assert {name: len(calls) for name, calls in reads.items()} == reads_beside(
         "rows set aside before their read", press, SHAPE_THREE
     )
@@ -30887,6 +30957,7 @@ def test_a_press_with_rows_set_aside_beside_shape_three_read_again_with_other_re
     """Rows set aside, the same shape 3 at both reads, the later read's readings changed (forced by
     ``later_read_with_other_readings``): the rows' conversion can't stand for it, so it's said."""
     with here(open_settings(tmp_path)) as browser:
+        posted: list[tuple[str, str]] = []
         answer, reads, returned = a_press_beside_progress_read_again(
             browser,
             monkeypatch,
@@ -30895,13 +30966,14 @@ def test_a_press_with_rows_set_aside_beside_shape_three_read_again_with_other_re
             True,
             (SHAPE_THREE, SHAPE_THREE),
             other_readings=True,
+            sent=posted,
         )
 
     text = page_text(answer)
     assert returned == [None]
     assert answer.status_code == 409, text[:400]
     assert not recovery_of(answer).form
-    assert recovery_of(answer).copies == [WORDS_BESIDE]
+    assert copies_beside_words(recovery_of(answer).copies, posted, [WORDS_BESIDE])
     assert reads == reads_beside("rows set aside before their read", press, SHAPE_THREE)
     assert text.count(NOT_CARRIED) == 1
 
@@ -31103,7 +31175,8 @@ def test_a_page_with_a_date_beside_words_draws_no_form_only_when_behind(
     assert answer.status_code == 422
     if behind:
         assert not found.form
-        assert sorted(found.copies) == sorted(["2026-10-03", words])
+        owed_now = owed_in_order(posted, returned=boxes_returned(answer))
+        assert sorted(found.copies) == sorted(["2026-10-03", words, *owed_now])
         assert screenshot_page.SAID["not_carried"] in page_text(answer)
         assert imports.OUT_OF_DATE in page_text(answer)
         assert found.links == ["Back to the review", "Back to Family review"]
@@ -31285,13 +31358,15 @@ def test_a_busy_press_whose_rows_come_back_empty_gives_back_every_box(
 
         monkeypatch.setattr(drafts, writer, busy)
         no_rows_once(monkeypatch)
-        answer = send(browser, draft_id, page_post(settled, press, typed=typed))
+        posted = page_post(settled, press, typed=typed)
+        answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     page = recovery_of(answer)
     assert answer.status_code == 503
     assert not page.form
-    assert sorted(page.copies) == ["This Tab Title", "Y Typed"]
+    assert {"This Tab Title", "Y Typed"} <= set(page.copies)
+    assert sorted(page.copies) == sorted(owed_in_order(posted))
     assert says(answer.text, imports.UNSHOWN_TYPED)
 
 
@@ -33370,15 +33445,15 @@ def test_keep_and_save_for_later_refused_at_the_student_read_before_the_write_co
 
         monkeypatch.setattr(imports, "review_post", post_read)
         monkeypatch.setattr(record, "student_id", student)
-        answer = send(
-            browser,
-            draft_id,
-            page_post(page, press, tick=[units[0]], typed={correct_box(piece, "assigned"): typed}),
+        posted = page_post(
+            page, press, tick=[units[0]], typed={correct_box(piece, "assigned"): typed}
         )
+        answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert answer.status_code == 503
-    assert copies_with_labels(answer) == [("Assigned date", typed)]
+    assert ("Assigned date", typed) in plain_copies_beside_a_date(posted, typed)
+    assert copies_with_labels(answer) == plain_copies_beside_a_date(posted, typed)
 
 
 # The line a stale found row's page says, naming the card and the row it was found under.
@@ -33488,15 +33563,15 @@ def test_keep_and_save_for_later_closed_at_their_write_after_a_save_copy_as_toda
         drafts = state_of(browser).import_drafts
         write = "keep_answers" if press == "keep" else "save_for_later"
         monkeypatch.setattr(drafts, write, busy_store(DraftClosed))
-        answer = send(
-            browser,
-            draft_id,
-            page_post(page, press, tick=[units[0]], typed={correct_box(piece, "assigned"): typed}),
+        posted = page_post(
+            page, press, tick=[units[0]], typed={correct_box(piece, "assigned"): typed}
         )
+        answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert answer.status_code == 200
-    assert copies_with_labels(answer) == [("Assigned date", typed)]
+    assert ("Assigned date", typed) in plain_copies_beside_a_date(posted, typed)
+    assert copies_with_labels(answer) == plain_copies_beside_a_date(posted, typed)
 
 
 @pytest.mark.parametrize("press", ["keep", "later"])
@@ -34003,14 +34078,14 @@ def test_keep_and_save_for_later_closed_at_their_write_with_no_save_before_copy_
         drafts = state_of(browser).import_drafts
         write = "keep_answers" if press == "keep" else "save_for_later"
         monkeypatch.setattr(drafts, write, busy_store(DraftClosed))
-        answer = send(
-            browser,
-            draft_id,
-            page_post(page, press, tick=[units[0]], typed={correct_box(piece, "assigned"): typed}),
+        posted = page_post(
+            page, press, tick=[units[0]], typed={correct_box(piece, "assigned"): typed}
         )
+        answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    assert copies_with_labels(answer) == [("Assigned date", typed)]
+    assert ("Assigned date", typed) in plain_copies_beside_a_date(posted, typed)
+    assert copies_with_labels(answer) == plain_copies_beside_a_date(posted, typed)
     assert WORDS_BESIDE not in copied(answer)
 
 
@@ -36243,6 +36318,24 @@ COPY_LABELS: Final = {"course": "Class", "title": "Title"}
 """The plain label of a copy with no card name, by field; any other field is an Instructions box."""
 
 
+def plain_copies_beside_a_date(
+    posted: Sequence[tuple[str, str]], date: str
+) -> list[tuple[str, str]]:
+    """As ``plain_copies``, with the assigned date box sent with this date in its posted place, as
+    ``typed_as_sent`` lists it on Keep and Save for later."""
+    texts = {(key, field): text for key, field, text in owed(posted)}
+    out: list[tuple[str, str]] = []
+    for name, value in posted:
+        if not name.startswith("correct:"):
+            continue
+        key, field = (str(part) for part in json.loads(name.removeprefix("correct:")))
+        if (key, field) in texts:
+            out.append((COPY_LABELS.get(field, "Instructions"), texts[(key, field)]))
+        elif field == "assigned" and value == date:
+            out.append(("Assigned date", value))
+    return out
+
+
 def plain_copies(posted: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
     """Every Class, Title and Instructions box ``owed`` names, in posted order, under its plain
     label, as a page with no card names gives them back."""
@@ -36416,7 +36509,8 @@ def test_save_with_no_post_to_read_gives_back_a_padded_reading_s_padding_deleted
         monkeypatch.undo()
 
     assert answer.status_code == 200, answer.headers.get("location")
-    assert copies_with_labels(answer) == [("Instructions", PADDING_DELETED)]
+    assert ("Instructions", PADDING_DELETED) in plain_copies(fields)
+    assert copies_with_labels(answer) == plain_copies(fields)
     assert len(record) == SAVE_PAGE_TABLE_READS[route]
 
 
@@ -37564,3 +37658,50 @@ def test_an_ordinary_save_gives_back_nothing_its_read_back_and_its_form_hold(
     assert answer.status_code == 200
     assert "Saved: 1 new assignment." in page_text(answer)
     assert copies_with_labels(answer) == []
+
+
+def test_keep_with_an_instructions_box_posted_twice_on_an_open_review_is_refused_before_any_write(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crafted post on an open review: Keep with card 2's Instructions box posted as read, then
+    again holding other words. The post reader refuses a box name sent twice, so nothing is kept:
+    the answers, the progress and the version stay as they were. What that refusal gives back is
+    not pinned here."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_review_reading(browser, monkeypatch, READ_WORDS)
+        box = correct_box(json.loads(box_subject(page, "instruction:0", 1))[0], "instruction:0")
+        posted = [*page_post(page, "keep"), (box, "Zebra words")]
+        student, drafts = student_and_drafts(browser)
+        before = (drafts.snapshot(student, draft_id).version, stored_answers(browser, draft_id))
+        send(browser, draft_id, posted)
+        after = (drafts.snapshot(student, draft_id).version, stored_answers(browser, draft_id))
+        held = held_corrections(browser, draft_id)
+
+    assert [name for name, _ in posted].count(box) == 2
+    assert after == before
+    assert held is None
+
+
+def test_a_row_set_aside_after_the_label_read_keeps_its_copy_under_the_card_s_name(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forced timing: Keep with the second card's Title typed, and that row set aside just before
+    the read of the rows for Keep's page. The returned form does not draw the row, and the typed
+    Title comes back under the card's name as the post was read."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, "keep", typed={correct_box(other, "title"): "Set Four"})
+        student, drafts = student_and_drafts(browser)
+
+        def set_aside() -> None:
+            now = drafts.snapshot(student, draft_id)
+            drafts.set_aside(student, draft_id, version=now.version, keys=[other])
+
+        before_the_rows_read(monkeypatch, set_aside)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert correct_box(other, "title") not in [
+        f"correct:{name}" for name in fields_named(answer.text, "correct:")
+    ]
+    assert ("Title for Set 3 (screenshot 1, card 2)", "Set Four") in copies_with_labels(answer)
