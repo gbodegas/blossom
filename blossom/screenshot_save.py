@@ -633,7 +633,8 @@ class ReviewState:
     """The checks and preview another mapping of these pieces would have, as an offer shows it,
     against the same record and answers."""
     every_row: tuple[ScreenshotRow, ...] = dataclasses.field(default=(), compare=False)
-    """Every row of the review, those set aside included, read only to name what a press typed."""
+    """Every row of the review, those set aside included, read only to name what a press typed and
+    to compare a box it sent with the row's text as read."""
 
     @property
     def by_name(self) -> dict[str, Piece]:

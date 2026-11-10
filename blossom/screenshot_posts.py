@@ -602,7 +602,10 @@ def typed_back(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
 
 
 def typed_for(
-    items: Sequence[tuple[str, str]], *, exact: bool = False
+    items: Sequence[tuple[str, str]],
+    *,
+    exact: bool = False,
+    readings: Mapping[tuple[str, str], str] | None = None,
 ) -> tuple[tuple[str, str, str], ...]:
     """Each correction a post typed, by the row or piece it names, its field and its text, in the
     order it was posted: a box's text that differs from its value with no correction as the
@@ -610,7 +613,10 @@ def typed_for(
     read that was carried beside it. Read from the post alone, never from the review, to give
     back as typed when the review can't take it; a name that doesn't name a correction is passed
     over. With ``exact``, whitespace counts: a box is passed over only when it is exactly its value
-    with no correction, and whitespace-only text comes back, as ``typed_as_sent`` reads them."""
+    with no correction, and whitespace-only text comes back, as ``typed_as_sent`` reads them. With
+    ``readings``, the one thing here not read from the post, a class, title or instruction text box
+    holding text that is exactly its value with no correction comes back too, unless the reading
+    given for its row key and field is that text."""
     found: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
     unchanged = {
@@ -631,7 +637,17 @@ def typed_for(
             continue
         text = correction_text(field, value)
         if prefix == "correct:":
-            if unchanged.get(named) == read_digest(text) and (not exact or text == canonical(text)):
+            as_read = unchanged.get(named) == read_digest(text) and (
+                not exact or text == canonical(text)
+            )
+            differs = (
+                readings is not None
+                and (field in ROW_FIELDS or instruction_index(field) is not None)
+                and text != ""
+                and text == canonical(text)
+                and readings.get((key, field)) != text
+            )
+            if as_read and not differs:
                 continue
             found.setdefault((key, field), text)
         else:
@@ -644,13 +660,17 @@ def typed_for(
 
 
 def typed_as_sent(
-    items: Sequence[tuple[str, str]], *, unchanged_too: bool = False
+    items: Sequence[tuple[str, str]],
+    *,
+    unchanged_too: bool = False,
+    readings: Mapping[tuple[str, str], str] | None = None,
 ) -> tuple[tuple[str, str, str], ...]:
     """Each box's text as it was sent, whitespace kept and a box of several lines with its line
     endings made line feeds, unless it's empty or exactly its value with no correction (kept for a
-    class, title or instructions box with ``unchanged_too``). A box beside carried words is drawn
-    empty, so anything in it was typed; the words come back unless a date is in that box with "No
-    assigned date was given" unticked."""
+    class, title or instructions box with ``unchanged_too``, and with ``readings`` for a class,
+    title or instruction text box unless the reading given for its row key and field is that text).
+    A box beside carried words is drawn empty, so anything in it was typed; the words come back
+    unless a date is in that box with "No assigned date was given" unticked."""
     found: dict[tuple[str, str], str] = {}
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
@@ -680,9 +700,11 @@ def typed_as_sent(
             continue
         boxes.setdefault((key, field), text)
         worded = field in ROW_FIELDS or field.startswith("instruction:")
+        compared = field in ROW_FIELDS or instruction_index(field) is not None
         if text and (
             (unchanged_too and worded)
             or not (text == canonical(text) and unchanged.get(named) == read_digest(text))
+            or (readings is not None and compared and readings.get((key, field)) != text)
         ):
             found.setdefault((key, field), text)
     typed = [(key, field, text) for (key, field), text in found.items()]
@@ -704,10 +726,12 @@ def typed_beside_words(
     *,
     exact: bool = False,
     drawn: Collection[tuple[str, str]] = (),
+    readings: Mapping[tuple[str, str], str] | None = None,
 ) -> tuple[tuple[str, str, str], ...]:
-    """As ``typed_for`` (``exact`` as it takes it), with a date box beside carried words that isn't
-    ``drawn`` given back as ``typed_as_sent`` gives it: what was sent in it, even the date as read,
-    and the words unless a date is in it with "No assigned date was given" unticked."""
+    """As ``typed_for`` (``exact`` and ``readings`` as it takes them), with a date box beside
+    carried words that isn't ``drawn`` given back as ``typed_as_sent`` gives it: what was sent in
+    it, even the date as read, and the words unless a date is in it with "No assigned date was
+    given" unticked."""
     carried: set[tuple[str, str]] = set()
     for name, _ in items:
         if not name.startswith("refused:"):
@@ -723,7 +747,7 @@ def typed_beside_words(
         if (key, field) in carried and text.strip():
             beside.setdefault((key, field), []).append(text)
     typed: list[tuple[str, str, str]] = []
-    for key, field, text in typed_for(items, exact=exact):
+    for key, field, text in typed_for(items, exact=exact, readings=readings):
         if (key, field) not in carried:
             typed.append((key, field, text))
         elif (key, field) in beside:

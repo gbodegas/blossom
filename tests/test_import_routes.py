@@ -36632,3 +36632,81 @@ def test_padding_deleted_on_every_other_page_reads_as_the_post_alone_reads(
     assert given == [None]
     if form:
         assert drawn_text(answer.text, correct_box(key, "instruction:0")) == PADDING_DELETED
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_cleared_box_on_a_page_sent_at_another_version_reads_its_typing_with_no_readings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Real presses: an instruction's padding deleted on a row another page left unsaved, and a
+    whitespace-only Title on the other row. The press is refused for the cleared box (422) at
+    another version than its page's, its one read of the typing is given no readings, and the box
+    whose padding was deleted is not copied."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, key, typed = a_padded_instruction_posted(
+            browser, monkeypatch, "padding deleted"
+        )
+        typed[f"correct:{box_subject(page, 'title', 0)}"] = "   "
+        left_by_another_page(browser, draft_id, key)
+        given = readings_given_to_the_typing(monkeypatch)
+        answer = send(browser, draft_id, page_post(page, press, tick=units_on(page), typed=typed))
+        monkeypatch.undo()
+
+    assert answer.status_code == 422
+    assert given == [None]
+    assert PADDING_DELETED not in [text for _, text in copies_with_labels(answer)]
+
+
+def test_a_save_refused_at_its_page_s_own_version_reads_its_typing_with_no_readings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real presses: a Save ticking a group whose title still has its question, an instruction's
+    padding deleted, sent from a page loaded after the same Save kept its answers. Refused (409)
+    at its page's own version with the form drawn again, its one read of the typing is given no
+    readings and nothing is copied."""
+    smudged = homework_card(
+        **A_SECOND_CARD,
+        instruction=PADDED_INSTRUCTION,
+        uncertain=[{"field": "title", "reason": "a smudge over it"}],
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[homework_card(), smudged]))
+        )
+        page = her_name_answered(browser, draft_id, page)
+        key = json.loads(box_subject(page, "instruction:0", 1))[0]
+        typed = {correct_box(key, "instruction:0"): PADDING_DELETED}
+        send(browser, draft_id, page_post(page, "save", tick=digests_on(page), typed=typed))
+        page = loaded(browser, draft_id)
+        given = readings_given_to_the_typing(monkeypatch)
+        answer = send(
+            browser, draft_id, page_post(page, "save", tick=digests_on(page), typed=typed)
+        )
+        monkeypatch.undo()
+
+    assert answer.status_code == 409
+    assert imports.wasnt_saved("open") in page_text(answer)
+    assert imports.OUT_OF_DATE not in page_text(answer)
+    assert recovery_of(answer).form
+    assert given == [None]
+    assert copies_with_labels(answer) == []
+
+
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_a_press_answered_at_its_page_s_own_version_reads_its_typing_with_no_readings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Real presses: an instruction's padding deleted, Keep or Save for later sent from the page as
+    loaded and answered (200) at its page's own version. Each read of the typing is given no
+    readings."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, typed = a_padded_instruction_posted(
+            browser, monkeypatch, "padding deleted"
+        )
+        given = readings_given_to_the_typing(monkeypatch)
+        answer = send(browser, draft_id, page_post(page, press, tick=units_on(page), typed=typed))
+        monkeypatch.undo()
+
+    assert answer.status_code == 200
+    assert given
+    assert [readings for readings in given if readings is not None] == []

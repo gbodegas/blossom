@@ -71,7 +71,7 @@ from blossom.screenshot_posts import (
     typed_for,
 )
 from blossom.screenshot_reading import ReadOutcome, read_screenshots
-from blossom.screenshot_review import Corrections, change_told, value_json
+from blossom.screenshot_review import Corrections, change_told, row_texts, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
     NotSaved,
@@ -824,6 +824,7 @@ async def typing_of(
     as_sent: bool = False,
     drawn: Mapping[str, str] | None = None,
     undrawn_beside_words: bool = False,
+    readings: Mapping[tuple[str, str], str] | None = None,
 ) -> list[tuple[str, str]]:
     """Every correction a press's post typed, labeled, read from the post alone (``typed_for``),
     to give back as it was sent, in boxes to copy, where the review can't keep it. A correction is
@@ -832,7 +833,8 @@ async def typing_of(
     or a hidden field beside it isn't either, whatever was ticked. With ``beside_words``, a date box
     beside carried words comes back as ``typed_beside_words`` gives it, and with
     ``undrawn_beside_words`` one no box in ``shown`` draws; with ``as_sent``, each text exactly as
-    sent (``exact``), labeled by its card (``copy_label``, with ``drawn``)."""
+    sent (``exact``), labeled by its card (``copy_label``, with ``drawn``). ``readings`` goes to
+    whichever of those readers the call reaches, as each takes it."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -840,12 +842,12 @@ async def typing_of(
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     evidence = set(stored)
     if beside_words:
-        typed = typed_beside_words(items, exact=as_sent)
+        typed = typed_beside_words(items, exact=as_sent, readings=readings)
     elif undrawn_beside_words:
         boxes = {(key, field) for key, field, _ in shown}
-        typed = typed_beside_words(items, exact=as_sent, drawn=boxes)
+        typed = typed_beside_words(items, exact=as_sent, drawn=boxes, readings=readings)
     else:
-        typed = typed_for(items, exact=as_sent)
+        typed = typed_for(items, exact=as_sent, readings=readings)
     return [
         (copy_label(request, key, field, by_card=as_sent, drawn=drawn), text)
         for key, field, text in typed
@@ -864,6 +866,7 @@ async def typing_by_press(
     drawn: Mapping[str, str] | None = None,
     undrawn_beside_words: bool = False,
     unchanged_too: bool = False,
+    readings: Mapping[tuple[str, str], str] | None = None,
 ) -> list[tuple[str, str]]:
     """What a post gives back when its press finds the review ended, on every page that says it
     can't be shown, beside a confirmed save's counts with no post to read, and on Save for later's
@@ -871,7 +874,11 @@ async def typing_by_press(
     since: on a Save press, ``typing_of``, with ``beside_words``, ``undrawn_beside_words`` and
     ``as_sent`` passed on; on Keep or Save for later, every box as it was sent, whitespace included
     (``typed_as_sent``, with ``unchanged_too``), labeled by its card with ``every_press`` (``drawn``
-    as ``copy_label`` takes it). Text a box on the page holds exactly (``shown``) is left out."""
+    as ``copy_label`` takes it). Text a box on the page holds exactly (``shown``) is left out. With
+    ``readings``, given on the page for a press refused at another version than its page's and on
+    an earlier save's page with no post to read, either reader gives back a class, title or
+    instruction text box unless the reading given for it is its exact text; ``keep_readings`` leaves
+    them, and an empty mapping stands for none left."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -886,10 +893,11 @@ async def typing_by_press(
             as_sent=as_sent,
             drawn=drawn,
             undrawn_beside_words=undrawn_beside_words,
+            readings=readings,
         )
     return [
         (copy_label(request, key, field, by_card=every_press, drawn=drawn), text)
-        for key, field, text in typed_as_sent(items, unchanged_too=unchanged_too)
+        for key, field, text in typed_as_sent(items, unchanged_too=unchanged_too, readings=readings)
         if (key, field, text) not in shown
     ]
 
@@ -1469,16 +1477,21 @@ def picked(progress: str | None) -> frozenset[str] | None:
 
 
 async def saved_corrections(
-    state: ApplicationState, snapshot: DraftSnapshot
+    state: ApplicationState,
+    snapshot: DraftSnapshot,
+    *,
+    state_read: list[ReviewState] | None = None,
 ) -> dict[str, dict[str, str | None]]:
     """The corrections a review's saved progress keeps, in the shape a press posts them:
     progress of shape 3 read as the boxes its corrections give, so its answers and "Not saved
     yet" are worked out against what the page posts, and its card's destination asks again
-    once, not after every press."""
+    once, not after every press. A review state read to give those boxes goes in ``state_read``."""
     read = progress_read(snapshot.progress)
     if read is None or read.shape == PROGRESS_SHAPE or not read.corrected:
         return {} if read is None else read.corrected
     review = await state_of_review(state, snapshot, read.corrected)
+    if review is not None and state_read is not None:
+        state_read.append(review)
     return {} if review is None else shape_four(review, read.corrected)
 
 
@@ -2146,6 +2159,26 @@ async def kept_words(state: ApplicationState, wanted: frozenset[str]) -> dict[st
     }
 
 
+def keep_readings(request: Request, review: ReviewState) -> None:
+    """Leaves on the request each row's class, title and instruction texts as this review state
+    read them, by row key and field, for ``typing_by_press`` to compare a post's boxes with. A
+    request that holds those of an earlier state keeps them whole, an empty mapping included."""
+    if hasattr(request.state, "typed_readings"):
+        return
+    request.state.typed_readings = {
+        (row.key, field): text
+        for row in review.every_row
+        for field, text in (
+            ("course", row.reading.course),
+            ("title", row.reading.title),
+            *(
+                (f"instruction:{index}", words)
+                for index, words in enumerate(row_texts(row.reading))
+            ),
+        )
+    }
+
+
 async def review_post(
     request: Request, state: ApplicationState, found: DraftSnapshot
 ) -> tuple[ReviewPost | None, str]:
@@ -2153,14 +2186,20 @@ async def review_post(
     has no homework to read it against, with the press it named. Kept rows are read only for a post
     its page signed. Anything in it nested too deep to read doesn't match either. A signed list past
     its ceiling is left for the caller to answer (``ListTooLarge``). A post that matches leaves the
-    cards its boxes are drawn for on the request alone, to label its copies (``copy_label``)."""
+    cards its boxes are drawn for on the request alone, to label its copies (``copy_label``). The
+    first review state read here in a request, the one ``saved_corrections`` reads among them,
+    leaves its readings there (``keep_readings``) before the post is read against it."""
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
-    saved = await saved_corrections(state, found)
+    state_read: list[ReviewState] = []
+    saved = await saved_corrections(state, found, state_read=state_read)
+    if state_read:
+        keep_readings(request, state_read[0])
     review = await state_of_review(state, found, saved)
     if review is None:
         return None, named
+    keep_readings(request, review)
     places = {image.sha256: index + 1 for index, image in enumerate(found.images)}
     try:
         if any(name == "offer" for name, _ in items):
@@ -2390,7 +2429,10 @@ async def with_typing(
     shown. Each box holds the text its post sent where that equals its value once canonical
     (``boxes_as_sent``). Any press with no save committed gives back each box as sent that no box
     holds exactly (``typing_by_press``), labeled by the card the form draws it on (``cards_drawn``),
-    under ``UNSHOWN_TYPED``, ``TYPED_SAID`` on a press refused with its choices; Keep or Save for
+    under ``UNSHOWN_TYPED``, ``TYPED_SAID`` on a press refused with its choices; refused (409) at
+    another version than its page's, that read is given the request's readings (``keep_readings``,
+    an empty mapping with none left), so a class, title or instruction text box comes back too
+    unless its reading there is its exact text; Keep or Save for
     later adds what "No assigned date was given" set aside or was refused beside, the words and
     anything sent in the box beside them, under ``UNSHOWN_TYPED`` (``tick_set_aside``), and signs
     the revision its page read. An earlier save's page with rows gives back what no box holds under
@@ -2609,6 +2651,11 @@ async def with_typing(
             every_press=True,
             drawn=drawn,
             undrawn_beside_words=True,
+            readings=(
+                getattr(request.state, "typed_readings", {})
+                if status == 409 and not current
+                else None
+            ),
         )
         note = TYPED_SAID if refused_with_choices else UNSHOWN_TYPED
         if post.press != "save" and post.dropped:
@@ -3568,7 +3615,8 @@ async def saved_page(
     result the same way (``noted_after_commit``). What that save saved (``own``, its pieces) goes
     with it, unsaid, on the page that carries the press's choices. With no post to read, past its
     ceiling or not matching its page, the counts come with the typing to copy, by its press
-    (``typing_by_press``), and redirect only when there's nothing to give back."""
+    (``typing_by_press``, given the request's readings as ``keep_readings`` left them, an empty
+    mapping with none left), and redirect only when there's nothing to give back."""
     record = state.project_state
     try:
         student = await asyncio.to_thread(record.student_id)
@@ -3646,7 +3694,12 @@ async def saved_page(
                 notes=notes,
                 counted=bool(counts),
             )
-        typed = await typing_by_press(request, as_sent=True, beside_words=True)
+        typed = await typing_by_press(
+            request,
+            as_sent=True,
+            beside_words=True,
+            readings=getattr(request.state, "typed_readings", {}),
+        )
         if typed:
             return saved_outcome(
                 request,
