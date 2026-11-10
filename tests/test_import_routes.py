@@ -36742,3 +36742,46 @@ def test_a_press_answered_at_its_page_s_own_version_reads_its_typing_with_no_rea
     assert answer.status_code == 200
     assert given
     assert [readings for readings in given if readings is not None] == []
+
+
+def test_a_save_for_later_whose_check_reads_busy_reads_its_typing_with_no_readings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forced store answer only: an instruction's padding deleted, Save for later sent from the page
+    as loaded, and the store's read after its commit refused as busy. Its three reads of the typing
+    (one for the busy read, one for the boxes it kept, one for its page) are each given no
+    readings."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, _, typed = a_padded_instruction_posted(
+            browser, monkeypatch, "padding deleted"
+        )
+        drafts = state_of(browser).import_drafts
+        put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, StoreBusy))
+        given = readings_given_to_the_typing(monkeypatch)
+        answer = send(browser, draft_id, page_post(page, "later", tick=units_on(page), typed=typed))
+        put_back()
+        monkeypatch.undo()
+
+    assert answer.status_code == 200
+    assert given == [None, None, None]
+
+
+def test_a_save_for_later_with_words_set_aside_reads_its_typing_with_no_readings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saved progress written by the test, then a real press: words carried beside an assigned date
+    box, "No assigned date was given" ticked and a title typed, Save for later answered (200) with
+    no form. Its one read of the typing is given no readings."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, reopened, _, none = words_beside_a_date_box(browser, monkeypatch)
+        title = correct_box(json.loads(box_subject(reopened, "title"))[0], "title")
+        given = readings_given_to_the_typing(monkeypatch)
+        posted = page_post(
+            reopened, "later", choose=no_date_tick(none), typed={title: "Typed Words "}
+        )
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert answer.status_code == 200
+    assert 'name="correct:' not in answer.text
+    assert given == [None]
