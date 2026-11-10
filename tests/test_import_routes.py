@@ -36725,12 +36725,11 @@ def test_a_save_refused_at_its_page_s_own_version_reads_its_typing_with_no_readi
 
 
 @pytest.mark.parametrize("press", ["keep", "later"])
-def test_a_press_answered_at_its_page_s_own_version_reads_its_typing_with_no_readings(
+def test_a_press_from_the_page_as_loaded_answered_200_reads_its_typing_with_no_readings(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
     """Real presses: an instruction's padding deleted, Keep or Save for later sent from the page as
-    loaded and answered (200) at its page's own version. Each read of the typing is given no
-    readings."""
+    loaded and answered (200). Each read of the typing is given no readings."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, typed = a_padded_instruction_posted(
             browser, monkeypatch, "padding deleted"
@@ -36750,7 +36749,7 @@ def test_a_save_for_later_whose_check_reads_busy_reads_its_typing_with_no_readin
     """Forced store answer only: an instruction's padding deleted, Save for later sent from the page
     as loaded, and the store's read after its commit refused as busy. Its three reads of the typing
     (one for the busy read, one for the boxes it kept, one for its page) are each given no
-    readings."""
+    readings, and its page gives that box back as one copy, exactly as sent."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, typed = a_padded_instruction_posted(
             browser, monkeypatch, "padding deleted"
@@ -36764,6 +36763,7 @@ def test_a_save_for_later_whose_check_reads_busy_reads_its_typing_with_no_readin
 
     assert answer.status_code == 200
     assert given == [None, None, None]
+    assert copies_with_labels(answer) == [(THE_PADDED_BOX, PADDING_DELETED)]
 
 
 def test_a_save_for_later_with_words_set_aside_reads_its_typing_with_no_readings(
