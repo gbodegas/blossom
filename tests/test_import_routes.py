@@ -36530,6 +36530,38 @@ def test_no_reader_gives_back_an_empty_box_or_a_date_box_for_the_readings_given(
     assert as_each_reader_gives(a_box_left_alone(key, field, text), readings) == [(), (), (), ()]
 
 
+READINGS_WITHOUT_THE_BOX: Final[dict[str, dict[tuple[str, str], str] | None]] = {
+    "an empty mapping": {},
+    "the row's other readings": {("row", field): text for field, text in A_ROW_AS_POSTED},
+    "no readings": None,
+}
+"""Readings given to the readers of a post's typing, none holding a text for the Instructions box
+of a card read with no words."""
+
+
+@pytest.mark.parametrize("held", list(READINGS_WITHOUT_THE_BOX))
+def test_each_reader_gives_back_words_in_the_box_of_a_card_read_with_no_words_for_readings_given(
+    held: str,
+) -> None:
+    """Direct calls, a crafted post: the Instructions box of a card read with no words, posted
+    holding words beside the mark of those words, where a page draws that box beside the mark of an
+    empty text. The readings hold no text for that box, so with readings given it comes back, and
+    with none it reads as the post alone. Posted empty, as a page sends it left alone, it comes
+    back from no reader."""
+    readings = READINGS_WITHOUT_THE_BOX[held]
+    field = f"instruction:{'a' * 64}:0"
+    back = (("row", field, "Do pages 1 to 2."),)
+    given = () if readings is None else back
+
+    assert as_each_reader_gives(a_box_left_alone("row", field, "Do pages 1 to 2."), readings) == [
+        given,
+        given,
+        given,
+        back,
+    ]
+    assert as_each_reader_gives(a_box_left_alone("row", field, ""), readings) == [(), (), (), ()]
+
+
 def readings_given_to_the_typing(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     """Fills with the readings each read of a press's typing is given from here on: ``None`` when
     it is given none or the keyword is left out."""

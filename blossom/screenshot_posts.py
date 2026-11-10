@@ -614,7 +614,7 @@ def typed_for(
     back as typed when the review can't take it; a name that doesn't name a correction is passed
     over. With ``exact``, whitespace counts: a box is passed over only when it is exactly its value
     with no correction, and whitespace-only text comes back, as ``typed_as_sent`` reads them. With
-    ``readings``, the one thing here not read from the post, a class, title or instruction text box
+    ``readings``, the one thing here not read from the post, a class, title or instructions box
     holding text that is exactly its value with no correction comes back too, unless the reading
     given for its row key and field is that text."""
     found: dict[tuple[str, str], str] = {}
@@ -642,7 +642,7 @@ def typed_for(
             )
             differs = (
                 readings is not None
-                and (field in ROW_FIELDS or instruction_index(field) is not None)
+                and (field in ROW_FIELDS or field.startswith("instruction:"))
                 and text != ""
                 and text == canonical(text)
                 and readings.get((key, field)) != text
@@ -667,10 +667,10 @@ def typed_as_sent(
 ) -> tuple[tuple[str, str, str], ...]:
     """Each box's text as it was sent, whitespace kept and a box of several lines with its line
     endings made line feeds, unless it's empty or exactly its value with no correction (kept for a
-    class, title or instructions box with ``unchanged_too``, and with ``readings`` for a class,
-    title or instruction text box unless the reading given for its row key and field is that text).
-    A box beside carried words is drawn empty, so anything in it was typed; the words come back
-    unless a date is in that box with "No assigned date was given" unticked."""
+    class, title or instructions box with ``unchanged_too``, and with ``readings`` unless the
+    reading given for its row key and field is that text). A box beside carried words is drawn
+    empty, so anything in it was typed; the words come back unless a date is in that box with "No
+    assigned date was given" unticked."""
     found: dict[tuple[str, str], str] = {}
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
@@ -700,11 +700,10 @@ def typed_as_sent(
             continue
         boxes.setdefault((key, field), text)
         worded = field in ROW_FIELDS or field.startswith("instruction:")
-        compared = field in ROW_FIELDS or instruction_index(field) is not None
         if text and (
             (unchanged_too and worded)
             or not (text == canonical(text) and unchanged.get(named) == read_digest(text))
-            or (readings is not None and compared and readings.get((key, field)) != text)
+            or (readings is not None and worded and readings.get((key, field)) != text)
         ):
             found.setdefault((key, field), text)
     typed = [(key, field, text) for (key, field), text in found.items()]
