@@ -824,17 +824,15 @@ async def typing_of(
     as_sent: bool = False,
     drawn: Mapping[str, str] | None = None,
     undrawn_beside_words: bool = False,
-    readings: Mapping[tuple[str, str], str] | None = None,
 ) -> list[tuple[str, str]]:
-    """Every correction a press's post typed, labeled, read from the post alone (``typed_for``),
-    to give back as it was sent, in boxes to copy, where the review can't keep it. A correction is
+    """Every box a press's post gives back, labeled, read from the post alone (``typed_for``),
+    to give back as it was sent, in boxes to copy, where the review can't keep it. A box is
     left out only when a box on the page holds that exact text (``shown``), or when its save shows
     it stored that exact text in that field (``stored``, the outcome's own evidence). An empty box
     or a hidden field beside it isn't either, whatever was ticked. With ``beside_words``, a date box
     beside carried words comes back as ``typed_beside_words`` gives it, and with
     ``undrawn_beside_words`` one no box in ``shown`` draws; with ``as_sent``, each text exactly as
-    sent (``exact``), labeled by its card (``copy_label``, with ``drawn``). ``readings`` goes to
-    whichever of those readers the call reaches, as each takes it."""
+    sent (``exact``), labeled by its card (``copy_label``, with ``drawn``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -842,12 +840,12 @@ async def typing_of(
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     evidence = set(stored)
     if beside_words:
-        typed = typed_beside_words(items, exact=as_sent, readings=readings)
+        typed = typed_beside_words(items, exact=as_sent)
     elif undrawn_beside_words:
         boxes = {(key, field) for key, field, _ in shown}
-        typed = typed_beside_words(items, exact=as_sent, drawn=boxes, readings=readings)
+        typed = typed_beside_words(items, exact=as_sent, drawn=boxes)
     else:
-        typed = typed_for(items, exact=as_sent, readings=readings)
+        typed = typed_for(items, exact=as_sent)
     return [
         (copy_label(request, key, field, by_card=as_sent, drawn=drawn), text)
         for key, field, text in typed
@@ -865,20 +863,14 @@ async def typing_by_press(
     every_press: bool = False,
     drawn: Mapping[str, str] | None = None,
     undrawn_beside_words: bool = False,
-    unchanged_too: bool = False,
-    readings: Mapping[tuple[str, str], str] | None = None,
 ) -> list[tuple[str, str]]:
     """What a post gives back when its press finds the review ended, on every page that says it
     can't be shown, beside a confirmed save's counts with no post to read, and on Save for later's
     page after a commit that set words aside, whether or not its read shows another tab saved
     since: on a Save press, ``typing_of``, with ``beside_words``, ``undrawn_beside_words`` and
     ``as_sent`` passed on; on Keep or Save for later, every box as it was sent, whitespace included
-    (``typed_as_sent``, with ``unchanged_too``), labeled by its card with ``every_press`` (``drawn``
-    as ``copy_label`` takes it). Text a box on the page holds exactly (``shown``) is left out. With
-    ``readings``, given on the page for a press refused at another version than its page's and on
-    an earlier save's page with no post to read, either reader gives back a class, title or
-    instruction text box unless the reading given for it is its exact text; ``keep_readings`` leaves
-    them, and an empty mapping stands for none left."""
+    (``typed_as_sent``), labeled by its card with ``every_press`` (``drawn`` as ``copy_label``
+    takes it). Text a box on the page holds exactly (``shown``) is left out."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -893,11 +885,10 @@ async def typing_by_press(
             as_sent=as_sent,
             drawn=drawn,
             undrawn_beside_words=undrawn_beside_words,
-            readings=readings,
         )
     return [
         (copy_label(request, key, field, by_card=every_press, drawn=drawn), text)
-        for key, field, text in typed_as_sent(items, unchanged_too=unchanged_too, readings=readings)
+        for key, field, text in typed_as_sent(items)
         if (key, field, text) not in shown
     ]
 
@@ -2651,11 +2642,6 @@ async def with_typing(
             every_press=True,
             drawn=drawn,
             undrawn_beside_words=True,
-            readings=(
-                getattr(request.state, "typed_readings", {})
-                if status == 409 and not current
-                else None
-            ),
         )
         note = TYPED_SAID if refused_with_choices else UNSHOWN_TYPED
         if post.press != "save" and post.dropped:
@@ -2884,9 +2870,7 @@ async def later_press(
                 request, state, found.draft_id, [THIS_ATTEMPT_SAVED], [OUT_OF_DATE]
             )
         kept = frozenset() if review is None else kept_for_later(review, post.corrections)
-        if kept and await typing_by_press(
-            request, shown=kept, every_press=True, unchanged_too=True
-        ):
+        if kept and await typing_by_press(request, shown=kept, every_press=True):
             lines = [THIS_ATTEMPT_SAVED, saved_for_later_at(state)]
             return await saved_for_later_with_typing(
                 request, state, found.draft_id, lines, [], kept_as=kept
@@ -2966,7 +2950,7 @@ async def saved_for_later_with_typing(
     typed = (
         await typing_by_press(request)
         if kept_as is None
-        else await typing_by_press(request, shown=kept_as, every_press=True, unchanged_too=True)
+        else await typing_by_press(request, shown=kept_as, every_press=True)
     )
     return templates.TemplateResponse(
         request,
@@ -3694,12 +3678,7 @@ async def saved_page(
                 notes=notes,
                 counted=bool(counts),
             )
-        typed = await typing_by_press(
-            request,
-            as_sent=True,
-            beside_words=True,
-            readings=getattr(request.state, "typed_readings", {}),
-        )
+        typed = await typing_by_press(request, as_sent=True, beside_words=True)
         if typed:
             return saved_outcome(
                 request,
