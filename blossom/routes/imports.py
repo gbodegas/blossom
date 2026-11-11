@@ -72,7 +72,7 @@ from blossom.screenshot_posts import (
     words_box,
 )
 from blossom.screenshot_reading import ReadOutcome, read_screenshots
-from blossom.screenshot_review import Corrections, change_told, row_texts, value_json
+from blossom.screenshot_review import Corrections, change_told, value_json
 from blossom.screenshot_save import (
     AlreadySaved,
     NotSaved,
@@ -1549,19 +1549,15 @@ def picked(progress: str | None) -> frozenset[str] | None:
 async def saved_corrections(
     state: ApplicationState,
     snapshot: DraftSnapshot,
-    *,
-    state_read: list[ReviewState] | None = None,
 ) -> dict[str, dict[str, str | None]]:
     """The corrections a review's saved progress keeps, in the shape a press posts them:
     progress of shape 3 read as the boxes its corrections give, so its answers and "Not saved
     yet" are worked out against what the page posts, and its card's destination asks again
-    once, not after every press. A review state read to give those boxes goes in ``state_read``."""
+    once, not after every press."""
     read = progress_read(snapshot.progress)
     if read is None or read.shape == PROGRESS_SHAPE or not read.corrected:
         return {} if read is None else read.corrected
     review = await state_of_review(state, snapshot, read.corrected)
-    if review is not None and state_read is not None:
-        state_read.append(review)
     return {} if review is None else shape_four(review, read.corrected)
 
 
@@ -2229,26 +2225,6 @@ async def kept_words(state: ApplicationState, wanted: frozenset[str]) -> dict[st
     }
 
 
-def keep_readings(request: Request, review: ReviewState) -> None:
-    """Leaves on the request each row's class, title and instruction texts as this review state
-    read them, by row key and field, for ``typing_by_press`` to compare a post's boxes with. A
-    request that holds those of an earlier state keeps them whole, an empty mapping included."""
-    if hasattr(request.state, "typed_readings"):
-        return
-    request.state.typed_readings = {
-        (row.key, field): text
-        for row in review.every_row
-        for field, text in (
-            ("course", row.reading.course),
-            ("title", row.reading.title),
-            *(
-                (f"instruction:{index}", words)
-                for index, words in enumerate(row_texts(row.reading))
-            ),
-        )
-    }
-
-
 async def review_post(
     request: Request, state: ApplicationState, found: DraftSnapshot
 ) -> tuple[ReviewPost | None, str]:
@@ -2256,20 +2232,14 @@ async def review_post(
     has no homework to read it against, with the press it named. Kept rows are read only for a post
     its page signed. Anything in it nested too deep to read doesn't match either. A signed list past
     its ceiling is left for the caller to answer (``ListTooLarge``). A post that matches leaves the
-    cards its boxes are drawn for on the request alone, to label its copies (``copy_label``). The
-    first review state read here in a request, the one ``saved_corrections`` reads among them,
-    leaves its readings there (``keep_readings``) before the post is read against it."""
+    cards its boxes are drawn for on the request alone, to label its copies (``copy_label``)."""
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
-    state_read: list[ReviewState] = []
-    saved = await saved_corrections(state, found, state_read=state_read)
-    if state_read:
-        keep_readings(request, state_read[0])
+    saved = await saved_corrections(state, found)
     review = await state_of_review(state, found, saved)
     if review is None:
         return None, named
-    keep_readings(request, review)
     places = {image.sha256: index + 1 for index, image in enumerate(found.images)}
     try:
         if any(name == "offer" for name, _ in items):
@@ -2499,10 +2469,7 @@ async def with_typing(
     shown. Each box holds the text its post sent where that equals its value once canonical
     (``boxes_as_sent``). Any press with no save committed gives back each box as sent that no box
     holds exactly (``typing_by_press``), labeled by the card the form draws it on (``cards_drawn``),
-    under ``UNSHOWN_TYPED``, ``TYPED_SAID`` on a press refused with its choices; refused (409) at
-    another version than its page's, that read is given the request's readings (``keep_readings``,
-    an empty mapping with none left), so a class, title or instruction text box comes back too
-    unless its reading there is its exact text; Keep or Save for
+    under ``UNSHOWN_TYPED``, ``TYPED_SAID`` on a press refused with its choices; Keep or Save for
     later adds what "No assigned date was given" set aside or was refused beside, the words and
     anything sent in the box beside them, under ``UNSHOWN_TYPED`` (``tick_set_aside``), and signs
     the revision its page read. An earlier save's page with rows gives back what no box holds under
@@ -3829,8 +3796,7 @@ async def saved_page(
     result the same way (``noted_after_commit``). What that save saved (``own``, its pieces) goes
     with it, unsaid, on the page that carries the press's choices. With no post to read, past its
     ceiling or not matching its page, the counts come with the typing to copy, by its press
-    (``typing_by_press``, given the request's readings as ``keep_readings`` left them, an empty
-    mapping with none left), and redirect only when there's nothing to give back. The earlier
+    (``typing_by_press``), and redirect only when there's nothing to give back. The earlier
     save's receipt leaves no box out of a page's copies; this request's own committed Save for
     later does, on each page here with no form, for the class, title and instructions boxes it
     is shown to hold exactly (``saved_exactly``)."""
