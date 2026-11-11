@@ -23666,6 +23666,47 @@ def split_typing(
     return [t for t in typing if t in held], [t for t in typing if t not in held]
 
 
+def date_boxes_read_back(
+    posted: Sequence[tuple[str, str]],
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """The date boxes ``typed_as_sent`` gives back on Keep and Save for later, by key, field and
+    text. First those it lists in their posted place: a date box holding anything but exactly its
+    reading, as the ``read:`` field beside it names that reading. Then those it lists once each
+    after every box found in posted order: a date box holding exactly its reading beside carried
+    words. A date box left as read with no carried words beside it is in neither list."""
+
+    def box(named: str) -> tuple[str, str]:
+        key, field = (str(part) for part in json.loads(named))
+        return key, field
+
+    read = {
+        box(name.removeprefix(screenshot_posts.READ_PREFIX)): digest
+        for name, digest in posted
+        if name.startswith(screenshot_posts.READ_PREFIX)
+    }
+    beside_words = {box(n.removeprefix("refused:")) for n, _ in posted if n.startswith("refused:")}
+    first: dict[tuple[str, str], str] = {}
+    typed: dict[tuple[str, str], str] = {}
+    for name, value in posted:
+        if not name.startswith("correct:"):
+            continue
+        subject = box(name.removeprefix("correct:"))
+        if subject[1] not in ("due", "assigned"):
+            continue
+        first.setdefault(subject, value)
+        as_read = value == screenshot_save.canonical(value) and read.get(
+            subject
+        ) == screenshot_save.read_digest(value)
+        if value and not as_read:
+            typed.setdefault(subject, value)
+    late = {
+        subject: value
+        for subject, value in first.items()
+        if value and subject in beside_words and subject not in typed
+    }
+    return [(*s, v) for s, v in typed.items()], [(*s, v) for s, v in late.items()]
+
+
 def in_reader_order(
     posted: Sequence[tuple[str, str]],
     dates: Collection[str] = (),
@@ -23674,17 +23715,23 @@ def in_reader_order(
 ) -> list[str]:
     """What a page with no form and no save evidence gives back, in the order its reader finds it:
     each Class, Title and Instructions box ``owed`` names (less those ``returned``) and each date
-    box sent with one of these texts, in posted order, then the words carried."""
+    box typed away from its reading with one of these ``dates``, in posted order; then each date
+    box sent exactly as read beside carried words with one of them, once; then the words carried.
+    A date box left as read with no carried words beside it isn't given
+    (``date_boxes_read_back``)."""
     texts = {(key, field): text for key, field, text in owed(posted, returned=returned)}
+    typed, as_read = date_boxes_read_back(posted)
     out: list[str] = []
     for name, value in posted:
         if not name.startswith("correct:"):
             continue
         key, field = (str(part) for part in json.loads(name.removeprefix("correct:")))
-        text = texts.get((key, field)) or (value if field in ("due", "assigned") else None)
-        if text and (text in dates or (key, field) in texts):
-            out.append(text)
-    return [*out, *words]
+        if (key, field) in texts:
+            out.append(texts[(key, field)])
+        elif value in dates and (key, field, value) in typed:
+            typed.remove((key, field, value))
+            out.append(value)
+    return [*out, *(text for *_, text in as_read if text in dates), *words]
 
 
 def a_press_beside_a_save(
@@ -36334,9 +36381,12 @@ COPY_LABELS: Final = {"course": "Class", "title": "Title"}
 def plain_copies_beside_a_date(
     posted: Sequence[tuple[str, str]], date: str
 ) -> list[tuple[str, str]]:
-    """As ``plain_copies``, with the assigned date box sent with this date in its posted place, as
-    ``typed_as_sent`` lists it on Keep and Save for later."""
+    """As ``plain_copies``, with the assigned date box sent with this date where ``typed_as_sent``
+    lists it on Keep and Save for later (``date_boxes_read_back``): in its posted place when typed
+    away from its reading, once after the other boxes when sent exactly as read beside carried
+    words, and not at all when left as read with no carried words beside it."""
     texts = {(key, field): text for key, field, text in owed(posted)}
+    typed, as_read = date_boxes_read_back(posted)
     out: list[tuple[str, str]] = []
     for name, value in posted:
         if not name.startswith("correct:"):
@@ -36344,9 +36394,11 @@ def plain_copies_beside_a_date(
         key, field = (str(part) for part in json.loads(name.removeprefix("correct:")))
         if (key, field) in texts:
             out.append((COPY_LABELS.get(field, "Instructions"), texts[(key, field)]))
-        elif field == "assigned" and value == date:
+        elif field == "assigned" and value == date and (key, field, value) in typed:
+            typed.remove((key, field, value))
             out.append(("Assigned date", value))
-    return out
+    late = [text for _, field, text in as_read if field == "assigned" and text == date]
+    return [*out, *(("Assigned date", text) for text in late)]
 
 
 def plain_copies(posted: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
