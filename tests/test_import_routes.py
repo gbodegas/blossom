@@ -6615,11 +6615,17 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
         expires_after, progress = stored_row(browser, draft_id)
 
     assert says(answer, imports.SAID["expired"])
+    committed = moment == "after it commits"
+    held = {
+        "keep": [],
+        "later": owed(posted),
+        "save": [box for box in owed(posted) if box[0] in ready],
+    }[press]
+    texts = [text for *_, text in owed(posted, saved=held if committed else ())]
     assert TYPED_WORDS in owed_texts(posted)
-    assert sorted(copyable(answer)) == sorted([*owed_in_order(posted), TYPED_DATE])
+    assert sorted(copyable(answer)) == sorted([*texts, TYPED_DATE])
     assert says(answer, TYPED_SAID)
     assert expires_after == stored_before[0]
-    committed = moment == "after it commits"
     if press == "save" and committed:
         assert says(answer, "Saved: 1 new assignment.")
         assert after == before + 1
@@ -8165,8 +8171,9 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
     assert not says(again.text, imports.SAID["closed"])
     assert not says(again.text, imports.SAID["expired"])
     assert not says(again.text, imports.SAID["absent"])
+    assert "Chains Guide Six" in owed_in_order(posted)
     assert TYPED_BACK.findall(again.text) == owed_in_order(posted)
-    a_resend_behind_its_save(healthy, counts[0], ["Chains Guide Six"])
+    a_resend_behind_its_save(healthy, counts[0], owed_in_order(posted))
     assert not says(healthy.text, imports.SAID["closed"])
 
 
@@ -9486,7 +9493,9 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
     (on a resent save, the way to her week), then in one problem block that takes no focus: a
     close that couldn't be confirmed, a changed group as the busy page says it, and that the
     review can't be shown; no line pointing at rows the page doesn't show; the typed title to
-    copy and the way back to the review."""
+    copy and the way back to the review. The save that ran in full holds each box of the group it
+    saved exactly, so only the open row's boxes come back; a stand-in outcome and a resend hold
+    none, so every box does."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
@@ -9551,8 +9560,9 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
     assert says(answer.text, changed) == (case in ("a group changed", "close unconfirmed"))
     assert not says(answer.text, imports.PRESS_SAID["incomplete"])
     assert not says(answer.text, imports.PRESS_SAID["left_open"])
-    assert "Chains Guide Six" in owed_in_order(posted)
-    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
+    owed_now = owed_past_a_save(posted, other, own=case == "typing left open")
+    assert "Chains Guide Six" in owed_now
+    assert TYPED_BACK.findall(answer.text) == owed_now
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert not says(answer.text, TYPED_SAID)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
@@ -12982,8 +12992,9 @@ def test_a_review_closed_for_real_before_its_rows_are_read_keeps_the_saved_resul
     assert closed is not None
     shown = the_saved_heading(answer, ONE_OF_TWO)
     assert lines_in(PROBLEM_BLOCK.search(shown)) == [imports.REVIEW_NOT_SHOWN]
-    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
-    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
+    owed_now = owed_past_a_save(posted, other, own=path == "save")
+    assert TYPED_ON_THE_OTHER in owed_now
+    assert TYPED_BACK.findall(answer.text) == owed_now
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
@@ -13414,8 +13425,9 @@ def test_a_review_discarded_before_the_page_s_read_gives_the_typing_back(
 
     shown = the_saved_heading(answer, ONE_OF_TWO)
     assert says(shown, imports.SAID["closed"])
-    assert TYPED_ON_THE_OTHER in owed_in_order(posted)
-    assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
+    owed_now = owed_past_a_save(posted, other, own=path == "save")
+    assert TYPED_ON_THE_OTHER in owed_now
+    assert TYPED_BACK.findall(answer.text) == owed_now
     assert not says(answer.text, imports.PRESS_SAID["left_open"])
     assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
 
@@ -23180,8 +23192,9 @@ def test_save_with_a_refused_read_keeps_its_own_reading_of_the_boxes(
 
     assert answer.status_code == status
     assert imports.REVIEW_NOT_SHOWN in page_text(answer)
-    assert typing <= owed_texts(posted)
-    assert copied(answer) == owed_texts(posted)
+    owed_here = owed_texts(posted, spaces=read == "its own read")
+    assert typing <= owed_here
+    assert copied(answer) == owed_here
 
 
 @pytest.mark.parametrize(
@@ -37104,6 +37117,15 @@ def owed_in_order(
 ) -> list[str]:
     """The texts ``owed`` names, in posted order, with nothing saved."""
     return [text for _, _, text in owed(posted, returned=returned, spaces=spaces)]
+
+
+def owed_past_a_save(posted: Sequence[tuple[str, str]], left: str, *, own: bool) -> list[str]:
+    """The texts a page with no form owes a Save that ticked one group and left open the row of
+    the box ``left`` names, in posted order. From the request whose save committed (``own``), the
+    left row's boxes: that save holds each box of the group it saved exactly. From a resend, which
+    is handed no save, every box."""
+    key = json.loads(left.removeprefix("correct:"))[0]
+    return [text for k, _, text in owed(posted) if not own or k == key]
 
 
 READ_WORDS: Final = INSTRUCTION_READINGS["one line"]
