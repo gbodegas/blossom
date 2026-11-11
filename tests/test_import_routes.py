@@ -26465,6 +26465,7 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_receipt_s_page_can_t_rea
     assert "Saved: 1 new assignment." in shown
     assert shown.count(KEPT_SHORT) == 1
     assert f'<p class="note">{KEPT_SHORT}</p>' in answer.text
+    assert "Saved: 1 new assignment." in the_outcome_heading(answer)
     assert KEPT_SHORT not in the_outcome_heading(answer)
     assert copied(answer) == owed_texts(posted)
     leaves_out_only_what_the_save_stored(posted, copied(answer), held)
