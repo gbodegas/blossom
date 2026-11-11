@@ -104,6 +104,7 @@ from tests.support import (
     homework_answer,
     homework_card,
     homework_from_a_note,
+    main_of,
     names_not_led_by_their_words,
     names_without_their_words,
     quiet_client,
@@ -23141,6 +23142,7 @@ def says_the_review_can_t_be_shown(answer: Answer, status: int, typing: set[str]
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert copied(answer) == typing
     assert 'name="correct:' not in answer.text
+    assert "<form" not in main_of(answer.text)
 
 
 @pytest.mark.parametrize("where", WHERE_WORDS_ARE)
@@ -23276,6 +23278,7 @@ def test_a_review_left_unread_answers_the_same_way_on_every_press(
     assert said_by(answer) == [*busy_line, imports.REVIEW_NOT_SHOWN]
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert 'name="correct:' not in answer.text
+    assert "<form" not in main_of(answer.text)
     labeled = copies_with_labels(answer)
     assert {text for _, text in labeled} == copied(answer)
     assert {label for label, _ in labeled} <= {"Class", "Title", "Instructions", "Assigned date"}
@@ -23428,6 +23431,7 @@ def test_a_read_forced_to_answer_frozen_closed_or_too_many_images_gives_no_copie
     assert answer.status_code == 409
     assert copied(answer) == set()
     assert 'name="correct:' not in answer.text
+    assert "<form" not in main_of(answer.text)
 
 
 @pytest.mark.parametrize("where", WHERE_WORDS_ARE)
