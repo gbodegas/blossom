@@ -23147,9 +23147,10 @@ def test_only_an_unticked_valid_date_replaces_the_words_at_each_status_of_a_refu
     typing = typing_beside_words(sent, ticked, WORDS_BESIDE)
     if line == "too long":
         typing = {*typing, too_long}
-    if (press, line) != ("later", "its answers kept"):
+    refused_whole = refused_as_both(sent, ticked)
+    if (press, line) != ("later", "its answers kept") or refused_whole:
         typing |= owed_texts(posted)
-    says_the_review_can_t_be_shown(answer, 422 if refused_as_both(sent, ticked) else status, typing)
+    says_the_review_can_t_be_shown(answer, 422 if refused_whole else status, typing)
 
 
 @pytest.mark.parametrize(
