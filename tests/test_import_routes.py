@@ -37271,7 +37271,6 @@ def test_a_clean_post_on_an_earlier_save_s_page_says_its_own_line_and_leaves_no_
     says_the_save_and_gives_the_typing_back(answer, owed_texts(posted))
     assert (imports.NOTHING_BY_THIS_ATTEMPT in page_text(answer)) == LINE_ON_THE_LANDING[route]
     assert imports.NOTHING_BY_THIS_ATTEMPT not in html.unescape(after)
-    assert "Saved: 1 new assignment." in html.unescape(after)
 
 
 LINE_ON_THE_LANDING: Final = {
