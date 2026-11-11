@@ -2833,6 +2833,7 @@ def test_a_partial_save_returns_the_rows_left_open_with_their_typing_marked_unsa
             typed={f"correct:{second_confirm}": "Chains Reading Guide Six"},
         )
         saved = send(browser, draft_id, fields)
+        held = what_a_save_stores(monkeypatch)
         again = send(browser, draft_id, fields)
         student = state_of(browser).project_state.student_id()
         progress = state_of(browser).import_drafts.snapshot(student, draft_id).progress
@@ -2843,7 +2844,16 @@ def test_a_partial_save_returns_the_rows_left_open_with_their_typing_marked_unsa
     form = review_form(saved.text)
     assert 'value="Chains Reading Guide Six"' in form
     assert says(form, screenshot_page.SAID["not_saved_yet"])
-    a_resend_behind_its_save(again, imports.counted(1, 0, 0, 1), ["Chains Reading Guide Six"])
+    back = [
+        "English 8",
+        "Sentence Composing",
+        "Complete pages 12 to 14.",
+        "Science 8",
+        "Chains Reading Guide Six",
+        "Read chapter 6.",
+    ]
+    a_resend_behind_its_save(again, imports.counted(1, 0, 0, 1), back)
+    leaves_out_only_what_the_save_stored(fields, back, held)
     assert progress is None
 
 
@@ -12387,7 +12397,8 @@ def test_the_finished_page_gives_back_only_the_typing_the_save_did_not_write(
     """A save that finishes the review, showing it stored only the first group's title, as when
     another tab took the second between the page's read and the save. A title typed on the second
     was never written, so it stays available to copy. A title typed on the first is stored, so the
-    reader isn't asked to copy it. A resent press has no such evidence, so it gives both back."""
+    reader isn't asked to copy it. A resent press has no such evidence, so it gives both back. The
+    Class and Instructions boxes of the post come back on both, as nothing shows them stored."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
@@ -12413,19 +12424,26 @@ def test_the_finished_page_gives_back_only_the_typing_the_save_did_not_write(
                 stored=((json.loads(mine.removeprefix("correct:"))[0], "title", "Worded Anew"),),
             )
             monkeypatch.setattr(imports, "save_homework", lambda *_, **__: saved)
+            evidence: Collection[tuple[str, str, str]] = saved.stored
         else:
             record = state_of(browser).project_state
             monkeypatch.setattr(record, "homework_acceptance", lambda *_, **__: pairs)
             monkeypatch.setattr(record, "homework_counts", lambda *_, **__: (1, 0, 0, 0))
             put_back = restored(drafts, "snapshot", closed_from_the_read(drafts.snapshot, 2))
+            evidence = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
         if path == "resent":
             put_back()
         monkeypatch.undo()
 
     the_saved_heading(answer, imports.counted(1, 0, 0, 0))
-    expected = {"save": [TYPED_ON_THE_OTHER], "resent": ["Worded Anew", TYPED_ON_THE_OTHER]}[path]
+    as_read = ["English 8", "Complete pages 12 to 14.", "Science 8"]
+    expected = {
+        "save": [*as_read, TYPED_ON_THE_OTHER],
+        "resent": [*as_read, "Worded Anew", TYPED_ON_THE_OTHER],
+    }[path]
     assert sorted(TYPED_BACK.findall(answer.text)) == sorted(expected)
+    leaves_out_only_what_the_save_stored(posted, expected, evidence)
     assert says(answer.text, TYPED_SAID)
 
 
@@ -13124,7 +13142,7 @@ def test_a_partial_save_gives_back_a_date_left_off_saved_work_beside_the_rows(
     """A real commit with no failure: a row landing on saved work, a date typed on it and the saved
     date chosen, another row left open. The date is on no assignment and in no box, so the page
     gives it back to copy under the neutral note; its resend, behind the save's own raise, draws no
-    form and does too."""
+    form and does too, with every Class, Title and Instructions box of the post."""
     typed = "2026-10-09"
     with here(open_settings(tmp_path)) as browser:
         again, page, piece = landing_beside_an_open_row(browser, monkeypatch)
@@ -13135,12 +13153,21 @@ def test_a_partial_save_gives_back_a_date_left_off_saved_work_beside_the_rows(
         kept = followed(browser, send(browser, again, page_post(asked.text, "keep", choose=choice)))
         posted = page_post(kept, "save", tick=[piece])
         first = send(browser, again, posted)
+        held = what_a_save_stores(monkeypatch)
         answer = send(browser, again, posted) if path == "resent" else first
         stored = on_record(browser, typed)
 
     assert not stored
     if path == "resent":
-        a_resend_behind_its_save(answer, lines_in(DONE.search(first.text))[0], [typed])
+        back = [
+            "English 8",
+            "Sentence Composing",
+            "Science 8",
+            "Chains Reading Guide 6",
+            "Complete pages 12 to 14.",
+        ]
+        a_resend_behind_its_save(answer, lines_in(DONE.search(first.text))[0], [typed, *back])
+        leaves_out_only_what_the_save_stored(posted, back, held)
         return
     assert answer.status_code == 200
     assert lines_in(DONE.search(answer.text))
@@ -13192,7 +13219,8 @@ def test_a_partial_save_asks_for_no_copy_of_what_it_shows_it_stored_and_a_resend
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A row saved as a new assignment with a title typed on it, another left open. The save shows
-    it stored the title, so nothing comes back. Its resend has no such evidence, so it does."""
+    it stored the title, so nothing comes back. Its resend has no such evidence, so the title and
+    every other Class, Title and Instructions box of the post come back."""
     typed = "Worded Anew"
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
@@ -13204,14 +13232,19 @@ def test_a_partial_save_asks_for_no_copy_of_what_it_shows_it_stored_and_a_resend
             browser, draft_id, page_post(page, "save", tick=[first_unit], typed={mine: typed})
         )
         posted = page_post(asked.text, "save", tick=[first_unit])
+        held = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
+        by_the_save = list(held)
         resent = send(browser, draft_id, posted)
         stored = on_record(browser, typed)
 
     assert stored
     assert answer.status_code == 200
     assert TYPED_BACK.findall(answer.text) == []
-    assert TYPED_BACK.findall(resent.text) == [typed]
+    leaves_out_only_what_the_save_stored(posted, [], by_the_save, boxes_returned(answer))
+    back = ["English 8", typed, "Science 8", "Chains Reading Guide 6", "Complete pages 12 to 14."]
+    assert TYPED_BACK.findall(resent.text) == back
+    leaves_out_only_what_the_save_stored(posted, back, held[len(by_the_save) :])
 
 
 def test_a_review_closed_with_a_couldn_t_read_item_open_keeps_the_saved_result(
@@ -28575,8 +28608,8 @@ def recovery_of(answer: Answer) -> SimpleNamespace:
 
 def a_resend_behind_its_save(answer: Answer, counts: str, copies: Sequence[str]) -> None:
     """A committed Save sent again from the page it was pressed on, which that save's own raise of
-    the revision left behind: 200 with no form, its counts first, then the out-of-date notice, every
-    correction the post typed to copy under the copy note, and both links."""
+    the revision left behind: 200 with no form, its counts first, then the out-of-date notice, the
+    named copies (``copies``) under the copy note, and both links."""
     page = recovery_of(answer)
     text = page_text(answer)
     assert answer.status_code == 200, text[:400]
