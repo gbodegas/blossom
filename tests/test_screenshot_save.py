@@ -2362,3 +2362,165 @@ def test_a_save_that_writes_nothing_leaves_the_review_s_revision(house: House) -
     assert isinstance(again, AlreadySaved)
     assert stale == NotSaved("stale")
     assert revision_of(house, draft_id) == after_it
+
+
+# ------------------------------------------- the text boxes a Save for later's own answers keep
+
+SPLIT_COURSE: Final = "Science 7"
+
+
+def assigned_on_card(title: str, words: str, top: int = 200) -> dict[str, object]:
+    return homework_card(
+        badge="ASSIGNED",
+        course=SPLIT_COURSE,
+        title=title,
+        instruction=words,
+        footer="Due (10/14/2026)",
+        y_top=top,
+        y_bottom=top + 80,
+    )
+
+
+def due_on_card(title: str, words: str, top: int = 450) -> dict[str, object]:
+    return homework_card(
+        badge="DUE",
+        course=SPLIT_COURSE,
+        title=title,
+        instruction=words,
+        footer=None,
+        y_top=top,
+        y_bottom=top + 80,
+    )
+
+
+def disagreeing(title: str) -> list[dict[str, object]]:
+    """One assignment's assigned card under Monday and due card under Wednesday, and its
+    assigned card under Tuesday on another screenshot: a row whose assigned dates disagree."""
+    both = homework_answer(
+        headings=[
+            {"text": "Monday 10/12/2026", "y": 150, "uncertain": None},
+            {"text": "Wednesday 10/14/2026", "y": 400, "uncertain": None},
+        ],
+        cards=[assigned_on_card(title, "Read pages 1 to 4."), due_on_card(title, "Read it.")],
+    )
+    tuesday = screenshot("Tuesday 10/13/2026", assigned_on_card(title, "Read pages 5 to 8."))
+    return [both, tuesday]
+
+
+def text_boxes(state: ReviewState) -> dict[str, set[frozenset[tuple[str, str]]]]:
+    """Each row key with an open card, and the Class, Title and Instructions boxes each of its
+    open pieces offers, by field and the text as read."""
+    out: dict[str, set[frozenset[tuple[str, str]]]] = {}
+    for piece in state.open:
+        read = piece.as_read
+        assert read is not None
+        boxes = {("course", read.course), ("title", read.title)}
+        boxes |= {(f"instruction:{i}", text) for i, text in enumerate(read.texts)}
+        out.setdefault(piece.key, set()).add(frozenset(boxes))
+    return out
+
+
+def row_key_of(state: ReviewState, title: str) -> str:
+    [key] = {row.key for row in state.every_row if row.reading.title == title}
+    return key
+
+
+@pytest.mark.parametrize("asking_answer", [json.dumps("split"), json.dumps(["one", "2026-10-13"])])
+def test_a_save_for_later_s_own_answers_leave_every_open_row_s_text_boxes_as_they_were(
+    house: House, asking_answer: str
+) -> None:
+    """A plain row, a row answered as different assignments, a row answered with one day and a
+    row still asking. A Save for later keeping an answer of every kind a press posts, the
+    asking row's split answer among them, and taking back a confirmation, leaves each row that
+    had an open card with the same Class, Title and Instructions boxes, one set per row, and
+    gives the asking row its pieces."""
+    draft_id = read_review(
+        house,
+        *disagreeing("Lab Notes"),
+        *disagreeing("Cell Diagram"),
+        *disagreeing("Field Log"),
+        screenshot("Thursday 10/15/2026", card("Vocab Quiz", "  Study list one. ", 200)),
+    )
+    first = state_of(house, draft_id)
+    split_key, one_key, asking_key = (
+        row_key_of(first, t) for t in ("Lab Notes", "Cell Diagram", "Field Log")
+    )
+    held = [
+        AnswerToKeep("split", split_key, json.dumps("split"), correction_digest_none(), ()),
+        AnswerToKeep(
+            "split", one_key, json.dumps(["one", "2026-10-12"]), correction_digest_none(), ()
+        ),
+    ]
+    version = house.drafts.snapshot(house.student, draft_id).version
+    house.drafts.keep_answers(house.student, draft_id, version=version, answers=held)
+    before = state_of(house, draft_id)
+    [plain] = [p for p in before.open if p.title == "Vocab Quiz"]
+    confirm = confirm_subject(plain.key, "title")
+    version = house.drafts.snapshot(house.student, draft_id).version
+    house.drafts.keep_answers(
+        house.student,
+        draft_id,
+        version=version,
+        answers=[AnswerToKeep("confirm", confirm, "yes", correction_digest_none(), (plain.name,))],
+    )
+    before = state_of(house, draft_id)
+    names = [p.name for p in before.open]
+    posted = [
+        *held,
+        AnswerToKeep(
+            "split",
+            asking_key,
+            asking_answer,
+            correction_digest_none(),
+            (),
+        ),
+        AnswerToKeep("kind", plain.key, "HOMEWORK", correction_digest_none(), (plain.name,)),
+        AnswerToKeep(
+            "destination", plain.name, '{"new":1}', correction_digest_none(), (plain.name,)
+        ),
+        AnswerToKeep("due_read", plain.name, "2026-10-15", correction_digest_none(), (plain.name,)),
+        AnswerToKeep(
+            "due",
+            json.dumps([["new", "1"], [plain.name]]),
+            "2026-10-15",
+            correction_digest_none(),
+            (plain.name,),
+        ),
+        AnswerToKeep(
+            "assigned",
+            json.dumps([["new", "1"], [plain.name]]),
+            "2026-10-12",
+            correction_digest_none(),
+            (plain.name,),
+        ),
+        AnswerToKeep(
+            "instructions",
+            instruction_subject(("new", "1"), [plain.name], 0),
+            "[]",
+            correction_digest_none(),
+            (plain.name,),
+        ),
+        AnswerToKeep("name", "missing", "confirmed", correction_digest_none(), ()),
+    ]
+    snapshot = house.drafts.snapshot(house.student, draft_id)
+    done = house.drafts.save_for_later(
+        house.student,
+        draft_id,
+        version=snapshot.version,
+        progress_revision=snapshot.progress_revision,
+        answers=posted,
+        progress=json.dumps({"v": 4, "corrected": {}}),
+        withdrawn=[("confirm", confirm)],
+    )
+    after = state_of(house, draft_id)
+
+    assert done.progress_saved
+    assert asking_key not in text_boxes(before)
+    assert [row.key for row in before.asking] == [asking_key]
+    assert after.asking == ()
+    assert asking_key in text_boxes(after)
+    assert {p.name for p in after.open} >= set(names)
+    assert {k: v for k, v in text_boxes(after).items() if k != asking_key} == text_boxes(before)
+    assert all(len(found) == 1 for found in text_boxes(after).values())
+    assert set(text_boxes(before)) == {split_key, one_key, plain.key}
+    assert len([p for p in before.open if p.key == split_key]) == 3

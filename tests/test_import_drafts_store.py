@@ -25,6 +25,7 @@ from blossom.stores.import_drafts import (
     DRAFT_LIFETIME,
     MOST_IMAGES_PRESENT,
     READ_DEADLINE_SECONDS,
+    AnswersKept,
     AnswerToKeep,
     AttemptUnderWay,
     Carry,
@@ -40,6 +41,7 @@ from blossom.stores.import_drafts import (
     ProgressBehind,
     ReadTiming,
     ReviewChanged,
+    SavedForLater,
     StoredReading,
     TooManyImages,
     UnknownImage,
@@ -1957,6 +1959,169 @@ def test_a_withdrawn_answer_is_deleted_with_the_press_s_answers_and_one_raise(
     assert (kept.version, kept.stored, kept.withdrawn) == (version + 2, 1, 1)
     assert kept_answers(world, draft_id) == {("destination", "0:r2"): '{"new":1}'}
     assert (again.version, again.stored, again.withdrawn) == (version + 2, 0, 0)
+
+
+FIRST_ROW = ("destination", "0:r1")
+SECOND_ROW = ("destination", "0:r2")
+
+
+def keep_both_rows(world: World, *accepted: str) -> tuple[str, int, AnswersKept]:
+    """Store calls: a draft read with rows r1 and r2, the named rows accepted as a save writes
+    them, then one keep of an answer for each row."""
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1", "r2")
+    if accepted:
+        world.accept(draft_id, *accepted)
+    version = world.store.snapshot(world.student, draft_id).version
+    kept = world.store.keep_answers(
+        world.student,
+        draft_id,
+        version=version,
+        answers=[answer("0:r1"), answer("0:r2", '{"new":2}')],
+    )
+    return draft_id, version, kept
+
+
+def test_a_keep_names_the_answer_it_dropped_and_not_the_one_it_kept(world: World) -> None:
+    """Store calls: r1 accepted, r1 and r2 posted; the result names r1's key as dropped, and
+    the counts, version raise and stored answers are as the transaction left them."""
+    draft_id, version, kept = keep_both_rows(world, "0:r1")
+
+    assert (kept.version, kept.stored, kept.dropped) == (version + 1, 1, 1)
+    assert set(kept_answers(world, draft_id)) == {SECOND_ROW}
+    assert kept.dropped_keys == frozenset({FIRST_ROW})
+
+
+def test_a_keep_names_the_answer_it_dropped_when_the_other_is_kept(world: World) -> None:
+    """Store calls: r2 accepted, r1 and r2 posted; the result names r2's key alone."""
+    draft_id, version, kept = keep_both_rows(world, "0:r2")
+
+    assert (kept.version, kept.stored, kept.dropped) == (version + 1, 1, 1)
+    assert set(kept_answers(world, draft_id)) == {FIRST_ROW}
+    assert kept.dropped_keys == frozenset({SECOND_ROW})
+
+
+def test_a_keep_that_drops_nothing_returns_an_empty_known_set(world: World) -> None:
+    """Store calls: nothing accepted; the result's dropped keys are known and empty."""
+    draft_id, version, kept = keep_both_rows(world)
+
+    assert (kept.version, kept.stored, kept.dropped) == (version + 1, 2, 0)
+    assert set(kept_answers(world, draft_id)) == {FIRST_ROW, SECOND_ROW}
+    assert kept.dropped_keys == frozenset()
+
+
+def test_save_for_later_carries_the_keys_its_keep_dropped(world: World) -> None:
+    """Store calls: r1 accepted, then Save for later with r1 and r2 posted; its answers name
+    r1's key as dropped."""
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1", "r2")
+    world.accept(draft_id, "0:r1")
+    snapshot = world.store.snapshot(world.student, draft_id)
+
+    done = world.store.save_for_later(
+        world.student,
+        draft_id,
+        version=snapshot.version,
+        progress_revision=snapshot.progress_revision,
+        answers=[answer("0:r1"), answer("0:r2", '{"new":2}')],
+        progress="{}",
+    )
+
+    assert (done.answers.stored, done.answers.dropped) == (1, 1)
+    assert set(kept_answers(world, draft_id)) == {SECOND_ROW}
+    assert done.answers.dropped_keys == frozenset({FIRST_ROW})
+
+
+def test_a_result_built_without_dropped_keys_is_unknown() -> None:
+    """A result built with no dropped keys holds None, meaning unknown, never an empty set,
+    and Save for later's result carries it as built."""
+    built = AnswersKept(1, 0, 0)
+
+    assert built.dropped_keys is None
+    assert SavedForLater(built, True, 2).answers.dropped_keys is None
+
+
+def test_a_failed_keep_returns_no_result_and_keeps_nothing(world: World) -> None:
+    """Injected error only, its reach by supported presses not established: a planted trigger
+    refuses every new answer row, so the keep raises in its transaction, returns nothing and
+    leaves the version as it was."""
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1", "r2")
+    version = world.store.snapshot(world.student, draft_id).version
+    planted = sqlite3.connect(world.path)
+    with planted:
+        planted.execute(
+            "CREATE TRIGGER refuse_answers BEFORE INSERT ON import_draft_answers "
+            "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+        )
+    planted.close()
+    results: list[AnswersKept] = []
+
+    with pytest.raises(sqlite3.IntegrityError, match="refused"):
+        results.append(
+            world.store.keep_answers(
+                world.student, draft_id, version=version, answers=[answer("0:r1")]
+            )
+        )
+
+    assert results == []
+    assert kept_answers(world, draft_id) == {}
+    assert world.store.snapshot(world.student, draft_id).version == version
+
+
+class RefusedCommit:
+    """The store's connection with its commit refused and everything else passed through."""
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self._real = real
+
+    def commit(self) -> None:
+        message = "disk I/O error"
+        raise sqlite3.OperationalError(message)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._real, name)
+
+
+@pytest.mark.parametrize("call", ["keep", "later"])
+def test_a_refused_commit_returns_no_result_and_keeps_nothing(
+    world: World, monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    """Injected error only, its reach by supported presses not established: the write's
+    statements run and its commit is refused, so the call raises, returns nothing, keeps no
+    answer and leaves version and revision as they were."""
+    draft_id = world.draft("a")
+    world.read(draft_id, "a", "r1", "r2")
+    snapshot = world.store.snapshot(world.student, draft_id)
+    real = world.store._connection
+    monkeypatch.setattr(world.store, "_connection", RefusedCommit(real))
+    results: list[object] = []
+
+    def write() -> object:
+        if call == "keep":
+            return world.store.keep_answers(
+                world.student, draft_id, version=snapshot.version, answers=[answer("0:r1")]
+            )
+        return world.store.save_for_later(
+            world.student,
+            draft_id,
+            version=snapshot.version,
+            progress_revision=snapshot.progress_revision,
+            answers=[answer("0:r1")],
+            progress="{}",
+        )
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        results.append(write())
+
+    monkeypatch.setattr(world.store, "_connection", real)
+    after = world.store.snapshot(world.student, draft_id)
+    assert results == []
+    assert kept_answers(world, draft_id) == {}
+    assert (after.version, after.progress_revision) == (
+        snapshot.version,
+        snapshot.progress_revision,
+    )
 
 
 def test_a_mark_stays_until_the_draft_closes_even_once_its_piece_is_answered(

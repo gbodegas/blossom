@@ -15,7 +15,7 @@ signed is refused whole, so nothing of it is kept.
 import dataclasses
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from blossom.screenshot_page import (
@@ -112,9 +112,8 @@ class ReviewPost:
     """Each instruction question ticked beside "None of these apply", by its field, with its
     values as posted: the press is refused whole, and they go back as posted."""
     choices: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
-    """On a Save press, or a press with a conflict or a kept row that isn't on the record: each
-    signed question's posted values, a checkbox left unticked among them as no values, for the page
-    to show them as they were sent. A radio left empty isn't a choice, and isn't here."""
+    """Each signed question's posted values, a checkbox left unticked among them as no values, for
+    the page to show them as they were sent. A radio left empty isn't a choice, and isn't here."""
     unresolved: tuple[str, ...] = ()
     """Each instruction question, by its field, whose posted choice names a kept row that isn't on
     the record: the press is refused whole, as a conflict is, and its typing and the choices that
@@ -430,9 +429,7 @@ def read_review(
         needed=folded.needed,
         both=folded.both,
         conflicted=conflicted,
-        choices=_posted_choices(offered, chosen, rest)
-        if conflicted or unresolved or presses[0] == "save"
-        else {},
+        choices=_posted_choices(offered, chosen, rest),
         unresolved=tuple(unresolved),
         dropped=folded.dropped,
     )
@@ -604,14 +601,33 @@ def typed_back(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
     return tuple((field, text) for _, field, text in typed_for(items))
 
 
-def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
-    """Each correction a post typed, by the row or piece it names, its field and its text, in the
-    order it was posted: a box's text that differs from its value with no correction as the
-    ``read:`` field beside it names it, or for a date box posted empty, the date Blossom couldn't
-    read that was carried beside it. Read from the post alone, never from the review, to give
-    back as typed when the review can't take it; a name that doesn't name a correction is passed
-    over."""
-    found: dict[tuple[str, str], str] = {}
+def words_box(field: str) -> bool:
+    """Whether a field is a class, title or instructions box's."""
+    return field in ROW_FIELDS or field.startswith("instruction:")
+
+
+def typed_for(
+    items: Sequence[tuple[str, str]],
+    *,
+    exact: bool = False,
+) -> tuple[tuple[str, str, str], ...]:
+    """Each box a post sent that is given back, by the row or piece it names, its field and its
+    text, in the order it was posted. A class, title or instructions box comes back whenever it
+    holds text, whatever the ``read:`` field beside it says, and each distinct text posted under
+    one box name comes back once. Words carried under the name of such a box that holds text come
+    back after every box, once, unless the first text posted for it that isn't its value as the
+    ``read:`` field names it holds more than spaces. A date box comes back when its text differs
+    from its value with no correction as the ``read:`` field beside it names it, or posted empty,
+    as the date Blossom couldn't read that was carried beside it. Read from the post alone, never
+    from the review, to give back as typed when the review can't take it; a name that doesn't
+    name a correction is passed over. With ``exact``, whitespace counts: a date box is passed
+    over only when it is exactly its value with no correction, and whitespace-only text comes
+    back, as ``typed_as_sent`` reads them."""
+    typed: list[tuple[str, str, str]] = []
+    first: dict[tuple[str, str], int] = {}
+    filled: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
+    typed_over: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
     unchanged = {
         name.removeprefix(READ_PREFIX): value
@@ -630,24 +646,50 @@ def typed_for(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], .
         if not correctable(field):
             continue
         text = correction_text(field, value)
-        if prefix == "correct:":
-            if unchanged.get(named) == read_digest(text):
-                continue
-            found.setdefault((key, field), text)
-        else:
+        if prefix == "refused:":
             carried.setdefault((key, field), text)
+            continue
+        if words_box(field):
+            if unchanged.get(named) != read_digest(text) or (exact and text != canonical(text)):
+                typed_over.setdefault((key, field), text)
+            if (key, field, text) in seen:
+                continue
+            seen.add((key, field, text))
+        elif (key, field) in first or (
+            unchanged.get(named) == read_digest(text) and (not exact or text == canonical(text))
+        ):
+            continue
+        first.setdefault((key, field), len(typed))
+        if text.strip():
+            filled.add((key, field))
+        typed.append((key, field, text))
     for subject, text in carried.items():
-        if not found.get(subject, "").strip():
-            found[subject] = text
-    return tuple((key, field, text) for (key, field), text in found.items() if text.strip())
+        if subject in filled:
+            if (
+                words_box(subject[1])
+                and not typed_over.get(subject, "").strip()
+                and (*subject, text) not in seen
+            ):
+                typed.append((*subject, text))
+            continue
+        if subject in first:
+            typed[first[subject]] = (*subject, text)
+        else:
+            typed.append((*subject, text))
+    return tuple(given for given in typed if (given[2] if exact else given[2].strip()))
 
 
 def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
     """Each box's text as it was sent, whitespace kept and a box of several lines with its line
-    endings made line feeds, unless it's empty or exactly its value with no correction. A box beside
-    carried words is drawn empty, so anything in it was typed; the words come back unless a date is
-    in that box with "No assigned date was given" unticked."""
-    found: dict[tuple[str, str], str] = {}
+    endings made line feeds, unless it's empty. A class, title or instructions box comes back
+    whenever it holds text, whatever the ``read:`` field beside it says, and each distinct text
+    posted under one box name comes back once; a date box comes back unless it's exactly its value
+    with no correction. A box beside carried words is drawn empty, so anything in it was typed;
+    the words come back unless a date is in that box with "No assigned date was given"
+    unticked."""
+    typed: list[tuple[str, str, str]] = []
+    found: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
     ticked: set[tuple[str, str]] = set()
@@ -675,9 +717,18 @@ def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str
             carried.setdefault((key, field), text)
             continue
         boxes.setdefault((key, field), text)
-        if text and not (text == canonical(text) and unchanged.get(named) == read_digest(text)):
-            found.setdefault((key, field), text)
-    typed = [(key, field, text) for (key, field), text in found.items()]
+        if not text:
+            continue
+        if words_box(field):
+            if (key, field, text) in seen:
+                continue
+            seen.add((key, field, text))
+        elif (key, field) in found or (
+            text == canonical(text) and unchanged.get(named) == read_digest(text)
+        ):
+            continue
+        found.add((key, field))
+        typed.append((key, field, text))
     typed += [
         (key, field, text)
         for (key, field), text in boxes.items()
@@ -691,10 +742,15 @@ def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str
     return tuple(typed)
 
 
-def typed_beside_words(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
-    """As ``typed_for``, with a date box beside carried words as ``typed_as_sent`` gives it back:
-    what was sent in that box, even the date as read, and the words unless a date is in it with "No
-    assigned date was given" unticked."""
+def typed_beside_words(
+    items: Sequence[tuple[str, str]],
+    *,
+    exact: bool = False,
+    drawn: Collection[tuple[str, str]] = (),
+) -> tuple[tuple[str, str, str], ...]:
+    """As ``typed_for`` (``exact`` as it takes it), with a date box beside carried words that
+    isn't ``drawn`` given back as ``typed_as_sent`` gives it: what was sent in it, even the date
+    as read, and the words unless a date is in it with "No assigned date was given" unticked."""
     carried: set[tuple[str, str]] = set()
     for name, _ in items:
         if not name.startswith("refused:"):
@@ -703,13 +759,14 @@ def typed_beside_words(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str
             key, field = (str(part) for part in json.loads(name.removeprefix("refused:")))
         except (ValueError, TypeError, RecursionError):
             continue
-        carried.add((key, field))
+        if (key, field) not in drawn:
+            carried.add((key, field))
     beside: dict[tuple[str, str], list[str]] = {}
     for key, field, text in typed_as_sent(items):
         if (key, field) in carried and text.strip():
             beside.setdefault((key, field), []).append(text)
     typed: list[tuple[str, str, str]] = []
-    for key, field, text in typed_for(items):
+    for key, field, text in typed_for(items, exact=exact):
         if (key, field) not in carried:
             typed.append((key, field, text))
         elif (key, field) in beside:

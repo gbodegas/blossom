@@ -188,9 +188,11 @@ class Saved:
     """Assignments added, updated and already saved by this save, and what is left to check:
     open pieces, rows waiting on their split question and "couldn't read" items."""
     stored: tuple[tuple[str, str, str], ...] = ()
-    """The corrections this save can show it stored, each by its key, field and text
-    (``stored_corrections``). ``pairs`` says where pieces landed, not what they kept: a choice
-    among dates or instructions can leave what was typed off an assignment it names."""
+    """The corrections this save can show it stored, and the dates and the class, title and
+    instructions boxes left as read that it can show the assignments it saved them to hold, each
+    by its key, field and text (``stored_corrections``). ``pairs`` says where pieces landed, not
+    what they kept: a choice among dates or instructions can leave what was typed off an
+    assignment it names."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -632,6 +634,9 @@ class ReviewState:
     rework: "Rework" = dataclasses.field(default=lambda _: (Validation((), {}), ()), compare=False)
     """The checks and preview another mapping of these pieces would have, as an offer shows it,
     against the same record and answers."""
+    every_row: tuple[ScreenshotRow, ...] = dataclasses.field(default=(), compare=False)
+    """Every row of the review, those set aside included, read only to name what a press typed and
+    to compare a box it sent with the row's text as read."""
 
     @property
     def by_name(self) -> dict[str, Piece]:
@@ -682,7 +687,7 @@ def review_state(
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
     }
     due_read = {subject: value for (kind, subject), value in values.items() if kind == "due_read"}
-    pieces, asking, _ = pieces_from(
+    pieces, asking, every_row = pieces_from(
         tables.readings, split, tables.discards, now, corrections, due_read
     )
     by_name = {p.name: p for p in pieces}
@@ -797,6 +802,7 @@ def review_state(
         asked,
         {key: value for key, (value, _) in tables.answers.items()},
         rework,
+        tuple(every_row),
     )
 
 
@@ -1025,7 +1031,7 @@ def _homework_transaction(
         changed_units=tuple(changed),
         already_units=tuple(already),
         counts=(added, updated, unchanged, left),
-        stored=stored_corrections(record, state, pairs, press.corrections),
+        stored=stored_corrections(record, state, pairs, press.corrections, as_read=True),
     )
 
 
@@ -1057,11 +1063,15 @@ def stored_corrections(
     state: ReviewState,
     pairs: Sequence[tuple[str, str]],
     corrections: Corrections,
+    *,
+    as_read: bool = False,
 ) -> tuple[tuple[str, str, str], ...]:
     """The corrections this save can show it stored, read back from the record inside its
     transaction: those whose text an assignment it wrote now holds in that field. A date
-    correction speaks for its own piece. Any other speaks for its row, so every piece of the row
-    must have been written and hold it. Nothing else is claimed, so what a choice left off, what
+    correction speaks for its own piece, as does, with ``as_read``, a date left as read on a piece
+    it wrote (``dates_left_as_read``). Any other speaks for its row, so every piece of the row must
+    have been written and hold it, as must, with ``as_read``, a class, title or instructions box
+    left as read (``texts_left_as_read``). Nothing else is claimed, so what a choice left off, what
     an earlier press wrote and a field with no match aren't here. A failure of the file is raised,
     as any in this transaction is, since SQLite may have ended it: the save fails and rolls back.
     Any other error here costs only the evidence, on record by its type and place."""
@@ -1091,7 +1101,71 @@ def stored_corrections(
                 text in held.get(targets[name], {}).get(kind, ()) for name in names
             ):
                 found.append((key, field, text))
+    if as_read:
+        found += dates_left_as_read(state, targets, corrections, held)
+        found += texts_left_as_read(state, targets, corrections, held)
     return tuple(found)
+
+
+def dates_left_as_read(
+    state: ReviewState,
+    targets: Mapping[str, str],
+    corrections: Corrections,
+    held: Mapping[str, Mapping[str, Collection[str]]],
+) -> list[tuple[str, str, str]]:
+    """Each date a piece this save wrote kept as read, with no correction posted for it, where the
+    assignment it wrote (``targets``) holds it (``held``): by its dates key, field and the text a
+    date box posts."""
+    found = []
+    for piece in state.pieces:
+        key = dates_key(piece.name)
+        if piece.name not in targets or piece.as_read is None:
+            continue
+        for field, day in (("due", piece.as_read.due), ("assigned", piece.as_read.assigned)):
+            if day is None or field in corrections.get(key, {}):
+                continue
+            if day.isoformat() in held.get(targets[piece.name], {}).get(field, ()):
+                found.append((key, field, day.isoformat()))
+    return found
+
+
+def texts_left_as_read(
+    state: ReviewState,
+    targets: Mapping[str, str],
+    corrections: Corrections,
+    held: Mapping[str, Mapping[str, Collection[str]]],
+) -> list[tuple[str, str, str]]:
+    """Each class, title and instruction text a row kept as read, with no correction posted for
+    its box, where this save has a destination for every piece of the row (``targets``), every
+    piece has that reading, the text isn't empty and every one of those assignments holds exactly
+    that text in that field (``held``): by its row key, field and the text as read. Being left as
+    read claims nothing by itself, and a row with a piece that has no destination in this save
+    claims nothing."""
+    rows: dict[str, list[Piece]] = {}
+    for piece in state.pieces:
+        rows.setdefault(piece.key, []).append(piece)
+    found = []
+    for key, pieces in rows.items():
+        boxes = [
+            {
+                "course": read.course,
+                "title": read.title,
+                **{f"instruction:{index}": text for index, text in enumerate(read.texts)},
+            }
+            for read in (piece.as_read for piece in pieces)
+            if read is not None
+        ]
+        if len(boxes) != len(pieces) or any(piece.name not in targets for piece in pieces):
+            continue
+        for field, text in boxes[0].items():
+            if not text or field in corrections.get(key, {}):
+                continue
+            kind = field.partition(":")[0]
+            if all(read.get(field) == text for read in boxes) and all(
+                text in held.get(targets[piece.name], {}).get(kind, ()) for piece in pieces
+            ):
+                found.append((key, field, text))
+    return found
 
 
 def _open_units(
