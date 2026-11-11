@@ -22772,8 +22772,8 @@ def test_words_beside_a_date_on_one_of_two_rows_another_tab_took_come_back_to_co
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, how: str
 ) -> None:
     """Words beside a date on a row another tab took come back to copy while the other row is drawn.
-    Behind that tab's Save for later, the page draws no form and gives the words back. A row whose
-    screenshot was removed has no reading in hand, so its other boxes holding text come back too."""
+    Behind that tab's Save for later, the page draws no form and gives the words back. A row with
+    its screenshot removed has no reading in hand, so its other boxes holding text come back too."""
     screenshots = 2 if how == "its screenshot removed" else 1
     with here(open_settings(tmp_path)) as browser:
         draft_id, reopened, _, piece, none = two_cards_with_words(
@@ -36862,7 +36862,7 @@ A_REMOVED_ROW_S_BOXES_ON_SAVE: Final = [
     ("Assigned date", WORDS_BESIDE),
     ("Instructions", "Complete pages 12 to 14."),
 ]
-"""The copies a Save gives for the row whose screenshot was removed: the same boxes as
+"""The copies a Save gives for the row with its screenshot removed: the same boxes as
 ``A_REMOVED_ROW_S_BOXES``, the words beside its date ahead of its Instructions."""
 
 
