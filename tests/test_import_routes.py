@@ -15313,7 +15313,9 @@ def test_a_read_press_goes_back_to_a_review_that_says_it_can_t_be_shown(
 def test_a_committed_press_keeps_its_counts_when_a_transaction_opens_after_it(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, cards: int
 ) -> None:
-    """Its commit is confirmed, so the counts and the typing stay, and it never reads as unknown."""
+    """Its commit is confirmed, so the counts stay and it never reads as unknown. With a row left
+    open, that row's Class, Title and Instructions boxes are given to copy and the boxes the Save
+    stored are not."""
     with here(open_settings(tmp_path)) as browser:
         if cards == 2:
             draft_id, page, first, other = two_rows(browser, monkeypatch)
@@ -15331,6 +15333,7 @@ def test_a_committed_press_keeps_its_counts_when_a_transaction_opens_after_it(
             return done
 
         monkeypatch.setattr(imports, "save_homework", saving)
+        held = what_a_save_stores(monkeypatch)
         pressed = send(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
@@ -15338,7 +15341,8 @@ def test_a_committed_press_keeps_its_counts_when_a_transaction_opens_after_it(
     assert "Saved: 1 new assignment." in page_text(pressed)
     assert UNKNOWN_HOMEWORK not in page_text(pressed)
     if cards == 2:
-        assert copied(pressed) == AS_GIVEN_BACK
+        assert copied(pressed) == {*AS_GIVEN_BACK, "Math 8"}
+        leaves_out_only_what_the_save_stored(posted, {*AS_GIVEN_BACK, "Math 8"}, held)
 
 
 def a_refused_group_offering_work_on_file(
