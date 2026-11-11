@@ -8435,7 +8435,8 @@ def test_a_press_that_kept_answers_says_so_when_its_review_can_t_be_read(
     """A Save or Save review for later that kept her answers and then saved nothing, its page's
     read refused: it answers with its own status and its own lines, the kept answers first,
     then that the review can't be shown, never that nothing was added. A line that points at
-    the review's rows says the review instead."""
+    the review's rows says the review instead. Save for later behind gives each box sent back to
+    copy, and its line says the typing is still here."""
     status, keys = KEPT_CASES[case]
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
@@ -8475,6 +8476,10 @@ def test_a_press_that_kept_answers_says_so_when_its_review_can_t_be_read(
             "effects in the review, then save."
         ),
     }
+    if case == "later behind":
+        lines["later_behind"] = LATER_REFUSED_HERE
+        assert owed_in_order(posted)
+        assert TYPED_BACK.findall(answer.text) == owed_in_order(posted)
     assert answer.status_code == status
     for key in keys:
         assert says(answer.text, lines[key]), key
@@ -25645,8 +25650,9 @@ def test_save_for_later_behind_withdrawing_an_answer_alone_past_a_refused_read_h
 def test_save_for_later_behind_beside_a_receipt_says_so_only_when_it_stored(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, stored: bool, read: str
 ) -> None:
-    """The earlier save's counts at 200 either way, this press's refusal beneath them with no copy
-    to keep. Keep's line in full is this press's own, and a connection of its own finds it."""
+    """The earlier save's counts at 200 either way, this press's refusal beneath them saying the
+    typing is still here, beside the copies of the boxes sent. Keep's line in full is this press's
+    own, and a connection of its own finds it."""
     with here(open_settings(tmp_path)) as browser:
         review, page, _, _, field = back_on_a_page_saved_from(browser, monkeypatch)
         value = next(value for value, shown in options_of(page, field) if not shown)
@@ -25657,9 +25663,10 @@ def test_save_for_later_behind_beside_a_receipt_says_so_only_when_it_stored(
         monkeypatch.undo()
         after = review_as_stored(browser, review.draft_id)
 
-    later_behind = imports.PRESS_SAID["later_behind"]
+    owed_here = in_reader_order(posted)
+    assert owed_here
     says_the_earlier_save_with_no_form(
-        answer, review.draft_id, in_reader_order(posted), refused=later_behind
+        answer, review.draft_id, owed_here, refused=LATER_REFUSED_HERE
     )
     the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
     assert holds_the_answer(after, field, value) is stored
