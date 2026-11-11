@@ -23156,9 +23156,10 @@ def test_only_an_unticked_valid_date_replaces_the_words_when_the_first_read_is_r
     where: str,
 ) -> None:
     """Timing forced: the press's first read answers with a file error. On Save, Keep and Save for
-    later alike, the date sent always comes back exactly. An invalid date, or "No assigned date",
-    doesn't displace the words. Every non-empty Class, Title and Instructions box comes back as
-    sent. The five-digit year and the words in the date box are crafted posts."""
+    later alike, text sent in the date box comes back exactly, in each shape here. An invalid date,
+    or "No assigned date", doesn't displace the words. Every non-empty Class, Title and
+    Instructions box comes back as sent. The stray spaces, the five-digit year and the words in the
+    date box are crafted posts."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, piece, none, words = words_carried_where(browser, monkeypatch, where)
         posted = page_post(
@@ -23185,10 +23186,11 @@ def test_only_an_unticked_valid_date_replaces_the_words_when_a_save_s_post_can_t
     ticked: bool,
     where: str,
 ) -> None:
-    """Timing forced: the read of a Save's post against the review answers with a file error. The
-    date sent comes back exactly, and the words unless an unticked valid date replaces them, beside
-    every non-empty Class, Title and Instructions box as sent. Nothing is written. The five-digit
-    year and the words in the date box are crafted posts."""
+    """Timing forced: the read of a Save's post against the review answers with a file error. In
+    each shape here, text sent in the date box comes back exactly, and the words unless an unticked
+    valid date replaces them, beside every non-empty Class, Title and Instructions box as sent.
+    Nothing is written. The stray spaces, the five-digit year and the words in the date box are
+    crafted posts."""
     rule = READS_OF_THE_REVIEW["the read of the post"]("save", False)
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, piece, none, words = words_carried_where(browser, monkeypatch, where)
@@ -23341,6 +23343,7 @@ def test_save_gives_back_a_date_box_without_carried_words_when_the_review_is_lef
             for name, value in page_post(page, "save")
             if name.startswith("correct:") and json.loads(name.removeprefix("correct:"))[1] == field
         ]
+        assert len(boxes) == 2
         box, as_read = boxes[-1]
         sent = shape.format(as_read)
         posted = page_post(page, "save", tick=[units_on(page)[0]], typed={box: sent})
@@ -23348,12 +23351,39 @@ def test_save_gives_back_a_date_box_without_carried_words_when_the_review_is_lef
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    assert len(boxes) == 2
+    beside_words = [
+        json.loads(name.removeprefix("refused:"))
+        for name, _ in posted
+        if name.startswith("refused:")
+    ]
+    assert json.loads(box.removeprefix("correct:")) not in beside_words
     assert bool(as_read) == ("{}" in shape)
     assert sent != as_read
     assert sent.strip() == as_read
     assert faults.refused == [rule]
     says_the_review_can_t_be_shown(answer, 503, {sent} | owed_texts(posted))
+
+
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_spaces_alone_in_a_date_box_beside_carried_words_stay_out_of_a_save_s_copies(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """A limit. Timing forced: the press's first read answers with a file error. A crafted post:
+    only spaces in the date box beside carried words. The words come back on every press, and the
+    spaces on Keep and Save for later. A Save press's copies leave the spaces out."""
+    rule = ("review_press", "snapshot", 1)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, piece, _, words = words_carried_where(
+            browser, monkeypatch, "in saved progress"
+        )
+        posted = page_post(page, press, typed={correct_box(piece, "assigned"): "   "})
+        faults = Refusing(monkeypatch, (*rule, refusing_coded("SQLITE_IOERR")))
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert faults.refused == [rule]
+    spaces: set[str] = set() if press == "save" else {"   "}
+    says_the_review_can_t_be_shown(answer, 503, {words} | spaces | owed_texts(posted))
 
 
 def too_many_images(*_: object, **__: object) -> None:
