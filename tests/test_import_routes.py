@@ -15342,6 +15342,7 @@ def test_a_committed_press_keeps_its_counts_when_a_transaction_opens_after_it(
     assert UNKNOWN_HOMEWORK not in page_text(pressed)
     if cards == 2:
         assert copied(pressed) == {*AS_GIVEN_BACK, "Math 8"}
+        assert len(copies_in_order(pressed)) == len(AS_GIVEN_BACK) + 1
         leaves_out_only_what_the_save_stored(posted, {*AS_GIVEN_BACK, "Math 8"}, held)
 
 
@@ -26468,6 +26469,7 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_receipt_s_page_can_t_rea
     assert "Saved: 1 new assignment." in the_outcome_heading(answer)
     assert KEPT_SHORT not in the_outcome_heading(answer)
     assert copied(answer) == owed_texts(posted)
+    assert copies_in_order(answer) == [text for _, _, text in owed(posted)]
     leaves_out_only_what_the_save_stored(posted, copied(answer), held)
     assert KEPT_SHORT not in html.unescape(after)
 
@@ -37936,6 +37938,9 @@ def test_save_for_later_with_no_review_state_before_its_write_gives_back_what_it
     assert answer.status_code == 200, answer.headers.get("location")
     assert SAVED_BY_THIS_ATTEMPT in page_text(answer)
     assert copied(answer) == owed_texts(posted, saved={(other, "title", "Typed Words")})
+    assert len(copies_in_order(answer)) == len(
+        owed(posted, saved={(other, "title", "Typed Words")})
+    )
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -37961,11 +37966,6 @@ def test_a_crafted_refused_name_on_a_title_box_gives_its_words_back_on_an_earlie
     assert copied(answer) == owed_texts(posted) | {"Carried Words"}
 
 
-SAVE_ANSWERED_WITHOUT_ITS_ROWS: Final = (
-    "its rows forced empty",
-    "its review read refused",
-    "its review read busy",
-)
 @pytest.mark.parametrize("press", THE_PRESSES)
 def test_a_crafted_refused_name_on_a_title_box_gives_its_words_back_past_a_refused_first_read(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
@@ -37987,6 +37987,11 @@ def test_a_crafted_refused_name_on_a_title_box_gives_its_words_back_past_a_refus
     assert copies_in_order(answer) == [*(text for _, _, text in owed(posted)), "Carried Words"]
 
 
+SAVE_ANSWERED_WITHOUT_ITS_ROWS: Final = (
+    "its rows forced empty",
+    "its review read refused",
+    "its review read busy",
+)
 
 
 @pytest.mark.parametrize("how", SAVE_ANSWERED_WITHOUT_ITS_ROWS)
@@ -38013,6 +38018,7 @@ def test_a_save_answered_without_its_rows_gives_back_only_the_row_it_did_not_sav
     assert "Saved: 1 new assignment." in page_text(answer)
     assert the_other_row
     assert copied(answer) == the_other_row
+    assert len(copies_in_order(answer)) == len(the_other_row)
 
 
 def test_an_ordinary_save_gives_back_nothing_its_read_back_and_its_form_hold(
