@@ -69,6 +69,7 @@ from blossom.screenshot_posts import (
     typed_as_sent,
     typed_beside_words,
     typed_for,
+    words_box,
 )
 from blossom.screenshot_reading import ReadOutcome, read_screenshots
 from blossom.screenshot_review import Corrections, change_told, row_texts, value_json
@@ -2878,8 +2879,10 @@ async def later_press(
             return await saved_for_later_with_typing(
                 request, state, found.draft_id, [THIS_ATTEMPT_SAVED], [OUT_OF_DATE]
             )
-        kept = frozenset() if review is None else kept_for_later(review, post.corrections)
-        if kept and await typing_by_press(request, shown=kept, every_press=True):
+        kept = kept_for_later(
+            review, post.corrections, readings_checked=found.version == post.version
+        )
+        if await typing_by_press(request, shown=kept, every_press=True):
             lines = [THIS_ATTEMPT_SAVED, saved_for_later_at(state)]
             return await saved_for_later_with_typing(
                 request, state, found.draft_id, lines, [], kept_as=kept
@@ -2893,20 +2896,36 @@ async def later_press(
 
 
 def kept_for_later(
-    review: ReviewState, corrections: Corrections
+    review: ReviewState | None, corrections: Corrections, *, readings_checked: bool = True
 ) -> frozenset[tuple[str, str, str]]:
-    """Each box as a Save for later keeps it, by key, field and text: the correction it wrote, a
-    removal as an empty box, else its value with no correction as the page draws it, line endings
-    made line feeds."""
-    drawn = {subject: value or "" for subject, value in fold_reads(review).items()}
-    for piece in review.open:
-        read = piece.as_read
-        if read is None:
-            continue
-        drawn[(piece.key, "course")] = read.course
-        drawn[(piece.key, "title")] = read.title
-        for index, text in enumerate(read.texts):
-            drawn[(piece.key, f"instruction:{index}")] = correction_text("instruction:0", text)
+    """Each box a Save for later's committed write is shown to hold exactly, by key, field and
+    text. A correction it wrote counts under the text stored, and a removal as an empty box;
+    neither needs the review state. A class, title or instructions box with no correction counts
+    under its reading's text, line endings made line feeds, only where the review state is in
+    hand, was read at the version the write was checked against (``readings_checked``), and every
+    open piece of its row with a reading gives that same text. A date box with no correction
+    counts as the page draws it."""
+    drawn: dict[tuple[str, str], str] = {}
+    if review is not None:
+        drawn = {
+            subject: value or ""
+            for subject, value in fold_reads(review).items()
+            if not words_box(subject[1])
+        }
+    if review is not None and readings_checked:
+        rows: dict[str, list[dict[str, str]]] = {}
+        for piece in review.open:
+            read = piece.as_read
+            if read is None:
+                continue
+            texts = {"course": read.course, "title": read.title}
+            for index, text in enumerate(read.texts):
+                texts[f"instruction:{index}"] = correction_text("instruction:0", text)
+            rows.setdefault(piece.key, []).append(texts)
+        for key, pieces in rows.items():
+            for field, text in pieces[0].items():
+                if all(other.get(field) == text for other in pieces):
+                    drawn[(key, field)] = text
     for key, fields in corrections.items():
         for field, saved in fields.items():
             drawn[(key, field)] = "" if saved is None else saved
