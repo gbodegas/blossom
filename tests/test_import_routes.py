@@ -13921,7 +13921,8 @@ def test_no_date_ticked_doesn_t_cost_the_words_beside_it(
 ) -> None:
     """A row left open, words carried beside its date box and "No assigned date was given" ticked,
     another row saved. The tick is the parent's choice about the date, and the words aren't in any
-    box, so they come back, on the press and on its resend."""
+    box, so they come back, on the press and on its resend. The resend, which shows nothing stored,
+    gives every Class, Title and Instructions box of the post back with them."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, key = carried_beside_a_date_box(
             browser, monkeypatch, SECOND_CARDS[card], how
@@ -13931,11 +13932,19 @@ def test_no_date_ticked_doesn_t_cost_the_words_beside_it(
         ]
         [tick] = [name for name in ticks if key in name]
         posted = page_post(page, "save", tick=[first], choose={tick: "none"})
+        held = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
+        by_the_save = list(held)
         resent = send(browser, draft_id, posted)
 
     assert TYPED_BACK.findall(answer.text) == [CARRIED]
-    assert TYPED_BACK.findall(resent.text) == [CARRIED]
+    leaves_out_only_what_the_save_stored(posted, [], by_the_save, boxes_returned(answer))
+    names = ["English 8", "Sentence Composing", "Math 8", "Set 3"]
+    notes = ["Complete pages 12 to 14.", "Complete pages 12 to 14."]
+    words_last = (card, how) == ("it read none", "typed")
+    back = [*names, *notes, CARRIED] if words_last else [*names, CARRIED, *notes]
+    assert TYPED_BACK.findall(resent.text) == back
+    leaves_out_only_what_the_save_stored(posted, back, held[len(by_the_save) :])
 
 
 def test_no_date_ticked_on_the_row_being_saved_keeps_the_words_on_its_first_press(
@@ -31186,9 +31195,22 @@ def test_a_press_whose_later_read_answers_first_makes_no_comparison(
     assert not recovery_of(answer).form
 
 
-RECEIPT_AT_THE_LATER_READ: Final[tuple[int, list[str], int]] = (200, [WORDS_BESIDE], 0)
-"""A Save whose receipt is on file at the later read: its status, the copies it gives back and
-how often it says its choices can't be shown, as on the base."""
+RECEIPT_AT_THE_LATER_READ: Final[tuple[int, list[str], int]] = (
+    200,
+    [
+        "English 8",
+        "Sentence Composing",
+        "Math 8",
+        "Set 3",
+        "Complete pages 12 to 14.",
+        "Complete pages 12 to 14.",
+        WORDS_BESIDE,
+    ],
+    0,
+)
+"""A Save whose receipt is on file at the later read: its status, the copies it gives back (every
+Class, Title and Instructions box of the post, then the words beside the date) and how often it
+says its choices can't be shown."""
 ACCEPTANCE_COLUMNS: Final = (
     "student_id, kind, source_key, report_id, class_id, term_label, accepted, identity_status, "
     "identity_answer, identity_form, added, updated, already_saved, left_to_check, shown, "
@@ -31242,6 +31264,7 @@ def test_a_save_whose_receipt_is_on_file_at_the_later_read_answers_with_it_first
         posted = page_post(page, "save", tick=units_on(page)[:1], choose=no_date_tick(none))
         no_rows_once(monkeypatch, receipt_recorded)
         monkeypatch.setattr(imports, "words_beside_unlike", comparison)
+        held = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
         after = (review_as_stored(browser, draft_id), receipts_and_homework(browser))
@@ -31253,6 +31276,7 @@ def test_a_save_whose_receipt_is_on_file_at_the_later_read_answers_with_it_first
     assert answer.status_code == RECEIPT_AT_THE_LATER_READ[0], text[:400]
     assert "Saved: 1 new assignment." in text
     assert recovery_of(answer).copies == RECEIPT_AT_THE_LATER_READ[1]
+    leaves_out_only_what_the_save_stored(posted, RECEIPT_AT_THE_LATER_READ[1], held)
     assert text.count(NOT_CARRIED) == RECEIPT_AT_THE_LATER_READ[2]
     assert after[0] == before[0]
     assert after[1] == (before[1][0] + 1, before[1][1])
@@ -32820,7 +32844,8 @@ def test_a_save_past_a_first_read_refusal_or_rows_unread_after_its_commit_reads_
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str
 ) -> None:
     """A store call refusing the review's first read, or forced timing answering no rows right after
-    the commit: a Save with the date as read typed beside carried words gets today's copies."""
+    the commit: a Save with the date as read typed beside carried words gets the words back, after
+    each Class, Title and Instructions box of the post that no save of this press stored."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, units, piece, _ = two_cards_with_words(browser, monkeypatch)
         typed = the_date_as_read(browser, draft_id, piece)
@@ -32846,21 +32871,37 @@ def test_a_save_past_a_first_read_refusal_or_rows_unread_after_its_commit_reads_
 
             monkeypatch.setattr(imports, "save_homework", saving)
             monkeypatch.setattr(imports, "rows_of", rows)
-        answer = send(
-            browser,
-            draft_id,
-            page_post(page, "save", tick=[units[0]], typed={correct_box(piece, "assigned"): typed}),
+        posted = page_post(
+            page, "save", tick=[units[0]], typed={correct_box(piece, "assigned"): typed}
         )
+        held = what_a_save_stores(monkeypatch)
+        answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert copies_with_labels(answer) == SAVE_COPIES_TODAY[route]
+    texts = [text for label, text in SAVE_COPIES_TODAY[route] if label != "Assigned date"]
+    assert [box[2] for box in owed(posted) if box not in held] == texts
+    assert bool(held) == (route == "its rows unread past the commit")
 
 
 # What those pages give back today: the carried words in place of the date typed.
+THE_ROW_LEFT_OPEN: Final = [
+    ("Class", "Math 8"),
+    ("Title", "Set 3"),
+    ("Instructions", "Complete pages 12 to 14."),
+]
+BOTH_ROWS: Final = [
+    ("Class", "English 8"),
+    ("Title", "Sentence Composing"),
+    ("Class", "Math 8"),
+    ("Title", "Set 3"),
+    ("Instructions", "Complete pages 12 to 14."),
+    ("Instructions", "Complete pages 12 to 14."),
+]
 SAVE_COPIES_TODAY: Final[dict[str, list[tuple[str, str]]]] = {
-    "its first read refused": [("Assigned date", WORDS_BESIDE)],
-    "its first read busy": [("Assigned date", WORDS_BESIDE)],
-    "its rows unread past the commit": [("Assigned date", WORDS_BESIDE)],
+    "its first read refused": [*BOTH_ROWS, ("Assigned date", WORDS_BESIDE)],
+    "its first read busy": [*BOTH_ROWS, ("Assigned date", WORDS_BESIDE)],
+    "its rows unread past the commit": [*THE_ROW_LEFT_OPEN, ("Assigned date", WORDS_BESIDE)],
 }
 
 
