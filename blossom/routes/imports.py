@@ -2382,9 +2382,9 @@ async def unshown_unread(
 ) -> Response:
     """A press whose review the household's file refuses to read before anything was written:
     for a busy store, that nothing changed; for any other refusal, only that the review can't
-    be shown; with the typing given back."""
+    be shown; with the typing given back as sent on every press."""
     said = [AFTER_SAID["busy"]] if busy_refusal(error) else []
-    return await unshown_with_typing(request, state, draft_id, said, 503)
+    return await unshown_with_typing(request, state, draft_id, said, 503, as_sent=True)
 
 
 async def press_refused(
