@@ -824,15 +824,17 @@ async def typing_of(
     as_sent: bool = False,
     drawn: Mapping[str, str] | None = None,
     undrawn_beside_words: bool = False,
+    saved_exactly: Collection[tuple[str, str, str]] = (),
 ) -> list[tuple[str, str]]:
     """Every box a press's post gives back, labeled, read from the post alone (``typed_for``),
     to give back as it was sent, in boxes to copy, where the review can't keep it. A box is
     left out only when a box on the page holds that exact text (``shown``), or when its save shows
-    it stored that exact text in that field (``stored``, the outcome's own evidence). An empty box
-    or a hidden field beside it isn't either, whatever was ticked. With ``beside_words``, a date box
-    beside carried words comes back as ``typed_beside_words`` gives it, and with
-    ``undrawn_beside_words`` one no box in ``shown`` draws; with ``as_sent``, each text exactly as
-    sent (``exact``), labeled by its card (``copy_label``, with ``drawn``)."""
+    it stored that exact text in that field (``stored``, the outcome's own evidence, or
+    ``saved_exactly``, the class, title and instructions boxes of it that a page drawing no form is
+    handed). An empty box or a hidden field beside it isn't either, whatever was ticked. With
+    ``beside_words``, a date box beside carried words comes back as ``typed_beside_words`` gives
+    it, and with ``undrawn_beside_words`` one no box in ``shown`` draws; with ``as_sent``, each
+    text exactly as sent (``exact``), labeled by its card (``copy_label``, with ``drawn``)."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -849,7 +851,9 @@ async def typing_of(
     return [
         (copy_label(request, key, field, by_card=as_sent, drawn=drawn), text)
         for key, field, text in typed
-        if (key, field, text) not in evidence and (key, field, text) not in shown
+        if (key, field, text) not in evidence
+        and (key, field, text) not in shown
+        and (key, field, text) not in saved_exactly
     ]
 
 
@@ -863,14 +867,18 @@ async def typing_by_press(
     every_press: bool = False,
     drawn: Mapping[str, str] | None = None,
     undrawn_beside_words: bool = False,
+    saved_exactly: Collection[tuple[str, str, str]] = (),
 ) -> list[tuple[str, str]]:
     """What a post gives back when its press finds the review ended, on every page that says it
     can't be shown, beside a confirmed save's counts with no post to read, and on Save for later's
     page after a commit that set words aside, whether or not its read shows another tab saved
-    since: on a Save press, ``typing_of``, with ``beside_words``, ``undrawn_beside_words`` and
-    ``as_sent`` passed on; on Keep or Save for later, every box as it was sent, whitespace included
-    (``typed_as_sent``), labeled by its card with ``every_press`` (``drawn`` as ``copy_label``
-    takes it). Text a box on the page holds exactly (``shown``) is left out."""
+    since: on a Save press, ``typing_of``, with ``beside_words``, ``undrawn_beside_words``,
+    ``as_sent`` and ``saved_exactly`` passed on; on Keep or Save for later, every box as it was
+    sent, whitespace included (``typed_as_sent``), labeled by its card with ``every_press``
+    (``drawn`` as ``copy_label`` takes it). Text a box on the page holds exactly (``shown``) is left
+    out, and so is a class, title or instructions box whose exact text this request's own confirmed
+    write shows it holds (``saved_exactly``), by key, field and text. A caller that was handed no
+    such evidence passes none, and every box comes back."""
     try:
         form = await form_of(request)
     except FormUnreadable:
@@ -885,11 +893,12 @@ async def typing_by_press(
             as_sent=as_sent,
             drawn=drawn,
             undrawn_beside_words=undrawn_beside_words,
+            saved_exactly=saved_exactly,
         )
     return [
         (copy_label(request, key, field, by_card=every_press, drawn=drawn), text)
         for key, field, text in typed_as_sent(items)
-        if (key, field, text) not in shown
+        if (key, field, text) not in shown and (key, field, text) not in saved_exactly
     ]
 
 
