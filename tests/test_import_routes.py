@@ -34458,8 +34458,9 @@ def test_a_split_row_s_title_copied_from_a_page_behind_is_named_by_its_first_dra
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Store calls answer a row's split question "split" and stand in for another page's Save for
-    later, putting the page behind; then a real Keep with the row's title typed gives the title back
-    to copy, named by the day whose card the form draws the row's boxes on."""
+    later, putting the page behind; then a real Keep with the row's title typed gives the row's
+    Class, Title and Instructions boxes back to copy, the title as typed, each named by the day
+    whose card the form draws the row's boxes on."""
     monday, tuesday = split_answers()
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
@@ -34477,7 +34478,11 @@ def test_a_split_row_s_title_copied_from_a_page_behind_is_named_by_its_first_dra
     labeled = copies_with_labels(answer)
     assert not recovery_of(answer).form
     day = "Sentence Composing (screenshot 1, card 1, assigned Mon 10/5)"
-    assert labeled == [(f"Title for {day}", "Set 3 typed")]
+    assert labeled == [
+        (f"Class for {day}", "English 8"),
+        (f"Title for {day}", "Set 3 typed"),
+        (f"Instructions for {day}", "Complete pages 12 to 14."),
+    ]
 
 
 # --------------------------------------------- carried words on a form page before any save
@@ -36225,7 +36230,8 @@ def test_a_no_date_tick_whose_confirmation_is_read_as_posted_on_a_left_row_says_
 ) -> None:
     """Real presses: a Keep ticks "No assigned date was given" under an unsure day heading that
     read no date, another page leaves that row's group unsaved, and this page presses unchanged.
-    The rows' read holds the heading's confirmation as posted: nothing is said."""
+    The rows' read holds the heading's confirmation as posted: nothing is said of the tick. The
+    row's Class, Title and Instructions boxes are the only copies."""
     with here(open_settings(tmp_path)) as browser:
         found = a_no_date_tick_on_a_row_another_page_left(browser, monkeypatch)
         posted = page_post(found.page, press, tick=[found.first] if press == "save" else [])
@@ -36233,7 +36239,7 @@ def test_a_no_date_tick_whose_confirmation_is_read_as_posted_on_a_left_row_says_
 
     assert reads == LEFT_ROW_READS[press]
     assert states == ["discarded", "open", "open"]
-    assert copies_with_labels(answer) == []
+    assert copies_with_labels(answer) == TEXT_ON_THE_TICKED_ROW
     a_form_out_of_date_saying(answer, 0)
 
 
@@ -36257,7 +36263,8 @@ def test_a_no_date_tick_on_a_left_row_without_all_its_evidence_is_said_once(
 ) -> None:
     """Real presses, past what a case names. "Other text" is a store call standing in for another
     page; "superseded" is forced timing; "progress holding" is a forced store answer only, its
-    reach by supported presses not established. The line once."""
+    reach by supported presses not established. The line once. With nothing held, the row's
+    Class, Title and Instructions boxes are the only copies."""
     with here(open_settings(tmp_path)) as browser:
         found = a_no_date_tick_on_a_row_another_page_left(
             browser,
@@ -36284,7 +36291,7 @@ def test_a_no_date_tick_on_a_left_row_without_all_its_evidence_is_said_once(
 
     if case == "not held":
         assert reads == LEFT_ROW_READS[press]
-        assert copies_with_labels(answer) == []
+        assert copies_with_labels(answer) == TEXT_ON_THE_TICKED_ROW
     assert states == ["discarded", "open", "open"]
     a_form_out_of_date_saying(answer, 1)
 
@@ -36506,8 +36513,8 @@ def test_padding_deleted_on_a_row_another_page_left_unsaved_comes_back_as_sent(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
     """Real presses: an instruction read with outer spaces, its group left unsaved by another page,
-    then this page's press with that box's padding deleted. The reading in hand differs from the
-    text, so that box alone comes back, exactly as sent, and the row stays set aside."""
+    then this page's press with that box's padding deleted. That box comes back exactly as sent,
+    after the row's Class and Title boxes, and the row stays set aside."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, key, typed = a_padded_instruction_posted(
             browser, monkeypatch, "padding deleted"
@@ -36519,14 +36526,18 @@ def test_padding_deleted_on_a_row_another_page_left_unsaved_comes_back_as_sent(
 
     assert state == "discarded"
     assert reads == LEFT_ROW_READS[press]
-    assert copies_with_labels(answer) == [(THE_PADDED_BOX, PADDING_DELETED)]
+    assert copies_with_labels(answer) == [
+        SET_3_CLASS,
+        SET_3_TITLE,
+        (THE_PADDED_BOX, PADDING_DELETED),
+    ]
     assert answer.status_code == 409
     assert recovery_of(answer).form
     assert imports.OUT_OF_DATE in page_text(answer)
 
 
 LEFT_ROW_CONTROLS: Final[dict[str, tuple[str, str | None, list[str]]]] = {
-    "a clean reading left alone": (PADDING_DELETED, None, []),
+    "a clean reading left alone": (PADDING_DELETED, None, [PADDING_DELETED]),
     "the padded reading left as held": (PADDED_INSTRUCTION, None, [PADDED_INSTRUCTION]),
     "padding added": (PADDED_INSTRUCTION, "   Do pages 1 to 2.  ", ["   Do pages 1 to 2.  "]),
     "other words": (PADDED_INSTRUCTION, "Do page 3.", ["Do page 3."]),
@@ -36541,8 +36552,8 @@ def test_a_box_on_a_row_another_page_left_unsaved_reads_as_its_post_alone_reads(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, case: str
 ) -> None:
     """Real presses: the second card's group left unsaved by another page, then this page's press.
-    A clean reading left alone gives nothing back; a padded reading left as held, padding added
-    and other words each come back once, as the post alone gives them."""
+    A clean reading left alone, a padded reading left as held, padding added and other words each
+    come back once, exactly as sent, after the row's Class and Title boxes."""
     reading, edit, back = LEFT_ROW_CONTROLS[case]
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_review_reading(browser, monkeypatch, reading)
@@ -36555,7 +36566,11 @@ def test_a_box_on_a_row_another_page_left_unsaved_reads_as_its_post_alone_reads(
 
     assert state == "discarded"
     assert reads == LEFT_ROW_READS[press]
-    assert copies_with_labels(answer) == [(THE_PADDED_BOX, text) for text in back]
+    assert copies_with_labels(answer) == [
+        SET_3_CLASS,
+        SET_3_TITLE,
+        *((THE_PADDED_BOX, text) for text in back),
+    ]
     assert answer.status_code == 409
 
 
@@ -36565,7 +36580,8 @@ def test_padding_deleted_on_a_row_the_returned_form_draws_stays_in_its_box(
 ) -> None:
     """Real presses: another page leaves the other card's group unsaved, then this page's press
     with the padded reading's padding deleted. The returned form draws that row with its box
-    holding the text as sent, so no copy is added."""
+    holding the text as sent, so no copy is added for it. The other card's Class, Title and
+    Instructions boxes are the only copies."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, key, typed = a_padded_instruction_posted(
             browser, monkeypatch, "padding deleted"
@@ -36579,7 +36595,12 @@ def test_padding_deleted_on_a_row_the_returned_form_draws_stays_in_its_box(
     assert (states[other], states[key]) == ("discarded", "open")
     assert reads == LEFT_ROW_READS[press]
     assert answer.status_code == 409
-    assert copies_with_labels(answer) == []
+    card = "Sentence Composing (screenshot 1, card 1)"
+    assert copies_with_labels(answer) == [
+        (f"Class for {card}", "English 8"),
+        (f"Title for {card}", "Sentence Composing"),
+        (f"Instructions for {card}", "Complete pages 12 to 14."),
+    ]
     assert drawn_text(answer.text, correct_box(key, "instruction:0")) == PADDING_DELETED
 
 
