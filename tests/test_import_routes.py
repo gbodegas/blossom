@@ -32879,7 +32879,7 @@ def test_keep_and_save_for_later_past_a_discard_give_a_date_typed_beside_words_b
 @pytest.mark.parametrize(
     "route", ["its first read refused", "its first read busy", "its rows unread past the commit"]
 )
-def test_a_save_past_a_first_read_refusal_or_rows_unread_after_its_commit_reads_as_today(
+def test_a_save_past_a_first_read_refusal_or_rows_unread_after_its_commit_gets_the_words_back(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, route: str
 ) -> None:
     """A store call refusing the review's first read, or forced timing answering no rows right after
@@ -32917,13 +32917,14 @@ def test_a_save_past_a_first_read_refusal_or_rows_unread_after_its_commit_reads_
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    assert copies_with_labels(answer) == SAVE_COPIES_TODAY[route]
-    texts = [text for label, text in SAVE_COPIES_TODAY[route] if label != "Assigned date"]
+    assert copies_with_labels(answer) == SAVE_COPIES_BESIDE_WORDS[route]
+    texts = [text for label, text in SAVE_COPIES_BESIDE_WORDS[route] if label != "Assigned date"]
     assert [box[2] for box in owed(posted) if box not in held] == texts
     assert bool(held) == (route == "its rows unread past the commit")
 
 
-# What those pages give back today: the carried words in place of the date typed.
+# What those pages give back: each Class, Title and Instructions box no save of the press stored,
+# then the carried words in place of the date typed.
 THE_ROW_LEFT_OPEN: Final = [
     ("Class", "Math 8"),
     ("Title", "Set 3"),
@@ -32937,7 +32938,7 @@ BOTH_ROWS: Final = [
     ("Instructions", "Complete pages 12 to 14."),
     ("Instructions", "Complete pages 12 to 14."),
 ]
-SAVE_COPIES_TODAY: Final[dict[str, list[tuple[str, str]]]] = {
+SAVE_COPIES_BESIDE_WORDS: Final[dict[str, list[tuple[str, str]]]] = {
     "its first read refused": [*BOTH_ROWS, ("Assigned date", WORDS_BESIDE)],
     "its first read busy": [*BOTH_ROWS, ("Assigned date", WORDS_BESIDE)],
     "its rows unread past the commit": [*THE_ROW_LEFT_OPEN, ("Assigned date", WORDS_BESIDE)],
@@ -37036,7 +37037,7 @@ def test_a_save_sent_again_whose_post_reader_runs_twice_gives_back_every_box(
 
 @pytest.mark.parametrize("post", THREE_POSTS)
 @pytest.mark.parametrize("first", ["no rows", "no second row"])
-def test_a_first_state_lacking_a_row_stays_the_reading_in_hand(
+def test_a_first_state_lacking_a_row_gives_back_every_box_as_sent(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str, post: str
 ) -> None:
     """A state handed back by the test on a crafted post, its reach by supported presses not
