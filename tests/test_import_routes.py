@@ -31899,12 +31899,15 @@ def test_a_save_behind_whose_review_ends_before_its_transaction_says_it_ended(
 
         monkeypatch.setattr(drafts, "keep_answers", then_ended)
         typed = {correct_box(other, "title"): "Y Typed"}
-        answer = send(browser, draft_id, page_post(mine, "save", tick=[row], typed=typed))
+        posted = page_post(mine, "save", tick=[row], typed=typed)
+        answer = send(browser, draft_id, posted)
         monkeypatch.undo()
         saved = saved_from_the_review(browser)
 
     words = imports.SAID["closed"] if ending == "closed" else imports.SAID["expired"]
-    the_review_is_over(answer, 409, words, {"Y Typed"})
+    every = {"English 8", "Sentence Composing", "Math 8", "Y Typed", "Complete pages 12 to 14."}
+    assert owed_texts(posted) == every
+    the_review_is_over(answer, 409, words, every)
     assert imports.OUT_OF_DATE not in page_text(answer)
     assert imports.NO_HOMEWORK not in page_text(answer)
     assert saved == []
