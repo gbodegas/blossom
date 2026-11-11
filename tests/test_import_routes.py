@@ -6610,6 +6610,7 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
                 return done
 
             monkeypatch.setattr(state.import_drafts, method, committed_then_expired)
+        stored = what_a_save_stores(monkeypatch)
         answer = followed(browser, send(browser, draft_id, posted))
         after = assignment_count(browser)
         expires_after, progress = stored_row(browser, draft_id)
@@ -6624,6 +6625,8 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
     texts = [text for *_, text in owed(posted, saved=held if committed else ())]
     assert TYPED_WORDS in owed_texts(posted)
     assert sorted(copyable(answer)) == sorted([*texts, TYPED_DATE])
+    if press == "save" and committed:
+        leaves_out_only_what_the_save_stored(posted, texts, stored)
     assert says(answer, TYPED_SAID)
     assert expires_after == stored_before[0]
     if press == "save" and committed:
@@ -6633,6 +6636,12 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
         assert after == before
     if press == "later" and committed:
         assert progress is not None
+        typed = next(name for name, value in posted if value == TYPED_WORDS)
+        key, field = json.loads(typed.removeprefix("correct:"))
+        kept = json.loads(str(progress))["corrected"]
+        assert (key, field, TYPED_WORDS) in [
+            (row, box, text) for row, boxes in kept.items() for box, text in boxes.items()
+        ]
     else:
         assert progress == stored_before[1] is None
     if press in ("keep", "later") and committed:
@@ -9526,6 +9535,7 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
             refuse = busy_store(busy)
         else:
             refuse = failing_read(drafts.snapshot, 3 if case == "typing left open" else 2, busy)
+        stored = what_a_save_stores(monkeypatch)
         put_back = restored(drafts, "snapshot", refuse)
         answer = send(browser, draft_id, posted)
         put_back()
@@ -9568,6 +9578,7 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
     owed_now = owed_past_a_save(posted, other, own=case == "typing left open")
     assert "Chains Guide Six" in owed_now
     assert TYPED_BACK.findall(answer.text) == owed_now
+    leaves_out_only_what_the_save_stored(posted, owed_now, stored)
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert not says(answer.text, TYPED_SAID)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
@@ -12989,6 +13000,7 @@ def test_a_review_closed_for_real_before_its_rows_are_read_keeps_the_saved_resul
             return await real_rows(*args, **kwargs)
 
         monkeypatch.setattr(imports, "rows_of", closed_first)
+        stored = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
         student = state_of(browser).project_state.student_id()
@@ -13000,6 +13012,7 @@ def test_a_review_closed_for_real_before_its_rows_are_read_keeps_the_saved_resul
     owed_now = owed_past_a_save(posted, other, own=path == "save")
     assert TYPED_ON_THE_OTHER in owed_now
     assert TYPED_BACK.findall(answer.text) == owed_now
+    leaves_out_only_what_the_save_stored(posted, owed_now, stored)
     assert says(answer.text, imports.UNSHOWN_TYPED)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
     assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
@@ -13425,6 +13438,7 @@ def test_a_review_discarded_before_the_page_s_read_gives_the_typing_back(
                 return done
 
             monkeypatch.setattr(imports, "save_homework", saving)
+        stored = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
@@ -13433,6 +13447,7 @@ def test_a_review_discarded_before_the_page_s_read_gives_the_typing_back(
     owed_now = owed_past_a_save(posted, other, own=path == "save")
     assert TYPED_ON_THE_OTHER in owed_now
     assert TYPED_BACK.findall(answer.text) == owed_now
+    leaves_out_only_what_the_save_stored(posted, owed_now, stored)
     assert not says(answer.text, imports.PRESS_SAID["left_open"])
     assert not says(answer.text, imports.PRESS_SAID["unsaved_typing"])
 
@@ -37232,6 +37247,34 @@ def owed_past_a_save(posted: Sequence[tuple[str, str]], left: str, *, own: bool)
     is handed no save, every box."""
     key = json.loads(left.removeprefix("correct:"))[0]
     return [text for k, _, text in owed(posted) if not own or k == key]
+
+
+def what_a_save_stores(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str]]:
+    """Every row, field and text that a save's own check of what it stored
+    (``stored_corrections``) gives, for the presses sent after this call. The check itself runs
+    unchanged. A press that runs no save adds nothing."""
+    seen: list[tuple[str, str, str]] = []
+    real: Callable[..., tuple[tuple[str, str, str], ...]] = screenshot_save.stored_corrections
+
+    def recording(*args: object, **kwargs: object) -> tuple[tuple[str, str, str], ...]:
+        found = real(*args, **kwargs)
+        seen.extend(found)
+        return found
+
+    monkeypatch.setattr(screenshot_save, "stored_corrections", recording)
+    return seen
+
+
+def leaves_out_only_what_the_save_stored(
+    posted: Sequence[tuple[str, str]],
+    back: Collection[str],
+    stored: Collection[tuple[str, str, str]],
+) -> None:
+    """Beside a pinned list of copies: a non-empty Class, Title or Instructions box of the post
+    has its text missing from ``back`` exactly where the request's save stored that row, that
+    field and that text."""
+    boxes = owed(posted)
+    assert [box for box in boxes if box[2] not in back] == [box for box in boxes if box in stored]
 
 
 READ_WORDS: Final = INSTRUCTION_READINGS["one line"]
