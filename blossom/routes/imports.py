@@ -2919,8 +2919,11 @@ async def later_press(
     instructions box the write is shown to hold exactly (``text_boxes`` of what it kept), the one
     with words after one more read, which answers instead if it finds the review ended or is
     refused; or, with the review ended or its read refused, the typing to copy, less those boxes,
-    redirecting past a refused read only when there's nothing to give back. A read saying the
-    review ended says the answers were kept before it did only when this write stored some."""
+    redirecting past a refused read only when there's nothing to give back. Past a refused read
+    the copies owed choose the page and never whether a box comes back (``unshown_page_for``): the
+    one saying the review can't be shown, or the one saying this attempt saved it, each box under
+    its card's name. A read saying the review ended says the answers were kept before it did only
+    when this write stored some."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         review = await state_of_review(state, found, post.corrections)
@@ -2963,7 +2966,8 @@ async def later_press(
         saved_exactly = text_boxes(kept)
         now = await review_state_now(state, found.draft_id)
         if now == "busy":
-            if await typing_by_press(request, saved_exactly=saved_exactly):
+            owed = await later_copies_owed(request, saved_exactly)
+            if unshown_page_for(owed, post.corrections):
                 return await unshown_with_typing(
                     request, state, found.draft_id, [], 200, saved_exactly=saved_exactly
                 )
@@ -3042,6 +3046,34 @@ def kept_for_later(
         for field, saved in fields.items():
             drawn[(key, field)] = "" if saved is None else saved
     return frozenset((key, field, text) for (key, field), text in drawn.items())
+
+
+async def later_copies_owed(
+    request: Request, saved_exactly: Collection[tuple[str, str, str]]
+) -> list[tuple[str, str, str]]:
+    """Each box a Save for later's post is owed a copy of once its write has committed, by key,
+    field and text as sent (``typed_as_sent``): every one apart from a class, title or
+    instructions box the write is shown to hold exactly (``saved_exactly``). With no form to
+    read, none."""
+    try:
+        form = await form_of(request)
+    except FormUnreadable:
+        return []
+    items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
+    return [box for box in typed_as_sent(items) if box not in saved_exactly]
+
+
+def unshown_page_for(owed: Iterable[tuple[str, str, str]], corrections: Corrections) -> bool:
+    """Whether a Save for later that committed and then found its review busy answers on the page
+    saying the review can't be shown, and not on the one saying this attempt saved it for later.
+    It does where a copy it owes is a date box's or carried words, a class, title or instructions
+    box sent with outer whitespace, or such a box the write stored a correction with text for. It
+    looks only at the copies owed, so a box the write holds exactly chooses no page, and it
+    chooses the page alone: every copy owed comes back on either."""
+    return any(
+        not words_box(field) or text != canonical(text) or bool(corrections.get(key, {}).get(field))
+        for key, field, text in owed
+    )
 
 
 async def later_with_words(
