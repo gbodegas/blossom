@@ -23712,14 +23712,18 @@ def in_reader_order(
     dates: Collection[str] = (),
     words: Sequence[str] = (),
     returned: Collection[tuple[str, str, str]] = (),
+    *,
+    spaces: bool = True,
 ) -> list[str]:
     """What a page with no form and no save evidence gives back, in the order its reader finds it:
-    each Class, Title and Instructions box ``owed`` names (less those ``returned``) and each date
-    box typed away from its reading with one of these ``dates``, in posted order; then each date
-    box sent exactly as read beside carried words with one of them, once; then the words carried.
-    A date box left as read with no carried words beside it isn't given
-    (``date_boxes_read_back``)."""
-    texts = {(key, field): text for key, field, text in owed(posted, returned=returned)}
+    each Class, Title and Instructions box ``owed`` names (less those ``returned``, and with
+    ``spaces`` off less a box of spaces only) and each date box typed away from its reading with
+    one of these ``dates``, in posted order; then each date box sent exactly as read beside carried
+    words with one of them, once; then the words carried. A date box left as read with no carried
+    words beside it isn't given (``date_boxes_read_back``)."""
+    texts = {
+        (key, field): text for key, field, text in owed(posted, returned=returned, spaces=spaces)
+    }
     typed, as_read = date_boxes_read_back(posted)
     out: list[str] = []
     for name, value in posted:
@@ -24564,19 +24568,20 @@ def test_save_with_no_rows_at_first_beside_its_receipt_says_the_save_and_what_it
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: bool
 ) -> None:
     """Save finds its receipt before those reads, so none is refused, and it gives back what its own
-    reader finds."""
+    reader finds: each text box that holds more than spaces, then the words carried."""
     with here(open_settings(tmp_path)) as browser:
         beside = a_press_beside_a_save(browser, monkeypatch, "save", words=words)
         reads = rows_back_past_its_next_read(monkeypatch, refusing_coded("SQLITE_IOERR"))
         answer = send(browser, beside.draft_id, beside.posted)
         monkeypatch.undo()
 
+    owed_here = in_reader_order(beside.posted, [], [WORDS_BESIDE] if words else [], spaces=False)
     assert reads.refused == []
     the_saved_heading(answer, "Saved: 1 new assignment. 1 still needs checking.")
     assert imports.REVIEW_NOT_SHOWN in page_text(answer)
-    assert copies_in_order(answer) == in_reader_order(
-        beside.posted, [], [WORDS_BESIDE] if words else []
-    )
+    assert "   " in in_reader_order(beside.posted)
+    assert "   " not in owed_here
+    assert copies_in_order(answer) == owed_here
     assert 'name="correct:' not in answer.text
 
 
