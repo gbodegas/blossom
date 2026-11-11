@@ -35500,6 +35500,27 @@ def test_an_instructions_question_on_a_refused_page_is_said_by_what_the_read_hol
 # ------------------------------------------ a date typed beside carried words on a set-aside row
 
 SET_3_DATE: Final = "Assigned date for Set 3 (screenshot 1, card 2)"
+SET_3_CLASS: Final = ("Class for Set 3 (screenshot 1, card 2)", "Math 8")
+SET_3_TITLE: Final = ("Title for Set 3 (screenshot 1, card 2)", "Set 3")
+SET_3_INSTRUCTIONS: Final = (
+    "Instructions for Set 3 (screenshot 1, card 2)",
+    "Complete pages 12 to 14.",
+)
+"""The second card's Class, Title and Instructions boxes as its page sends them, each labeled by
+that card."""
+
+
+def set_3_copies(in_place: Sequence[str] = (), after: Sequence[str] = ()) -> list[tuple[str, str]]:
+    """The copies for the second card when another page left its group unsaved, in page order: its
+    Class and Title boxes, the assigned date texts given in that box's posted place, its
+    Instructions box, then the assigned date texts given after every box."""
+    return [
+        SET_3_CLASS,
+        SET_3_TITLE,
+        *((SET_3_DATE, text) for text in in_place),
+        SET_3_INSTRUCTIONS,
+        *((SET_3_DATE, text) for text in after),
+    ]
 
 
 def a_date_beside_words_pressed(
@@ -35541,7 +35562,8 @@ def test_a_date_typed_as_read_on_a_row_another_page_left_unsaved_comes_back_in_p
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A store call for the carried words, then real presses: Save with the date as read typed and
-    the tick off, its row left unsaved by another page. The date comes back, not the words."""
+    the tick off, its row left unsaved by another page. The row's Class, Title and Instructions
+    boxes come back, then the date, not the words."""
     answer, reads, unchanged, _ = a_date_beside_words_pressed(
         tmp_path, monkeypatch, "save", READ_ASSIGNED, ticked=False
     )
@@ -35549,7 +35571,7 @@ def test_a_date_typed_as_read_on_a_row_another_page_left_unsaved_comes_back_in_p
     assert answer.status_code == 409
     assert recovery_of(answer).form
     assert (reads, unchanged) == (2, True)
-    assert copies_with_labels(answer) == [(SET_3_DATE, READ_ASSIGNED)]
+    assert copies_with_labels(answer) == set_3_copies(after=[READ_ASSIGNED])
 
 
 @pytest.mark.parametrize("typed", [READ_ASSIGNED, "2026-10-06"])
@@ -35557,7 +35579,9 @@ def test_a_date_typed_with_the_tick_on_a_row_another_page_left_unsaved_comes_bac
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, typed: str
 ) -> None:
     """A store call for the carried words, then real presses: Save with a date typed and the tick
-    on, its row left unsaved by another page. The date comes back, then the words."""
+    on, its row left unsaved by another page. The date comes back, then the words, among the
+    row's Class, Title and Instructions boxes: a date typed away from its reading in its box's
+    posted place, the date as read after the Instructions box."""
     answer, reads, unchanged, _ = a_date_beside_words_pressed(
         tmp_path, monkeypatch, "save", typed, ticked=True
     )
@@ -35565,23 +35589,29 @@ def test_a_date_typed_with_the_tick_on_a_row_another_page_left_unsaved_comes_bac
     assert answer.status_code == 409
     assert recovery_of(answer).form
     assert (reads, unchanged) == (2, True)
-    assert copies_with_labels(answer) == [(SET_3_DATE, typed), (SET_3_DATE, WORDS_BESIDE)]
+    both = [typed, WORDS_BESIDE]
+    as_read = typed == READ_ASSIGNED
+    assert copies_with_labels(answer) == set_3_copies(
+        in_place=[] if as_read else both, after=both if as_read else []
+    )
 
 
 DATE_BESIDE_WORDS_CONTROLS: Final = {
-    ("save", "2026-10-06", False, True): ["2026-10-06"],
-    ("save", "", False, True): [WORDS_BESIDE],
-    ("save", "", True, True): [WORDS_BESIDE],
-    ("save", READ_ASSIGNED, False, False): [WORDS_BESIDE],
-    ("keep", READ_ASSIGNED, False, True): [READ_ASSIGNED],
-    ("keep", READ_ASSIGNED, True, True): [READ_ASSIGNED, WORDS_BESIDE],
-    ("keep", "", False, True): [WORDS_BESIDE],
-    ("later", READ_ASSIGNED, False, True): [READ_ASSIGNED],
-    ("later", READ_ASSIGNED, True, True): [READ_ASSIGNED, WORDS_BESIDE],
-    ("later", "", False, True): [WORDS_BESIDE],
+    ("save", "2026-10-06", False, True): set_3_copies(["2026-10-06"]),
+    ("save", "", False, True): set_3_copies([WORDS_BESIDE]),
+    ("save", "", True, True): set_3_copies([WORDS_BESIDE]),
+    ("save", READ_ASSIGNED, False, False): [(SET_3_DATE, WORDS_BESIDE)],
+    ("keep", READ_ASSIGNED, False, True): set_3_copies(after=[READ_ASSIGNED]),
+    ("keep", READ_ASSIGNED, True, True): set_3_copies(after=[READ_ASSIGNED, WORDS_BESIDE]),
+    ("keep", "", False, True): set_3_copies(after=[WORDS_BESIDE]),
+    ("later", READ_ASSIGNED, False, True): set_3_copies(after=[READ_ASSIGNED]),
+    ("later", READ_ASSIGNED, True, True): set_3_copies(after=[READ_ASSIGNED, WORDS_BESIDE]),
+    ("later", "", False, True): set_3_copies(after=[WORDS_BESIDE]),
 }
 """Per press, date typed, tick and whether another page left the row unsaved (or kept it open):
-the texts that come back to copy, each labeled by the card."""
+the copies that come back, in page order, each labeled by the card. A row left unsaved gives its
+Class, Title and Instructions boxes with the assigned date texts; a row kept open gives the
+assigned date texts alone."""
 
 
 @pytest.mark.parametrize(("press", "typed", "ticked", "left"), list(DATE_BESIDE_WORDS_CONTROLS))
@@ -35601,8 +35631,7 @@ def test_a_date_box_beside_carried_words_comes_back_by_its_press_and_row(
 
     assert answer.status_code == 409
     assert (reads, unchanged) == (2, True)
-    copies = DATE_BESIDE_WORDS_CONTROLS[(press, typed, ticked, left)]
-    assert copies_with_labels(answer) == [(SET_3_DATE, text) for text in copies]
+    assert copies_with_labels(answer) == DATE_BESIDE_WORDS_CONTROLS[(press, typed, ticked, left)]
     assert drawn == (None if left else typed)
 
 
@@ -36309,10 +36338,20 @@ def test_a_no_date_tick_compared_alone_without_its_confirmation_read_as_posted_c
     assert alone == [True]
 
 
-WORDS_CARRIED_BESIDE_THE_TICK: Final = [
-    ("Assigned date for Sentence Composing (screenshot 1, card 2)", CARRIED)
+TEXT_ON_THE_TICKED_ROW: Final = [
+    ("Class for Sentence Composing (screenshot 1, card 2)", "English 8"),
+    ("Title for Sentence Composing (screenshot 1, card 2)", "Sentence Composing"),
+    ("Instructions for Sentence Composing (screenshot 1, card 2)", "Complete pages 12 to 14."),
 ]
-"""The one copy a press gives for words carried for the second card's assigned date."""
+"""The second card's Class, Title and Instructions boxes as its page sends them, in posted order,
+each labeled by that card."""
+WORDS_CARRIED_BESIDE_THE_TICK: Final = [
+    *TEXT_ON_THE_TICKED_ROW,
+    ("Assigned date for Sentence Composing (screenshot 1, card 2)", CARRIED),
+]
+"""The copies a press gives for the second card, its row left unsaved by another page, with words
+carried for its assigned date: the row's Class, Title and Instructions boxes, then the words
+once."""
 
 
 def with_words_carried(posted: Sequence[tuple[str, str]], none: str) -> list[tuple[str, str]]:
@@ -36327,7 +36366,8 @@ def test_a_no_date_tick_with_its_confirmation_read_as_posted_says_nothing_beside
 ) -> None:
     """Crafted post, its reach by supported presses not established: the post of a tick whose
     confirmation the rows' read holds as posted on a left row, plus a carried-words field for
-    that date. The words come back as one exact copy and nothing is said."""
+    that date. The row's Class, Title and Instructions boxes come back, then the words as one
+    exact copy, and nothing is said."""
     with here(open_settings(tmp_path)) as browser:
         found = a_no_date_tick_on_a_row_another_page_left(browser, monkeypatch)
         posted = page_post(found.page, press, tick=[found.first] if press == "save" else [])
@@ -36356,7 +36396,8 @@ def test_a_no_date_tick_without_all_its_evidence_is_said_once_beside_carried_wor
 ) -> None:
     """Crafted post, its reach by supported presses not established: the carried-words field
     where the confirmation isn't held, holds other text (a store call standing in for another
-    page), or matches beside another choice the form doesn't show. The same copy, the line once."""
+    page), or matches beside another choice the form doesn't show. The same copies, the line
+    once."""
     with here(open_settings(tmp_path)) as browser:
         found = a_no_date_tick_on_a_row_another_page_left(
             browser, monkeypatch, held=case != "not held"
