@@ -26404,7 +26404,9 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_receipt_s_page_can_t_rea
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, typed: bool
 ) -> None:
     """Timing forced: a later look finds its receipt, and the list it posted is now past the ceiling
-    when its page reads it, so that page has no rows. Its line goes with the counts."""
+    when its page reads it, so that page has no rows. Its line goes with the counts, as a note
+    outside the heading, with every Class, Title and Instructions box of the post to copy, and the
+    next load of the review says nothing of the press."""
     with here(open_settings(tmp_path)) as browser:
         review, page, _, _, field = back_on_a_page_saved_from(browser, monkeypatch)
         value = next(value for value, shown in options_of(page, field) if not shown)
@@ -26421,19 +26423,20 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_receipt_s_page_can_t_rea
         a_later_look_finds_its_receipt(
             "its first page read refused", "open", browser, monkeypatch, review.draft_id
         )
+        held = what_a_save_stores(monkeypatch)
         answer = send(browser, review.draft_id, posted)
         monkeypatch.undo()
-        shown = page_text(answer) if typed else followed(browser, answer)
+        shown = page_text(answer)
+        after = loaded(browser, review.draft_id)
 
+    assert answer.status_code == 200
     assert "Saved: 1 new assignment." in shown
     assert shown.count(KEPT_SHORT) == 1
-    if typed:
-        assert f'<p class="note">{KEPT_SHORT}</p>' in answer.text
-        assert KEPT_SHORT not in the_outcome_heading(answer)
-    else:
-        assert "Saved: 1 new assignment." in the_saved_panel(shown)
-        assert KEPT_SHORT not in the_saved_panel(shown)
-        assert KEPT_SHORT in the_status_block(shown)
+    assert f'<p class="note">{KEPT_SHORT}</p>' in answer.text
+    assert KEPT_SHORT not in the_outcome_heading(answer)
+    assert copied(answer) == owed_texts(posted)
+    leaves_out_only_what_the_save_stored(posted, copied(answer), held)
+    assert KEPT_SHORT not in html.unescape(after)
 
 
 @pytest.mark.parametrize("typed", [True, False], ids=["a title typed", "nothing typed"])
