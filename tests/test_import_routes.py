@@ -9457,7 +9457,8 @@ def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_t
 ) -> None:
     """A save that committed one group with a title typed for the other: on a review that stays
     readable it says the changes on the rows below aren't saved yet; on a review found ended at
-    the page's read, that line is left out, while the counts and the typed title stay."""
+    the page's read, that line is left out, while the counts stay and the open row's Class box
+    and typed title come back to copy."""
     answers: dict[str, Answer] = {}
     for mode in ("live", "ended"):
         with here(open_settings(tmp_path / mode)) as browser:
@@ -9473,6 +9474,7 @@ def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_t
                 puts.append(
                     restored(drafts, "snapshot", failing_read(drafts.snapshot, 3, DraftExpired))
                 )
+            stored = what_a_save_stores(monkeypatch)
             answers[mode] = send(browser, draft_id, posted)
             for undo in puts:
                 undo()
@@ -9485,7 +9487,9 @@ def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_t
     assert says(live, counts)
     assert says(ended, counts)
     assert says(ended, imports.SAID["expired"])
-    assert TYPED_BACK.findall(ended) == ["Chains Guide Six"]
+    back = ["Science 8", "Chains Guide Six"]
+    assert TYPED_BACK.findall(ended) == back
+    leaves_out_only_what_the_save_stored(posted, back, stored)
 
 
 BUSY_SAVE_CASES: Final = ("a group changed", "typing left open", "close unconfirmed", "resent")
@@ -13246,16 +13250,18 @@ def test_a_review_closed_with_a_couldn_t_read_item_open_keeps_the_saved_result(
             return await real_rows(*args, **kwargs)
 
         monkeypatch.setattr(imports, "rows_of", closed_first)
-        pressed = send(
-            browser, draft_id, page_post(page, "save", tick=[first_unit], typed={title: typed})
-        )
+        posted = page_post(page, "save", tick=[first_unit], typed={title: typed})
+        stored = what_a_save_stores(monkeypatch)
+        pressed = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     shown = OUTCOME.search(pressed.text)
     assert pressed.status_code == 200
     assert shown is not None
     assert lines_in(PROBLEM_BLOCK.search(shown.group(1))) == [imports.REVIEW_NOT_SHOWN]
-    assert TYPED_BACK.findall(pressed.text) == [typed]
+    back = ["Science 8", typed]
+    assert TYPED_BACK.findall(pressed.text) == back
+    leaves_out_only_what_the_save_stored(posted, back, stored)
     assert BACK_TO_REVIEW.format(draft_id) in pressed.text
     assert not says(pressed.text, imports.PRESS_SAID["unsaved_typing"])
 
@@ -14020,6 +14026,7 @@ def test_a_changed_row_on_a_review_closed_before_its_rows_says_nothing_of_checki
         posted = page_post(
             page, "save", tick=[first_unit, open_unit], typed={other: TYPED_ON_THE_OTHER}
         )
+        stored = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
@@ -14027,7 +14034,9 @@ def test_a_changed_row_on_a_review_closed_before_its_rows_says_nothing_of_checki
     assert "Check it" not in said
     assert "Saved: 1 new assignment." in said
     assert imports.REVIEW_NOT_SHOWN in said
-    assert TYPED_BACK.findall(answer.text) == [TYPED_ON_THE_OTHER]
+    back = ["Science 8", TYPED_ON_THE_OTHER]
+    assert TYPED_BACK.findall(answer.text) == back
+    leaves_out_only_what_the_save_stored(posted, back, stored)
     assert BACK_TO_REVIEW.format(draft_id) in answer.text
 
 
@@ -14128,7 +14137,8 @@ def test_the_line_about_the_rows_below_depends_on_the_rows_shown(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, what: str
 ) -> None:
     """A title typed on an open row. If another tab sets that row aside before the rows are read,
-    it isn't below, so the line isn't said and the title comes back. Shown, the line stays."""
+    it isn't below, so the line isn't said and the row's Class box and typed title come back.
+    Shown, the line stays."""
     answer = homework_answer(
         cards=[
             homework_card(),
@@ -14169,11 +14179,14 @@ def test_the_line_about_the_rows_below_depends_on_the_rows_shown(
             return await real_rows(*args, **kwargs)
 
         monkeypatch.setattr(imports, "rows_of", aside)
+        stored = what_a_save_stores(monkeypatch)
         pressed = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert says(pressed.text, imports.PRESS_SAID["unsaved_typing"]) == (what == "shown")
-    assert TYPED_BACK.findall(pressed.text) == (["Typed On B"] if what == "set aside" else [])
+    back = ["Science 8", "Typed On B"] if what == "set aside" else []
+    assert TYPED_BACK.findall(pressed.text) == back
+    leaves_out_only_what_the_save_stored(posted, back, stored, boxes_returned(pressed))
 
 
 def test_the_line_about_the_rows_below_keeps_its_place_among_the_press_s_lines(
@@ -37290,11 +37303,12 @@ def leaves_out_only_what_the_save_stored(
     posted: Sequence[tuple[str, str]],
     back: Collection[str],
     stored: Collection[tuple[str, str, str]],
+    returned: Collection[tuple[str, str, str]] = (),
 ) -> None:
     """Beside a pinned list of copies: a non-empty Class, Title or Instructions box of the post
-    has its text missing from ``back`` exactly where the request's save stored that row, that
-    field and that text."""
-    boxes = owed(posted)
+    that the answer's form does not return (``returned``) has its text missing from ``back``
+    exactly where the request's save stored that row, that field and that text."""
+    boxes = owed(posted, returned=returned)
     assert [box for box in boxes if box[2] not in back] == [box for box in boxes if box in stored]
 
 
