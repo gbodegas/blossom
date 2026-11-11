@@ -14292,6 +14292,15 @@ def test_the_line_about_the_rows_below_keeps_its_place_among_the_press_s_lines(
 STRAY_TITLE: Final = "  Typed  Words "
 TYPED_LINES: Final = "Line one.\r\nLine  two. "
 AS_GIVEN_BACK: Final = {STRAY_TITLE, "Line one.\nLine  two. "}
+EVERY_BOX_OF_BOTH_ROWS: Final = {
+    *AS_GIVEN_BACK,
+    "English 8",
+    "Sentence Composing",
+    "Complete pages 12 to 14.",
+    "Math 8",
+}
+"""Every Class, Title and Instructions box of a post of ``two_rows`` with ``typed_on`` its second
+row, as a page gives them to copy."""
 NEVER_WITHOUT_EVIDENCE: Final = (
     "Saved:",
     "wasn't saved",
@@ -15150,8 +15159,9 @@ def test_the_resend_of_a_save_that_committed_can_t_tell_until_the_transaction_en
 def test_a_confirmed_save_keeps_its_counts_though_a_transaction_opens_after_it_is_confirmed(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The acceptance read as settled, so those rows are committed: the counts stay, with the
-    typing, and the rows it can't now make are said not to be shown."""
+    """The acceptance read as settled, so those rows are committed: the counts stay, with every
+    Class, Title and Instructions box of the post to copy, and the rows it can't now make are said
+    not to be shown. The Save sent again stores none of those boxes itself."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, other = two_rows(browser, monkeypatch)
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
@@ -15165,13 +15175,16 @@ def test_a_confirmed_save_keeps_its_counts_though_a_transaction_opens_after_it_i
             return done
 
         monkeypatch.setattr(record, "homework_acceptance", reading)
+        held = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
 
     assert "Saved: 1 new assignment." in page_text(answer)
     assert UNKNOWN_HOMEWORK not in page_text(answer)
-    assert copied(answer) == AS_GIVEN_BACK
+    assert owed_texts(posted) == EVERY_BOX_OF_BOTH_ROWS
+    assert copied(answer) == EVERY_BOX_OF_BOTH_ROWS
+    leaves_out_only_what_the_save_stored(posted, EVERY_BOX_OF_BOTH_ROWS, held)
 
 
 # --------------------------------------------------------- no rows from an unsettled connection
@@ -22240,6 +22253,19 @@ def test_a_review_finished_at_the_write_with_no_save_of_this_page_says_it_s_clos
 
 WHITESPACE_SENT: Final = [("title", "Set 3 "), ("instruction:0", "   ")]
 """A stray space on an unchanged value, and whitespace alone."""
+EVERY_BOX_BESIDE_WHITESPACE_SENT: Final = {
+    "title": {"English 8", "Sentence Composing", "Math 8", "Set 3 ", "Complete pages 12 to 14."},
+    "instruction:0": {
+        "English 8",
+        "Sentence Composing",
+        "Math 8",
+        "Set 3",
+        "Complete pages 12 to 14.",
+        "   ",
+    },
+}
+"""Every Class, Title and Instructions box of a post of ``a_saved_row`` that sends one of
+``WHITESPACE_SENT`` on its second row, by the field it is sent in, each text as sent."""
 
 
 @pytest.mark.parametrize(("field", "sent"), WHITESPACE_SENT)
@@ -22517,7 +22543,9 @@ def test_an_earlier_save_with_unreadable_counts_on_a_second_read_finding_the_rev
         monkeypatch.undo()
 
     assert imports.COUNTS_UNSHOWN in page_text(answer)
-    assert copied(answer) == {sent}
+    assert sent in EVERY_BOX_BESIDE_WHITESPACE_SENT[field]
+    assert owed_texts(posted) == EVERY_BOX_BESIDE_WHITESPACE_SENT[field]
+    assert copied(answer) == EVERY_BOX_BESIDE_WHITESPACE_SENT[field]
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
@@ -37005,17 +37033,20 @@ def test_a_first_state_lacking_a_row_stays_the_reading_in_hand(
 ) -> None:
     """A state handed back by the test on a crafted post, its reach by supported presses not
     established: the post reader's first read handed back with no rows, or without the second row,
-    then the full state. What the first lacks isn't filled: each box of a row it lacks is back."""
+    then the full state. Every non-empty Class, Title and Instructions box comes back as sent,
+    under plain labels, at 200; the Save sent again stores none of them itself."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, key, typed = a_padded_instruction_posted(browser, monkeypatch, post)
         posted = an_earlier_save_sent_again(browser, draft_id, page, typed)
         fields = [(name, "0" if name == "version" else value) for name, value in posted]
         own_reads_of_the_post_reader(monkeypatch, own_reads_forced(first, key))
+        held = what_a_save_stores(monkeypatch)
         answer, reads, _ = pressed_with_its_reads(browser, monkeypatch, draft_id, fields)
 
     every = each_box_holding_text(post)
     assert answer.status_code == 200, answer.headers.get("location")
-    assert copies_with_labels(answer) == (every if first == "no rows" else [*every[2:4], every[5]])
+    assert copies_with_labels(answer) == every
+    leaves_out_only_what_the_save_stored(fields, [text for _, text in every], held)
     assert reads == (2, 2)
 
 
