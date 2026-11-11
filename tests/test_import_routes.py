@@ -26867,6 +26867,25 @@ def says_its_line_once_as_a_note(answer: Answer, line: str) -> None:
     assert f'<p class="note">{escape(line)}</p>' in answer.text
 
 
+EVERY_TEXT_BOX_BESIDE_THAT_SAVE: Final = [
+    "English 8",
+    "Sentence Composing",
+    "Math 8",
+    "Set 3",
+    "Art 8",
+    "Sketch",
+    "Music 8",
+    "This Tab ",
+    "Complete pages 15 to 16.",
+    "Complete pages 12 to 14.",
+    "Complete pages 12 to 14.",
+    "Complete pages 12 to 14.",
+]
+"""The non-empty Class, Title and Instructions boxes, in posted order, of the post that
+``a_press_with_a_line_finding_an_earlier_save`` builds: the title typed, the rest as the page read
+them."""
+
+
 @pytest.mark.parametrize("write", THE_WRITES_LEAVING_A_LINE)
 @pytest.mark.parametrize("press", ["keep", "later", "save"])
 def test_a_press_s_line_goes_beneath_an_earlier_save_s_counts_it_can_t_show(
@@ -26875,7 +26894,8 @@ def test_a_press_s_line_goes_beneath_an_earlier_save_s_counts_it_can_t_show(
     """Timing forced: past this write a look finds the earlier save, its counts are empty, the
     review reads open and the post can't be read. Both sentences stand, and the press's own line
     goes beneath the counts-unavailable answer, outside it and outside the alert, whether its page
-    would draw rows or not."""
+    would draw rows or not. Every Class, Title and Instructions box of the post comes back to copy,
+    and no save of this press stored one."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, line = a_press_with_a_line_finding_an_earlier_save(
             browser, monkeypatch, press, write
@@ -26888,13 +26908,16 @@ def test_a_press_s_line_goes_beneath_an_earlier_save_s_counts_it_can_t_show(
         counts = calls_to(monkeypatch, record, "homework_counts")
         looks = calls_to(monkeypatch, record, "homework_acceptance")
         posts = reads_of_the_post(monkeypatch)
+        held = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert not asked
     assert len(read) == (2 if press == "save" else 3)
     assert (len(counts), len(looks), len(posts)) == (1, 2 if press == "save" else 1, 2)
-    says_the_counts_and_the_review_unshown(answer, draft_id, ["This Tab "])
+    assert [text for _, _, text in owed(posted)] == EVERY_TEXT_BOX_BESIDE_THAT_SAVE
+    says_the_counts_and_the_review_unshown(answer, draft_id, EVERY_TEXT_BOX_BESIDE_THAT_SAVE)
+    leaves_out_only_what_the_save_stored(posted, EVERY_TEXT_BOX_BESIDE_THAT_SAVE, held)
     says_its_line_once_as_a_note(answer, line)
     assert imports.NO_HOMEWORK not in page_text(answer)
 
@@ -26906,7 +26929,8 @@ def test_a_save_that_saw_a_close_beside_empty_counts_says_only_that_it_can_t_tel
     """Timing forced: past this write its first page read says the review closed, a look finds the
     earlier save, its counts are empty, its page's own read finds the review open and the post can't
     be read. A close beside empty counts stops it saying it kept answers, as the close removed them.
-    It doesn't stop it saying it can't tell."""
+    It doesn't stop it saying it can't tell. Every Class, Title and Instructions box of the post
+    comes back to copy, and no save of this press stored one."""
     with here(open_settings(tmp_path)) as browser:
         armed = a_read_says_once(browser, monkeypatch, closed_at=READ_CLOSED)
 
@@ -26931,11 +26955,14 @@ def test_a_save_that_saw_a_close_beside_empty_counts_says_only_that_it_can_t_tel
             a_receipt_unseen_at_first(browser, monkeypatch)
         counts_unreadable(browser, monkeypatch, "empty")
         no_post_to_read_after_the_first(monkeypatch, sqlite3.OperationalError("refused"))
+        held = what_a_save_stores(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert not armed
-    says_the_counts_and_the_review_unshown(answer, draft_id, ["This Tab "])
+    assert [text for _, _, text in owed(posted)] == EVERY_TEXT_BOX_BESIDE_THAT_SAVE
+    says_the_counts_and_the_review_unshown(answer, draft_id, EVERY_TEXT_BOX_BESIDE_THAT_SAVE)
+    leaves_out_only_what_the_save_stored(posted, EVERY_TEXT_BOX_BESIDE_THAT_SAVE, held)
     if stored:
         says_nothing_of_kept_answers(answer)
     else:
