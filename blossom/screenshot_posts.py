@@ -614,17 +614,20 @@ def typed_for(
     """Each box a post sent that is given back, by the row or piece it names, its field and its
     text, in the order it was posted. A class, title or instructions box comes back whenever it
     holds text, whatever the ``read:`` field beside it says, and each distinct text posted under
-    one box name comes back once. A date box comes back when its text differs from its value with
-    no correction as the ``read:`` field beside it names it, or posted empty, as the date Blossom
-    couldn't read that was carried beside it. Read from the post alone, never from the review, to
-    give back as typed when the review can't take it; a name that doesn't name a correction is
-    passed over. With ``exact``, whitespace counts: a date box is passed over only when it is
-    exactly its value with no correction, and whitespace-only text comes back, as
-    ``typed_as_sent`` reads them."""
+    one box name comes back once. Words carried under the name of such a box that holds text come
+    back after every box, once, unless the first text posted for it that isn't its value as the
+    ``read:`` field names it holds more than spaces. A date box comes back when its text differs
+    from its value with no correction as the ``read:`` field beside it names it, or posted empty,
+    as the date Blossom couldn't read that was carried beside it. Read from the post alone, never
+    from the review, to give back as typed when the review can't take it; a name that doesn't
+    name a correction is passed over. With ``exact``, whitespace counts: a date box is passed
+    over only when it is exactly its value with no correction, and whitespace-only text comes
+    back, as ``typed_as_sent`` reads them."""
     typed: list[tuple[str, str, str]] = []
     first: dict[tuple[str, str], int] = {}
     filled: set[tuple[str, str]] = set()
     seen: set[tuple[str, str, str]] = set()
+    typed_over: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
     unchanged = {
         name.removeprefix(READ_PREFIX): value
@@ -647,6 +650,8 @@ def typed_for(
             carried.setdefault((key, field), text)
             continue
         if words_box(field):
+            if unchanged.get(named) != read_digest(text) or (exact and text != canonical(text)):
+                typed_over.setdefault((key, field), text)
             if (key, field, text) in seen:
                 continue
             seen.add((key, field, text))
@@ -660,6 +665,12 @@ def typed_for(
         typed.append((key, field, text))
     for subject, text in carried.items():
         if subject in filled:
+            if (
+                words_box(subject[1])
+                and not typed_over.get(subject, "").strip()
+                and (*subject, text) not in seen
+            ):
+                typed.append((*subject, text))
             continue
         if subject in first:
             typed[first[subject]] = (*subject, text)

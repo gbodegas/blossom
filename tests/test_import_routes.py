@@ -37966,6 +37966,27 @@ SAVE_ANSWERED_WITHOUT_ITS_ROWS: Final = (
     "its review read refused",
     "its review read busy",
 )
+@pytest.mark.parametrize("press", THE_PRESSES)
+def test_a_crafted_refused_name_on_a_title_box_gives_its_words_back_past_a_refused_first_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """A crafted post at forced timing: words posted under the name a date box carries words by,
+    named for a Title box left as read, and the press's first read of the review is refused. The
+    words come back by their own rule, after every non-empty Class, Title and Instructions box
+    as sent."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, first, other = two_rows(browser, monkeypatch)
+        posted = page_post(page, press, tick=[first] if press == "save" else [])
+        named = json.dumps([other, "title"], separators=(",", ":"))
+        posted = [*posted, (f"refused:{named}", "Carried Words")]
+        Refusing(monkeypatch, ("review_press", "snapshot", 1, refusing_coded("SQLITE_BUSY")))
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert answer.status_code == 503
+    assert copies_in_order(answer) == [*(text for _, _, text in owed(posted)), "Carried Words"]
+
+
 
 
 @pytest.mark.parametrize("how", SAVE_ANSWERED_WITHOUT_ITS_ROWS)
