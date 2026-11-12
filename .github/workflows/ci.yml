@@ -76,9 +76,10 @@ jobs:
         run: uv run ruff format --check .
       - name: Mypy
         run: uv run mypy blossom tests
-      # Every test case's name, collected in one process and kept beside the
-      # results, so what ran can be compared with what should have. On an
-      # error the listing is printed, since it holds the error's text.
+      # Every test case's name, collected in one process before the workers
+      # start. The step after the tests counts against this list, and it is
+      # kept with the results. On an error the listing is printed, since it
+      # holds the error's text.
       - name: Collect test cases
         run: |
           mkdir -p test-results
@@ -94,14 +95,26 @@ jobs:
         run: >-
           uv run pytest -n 4 --dist loadfile --max-worker-restart=0
           --durations=50 --junitxml=test-results/junit.xml
+      # pytest's own result is not enough here. A worker lost while the cases
+      # are still being collected ends the run with nothing run and no error.
+      # So the cases in the results are counted against the cases collected
+      # above, and any difference fails the job.
+      - name: Every collected case ran
+        run: |
+          collected=$(grep -c '^tests/.*::' test-results/collected.txt)
+          ran=$(grep -o '<testcase ' test-results/junit.xml | wc -l)
+          echo "collected $collected, ran $ran"
+          test "$collected" -gt 0
+          test "$collected" -eq "$ran"
       # A record, not a check: every case's outcome and time, kept for two
-      # weeks. It runs after a failure too and cannot turn one into a pass; a
-      # failed upload shows on the run without changing its result.
+      # weeks, one for each attempt when a run is started again. It runs after
+      # a failure too and cannot turn one into a pass; a failed upload shows
+      # on the run without changing its result.
       - name: Keep test results
         if: ${{ !cancelled() }}
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-results
+          name: test-results-attempt-${{ github.run_attempt }}
           path: test-results/
           retention-days: 14
