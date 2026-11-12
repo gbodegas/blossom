@@ -36,6 +36,7 @@ from typing import Final, Literal
 from urllib.parse import urlencode
 
 import pytest
+from anyio.from_thread import BlockingPortal
 from fastapi.testclient import TestClient
 from markupsafe import escape
 from starlette.requests import Request
@@ -935,7 +936,7 @@ def streamed(
         await client.app(scope, receive, send)
         return Streamed(status, answer.decode("utf-8"), said, pulled)
 
-    portal = client.portal
+    portal: BlockingPortal | None = client.portal
     assert portal is not None
     return portal.call(run)
 
@@ -1736,7 +1737,7 @@ def paced(
         reading_began = answered >= 0.0
         return Paced(status, answer.decode("utf-8"), said, answered, waiting, gone, reading_began)
 
-    portal = client.portal
+    portal: BlockingPortal | None = client.portal
     assert portal is not None
     return portal.call(run)
 
@@ -1929,7 +1930,7 @@ def within_the_guard[T](client: TestClient, run: Callable[[], Awaitable[T]]) -> 
     """Run a press on the client's own loop and wait for it from this thread, for
     ``ORDERED_GUARD`` at most. The wait is this thread's and cancels nothing. A press still
     going at its end fails the test, and is canceled first so the client can close."""
-    portal = client.portal
+    portal: BlockingPortal | None = client.portal
     assert portal is not None
     pressing = portal.start_task_soon(run)
     done, _ = wait([pressing], timeout=ORDERED_GUARD)
