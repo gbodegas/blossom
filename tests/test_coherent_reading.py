@@ -328,7 +328,7 @@ def test_a_reading_inside_a_callers_transaction_neither_commits_nor_rolls_it_bac
     store = store_of(path, 3)
     connection = store._connection
 
-    with store.exclusively():
+    with store.comparing_and_writing():
         connection.execute("UPDATE assignments SET title = 'pending'")
         assert connection.in_transaction
 

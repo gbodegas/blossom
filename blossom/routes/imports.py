@@ -93,7 +93,11 @@ from blossom.screenshot_save import (
 )
 from blossom.screenshots import homework_assembly
 from blossom.stores.drafts import StoreBusy, WriterBusy
-from blossom.stores.homework_saves import DraftForSave, TransactionLeftOpen
+from blossom.stores.homework_saves import (
+    LEFT_OPEN_ON_THE_RECORD,
+    DraftForSave,
+    TransactionLeftOpen,
+)
 from blossom.stores.import_drafts import (
     DRAFT_LIFETIME,
     MOST_IMAGES_PRESENT,
@@ -468,19 +472,20 @@ def busy_refusal(error: Exception) -> bool:
 def noted(error: Exception) -> None:
     """A failure of the household's file that isn't a busy refusal, in the log by its kind
     alone, never its words, so a failure a page answers is still on record. A busy refusal isn't
-    logged, as the busy pages never were. A transaction left open on the record's connection is
-    its own diagnosis, at error level, since nothing here repairs it."""
+    logged, as the busy pages never were. A transaction left open is its own diagnosis, at
+    error level, and the store that refused it has logged it where it raised, once, so nothing
+    is added here."""
     if isinstance(error, TransactionLeftOpen):
-        logger.error("A transaction was found left open on the record's connection")
-    elif isinstance(error, sqlite3.Error) and not busy_file(error):
+        return
+    if isinstance(error, sqlite3.Error) and not busy_file(error):
         logger.warning("an import page's store call failed: %s", type(error).__name__)
 
 
 def acceptance_unread(error: sqlite3.Error) -> None:
     """Why a Save press couldn't ask whether it has saved. The page is the same for a store that
-    refused the read and for a transaction left open, and the log tells them apart, by kind."""
+    refused the read and for a transaction left open, and the log tells them apart, by kind: the
+    store has logged a transaction left open where it raised."""
     if isinstance(error, TransactionLeftOpen):
-        noted(error)
         return
     what = "busy" if busy_file(error) else type(error).__name__
     logger.warning("A Save press's acceptance couldn't be read: %s", what)
@@ -3186,8 +3191,7 @@ async def save_press(
         )
     try:
         named = await image_names(request, state, found)
-    except TransactionLeftOpen as error:
-        noted(error)
+    except TransactionLeftOpen:
         return await unknown_outcome(request, state, kept_said)
     except sqlite3.Error as error:
         noted(error)
@@ -3231,7 +3235,8 @@ async def save_press(
         logger.warning("A screenshot save failed: %s", type(error).__name__)
         outcome = NotSaved("failed")
     if isinstance(outcome, NotSaved) and await left_open(state):
-        noted(TransactionLeftOpen())
+        # Found here by asking, with no refusal of the store's behind it, so this is its one line.
+        logger.error(LEFT_OPEN_ON_THE_RECORD)
         return await unknown_outcome(request, state, kept_said)
     return await outcome_page(request, state, draft_id, outcome, answered, post, own_write=kept)
 

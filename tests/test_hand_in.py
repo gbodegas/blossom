@@ -673,13 +673,13 @@ def test_making_the_tables_inside_a_callers_transaction_leaves_its_end_to_the_ca
     store._connection.execute("DROP TABLE hand_in_events")
     store._connection.commit()
 
-    store._connection.execute("BEGIN")
-    store._connection.execute("UPDATE assignments SET title = 'pending'")
-    store._create_tables()
+    with store.comparing_and_writing():
+        store._connection.execute("UPDATE assignments SET title = 'pending'")
+        store._create_tables()
 
-    assert store._connection.in_transaction
-    assert "hand_in_events" not in schema_of(path)
-    store._connection.rollback()
+        assert store._connection.in_transaction
+        assert "hand_in_events" not in schema_of(path)
+        store._connection.rollback()
     assert "hand_in_events" not in schema_of(path)
     assert "pending" not in {item.title for item in store.all_assignments()}
 

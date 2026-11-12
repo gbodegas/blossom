@@ -770,13 +770,14 @@ def test_a_replay_checks_access_and_ownership_first(tmp_path: pathlib.Path) -> N
         store.delete_class_term(class_id, "T1", revision=preview.revision, role="student")  # type: ignore[arg-type]
     store._connection.set_trace_callback(None)
     assert isinstance(deleted(store, class_id, preview.revision), ClassTermDeleted)
-    store._connection.execute(
-        "UPDATE grade_scope_revisions SET student_id = 'someone else' WHERE class_id = ? "
-        "AND term_label = 'T1'",
-        (class_id,),
-    )
-    elsewhere = deleted(store, class_id, preview.revision)
-    store._connection.rollback()
+    with store.comparing_and_writing():
+        store._connection.execute(
+            "UPDATE grade_scope_revisions SET student_id = 'someone else' WHERE class_id = ? "
+            "AND term_label = 'T1'",
+            (class_id,),
+        )
+        elsewhere = deleted(store, class_id, preview.revision)
+        store._connection.rollback()
     store.close()
 
     assert ran == []
