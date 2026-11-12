@@ -78,11 +78,17 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from blossom.captures import capture_id_from
 from blossom.clock import Clock
 from blossom.stores.gradebook import HER_NAME_RECORD, RESULT_ID, RESULT_SCOPE
+from blossom.stores.homework_saves import TransactionLeftOpen
 from blossom.stores.paths import refuse_unsafe_path
 from blossom.stores.project_state import HeldText, normalize_note
 from blossom.unreadable import refusal_in_names, text_or_refusal
 
 logger = logging.getLogger(__name__)
+
+LEFT_OPEN: Final = "A transaction was found left open on the help requests connection"
+"""The one line a writer that enters the connection's context logs, at error level, when it
+finds a transaction already open there. It then raises ``TransactionLeftOpen``, having written
+nothing and ended nothing."""
 
 HELP_RETENTION_DAYS: Final = 14
 """How long a resolved request is kept: long enough for a parent's updates to be read."""
@@ -692,14 +698,20 @@ class HelpRequestsStore:
         row that can't be read as a request is ``UnreadableHelpRequest``, and
         stays as it is.
         """
-        with self._lock, self._connection:
-            row = self._held_row(RETAINED_ONE, (request_id, self._cutoff()))
-            if row is None:
-                return False
-            current = request_from(row)
-            if current.state != "requested":
-                raise RequestClosed(current, "taken back")
-            self._connection.execute("DELETE FROM help_requests WHERE request_id=?", (request_id,))
+        with self._lock:
+            if self._connection.in_transaction:
+                logger.error(LEFT_OPEN)
+                raise TransactionLeftOpen
+            with self._connection:
+                row = self._held_row(RETAINED_ONE, (request_id, self._cutoff()))
+                if row is None:
+                    return False
+                current = request_from(row)
+                if current.state != "requested":
+                    raise RequestClosed(current, "taken back")
+                self._connection.execute(
+                    "DELETE FROM help_requests WHERE request_id=?", (request_id,)
+                )
         return True
 
     def accept(
@@ -868,11 +880,15 @@ class HelpRequestsStore:
 
     def sweep(self) -> int:
         """Delete every resolved request past retention; return how many went."""
-        with self._lock, self._connection:
-            removed = self._connection.execute(
-                "DELETE FROM help_requests WHERE state='resolved' AND resolved_at < ?",
-                (self._cutoff(),),
-            ).rowcount
+        with self._lock:
+            if self._connection.in_transaction:
+                logger.error(LEFT_OPEN)
+                raise TransactionLeftOpen
+            with self._connection:
+                removed = self._connection.execute(
+                    "DELETE FROM help_requests WHERE state='resolved' AND resolved_at < ?",
+                    (self._cutoff(),),
+                ).rowcount
         return int(removed)
 
     def _read(self, request_id: str, now: datetime | None = None) -> HelpRequest:

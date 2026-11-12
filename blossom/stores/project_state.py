@@ -109,7 +109,11 @@ from blossom.stores.captures import (
 )
 from blossom.stores.catch_up import CatchUpRecords
 from blossom.stores.gradebook import GradebookRecords
-from blossom.stores.homework_saves import HomeworkSaveRecords
+from blossom.stores.homework_saves import (
+    LEFT_OPEN_ON_THE_RECORD,
+    HomeworkSaveRecords,
+    TransactionLeftOpen,
+)
 from blossom.stores.intake_decisions import IntakeDecisionRecords
 from blossom.stores.paths import refuse_unsafe_path
 from blossom.stores.school_instructions import (
@@ -754,6 +758,11 @@ class ProjectStateStore(
         # Re-entrant, so a caller holding the store through ``exclusively``
         # can read and write through the same methods everyone else uses.
         self._lock = threading.RLock()
+        # How many of the store's own scopes are open on the connection now: each write scope
+        # and read block, nested ones too, a first start's transaction, and the connection's
+        # context of each direct writer. Read and changed only with the lock held. A
+        # transaction open while this is zero is one no scope owns.
+        self._scopes = 0
         self.path: Path | None = None
         """The file, when the store was opened on one; a connection handed in has none."""
         self.created = False
@@ -1070,16 +1079,22 @@ class ProjectStateStore(
                 # their own, before the seed, and a file with tables is judged
                 # to be the household's.
                 connection.execute("BEGIN")
-                store._create_tables()
-                if seed is not None:
-                    given = seed()
-                    store._upsert_assignments_locked(given.assignments, initial=True)
-                    for assignment_id, records in given.claims.items():
-                        store._record_claims_locked(assignment_id, records)
-                    for report in given.student_reports:
-                        store._append_student_report_locked(report)
-                if notes is not None:
-                    notes(store)
+                # Counted as the store's own while its context is open, so the write
+                # scopes inside join it.
+                store._scopes += 1
+                try:
+                    store._create_tables()
+                    if seed is not None:
+                        given = seed()
+                        store._upsert_assignments_locked(given.assignments, initial=True)
+                        for assignment_id, records in given.claims.items():
+                            store._record_claims_locked(assignment_id, records)
+                        for report in given.student_reports:
+                            store._append_student_report_locked(report)
+                    if notes is not None:
+                        notes(store)
+                finally:
+                    store._scopes -= 1
         except BaseException:
             store.discard_if_new()
             raise
@@ -1115,6 +1130,33 @@ class ProjectStateStore(
         from it."""
         return self._connection.in_transaction
 
+    def _refuse_unowned(self) -> None:
+        """Refuse, inside a held lock, when a transaction is open on the connection and no scope
+        of the store is: ``TransactionLeftOpen``, logged here once by its fixed sentence. Every
+        transaction of the store begins and ends under one hold of the lock, and one that scopes
+        can join is counted while it is open, so this one is no caller's now, and joining it or
+        ending it would decide writes that are nobody's to decide. Nothing is written and nothing
+        is ended. A transaction open inside one of the store's scopes is that scope's, and
+        passes."""
+        if self._connection.in_transaction and self._scopes == 0:
+            logger.error(LEFT_OPEN_ON_THE_RECORD)
+            raise TransactionLeftOpen
+
+    @contextmanager
+    def _counted(self) -> Iterator[None]:
+        """Count the block as one of the store's own scopes, inside a held lock, and give the
+        count back however the block ends. A direct writer puts the connection's own context
+        inside it, so a transaction open on the connection while that context lasts, its
+        commit or rollback included, is the store's, and a scope entered then joins it. The
+        context opens no transaction itself: one begins at the writer's first statement, and
+        a scope entered before that begins and ends its own. Counting is all this does: it
+        begins nothing and ends nothing."""
+        self._scopes += 1
+        try:
+            yield
+        finally:
+            self._scopes -= 1
+
     @contextmanager
     def reading(self) -> Iterator[None]:
         """Hold the store and read one snapshot of the file, however many reads it takes.
@@ -1129,20 +1171,35 @@ class ProjectStateStore(
         here is ended here, committed when the block succeeds and rolled back
         when it fails. Inside a caller's own transaction the block joins it and
         ends nothing, since committing or rolling back there would decide the
-        caller's writes for it. Keep the block to the reads themselves and
+        caller's writes for it. A transaction open that no scope of the store
+        owns is refused before anything is read, ``TransactionLeftOpen``, and
+        is neither joined nor ended. Keep the block to the reads themselves and
         finish before rendering, a model call, or another store: a writer
         elsewhere waits for as long as this is held.
+
+        The block counts as one of the store's open scopes from its begin, or
+        from joining, until it ends. The count is given back before the commit,
+        so a commit the file refuses leaves a transaction no scope owns, and
+        the next write or read block refuses it.
         """
         with self._lock:
+            self._refuse_unowned()
             if self._connection.in_transaction:
-                yield
+                self._scopes += 1
+                try:
+                    yield
+                finally:
+                    self._scopes -= 1
                 return
             self._connection.execute("BEGIN DEFERRED")
+            self._scopes += 1
             try:
                 yield
             except BaseException:
                 self._connection.rollback()
                 raise
+            finally:
+                self._scopes -= 1
             self._connection.commit()
 
     def discard_if_new(self) -> None:
@@ -1164,8 +1221,10 @@ class ProjectStateStore(
         is rolled back whole, so nothing of it shows, nothing of it is kept
         by a later write, and the file is free for the other stores at once.
         """
-        with self._lock, self._connection:
-            self._upsert_assignments_locked(assignments)
+        with self._lock:
+            self._refuse_unowned()
+            with self._counted(), self._connection:
+                self._upsert_assignments_locked(assignments)
 
     def put_on_record(
         self,
@@ -1187,8 +1246,10 @@ class ProjectStateStore(
         """Keep what a school channel reported about one assignment, once per day, status, and
         date as written, and set the row's reported status from the latest report, in one
         transaction."""
-        with self._lock, self._connection:
-            self._record_status_reports_locked(assignment_id, reports)
+        with self._lock:
+            self._refuse_unowned()
+            with self._counted(), self._connection:
+                self._record_status_reports_locked(assignment_id, reports)
 
     def _record_status_reports_locked(
         self, assignment_id: str, reports: Iterable[StatusReport]
@@ -1573,19 +1634,38 @@ class ProjectStateStore(
         and nothing said to be unsaved can land afterward. The reservation
         and the scope are one helper, so no caller can open the scope first
         and reserve second, which would reserve nothing. Inside a
-        transaction already open, a first start's, the block joins it and
-        leaves its end to the opener.
+        transaction one of the store's own scopes has open, a first start's,
+        another write scope's, a read block's or a direct writer's, the block
+        joins it and leaves its end to the opener.
+
+        The scope takes the store's lock itself, and before anything else it
+        refuses a transaction open on the connection that no scope of the
+        store owns, ``TransactionLeftOpen``: it writes nothing, opens no
+        savepoint and ends nothing. It counts as one of the store's open
+        scopes only once its reservation succeeds or it has joined, and the
+        count is given back after the commit and the rollback, however the
+        block ends. So a rollback the file refuses leaves a transaction no
+        scope owns, and the next write or read block refuses it.
         """
-        if self._connection.in_transaction:
-            yield
-            return
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
-            yield
-            self._connection.commit()
-        except BaseException:
-            self._connection.rollback()
-            raise
+        with self._lock:
+            self._refuse_unowned()
+            if self._connection.in_transaction:
+                self._scopes += 1
+                try:
+                    yield
+                finally:
+                    self._scopes -= 1
+                return
+            self._connection.execute("BEGIN IMMEDIATE")
+            self._scopes += 1
+            try:
+                yield
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+            finally:
+                self._scopes -= 1
 
     def _require_assignment_locked(self, assignment_id: str) -> None:
         row = self._connection.execute(
@@ -2312,8 +2392,10 @@ class ProjectStateStore(
         included: the table is the history of what each channel said and
         when. Not making a claim twice is the import's job, before it writes.
         """
-        with self._lock, self._connection:
-            self._record_claims_locked(assignment_id, records)
+        with self._lock:
+            self._refuse_unowned()
+            with self._counted(), self._connection:
+                self._record_claims_locked(assignment_id, records)
 
     def _record_claims_locked(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
         self._connection.executemany(

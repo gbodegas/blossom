@@ -21,6 +21,7 @@ by weekday or counts them over a month. A record like that would be about her
 rather than about the plan, which is the line this design does not cross.
 """
 
+import logging
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -33,7 +34,15 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from blossom.clock import Clock
 from blossom.stores.help_requests import request_id_from
+from blossom.stores.homework_saves import TransactionLeftOpen
 from blossom.stores.paths import refuse_unsafe_path
+
+logger = logging.getLogger(__name__)
+
+LEFT_OPEN: Final = "A transaction was found left open on the workload signals connection"
+"""The one line ``withdraw`` logs, at error level, when it finds a transaction already open on
+the connection. It then raises ``TransactionLeftOpen``, having written nothing and ended
+nothing."""
 
 SIGNAL_RETENTION_DAYS: Final = 7
 """How long a signal is kept: long enough for her to see it and take it back."""
@@ -238,10 +247,14 @@ class WorkloadSignalsStore:
         """Remove one signal because she took it back. False when there was none to remove. The
         id that asked for it stays kept as handled until a cleanup removes it, once more than
         seven days have passed since its kept time."""
-        with self._lock, self._connection:
-            removed = self._connection.execute(
-                "DELETE FROM workload_signals WHERE signal_id=?", (signal_id,)
-            ).rowcount
+        with self._lock:
+            if self._connection.in_transaction:
+                logger.error(LEFT_OPEN)
+                raise TransactionLeftOpen
+            with self._connection:
+                removed = self._connection.execute(
+                    "DELETE FROM workload_signals WHERE signal_id=?", (signal_id,)
+                ).rowcount
         return removed > 0
 
     def for_evening(self, evening: date) -> list[WorkloadSignal]:

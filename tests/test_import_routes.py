@@ -14843,7 +14843,7 @@ def test_a_double_failure_can_t_tell_on_the_press_or_its_resend(
     assert writes == []
     assert held == held_after
     assert (held["english"], held["math"], held["acceptances"]) == (0, 0, 0)
-    assert caplog.text.count(UNKNOWN_LOGGED) >= 2
+    assert caplog.text.count(UNKNOWN_LOGGED) == 3
     assert "couldn't be read" not in caplog.text
     assert "Typed" not in caplog.text
     assert "Line one" not in caplog.text

@@ -12,6 +12,7 @@ it passes through a redaction hook before it is written, and rows older than
 ``TRACE_RETENTION_DAYS`` are swept. Nothing reads it to decide anything.
 """
 
+import logging
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -20,7 +21,15 @@ from pathlib import Path
 from typing import Final
 
 from blossom.clock import Clock
+from blossom.stores.homework_saves import TransactionLeftOpen
 from blossom.stores.paths import refuse_unsafe_path
+
+logger = logging.getLogger(__name__)
+
+LEFT_OPEN: Final = "A transaction was found left open on the traces connection"
+"""The one line a writer logs, at error level, when it finds a transaction already open on the
+connection. It then raises ``TransactionLeftOpen``, having written nothing and ended
+nothing."""
 
 TRACE_RETENTION_DAYS: Final = 14
 """How long a run's trace is kept: long enough to look into a run that went wrong."""
@@ -120,24 +129,32 @@ class TraceStore:
             )
             for run in flattened(root)
         ]
-        with self._lock, self._connection:
-            self._connection.executemany(
-                """
-                INSERT OR REPLACE INTO trace_runs (
-                    run_id, trace_id, parent_run_id, thread_id, name, run_type,
-                    started_at, ended_at, inputs, outputs, error, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
+        with self._lock:
+            if self._connection.in_transaction:
+                logger.error(LEFT_OPEN)
+                raise TransactionLeftOpen
+            with self._connection:
+                self._connection.executemany(
+                    """
+                    INSERT OR REPLACE INTO trace_runs (
+                        run_id, trace_id, parent_run_id, thread_id, name, run_type,
+                        started_at, ended_at, inputs, outputs, error, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
 
     def sweep(self, keep_days: int = TRACE_RETENTION_DAYS) -> int:
         """Delete every run recorded more than ``keep_days`` ago; return how many went."""
         cutoff = (self._clock.now() - timedelta(days=keep_days)).isoformat()
-        with self._lock, self._connection:
-            removed = self._connection.execute(
-                "DELETE FROM trace_runs WHERE recorded_at < ?", (cutoff,)
-            ).rowcount
+        with self._lock:
+            if self._connection.in_transaction:
+                logger.error(LEFT_OPEN)
+                raise TransactionLeftOpen
+            with self._connection:
+                removed = self._connection.execute(
+                    "DELETE FROM trace_runs WHERE recorded_at < ?", (cutoff,)
+                ).rowcount
         return int(removed)
 
     def runs_for_thread(self, thread_id: str) -> list[TracedRun]:

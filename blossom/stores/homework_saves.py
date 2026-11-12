@@ -12,6 +12,7 @@ writer, puts the whole save in that one transaction.
 """
 
 import json
+import logging
 import sqlite3
 import threading
 from collections.abc import Callable, Collection, Mapping
@@ -21,6 +22,8 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 
 if TYPE_CHECKING:
     from blossom.stores.import_drafts import StoredReading
+
+logger = logging.getLogger(__name__)
 
 HOMEWORK: Final = "homework_screenshot"
 ADD_HOMEWORK_ACCEPTANCE: Final = (
@@ -93,11 +96,20 @@ class HomeworkAcceptance(NamedTuple):
     role: str
 
 
+LEFT_OPEN_ON_THE_RECORD: Final = "A transaction was found left open on the record's connection"
+"""The one line a refusal on the record's connection logs, at error level, where it is found."""
+
+
 class TransactionLeftOpen(sqlite3.OperationalError):
-    """A read outside a save found a transaction open on the record's connection, with the store's
-    lock held. Every transaction here lives wholly under that lock, so this one is no request's
-    now: a refused commit and rollback left it, and what the connection reads isn't settled. It has
-    no code, so it isn't a busy file."""
+    """A store found a transaction open on its own connection that nothing of the store owns, with
+    the store's lock held. The record's store raises it from a write scope, a read block and its
+    writers that enter the connection's context, when a transaction is open and no scope of the
+    store is, and from ``settled``, a read outside a save, when one is open at all. The help
+    requests, traces and workload signals stores raise it from their writers that enter their
+    connection's context. Every transaction of a store lives wholly under its lock, so this one is
+    no request's now: a commit or a rollback that was refused left it, and what the connection
+    reads isn't settled. Whoever raises it logs it once, and has written nothing, opened no
+    savepoint and ended nothing. It has no code, so it isn't a busy file."""
 
 
 class HomeworkSaveRecords:
@@ -127,10 +139,11 @@ class HomeworkSaveRecords:
         """What ``read`` answers, for a caller outside a save, with the check that no transaction
         is open and the read itself under one hold of the store's lock, so another request's
         ordinary transaction is waited for and never mistaken for one left open. It runs whole in
-        one call, so no lock is held across an ``await``, and each read checks again. A save reads
-        without it, inside its own transaction."""
+        one call, so no lock is held across an ``await``, and each read checks again. A refusal is
+        logged here, once. A save reads without it, inside its own transaction."""
         with self._lock:
             if self._connection.in_transaction:
+                logger.error(LEFT_OPEN_ON_THE_RECORD)
                 raise TransactionLeftOpen
             return read(*args, **kwargs)
 

@@ -430,6 +430,7 @@ def old_file(
             "UPDATE assignments SET note = ?, origins = ? WHERE assignment_id = ?",
             (note, json.dumps(origins), name),
         )
+        store._connection.commit()
     store._connection.execute("DROP TABLE school_instructions")
     store._connection.commit()
     store.close()
