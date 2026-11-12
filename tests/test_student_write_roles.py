@@ -1963,12 +1963,12 @@ def test_a_deadline_fired_as_the_gate_cancels_a_read_still_gives_up_the_copy(
     403 without a copy, no further read of the body begun, nothing left waiting, one limit
     made, no store read and nothing written.
 
-    The moment is placed by order, with no clock. The deadline is long. The first read waits
-    on a future of the test's; the callback that lets it go queues a second, which runs right
-    after the route's step and moves the reader's own limit into the past; a third, queued
-    behind the deadline, counts the cancel requests on the route's task. Two says the cancels
-    met; any other count says they did not, and the test fails on that. A further read, if
-    one begins, is counted and told the client has gone, so the press ends at once."""
+    The moment is placed by order: nothing waits on a clock. The deadline is long. The first
+    read waits on a future of the test's; the callback that lets it go queues a second, which
+    runs right after the route's step and moves the reader's own limit into the past; a third,
+    queued behind the deadline, counts the cancel requests on the route's task. Two says the
+    cancels met; any other count says they did not, and the test fails on that. A further
+    read, if one begins, is counted and told the client has gone, so the press ends at once."""
     made = limits_made(monkeypatch)
     with household(tmp_path, "parent") as client:
         seeded = seed(client)
@@ -2035,8 +2035,8 @@ def test_a_press_makes_one_limit_and_a_chunk_that_arrives_does_not_move_it(
     """A control: it passes whether or not a deadline can be lost to the gate's cancel. A
     press makes the copy's limit once, and the moment that limit names reads the same as
     each chunk is asked for and after the answer, so a chunk that arrives does not start it
-    again. It is read from the limit itself, with no clock. The copy is kept, no store is
-    read and nothing is written."""
+    again. It is read from the limit itself, with no clock. It is the control for writes
+    too: the copy is kept, no store is read and nothing is written."""
     made = limits_made(monkeypatch)
     with household(tmp_path, "parent") as client:
         seeded = seed(client)

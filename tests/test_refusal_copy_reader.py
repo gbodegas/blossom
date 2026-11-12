@@ -199,7 +199,8 @@ def test_the_reader_leaves_nothing_behind_on_each_way_out(
     """A control: it passes whether or not a deadline can be lost to a cancel scope's own
     cancel. Each way the reader ends short of its deadline, with the body whole, past the
     length it declared, ended short of it, or the client gone, leaves no read waiting and
-    no task going."""
+    no task going, when it returns and a pass of the event loop later: a stream of the
+    body left open is closed by the loop in a task of its own, which starts in that pass."""
     monkeypatch.setattr(forms, "COPY_DEADLINE", 30.0)
 
     async def test() -> None:
@@ -209,6 +210,8 @@ def test_the_reader_leaves_nothing_behind_on_each_way_out(
         )
         assert found == kept
         assert client.waiting == 0
+        assert asyncio.all_tasks() == {asyncio.current_task()}
+        await asyncio.sleep(0)
         assert asyncio.all_tasks() == {asyncio.current_task()}
 
     run(test)
