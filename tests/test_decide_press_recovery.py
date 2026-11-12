@@ -140,12 +140,28 @@ def coded(name: str) -> sqlite3.OperationalError:
     return error
 
 
+def background_work_ended(client: TestClient, seconds: float = 10.0) -> None:
+    """Return once the work the requests went on without has ended, within ``seconds``.
+
+    A run keeps its time on a worker thread after its answer. A test that holds the file or
+    the store next would meet that write: held up at its commit it keeps the store for its
+    whole wait, and a read the press makes before its own write is refused as busy."""
+    state = state_of(client)
+    ends = time.monotonic() + seconds
+    while state.detached and time.monotonic() < ends:
+        time.sleep(0.01)
+    assert not state.detached
+
+
 @contextlib.contextmanager
 def a_waiting_plan(**environ: str) -> Iterator[tuple[TestClient, str]]:
-    """Today's plan, published and waiting at the gate, and the client that made it."""
+    """Today's plan, published and waiting at the gate with nothing of its run still at
+    work, and the client that made it."""
     with browser(key=True, **environ) as client:
         walkthrough(client)
-        yield client, planned(client).draft_id
+        draft_id = planned(client).draft_id
+        background_work_ended(client)
+        yield client, draft_id
 
 
 def press(client: TestClient, draft_id: str, decision: str = "approve", reason: str = NOTE) -> Any:  # noqa: ANN401

@@ -56,6 +56,9 @@ dev = [
     "httpx2==2.10.0",
     "mypy==1.17.1",
     "pytest==8.4.1",
+    # Spreads the test files over worker processes. CI asks for the workers on
+    # its own command line; a plain `pytest` still runs in one process.
+    "pytest-xdist==3.8.0",
     "ruff==0.12.9",
 ]
 
