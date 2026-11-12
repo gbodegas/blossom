@@ -26809,17 +26809,25 @@ def test_save_with_nothing_ticked_reads_once_more_when_its_rows_come_back_empty(
     assert reads == ([read] if stored else [])
 
 
+READS_OF_THE_REVIEW_BY_A_TICKED_SAVE: Final = {
+    "its first page read refused": 2,
+    "its next read open": 4,
+    "its first page read says expired": 2,
+}
+"""How many times the store is asked for the review while a Save ticking a group answers
+with a receipt's page whose rows come back empty, by the look that found the receipt. One
+more read of any kind on that page raises the count."""
+
+
 @pytest.mark.parametrize("counts", ["shown", "empty"])
-@pytest.mark.parametrize(
-    "look",
-    ["its first page read refused", "its next read open", "its first page read says expired"],
-)
+@pytest.mark.parametrize("look", list(READS_OF_THE_REVIEW_BY_A_TICKED_SAVE))
 def test_save_with_a_group_ticked_reads_nothing_more_when_its_rows_come_back_empty(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, look: str, counts: str
 ) -> None:
     """Timing forced: a Save ticking a group stores an answer and saves no homework, a later look
     finds its receipt, its own read finds the review open, and its rows come back empty. The press
-    asks for no read more. Its answers lines stay as its look gave them: by this attempt, or
+    asks for no read more, and the store is asked for the review as many times as that look
+    takes and no more. Its answers lines stay as its look gave them: by this attempt, or
     before the review ended where that look's read said so, beside the earlier save's counts or
     that they can't be shown. The control is
     ``test_save_with_nothing_ticked_reads_once_more_when_its_rows_come_back_empty``: a Save with
@@ -26832,10 +26840,12 @@ def test_save_with_a_group_ticked_reads_nothing_more_when_its_rows_come_back_emp
         asked = no_read_for_the_tense(monkeypatch)
         from_its_rows_page(monkeypatch, "rows_of", no_rows_to_show)
         a_look_that_leaves_its_own_read_open(look, browser, monkeypatch, draft_id)
+        reads = reads_of_the_review(browser, monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert asked == []
+    assert len(reads) == READS_OF_THE_REVIEW_BY_A_TICKED_SAVE[look]
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
     if counts == "shown":

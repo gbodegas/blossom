@@ -2589,9 +2589,10 @@ async def kept_past_empty_rows(
 ) -> Sequence[str]:
     """What a press's own write kept (``notes``) on a receipt's page whose rows came back empty,
     which can't tell an ending from nothing open. A press that ticked a group (``ticked``) reads
-    nothing more, and its lines are said as they stand, which is as the reads it has made gave
-    them: as an ended review's page says them where one of those said the review ended, and by
-    this attempt otherwise. For a press with nothing ticked, one more read says how those lines
+    nothing more, and its lines are said as they reach this page: as an ended review's page says
+    them where an earlier read of the request found the review expired, removed or closed, and
+    by this attempt otherwise, also where a first page read was refused as finished and a
+    receipt was then found. For a press with nothing ticked, one more read says how those lines
     are said, as the page's own read does: as an ended review's page says them where it says the
     review ended; past a close with no counts (``counted``), only that this attempt did not keep
     answers for homework already saved, which claims nothing of what is on file; and as they
