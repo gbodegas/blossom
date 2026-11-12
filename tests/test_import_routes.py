@@ -39298,12 +39298,12 @@ FIRST_PAGE_READS_REFUSED_ANOTHER_WAY: Final[dict[str, tuple[str, str, str]]] = {
 
 
 @pytest.mark.parametrize("case", list(FIRST_PAGE_READS_REFUSED_ANOTHER_WAY))
-def test_a_press_that_stored_answers_says_so_ahead_of_another_refusal_of_its_first_page_read(
+def test_a_press_that_stored_answers_says_so_after_another_refusal_of_its_first_page_read(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     """Keep, or Save for later behind another tab's save, storing answers, the first read for its
-    page forced to answer frozen, closed or too many images: 409, the answers line ahead of the
-    refusal's own sentence, in the past of an ended review where the read says closed."""
+    page forced to answer frozen, closed or too many images: 409, the refusal's own sentence, then
+    the answers line, as an ended review's page says it where the read says closed."""
     press, line, refusal = FIRST_PAGE_READS_REFUSED_ANOTHER_WAY[case]
     refusals: dict[str, Callable[..., None]] = {
         "frozen": refusing(DraftFrozen),
@@ -39325,7 +39325,7 @@ def test_a_press_that_stored_answers_says_so_ahead_of_another_refusal_of_its_fir
     [kept] = written
     assert (kept.stored > 0, kept.dropped) == (True, 0)
     assert answer.status_code == 409
-    says_in_order(answer, SAID_OF_ONE_ATTEMPT[line], refusal)
+    says_in_order(answer, refusal, SAID_OF_ONE_ATTEMPT[line])
 
 
 FIRST_PAGE_READS_REFUSED_AS: Final[dict[str, tuple[Callable[..., None], str, str]]] = {
@@ -40023,14 +40023,15 @@ def test_a_save_whose_check_for_an_open_transaction_is_refused_can_t_tell_past_a
     says_it_can_t_tell_of_any_homework_then(answer, SAID_OF_ONE_ATTEMPT["kept"])
 
 
-def test_a_save_beside_empty_counts_whose_rows_stay_empty_past_a_close_says_what_it_dropped(
+def test_a_save_beside_empty_counts_whose_rows_stay_empty_says_its_lines_past_a_close_unread(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Timing forced: Save from a page an earlier save took a group from, storing one answer and
-    dropping the saved group's, its homework not saved; its rows come back empty, a look finds the
-    earlier save with its counts empty, that save's page finds no rows either, and the read after
-    them says the review closed. Nothing says answers were kept, and the page says once that this
-    attempt did not keep answers for homework already saved."""
+    """Timing forced: Save ticking a group from a page an earlier save took a group from, storing
+    one answer and dropping the saved group's, its homework not saved; its rows come back empty, a
+    look finds the earlier save with its counts empty, that save's page finds no rows either, and
+    another tab discards the review as they come back. The press reads nothing more, so no read
+    of its own says the review closed: the page says once that some answers were kept by this
+    attempt, and once that this attempt did not keep answers for homework already saved."""
     asked: list[bool] = []
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, _, _ = a_save_storing_an_answer_beside_its_receipt(browser, monkeypatch)
@@ -40044,13 +40045,18 @@ def test_a_save_beside_empty_counts_whose_rows_stay_empty_past_a_close_says_what
 
         monkeypatch.setattr(imports, "rows_of", no_rows)
         written = answers_written_by(browser, monkeypatch, "keep_answers")
+        read_more = no_read_for_the_tense(monkeypatch)
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
     [kept] = written
     assert (kept.stored > 0, kept.dropped > 0) == (True, True)
     assert len(asked) == 2
+    assert read_more == []
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
     assert imports.COUNTS_UNSHOWN in page_text(answer)
-    says_no_answers_were_kept(answer, dropped=True)
+    says_in_order(
+        answer, SAID_OF_ONE_ATTEMPT["some_kept"], SAID_OF_ONE_ATTEMPT["not_kept_for_saved"]
+    )
+    assert "before this review ended" not in page_text(answer)

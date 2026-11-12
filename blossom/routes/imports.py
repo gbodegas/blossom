@@ -516,12 +516,13 @@ def upload_refusal(request: Request, state: ApplicationState, error: Exception) 
 
 
 def store_refusal(
-    request: Request, state: ApplicationState, error: Exception, ahead: Sequence[str] = ()
+    request: Request, state: ApplicationState, error: Exception, answers: Sequence[str] = ()
 ) -> Response:
     """A store's refusal of a request on a review or one of its images, or of an upload for
     any reason but a busy store, as its page says it. A busy store began nothing, so the
-    request changed nothing. A press whose own write stored or dropped answers before a read
-    was refused says its answers lines (``ahead``) ahead of the refusal's sentence."""
+    request changed nothing. The refusal's own sentence is the page's first, which the page
+    draws as its alert and gives the focus on a press. A press whose own write stored or dropped
+    answers before a read was refused says its answers lines (``answers``) after that sentence."""
     if isinstance(error, TooManyImages):
         said, status = too_many(error.free), 409
     elif isinstance(error, DraftClosed):
@@ -534,8 +535,7 @@ def store_refusal(
         said, status = AFTER_SAID["busy"], 503
     else:
         said, status = SAID["absent"], 404
-    lines: list[str] = [*ahead, said]
-    return said_page(request, marks_of(state), lines[0], status, *lines[1:])
+    return said_page(request, marks_of(state), said, status, *answers)
 
 
 def unread_page(
@@ -1220,10 +1220,10 @@ async def refused_keeping_typing(
 ) -> Response:
     """A store's refusal of a press, as its page says it: for a review that expired, or that the
     sweep has since removed, with the press's typing given back, after what the press did if
-    anything of it committed; any other as it always is, after the press's answers lines, which a
-    refusal saying the review closed gets as an ended review's page says them. The typing given
-    back leaves out the boxes this request's own committed Save for later is shown to hold
-    exactly (``saved_exactly``)."""
+    anything of it committed; any other as it always is, its own sentence first as the page's
+    alert, then the press's answers lines, which a refusal saying the review closed gets as an
+    ended review's page says them. The typing given back leaves out the boxes this request's own
+    committed Save for later is shown to hold exactly (``saved_exactly``)."""
     if isinstance(error, DraftExpired):
         return await gone_with_typing(
             request, state, "expired", said, status or 410, saved_exactly=saved_exactly
@@ -2585,17 +2585,20 @@ async def press_refused(
 
 
 async def kept_past_empty_rows(
-    state: ApplicationState, draft_id: str, notes: Sequence[str], counted: bool
+    state: ApplicationState, draft_id: str, notes: Sequence[str], counted: bool, ticked: bool
 ) -> Sequence[str]:
     """What a press's own write kept (``notes``) on a receipt's page whose rows came back empty,
-    which can't tell an ending from nothing open. One more read says how those lines are said, as
-    the page's own read does: as an ended review's page says them where it says the review ended;
-    past a close with no counts (``counted``), only that this attempt did not keep answers for
-    homework already saved, which claims nothing of what is on file; and as they stand where it
-    reads open or is refused. A press with no line saying it kept answers reads nothing more, and
-    its lines are said as they stand: that its write failed or can't be told, or that it did not
-    keep answers for homework already saved."""
-    if not set(notes) & CONFIRMED_SAID:
+    which can't tell an ending from nothing open. A press that ticked a group (``ticked``) reads
+    nothing more, and its lines are said as they stand, which is as the reads it has made gave
+    them: as an ended review's page says them where one of those said the review ended, and by
+    this attempt otherwise. For a press with nothing ticked, one more read says how those lines
+    are said, as the page's own read does: as an ended review's page says them where it says the
+    review ended; past a close with no counts (``counted``), only that this attempt did not keep
+    answers for homework already saved, which claims nothing of what is on file; and as they
+    stand where it reads open or is refused. A press with no line saying it kept answers reads
+    nothing more either, and its lines are said as they stand: that its write failed or can't be
+    told, or that it did not keep answers for homework already saved."""
+    if ticked or not set(notes) & CONFIRMED_SAID:
         return notes
     now = await review_state_now(state, draft_id)
     if now == "busy":
@@ -2686,8 +2689,9 @@ async def with_typing(
     (``RowsShown.unselected``). What a receipt's press kept itself (``notes``) goes in the page's
     status block, ahead of "Not saved yet", where rows are
     drawn, and beneath the save's result, outside the problem alert, where they aren't: as it
-    stands, or if the rows came back empty as one more read has it (``kept_past_empty_rows``,
-    ``counted``). Rows that come back empty with the review open draw no form, and give every box
+    stands, or if the rows came back empty and the press ticked no group, as one more read has
+    it (``kept_past_empty_rows``, ``counted``). Rows that come back empty with the review open
+    draw no form, and give every box
     back to copy; behind, beside words a tick set aside, they say its choices can't be shown where
     the saved progress of the review's own read, or the answers the press's latest read of the
     review holds, differ from them or can't be compared with them (``words_beside_unlike``). With
@@ -2904,7 +2908,7 @@ async def with_typing(
             request, state, after, lines, status, rows=rows, typed=typed, typed_said=note
         )
     if rows is None:
-        kept_line = await kept_past_empty_rows(state, draft_id, notes, counted)
+        kept_line = await kept_past_empty_rows(state, draft_id, notes, counted, bool(post.units))
         return await saved_busy(
             request,
             state,
@@ -4054,10 +4058,11 @@ async def saved_page(
     status block of the press's lines (``said``), ahead of "Not saved yet", as a Save's own page has
     it. On any other page it's beneath the counts in the note style, outside the problem alert. It
     stays as the press's reads have it, and goes as an ended review's page says it where this
-    page's own read, or the read after its rows come back empty, says that
-    (``kept_past_empty_rows``). With no counts and a closed read, this page's, the one after its
-    rows come back empty or one before it in this press (``closed_seen``), it goes unsaid, since a
-    close deletes the review's answers. A line in ``notes`` saying this press's write failed or
+    page's own read, or the read a press with nothing ticked makes after its rows come back
+    empty, says that (``kept_past_empty_rows``). With no counts and a closed read, this page's,
+    that one after its rows come back empty or one before it in this press (``closed_seen``), it
+    goes unsaid, since a close deletes the review's answers. A line in ``notes`` saying this
+    press's write failed or
     can't be told stays on every page here, as it doesn't say anything was kept. A review the store
     refuses to read can't say whether it finished: the
     counts show in the success panel with no word of that, and every correction the post typed
