@@ -36,10 +36,11 @@ from typing import Final, Literal
 from urllib.parse import urlencode
 
 import pytest
+from anyio.from_thread import BlockingPortal
 from fastapi.testclient import TestClient
 from markupsafe import escape
 from starlette.requests import Request
-from starlette.types import Message, Scope
+from starlette.types import Message, Receive, Scope
 
 from blossom.app import create_app
 from blossom.captures import PARENT, STUDENT, CaptureCreated, new_capture_id
@@ -935,7 +936,7 @@ def streamed(
         await client.app(scope, receive, send)
         return Streamed(status, answer.decode("utf-8"), said, pulled)
 
-    portal = client.portal
+    portal: BlockingPortal | None = client.portal
     assert portal is not None
     return portal.call(run)
 
@@ -1618,7 +1619,7 @@ def test_a_parents_update_hand_in_or_undo_lands_on_her_current_week(
 
 SHORT_DEADLINE: Final = 0.4
 """The deadline these tests give the copy, so a body that stalls is seen out quickly. The
-application's own is pinned below as it is, and a real server is timed against it apart."""
+application's own is pinned below as it is."""
 CLOCK_TICK: Final = 0.05
 """How early an event loop may run a timer: it runs every timer due within its clock's
 resolution, which is about 16 milliseconds on Windows."""
@@ -1736,7 +1737,7 @@ def paced(
         reading_began = answered >= 0.0
         return Paced(status, answer.decode("utf-8"), said, answered, waiting, gone, reading_began)
 
-    portal = client.portal
+    portal: BlockingPortal | None = client.portal
     assert portal is not None
     return portal.call(run)
 
@@ -1864,6 +1865,214 @@ def test_a_press_canceled_while_its_copy_is_read_stays_canceled(
     assert isinstance(ended, BaseException)
     assert not isinstance(ended, Exception)
     assert sent == []
+
+
+ORDERED_DEADLINE: Final = 30.0
+"""The deadline given to a press whose moments a test places by order: so long that its own
+timer never runs, and the deadline fires only where the test fires it."""
+ORDERED_GUARD: Final = 10.0
+"""How long a test waits at most for such a press, counted in the test's own thread: past
+it the press hung."""
+
+
+def limits_made(monkeypatch: pytest.MonkeyPatch) -> list[asyncio.Timeout]:
+    """Give the copy ``ORDERED_DEADLINE`` and keep each limit made with it, the object the
+    reader itself made. Every other limit is made as it is and not kept."""
+    made: list[asyncio.Timeout] = []
+    make = asyncio.timeout
+
+    def recording(delay: float | None) -> asyncio.Timeout:
+        limit = make(delay)
+        if delay == ORDERED_DEADLINE:
+            made.append(limit)
+        return limit
+
+    monkeypatch.setattr(form_routes, "COPY_DEADLINE", ORDERED_DEADLINE)
+    monkeypatch.setattr(asyncio, "timeout", recording)
+    return made
+
+
+@dataclass(frozen=True)
+class Told:
+    """What the application answered a press whose reads a test placed by order."""
+
+    status_code: int
+    text: str
+    headers: dict[str, str]
+    tasks_left: int
+    """Tasks the press started that were still going when the application finished."""
+
+
+async def told(client: TestClient, scope: Scope, receive: Receive) -> Told:
+    """Send a press straight to the application, its body read through the caller's own
+    ``receive``, and count the tasks it leaves going."""
+    status = 0
+    said: dict[str, str] = {}
+    answer = bytearray()
+
+    async def send(message: Message) -> None:
+        nonlocal status
+        if message["type"] == "http.response.start":
+            status = message["status"]
+            said.update(
+                (name.decode("latin-1"), value.decode("latin-1"))
+                for name, value in message.get("headers", [])
+            )
+        elif message["type"] == "http.response.body":
+            answer.extend(message.get("body", b""))
+
+    going = asyncio.all_tasks()
+    await client.app(scope, receive, send)
+    return Told(status, answer.decode("utf-8"), said, len(asyncio.all_tasks() - going))
+
+
+def within_the_guard[T](client: TestClient, run: Callable[[], Awaitable[T]]) -> T:
+    """Run a press on the client's own loop and wait for it from this thread, for
+    ``ORDERED_GUARD`` at most. The wait is this thread's and cancels nothing. A press still
+    going at its end fails the test, and is canceled first so the client can close."""
+    portal: BlockingPortal | None = client.portal
+    assert portal is not None
+    pressing = portal.start_task_soon(run)
+    done, _ = wait([pressing], timeout=ORDERED_GUARD)
+    if not done:
+        pressing.cancel()
+        pytest.fail(f"the press was still going after {ORDERED_GUARD} seconds")
+    return pressing.result()
+
+
+@dataclass
+class Collision:
+    """What a press did whose deadline fired in the pass where the gate's cancel reached it."""
+
+    reads: int = 0
+    """Reads of the body the application began."""
+    reads_left_waiting: int = 0
+    cancel_requests: int | None = None
+    """Cancel requests on the route's task once both cancels had landed, before it ran
+    again."""
+
+
+def test_a_deadline_fired_as_the_gate_cancels_a_read_still_gives_up_the_copy(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate waits for each read of the body inside a cancel scope of its own and cancels
+    that scope when the read returns; the scope's cancel reaches the route's task in the next
+    pass of the event loop. Here the copy's deadline fires in that same pass, behind it, so
+    the route's task holds two cancel requests at once: the scope's, which the scope takes
+    back, and the deadline's, which stands. The copy is given up as at any deadline: the same
+    403 without a copy, no further read of the body begun, nothing left waiting, one limit
+    made, no store read and nothing written.
+
+    The moment is placed by order: nothing waits on a clock. The deadline is long. The first
+    read waits on a future of the test's; the callback that lets it go queues a second, which
+    runs right after the route's step and moves the reader's own limit into the past; a third,
+    queued behind the deadline, counts the cancel requests on the route's task. Two says the
+    cancels met; any other count says they did not, and the test fails on that. A further
+    read, if one begins, is counted and told the client has gone, so the press ends at once."""
+    made = limits_made(monkeypatch)
+    with household(tmp_path, "parent") as client:
+        seeded = seed(client)
+        subject = subject_of("details", "known", seeded)
+        small = sized("details", seeded, 600)
+        scope = press_scope(
+            client, press_path("details", subject), [FORM_HEADER, ("content-length", "600")]
+        )
+        seen = Collision()
+
+        async def run() -> Told:
+            loop = asyncio.get_running_loop()
+
+            async def receive() -> Message:
+                seen.reads += 1
+                if seen.reads > 1:
+                    return {"type": "http.disconnect"}
+                route = asyncio.current_task()
+                assert route is not None
+                arrived: asyncio.Future[None] = loop.create_future()
+
+                def count() -> None:
+                    seen.cancel_requests = route.cancelling()
+
+                def fire() -> None:
+                    for limit in made:
+                        limit.reschedule(loop.time() - 1)
+                    loop.call_soon(count)
+
+                def arrive() -> None:
+                    arrived.set_result(None)
+                    loop.call_soon(fire)
+
+                loop.call_soon(arrive)
+                seen.reads_left_waiting += 1
+                try:
+                    await arrived
+                finally:
+                    seen.reads_left_waiting -= 1
+                return {"type": "http.request", "body": small[:300], "more_body": True}
+
+            return await told(client, scope, receive)
+
+        before = everything_kept(client)
+        with watched(client) as watch:
+            answer = within_the_guard(client, run)
+        after = everything_kept(client)
+
+    assert len(made) == 1, "the press is to make one limit, the copy's"
+    assert made[0].expired()
+    assert seen.cancel_requests == 2, "the gate's cancel and the deadline's did not meet"
+    assert seen.reads == 1, "a read of the body began after the deadline had fired"
+    check_refused("details", answer, subject=subject, typed=None)
+    check_untouched(watch, "details", subject)
+    assert watch.copied == []
+    assert seen.reads_left_waiting == 0
+    assert answer.tasks_left == 0
+    assert after == before
+
+
+def test_a_press_makes_one_limit_and_a_chunk_that_arrives_does_not_move_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A control: it passes whether or not a deadline can be lost to the gate's cancel. A
+    press makes the copy's limit once, and the moment that limit names reads the same as
+    each chunk is asked for and after the answer, so a chunk that arrives does not start it
+    again. It is read from the limit itself, with no clock. It is the control for writes
+    too: the copy is kept, no store is read and nothing is written."""
+    made = limits_made(monkeypatch)
+    with household(tmp_path, "parent") as client:
+        seeded = seed(client)
+        subject = subject_of("details", "known", seeded)
+        pieces = in_pieces(sized("details", seeded, 600), 3)
+        scope = press_scope(
+            client, press_path("details", subject), [FORM_HEADER, ("content-length", "600")]
+        )
+        named: list[list[float | None]] = []
+
+        async def run() -> Told:
+            async def receive() -> Message:
+                if not pieces:
+                    return {"type": "http.disconnect"}
+                named.append([limit.when() for limit in made])
+                await asyncio.sleep(0)
+                chunk = pieces.pop(0)
+                return {"type": "http.request", "body": chunk, "more_body": bool(pieces)}
+
+            return await told(client, scope, receive)
+
+        before = everything_kept(client)
+        with watched(client) as watch:
+            answer = within_the_guard(client, run)
+        after = everything_kept(client)
+
+    assert len(made) == 1
+    deadline = made[0].when()
+    assert deadline is not None
+    assert named == [[deadline], [deadline], [deadline]]
+    assert not made[0].expired()
+    check_refused("details", answer, subject=subject, typed=TYPED["details"])
+    check_untouched(watch, "details", subject)
+    assert watch.copied == [600]
+    assert answer.tasks_left == 0
+    assert after == before
 
 
 # ------------------------------------------- a parent's press of I turned it in or its Undo
