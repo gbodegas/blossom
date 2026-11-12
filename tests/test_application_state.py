@@ -259,12 +259,17 @@ def signals_in_file(path: pathlib.Path) -> int:
     return int(count)
 
 
-def age_a_signal_into(path: pathlib.Path) -> None:
-    """Write one signal stamped well past its week, as a long-running process would hold."""
+def a_store_long_ago(path: pathlib.Path) -> WorkloadSignalsStore:
+    """A signals store of its own on the file, whose clock stands well past a signal's week."""
     long_ago = FrozenClock(
         OBSERVED_AT - timedelta(days=SIGNAL_RETENTION_DAYS + 1), fixture_clock().zone
     )
-    aged = WorkloadSignalsStore(sqlite3.connect(path, check_same_thread=False), long_ago)
+    return WorkloadSignalsStore(sqlite3.connect(path, check_same_thread=False), long_ago)
+
+
+def age_a_signal_into(path: pathlib.Path) -> None:
+    """Write one signal stamped well past its week, as a long-running process would hold."""
+    aged = a_store_long_ago(path)
     aged.record(PLAN_DATE)
     aged.close()
 
@@ -317,14 +322,24 @@ def test_one_sweep_deletes_what_the_reads_already_leave_out(tmp_path: pathlib.Pa
 def test_a_running_process_sweeps_on_its_own(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A signal past its week goes without a restart; the interval is shortened to show it."""
+    """A signal past its week goes without a restart; the interval is shortened to show it.
+
+    The second store is opened before the application starts. Opening one reads the file and
+    then writes it inside one transaction, and SQLite refuses that write at once, without
+    waiting, while a sweep of the running application holds the file. The aged signal is
+    recorded while the application runs, by a write that asks for the file first and so waits
+    for a sweep to finish. The file holds the signals tables when the application starts, so
+    the start takes it for a record already there and plants no seed, which nothing here reads.
+    """
     monkeypatch.setattr(dependencies, "SWEEP_INTERVAL_SECONDS", 0.02)
     settings = fixture_settings(**file_settings(tmp_path))
     app = create_app(settings)
+    aged = a_store_long_ago(settings.database_path)
 
     with TestClient(app, headers=SAME_ORIGIN) as client:
         client.get("/student/due-this-week")
-        age_a_signal_into(settings.database_path)
+        aged.record(PLAN_DATE)
+        aged.close()
         held_by_the_page = client.get("/student/workload-signals").json()
         for _ in range(100):
             if signals_in_file(settings.database_path) == 0:
