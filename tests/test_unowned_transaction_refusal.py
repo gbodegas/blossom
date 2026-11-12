@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, _GeneratorContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import TracebackType
 from typing import Final
 
 import pytest
@@ -214,6 +215,8 @@ def test_the_record_s_store_refuses_at_each_site_and_touches_nothing(
     assert store._connection.in_transaction
     assert rows_through(store._connection) == held
     assert every_row(path) == before
+    assert scopes_of(store) == 0
+    assert lock_free(store)
     assert errors_logged(caplog) == [(logging.ERROR, ON_THE_RECORD)]
 
 
@@ -614,6 +617,180 @@ def test_a_write_scope_holds_the_store_s_lock_whoever_enters_it(store: ProjectSt
         assert not lock_free(store)
 
     assert lock_free(store)
+
+
+# ------------------------------------------------------------- the three direct writers
+
+
+def one_at_a_time[T](rows: list[T], before_each: Callable[[int], None]) -> Iterator[T]:
+    """Each of ``rows`` in turn, ``before_each`` called with its place before it is handed
+    over."""
+    for place, row in enumerate(rows):
+        before_each(place)
+        yield row
+
+
+DIRECT: Final[dict[str, Callable[[ProjectStateStore, Callable[[int], None]], None]]] = {
+    "upsert_assignments": lambda store, before_each: store.upsert_assignments(
+        one_at_a_time([a_row(ADDED, "Added later"), a_row(INSIDE, "Added inside")], before_each)
+    ),
+    "record_status_reports": lambda store, before_each: store.record_status_reports(
+        PRACTICE, one_at_a_time([school_missing(SAID_ON)], before_each)
+    ),
+    "record_claims": lambda store, before_each: store.record_claims(
+        PRACTICE, one_at_a_time([record(SourceChannel.LMS, "2026-10-06")], before_each)
+    ),
+}
+"""The three writers that end their work through the connection's own context, each handed
+its rows one at a time from inside that context."""
+
+
+@pytest.mark.parametrize("writer", list(DIRECT))
+def test_a_direct_writer_counts_its_context_as_the_store_s_own_and_gives_the_count_back(
+    writer: str, store: ProjectStateStore, path: pathlib.Path
+) -> None:
+    before = every_row(path)
+    counted: list[int] = []
+
+    DIRECT[writer](store, lambda _: counted.append(scopes_of(store)))
+
+    assert counted
+    assert set(counted) == {1}
+    assert not store._connection.in_transaction
+    assert every_row(path) != before
+    assert scopes_of(store) == 0
+    assert lock_free(store)
+    held_open(store._connection, HOLD_A_TITLE, (HELD, PRACTICE))
+    with pytest.raises(TransactionLeftOpen):
+        put(store)
+
+
+BETWEEN: Final = "assignment-between"
+JOINING: Final[dict[str, Callable[[ProjectStateStore], None]]] = {
+    "a read block": read_block,
+    "a write scope": lambda store: put(store, BETWEEN),
+}
+
+
+@pytest.mark.parametrize("scope", list(JOINING))
+def test_rows_that_enter_a_scope_of_the_store_between_them_are_written_whole(
+    scope: str, store: ProjectStateStore, path: pathlib.Path
+) -> None:
+    """``upsert_assignments`` writes each row as it is handed over, so a source of rows that
+    reads or writes the store before its second row does so inside the writer's open
+    transaction, which is the store's own: the scope joins it. The other two direct writers
+    read every row before their first statement."""
+    DIRECT["upsert_assignments"](store, lambda _: JOINING[scope](store))
+
+    assert not store._connection.in_transaction
+    assert {ADDED, INSIDE} <= set(read_fresh(path, IDS))
+    assert (BETWEEN in read_fresh(path, IDS)) == (scope == "a write scope")
+    assert scopes_of(store) == 0
+    assert lock_free(store)
+
+
+class Ending(Refusing):
+    """``Refusing`` used as a context, ending as the connection's own context ends: a commit
+    when the block ended, a rollback when it raised, and a rollback after a commit that was
+    refused. ``at_each`` is called with each step before it is tried."""
+
+    def __init__(
+        self, connection: sqlite3.Connection, refused: str, at_each: Callable[[str], None]
+    ) -> None:
+        super().__init__(connection, refused)
+        self.at_each = at_each
+
+    def __enter__(self) -> "Ending":
+        return self
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        value: BaseException | None,
+        trace: TracebackType | None,
+    ) -> None:
+        if kind is not None:
+            self.at_each("rollback")
+            self.rollback()
+            return
+        self.at_each("commit")
+        try:
+            self.commit()
+        except sqlite3.OperationalError:
+            self.at_each("rollback")
+            self.rollback()
+            raise
+
+
+@dataclass(frozen=True)
+class Failing:
+    """One direct writer failing one way: the step of its connection's context that is
+    refused, the place of the row its rows raise before, and whether its transaction is left
+    open, which no scope then owns."""
+
+    writer: str
+    refused: str | None = None
+    raises_before: int | None = None
+    leaves_open: bool = False
+
+
+FAILURES: Final = {
+    "upsert_assignments, its rows raise after the first": Failing(
+        "upsert_assignments", raises_before=1
+    ),
+    "upsert_assignments, its commit refused": Failing("upsert_assignments", refused="commit"),
+    "upsert_assignments, its rollback refused": Failing(
+        "upsert_assignments", refused="rollback", raises_before=1, leaves_open=True
+    ),
+    "record_status_reports, its rows raise": Failing("record_status_reports", raises_before=0),
+    "record_status_reports, its commit refused": Failing("record_status_reports", refused="commit"),
+    "record_claims, its rows raise": Failing("record_claims", raises_before=0),
+    "record_claims, its commit refused": Failing("record_claims", refused="commit"),
+}
+"""Only ``upsert_assignments`` has written a row when its rows raise, so only its refused
+rollback leaves a transaction open."""
+
+
+@pytest.mark.parametrize("case", list(FAILURES))
+def test_a_direct_writer_that_fails_gives_its_count_back_and_the_next_writer_meets_the_state(
+    case: str, store: ProjectStateStore, path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failing = FAILURES[case]
+    before = every_row(path)
+    counted: list[tuple[str, int]] = []
+
+    def before_each(place: int) -> None:
+        if place == failing.raises_before:
+            raise Stopped
+
+    real = store._connection
+    if failing.refused is None:
+        with pytest.raises(Stopped):
+            DIRECT[failing.writer](store, before_each)
+    else:
+        ending = Ending(
+            real, failing.refused, lambda step: counted.append((step, scopes_of(store)))
+        )
+        monkeypatch.setattr(store, "_connection", ending)
+        with pytest.raises(sqlite3.OperationalError, match="^refused$"):
+            DIRECT[failing.writer](store, before_each)
+        monkeypatch.setattr(store, "_connection", real)
+        assert counted
+        assert {count for _, count in counted} == {1}
+
+    assert store._connection.in_transaction == failing.leaves_open
+    assert every_row(path) == before
+    assert scopes_of(store) == 0
+    assert lock_free(store)
+    if failing.leaves_open:
+        with pytest.raises(TransactionLeftOpen):
+            put(store)
+        assert store._connection.in_transaction
+        assert every_row(path) == before
+    else:
+        put(store)
+        assert committed(store, path, ADDED)
+        assert INSIDE not in read_fresh(path, IDS)
 
 
 # ------------------------------------------------------------- the closed list of sites
