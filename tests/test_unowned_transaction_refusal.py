@@ -639,14 +639,16 @@ PINNED: Final = {
 """Every connection used as a context and every transaction or savepoint begun by hand under
 ``blossom/stores``, by file and exact shape. One added or removed fails here, and so does a
 context whose expression names a connection another way and a statement that starts with
-``BEGIN`` or ``SAVEPOINT`` in other words. It is then classified: a site that refuses, or one
-that needs no check. A context on a name that does not say ``connection`` is not seen."""
+``BEGIN`` or ``SAVEPOINT`` and is not one of those counted. It is then classified: a site that
+refuses, or one that needs no check. A context on a name that does not say ``connection`` is
+not seen."""
 
 
 def transaction_shapes(source: str) -> Counter[str]:
     """Each connection context and each by-hand begin in ``source``, counted by its exact
-    shape. A context that names a connection another way, a statement that begins a
-    transaction or a savepoint in other words, and ``executescript`` are refused unread."""
+    shape. A context that names a connection another way, a statement that starts with
+    ``BEGIN`` or ``SAVEPOINT`` and is not one of those counted, and ``executescript`` are
+    refused unread."""
     found: Counter[str] = Counter()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.With | ast.AsyncWith):
