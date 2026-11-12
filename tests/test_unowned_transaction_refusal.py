@@ -576,6 +576,46 @@ def test_every_way_out_of_a_scope_gives_its_count_back_and_the_next_writer_meets
         assert INSIDE not in read_fresh(path, IDS)
 
 
+def stopped_inside(store: ProjectStateStore, outer: str, inner: str) -> None:
+    """One scope of the store entered inside another, and left by an exception."""
+    with OPENERS[outer](store), OPENERS[inner](store):
+        raise Stopped
+
+
+@pytest.mark.parametrize("inner", list(OPENERS))
+@pytest.mark.parametrize("outer", list(OPENERS))
+def test_a_scope_that_joined_another_and_raises_gives_its_count_back(
+    outer: str, inner: str, store: ProjectStateStore, path: pathlib.Path
+) -> None:
+    """A scope that joined an outer one counts until it ends, by an exception too. Were its
+    count kept, a transaction left open afterward would pass for one a scope still owns."""
+    before = every_row(path)
+
+    with pytest.raises(Stopped):
+        stopped_inside(store, outer, inner)
+
+    still_open = store._connection.in_transaction
+    assert not still_open
+    assert scopes_of(store) == 0
+    assert lock_free(store)
+    held_open(store._connection, HOLD_A_TITLE, (HELD, PRACTICE))
+    with pytest.raises(TransactionLeftOpen):
+        put(store)
+    assert store._connection.in_transaction
+    assert every_row(path) == before
+
+
+def test_a_write_scope_holds_the_store_s_lock_whoever_enters_it(store: ProjectStateStore) -> None:
+    """The write scope takes the lock itself, so its check and its count are never read or
+    changed by a caller that came without it."""
+    assert lock_free(store)
+
+    with store._writing():
+        assert not lock_free(store)
+
+    assert lock_free(store)
+
+
 # ------------------------------------------------------------- the closed list of sites
 
 CONTEXTS: Final = ("self._connection", "connection")
@@ -597,8 +637,10 @@ PINNED: Final = {
     "workload_signals.py": {"BEGIN": 1, "BEGIN IMMEDIATE": 2, "with self._connection": 1},
 }
 """Every connection used as a context and every transaction or savepoint begun by hand under
-``blossom/stores``, by file and exact shape. One added, removed or written another way fails
-here, and is then classified: a site that refuses, or one that needs no check."""
+``blossom/stores``, by file and exact shape. One added or removed fails here, and so does a
+context whose expression names a connection another way and a statement that starts with
+``BEGIN`` or ``SAVEPOINT`` in other words. It is then classified: a site that refuses, or one
+that needs no check. A context on a name that does not say ``connection`` is not seen."""
 
 
 def transaction_shapes(source: str) -> Counter[str]:
