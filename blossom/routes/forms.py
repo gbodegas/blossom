@@ -62,7 +62,9 @@ COPY_LIMIT: Final = 16 * 1024
 COPY_DEADLINE: Final = 5.0
 """How long, in seconds, a refused press's copy may take to be read. The time is counted
 once, from the moment its body starts being read, and a chunk that arrives does not start
-it again: past it the copy is given up and the refusal stands without one."""
+it again: past it the copy is given up and the refusal stands without one. The deadline
+covers reading and parsing the submitted body, not completion of the response. Rendering
+follows on the event loop's default thread pool and may wait for a free worker."""
 URL_ENCODED: Final = "application/x-www-form-urlencoded"
 """The one kind of body a refused press's copy is read from: the kind a page's form sends."""
 PARSER_LOGGER: Final = "python_multipart"

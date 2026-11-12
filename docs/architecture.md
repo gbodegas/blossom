@@ -1465,7 +1465,10 @@ once the refusal is settled and only when it is a page's form of one declared
 length within 16 KiB, counted as it streams in and given up the moment it runs
 past that length or ends short of it. The read has five seconds in all from its
 start, which a chunk arriving does not restart: a body not all come by then is
-dropped and the refusal answers at once, the client still connected. Whatever
+dropped and the refusal is made without it, the client still connected. The
+deadline covers reading and parsing the submitted body, not completion of the
+response. Rendering follows on the event loop's default thread pool and may
+wait for a free worker. Whatever
 that read finds, the answer is the same 403, and a name that is no note's
 changes nothing about it. The copy shows each value as it was sent: a date
 isn't read, respelled, or cut, and the page doesn't say whether it reads. For her

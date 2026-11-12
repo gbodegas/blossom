@@ -1619,7 +1619,7 @@ def test_a_parents_update_hand_in_or_undo_lands_on_her_current_week(
 
 SHORT_DEADLINE: Final = 0.4
 """The deadline these tests give the copy, so a body that stalls is seen out quickly. The
-application's own is pinned below as it is, and a real server is timed against it apart."""
+application's own is pinned below as it is."""
 CLOCK_TICK: Final = 0.05
 """How early an event loop may run a timer: it runs every timer due within its clock's
 resolution, which is about 16 milliseconds on Windows."""
