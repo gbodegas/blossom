@@ -689,6 +689,31 @@ def test_rows_that_enter_a_scope_of_the_store_between_them_are_written_whole(
     assert lock_free(store)
 
 
+@pytest.mark.parametrize("writer", list(DIRECT))
+@pytest.mark.parametrize("scope", list(OPENERS))
+def test_a_direct_writer_inside_an_open_scope_ends_as_its_context_does_and_keeps_to_its_count(
+    scope: str, writer: str, store: ProjectStateStore, path: pathlib.Path
+) -> None:
+    """The connection's context commits whatever the connection holds, so a direct writer
+    called inside an open scope keeps what that scope has written so far along with its own
+    rows. The count it gives back is its own: the scope's stays until the scope ends."""
+    with OPENERS[scope](store):
+        put(store, BETWEEN)
+        written_by_the_scope = store._connection.in_transaction
+
+        DIRECT[writer](store, lambda _: None)
+
+        assert scopes_of(store) == 1
+        assert committed(store, path, BETWEEN)
+
+    assert written_by_the_scope
+    assert scopes_of(store) == 0
+    assert lock_free(store)
+    held_open(store._connection, HOLD_A_TITLE, (HELD, PRACTICE))
+    with pytest.raises(TransactionLeftOpen):
+        put(store)
+
+
 class Ending(Refusing):
     """``Refusing`` used as a context, ending as the connection's own context ends: a commit
     when the block ended, a rollback when it raised, and a rollback after a commit that was
@@ -743,8 +768,14 @@ FAILURES: Final = {
         "upsert_assignments", refused="rollback", raises_before=1, leaves_open=True
     ),
     "record_status_reports, its rows raise": Failing("record_status_reports", raises_before=0),
+    "record_status_reports, its rollback refused": Failing(
+        "record_status_reports", refused="rollback", raises_before=0
+    ),
     "record_status_reports, its commit refused": Failing("record_status_reports", refused="commit"),
     "record_claims, its rows raise": Failing("record_claims", raises_before=0),
+    "record_claims, its rollback refused": Failing(
+        "record_claims", refused="rollback", raises_before=0
+    ),
     "record_claims, its commit refused": Failing("record_claims", refused="commit"),
 }
 """Only ``upsert_assignments`` has written a row when its rows raise, so only its refused

@@ -1146,9 +1146,11 @@ class ProjectStateStore(
     def _counted(self) -> Iterator[None]:
         """Count the block as one of the store's own scopes, inside a held lock, and give the
         count back however the block ends. A direct writer puts the connection's own context
-        inside it, so the transaction that context begins is the store's until its commit or
-        its rollback has run, and a scope entered from inside it joins it. Counting is all it
-        does: it begins nothing and ends nothing."""
+        inside it, so a transaction open on the connection while that context lasts, its
+        commit or rollback included, is the store's, and a scope entered then joins it. The
+        context opens no transaction itself: one begins at the writer's first statement, and
+        a scope entered before that begins and ends its own. Counting is all this does: it
+        begins nothing and ends nothing."""
         self._scopes += 1
         try:
             yield
@@ -1633,8 +1635,8 @@ class ProjectStateStore(
         and the scope are one helper, so no caller can open the scope first
         and reserve second, which would reserve nothing. Inside a
         transaction one of the store's own scopes has open, a first start's,
-        another write scope's or a read block's, the block joins it and
-        leaves its end to the opener.
+        another write scope's, a read block's or a direct writer's, the block
+        joins it and leaves its end to the opener.
 
         The scope takes the store's lock itself, and before anything else it
         refuses a transaction open on the connection that no scope of the

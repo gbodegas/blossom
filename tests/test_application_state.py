@@ -329,7 +329,8 @@ def test_a_running_process_sweeps_on_its_own(
     waiting, while a sweep of the running application holds the file. The aged signal is
     recorded while the application runs, by a write that asks for the file first and so waits
     for a sweep to finish. The file holds the signals tables when the application starts, so
-    the start takes it for a record already there and plants no seed, which nothing here reads.
+    the start takes it for a record already there and plants no seed: the record the first
+    page reads holds no homework. No assertion here depends on the seed.
     """
     monkeypatch.setattr(dependencies, "SWEEP_INTERVAL_SECONDS", 0.02)
     settings = fixture_settings(**file_settings(tmp_path))
