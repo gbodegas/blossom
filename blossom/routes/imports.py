@@ -663,22 +663,33 @@ async def unknown_outcome(
     homework: Sequence[str] = (UNKNOWN_SAID["homework"],),
 ) -> Response:
     """A Save press that can't ask whether a save is on record: a transaction left open on the
-    record's connection, or a refused read of its acceptance. First what it knows of its answers
-    (``kept``): its answers lines, only where its own keep committed, which its caller says as an
-    ended review's page does once a read has said the review ended; that they couldn't be kept,
-    with no instruction to press again (``with_no_retry``); or that it can't tell that either.
-    Then its homework lines (``homework``): that it couldn't tell whether any homework was saved,
-    where its own homework write is unresolved or its caller's values don't show that it wrote
-    none; where they do show that, that no homework was saved by this attempt and that it
+    record's connection, or a refused read of its acceptance. The page draws its first line as
+    its alert, so the lines that report a problem come first. Of what its caller passes
+    (``kept``), those are every line that isn't an answers line: that its answers couldn't be
+    kept, with no instruction to press again (``with_no_retry``); that it can't tell whether
+    they were; or a refused post's own sentence, which says nothing was kept or saved by this
+    attempt. Then its homework lines (``homework``). Where its caller's own values show that this
+    press wrote no homework, they say that no homework was saved by this attempt and that it
     couldn't tell whether another attempt saved any (``NO_HOMEWORK_BY_THIS_ATTEMPT``), the second
-    alone after a line that already says nothing was saved by this attempt. Then every correction
-    to copy, and the way to Family review. It shows no rows or review link, since rows rebuilt
-    here would carry a new acceptance, and a Save from them wouldn't be a replay of this press."""
+    alone after a refused post's sentence. Every other caller says that it couldn't tell whether
+    any homework was saved: a homework save that returned not saved and left a transaction open;
+    one whose check for a transaction left open was refused, at a later look that is refused;
+    and a refused look at the first reads of ``review_press``, past a post refused for a box it
+    can't take, past an answers write refused as out of date, closed, expired or removed, or by
+    a file error that isn't busy, past a name check that can't be read, and past "Already
+    saved". Last, the answers lines among ``kept`` (``ANSWERS_SAID``), there only where its own
+    keep committed, which its caller says as an ended review's page does once a read has said
+    the review ended. Then every correction to copy, and the way to Family review. It shows no
+    rows or review link, since rows rebuilt here would carry a new acceptance, and a Save from
+    them wouldn't be a replay of this press."""
+    lines = with_no_retry(kept)
+    problems = [line for line in lines if line not in ANSWERS_SAID]
+    answers = [line for line in lines if line in ANSWERS_SAID]
     return templates.TemplateResponse(
         request,
         "import_said.html",
         {
-            "said": [*with_no_retry(kept), *homework],
+            "said": [*problems, *homework, *answers],
             "typed": await typing_of(request, as_sent=True, beside_words=True),
             "typed_said": UNSHOWN_TYPED,
             "marks": marks_of(state),
@@ -2184,6 +2195,27 @@ def answers_said(kept: AnswersKept) -> list[str]:
     return []
 
 
+def kept_then_ended(kept: AnswersKept) -> list[str]:
+    """What a Save says of its own write where its review expired or was gone under its homework
+    save, from what that committed write returned. When it stored some answers and dropped none:
+    that its answers were kept, but the review ended before the homework was saved. When it
+    stored some and dropped some: that some were kept before the review ended, that none were
+    kept for homework already saved, and that no homework was saved by this attempt. When it
+    stored none and dropped some: only that none were kept for homework already saved. When it
+    stored and dropped none: nothing."""
+    if kept.stored > 0 and kept.dropped > 0:
+        return [
+            PRESS_SAID["some_kept_before_ended"],
+            PRESS_SAID["not_kept_for_saved"],
+            NO_HOMEWORK,
+        ]
+    if kept.stored > 0:
+        return [PRESS_SAID["kept_then_ended"]]
+    if kept.dropped > 0:
+        return [PRESS_SAID["not_kept_for_saved"]]
+    return []
+
+
 def kept_lines(said: Iterable[str]) -> list[str]:
     """Of a press's lines, its answers lines."""
     return [line for line in said if line in KEPT_SAID]
@@ -2260,6 +2292,8 @@ CONFIRMED_SAID: Final = frozenset(
     }
 )
 """The lines that say a press kept answers, by this attempt or before the review ended."""
+ANSWERS_SAID: Final = KEPT_SAID | CONFIRMED_SAID
+"""The answers lines as any page says them: by this attempt, or before the review ended."""
 
 
 def unconfirmed_lines(said: Iterable[str]) -> list[str]:
@@ -2555,11 +2589,12 @@ async def kept_past_empty_rows(
 ) -> Sequence[str]:
     """What a press's own write kept (``notes``) on a receipt's page whose rows came back empty,
     which can't tell an ending from nothing open. One more read says how those lines are said, as
-    the page's own read does: as an ended review's page says them where it says the review ended,
-    none of them past a close with no counts (``counted``), and as they stand where it reads open
-    or is refused. A press with no line saying it kept answers reads nothing more, and its lines
-    are said as they stand: that its write failed or can't be told, or that it did not keep
-    answers for homework already saved."""
+    the page's own read does: as an ended review's page says them where it says the review ended;
+    past a close with no counts (``counted``), only that this attempt did not keep answers for
+    homework already saved, which claims nothing of what is on file; and as they stand where it
+    reads open or is refused. A press with no line saying it kept answers reads nothing more, and
+    its lines are said as they stand: that its write failed or can't be told, or that it did not
+    keep answers for homework already saved."""
     if not set(notes) & CONFIRMED_SAID:
         return notes
     now = await review_state_now(state, draft_id)
@@ -2568,7 +2603,7 @@ async def kept_past_empty_rows(
     if isinstance(now, str):
         return ended_lines(notes, saved=True)
     if now.closed_at is not None and not counted:
-        return ()
+        return [line for line in notes if line == PRESS_SAID["not_kept_for_saved"]]
     if now.closed_at is None and not now.finished:
         return notes
     return ended_lines(notes, saved=True)
@@ -2607,10 +2642,12 @@ async def with_typing(
     back, and says nothing of rows it doesn't show. Where it does show rows, each typed field ends
     in a box holding it, in the save's evidence (``saved``) or in a box to copy, and two kinds of
     line are said here, beside them: the answers lines of that save's own write (``own_write``, by
-    ``answers_said``), which every page after that save says beneath its result, and that
-    changes on the rows below aren't saved yet, when a box for one (``unsaved``) is among those
-    shown. A press with no save committed carries its answers lines in ``said``, and a line of
-    its own that is said only where rows were read (``beside_rows``) follows them. A Save press
+    ``answers_said``), which each page after that save says beneath its result, apart from the
+    page of a save that itself closed the review and a page that fails after the commit, which
+    say no answers line, and that changes on the rows below aren't saved yet, when a box for one
+    (``unsaved``) is among those shown. A press with no save committed carries its answers lines
+    in ``said``, and a line of its own that is said only where rows were read (``beside_rows``)
+    follows them. A Save press
     with no save committed that can't ask for its receipt says its homework lines (``homework``,
     as ``unknown_outcome`` says them). Each box holds the text its post sent where that equals
     its value once canonical
@@ -2626,8 +2663,8 @@ async def with_typing(
     ``unknown_outcome`` does. It
     keeps a line saying a press's own write to its answers failed, or that it can't be told
     (``own_failure_lines``). With
-    no save committed, ``answered`` says this press's own write stored answers, for the pages that
-    show no rows (``ended_under_press``, ``snapshot_keeping_typing``), and ``beside_rows`` are lines
+    no save committed, ``answered`` says this press's own write stored answers, for the pages
+    ``ended_under_press`` answers with where the rows come back empty, and ``beside_rows`` are lines
     said after the press's answers lines and ahead of its others, only where rows are drawn. A
     Save press asks for its receipt before any page that ends it, as ``snapshot_keeping_typing``
     does. A press with an instruction conflict, or naming a kept row that isn't on the record
@@ -3294,10 +3331,12 @@ async def save_press(
     (``NO_HOMEWORK_BY_THIS_ATTEMPT``): its first look refused, before any write; its answers
     write refused by a busy store, writer or file, so its homework never began; nothing ticked;
     the read of her name refused, or meeting a transaction left open; and a homework save that
-    returned not saved with no transaction left open. A homework save that returned not saved
-    and left a transaction open says that Blossom couldn't tell whether any homework was saved.
-    So does a refused look past an answers write refused as out of date, closed, expired or
-    removed, or by a file error that isn't busy, and past a name check that can't be read."""
+    returned not saved where the check that follows it (``left_open``) answers that no
+    transaction is left open. A homework save that returned not saved and left a transaction
+    open says that Blossom couldn't tell whether any homework was saved. So does a refused look
+    past a homework save that returned not saved where that check was itself refused, past an
+    answers write refused as out of date, closed, expired or removed, or by a file error that
+    isn't busy, past a name check that can't be read, and past "Already saved"."""
     none_written = NO_HOMEWORK_BY_THIS_ATTEMPT
     record = state.project_state
     draft_id = found.draft_id
@@ -3419,21 +3458,30 @@ async def save_press(
     except Exception as error:
         logger.warning("A screenshot save failed: %s", type(error).__name__)
         outcome = NotSaved("failed")
-    if isinstance(outcome, NotSaved) and await left_open(state):
-        # Found here by asking, with no refusal of the store's behind it, so this is its one line.
-        logger.error(LEFT_OPEN_ON_THE_RECORD)
-        return await unknown_outcome(request, state, kept_said)
-    return await outcome_page(request, state, draft_id, outcome, answered, post, own_write=kept)
+    homework: Sequence[str] = none_written
+    if isinstance(outcome, NotSaved):
+        open_now = await left_open(state)
+        if open_now:
+            # Found here by asking, with no refusal of the store's behind it, so this is its one
+            # line.
+            logger.error(LEFT_OPEN_ON_THE_RECORD)
+            return await unknown_outcome(request, state, kept_said)
+        if open_now is None:
+            homework = (UNKNOWN_SAID["homework"],)
+    return await outcome_page(
+        request, state, draft_id, outcome, answered, post, own_write=kept, homework=homework
+    )
 
 
-async def left_open(state: ApplicationState) -> bool:
+async def left_open(state: ApplicationState) -> bool | None:
     """Whether a save that didn't commit has left its transaction open: its commit and its rollback
-    both refused. Then whether it saved isn't known. A store refusing to say is no evidence."""
+    both refused. Then whether it saved isn't known. None where the store refuses to say, which
+    is no evidence that one is open and none that none is."""
     try:
         return await asyncio.to_thread(state.project_state.transaction_left_open)
     except sqlite3.Error as error:
         noted(error)
-        return False
+        return None
 
 
 async def outcome_page(
@@ -3445,6 +3493,7 @@ async def outcome_page(
     post: ReviewPost,
     *,
     own_write: AnswersKept,
+    homework: Sequence[str] = NO_HOMEWORK_BY_THIS_ATTEMPT,
 ) -> Response:
     """What a Save press answers with, by what committed: "nothing was saved" only when the
     homework transaction didn't commit, and a save that committed is reported as saved, in the
@@ -3457,26 +3506,28 @@ async def outcome_page(
     title and instructions boxes its evidence holds (``text_boxes``). The answers lines of this
     press's own write (``own_write``, by ``answers_said``) are said beside each line saying why
     no homework was saved, beside "Already saved", on a closed review's page, on the page of a
-    look that is refused, and beneath this press's own save where its page doesn't fail. A
-    review that expired or is gone under the homework save says in their place, where the write
-    stored answers, that they were kept but the review ended before the homework was saved. A
-    receipt found by the look past a busy or failed save, and a replayed save, show that save's
-    page without them. A homework save that returned not saved reaches here only with no
-    transaction left open, so this press wrote no homework, and a look for a receipt that is
-    refused says so (``NO_HOMEWORK_BY_THIS_ATTEMPT``); past "Already saved" a refused look says
-    that Blossom couldn't tell whether any homework was saved."""
+    look that is refused, and beneath this press's own save where its page doesn't fail and
+    that save didn't itself close the review, whose page says no answers line. A review that
+    expired or is gone under the homework save says in their place what the write returned
+    (``kept_then_ended``). A receipt found by the look past a busy or failed save, and a replayed
+    save, show that save's page without them. A look for a receipt that is refused past a
+    homework save that returned not saved says this press's homework lines (``homework``). By
+    default those say that no homework was saved by this attempt and that Blossom couldn't tell
+    whether another attempt saved any (``NO_HOMEWORK_BY_THIS_ATTEMPT``): the homework save never
+    began, or the check after it answered that no transaction is left open. Where that check was
+    refused, ``save_press`` passes that Blossom couldn't tell whether any homework was saved.
+    Past "Already saved" a refused look says that too."""
     kept = answers_said(own_write)
     if isinstance(outcome, NotSaved):
-        none_written = NO_HOMEWORK_BY_THIS_ATTEMPT
         if outcome.reason in ("absent", "expired"):
-            ended = [PRESS_SAID["kept_then_ended"]] if answered else []
+            ended = kept_then_ended(own_write)
             return await gone_with_typing(request, state, outcome.reason, ended, 409)
         if outcome.reason == "closed":
             return await closed_on_press(
-                request, state, draft_id, 409, kept, notes=kept, homework=none_written
+                request, state, draft_id, 409, kept, notes=kept, homework=homework
             )
         if outcome.reason in ("busy", "failed"):
-            recorded = await replayed(request, state, draft_id, kept, homework=none_written)
+            recorded = await replayed(request, state, draft_id, kept, homework=homework)
             if recorded is not None:
                 return recorded
         status = 503 if outcome.reason in ("busy", "failed") else 409
@@ -3488,7 +3539,7 @@ async def outcome_page(
             not_saved(outcome, own_write),
             status,
             own_write=own_write,
-            homework=none_written,
+            homework=homework,
         )
     if isinstance(outcome, AlreadySaved):
         said = [*kept, PRESS_SAID["already"]]
