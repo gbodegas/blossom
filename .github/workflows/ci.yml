@@ -9,9 +9,21 @@ on:
 permissions:
   contents: read
 
+# A newer commit on a pull request ends the run of the commit it replaces, so
+# the full suite is spent on the current head only. A run on main is never
+# ended or replaced: each one has a group to itself, because runs that share a
+# group can still replace one another while waiting, even with
+# cancel-in-progress off.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pull-request-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   checks:
     runs-on: ubuntu-latest
+    # A run that stops making progress is ended here rather than at GitHub's
+    # own limit of six hours.
+    timeout-minutes: 120
     steps:
       # Actions are pinned to commits rather than tags. A tag is a moving
       # reference, so whoever can move it can run code here. Pinning fixes
@@ -50,11 +62,46 @@ jobs:
           enable-cache: auto
       - name: Install dependencies
         run: uv sync --dev
+      # What the tests ran on, printed so a slow or odd run can be read
+      # against the machine and the packages it had.
+      - name: Runner and versions
+        run: |
+          nproc
+          free -h
+          uv run python --version
+          uv pip list
       - name: Ruff
         run: uv run ruff check .
       - name: Ruff format
         run: uv run ruff format --check .
       - name: Mypy
         run: uv run mypy blossom tests
+      # Every test case's name, collected in one process and kept beside the
+      # results, so what ran can be compared with what should have. On an
+      # error the listing is printed, since it holds the error's text.
+      - name: Collect test cases
+        run: |
+          mkdir -p test-results
+          uv run pytest --collect-only -q > test-results/collected.txt \
+            || { status=$?; cat test-results/collected.txt; exit "$status"; }
+          tail -n 1 test-results/collected.txt
+      # Four workers, one test file at a time on each: a file's cases stay
+      # together, in order, in one process. A worker that dies is not started
+      # again, so its loss fails the run instead of being worked around. The
+      # options are given here and not in pyproject.toml, so a pytest that a
+      # test starts on its own stays a single plain process.
       - name: Pytest
-        run: uv run pytest
+        run: >-
+          uv run pytest -n 4 --dist loadfile --max-worker-restart=0
+          --durations=50 --junitxml=test-results/junit.xml
+      # A record, not a check: every case's outcome and time, kept for two
+      # weeks. It runs after a failure too and cannot turn one into a pass; a
+      # failed upload shows on the run without changing its result.
+      - name: Keep test results
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 14
