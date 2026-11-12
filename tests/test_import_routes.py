@@ -26809,6 +26809,42 @@ def test_save_with_nothing_ticked_reads_once_more_when_its_rows_come_back_empty(
     assert reads == ([read] if stored else [])
 
 
+@pytest.mark.parametrize("counts", ["shown", "empty"])
+@pytest.mark.parametrize(
+    "look",
+    ["its first page read refused", "its next read open", "its first page read says expired"],
+)
+def test_save_with_a_group_ticked_reads_nothing_more_when_its_rows_come_back_empty(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, look: str, counts: str
+) -> None:
+    """Timing forced: a Save ticking a group stores an answer and saves no homework, a later look
+    finds its receipt, its own read finds the review open, and its rows come back empty. The press
+    asks for no read more. Its answers lines stay as its look gave them: by this attempt, or
+    before the review ended where that look's read said so, beside the earlier save's counts or
+    that they can't be shown. The control is
+    ``test_save_with_nothing_ticked_reads_once_more_when_its_rows_come_back_empty``: a Save with
+    nothing ticked that stored an answer reads once more on this page."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, posted, _, _ = a_save_storing_an_answer_beside_its_receipt(browser, monkeypatch)
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("names"))
+        if counts == "empty":
+            counts_unreadable(browser, monkeypatch, "empty")
+        asked = no_read_for_the_tense(monkeypatch)
+        from_its_rows_page(monkeypatch, "rows_of", no_rows_to_show)
+        a_look_that_leaves_its_own_read_open(look, browser, monkeypatch, draft_id)
+        answer = send(browser, draft_id, posted)
+        monkeypatch.undo()
+
+    assert asked == []
+    assert answer.status_code == 200
+    assert 'name="correct:' not in answer.text
+    if counts == "shown":
+        the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
+    else:
+        says_the_save_with_its_counts_unread(answer)
+    says_this_keep_stored_its_answers(answer, THE_LINE_BESIDE_ITS_ROWS[look])
+
+
 def test_save_with_nothing_ticked_keeps_its_typing_when_its_one_more_read_fails(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -39290,6 +39326,49 @@ def test_a_press_that_stored_answers_says_so_ahead_of_another_refusal_of_its_fir
     assert (kept.stored > 0, kept.dropped) == (True, 0)
     assert answer.status_code == 409
     says_in_order(answer, SAID_OF_ONE_ATTEMPT[line], refusal)
+
+
+FIRST_PAGE_READS_REFUSED_AS: Final[dict[str, tuple[Callable[..., None], str, str]]] = {
+    "fixed": (refusing(DraftFrozen), imports.SAID["frozen"], "kept"),
+    "finished": (refusing(DraftClosed), imports.SAID["closed"], "kept_before_ended"),
+    "full": (too_many_images, imports.too_many(0), "kept"),
+}
+"""A forced refusal of a press's first page read: how the read fails, the refusal's own sentence,
+and the answers line of a press that stored answers and dropped none."""
+
+
+def the_said_lines(answer: Answer) -> list[str]:
+    """Each paragraph of plain text in the panel of a page with no rows, in the order drawn."""
+    panel = main_of(answer.text).split('<section class="panel">', 1)[1].split("</section>", 1)[0]
+    drawn = re.findall(r"<p(?: [^>]*)?>([^<]*)</p>", panel)
+    return [html.unescape(line) for line in drawn]
+
+
+@pytest.mark.parametrize("refused", list(FIRST_PAGE_READS_REFUSED_AS))
+def test_a_first_page_read_refused_as_fixed_finished_or_full_keeps_the_refusal_as_its_alert(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refused: str
+) -> None:
+    """Keep storing answers, the first read for its page forced to answer that the review's
+    screenshots are fixed, that it is finished, or that it has room for no more: 409 and two
+    paragraphs. The refusal's own sentence comes first, and it is the page's one alert and the one
+    element that takes the focus. The answers line follows it: by this attempt, or before the
+    review ended where the read says finished."""
+    fails, refusal, line = FIRST_PAGE_READS_REFUSED_AS[refused]
+    with here(open_settings(tmp_path)) as browser:
+        review, page, field, value, _, title = an_answer_to_change(browser, monkeypatch)
+        posted = shown_post(page, "keep", choose={field: value}, typed={title: "This Tab "})
+        written = answers_written_by(browser, monkeypatch, "keep_answers")
+        Refusing(monkeypatch, ("snapshot_keeping_typing", "snapshot", 1, fails))
+        answer = send(browser, review.draft_id, posted)
+        monkeypatch.undo()
+
+    [kept] = written
+    assert (kept.stored > 0, kept.dropped) == (True, 0)
+    assert answer.status_code == 409
+    assert the_said_lines(answer) == [refusal, SAID_OF_ONE_ATTEMPT[line]]
+    assert the_alert_of(answer) == [refusal]
+    assert main_of(answer.text).count('role="alert"') == 1
+    assert focused(answer.text) == ['<p class="problem" role="alert" tabindex="-1" autofocus>']
 
 
 A_BUSY_SAVE_WITH_NO_EARLIER_SAVE: Final[dict[str, tuple[str, int, bool]]] = {
