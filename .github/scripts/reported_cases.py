@@ -12,6 +12,11 @@ has an outcome. It does not say that the case's body ran, and it does not say th
 pass: pytest's own exit status covers failures. What this adds is a run that ends without a
 failure while cases are missing, which a worker lost during collection can cause.
 
+The listing ends with pytest's own count, "N tests collected". The lines read as cases must
+come to that N, so a line this script does not recognize fails the check and is not passed
+over. A module skipped as a whole during collection is named in the results and not in the
+listing, and fails the check as well.
+
 Exit status 0 when the two agree, 1 when they differ or either file cannot be read, 2 on a
 wrong command line.
 """
@@ -24,6 +29,7 @@ from collections import Counter
 type Case = tuple[str, str]
 
 CASE_LINE = re.compile(r"[^\s:]+\.py::\S")
+STATED_COUNT = re.compile(r"(\d+) tests? collected\b")
 OUTCOMES = ("failure", "error", "skipped")
 SHOWN = 20
 
@@ -40,10 +46,13 @@ def collected_case(line: str) -> Case:
     return ".".join([module, *names[1:-1]]), names[-1] + bracket + parameters
 
 
-def collected_cases(path: str) -> Counter[Case]:
+def collected_cases(path: str) -> tuple[Counter[Case], int | None]:
+    """The cases the listing names, and the count pytest states on its closing line."""
     with open(path, encoding="utf-8") as listing:
         lines = [line.rstrip("\n") for line in listing]
-    return Counter(collected_case(line) for line in lines if CASE_LINE.match(line))
+    cases = Counter(collected_case(line) for line in lines if CASE_LINE.match(line))
+    stated = [int(found[1]) for line in lines if (found := STATED_COUNT.match(line))]
+    return cases, stated[-1] if stated else None
 
 
 def reported_cases(path: str) -> tuple[Counter[Case], Counter[str]]:
@@ -70,7 +79,7 @@ def main(arguments: list[str]) -> int:
         say("usage: reported_cases.py COLLECTED RESULTS")
         return 2
     try:
-        collected = collected_cases(arguments[0])
+        collected, stated = collected_cases(arguments[0])
         reported, outcomes = reported_cases(arguments[1])
     except (OSError, UnicodeDecodeError, ElementTree.ParseError) as error:
         say(f"cannot read the collected cases or the results: {error}")
@@ -80,6 +89,10 @@ def main(arguments: list[str]) -> int:
     say(f"outcomes in the results: {counts or 'none'}")
     if not collected:
         say("no collected case was found, so there is nothing to hold the results to")
+        return 1
+    if stated != sum(collected.values()):
+        own = "no count" if stated is None else f"{stated} collected"
+        say(f"the listing states {own}, and {sum(collected.values())} of its lines read as cases")
         return 1
     missing = collected - reported
     unexpected = reported - collected

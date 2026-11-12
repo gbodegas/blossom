@@ -17,7 +17,7 @@ permissions:
 # that share a group can still replace one another while waiting, even with
 # cancel-in-progress off.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pull-request-{0}', github.event.pull_request.number) || format('run-{0}-attempt-{1}', github.run_id, github.run_attempt) }}
+  group: ${{ github.workflow }}-${{ (github.event_name == 'pull_request' && github.run_attempt == 1 && format('pull-request-{0}', github.event.pull_request.number)) || format('run-{0}-attempt-{1}', github.run_id, github.run_attempt) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
