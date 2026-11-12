@@ -759,8 +759,9 @@ class ProjectStateStore(
         # can read and write through the same methods everyone else uses.
         self._lock = threading.RLock()
         # How many of the store's own scopes are open on the connection now: each write scope
-        # and read block, nested ones too, and a first start's transaction. Read and changed
-        # only with the lock held. A transaction open while this is zero is one no scope owns.
+        # and read block, nested ones too, a first start's transaction, and the connection's
+        # context of each direct writer. Read and changed only with the lock held. A
+        # transaction open while this is zero is one no scope owns.
         self._scopes = 0
         self.path: Path | None = None
         """The file, when the store was opened on one; a connection handed in has none."""
@@ -1142,6 +1143,19 @@ class ProjectStateStore(
             raise TransactionLeftOpen
 
     @contextmanager
+    def _counted(self) -> Iterator[None]:
+        """Count the block as one of the store's own scopes, inside a held lock, and give the
+        count back however the block ends. A direct writer puts the connection's own context
+        inside it, so the transaction that context begins is the store's until its commit or
+        its rollback has run, and a scope entered from inside it joins it. Counting is all it
+        does: it begins nothing and ends nothing."""
+        self._scopes += 1
+        try:
+            yield
+        finally:
+            self._scopes -= 1
+
+    @contextmanager
     def reading(self) -> Iterator[None]:
         """Hold the store and read one snapshot of the file, however many reads it takes.
 
@@ -1207,7 +1221,7 @@ class ProjectStateStore(
         """
         with self._lock:
             self._refuse_unowned()
-            with self._connection:
+            with self._counted(), self._connection:
                 self._upsert_assignments_locked(assignments)
 
     def put_on_record(
@@ -1232,7 +1246,7 @@ class ProjectStateStore(
         transaction."""
         with self._lock:
             self._refuse_unowned()
-            with self._connection:
+            with self._counted(), self._connection:
                 self._record_status_reports_locked(assignment_id, reports)
 
     def _record_status_reports_locked(
@@ -2378,7 +2392,7 @@ class ProjectStateStore(
         """
         with self._lock:
             self._refuse_unowned()
-            with self._connection:
+            with self._counted(), self._connection:
                 self._record_claims_locked(assignment_id, records)
 
     def _record_claims_locked(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
