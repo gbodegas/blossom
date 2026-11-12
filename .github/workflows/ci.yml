@@ -80,12 +80,15 @@ jobs:
         run: uv run mypy blossom tests
       # Every test case's name, collected in one process before the workers
       # start. The step after the tests holds the results to this list, and
-      # it is kept with them. On an error the listing is printed, since it
-      # holds the error's text.
+      # it is kept with them. The list is read strictly, as cases and one
+      # closing count, so the summary of warnings is left out of it here. That
+      # option only drops the summary from this listing; the test run below
+      # reports warnings as before. On an error the listing is printed, since
+      # it holds the error's text.
       - name: Collect test cases
         run: |
           mkdir -p test-results
-          uv run pytest --collect-only -q > test-results/collected.txt \
+          uv run pytest --collect-only -q --disable-warnings > test-results/collected.txt \
             || { status=$?; cat test-results/collected.txt; exit "$status"; }
           tail -n 1 test-results/collected.txt
       # Four workers, one test file at a time on each: a file's cases stay

@@ -188,7 +188,9 @@ Use synthetic data only. Fixtures live in `data/sample/` and
 `data/synthetic/`; never include real student or family data. New third-party
 imports need a justification in the project's allowlist.
 
-Run the same checks as CI. If you installed with pip, the
+Run the checks locally with the commands below. CI runs the test suite on
+four workers and also checks that every collected case has a reported
+outcome. If you installed with pip, the
 [development guide](docs/development.md#when-uv-cannot-download) gives the
 steps to install the tools and run those checks.
 
